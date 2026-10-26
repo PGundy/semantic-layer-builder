@@ -3,7 +3,15 @@ import { SQL } from "bun";
 import { cpSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Issue, type SchemaKind, schemaIssues, sqlNames, validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
+import {
+  callsRound,
+  dividesByLiteral,
+  type Issue,
+  type SchemaKind,
+  schemaIssues,
+  sqlNames,
+  validateProject,
+} from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { sl } from "./helpers.ts";
 
@@ -756,6 +764,114 @@ const CASES: Case[] = [
     ],
   },
 
+  {
+    name: "a field that writes a redefining dimension's whole rule out through the same join",
+    file: "",
+    setup: (r) => {
+      mutate(r, CUSTOMERS, (d) => (d.dimensions[2].expr = "is_test_account or email like '%@example-test.com'"));
+      mutate(r, ORDERS, (d) => (d.measures[0].filter = "status <> 'cancelled' and not coalesce(customer.is_test_account or customer.email like '%@example-test.com', false)"));
+    },
+    expect: [],
+  },
+  {
+    name: "a field that writes only part of a redefining dimension's rule out keeps the warning",
+    file: "",
+    setup: (r) => {
+      mutate(r, CUSTOMERS, (d) => (d.dimensions[2].expr = "is_test_account or email like '%@example-test.com' or region = 'internal'"));
+      mutate(r, ORDERS, (d) => (d.measures[0].filter = "not coalesce(customer.is_test_account or customer.email like '%@example-test.com', false)"));
+    },
+    expect: ["warning", ORDERS, "measures[0].filter", "customer.is_test_account reads the column is_test_account of public.dim_customers, not dimension is_test_account"],
+  },
+  {
+    name: "a redefining dimension's rule written out through two hops; the one-hop field that reads only the column keeps the warning",
+    file: "",
+    setup: (r) => {
+      addShipments(r);
+      mutate(r, CUSTOMERS, (d) => (d.dimensions[2].expr = "is_test_account or email like '%@example-test.com'"));
+      mutate(r, SHIPMENTS, (d) => (d.measures[0].filter = "not coalesce(order.customer.is_test_account or order.customer.email like '%@example-test.com', false)"));
+    },
+    expect: ["warning", ORDERS, "measures[0].filter", "customer.is_test_account reads the column is_test_account"],
+  },
+  {
+    name: "the other columns written through another join chain do not count",
+    file: "",
+    setup: (r) => {
+      addShipments(r);
+      mutate(r, CUSTOMERS, (d) => (d.dimensions[2].expr = "is_test_account or email like '%@example-test.com'"));
+      mutate(r, ORDERS, (d) => (d.measures[0].filter = "not coalesce(customer.is_test_account or customer.email like '%@example-test.com', false)"));
+      mutate(r, SHIPMENTS, (d) => (d.measures[0].filter = "not coalesce(order.customer.is_test_account, false) and order.status <> 'x'"));
+    },
+    expect: ["warning", SHIPMENTS, "measures[0].filter", "order.customer.is_test_account reads the column is_test_account"],
+  },
+
+  // Exact amounts on duckdb and goldens that apply a measure exactly
+  {
+    name: "a duckdb measure expr that divides by a numeric literal",
+    file: "models/lake/web_events.yaml",
+    edit: (d) => d.measures.push({ name: "amount", expr: "event_id / 100.0", agg: "sum", status: "draft" }),
+    expect: ["warning", "models/lake/web_events.yaml", "measures[2].expr", 'divides by a numeric literal; on duckdb "/ 100.0" gives a DOUBLE, so write <col> * 0.01 for an exact amount'],
+  },
+  {
+    name: "a duckdb measure expr that divides by an integer literal",
+    file: "models/lake/web_events.yaml",
+    edit: (d) => d.measures.push({ name: "amount", expr: "event_id / 100", agg: "sum", status: "draft" }),
+    expect: ["warning", "models/lake/web_events.yaml", "measures[2].expr", "divides by a numeric literal"],
+  },
+  {
+    name: "a duckdb measure expr written as an exact amount or by integer division",
+    file: "models/lake/web_events.yaml",
+    edit: (d) =>
+      d.measures.push(
+        { name: "amount", expr: "event_id * 0.01", agg: "sum", status: "draft" },
+        { name: "hundreds", expr: "event_id // 100", agg: "sum", status: "draft" },
+        { name: "ratio", expr: "event_id / session_id", agg: "sum", status: "draft" },
+      ),
+    expect: [],
+  },
+  {
+    name: "a duckdb measure expr that divides by a cast, parenthesized or negative literal",
+    file: "models/lake/web_events.yaml",
+    edit: (d) =>
+      d.measures.push(
+        { name: "cast_amount", expr: "event_id / 100::decimal(18, 2)", agg: "sum", status: "draft" },
+        { name: "paren_amount", expr: "event_id / (100.0)", agg: "sum", status: "draft" },
+        { name: "negative_amount", expr: "event_id / -100", agg: "sum", status: "draft" },
+      ),
+    expect: [
+      ["warning", "models/lake/web_events.yaml", "measures[2].expr", "divides by a numeric literal"],
+      ["warning", "models/lake/web_events.yaml", "measures[3].expr", "divides by a numeric literal"],
+      ["warning", "models/lake/web_events.yaml", "measures[4].expr", "divides by a numeric literal"],
+    ],
+  },
+  { name: "a postgres measure expr may divide by a numeric literal", file: ORDERS, edit: (d) => (d.measures[0].expr = "amount_cents / 100"), expect: [] },
+  {
+    name: "a golden's sql that calls round()",
+    file: GOLDEN,
+    edit: (d) => (d.sql = "select round(sum(o.amount_cents / 100.0), 2) as revenue from public.fct_orders o"),
+    expect: ["warning", GOLDEN, "sql", "calls round(); a golden's SQL applies the measure exactly as written; round() hides float noise"],
+  },
+  { name: "round in a golden's string literal or comment", file: GOLDEN, edit: (d) => (d.sql = "select 'round(x)' as label -- round(y)\nfrom public.fct_orders"), expect: [] },
+  {
+    name: "an approved golden using a draft field says how to keep its rows",
+    file: "",
+    setup: (r) =>
+      mutate(r, ORDERS, (d) => {
+        d.measures[0].status = "draft";
+        delete d.measures[0].approved_by;
+        delete d.measures[0].approved_at;
+      }),
+    expect: [
+      ["error", "metrics.yaml", "metrics[0].numerator", "only approved measures"],
+      [
+        "warning",
+        GOLDEN,
+        "request.measures[0]",
+        "an approved golden uses draft measure orders.revenue; approve it after its readback, then run sl goldens check --name revenue_by_month_2025; " +
+          "if it passes the recorded rows stand, and only changed rows need a new confirm",
+      ],
+    ],
+  },
+
   // Definition joins and what a role may see
   {
     name: "a role allowed a dimension that reads through a join to a model it is not allowed",
@@ -1002,6 +1118,33 @@ describe("sqlNames", () => {
     expect(sqlNames('"a" = t.c and "select"', "bigquery")).toEqual({ subquery: false, chains: [{ parts: ["t", "c"], quoted: [false, false], text: "t.c" }] });
     expect(sqlNames("x in (from t) or y in (TABLE u)").subquery).toBe(true);
     expect(sqlNames("trim(from x)").subquery).toBe(false);
+  });
+});
+
+describe("dividesByLiteral and callsRound", () => {
+  test("a division by a numeric literal, outside literals and comments", () => {
+    expect(dividesByLiteral("amount_cents / 100.0")).toBe(true);
+    expect(dividesByLiteral("amount_cents/100")).toBe(true);
+    expect(dividesByLiteral("amount_cents / .5")).toBe(true);
+    expect(dividesByLiteral("amount_cents * 0.01")).toBe(false);
+    expect(dividesByLiteral("amount_cents // 100")).toBe(false);
+    expect(dividesByLiteral("amount_cents / 100::decimal(18, 2)")).toBe(true);
+    expect(dividesByLiteral("amount_cents / 100.0::double")).toBe(true);
+    expect(dividesByLiteral("amount_cents / (100.0)")).toBe(true);
+    expect(dividesByLiteral("amount_cents / -100")).toBe(true);
+    expect(dividesByLiteral("amount_cents / +(100)")).toBe(true);
+    expect(dividesByLiteral("amount_cents / (quantity - 1)")).toBe(false);
+    expect(dividesByLiteral("amount_cents / quantity")).toBe(false);
+    expect(dividesByLiteral("'a / 100' || amount /* x / 2 */")).toBe(false);
+  });
+
+  test("a call to round(), in any case, outside literals and comments", () => {
+    expect(callsRound("select ROUND (sum(x), 2)")).toBe(true);
+    expect(callsRound("select round(x)")).toBe(true);
+    expect(callsRound("select pg_catalog.round(x, 2)")).toBe(true);
+    expect(callsRound("select main.round(x, 2)")).toBe(true);
+    expect(callsRound("select rounded, 'round(x)' -- round(y)")).toBe(false);
+    expect(callsRound('select "round"(x)')).toBe(false);
   });
 });
 

@@ -261,6 +261,66 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["SKILL.md", "row-filtered targets of a dimension do not warn", "A dimension that reads a model the role row-filters shows every row's value and validate does not warn"],
   ["SKILL.md", "coverage includes metrics and owner figures", "every approved measure and metric in at least one approved golden"],
   ["SKILL.md", "federating source is the route if modelled", "do not model it in either source. If the owner wants it modelled"],
+  // Synonyms, engineering asks, rule goldens, access open questions, handoff and resume.
+  ["SKILL.md", "synonyms are read back", "Read back every synonym you will write, and write none the owner did not hear in a readback"],
+  ["interview-guide.md", "synonyms are read back", "write none the owner did not hear in a readback"],
+  ["SKILL.md", "engineering only when no construct expresses the rule", "Ask engineering for a column or view only when no supported construct (a join reference within two hops, a filter that writes the rule out, or a DuckDB view in `connection.views`, on a DuckDB source) can express the rule"],
+  ["SKILL.md", "otherwise wait for the tool", "wait for the tool and say so"],
+  ["interview-guide.md", "engineering only when no construct expresses the rule", "Ask engineering for a column or view only when no supported construct"],
+  ["interview-guide.md", "otherwise wait for the tool", "keep the rule, wait for the tool, and say so"],
+  ["intake.md", "engineering only when no construct expresses the rule", "Ask engineering for one only when no supported construct (a join reference within two hops, a filter that writes the rule out, or a DuckDB view in `connection.views`, on a DuckDB source) can express the rule"],
+  ["interview-guide.md", "a written-out rule skips the column warning", "writes the dimension's whole rule out and `sl validate` skips the warning"],
+  ["interview-guide.md", "duckdb literal division warns", "`sl validate` warns on a duckdb measure `expr` that divides by a numeric literal"],
+  ["SKILL.md", "a golden may pin a rule", "A golden may pin a rule rather than a figure"],
+  ["SKILL.md", "rule goldens request the trusted grain", "confirm its measured rows only when its `reference` says which rows were checked against a report; otherwise request only the trusted grain"],
+  ["verification.md", "a golden may pin a rule", "### A golden that pins a rule"],
+  ["verification.md", "rule goldens request the trusted grain", "Otherwise request only the trusted grain"],
+  ["verification.md", "round in golden SQL warns", "`sl validate` warns on `round(` in a golden's `sql`"],
+  ["verification.md", "approved golden with a draft field is rechecked", "approve the field after its readback, then run `sl goldens check --name <g>`: if it passes, the recorded rows stand; only rows that changed need a new confirm"],
+  ["SKILL.md", "approved golden with a draft field is rechecked", "then run `sl goldens check --name <g>`: if it passes, the recorded rows stand, and only changed rows need a new confirm"],
+  ["verification.md", "roles without goldens hold verify", "keeps `next_step` at `verify` until a golden that runs as that role is written and confirmed"],
+  ["verification.md", "done does not tick the checklist", "it does not tick this list"],
+  ["access.md", "open-question edits need no re-approval", "neither is deleting an answered open question or adding a new one"],
+  ["access.md", "open-question edits are mentioned", "Mention such an open-question edit in your next message"],
+  ["SKILL.md", "open-question edits need no re-approval", "neither is deleting an answered open question or adding one, which you mention in the next message"],
+  ["SKILL.md", "a cross-source side that cannot exist yet", "record the formula on the measure that exists and an open question on the other model naming the missing column or view"],
+  ["SKILL.md", "unstated formulas are open questions", "A formula the owner never stated is an open question, not a description"],
+  ["interview-guide.md", "unstated formulas are open questions", "A formula the owner never stated is an open question, not a description"],
+  ["SKILL.md", "handoff lists validate warnings", "every warning `sl validate` still prints, with the reason it stands"],
+  ["SKILL.md", "handoff lists draft metrics and goldens", "every draft metric (`draft_metrics` in status), draft golden (`draft_goldens`) and draft field (`draft_fields`)"],
+  ["SKILL.md", "done means the measurable phases", "`next_step` reaches `done` when the phases the CLI can measure are complete"],
+  ["SKILL.md", "tick the checklist before the handoff", "Tick that checklist in `references/verification.md`"],
+  ["SKILL.md", "validate first on resume", "run `sl validate` first and fix every new warning"],
+  ["SKILL.md", "new warnings surface new rules", "new warnings surface rules added since the last session (such as exact cents on duckdb"],
+  ["SKILL.md", "removing a drafted field", "Removing a drafted field is a hand edit of the model file; `sl validate` then names what still uses it"],
+  ["interview-guide.md", "removing a drafted field", "Removing a drafted field is a hand edit of the model file"],
+  ["SKILL.md", "resume news goes in the numbered items", "news from a resumed session (warnings fixed, rules added) goes into the numbered items"],
+  ["interview-guide.md", "resume news goes in the numbered items", "goes into the numbered items, not the status"],
+  ["SKILL.md", "every round ends with stop or continue", "End every round trip, the last one and the handoff included, with one line"],
+  ["interview-guide.md", "every round ends with stop or continue", "End every round trip, the last one and the handoff included"],
+  // Standing warnings, cast divisors, coverage by role, rounded ratios.
+  ["SKILL.md", "a warning stands only with a recorded reason", "A warning stands only when its reason is written in the file it points at (Phase 10); fix every other one"],
+  ["SKILL.md", "fixing a warning on an approved item rechecks goldens", "After fixing a warning on an approved measure or golden (a `round()` removed), run `sl goldens check`; when the rows changed, show the new figure and confirm again only on the owner's yes"],
+  ["SKILL.md", "handoff writes standing reasons into files", "Write that reason into the file the warning points at, so a resumed session leaves it"],
+  ["SKILL.md", "waiting for the tool is recorded", "write in the field's `description` why its warning stands"],
+  ["interview-guide.md", "warnings that stand", "### Warnings that stand"],
+  ["interview-guide.md", "a deliberate column read is recorded", "say in the field's `description` that it reads the column on purpose"],
+  ["interview-guide.md", "a written-out rule is read back", "`sl validate` checks only that the columns are named, not the rule; read the written-out filter back against the dimension's `expr`"],
+  ["interview-guide.md", "a draft golden's missing measure is recorded", "add an open question on the model that measure belongs to, naming the golden"],
+  ["verification.md", "a draft golden's missing measure is recorded", "Add an open question on the model that measure belongs to, naming the golden"],
+  ["interview-guide.md", "a cast divisor is still a double on duckdb", "a cast divisor such as `/ 100::decimal(18, 2)` is still a double there"],
+  ["verification.md", "a cast divisor is still a double on duckdb", "a cast divisor such as `/ 100::decimal(18, 2)` included"],
+  ["interview-guide.md", "same engineering list", "(a join reference within two hops, a filter that writes the rule out, or a DuckDB view in `connection.views`, on a DuckDB source)"],
+  ["access.md", "writing an answer into a role is a change", "Writing the answer into roles, patterns, denials or row filters is a change; only the question's own deletion or addition is not"],
+  ["SKILL.md", "writing an answer into a role is a change", "writing its answer into roles, patterns, denials or row filters is a change"],
+  ["SKILL.md", "every role needs a golden", "an approved golden that runs as each role in `access.yaml`, restricted or not (a golden with no `role` runs as `default_role`)"],
+  ["verification.md", "every role needs a golden", "Every role in `access.yaml`, restricted or not, has at least one approved golden that runs as it"],
+  ["SKILL.md", "a cross-source side with no model", "when that model does not exist yet, on the existing measure's model and among the handoff's cross-source questions"],
+  ["interview-guide.md", "a cross-source side with no model", "when that model does not exist yet, on the existing measure's model and in the handoff"],
+  ["SKILL.md", "rounded ratios use tolerance", "For a ratio compared with a report figure rounded to cents (AOV $134.46), show the unrounded value and agree the match; an agreed difference goes in `tolerance`"],
+  ["verification.md", "rounded ratios use tolerance", "record the agreed difference in `tolerance`"],
+  ["verification.md", "tolerance covers every column", "put the ratio in a golden of its own"],
+  ["verification.md", "fixing a warning on an approved item rechecks goldens", "After fixing a `sl validate` warning on an approved measure or golden"],
 ];
 
 describe("readbacks and examples", () => {
@@ -268,6 +328,19 @@ describe("readbacks and examples", () => {
 
   test('sign-off readbacks end with a bare "Approve?"', () => {
     for (const d of docs) expect(read(d)).not.toMatch(/Approve (this|the) [a-z ]+\?/);
+  });
+
+  test("coverage does not ask for a golden per restricted role only", () => {
+    for (const d of DOCS) expect(read(d).replace(/\s+/g, " ")).not.toMatch(/(one approved golden|one question) per restricted role|Every restricted role has/);
+  });
+
+  test("the supported-construct list is the same wherever engineering is asked", () => {
+    const list = "(a join reference within two hops, a filter that writes the rule out, or a DuckDB view in `connection.views`, on a DuckDB source)";
+    for (const d of ["SKILL.md", "references/interview-guide.md", "references/intake.md"]) {
+      const text = read(d).replace(/\s+/g, " ");
+      for (const m of text.matchAll(/no supported construct (\([^)]*\))/g)) expect(m[1]).toBe(list);
+      expect(text).toContain(list);
+    }
   });
 
   test("join references are not limited to one hop", () => {

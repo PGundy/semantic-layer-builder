@@ -1,6 +1,7 @@
 // Progress of a semantic layer, read from its files alone, and the next step
 // the skill should take. Nothing here touches a database.
 import { existsSync } from "node:fs";
+import { basename } from "node:path";
 import { canRun } from "./adapters/index.ts";
 import { findTable, qualifiedName } from "./naming.ts";
 import { inScope } from "./patterns.ts";
@@ -15,10 +16,12 @@ import {
   loadSource,
   paths,
   projectSettings,
+  stem,
+  type LoadedGolden,
   type LoadedModel,
 } from "./project.ts";
 import { rankTables } from "./rank.ts";
-import type { Approval, Dialect, SnapshotMethod, SourceConfig } from "./types.ts";
+import type { Approval, Dialect, Metric, SnapshotMethod, SourceConfig } from "./types.ts";
 
 // Golden count below which the verify phase stays open.
 export const MIN_APPROVED_GOLDENS = 5;
@@ -110,11 +113,15 @@ export interface ProjectStatus {
   settings: { focus_threshold: number; batch_size: number };
   sources: SourceStatus[];
   metrics: ApprovalCount;
+  // Names of the metrics in metrics.yaml that are not approved.
+  draft_metrics: string[];
   // open_questions counts access.yaml's top-level and per-role open questions.
   access: { state: "missing" | "draft" | "approved"; roles: number; open_questions: number };
   // Open questions across the reported sources' models and access.yaml.
   open_questions: number;
   goldens: ApprovalCount;
+  // Names of the goldens that are not approved; a golden without a string name goes by its file name.
+  draft_goldens: string[];
   // Roles in access.yaml that no approved golden uses. A golden without a role key uses
   // access.yaml's default_role.
   roles_without_goldens: string[];
@@ -157,6 +164,28 @@ function count(items: (Approval | undefined)[]): ApprovalCount {
     else out.draft++;
   }
   return out;
+}
+
+// Names of the metrics that are not approved, matching what count() counts as draft: every entry
+// but an empty one. An entry without a string name goes by its place in the list, as metrics[1].
+function draftMetricNames(metrics: unknown[]): string[] {
+  return metrics.flatMap((m, i) => {
+    if (!m) return [];
+    const { name, status } = (typeof m === "object" ? m : {}) as { name?: unknown; status?: unknown };
+    if (status === "approved") return [];
+    return [typeof name === "string" && name !== "" ? name : `metrics[${i}]`];
+  });
+}
+
+// Names of the goldens that are not approved, matching what count() counts as draft: every golden
+// but an empty file. A golden goes by the name inside the file, or the file's stem.
+function draftGoldenNames(goldens: LoadedGolden[]): string[] {
+  return goldens.flatMap(({ path, golden }) => {
+    if (!golden) return [];
+    const g = typeof golden === "object" ? (golden as { name?: unknown; status?: unknown }) : {};
+    if (g.status === "approved") return [];
+    return [typeof g.name === "string" && g.name !== "" ? g.name : stem(basename(path))];
+  });
 }
 
 function draftFields(m: LoadedModel["model"]): string[] {
@@ -413,22 +442,47 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         };
   }
 
+  const uncovered = status.roles_without_goldens;
+  const roleNote = uncovered.length ? ` Roles without an approved golden: ${uncovered.join(", ")}.` : "";
   if (status.goldens.approved < MIN_APPROVED_GOLDENS) {
     return {
       phase: "verify",
       message:
         `${status.goldens.approved} of ${MIN_APPROVED_GOLDENS} approved goldens. Ask the owner for questions with known answers, ` +
-        "run each golden and record it once they confirm the rows.",
+        "run each golden and record it once they confirm the rows." +
+        roleNote,
       command: `sl goldens run --name <golden>`,
     };
   }
 
-  const left = sources.flatMap((s) => s.draft_fields.map((f) => `${s.source}.${f}`));
+  // Every role is verified by at least one approved golden that runs as it.
+  if (uncovered.length) {
+    const role = uncovered[0]!;
+    const others = uncovered.slice(1);
+    return {
+      phase: "verify",
+      message:
+        `Role ${role} has no approved golden: write and confirm a golden that runs as role ${role} (role: ${role}), ` +
+        "reading its rows back to the owner before confirming." +
+        (others.length ? ` Then do the same for ${others.map((r) => `role ${r}`).join(", ")}.` : ""),
+      command: `sl goldens run --name <golden>`,
+    };
+  }
+
+  // Draft metrics, goldens and fields may stay deliberately: the owner can defer them, and
+  // the handoff names each one.
+  const fields = sources.flatMap((s) => s.draft_fields.map((f) => `${s.source}.${f}`));
+  const left = [
+    status.draft_metrics.length ? `draft metric(s) ${status.draft_metrics.join(", ")}` : "",
+    status.draft_goldens.length ? `draft golden(s) ${status.draft_goldens.join(", ")}` : "",
+    fields.length ? `draft field(s) ${fields.join(", ")}` : "",
+  ].filter(Boolean);
   return {
     phase: "done",
     message:
-      "Every phase is complete. Rerun sl validate after any change." +
-      (left.length ? ` ${left.length} field(s) stay draft; name them in the handoff: ${preview(left)}.` : ""),
+      "Every phase the CLI can measure is complete. Rerun sl validate after any change." +
+      (left.length ? ` Name in the handoff the ${left.join("; ")}.` : "") +
+      " Before the handoff, tick the coverage checklist in references/verification.md; every figure the owner gave needs a golden, draft or approved.",
     command: "sl validate",
   };
 }
@@ -442,7 +496,8 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
   if (only) loadSource(root, only);
   const sources = (only ? [only] : names).map((s) => sourceStatus(root, s, settings));
 
-  const metrics = loadMetrics(root).metrics ?? [];
+  const metricsFile = loadMetrics(root);
+  const metrics: Metric[] = Array.isArray(metricsFile?.metrics) ? metricsFile.metrics : [];
   const access = loadAccess(root);
   // A file that holds only comments parses to null but still exists: a draft with no roles.
   const accessState: ProjectStatus["access"]["state"] = access
@@ -452,7 +507,8 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
     : existsSync(paths(root).access)
       ? "draft"
       : "missing";
-  const goldens = listGoldens(root).map((g) => g.golden);
+  const loadedGoldens = listGoldens(root);
+  const goldens = loadedGoldens.map((g) => g.golden);
   const accessQuestions = accessOpenQuestions(access);
   const defaultRole = access && typeof access.default_role === "string" ? access.default_role : undefined;
   const goldenRoles = new Set(
@@ -467,9 +523,11 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
     settings,
     sources,
     metrics: count(metrics),
+    draft_metrics: draftMetricNames(metrics),
     access: { state: accessState, roles: Array.isArray(access?.roles) ? access.roles.length : 0, open_questions: accessQuestions },
     open_questions: sources.reduce((n, s) => n + s.open_questions, accessQuestions),
     goldens: count(goldens),
+    draft_goldens: draftGoldenNames(loadedGoldens),
     roles_without_goldens: roleNames(access).filter((r) => !goldenRoles.has(r)),
   };
   const found = nextStep(base, names.length);

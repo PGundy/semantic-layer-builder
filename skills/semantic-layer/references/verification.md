@@ -6,8 +6,8 @@ A golden is a question with an answer the owner trusts. It proves the approved d
 
 Draft goldens may be written at any phase. Write one as soon as the owner offers a trusted figure, or ties a sign-off to matching one ("I'll approve revenue once 2025 matches the close"), and `sl goldens run` it during the interview. Phase 9 rounds the set out to about ten.
 
-- Until `access.yaml` exists, leave `role` and `user` out; `sl validate` warns about a golden that names a role with no access file. Add them in Phase 9 for the goldens asked as a restricted role.
-- A draft golden may name a measure, dimension or metric that does not exist yet; `sl validate` warns rather than errors, so the owner's figure is recorded as soon as they give it, before its measure is written. An approved golden naming an unknown field is an error.
+- Until `access.yaml` exists, leave `role` and `user` out; `sl validate` warns about a golden that names a role with no access file. Add them in Phase 9, so each role in `access.yaml` has a golden that runs as it.
+- A draft golden may name a measure, dimension or metric that does not exist yet; `sl validate` warns rather than errors, so the owner's figure is recorded as soon as they give it, before its measure is written. Add an open question on the model that measure belongs to, naming the golden, so the warning stands with its reason (`SKILL.md`, Phase 10). An approved golden naming an unknown field is an error.
 - Confirm a golden only after the measures, dimensions and metrics its request uses are approved.
 
 ## Choosing the questions
@@ -19,25 +19,29 @@ Pick about ten questions with the owner. Together they should:
 - include one or two breakdowns by a category (region, product line, channel);
 - include each approved filter that changes totals (excluded statuses, test data);
 - cross at least one approved join;
-- if access is approved, include one question per restricted role with its user attributes set, and for a role with row filters on two joined models, one that crosses that join (revenue by customer for a sales rep), so the left-join rule is pinned;
+- if access is approved, include one question as each role in `access.yaml`, restricted or not (a golden with no `role` runs as `default_role`), with its user attributes set, and for a role with row filters on two joined models, one that crosses that join (revenue by customer for a sales rep), so the left-join rule is pinned;
 - for a restricted role whose measure reads through a join to a model the role cannot see or row-filters (revenue's test-account rule for marketing), one question as that role, so the rule that definition joins apply whatever the role may see is pinned;
 - cover every reference figure the owner gave, including its breakdowns (spend by channel as well as total spend);
 - have a known answer: a monthly close, a board deck, a dashboard the owner trusts. Ask: "Which numbers do you already know by heart or can look up? Last month's revenue, last quarter's order count?"
 
 Write each question exactly as a person would ask it.
 
+### A golden that pins a rule
+
+A golden may pin a rule rather than a figure: the restricted-role golden above pins that revenue leaves out test accounts for marketing, and the owner may have no report for that role. Confirm its measured rows only when its `reference` says which rows were checked against a report ("2025 total checked against the Finance close; the role sees the same total"). Otherwise request only the trusted grain, the figure the owner did check (the year's total, not each month), so the recorded rows hold nothing nobody compared.
+
 ### Coverage checklist, checked at handoff
 
-Before the handoff, tick each line, and name every line that stays unticked in the handoff with the reason:
+`next_step` in `sl status` reaches `done` when the phases the CLI can measure are complete; it does not tick this list, and its message says to. A role in `roles_without_goldens` keeps `next_step` at `verify` until a golden that runs as that role is written and confirmed. Before the handoff, tick each line, and name every line that stays unticked in the handoff with the reason:
 
 - [ ] Every approved measure and metric is in at least one approved golden.
-- [ ] Every restricted role has at least one approved golden; `roles_without_goldens` in `sl status --json` lists the roles of `access.yaml` that no approved golden uses, and the handoff names each one.
+- [ ] Every role in `access.yaml`, restricted or not, has at least one approved golden that runs as it (a golden with no `role` runs as `default_role`); `roles_without_goldens` in `sl status --json` lists the roles of `access.yaml` that no approved golden uses, and the handoff names each one.
 - [ ] At least one approved golden crosses a join to a model with a row filter, as the role that has the filter.
 - [ ] Every reference figure the owner gave has a golden, draft or approved.
 
 ## Writing a golden
 
-Create `goldens/<name>.yaml` yourself with `status: draft`. The `request` names approved fields relative to its `source`; the `sql` is the query you write by hand from the model YAML, applying exactly what the YAML says: each measure's `expr`, `agg` and `filter`, each dimension's `expr`, each join's `keys` and `type`, and, for a restricted role, its row filters with the user's values. Add nothing the YAML does not say: no `round()` around a measure (fix the measure's `expr` instead, such as cents as `<col> * 0.01` on duckdb), and no join the request and its fields do not use.
+Create `goldens/<name>.yaml` yourself with `status: draft`. The `request` names approved fields relative to its `source`; the `sql` is the query you write by hand from the model YAML, applying exactly what the YAML says: each measure's `expr`, `agg` and `filter`, each dimension's `expr`, each join's `keys` and `type`, and, for a restricted role, its row filters with the user's values. Add nothing the YAML does not say: no `round()` around a measure (fix the measure's `expr` instead, such as cents as `<col> * 0.01` on duckdb), and no join the request and its fields do not use. `sl validate` warns on `round(` in a golden's `sql`, since it hides float noise the measure would carry, and on a duckdb measure `expr` that divides by a numeric literal; on duckdb a division by any number gives a DOUBLE, a cast divisor such as `/ 100::decimal(18, 2)` included. For a ratio compared with a report figure rounded to cents (AOV $134.46), the SQL does not round either; an agreed difference goes in `tolerance` (Running and comparing).
 
 The request's `measures` lists measures as `model.measure` and metrics by bare name; there is no `metrics` key, and `sl validate` says so when it sees `request.metrics`:
 
@@ -106,7 +110,7 @@ Show the owner the result next to their trusted figure, row by row, with the dif
 
 > "For January 2025 I get $104,233.50; your close says $104,240. That's 0.006% apart. February matches exactly. ..."
 
-Small differences can be expected (rounding, late-arriving rows, a close taken on a fixed date). Agree the tolerance with the owner before confirming, and say what it means in money: "a tolerance of half a percent lets $1.2M revenue drift by $6,000 before the check fails". Use 0 for figures finance signs off. Without `--tolerance`, confirm keeps the tolerance already in the file or records the default 0.005, so always pass it.
+Small differences can be expected (rounding, late-arriving rows, a close taken on a fixed date). Agree the tolerance with the owner before confirming, and say what it means in money: "a tolerance of half a percent lets $1.2M revenue drift by $6,000 before the check fails". Use 0 for figures finance signs off. A ratio set against a report figure rounded to cents (AOV $134.4578 against $134.46) differs by the rounding: show both, agree the match, and record the agreed difference in `tolerance`. The tolerance covers every column of the golden, so when the other figures need 0, put the ratio in a golden of its own. Without `--tolerance`, confirm keeps the tolerance already in the file or records the default 0.005, so always pass it.
 
 ## Confirming
 
@@ -117,7 +121,7 @@ sl goldens confirm --name revenue_by_month_2025 --by "Dana Ruiz" --tolerance 0
 sl validate
 ```
 
-`confirm` reruns the golden's query, records the rows as `expected` with the tolerance and marks the golden approved. Before recording it prints any draft measure, dimension or metric the request uses, and `sl validate` warns about an approved golden that uses one. Check the request's fields before you confirm; if confirm lists a draft field, read that field back and approve it on a yes, or set the golden back to `status: draft` until it is approved. For a warehouse dialect, confirm with `--results <file>` from the run you showed the owner: `sl goldens confirm --name revenue_by_month_2025 --by "Dana Ruiz" --tolerance 0 --results <scratch>/golden-results.json`. Never confirm a golden because the SQL looks right: the point is agreement with an independent figure.
+`confirm` reruns the golden's query, records the rows as `expected` with the tolerance and marks the golden approved. Before recording it prints any draft measure, dimension or metric the request uses, and `sl validate` warns about an approved golden that uses one. Check the request's fields before you confirm; if confirm lists a draft field, read that field back and approve it on a yes, or leave the golden draft until it is approved. For a golden already approved that uses a draft field (`sl validate` warns, and rerunning confirm lists it), approve the field after its readback, then run `sl goldens check --name <g>`: if it passes, the recorded rows stand; only rows that changed need a new confirm, after the owner's yes to the new figure. For a warehouse dialect, confirm with `--results <file>` from the run you showed the owner: `sl goldens confirm --name revenue_by_month_2025 --by "Dana Ruiz" --tolerance 0 --results <scratch>/golden-results.json`. Never confirm a golden because the SQL looks right: the point is agreement with an independent figure.
 
 A golden records at most 200 rows; `--force` lifts that limit and does nothing else. To change an agreed tolerance later, rerun `sl goldens confirm --name <g> --by "<name>" --tolerance <t>` after the owner's yes to the new tolerance: it reruns the query, records the rows again with the new tolerance, and updates `confirmed_by` and `confirmed_at`.
 
@@ -139,4 +143,4 @@ Fix the definition in the model YAML, return the changed item to draft (`sl appr
 sl goldens check
 ```
 
-It reruns every approved golden and fails when any result drifts beyond its tolerance. Without `--source` it checks every source, so each runnable source's connection variable must be set; `--source <s>` checks one. For a warehouse dialect a plan covers one source: run `sl goldens check --source <s> --emit-sql`, run the queries as in `intake.md`, then `sl goldens check --source <s> --results <file>`; repeat per source. Run it at the end of every session, after any change to an approved model, metric or access rule, and before handing the layer to a downstream tool. A failure after a data refresh can be legitimate (late rows); discuss it with the owner before confirming new rows.
+It reruns every approved golden and fails when any result drifts beyond its tolerance. Without `--source` it checks every source, so each runnable source's connection variable must be set; `--source <s>` checks one. For a warehouse dialect a plan covers one source: run `sl goldens check --source <s> --emit-sql`, run the queries as in `intake.md`, then `sl goldens check --source <s> --results <file>`; repeat per source. After fixing a `sl validate` warning on an approved measure or golden (a `round()` removed from its SQL), run `sl goldens check --name <g>`: when it passes, the recorded rows stand; when the rows changed, show the new figure to the owner and confirm again only on their yes. Run it at the end of every session, after any change to an approved model, metric or access rule, and before handing the layer to a downstream tool. A failure after a data refresh can be legitimate (late rows); discuss it with the owner before confirming new rows.

@@ -434,7 +434,10 @@ describe("goldens CLI on duckdb", () => {
     expect(human.code).toBe(0);
     const notice = human.out.indexOf("This golden's request uses draft field(s): wh.orders.revenue.");
     expect(notice).toBe(0);
-    expect(human.out).toContain("then confirm this golden again; sl validate warns until then.");
+    expect(human.out).toContain(
+      "Approve each field after its readback, then run sl goldens check --name revenue_by_region; if it passes the recorded rows stand, " +
+        "and only changed rows need a new confirm. sl validate warns until then.",
+    );
     expect(human.out).not.toContain("rests on draft definitions");
     expect(human.out.indexOf("Recorded 3 expected rows")).toBeGreaterThan(notice);
     expect(human.out).toContain("(tolerance 0)");
@@ -443,7 +446,18 @@ describe("goldens CLI on duckdb", () => {
     expect(json.code).toBe(0);
     expect(json.json<{ draft_fields: string[]; tolerance: number }>()).toMatchObject({ draft_fields: ["wh.orders.revenue"], tolerance: 0 });
 
+    // The approved golden on a draft field: validate says how to keep its recorded rows.
+    const validate = await sl(t.root, ["validate", "--json"]);
+    const warning = validate.json<{ issues: { path: string; message: string }[] }>().issues.find((i) => i.path === "request.measures[0]");
+    expect(warning?.message).toContain(
+      "approve it after its readback, then run sl goldens check --name revenue_by_region; if it passes the recorded rows stand, and only changed rows need a new confirm",
+    );
+
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), ordersModel("approved"));
+    // Once the field is approved, the recorded rows stand when the check passes.
+    const check = await sl(t.root, ["goldens", "check", "--name", "revenue_by_region"]);
+    expect(check.code).toBe(0);
+    expect(check.out).toContain("1 passed, 0 failed.");
     const clean = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0"]);
     expect(clean.out).not.toContain("draft field");
     expect(clean.out).toContain("(tolerance 0)");

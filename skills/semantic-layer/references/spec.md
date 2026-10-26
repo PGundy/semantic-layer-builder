@@ -33,7 +33,7 @@ A dimension `expr` and a measure `filter` may also name a column of a model reac
 
 - One hop, `<join>.<column>`, through one of this model's own joins. On `orders`, with a `customer` join, `customer.is_test_account`; on `refunds`, with an `order` join, `order.status`, and a dimension `order_date` with `expr: order.created_at`.
 - Two hops, `<join>.<join>.<column>`, through one of this model's joins and then a join of the model it reaches. On `refunds`, `order.customer.is_test_account` goes through `refunds.order` to `orders`, then `orders.customer` to `customers`. Nothing goes further than two hops; to reach further, add a join to this model, or ask the owner for a view.
-- The column is a physical column of the last target's table, as in the snapshot, not that model's dimension of the same name. `sl validate` warns when the target has a dimension `<column>` whose expr is not that bare column: the reference reads the column, so a rule the dimension adds (`is_test_account or email like '%@example-test.com'`) is written out over join references where it is meant.
+- The column is a physical column of the last target's table, as in the snapshot, not that model's dimension of the same name. `sl validate` warns when the target has a dimension `<column>` whose expr is not that bare column: the reference reads the column, so a rule the dimension adds (`is_test_account or email like '%@example-test.com'`) is written out over join references where it is meant. The warning is skipped when the field already writes the dimension's whole rule out: every other column the dimension's expr uses also appears in the field as a reference through the same join chain, as `customer.is_test_account or customer.email like '%@example-test.com'`. A dimension that adds a rule over its own column alone, such as `upper(region)`, keeps the warning.
 - The compiler adds each hop's join to the query, chained in order, each with its own declared `type`. A `left` join keeps rows whose target is missing, with the target's columns null, so a filter meant to keep those rows handles null: `coalesce(customer.is_test_account, false) = false`. An `inner` join drops them; an `inner` second hop also drops the rows whose first hop found no match.
 - A measure `expr` stays over the model's own columns, and a row filter over its model's own columns.
 - Nothing else outside the model's own table may be named: no other table names, no schema-qualified table names, no subqueries. `sl validate` reports a subquery (`select`, or a parenthesis opening `from` or `table`), a schema-qualified table name or another table's name in an `expr`, `filter` or row filter as an error, and checks that each hop of a join reference is a `many_to_one` or `one_to_one` join of the model it starts from and, when the snapshot has the last target's table, that the column is one of its columns. A rule that needs more than a join reference, such as an aggregate (a customer's first counted order) or a rule held in another source, is a view the owner creates in the database (the CLI is read-only); a DuckDB source can define one in `connection.views`.
@@ -66,7 +66,7 @@ Approval rules that `sl validate` enforces:
 - An approved metric references only approved measures.
 - An approved join has `evidence` from `sl check-join`; without it validation warns.
 - An approved item inside a draft model is allowed; the model's own status says whether the table as a whole is signed off.
-- An approved golden whose request uses a draft measure, dimension or metric gets a warning.
+- An approved golden whose request uses a draft measure, dimension or metric gets a warning: approve the field after its readback, then run `sl goldens check --name <g>`; if it passes, the recorded rows stand, and only changed rows need a new confirm.
 
 ## semantic.yaml
 
@@ -251,7 +251,7 @@ joins:
 
 `dimensions` and `measures` are required keys; write `[]` when a model has none. `joins` may be left out.
 
-Money stored in cents becomes an exact decimal amount, written per dialect: `amount_cents * 0.01` on duckdb, an exact DECIMAL there, where `amount_cents / 100.0` is a DOUBLE; `cast(amount_cents as numeric) / 100` on bigquery; and `amount_cents / 100.0` on every other dialect.
+Money stored in cents becomes an exact decimal amount, written per dialect: `amount_cents * 0.01` on duckdb, an exact DECIMAL there, where `amount_cents / 100.0` is a DOUBLE; `cast(amount_cents as numeric) / 100` on bigquery; and `amount_cents / 100.0` on every other dialect. `sl validate` warns on a duckdb measure `expr` that divides by a numeric literal, cast or not (`/ 100::decimal(18, 2)` is a DOUBLE too); integer division (`//`) is not flagged.
 
 `evidence` records the target model (`to`) and the `keys` the check measured. Renaming a join keeps its evidence. When the join's current `to` or `keys` differ from the evidence's, `sl validate` warns that the evidence is stale, and `sl check-join` measures the join again; evidence without `to` and `keys` gets no such warning.
 
@@ -378,7 +378,8 @@ Writing and confirming:
 
 - A draft golden may be written at any phase, for example as soon as the owner offers a trusted figure. Leave `role` and `user` out until `access.yaml` exists; a golden `role` with no `access.yaml` is a validate warning, not an error.
 - A draft golden may name a measure, dimension, metric or model that does not exist yet, so the owner's figure is recorded before its measure is: `sl validate` warns. In an approved golden it is an error.
-- `sl goldens confirm` records the rows the `sql` returns as `expected` and approves the golden. Confirm only after the request's measures are approved. Before recording, it prints the draft measures, dimensions and metrics the request uses, and `sl validate` warns when an approved golden's request uses any.
+- The `sql` applies each measure exactly as the model writes it. `sl validate` warns on `round(` in a golden's `sql`, since `round()` hides float noise; an agreed difference goes in `tolerance`.
+- `sl goldens confirm` records the rows the `sql` returns as `expected` and approves the golden. Confirm only after the request's measures are approved. Before recording, it prints the draft measures, dimensions and metrics the request uses, and `sl validate` warns when an approved golden's request uses any. Once such a field is approved after its readback, `sl goldens check --name <g>` reruns the golden: if it passes, the recorded rows stand, and only changed rows need a new confirm.
 - `tolerance` is relative, agreed with the owner and passed as `--tolerance`: 0 for figures finance signs off. Rerunning `goldens confirm` with a new `--tolerance` records the rows again with it. `--force` only lifts the 200-row limit.
 
 ## Query-plan protocol
@@ -419,8 +420,10 @@ The skill resumes from this output.
 
 - `settings`: `focus_threshold` and `batch_size`.
 - `sources[]`: per source, its dialect, snapshot state, `needs_focus`, model, dimension, measure and join counts by status, joins without evidence and open questions, `draft_models` (the draft models on in-scope tables, which alone hold the interview phase open), `draft_fields` (the draft dimensions, measures and joins of in-scope models, as `model.field`) and `models_with_draft_fields` (approved models that still hold draft fields; the handoff names them).
+- `draft_metrics`: the names of the metrics in `metrics.yaml` that are not approved, one per metric `metrics.draft` counts; an entry without a name goes by its place in the list, as `metrics[1]`.
 - `access`: `{ state, roles, open_questions }`: `missing`, `draft` or `approved`, the number of roles, and the open questions of `access.yaml`, top level and per role.
 - `open_questions`: the open questions across the reported sources' models and `access.yaml`.
 - `next_batch`: `{ source, tables: [{ table, model, model_status, score, reasons }] }`, the next tables to interview, or `null`.
-- `roles_without_goldens`: the roles in `access.yaml` that no approved golden runs as; a golden with no `role` runs as `default_role`.
-- `next_step`: `{ phase, message, command, source?, after_owner_yes }`, the first unfinished phase. `after_owner_yes` is true when `command` is an `sl approve` or `sl goldens confirm`, which runs only after the owner says yes to its readback. Phases in order: `add-source`, `introspect`, `scope`, `profile`, `draft`, `interview`, `check-join`, `metrics`, `access`, `verify`, `done`.
+- `draft_goldens`: the names of the goldens that are not approved, one per golden `goldens.draft` counts (the name in the file, or its file name); an empty golden file is neither counted nor listed.
+- `roles_without_goldens`: the roles in `access.yaml` that no approved golden runs as; a golden with no `role` runs as `default_role`. Any such role holds `next_step` in `verify` until a golden that runs as it is written and confirmed.
+- `next_step`: `{ phase, message, command, source?, after_owner_yes }`, the first unfinished phase. `after_owner_yes` is true when `command` is an `sl approve` or `sl goldens confirm`, which runs only after the owner says yes to its readback. Phases in order: `add-source`, `introspect`, `scope`, `profile`, `draft`, `interview`, `check-join`, `metrics`, `access`, `verify`, `done`. `verify` holds until there are 5 approved goldens and every role has one. `done` means the phases the CLI can measure are complete; it is reachable with draft metrics, goldens and fields the owner deferred, and its message names each of them and ends by asking for the coverage checklist in `verification.md` to be ticked before the handoff.

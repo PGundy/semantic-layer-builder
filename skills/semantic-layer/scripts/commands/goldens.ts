@@ -175,7 +175,8 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   if (draftFields.length && !ctx.json) {
     ctx.out(
       `This golden's request uses draft field(s): ${draftFields.join(", ")}. A golden is confirmed after its measures are ` +
-        "approved. Approve them once the owner confirms their readbacks, then confirm this golden again; sl validate warns until then.",
+        `approved. Approve each field after its readback, then run sl goldens check --name ${golden.name}; if it passes the ` +
+        "recorded rows stand, and only changed rows need a new confirm. sl validate warns until then.",
     );
   }
   const rows = await runGolden(ctx, golden, source, resultsPath(ctx, values));

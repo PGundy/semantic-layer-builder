@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { needsOwnerYes, type ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
 import type { Model, Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
@@ -106,6 +106,8 @@ interface Build {
   metrics?: "none" | "draft" | "approved";
   access?: "missing" | "draft" | "approved";
   goldens?: number;
+  // Whether the approved goldens run as access.yaml's roles (g0 as viewer, the rest as analyst); default true.
+  goldenRoles?: boolean;
 }
 
 // Builds a project that has completed every phase the options allow.
@@ -150,10 +152,12 @@ function build(root: string, b: Build): void {
     });
   }
   const goldens = b.goldens ?? 5;
+  const roles = access !== "missing" && b.goldenRoles !== false;
   for (let i = 0; i < goldens + 1; i++) {
     writeYaml(join(root, "goldens", `g${i}.yaml`), {
       name: `g${i}`,
       question: "How much?",
+      ...(roles && i < goldens ? { role: i === 0 ? "viewer" : "analyst" } : {}),
       request: { source: "wh", measures: ["orders.total"] },
       sql: "select 1",
       status: i < goldens ? "approved" : "draft",
@@ -308,7 +312,7 @@ describe("status next_step", () => {
     expect(w.draft_fields).toEqual(["orders.total"]);
     expect(s.next_batch).toBeNull();
     expect(s.next_step.phase).toBe("done");
-    expect(s.next_step.message).toContain("1 field(s) stay draft; name them in the handoff: wh.orders.total");
+    expect(s.next_step.message).toContain("draft field(s) wh.orders.total.");
 
     const human = await sl(t.root, ["status"]);
     expect(human.out).toContain("draft fields in approved models: orders.total");
@@ -580,7 +584,7 @@ describe("status owner gates and golden coverage", () => {
   test("roles_without_goldens lists the roles no approved golden names", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
-    build(t.root, {});
+    build(t.root, { goldenRoles: false });
     const before = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(before.roles_without_goldens).toEqual(["analyst", "viewer"]);
     const golden = (name: string, role: string, approved: boolean) =>
@@ -627,6 +631,101 @@ describe("status owner gates and golden coverage", () => {
     expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual(["viewer"]);
     writeYaml(join(t.root, "access.yaml"), { status: "draft", roles });
     expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual(["analyst", "viewer"]);
+  });
+
+  test("a role without an approved golden -> verify, even with enough goldens", async () => {
+    const s = await status({ goldenRoles: false });
+    expect(s.goldens.approved).toBe(5);
+    expect(s.roles_without_goldens).toEqual(["analyst", "viewer"]);
+    expect(s.next_step).toMatchObject({ phase: "verify", command: "sl goldens run --name <golden>", after_owner_yes: false });
+    expect(s.next_step.message).toContain("write and confirm a golden that runs as role analyst");
+    expect(s.next_step.message).toContain("Then do the same for role viewer.");
+
+    const few = await status({ goldens: 2, goldenRoles: false });
+    expect(few.next_step.phase).toBe("verify");
+    expect(few.next_step.message).toContain("2 of 5 approved goldens");
+    expect(few.next_step.message).toContain("Roles without an approved golden: analyst, viewer.");
+
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, {});
+    writeYaml(join(t.root, "goldens", "g0.yaml"), {
+      name: "g0",
+      question: "How much?",
+      role: "viewer",
+      request: { source: "wh", measures: ["orders.total"] },
+      sql: "select 1",
+      status: "draft",
+    });
+    const one = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(one.roles_without_goldens).toEqual(["viewer"]);
+    expect(one.next_step.message).toBe(
+      "4 of 5 approved goldens. Ask the owner for questions with known answers, run each golden and record it once they confirm the rows. " +
+        "Roles without an approved golden: viewer.",
+    );
+  });
+
+  test("done stays reachable with draft metrics, goldens and fields, and names each one", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, {});
+    const m = model("fct_orders", true, { evidence: true });
+    m.measures[0] = { ...m.measures[0]!, status: "draft", approved_by: undefined, approved_at: undefined };
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), m);
+    // A golden whose name is missing goes by its file name.
+    writeYaml(join(t.root, "goldens", "unnamed.yaml"), { question: "How many?", status: "draft" });
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.draft_metrics).toEqual(["draft_one"]);
+    expect(s.draft_goldens).toEqual(["g5", "unnamed"]);
+    expect(s.next_step.phase).toBe("done");
+    expect(s.next_step.message).toBe(
+      "Every phase the CLI can measure is complete. Rerun sl validate after any change. " +
+        "Name in the handoff the draft metric(s) draft_one; draft golden(s) g5, unnamed; draft field(s) wh.orders.total. " +
+        "Before the handoff, tick the coverage checklist in references/verification.md; every figure the owner gave needs a golden, draft or approved.",
+    );
+    const human = await sl(t.root, ["status"]);
+    expect(human.out).toContain("draft metrics: draft_one");
+    expect(human.out).toContain("draft goldens: g5, unnamed");
+  });
+
+  test("draft lists name exactly the drafts the counts count", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, { goldens: 5 });
+    writeYaml(join(t.root, "metrics.yaml"), {
+      metrics: [
+        { name: "avg_total", source: "wh", type: "ratio", numerator: "orders.total", denominator: "customers.total", description: "Avg.", ...approval(true) },
+        { source: "wh", status: "draft" },
+        null,
+      ],
+    });
+    // An empty golden file parses to null: neither counted nor listed.
+    writeFileSync(join(t.root, "goldens", "empty.yaml"), "# nothing yet\n");
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.metrics).toEqual({ approved: 1, draft: 1 });
+    expect(s.draft_metrics).toEqual(["metrics[1]"]);
+    expect(s.goldens.draft).toBe(s.draft_goldens.length);
+    expect(s.draft_goldens).toEqual(["g5"]);
+  });
+
+  test("done with nothing left draft still ends with the coverage checklist", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, { goldens: 5 });
+    writeYaml(join(t.root, "metrics.yaml"), {
+      metrics: [
+        { name: "avg_total", source: "wh", type: "ratio", numerator: "orders.total", denominator: "customers.total", description: "Avg.", ...approval(true) },
+        null,
+      ],
+    });
+    rmSync(join(t.root, "goldens", "g5.yaml"));
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.draft_metrics).toEqual([]);
+    expect(s.draft_goldens).toEqual([]);
+    expect(s.next_step.message).toBe(
+      "Every phase the CLI can measure is complete. Rerun sl validate after any change. " +
+        "Before the handoff, tick the coverage checklist in references/verification.md; every figure the owner gave needs a golden, draft or approved.",
+    );
   });
 
   test("roles_without_goldens is empty without access.yaml and skips malformed roles", async () => {

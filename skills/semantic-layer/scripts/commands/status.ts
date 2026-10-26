@@ -40,6 +40,8 @@ function render(st: ProjectStatus): string {
   lines.push(
     `metrics ${ratio(st.metrics)}; access ${st.access.state}${st.access.state === "missing" ? "" : ` (${st.access.roles} role(s)${accessQuestions})`}; goldens ${ratio(st.goldens)}`,
   );
+  if (st.draft_metrics.length) lines.push(`draft metrics: ${st.draft_metrics.join(", ")}`);
+  if (st.draft_goldens.length) lines.push(`draft goldens: ${st.draft_goldens.join(", ")}`);
   if (st.roles_without_goldens.length) lines.push(`roles without an approved golden: ${st.roles_without_goldens.join(", ")}`);
   if (st.next_batch) {
     lines.push(`Next batch (${st.next_batch.source}):`);

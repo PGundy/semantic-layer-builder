@@ -144,6 +144,9 @@ type SqlToken =
   | { t: "," }
   | { t: ":" }
   | { t: "->" }
+  | { t: "/" }
+  | { t: "num" }
+  | { t: "sign" }
   | { t: "x" };
 
 // Where a string literal starting at sql[i] (its opening quote) ends, just past the closing quote.
@@ -217,7 +220,7 @@ function tokenizeSql(sql: string, dialect?: Dialect): SqlToken[] {
       });
     } else if (/\d/.test(c) || (c === "." && /\d/.test(next))) {
       i += sql.slice(i).match(/^(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?/i)![0].length;
-      out.push({ t: "x" });
+      out.push({ t: "num" });
     } else if (/[A-Za-z_]/.test(c)) {
       const word = sql.slice(i).match(/^[A-Za-z_][A-Za-z0-9_$]*/)![0];
       i += word.length;
@@ -226,9 +229,12 @@ function tokenizeSql(sql: string, dialect?: Dialect): SqlToken[] {
       // A cast: the type name that follows is not a column.
       i += 2;
       out.push({ t: ":" });
-    } else if (c === "." || c === "(" || c === ")" || c === "," || c === ":") {
+    } else if (c === "." || c === "(" || c === ")" || c === "," || c === ":" || c === "/") {
       i++;
       out.push({ t: c });
+    } else if (c === "+" || c === "-") {
+      i++;
+      out.push({ t: "sign" });
     } else {
       i++;
       out.push({ t: "x" });
@@ -303,6 +309,42 @@ export function sqlNames(sql: string, dialect?: Dialect): SqlNames {
     names.chains.push({ parts, quoted, text: parts.join(".") });
   }
   return names;
+}
+
+// Single names that read as columns: not part of a dotted name, not function calls, cast types or
+// lambda parameters. SQL keywords come back too; a caller keeps the ones that are columns.
+function bareNames(sql: string, dialect?: Dialect): { v: string; quoted: boolean }[] {
+  const tokens = tokenizeSql(sql, dialect);
+  const bound = lambdaParams(tokens);
+  const out: { v: string; quoted: boolean }[] = [];
+  tokens.forEach((tok, i) => {
+    if (tok.t !== "id") return;
+    const prev = tokens[i - 1]?.t;
+    const next = tokens[i + 1]?.t;
+    if (prev === "." || prev === ":" || next === "." || next === "(") return;
+    if (!tok.quoted && bound.has(tok.v.toLowerCase())) return;
+    out.push({ v: tok.v, quoted: tok.quoted });
+  });
+  return out;
+}
+
+// Whether the SQL divides by a numeric literal, as in amount_cents / 100.0, / (100), / -100 or
+// / 100::decimal(18, 2): on DuckDB each gives a DOUBLE. Integer division (//) does not count.
+export function dividesByLiteral(sql: string, dialect?: Dialect): boolean {
+  const tokens = tokenizeSql(sql, dialect);
+  return tokens.some((tok, i) => {
+    if (tok.t !== "/" || tokens[i - 1]?.t === "/" || tokens[i + 1]?.t === "/") return false;
+    let j = i + 1;
+    while (tokens[j]?.t === "(" || tokens[j]?.t === "sign") j++;
+    return tokens[j]?.t === "num";
+  });
+}
+
+// Whether the SQL calls round(), plain or qualified (pg_catalog.round(, x.round( in DuckDB),
+// outside string literals and comments.
+export function callsRound(sql: string, dialect?: Dialect): boolean {
+  const tokens = tokenizeSql(sql, dialect);
+  return tokens.some((tok, i) => tok.t === "id" && !tok.quoted && tok.v.toLowerCase() === "round" && tokens[i + 1]?.t === "(");
 }
 
 type SqlRole = "dimension expr" | "measure expr" | "measure filter" | "row filter";
@@ -723,7 +765,7 @@ class Validator {
           report("error", `${text} is a join reference; a row filter is over its model's own columns, so write a row filter on the joined model instead`);
           continue;
         }
-        const ref = this.resolveJoinRef(model, join, chain, rules, report);
+        const ref = this.resolveJoinRef(model, join, chain, rules, report, names.chains);
         if (ref) refs.push(ref);
         continue;
       }
@@ -743,13 +785,15 @@ class Validator {
   // <join>.<join>.<column> when the second name is a join of the joined model. Every hop must be
   // many_to_one or one_to_one, and the final column, when the snapshot has its table, a column of
   // it; names after the column read struct fields. Returns the reference, or undefined after
-  // reporting why it does not resolve.
+  // reporting why it does not resolve. fieldChains are every dotted name of the SQL the reference
+  // sits in.
   resolveJoinRef(
     model: Model,
     first: Join,
     chain: SqlNames["chains"][number],
     rules: IdentRules,
     report: (level: Issue["level"], message: string) => void,
+    fieldChains: SqlNames["chains"],
   ): JoinRef | undefined {
     const { parts, quoted, text } = chain;
     const hops: Join[] = [];
@@ -801,9 +845,15 @@ class Validator {
         report("error", `${text}: "${name}" is not a column of ${qualified(targetTable!)}, the table of model ${join.to} that ${via} reaches${nor}${hint}`);
         return undefined;
       }
-      // The reference reads the physical column, which a same-named dimension of the target may redefine.
+      // The reference reads the physical column, which a same-named dimension of the target may
+      // redefine; a field that writes the dimension's whole rule out through the same joins is fine.
       const dim = named<Dimension>(target.dimensions).find((d) => d.name.toLowerCase() === name.toLowerCase());
-      if (dim && typeof dim.expr === "string" && !isBareColumn(dim.expr, name)) {
+      if (
+        dim &&
+        typeof dim.expr === "string" &&
+        !isBareColumn(dim.expr, name) &&
+        !this.writesOut(target, targetCols, dim.expr, name, parts.slice(0, k), fieldChains, rules)
+      ) {
         report(
           "warning",
           `${text} reads the column ${name} of ${qualified(targetTable!)}, not dimension ${dim.name} of model ${join.to} (expr: ${dim.expr}); ` +
@@ -813,6 +863,33 @@ class Validator {
       return ref;
     }
     return undefined;
+  }
+
+  // Whether a field's SQL that reads column `column` through the join chain prefix also names,
+  // through the same prefix, every other column a target dimension's expr uses: each bare column as
+  // <prefix>.<column>, and each dotted name on one of the target's columns or joins as
+  // <prefix>.<that name>. An expr that uses no column besides `column`, as upper(region), is never
+  // written out this way, since the reference alone reads only the column.
+  writesOut(
+    target: Model,
+    targetCols: SnapshotTable["columns"],
+    expr: string,
+    column: string,
+    prefix: string[],
+    fieldChains: SqlNames["chains"],
+    rules: IdentRules,
+  ): boolean {
+    const isCol = (name: string, quoted: boolean) => resolveColumn(name, quoted, targetCols, rules) !== false;
+    const targetJoins = named<Join>(target.joins);
+    const used: string[][] = [];
+    for (const b of bareNames(expr, rules.dialect)) if (isCol(b.v, b.quoted)) used.push([b.v]);
+    for (const c of sqlNames(expr, rules.dialect).chains) {
+      if (findJoin(targetJoins, c.parts[0]!, c.quoted[0]!) || isCol(c.parts[0]!, c.quoted[0]!)) used.push(c.parts);
+    }
+    const others = used.filter((path) => !(path.length === 1 && path[0]!.toLowerCase() === column.toLowerCase()));
+    if (!others.length) return false;
+    const written = new Set(fieldChains.map((c) => c.parts.join(".").toLowerCase()));
+    return others.every((path) => written.has([...prefix, ...path].join(".").toLowerCase()));
   }
 
   checkModels(): void {
@@ -856,6 +933,8 @@ class Validator {
         claim(x.name, p);
         this.checkColumnRef(f, `${p}.expr`, x.expr, table, rules);
         this.checkSqlRefs(f, `${p}.expr`, x.expr, m, "measure expr");
+        if (rules.dialect === "duckdb" && typeof x.expr === "string" && dividesByLiteral(x.expr, rules.dialect))
+          this.warn(f, `${p}.expr`, 'divides by a numeric literal; on duckdb "/ 100.0" gives a DOUBLE, so write <col> * 0.01 for an exact amount');
         this.checkSqlRefs(f, `${p}.filter`, x.filter, m, "measure filter");
         if (x.status === "approved" && !x.description) this.error(f, `${p}.description`, "is required on an approved measure");
         this.checkCurrency(f, p, x.format, x.currency, x.status);
@@ -1218,6 +1297,8 @@ class Validator {
           if (!attrs.has(key)) this.error(f, `user.${key}`, `"${key}" is not a declared user attribute`);
       }
       if (g.status === "approved" && !g.expected?.rows.length) this.error(f, "expected.rows", "an approved golden needs at least one expected row");
+      if (typeof g.sql === "string" && callsRound(g.sql, this.identRules(g.request.source).dialect))
+        this.warn(f, "sql", "calls round(); a golden's SQL applies the measure exactly as written; round() hides float noise, so remove it");
 
       const req = g.request;
       if (!this.sources.has(req.source)) {
@@ -1266,7 +1347,12 @@ class Validator {
       arr<{ field: string }>(req.order_by).forEach((x, i) => check(`request.order_by[${i}].field`, x.field, all, "order_by"));
       if (g.status === "approved")
         for (const [path, label] of this.draftFieldsUsed(req.source, req))
-          this.warn(f, path, `an approved golden uses draft ${label}; approve it, then confirm the golden again`);
+          this.warn(
+            f,
+            path,
+            `an approved golden uses draft ${label}; approve it after its readback, then run sl goldens check --name ${g.name}; ` +
+              "if it passes the recorded rows stand, and only changed rows need a new confirm",
+          );
     }
   }
 

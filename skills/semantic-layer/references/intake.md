@@ -51,7 +51,7 @@ The path in `glob` is relative to the semantic root, like a view's. Read the lis
 
 The views of an in-memory DuckDB source live in schema `main`: `sl tables` prints `main.web_events`. A scope pattern without a dot (`web_*`) matches the view name, and `main.*` matches them all; the source name (`lake.*`) matches nothing.
 
-`connection.views` is also where a DuckDB source holds a rule the model YAML cannot express (a customer's first order). A Postgres or warehouse source has no such place: such a rule needs a view or table the owner's engineers create, so say so as soon as one comes up (`interview-guide.md`).
+`connection.views` is also where a DuckDB source holds a rule the model YAML cannot express (a customer's first order). A Postgres or warehouse source has no such place: such a rule needs a view or table the owner's engineers create, so say so as soon as one comes up (`interview-guide.md`). Ask engineering for one only when no supported construct (a join reference within two hops, a filter that writes the rule out, or a DuckDB view in `connection.views`, on a DuckDB source) can express the rule.
 
 ## Live intake
 

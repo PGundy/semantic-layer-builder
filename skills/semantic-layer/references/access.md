@@ -130,7 +130,7 @@ roles:
 - `allow.models` uses scope patterns over `source.model`: `warehouse.*` is every model in a source, `warehouse.fct_*` a prefix, `*.orders` the orders model in every source.
 - Denials subtract from what `allow` grants: `deny.models`, `deny.fields` (`source.model.field`) and `deny.tags`.
 - `deny.fields` names dimensions and measures only, never a join. A join is hidden from a role when its target model is not allowed or is denied for that role: to stop sales reps reaching customers through `orders.customer`, leave `warehouse.customers` out of their `allow.models` or add it to `deny.models`. `sl validate` says so when a join is named in `deny.fields`. A hidden join still serves the definitions that read through it (see Definition joins).
-- `open_questions`, at the top level and on each role, holds what is still unsettled about access, such as notes for tool builders ("A downstream tool must not show sales reps single orders by hour"). `sl status` counts them. Read them back with the whole file. Approval may stand with open questions that are notes for tool builders or are waiting on someone; list them in the handoff. Delete the ones the owner has answered.
+- `open_questions`, at the top level and on each role, holds what is still unsettled about access, such as notes for tool builders ("A downstream tool must not show sales reps single orders by hour"). `sl status` counts them. Read them back with the whole file. Approval may stand with open questions that are notes for tool builders or are waiting on someone; list them in the handoff. Delete the ones the owner has answered, writing the answer where it belongs. Writing the answer into roles, patterns, denials or row filters is a change (see Readback); only the question's own deletion or addition is not.
 - Avoid `*` alone as an allow pattern; name sources so a new source is not exposed by accident.
 
 Run `sl validate`; it checks that every referenced model, field and attribute exists.
@@ -143,7 +143,7 @@ Read each role back as what its members can and cannot see, with the row rule in
 
 Then the whole file, with the default and its consequence, and every change settled along the way (a model added to a role, a join made inner, a new denial): "Three roles: analysts, sales reps and support. Anyone without a role is treated as support, so they see order status only. Since the per-role readbacks we added regions to sales reps. Every other table is hidden from everyone until we add it here. Approve?"
 
-Any change after the per-role readbacks, however small, means the whole-file readback comes again before `sl approve --target access`. A change is a change to roles, patterns, denials, row filters, user attributes or the default; an edit to comments only is not one.
+Any change after the per-role readbacks, however small, means the whole-file readback comes again before `sl approve --target access`. A change is a change to roles, patterns, denials, row filters, user attributes or the default; an edit to comments only is not one, and neither is deleting an answered open question or adding a new one. Mention such an open-question edit in your next message to the owner. Writing the answer into roles, patterns, denials or row filters is a change; only the question's own deletion or addition is not.
 
 After an explicit yes:
 
@@ -152,6 +152,6 @@ sl approve --target access --by "Dana Ruiz"
 sl validate
 ```
 
-Approval covers the whole file. Any later change (a new role, a widened pattern, a new source) needs a new approval: run `sl approve --target access --revoke`, edit the file, and read the whole file back before approving again.
+Approval covers the whole file. Any later change (a new role, a widened pattern, a new source) needs a new approval; deleting an answered open question or adding one does not, and you mention it in the next message, but writing its answer into a role is a change. For a change: run `sl approve --target access --revoke`, edit the file, and read the whole file back before approving again.
 
 A role often relies on fields that are still draft (marketing's agreed breakdown by `orders.status`). Before approving access, check each role's agreed breakdowns against `draft_fields` in `sl status --json`; read those fields back and approve them, or name them in the handoff.

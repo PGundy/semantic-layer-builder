@@ -67,7 +67,7 @@ The join's `type` also decides what a join reference through it sees. A measure 
 - `one_to_many`: one row on the left, many on the right (customer to orders). **It multiplies totals on the left.** If a customer has 5 orders, joining customers to orders repeats that customer 5 times, so a sum of `lifetime_credit` from customers comes out 5 times too large. Flag every such join to the owner: "If someone asks for customer credit broken down by order, the credit would be counted once per order. Tools that read this layer total the order side first and then join, so their numbers stay right, but anyone writing SQL by hand must do the same." Often the better model is the reverse join, declared on the many side (`orders.customer`, `many_to_one`).
 - `many_to_many`: neither side is unique (orders to promotions, where an order can have several promotions and a promotion several orders). It cannot be modeled directly and must not be approved. Options to offer:
   1. A bridge table that holds one row per pair (`order_promotions`). Add it to scope, model it, and join each side to it with `many_to_one` joins.
-  2. A pre-aggregated model, for example a view or table with one row per order and the promotion count, that the owner or their engineers create.
+  2. A pre-aggregated model, for example a view with one row per order and the promotion count: on DuckDB a view in `connection.views`, elsewhere a view or table the owner's engineers create.
   3. Leave it out and record an open question.
 
 When `relationship` in the YAML differs from `suggested_relationship`, change the YAML to match the evidence, or ask the owner why the data disagrees with what they expect. Never approve a join whose YAML relationship the evidence contradicts.
