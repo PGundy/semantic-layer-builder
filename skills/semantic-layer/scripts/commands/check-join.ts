@@ -24,6 +24,7 @@ export interface CheckJoinResult {
   model: string;
   join: string;
   // Null when the join could not be measured (an empty side, or no complete keys); nothing is written then.
+  // It records the join's to and keys as declared in the YAML.
   evidence: JoinEvidence | null;
   findings: JoinFinding[];
   sentence: string;
@@ -219,6 +220,8 @@ const spec: CommandSpec = {
           // A self-join names its other side by the join, e.g. "manager".
           right: t.join.to === t.model.model ? t.join.name : t.join.to,
           checkedAt,
+          to: t.join.to,
+          keys: t.join.keys,
         });
       } catch (err) {
         if (err instanceof UserError) throw new UserError(`${id}: ${err.message}`);

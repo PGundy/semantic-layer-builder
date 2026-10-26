@@ -36,13 +36,15 @@ In a shell, quote every pattern (`--include 'fct_*'`) so the shell does not expa
 
 When `sl tables` prints three-part names (a DuckDB file with attached databases, or an import spanning several databases or catalogs), the schema part includes that prefix, so write schema patterns with it, such as `prod.analytics.*` or `*.analytics.*`; `analytics.*` alone matches nothing there. Copy qualified names exactly as `sl tables` prints them.
 
+The views of an in-memory DuckDB source are in schema `main` (`sl tables` prints `main.web_events`): a pattern without a dot (`web_*`) matches the view name, `main.*` matches every view, and the source name (`lake.*`) matches nothing.
+
 ## Presenting `sl tables --groups`
 
 ```
 sl tables --source warehouse --groups
 ```
 
-The output clusters tables by schema, shared prefix and shared suffix, with counts and sizes, and suggests patterns. A group's rows read `?` when none of its tables has a row count yet (views before `sl profile`) and `30,551+` when only some do; `--json` carries `total_rows` (`null` when all are unknown) and `rows_unknown`. Never tell the owner a group is empty because its total is unknown.
+It first lists the in-scope tables, then the groups. The groups cluster tables by schema, shared prefix and shared suffix, with counts and sizes, and suggests patterns. A group's rows read `?` when none of its tables has a row count yet (views before `sl profile`) and `30,551+` when only some do; `--json` carries `total_rows` (`null` when all are unknown) and `rows_unknown`. Never tell the owner a group is empty because its total is unknown.
 
 It ends with one combined command:
 
@@ -96,7 +98,7 @@ Preview never changes anything:
 sl scope --source warehouse --include 'fct_*' --include 'dim_*' --exclude '*_backup' --exclude 'tmp_*'
 ```
 
-Read the result back: how many tables, the names, and anything surprising ("this also picks up `fct_orders_old`; leave it out?"). Adjust with more `--exclude` patterns, or drop a pattern you added with `--remove <pattern>`; start over with `--clear`. After any change, preview again and read back the final count and names. When the owner confirms that list, rerun the exact same command with `--write`:
+Read the result back: how many tables, the names, and anything surprising ("this also picks up `fct_orders_old`; leave it out?"). Adjust with more `--exclude` patterns, or drop a pattern you added with `--remove <pattern>`; start over with `--clear`. After any change, preview again and read back the final count and names; skip the new preview only when the owner stated the exact final list themselves ("just those 15, without dim_currency"). When the owner confirms that list, rerun the exact same command with `--write`. Ask for that confirmation as its own sign-off, not in the same item as an open question ("anything I missed?"):
 
 ```
 sl scope --source warehouse --include 'fct_*' --include 'dim_*' --exclude '*_backup' --exclude 'tmp_*' --write

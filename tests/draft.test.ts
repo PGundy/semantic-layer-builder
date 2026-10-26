@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { draftModels, inferPrimaryKey, numericRule, singular } from "../skills/semantic-layer/scripts/lib/draft.ts";
+import { centsExpr, draftModels, inferPrimaryKey, numericRule, singular } from "../skills/semantic-layer/scripts/lib/draft.ts";
 import type { ColumnProfile, Snapshot, SnapshotColumn, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { SQL } from "bun";
@@ -166,7 +166,8 @@ open_questions:
   - What does one row of analytics.fct_orders represent?
   - store_id looks like a key to ops.stores, which is out of scope and has no model. Bring it into scope to draft this join?
   - tracking_code has a different value on nearly every row and was left out as a dimension. Should it be one?
-  - "Is amount_cents stored in cents? The draft divides it by 100 (expr: amount_cents / 100.0) to report whole currency units; confirm the division."
+  - "Is amount_cents stored in cents? The draft divides it by 100 (expr: amount_cents * 0.01) to report whole currency units; confirm the division."
+  - The name weight_kg does not say how it adds up, so the draft averages it (avg_weight_kg). Do people total weight_kg or average it?
   - Which currency are amount_cents and discount in?
   - shipping_zip looks like personal data and is tagged pii. Who may see it?
 dimensions:
@@ -231,7 +232,7 @@ measures:
     format: integer
     status: draft
   - name: amount
-    expr: amount_cents / 100.0
+    expr: amount_cents * 0.01
     agg: sum
     format: currency
     description: Order value in cents.
@@ -289,7 +290,7 @@ describe("draft command", () => {
       dimensions: 6,
       measures: 8,
       joins: 2,
-      open_questions: 6,
+      open_questions: 7,
     });
     expect(readModel(root, "orders")).toBe(ORDERS_YAML);
     const v = await sl(root, ["validate", "--json"]);
@@ -325,8 +326,8 @@ describe("draft command", () => {
     expect(payments).toContain("  - name: customer\n    to: customers\n    keys:\n      - from: customer_id\n        to: customer_id\n");
     expect(payments).toContain("warehouse_id references ops.warehouses, which is out of scope and has no model.");
     expect(payments).not.toContain("to: warehouses");
-    expect(payments).toContain("Is fee_pennies stored in cents? The draft divides it by 100 (expr: fee_pennies / 100.0)");
-    expect(payments).toContain("  - name: fee\n    expr: fee_pennies / 100.0\n    agg: sum\n    format: currency\n");
+    expect(payments).toContain("Is fee_pennies stored in cents? The draft divides it by 100 (expr: fee_pennies * 0.01)");
+    expect(payments).toContain("  - name: fee\n    expr: fee_pennies * 0.01\n    agg: sum\n    format: currency\n");
     // A rate is averaged, never summed, even though its name holds "tax".
     expect(payments).toContain("  - name: avg_tax_rate\n    expr: tax_rate\n    agg: avg\n    format: number\n");
 
@@ -505,7 +506,7 @@ describe("draft command", () => {
     const r = await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "fct_orders"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Drafted 1 model in wh:");
-    expect(r.out).toMatch(/orders\s+analytics\.fct_orders\s+6\s+8\s+2\s+6/);
+    expect(r.out).toMatch(/orders\s+analytics\.fct_orders\s+6\s+8\s+2\s+7/);
     expect(r.out).toContain("left out payload (type json)");
   });
 });
@@ -591,6 +592,110 @@ describe("draftModels", () => {
     const snap: Snapshot = { ...snapshotOf([table]), dialect };
     return draftModels(snap, [table], [], { source: "wh", stripPrefixes: [], knownTables: [table] });
   }
+
+  test("additive count nouns are summed as integers", () => {
+    const rule = (n: string) => {
+      const r = numericRule(n);
+      return r ? `${r.agg}:${r.format}` : null;
+    };
+    for (const n of [
+      "impressions",
+      "clicks",
+      "views",
+      "visits",
+      "sessions",
+      "signups",
+      "conversions",
+      "installs",
+      "opens",
+      "events",
+      "pageviews",
+      "sends",
+      "page_views",
+      "email_opens",
+      "ad_clicks",
+      "clicks_total",
+      "impressions_served",
+    ]) {
+      expect(rule(n)).toBe("sum:integer");
+    }
+    // A ratio, a rate or a name with the noun inside is not an additive count.
+    expect(rule("clicks_per_session")).toBeNull();
+    expect(rule("conversions_pct")).toBeNull();
+    // A name ending _rate stays a per-unit rate.
+    expect(rule("conversions_rate")).toBe("avg:number");
+    expect(rule("unique_page_views_ratio")).toBeNull();
+    expect(rule("session")).toBeNull();
+    expect(rule("previews_shown")).toBeNull();
+    // A statistic or share of a count does not add up across rows, so no rule picks it.
+    for (const n of ["avg_clicks", "average_sessions", "mean_views", "median_pageviews", "max_views", "min_clicks", "p50_views", "views_avg", "impressions_share"]) {
+      expect(rule(n)).toBeNull();
+    }
+    // A name starting with a count noun that names money or a duration keeps its unit.
+    expect(rule("conversions_value_cents")).toBe("sum:currency");
+    expect(rule("conversions_revenue_cents")).toBe("sum:currency");
+    expect(rule("impressions_spend_cents")).toBe("sum:currency");
+    expect(rule("installs_revenue")).toBe("sum:currency");
+    expect(rule("clicks_cost")).toBe("sum:currency");
+    expect(rule("sessions_duration_seconds")).toBe("sum:number");
+    expect(rule("events_minutes")).toBe("sum:number");
+
+    const t: SnapshotTable = {
+      schema: "s",
+      name: "ad_stats",
+      kind: "table",
+      row_count: 1000,
+      columns: [
+        col("id", "integer", p(1000)),
+        col("impressions", "bigint", p(900)),
+        col("clicks", "integer", p(12)),
+        col("page_views", "integer", p(500)),
+        col("bounce_score", "double", p(700)),
+        col("dwell", "double", p(800)),
+      ],
+    };
+    const m = draftOneTable("duckdb", t).models[0]!;
+    expect(m.measures.map((x) => `${x.name}:${x.expr ?? ""}:${x.agg}:${x.format}`)).toEqual([
+      "ad_stat_count::count:integer",
+      "impressions:impressions:sum:integer",
+      "clicks:clicks:sum:integer",
+      "page_views:page_views:sum:integer",
+      "avg_bounce_score:bounce_score:avg:number",
+      "avg_dwell:dwell:avg:number",
+    ]);
+    // Only the averages no name rule chose ask whether people total or average the column.
+    expect(m.open_questions).toContain(
+      "The name bounce_score does not say how it adds up, so the draft averages it (avg_bounce_score). Do people total bounce_score or average it?",
+    );
+    expect(m.open_questions).toContain("The name dwell does not say how it adds up, so the draft averages it (avg_dwell). Do people total dwell or average it?");
+    expect(m.open_questions!.filter((q) => q.includes("Do people total"))).toHaveLength(2);
+    expect(m.dimensions.map((d) => d.name)).toEqual([]);
+  });
+
+  test("a count-noun prefix with a money or duration name drafts by its unit", () => {
+    const t: SnapshotTable = {
+      schema: "s",
+      name: "ad_stats",
+      kind: "table",
+      row_count: 1000,
+      columns: [
+        col("conversions_value_cents", "bigint", p(900)),
+        col("sessions_duration_seconds", "bigint", p(900)),
+        col("avg_clicks", "double", p(900)),
+      ],
+    };
+    const m = draftOneTable("duckdb", t).models[0]!;
+    expect(m.measures.map((x) => `${x.name}:${x.expr ?? ""}:${x.agg}:${x.format}`)).toEqual([
+      "ad_stat_count::count:integer",
+      "conversions_value:conversions_value_cents * 0.01:sum:currency",
+      "sessions_duration_seconds:sessions_duration_seconds:sum:number",
+      "avg_avg_clicks:avg_clicks:avg:number",
+    ]);
+    expect(m.open_questions!.some((q) => q.startsWith("Is conversions_value_cents stored in cents?"))).toBe(true);
+    expect(m.open_questions).toContain(
+      "The name avg_clicks does not say how it adds up, so the draft averages it (avg_avg_clicks). Do people total avg_clicks or average it?",
+    );
+  });
 
   test("numeric name rules match whole words", () => {
     const t: SnapshotTable = {
@@ -775,8 +880,8 @@ describe("draft heuristics on Acme-like tables", () => {
   };
   const ACME = [ORDERS, ITEMS, PRODUCTS, CUSTOMERS, REGIONS];
 
-  function draftAcme(tables = ACME) {
-    const snap: Snapshot = { ...snapshotOf(tables), dialect: "postgres" };
+  function draftAcme(tables = ACME, dialect: Snapshot["dialect"] = "postgres") {
+    const snap: Snapshot = { ...snapshotOf(tables), dialect };
     const { models, notes } = draftModels(snap, tables, [], { source: "warehouse", stripPrefixes: ["fct_", "dim_"], knownTables: tables });
     return { model: (name: string) => models.find((m) => m.model === name)!, notes };
   }
@@ -1016,8 +1121,9 @@ describe("draft heuristics on Acme-like tables", () => {
     const c = await db.connect();
     await c.run("create table items (quantity integer, unit_price_cents integer)");
     await c.run("insert into items values (2, 1999), (1, 500)");
-    const items = draftAcme().model("order_items");
+    const items = draftAcme(ACME, "duckdb").model("order_items");
     const line = items.measures.find((m) => m.name === "line_total")!;
+    expect(line.expr).toBe("quantity * (unit_price_cents * 0.01)");
     const avg = items.measures.find((m) => m.name === "avg_unit_price")!;
     const rows = (await (await c.runAndReadAll(`select sum(${line.expr}) as line, avg(${avg.expr}) as avg from items`)).getRowObjects()) as {
       line: unknown;
@@ -1029,8 +1135,55 @@ describe("draft heuristics on Acme-like tables", () => {
     await c.run("insert into items values (100, 25000000)");
     const big = (await (await c.runAndReadAll(`select sum(${line.expr}) as line from items`)).getRowObjects()) as { line: unknown }[];
     expect(Number(big[0]!.line)).toBeCloseTo(25000044.98, 4);
+    // The DuckDB cents expression is an exact DECIMAL; dividing by 100.0 is a DOUBLE there.
+    const cents = centsExpr("duckdb", "unit_price_cents");
+    const types = (await (
+      await c.runAndReadAll(
+        `select typeof(any_value(${cents})) as cents, typeof(any_value(unit_price_cents / 100.0)) as divided, sum(${cents}) = 250024.99 as exact from items`,
+      )
+    ).getRowObjects()) as { cents: string; divided: string; exact: boolean }[];
+    expect(types[0]!.cents).toStartWith("DECIMAL");
+    expect(types[0]!.divided).toBe("DOUBLE");
+    expect(types[0]!.exact).toBe(true);
     c.closeSync();
     db.closeSync();
+  });
+
+  test("the cents expression and its open question follow the dialect", () => {
+    expect(centsExpr("duckdb", "amount_cents")).toBe("amount_cents * 0.01");
+    expect(centsExpr("bigquery", "amount_cents")).toBe("cast(amount_cents as numeric) / 100");
+    expect(centsExpr("postgres", "amount_cents")).toBe("amount_cents / 100.0");
+    expect(centsExpr("snowflake", "AMOUNT_CENTS")).toBe("AMOUNT_CENTS / 100.0");
+    expect(centsExpr("databricks", "amount_cents")).toBe("amount_cents / 100.0");
+    const cases: [Snapshot["dialect"], string, string][] = [
+      ["duckdb", "amount_cents * 0.01", "quantity * (unit_price_cents * 0.01)"],
+      ["bigquery", "cast(amount_cents as numeric) / 100", "quantity * (cast(unit_price_cents as numeric) / 100)"],
+      ["postgres", "amount_cents / 100.0", "quantity * (unit_price_cents / 100.0)"],
+      // Snowflake quotes a lowercase name.
+      ["snowflake", '"amount_cents" / 100.0', '"quantity" * ("unit_price_cents" / 100.0)'],
+      ["databricks", "amount_cents / 100.0", "quantity * (unit_price_cents / 100.0)"],
+    ];
+    for (const [dialect, amount, line] of cases) {
+      const d = draftAcme(ACME, dialect);
+      const orders = d.model("orders");
+      expect(orders.measures.find((m) => m.name === "amount")!.expr).toBe(amount);
+      expect(orders.open_questions).toContain(
+        `Is amount_cents stored in cents? The draft divides it by 100 (expr: ${amount}) to report whole currency units; confirm the division.`,
+      );
+      const items = d.model("order_items");
+      expect(items.measures.find((m) => m.name === "line_total")!.expr).toBe(line);
+      expect(items.open_questions!.some((q) => q.endsWith(`the sum of ${line}.`))).toBe(true);
+    }
+    // A quoted column keeps its quoting inside the dialect's expression.
+    const ledger: SnapshotTable = {
+      schema: "acme",
+      name: "ledger",
+      kind: "table",
+      row_count: 100,
+      columns: [col("id", "integer", p(100)), col("Fee_Cents", "bigint", p(60))],
+    };
+    expect(draftAcme([ledger], "bigquery").model("ledger").measures[1]!.expr).toBe("cast(`Fee_Cents` as numeric) / 100");
+    expect(draftAcme([ledger], "duckdb").model("ledger").measures[1]!.expr).toBe('"Fee_Cents" * 0.01');
   });
 
   test.skipIf(!PG_URL)("the drafted line total runs on Postgres without integer overflow", async () => {

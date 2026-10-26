@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
+import { needsOwnerYes, type ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
 import type { Model, Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { FIXED_NOW, sl, tempRoot } from "./helpers.ts";
@@ -531,5 +531,112 @@ describe("status counts and batches", () => {
     const r = await sl(t.root, ["status"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("sl init");
+  });
+});
+
+describe("status owner gates and golden coverage", () => {
+  test("after_owner_yes is true exactly when the command records an approval", () => {
+    expect(needsOwnerYes('sl approve --target wh.customers --by "<owner>"')).toBe(true);
+    expect(needsOwnerYes('sl approve --target access --by "<owner>"')).toBe(true);
+    expect(needsOwnerYes('sl goldens confirm --name g --by "<owner>"')).toBe(true);
+    expect(needsOwnerYes("sl goldens run --name <golden>")).toBe(false);
+    expect(needsOwnerYes("sl check-join --source wh --model orders --join customer")).toBe(false);
+    expect(needsOwnerYes("sl validate")).toBe(false);
+    expect(needsOwnerYes("sl approver")).toBe(false);
+  });
+
+  test("approve steps wait for the owner's yes; other steps do not", async () => {
+    const interview = await status({ models: "draft" });
+    expect(interview.next_step).toMatchObject({ phase: "interview", after_owner_yes: true });
+    const join = await status({ models: "draft", evidence: false });
+    expect(join.next_step).toMatchObject({ phase: "interview", after_owner_yes: false });
+    const metrics = await status({ metrics: "draft" });
+    expect(metrics.next_step).toMatchObject({ phase: "metrics", after_owner_yes: true });
+    const noMetrics = await status({ metrics: "none" });
+    expect(noMetrics.next_step).toMatchObject({ phase: "metrics", command: "sl validate", after_owner_yes: false });
+    const access = await status({ access: "draft" });
+    expect(access.next_step).toMatchObject({ phase: "access", after_owner_yes: true });
+    const verify = await status({ goldens: 2 });
+    expect(verify.next_step).toMatchObject({ phase: "verify", after_owner_yes: false });
+    const done = await status({});
+    expect(done.next_step).toMatchObject({ phase: "done", after_owner_yes: false });
+    const none = await status({ sources: false });
+    expect(none.next_step).toMatchObject({ phase: "add-source", after_owner_yes: false });
+  });
+
+  test("human output says an approve command runs only after the owner's yes", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, { models: "draft" });
+    const r = await sl(t.root, ["status"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('  Only after the owner says yes to its readback: sl approve --target wh.customers --by "<owner>"');
+    build(t.root, { models: "draft", evidence: false });
+    const join = await sl(t.root, ["status"]);
+    expect(join.out).toContain("\n  sl check-join --source wh --model orders --join customer");
+    expect(join.out).not.toContain("Only after the owner says yes");
+  });
+
+  test("roles_without_goldens lists the roles no approved golden names", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, {});
+    const before = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(before.roles_without_goldens).toEqual(["analyst", "viewer"]);
+    const golden = (name: string, role: string, approved: boolean) =>
+      writeYaml(join(t.root, "goldens", `${name}.yaml`), {
+        name,
+        question: "How much?",
+        role,
+        request: { source: "wh", measures: ["orders.total"] },
+        sql: "select 1",
+        status: approved ? "approved" : "draft",
+      });
+    golden("analyst_total", "analyst", true);
+    golden("viewer_total", "viewer", false);
+    const after = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(after.roles_without_goldens).toEqual(["viewer"]);
+    const human = await sl(t.root, ["status"]);
+    expect(human.out).toContain("roles without an approved golden: viewer");
+    golden("viewer_total", "viewer", true);
+    const covered = await sl(t.root, ["status"]);
+    expect(covered.out).not.toContain("roles without an approved golden");
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual([]);
+  });
+
+  test("an approved golden without a role covers access.yaml's default_role", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, { access: "missing", goldens: 0 });
+    const roles = [
+      { name: "analyst", allow: { models: ["wh.*"] } },
+      { name: "viewer", allow: { models: [] } },
+    ];
+    const golden = (status: string) =>
+      writeYaml(join(t.root, "goldens", "total.yaml"), {
+        name: "total",
+        question: "How much?",
+        request: { source: "wh", measures: ["orders.total"] },
+        sql: "select 1",
+        status,
+      });
+    writeYaml(join(t.root, "access.yaml"), { status: "draft", default_role: "analyst", roles });
+    golden("draft");
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual(["analyst", "viewer"]);
+    golden("approved");
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual(["viewer"]);
+    writeYaml(join(t.root, "access.yaml"), { status: "draft", roles });
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual(["analyst", "viewer"]);
+  });
+
+  test("roles_without_goldens is empty without access.yaml and skips malformed roles", async () => {
+    const missing = await status({ access: "missing" });
+    expect(missing.roles_without_goldens).toEqual([]);
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, { access: "missing" });
+    writeYaml(join(t.root, "access.yaml"), { status: "draft", roles: [{ name: "support", allow: { models: [] } }, "not a role", { allow: {} }] });
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.roles_without_goldens).toEqual(["support"]);
   });
 });

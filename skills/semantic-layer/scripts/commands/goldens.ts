@@ -1,3 +1,4 @@
+import { validateProject } from "../lib/validate.ts";
 import { existsSync, readdirSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { canRun } from "../lib/adapters/index.ts";
@@ -128,6 +129,19 @@ function draftFieldsOf(ctx: CommandContext, g: Golden, source: SourceConfig): st
   return goldenDraftFields(g, models, metrics);
 }
 
+// What to do with the rows goldens run printed: an approved golden is rechecked with
+// goldens check; a draft one is confirmed only once its measures are approved and the
+// owner says the rows match a figure they trust.
+export function runHint(golden: Golden): string {
+  if (golden.status === "approved") {
+    return `Already confirmed; sl goldens check --name ${golden.name} compares these rows with the recorded ones.`;
+  }
+  return (
+    "Read these rows back to the owner. Confirm only once its measures are approved and the owner says these rows match " +
+    `a figure they trust: sl goldens confirm --name ${golden.name} --by "<owner>" --tolerance <agreed tolerance>.`
+  );
+}
+
 async function runCommand(ctx: CommandContext, values: OptionValues): Promise<number> {
   const { golden } = loadGolden(ctx, requireName(values, "run"));
   const source = goldenSource(ctx, golden);
@@ -142,7 +156,7 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
     ctx.out(`${golden.name}: ${golden.question}`);
     ctx.out(formatTable(rows, columns));
     ctx.out(`(${rows.length} row${rows.length === 1 ? "" : "s"})`);
-    ctx.out(`Read these rows back to the owner. Once they confirm them: sl goldens confirm --name ${golden.name} --by "<owner>" --tolerance <agreed tolerance>.`);
+    ctx.out(runHint(golden));
   }
   return 0;
 }
@@ -170,6 +184,16 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
     throw new UserError(
       `Golden "${golden.name}" returned ${rows.length} rows, more than ${MAX_CONFIRM_ROWS}. A golden should be an aggregate the ` +
         "owner can check by eye; aggregate further or add a limit, or pass --force to record every row.",
+    );
+  }
+  // A request naming a field that does not exist yet makes the approved golden invalid; say so before recording.
+  const unknown = validateProject(ctx.root).filter(
+    (i) => i.file === `goldens/${golden.name}.yaml` && i.path.startsWith("request") && (i.level === "error" || i.message.includes("before confirming")),
+  );
+  if (unknown.length && !ctx.json) {
+    ctx.err(
+      `Golden "${golden.name}" names fields the layer does not have yet; sl validate errors on it once confirmed:\n` +
+        unknown.map((i) => `  ${i.path}: ${i.message}`).join("\n"),
     );
   }
   const confirmedAt = today(ctx);

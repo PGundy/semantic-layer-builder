@@ -73,7 +73,19 @@ Several filters on one model in one role combine with `and`. Where a filter goes
 
 So for a sales rep with filters on both `orders` (`ship_region`) and `customers` (`home_region`), revenue by customer counts every order shipped to the rep's region, and orders whose customer lives elsewhere show with blank customer details, as long as `orders.customer` is a left join. Say which applies in the readback, with a count from the data where you can ("31 orders ship to a different region than their customer's home region"). If the owner wants such rows dropped instead, the join must be `inner`, which changes every query that uses it; read that consequence back too.
 
-Ask what should happen to a user whose attribute is missing; the safe answer is that they see no rows, and the calling tool must enforce it.
+### Definition joins
+
+A join that a measure `filter` or a dimension `expr` reads through (`customer.is_test_account` in revenue's filter, `ship_to_region.region_name` in a dimension) is part of that field's definition, not something the request names. The compiler applies it whenever the field is used, whatever the role may see, and joins it without the target's row filters. So:
+
+- A sales rep's row filter on `customers` never blanks `customer.is_test_account` inside revenue: test accounts stay out of the rep's revenue, while a `customers.region` the rep groups by still shows blank for customers outside the region. No helper model over the same table is needed to keep a row filter away from a rule.
+- A role that may not see `warehouse.customers` still gets revenue without test accounts.
+- Role visibility governs only what a request may name: models, dimensions, measures, and joins to reach other models' fields.
+
+A dimension shows values of the model it reads through, so `sl validate` warns when a role is allowed a dimension whose `expr` reads through a join to a model the role is not allowed or is denied, for example sales reps allowed `orders.ship_region_name`, which reads `regions` through the `ship_to_region` join. Settle each warning with the owner: allow the target model, or deny the dimension with `deny.fields`. A measure filter does not warn, because it shows no values of the joined model.
+
+A dimension that reads through a join to a model the role may see but row-filters shows that model's values for every row, because the definition join carries no row filter; `sl validate` does not warn. For each role with a row filter, check the dimensions of its other models that read the filtered model, and deny each one with `deny.fields` or read the consequence back.
+
+A row filter whose user attribute the user lacks returns no rows of that model; the compiler enforces it, so a row filter's `expr` does not test for a missing value. Say so in the readback.
 
 ## Writing access.yaml
 
@@ -117,7 +129,7 @@ roles:
 
 - `allow.models` uses scope patterns over `source.model`: `warehouse.*` is every model in a source, `warehouse.fct_*` a prefix, `*.orders` the orders model in every source.
 - Denials subtract from what `allow` grants: `deny.models`, `deny.fields` (`source.model.field`) and `deny.tags`.
-- `deny.fields` names dimensions and measures only, never a join. A join is hidden from a role when its target model is not allowed or is denied for that role: to stop sales reps reaching customers through `orders.customer`, leave `warehouse.customers` out of their `allow.models` or add it to `deny.models`. `sl validate` says so when a join is named in `deny.fields`.
+- `deny.fields` names dimensions and measures only, never a join. A join is hidden from a role when its target model is not allowed or is denied for that role: to stop sales reps reaching customers through `orders.customer`, leave `warehouse.customers` out of their `allow.models` or add it to `deny.models`. `sl validate` says so when a join is named in `deny.fields`. A hidden join still serves the definitions that read through it (see Definition joins).
 - `open_questions`, at the top level and on each role, holds what is still unsettled about access, such as notes for tool builders ("A downstream tool must not show sales reps single orders by hour"). `sl status` counts them. Read them back with the whole file. Approval may stand with open questions that are notes for tool builders or are waiting on someone; list them in the handoff. Delete the ones the owner has answered.
 - Avoid `*` alone as an allow pattern; name sources so a new source is not exposed by accident.
 
@@ -131,7 +143,7 @@ Read each role back as what its members can and cannot see, with the row rule in
 
 Then the whole file, with the default and its consequence, and every change settled along the way (a model added to a role, a join made inner, a new denial): "Three roles: analysts, sales reps and support. Anyone without a role is treated as support, so they see order status only. Since the per-role readbacks we added regions to sales reps. Every other table is hidden from everyone until we add it here. Approve?"
 
-Any change after the per-role readbacks, however small, means the whole-file readback comes again before `sl approve --target access`.
+Any change after the per-role readbacks, however small, means the whole-file readback comes again before `sl approve --target access`. A change is a change to roles, patterns, denials, row filters, user attributes or the default; an edit to comments only is not one.
 
 After an explicit yes:
 

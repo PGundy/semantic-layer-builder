@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { openAdapter } from "../skills/semantic-layer/scripts/lib/adapters/index.ts";
 import { UserError } from "../skills/semantic-layer/scripts/lib/errors.ts";
-import { executePlan } from "../skills/semantic-layer/scripts/lib/plan.ts";
+import { errorMessage, executePlan } from "../skills/semantic-layer/scripts/lib/plan.ts";
 import { assertReadOnly } from "../skills/semantic-layer/scripts/lib/sql-guard.ts";
 import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { duckdbSource, initProject, PG_URL, sl, tempRoot } from "./helpers.ts";
@@ -86,6 +86,38 @@ describe("database errors are user errors", () => {
     expect(r.err).toContain("syntax error");
     expect(r.err).not.toContain("unexpected error");
     expect(r.err).not.toContain(PG_URL!);
+    expect(r.err).toContain('syntax error at or near "month" (at character 31: "month from")');
+  });
+
+  test.skipIf(!PG_URL)("executePlan on postgres names the error position with a query excerpt", async () => {
+    const t = await project();
+    const source = { source: "pg", dialect: "postgres" as const, connection: { env: "PG_URL" } };
+    const sql = "select nope_column_with_a_long_name, 1 as x from pg_class";
+    const plan = { command: "test", source: "pg", dialect: "postgres" as const, queries: [{ id: "q1", purpose: "A broken query", sql }] };
+    const err = await executePlan(plan, { root: t.root, source, env: { PG_URL } }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(UserError);
+    expect((err as Error).message.split("\n")[0]).toBe(
+      'Query failed: column "nope_column_with_a_long_name" does not exist (at character 8: "nope_column_with_a_l…")',
+    );
+  });
+
+  test("errorMessage adds a driver's position and an excerpt only when the error carries one", () => {
+    const withPosition = Object.assign(new Error("syntax error"), { position: "8" });
+    expect(errorMessage(withPosition, "select\n  from\t\tx where")).toBe('syntax error (at character 8: "from x where")');
+    expect(errorMessage(withPosition)).toBe("syntax error (at character 8)");
+    expect(errorMessage(Object.assign(new Error("bad"), { position: 99 }), "select 1")).toBe("bad (at character 99)");
+    expect(errorMessage(Object.assign(new Error("bad"), { position: 3 }), "ab   ")).toBe("bad (at character 3)");
+    for (const position of [undefined, null, "", "x", 0, -1, 1.5]) {
+      expect(errorMessage(Object.assign(new Error("bad"), { position }), "select 1")).toBe("bad");
+    }
+    const emoji = "select '\u{1F600}\u{1F600}\u{1F600}' || nosuch";
+    expect(errorMessage(Object.assign(new Error("bad"), { position: 17 }), emoji)).toBe('bad (at character 17: "nosuch")');
+    expect(errorMessage(Object.assign(new Error("bad"), { position: 23 }), emoji)).toBe("bad (at character 23)");
+    expect(errorMessage(new Error(""))).toBe("Error");
+    expect(errorMessage("plain")).toBe("plain");
   });
 
   test("executePlan turns a failing query into a UserError that names the query", async () => {

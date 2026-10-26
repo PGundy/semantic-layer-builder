@@ -330,6 +330,11 @@ describe("goldens CLI on duckdb", () => {
     expect(human.code).toBe(0);
     expect(human.out).toContain("west");
     expect(human.out).toContain("(3 rows)");
+    expect(human.out).toContain(
+      "Confirm only once its measures are approved and the owner says these rows match a figure they trust: " +
+        'sl goldens confirm --name revenue_by_region --by "<owner>" --tolerance <agreed tolerance>.',
+    );
+    expect(human.out).not.toContain("Already confirmed");
 
     const confirm = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana Ruiz", "--json"]);
     expect(confirm.code).toBe(0);
@@ -346,6 +351,11 @@ describe("goldens CLI on duckdb", () => {
     expect(saved.confirmed_at).toBe("2026-01-15");
     expect(saved.expected?.tolerance).toBe(0.005);
     expect(saved.expected?.rows).toContainEqual({ region: "west", revenue: 200, orders: 1 });
+
+    const rerun = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
+    expect(rerun.code).toBe(0);
+    expect(rerun.out).toContain("Already confirmed; sl goldens check --name revenue_by_region compares these rows with the recorded ones.");
+    expect(rerun.out).not.toContain("sl goldens confirm");
 
     const validate = await sl(t.root, ["validate", "--json"]);
     // The fixture has no models or access file; only the fields confirm writes are checked here.
@@ -466,6 +476,14 @@ describe("goldens CLI on duckdb", () => {
     expect(broken.err).toContain("Could not read models/wh/broken.yaml, metrics.yaml to list draft fields (");
     expect(broken.err).toContain("run sl validate.");
     expect(readYaml<Golden>(join(t.root, "goldens", "revenue_by_region.yaml")).status).toBe("approved");
+  });
+
+  test("confirm notes request fields the layer does not have yet before recording", async () => {
+    const t = await setup();
+    const r = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0"]);
+    expect(r.code).toBe(0);
+    expect(r.err).toContain('Golden "revenue_by_region" names fields the layer does not have yet');
+    expect(r.err).toContain("request.measures[0]");
   });
 
   test("confirming again with a new --tolerance re-records the rows; without it the file's tolerance is kept", async () => {

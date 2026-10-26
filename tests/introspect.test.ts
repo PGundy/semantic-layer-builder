@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { SQL } from "bun";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { rowCountNote } from "../skills/semantic-layer/scripts/commands/introspect.ts";
+import { type CredentialSlot, hasCredential } from "../skills/semantic-layer/scripts/lib/credentials.ts";
 import { buildSnapshot, nullable } from "../skills/semantic-layer/scripts/lib/introspect.ts";
 import { introspectionPlan, schemaMatcher } from "../skills/semantic-layer/scripts/lib/sql/introspection.ts";
 import type { QueryPlan, Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
@@ -791,6 +792,41 @@ describe("add-source", () => {
     const human = await sl(t.root, ["add-source", "--name", "local", "--dialect", "duckdb", "--database", "data/missing.duckdb"]);
     expect(human.out).toContain("does not exist yet");
     expect(human.out).not.toContain("missing.duckdb");
+  });
+
+  test("add-source and sl validate share one credential check", async () => {
+    const flagged: [CredentialSlot, string][] = [
+      ["setup", "SET s3_secret_access_key='wJalrXUtnFEMI'"],
+      ["setup", "ATTACH 'dbname=prod user=u password=hunter2 host=db' AS pg (TYPE postgres)"],
+      ["database", "md:mydb?motherduck_token=eyJsecret"],
+      ["database", "postgres://admin:hunter2@db/prod"],
+      ["view", "read_parquet('https://acct.blob.core.windows.net/c/x.parquet?sv=2024&sig=abcSECRET')"],
+    ];
+    for (const [slot, value] of flagged) expect(hasCredential(slot, value)).toBe(true);
+    const clean: [CredentialSlot, string][] = [
+      ["setup", "SET secret_directory='/tmp/s'"],
+      ["setup", "CREATE SECRET (TYPE s3, PROVIDER credential_chain)"],
+      ["database", "md:analytics"],
+      ["database", "SET s3_secret_access_key='not-read-as-a-statement'"],
+      ["view", "read_parquet('s3://bucket/token_files/*.parquet')"],
+    ];
+    for (const [slot, value] of clean) expect(hasCredential(slot, value)).toBe(false);
+
+    // A hand-edited source gets the same check from sl validate, which names the key, never the value.
+    const t = await setup();
+    writeYaml(join(t.root, "sources", "lake.yaml"), {
+      source: "lake",
+      dialect: "duckdb",
+      connection: { database: ":memory:", setup: ["SET threads=2", "SET s3_secret_access_key='wJalrXUtnFEMI'"], views: { ev: "read_parquet('x?sig=abcSECRET')" } },
+    });
+    const r = await sl(t.root, ["validate", "--json"]);
+    expect(r.code).toBe(1);
+    const issues = r.json<{ issues: { path: string; message: string }[] }>().issues.filter((i) => i.message.includes("contains a credential"));
+    expect(issues.map((i) => i.path).sort()).toEqual(["connection.setup[1]", "connection.views.ev"]);
+    for (const out of [r.out, (await sl(t.root, ["validate"])).out]) {
+      expect(out).not.toContain("wJalrXUtnFEMI");
+      expect(out).not.toContain("abcSECRET");
+    }
   });
 
   test("refuses a name that already has a .yml source file", async () => {

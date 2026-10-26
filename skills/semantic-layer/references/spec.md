@@ -23,18 +23,24 @@ File names equal the name inside the file: `sources/lake.yaml` holds `source: la
 
 - Every name (project, source, model, dimension, measure, join, metric, role, user attribute, golden) matches `^[a-z][a-z0-9_]*$`.
 - Model names are unique within a source. Two sources may each have an `orders` model.
-- Within one model, dimension, measure and join names share one namespace.
+- Within one model, dimension, measure and join names share one namespace. Name a join after the role its target plays (`ship_to_region`, `home_region`), never after a column or dimension of the model.
 - References use dots. Inside a model's own file, a join's `to` is a bare model name in the same source. Inside `metrics.yaml`, a measure reference is `model.measure`, resolved in the metric's `source`. Inside `access.yaml`, a model reference is `source.model` and a field reference is `source.model.field`. A golden's request names fields relative to its source, as `model.field` (see goldens below).
-- Physical column names in `expr`, `filter`, join `keys` and row filters are written as they appear in the snapshot. An `expr`, `filter` or row filter is a SQL expression in the source's dialect. The compiler qualifies columns, so a bare column is a column of the model's own table, and an expression never names a table or a table alias; `<join>.<column>` join references are the only qualified names (see below). A dotted name on one of the model's own columns, or on a lambda parameter such as `x` in `list_filter(items, x -> x.kind = 'a')`, reads a struct field.
+- Physical column names in `expr`, `filter`, join `keys` and row filters are written as they appear in the snapshot. An `expr`, `filter` or row filter is a SQL expression in the source's dialect. The compiler qualifies columns, so a bare column is a column of the model's own table, and an expression never names a table or a table alias; join references, `<join>.<column>` and `<join>.<join>.<column>`, are the only qualified names (see below). A dotted name on one of the model's own columns, or on a lambda parameter such as `x` in `list_filter(items, x -> x.kind = 'a')`, reads a struct field.
 
 ### Join references
 
-A dimension `expr` and a measure `filter` may also name a column of a model reached through one of this model's own joins, written `<join name>.<column>`, when that join's `relationship` is `many_to_one` or `one_to_one`. On `orders`, with a `customer` join, `customer.is_test_account`; on `refunds`, with an `order` join, `order.status`, and a dimension `order_date` with `expr: order.created_at`.
+A dimension `expr` and a measure `filter` may also name a column of a model reached through joins, every hop a join whose `relationship` is `many_to_one` or `one_to_one`:
 
-- Only one hop: `<join>.<column>` through a join of this model, never through a join of the joined model. To reach further, add a join to this model.
-- The compiler adds that join to the query with the join's `type`. A `left` join keeps rows whose target is missing, with the target's columns null, so a filter meant to keep those rows handles null: `coalesce(customer.is_test_account, false) = false`. An `inner` join drops them.
+- One hop, `<join>.<column>`, through one of this model's own joins. On `orders`, with a `customer` join, `customer.is_test_account`; on `refunds`, with an `order` join, `order.status`, and a dimension `order_date` with `expr: order.created_at`.
+- Two hops, `<join>.<join>.<column>`, through one of this model's joins and then a join of the model it reaches. On `refunds`, `order.customer.is_test_account` goes through `refunds.order` to `orders`, then `orders.customer` to `customers`. Nothing goes further than two hops; to reach further, add a join to this model, or ask the owner for a view.
+- The column is a physical column of the last target's table, as in the snapshot, not that model's dimension of the same name. `sl validate` warns when the target has a dimension `<column>` whose expr is not that bare column: the reference reads the column, so a rule the dimension adds (`is_test_account or email like '%@example-test.com'`) is written out over join references where it is meant.
+- The compiler adds each hop's join to the query, chained in order, each with its own declared `type`. A `left` join keeps rows whose target is missing, with the target's columns null, so a filter meant to keep those rows handles null: `coalesce(customer.is_test_account, false) = false`. An `inner` join drops them; an `inner` second hop also drops the rows whose first hop found no match.
 - A measure `expr` stays over the model's own columns, and a row filter over its model's own columns.
-- Nothing else outside the model's own table may be named: no other table names, no schema-qualified table names, no subqueries. `sl validate` reports a subquery (`select`, or a parenthesis opening `from` or `table`), a schema-qualified table name or another table's name in an `expr`, `filter` or row filter as an error, and checks that each `<join>.<column>` names a `many_to_one` or `one_to_one` join of the model and, when the snapshot has the target's table, one of its columns. A rule that needs more than a join reference is a join added to the model, or a view the owner creates in the database (the CLI is read-only); a DuckDB source can define one in `connection.views`.
+- Nothing else outside the model's own table may be named: no other table names, no schema-qualified table names, no subqueries. `sl validate` reports a subquery (`select`, or a parenthesis opening `from` or `table`), a schema-qualified table name or another table's name in an `expr`, `filter` or row filter as an error, and checks that each hop of a join reference is a `many_to_one` or `one_to_one` join of the model it starts from and, when the snapshot has the last target's table, that the column is one of its columns. A rule that needs more than a join reference, such as an aggregate (a customer's first counted order) or a rule held in another source, is a view the owner creates in the database (the CLI is read-only); a DuckDB source can define one in `connection.views`.
+
+### Definition joins
+
+A join that a measure filter or a dimension expr reads through is part of that field's definition. The compiler applies it whenever the field is used, whatever the role may see, and joins it without the target's row filters. It is a join of its own in the query, apart from any join the request uses to reach another model's fields, even when both follow the same declared join. So `revenue`, whose filter reads `customer.is_test_account`, leaves out test accounts for a role that may not see `customers` and for a role whose row filter on `customers` hides some of them; a rule held on a model a role may not see needs no separate model of its own. Role visibility governs only what a request may name (see access.yaml).
 
 ## Time zones
 
@@ -106,6 +112,8 @@ connection:
     web_events: read_parquet('../data/lake/web_events/*.parquet')
     sessions: read_parquet('../data/lake/sessions.parquet')
 ```
+
+A source file never holds a credential. `sl add-source` refuses one, and `sl validate` errors on one in `connection.database`, `connection.setup` or `connection.views`; a DuckDB secret comes from a provider that reads the environment, such as `CREATE SECRET (TYPE s3, PROVIDER credential_chain)`, and a MotherDuck token from `MOTHERDUCK_TOKEN`.
 
 Only `duckdb` and `postgres` sources run queries directly. `snowflake`, `bigquery` and `databricks` sources work through the query-plan protocol below, where the agent runs the SQL with its own tool, such as an MCP connector.
 
@@ -199,7 +207,7 @@ dimensions:
     status: draft
 measures:
   - name: revenue
-    expr: amount_cents / 100.0      # over this table's columns only
+    expr: amount_cents / 100.0      # over this table's columns only; cents as an exact amount in postgres
     agg: sum                        # sum | count | count_distinct | avg | min | max
     # optional SQL predicate over this table's columns and join references
     filter: status <> 'cancelled' and coalesce(customer.is_test_account, false) = false
@@ -227,6 +235,9 @@ joins:
     status: draft
     evidence:                       # written by sl check-join
       checked_at: 2026-10-26T12:10:00.000Z
+      to: customers                 # the target model and keys the check measured
+      keys:
+        - { from: customer_id, to: customer_id }
       left_rows: 10000
       left_null_keys: 0
       matched_rows: 9990
@@ -237,6 +248,12 @@ joins:
       max_fanout: 1
       suggested_relationship: many_to_one   # many_to_one | one_to_one | one_to_many | many_to_many
 ```
+
+`dimensions` and `measures` are required keys; write `[]` when a model has none. `joins` may be left out.
+
+Money stored in cents becomes an exact decimal amount, written per dialect: `amount_cents * 0.01` on duckdb, an exact DECIMAL there, where `amount_cents / 100.0` is a DOUBLE; `cast(amount_cents as numeric) / 100` on bigquery; and `amount_cents / 100.0` on every other dialect.
+
+`evidence` records the target model (`to`) and the `keys` the check measured. Renaming a join keeps its evidence. When the join's current `to` or `keys` differ from the evidence's, `sl validate` warns that the evidence is stale, and `sl check-join` measures the join again; evidence without `to` and `keys` gets no such warning.
 
 `many_to_many` evidence means neither side is unique: the join cannot be modeled directly and needs a bridge table or a pre-aggregated model.
 
@@ -307,9 +324,11 @@ open_questions:
 - `allow.models` uses the scope pattern syntax over `source.model` names.
 - `deny.models`, `deny.fields` and `deny.tags` subtract from what `allow` grants. A tag denial hides every dimension, measure and model carrying that tag.
 - `deny.fields` names dimensions and measures only, as `source.model.field`. A join is hidden from a role when its target model is not allowed or is denied for that role; `sl validate` says so when `deny.fields` names a join.
+- Visibility governs only what a request may name. A dimension or measure the role may see still applies the joins its own definition reads through (see Definition joins), so a hidden join never changes a figure. A dimension shows the values it reads, though: `sl validate` warns when a role may see a dimension whose expr reads through a join to a model the role is not allowed or is denied, as `orders.customer_region` would show `customers` values. A measure filter only narrows what is counted, so it gets no such warning.
 - A row filter is a SQL predicate over the model's own columns, with no join references, subqueries or other tables. `{{ user.<attribute> }}` placeholders are bound as query parameters by the compiler, never interpolated into SQL text. A `_list` attribute binds as a list for `IN`.
+- A row filter whose user attribute the user lacks returns no rows of that model. The compiler enforces it, so an `expr` does not test for a missing value.
 - Several row filters on one model within a role combine with `AND`.
-- A row filter on the query's base model, the model of its first measure, goes in `WHERE`. A row filter on a joined model goes in that join's `ON` clause: a `left` join keeps the left row with the joined columns blank, and an `inner` join drops it. Were `sales_rep` also to filter `warehouse.customers`, an orders query grouped by `customers.region` would keep the rep's orders whose customer that filter hides, with blank customer columns, because the `customer` join is `left`.
+- A row filter on the query's base model, the model of its first measure, goes in `WHERE`. A row filter on a model the request joins to reach a field it names goes in that join's `ON` clause: a `left` join keeps the left row with the joined columns blank, and an `inner` join drops it. A definition join never carries a row filter. Were `sales_rep` also to filter `warehouse.customers`, an orders query grouped by `customers.region` would keep the rep's orders whose customer that filter hides, with blank customer columns, because the `customer` join is `left`; `revenue` would still leave out every test account, since its filter reads `customer.is_test_account` through its own definition join.
 - A user holds exactly one role in version 1.
 - `open_questions`, at the top level and on each role, lists access questions still open with the owner; `sl status` counts them with the models' open questions.
 
@@ -347,7 +366,7 @@ confirmed_by: Dana Ruiz
 confirmed_at: 2026-10-26
 ```
 
-A request names fields relative to its `source`: `model.field`, a time dimension with a grain as `model.field:grain`, and metrics by bare name. Filter operators are `eq`, `neq`, `in`, `not_in`, `gt`, `gte`, `lt`, `lte`, `between`, `is_null`, `not_null`. The `sql` is the query that produced the expected rows. Until a compiler exists, the skill writes it by hand from the YAML, and a golden is the regression test the compiler must later pass. The same rules hold for any tool's request.
+A request names fields relative to its `source`: `model.field`, a time dimension with a grain as `model.field:grain`, and metrics by bare name. `measures` lists measures as `model.measure` and metrics by bare name, as in `measures: [orders.revenue, average_order_value]`; there is no `metrics` key, and `sl validate` says so when a request has one. Filter operators are `eq`, `neq`, `in`, `not_in`, `gt`, `gte`, `lt`, `lte`, `between`, `is_null`, `not_null`. The `sql` is the query that produced the expected rows. Until a compiler exists, the skill writes it by hand from the YAML, and a golden is the regression test the compiler must later pass. The same rules hold for any tool's request.
 
 Fields on other models:
 
@@ -358,6 +377,7 @@ Fields on other models:
 Writing and confirming:
 
 - A draft golden may be written at any phase, for example as soon as the owner offers a trusted figure. Leave `role` and `user` out until `access.yaml` exists; a golden `role` with no `access.yaml` is a validate warning, not an error.
+- A draft golden may name a measure, dimension, metric or model that does not exist yet, so the owner's figure is recorded before its measure is: `sl validate` warns. In an approved golden it is an error.
 - `sl goldens confirm` records the rows the `sql` returns as `expected` and approves the golden. Confirm only after the request's measures are approved. Before recording, it prints the draft measures, dimensions and metrics the request uses, and `sl validate` warns when an approved golden's request uses any.
 - `tolerance` is relative, agreed with the owner and passed as `--tolerance`: 0 for figures finance signs off. Rerunning `goldens confirm` with a new `--tolerance` records the rows again with it. `--force` only lifts the 200-row limit.
 
@@ -388,9 +408,9 @@ For `duckdb` and `postgres` sources the command runs the plan itself. For any so
 | `draft --source <s> [--tables t,...] [--strip-prefix p,...] [--force]` | Writes draft models for in-scope tables that have none, with inferred keys and joins. Never overwrites a model. Refuses more tables than `focus_threshold` without `--tables` or `--force`. `--strip-prefix` is saved as `draft.strip_prefixes`. |
 | `check-join --source <s> (--model <m> --join <j> \| --model <m> --all \| --all) [--no-write]` | Measures a join's match rate, key uniqueness and fan-out and writes `evidence`, nothing else. |
 | `approve --target <ref> --by <name> [--recursive] [--revoke] [--date YYYY-MM-DD]` | Marks an item approved, or draft again with `--revoke`. `<ref>` is `source.model`, `source.model.field`, `metric:<name>` or `access`; goldens use `goldens confirm`. |
-| `validate` | Checks structure and references; exits 1 on any error. |
+| `validate` | Checks structure and references, and errors on a credential in a duckdb source's `connection.database`, `connection.setup` or `connection.views`, naming the key, never the value; exits 1 on any error. |
 | `status [--source <s>]` | Shows progress per source, the next batch of tables to interview and the next step. |
-| `run --source <s> (--sql <query> \| --file <path>) [--limit <n>]` | Runs one read-only query against a duckdb or postgres source. |
+| `run --source <s> (--sql <query> \| --file <path>) [--limit <n>]` | Runs one read-only query against a duckdb or postgres source. Every row is counted and at most `--limit` rows, 100 by default, are shown. |
 | `goldens run --name <g>` / `goldens confirm --name <g> --by <name> [--tolerance <t>] [--force]` / `goldens check [--name <g>] [--source <s>]` | Runs a golden's SQL, records its confirmed rows, or rechecks every approved golden. `confirm` prints the draft fields the request uses, then records the rows with the tolerance agreed with the owner, passed explicitly (0 for figures finance signs off; without the flag the golden keeps its recorded tolerance, or 0.005); rerunning it with a new `--tolerance` records the rows again. `--force` only lifts the 200-row limit. |
 
 ### sl status --json
@@ -402,4 +422,5 @@ The skill resumes from this output.
 - `access`: `{ state, roles, open_questions }`: `missing`, `draft` or `approved`, the number of roles, and the open questions of `access.yaml`, top level and per role.
 - `open_questions`: the open questions across the reported sources' models and `access.yaml`.
 - `next_batch`: `{ source, tables: [{ table, model, model_status, score, reasons }] }`, the next tables to interview, or `null`.
-- `next_step`: `{ phase, message, command, source? }`, the first unfinished phase. Phases in order: `add-source`, `introspect`, `scope`, `profile`, `draft`, `interview`, `check-join`, `metrics`, `access`, `verify`, `done`.
+- `roles_without_goldens`: the roles in `access.yaml` that no approved golden runs as; a golden with no `role` runs as `default_role`.
+- `next_step`: `{ phase, message, command, source?, after_owner_yes }`, the first unfinished phase. `after_owner_yes` is true when `command` is an `sl approve` or `sl goldens confirm`, which runs only after the owner says yes to its readback. Phases in order: `add-source`, `introspect`, `scope`, `profile`, `draft`, `interview`, `check-join`, `metrics`, `access`, `verify`, `done`.

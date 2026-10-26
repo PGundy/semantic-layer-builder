@@ -4,6 +4,7 @@ import { join, relative } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
 import { parseDocument } from "yaml";
+import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
 import { quoteIdent } from "./dialect.ts";
 import { findTable } from "./naming.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
@@ -14,6 +15,7 @@ import type {
   Dimension,
   Golden,
   Join,
+  JoinKey,
   Measure,
   Metric,
   MetricsFile,
@@ -99,6 +101,18 @@ function schemaMessage(e: ErrorObject): { path: string; message: string } | null
   }
 }
 
+// Hints added to a schema message, by file kind and property path.
+const SCHEMA_HINTS: Partial<Record<SchemaKind, Record<string, string>>> = {
+  model: {
+    dimensions: "write dimensions: [] when the model has none",
+    measures: "write measures: [] when the model has none",
+  },
+  golden: {
+    "request.metrics":
+      "there is no metrics key: request.measures lists measures as model.measure and metrics by bare name, as in measures: [orders.revenue, average_order_value]",
+  },
+};
+
 // Checks one parsed document against the schema for its kind.
 export function schemaIssues(kind: SchemaKind, data: unknown, file: string): Issue[] {
   const validate = getValidator(kind);
@@ -108,6 +122,8 @@ export function schemaIssues(kind: SchemaKind, data: unknown, file: string): Iss
   for (const e of validate.errors ?? []) {
     const m = schemaMessage(e);
     if (!m) continue;
+    const hint = SCHEMA_HINTS[kind]?.[m.path];
+    if (hint) m.message = `${m.message}; ${hint}`;
     const key = `${m.path}\0${m.message}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -291,13 +307,27 @@ export function sqlNames(sql: string, dialect?: Dialect): SqlNames {
 
 type SqlRole = "dimension expr" | "measure expr" | "measure filter" | "row filter";
 
+interface FieldProblem {
+  message: string;
+  unknown: boolean;
+}
+
+// A resolved join reference: the join names it goes through, from the model's own join on, the
+// model each of those joins reaches, and the model it reads from.
+interface JoinRef {
+  text: string;
+  joins: string[];
+  models: string[];
+  to: string;
+}
+
 // What a role may name and where a rule that needs more goes.
 const OUTSIDE_HINT: Record<SqlRole, string> = {
   "dimension expr":
-    "name only this model's columns and <join>.<column> join references through its many_to_one or one_to_one joins; " +
+    "name only this model's columns and <join>.<column> or <join>.<join>.<column> join references through many_to_one or one_to_one joins; " +
     "for a rule that needs anything else, add a join to the model or ask the owner for a view that holds it",
   "measure filter":
-    "name only this model's columns and <join>.<column> join references through its many_to_one or one_to_one joins; " +
+    "name only this model's columns and <join>.<column> or <join>.<join>.<column> join references through many_to_one or one_to_one joins; " +
     "for a rule that needs anything else, add a join to the model or ask the owner for a view that holds it",
   "measure expr": "name only this model's columns; put a joined column in the measure's filter or in a dimension, or ask the owner for a view",
   "row filter": "name only its model's columns; write a row filter on the joined model, or ask the owner for a view",
@@ -375,6 +405,8 @@ class Validator {
   access?: Loaded<AccessFile>;
   accessPresent = false;
   goldens: Loaded<Golden>[] = [];
+  // The join references of each dimension expr, by source.model.dimension, as checkModels resolved them.
+  dimensionRefs = new Map<string, JoinRef[]>();
 
   constructor(readonly root: string) {}
 
@@ -554,8 +586,29 @@ class Validator {
       this.error(p.file, "default_source", `names unknown source "${p.data.default_source}"`);
   }
 
+  // Errors on a credential in a source's DuckDB connection values, naming the key, never the value.
+  // Runs on files that fail their schema too, since what they hold is in the repository either way.
+  checkSourceCredentials(l: Loaded<SourceConfig>): void {
+    const c: unknown = l.data.connection;
+    if (!isObject(c)) return;
+    const flag = (path: string, slot: CredentialSlot) =>
+      this.error(l.file, path, `contains a credential; credentials never go in source files, so ${credentialHint(slot)}`);
+    if (typeof c.database === "string" && hasCredential("database", c.database)) flag("connection.database", "database");
+    // A setup written as one string instead of a list is read as one statement.
+    if (typeof c.setup === "string") {
+      if (hasCredential("setup", c.setup)) flag("connection.setup", "setup");
+    } else
+      arr<unknown>(c.setup).forEach((stmt, i) => {
+        if (typeof stmt === "string" && hasCredential("setup", stmt)) flag(`connection.setup[${i}]`, "setup");
+      });
+    if (isObject(c.views))
+      for (const [name, relation] of Object.entries(c.views))
+        if (typeof relation === "string" && hasCredential("view", relation)) flag(`connection.views.${name}`, "view");
+  }
+
   checkSources(): void {
     for (const [stem, l] of this.sources) {
+      this.checkSourceCredentials(l);
       if (!l.valid) continue;
       const s = l.data;
       if (s.source !== stem) this.error(l.file, "source", `is "${s.source}" but the file is named ${stem}.yaml`);
@@ -624,17 +677,19 @@ class Validator {
     this.error(file, path, `"${name}" is not a column of ${qualified(table)}${hint}`);
   }
 
-  // Checks the tables and join references an expr, filter or row filter names. A dimension expr
-  // and a measure filter may use <join>.<column> through one of the model's own to-one joins; a
-  // measure expr and a row filter use the model's own columns only. A subquery or another table
-  // is an error everywhere.
-  checkSqlRefs(file: string, path: string, sql: unknown, model: Model, role: SqlRole): void {
-    if (typeof sql !== "string") return;
+  // Checks the tables and join references an expr, filter or row filter names, and returns the join
+  // references it resolved. A dimension expr and a measure filter may use <join>.<column> through one
+  // of the model's own to-one joins, or <join>.<join>.<column> through a to-one join of the joined
+  // model; a measure expr and a row filter use the model's own columns only. A subquery or another
+  // table is an error everywhere.
+  checkSqlRefs(file: string, path: string, sql: unknown, model: Model, role: SqlRole): JoinRef[] {
+    const refs: JoinRef[] = [];
+    if (typeof sql !== "string") return refs;
     const rules = this.identRules(model.source);
     const names = sqlNames(sql, rules.dialect);
     if (names.subquery) {
       this.error(file, path, `has a subquery; a ${role} may ${OUTSIDE_HINT[role]}`);
-      return;
+      return refs;
     }
     const table = typeof model.table === "string" ? this.snapshotTable(model.source, model.table).table : undefined;
     const own = table?.columns.length ? table.columns : undefined;
@@ -647,53 +702,117 @@ class Validator {
     }
     for (const name of this.models.get(model.source)?.keys() ?? []) otherTables.add(name);
     const seen = new Set<string>();
-    const report = (message: string) => {
+    const report = (level: Issue["level"], message: string) => {
       if (seen.has(message)) return;
       seen.add(message);
-      this.error(file, path, message);
+      if (level === "error") this.error(file, path, message);
+      else this.warn(file, path, message);
     };
-    for (const { parts, quoted, text } of names.chains) {
-      const [first, second] = parts as [string, string];
-      // An unquoted join name matches in any case, as SQL resolves an unquoted alias; a quoted one exactly.
-      const join = joins.find((j) => (quoted[0] ? j.name === first : j.name === first.toLowerCase()));
+    for (const chain of names.chains) {
+      const { parts, quoted, text } = chain;
+      const first = parts[0]!;
+      const join = findJoin(joins, first, quoted[0]!);
       // A dotted name on one of the model's own columns reads a struct field.
       if (!join && isOwn(first)) continue;
       if (join) {
         if (role === "measure expr") {
-          report(`${text} is a join reference; a measure expr is over the model's own columns, so put the condition in the measure's filter or the field in a dimension`);
+          report("error", `${text} is a join reference; a measure expr is over the model's own columns, so put the condition in the measure's filter or the field in a dimension`);
           continue;
         }
         if (role === "row filter") {
-          report(`${text} is a join reference; a row filter is over its model's own columns, so write a row filter on the joined model instead`);
+          report("error", `${text} is a join reference; a row filter is over its model's own columns, so write a row filter on the joined model instead`);
           continue;
         }
-        if (!TO_ONE_RELATIONSHIPS.includes(join.relationship)) {
-          report(`${text} goes through join ${join.name}, which is ${join.relationship}; a join reference needs a many_to_one or one_to_one join, because ${join.relationship} repeats ${model.model}'s rows`);
-          continue;
-        }
-        const target = this.model(model.source, join.to);
-        const targetTable = target && typeof target.table === "string" ? this.snapshotTable(model.source, target.table).table : undefined;
-        const targetCols = targetTable?.columns.length ? targetTable.columns : undefined;
-        const resolved = targetCols ? resolveColumn(second, quoted[1]!, targetCols, rules) : undefined;
-        const isTarget = resolved === true;
-        if (resolved !== undefined && resolved !== true) {
-          const hint = resolved === false ? "" : `; ${resolved}`;
-          report(`${text}: "${second}" is not a column of ${qualified(targetTable!)}, the table of model ${join.to} that join ${join.name} reaches${hint}`);
-          continue;
-        }
-        if (parts.length > 2 && !isTarget)
-          report(`${text} goes more than one hop; a join reference is <join>.<column> through one of ${model.model}'s own joins, so add a join from ${model.model} to the model you need`);
+        const ref = this.resolveJoinRef(model, join, chain, rules, report);
+        if (ref) refs.push(ref);
         continue;
       }
       if (parts.length > 2 || otherTables.has(first.toLowerCase())) {
-        report(`${text} names a table or schema directly; a ${role} may ${OUTSIDE_HINT[role]}`);
+        report("error", `${text} names a table or schema directly; a ${role} may ${OUTSIDE_HINT[role]}`);
         continue;
       }
       if (own) {
         const list = joins.length ? `its joins are ${joins.map((j) => j.name).join(", ")}` : "it has no joins";
-        report(`${text}: "${first}" is neither a column nor a join of model ${model.model} (${list})`);
+        report("error", `${text}: "${first}" is neither a column nor a join of model ${model.model} (${list})`);
       }
     }
+    return refs;
+  }
+
+  // Follows a join reference that starts with one of the model's joins: <join>.<column>, or
+  // <join>.<join>.<column> when the second name is a join of the joined model. Every hop must be
+  // many_to_one or one_to_one, and the final column, when the snapshot has its table, a column of
+  // it; names after the column read struct fields. Returns the reference, or undefined after
+  // reporting why it does not resolve.
+  resolveJoinRef(
+    model: Model,
+    first: Join,
+    chain: SqlNames["chains"][number],
+    rules: IdentRules,
+    report: (level: Issue["level"], message: string) => void,
+  ): JoinRef | undefined {
+    const { parts, quoted, text } = chain;
+    const hops: Join[] = [];
+    let from = model;
+    let join = first;
+    for (let k = 1; k < parts.length; k++) {
+      const via = hops.length ? `join ${join.name} of model ${from.model}` : `join ${join.name}`;
+      if (!TO_ONE_RELATIONSHIPS.includes(join.relationship)) {
+        report(
+          "error",
+          `${text} goes through ${via}, which is ${join.relationship}; a join reference needs many_to_one or one_to_one joins, because ${join.relationship} repeats ${from.model}'s rows`,
+        );
+        return undefined;
+      }
+      hops.push(join);
+      const target = this.model(model.source, join.to);
+      // An unknown target is reported on the join itself.
+      if (!target) return undefined;
+      const name = parts[k]!;
+      const isLast = k === parts.length - 1;
+      const next = isLast ? undefined : findJoin(named<Join>(target.joins), name, quoted[k]!);
+      if (next) {
+        if (hops.length >= 2) {
+          report(
+            "error",
+            `${text} goes more than two hops; a join reference is <join>.<column> or <join>.<join>.<column>, so add a join from ${model.model} that comes closer to the model you need`,
+          );
+          return undefined;
+        }
+        from = target;
+        join = next;
+        continue;
+      }
+      const targetTable = typeof target.table === "string" ? this.snapshotTable(model.source, target.table).table : undefined;
+      const targetCols = targetTable?.columns.length ? targetTable.columns : undefined;
+      const ref: JoinRef = { text, joins: hops.map((h) => h.name), models: hops.map((h) => h.to), to: join.to };
+      if (!targetCols) {
+        if (isLast) return ref;
+        report(
+          "error",
+          `${text}: "${name}" is not a join of model ${join.to}, and the table of ${join.to} is not in the snapshot; a join reference is <join>.<column> or <join>.<join>.<column>`,
+        );
+        return undefined;
+      }
+      const resolved = resolveColumn(name, quoted[k]!, targetCols, rules);
+      if (resolved !== true) {
+        const nor = isLast ? "" : `, nor a join of model ${join.to}`;
+        const hint = resolved === false ? "" : `; ${resolved}`;
+        report("error", `${text}: "${name}" is not a column of ${qualified(targetTable!)}, the table of model ${join.to} that ${via} reaches${nor}${hint}`);
+        return undefined;
+      }
+      // The reference reads the physical column, which a same-named dimension of the target may redefine.
+      const dim = named<Dimension>(target.dimensions).find((d) => d.name.toLowerCase() === name.toLowerCase());
+      if (dim && typeof dim.expr === "string" && !isBareColumn(dim.expr, name)) {
+        report(
+          "warning",
+          `${text} reads the column ${name} of ${qualified(targetTable!)}, not dimension ${dim.name} of model ${join.to} (expr: ${dim.expr}); ` +
+            `write that dimension's rule out here over join references if it is the one meant`,
+        );
+      }
+      return ref;
+    }
+    return undefined;
   }
 
   checkModels(): void {
@@ -727,7 +846,8 @@ class Validator {
         const p = `dimensions[${i}]`;
         claim(d.name, p);
         this.checkColumnRef(f, `${p}.expr`, d.expr, table, rules);
-        this.checkSqlRefs(f, `${p}.expr`, d.expr, m, "dimension expr");
+        const refs = this.checkSqlRefs(f, `${p}.expr`, d.expr, m, "dimension expr");
+        if (refs.length) this.dimensionRefs.set(`${m.source}.${m.model}.${d.name}`, refs);
         if (d.time_grains && d.type !== "time") this.error(f, `${p}.time_grains`, `is only allowed on time dimensions, not ${d.type}`);
       });
 
@@ -762,6 +882,16 @@ class Validator {
           this.warn(f, `${p}.relationship`, `is ${j.relationship} but the evidence suggests ${ev.suggested_relationship}`);
         }
         if (j.status === "approved" && !ev) this.warn(f, p, "is approved without evidence; run `sl check-join`");
+        // Evidence measured for another target or other keys no longer describes the join; evidence
+        // without them predates their recording and is taken as current.
+        if (ev?.to !== undefined && ev.to !== j.to)
+          this.warn(f, `${p}.evidence.to`, `the evidence was measured for a join to ${ev.to}, but the join now goes to ${j.to}; run \`sl check-join\` again`);
+        if (Array.isArray(ev?.keys) && keySignature(ev.keys) !== keySignature(j.keys))
+          this.warn(
+            f,
+            `${p}.evidence.keys`,
+            `the evidence was measured on keys ${describeKeys(ev.keys)}, but the join's keys are now ${describeKeys(j.keys)}; run \`sl check-join\` again`,
+          );
       });
     }
   }
@@ -882,7 +1012,52 @@ class Validator {
         if (/\{\{|\}\}/.test(rest.replace(ANY_PLACEHOLDER, "")))
           this.error(f, `${rp}.expr`, "has an unclosed {{ or a stray }}; write {{ user.<attribute> }}");
       });
+      this.checkDefinitionJoinVisibility(r, p);
     });
+  }
+
+  // Warns when a role may see a dimension whose expr reads through a join to a model the role is
+  // not allowed or is denied, for each such model along the reference's joins: the joins are part
+  // of the dimension's definition, so the dimension shows the values of every model they reach. A
+  // measure filter only narrows what is counted, so it is not checked.
+  checkDefinitionJoinVisibility(r: AccessFile["roles"][number], p: string): void {
+    const f = this.access!.file;
+    const patterns = (v: unknown) => strings(v).filter((pat) => !validatePattern(pat));
+    const allow = patterns(r.allow?.models);
+    const denyModels = patterns(r.deny?.models);
+    const denyFields = new Set(strings(r.deny?.fields));
+    const denyTags = new Set(strings(r.deny?.tags));
+    const tagged = (tags: unknown) => strings(tags).some((t) => denyTags.has(t));
+    // Why the role cannot see a model, or null when it can.
+    const hidden = (source: string, model: string): string | null => {
+      const ref = `${source}.${model}`;
+      if (!allow.some((pat) => matchesDotted(pat, ref))) return "is not allowed";
+      if (denyModels.some((pat) => matchesDotted(pat, ref))) return "denies";
+      if (tagged(this.model(source, model)?.tags)) return "denies by tag";
+      return null;
+    };
+    for (const [key, refs] of this.dimensionRefs) {
+      const [source, model, field] = key.split(".") as [string, string, string];
+      if (hidden(source, model) || denyFields.has(key)) continue;
+      if (tagged(this.dimension(source, model, field)?.tags)) continue;
+      const seen = new Set<string>();
+      for (const ref of refs) {
+        ref.models.forEach((to, i) => {
+          const why = hidden(source, to);
+          if (!why || seen.has(to)) return;
+          seen.add(to);
+          const via = ref.joins.slice(0, i + 1);
+          const target = `${source}.${to}`;
+          this.warn(
+            f,
+            p,
+            `may see dimension ${key}, whose expr reads ${ref.text} through ${via.length > 1 ? "joins" : "join"} ${via.join(".")} ` +
+              `to model ${target}, which the role ${why}; the dimension would show the values of ${target} to this role, so allow ${target}, ` +
+              `deny ${key} in deny.fields, or confirm with the owner that the role may see them`,
+          );
+        });
+      }
+    }
   }
 
   usedTags(): Set<string> {
@@ -896,31 +1071,37 @@ class Validator {
     return tags;
   }
 
-  // Resolves a request field relative to a source; returns an error message or null.
-  requestFieldProblem(source: string, ref: string, allow: { metric: boolean; measure: boolean; dimension: boolean }): string | null {
+  // Resolves a request field relative to a source; returns the problem or null. unknown marks a
+  // field that names nothing that exists, as opposed to one that is malformed or misused.
+  requestFieldProblem(source: string, ref: string, allow: { metric: boolean; measure: boolean; dimension: boolean }): FieldProblem | null {
+    const malformed = (message: string): FieldProblem => ({ message, unknown: false });
+    const unknown = (message: string): FieldProblem => ({ message, unknown: true });
     if (/^[a-z][a-z0-9_]*$/.test(ref)) {
-      if (!allow.metric) return `"${ref}" must be model.field`;
+      if (!allow.metric) return malformed(`"${ref}" must be model.field`);
       const metric = this.metric(ref);
-      if (!metric) return `"${ref}" is not a metric`;
-      if (metric.source !== source) return `metric "${ref}" belongs to source ${metric.source}, not ${source}`;
+      if (!metric) return unknown(`"${ref}" is not a metric`);
+      if (metric.source !== source) return malformed(`metric "${ref}" belongs to source ${metric.source}, not ${source}`);
       return null;
     }
     const parsed = parseRequestField(ref);
-    if (!parsed) return `"${ref}" is not model.field, model.field:grain or a metric name`;
+    if (!parsed) return malformed(`"${ref}" is not model.field, model.field:grain or a metric name`);
     const model = this.model(source, parsed.model);
-    if (!model) return `"${parsed.model}" is not a model of source ${source}`;
+    if (!model) return unknown(`"${parsed.model}" is not a model of source ${source}`);
     const dim = this.dimension(source, parsed.model, parsed.field);
     const measure = this.measure(source, parsed.model, parsed.field);
     if (dim && allow.dimension) {
       if (parsed.grain === undefined) return null;
-      if (dim.type !== "time") return `"${ref}": a grain applies only to time dimensions`;
+      if (dim.type !== "time") return malformed(`"${ref}": a grain applies only to time dimensions`);
       const grains: readonly string[] = Array.isArray(dim.time_grains) ? strings(dim.time_grains) : TIME_GRAINS;
-      if (!grains.includes(parsed.grain)) return `"${ref}": grain ${parsed.grain} is not in the dimension's time_grains (${grains.join(", ")})`;
+      if (!grains.includes(parsed.grain)) return malformed(`"${ref}": grain ${parsed.grain} is not in the dimension's time_grains (${grains.join(", ")})`);
       return null;
     }
-    if (measure && allow.measure) return parsed.grain === undefined ? null : `"${ref}": a grain applies only to time dimensions`;
+    if (measure && allow.measure) return parsed.grain === undefined ? null : malformed(`"${ref}": a grain applies only to time dimensions`);
     const kinds = [allow.dimension && "dimension", allow.measure && "measure"].filter(Boolean).join(" or ");
-    return `model ${parsed.model} has no ${kinds} "${parsed.field}"`;
+    // A dimension in a measure slot, or a measure in a dimension slot, is misused, not unknown.
+    const misused = (dim && !allow.dimension) || (measure && !allow.measure);
+    const message = `model ${parsed.model} has no ${kinds} "${parsed.field}"`;
+    return misused ? malformed(message) : unknown(message);
   }
 
   // The models a metric's measures come from, in the order the metric names them.
@@ -1052,7 +1233,10 @@ class Validator {
       const check = (path: string, ref: string, allow: { metric: boolean; measure: boolean; dimension: boolean }, kind: "measure" | "dimension" | "filter" | "order_by") => {
         const problem = this.requestFieldProblem(req.source, ref, allow);
         if (problem) {
-          this.error(f, path, problem);
+          // A draft golden may record the owner's figure before its field exists.
+          if (problem.unknown && g.status !== "approved")
+            this.warn(f, path, `${problem.message}; a draft golden may name a field before it exists; add the field before confirming the golden, because sl validate errors on it once the golden is approved`);
+          else this.error(f, path, problem.message);
           return;
         }
         if (kind !== "dimension" && kind !== "filter") return;
@@ -1112,6 +1296,31 @@ function resolveColumn(name: string, quoted: boolean, columns: SnapshotTable["co
   const folded = rules.fold === "lower" ? name.toLowerCase() : name.toUpperCase();
   if (columns.some((c) => c.name === folded)) return true;
   return loose ? `${name} resolves to ${folded} in ${rules.dialect}, but the column is "${loose.name}"; write ${write(loose.name)}` : false;
+}
+
+// The join a name refers to: an unquoted name matches in any case, as SQL resolves an unquoted
+// alias; a quoted one exactly.
+function findJoin(joins: Join[], name: string, quoted: boolean): Join | undefined {
+  return joins.find((j) => (quoted ? j.name === name : j.name === name.toLowerCase()));
+}
+
+// Whether an expr is just the named column, bare or quoted, in any case.
+function isBareColumn(expr: string, column: string): boolean {
+  const m = expr.trim().match(/^(?:"((?:[^"]|"")+)"|`((?:[^`]|``)+)`|([A-Za-z_][A-Za-z0-9_$]*))$/);
+  const name = m?.[1] ?? m?.[2] ?? m?.[3];
+  return name !== undefined && name.toLowerCase() === column.toLowerCase();
+}
+
+// Key pairs as an order-free, case-free string, for comparing a join's keys with its evidence's.
+function keySignature(keys: JoinKey[]): string {
+  return keys
+    .map((k) => `${String(k.from).toLowerCase()}=${String(k.to).toLowerCase()}`)
+    .sort()
+    .join(",");
+}
+
+function describeKeys(keys: JoinKey[]): string {
+  return keys.map((k) => `${k.from} = ${k.to}`).join(", ");
 }
 
 function qualified(t: SnapshotTable): string {

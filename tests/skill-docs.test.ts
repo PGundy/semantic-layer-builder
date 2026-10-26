@@ -155,7 +155,8 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["scoping.md", "exact names do not pick up new tables", "exact names do not pick up new tables"],
   ["scoping.md", "deferring a table", "## Deferring a table"],
   ["interview-guide.md", "the join reference worked example", "coalesce(customer.is_test_account, false) = false"],
-  ["interview-guide.md", "join references are one hop", "One hop only"],
+  ["interview-guide.md", "join references are at most two hops", "At most two hops: `<join>.<column>` or `<join>.<join>.<column>`"],
+  ["interview-guide.md", "the two-hop refunds example", "coalesce(order.customer.is_test_account, false) = false"],
   ["interview-guide.md", "the time zone question for every time dimension", "Ask for every time dimension"],
   ["interview-guide.md", "examples are illustrative", "is illustrative"],
   ["interview-guide.md", "a factual check is not an approval", "is a question, not an approval"],
@@ -182,6 +183,84 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["verification.md", "--force only lifts the row limit", "`--force` lifts that limit and does nothing else"],
   ["verification.md", "request fields through to-one joins", "at most two hops"],
   ["verification.md", "confirm after measures are approved", "Confirm a golden only after the measures"],
+  // Readbacks, figures and owner time.
+  ["SKILL.md", "readbacks split definition from measured facts", "the definition to approve, then the measured facts"],
+  ["interview-guide.md", "measured facts need no confirmation", "measured from the data, no need to confirm"],
+  ["interview-guide.md", "a hedge on a measured fact keeps the approval", "does not void a yes to the definition"],
+  ["interview-guide.md", "a hedged measured fact is recorded", "measured, not checked against a report"],
+  ["interview-guide.md", "hand-computed figures are labelled", "computed by hand with a rule the layer cannot yet express, label it so and put the layer's own figure beside it"],
+  ["interview-guide.md", "blockers are missing columns or views", "Describe a blocker as the column or view that is missing, never as a limit of the tool"],
+  ["interview-guide.md", "an agreed rule is asked of the other measures", "ask in the same round trip whether it applies to every other measure of the model"],
+  ["SKILL.md", "an agreed rule is asked of the other measures", "ask in the same round trip whether it applies to the model's other measures"],
+  ["interview-guide.md", "time dimensions get the date's business name", "Rename each to the business name of that date (`order_date`)"],
+  ["SKILL.md", "brevity before the numbered items", "after at most three lines of status"],
+  ["interview-guide.md", "brevity before the numbered items", "at most three lines of status before the numbered items"],
+  ["SKILL.md", "stop or continue after each batch", "Stop here or continue?"],
+  ["interview-guide.md", "stop or continue after each batch", "Stop here or continue?"],
+  ["SKILL.md", "owner priorities override next_batch", "Owner priorities override it"],
+  ["SKILL.md", "status for the source the owner put first", "`sl status --source <s> --json` for the source the owner put first"],
+  ["interview-guide.md", "owner priorities override next_batch", "Owner priorities override `next_batch`"],
+  // Draft guesses and units.
+  ["interview-guide.md", "exact cents on duckdb", "`<col> * 0.01` on duckdb"],
+  ["interview-guide.md", "exact cents on bigquery", "`cast(<col> as numeric) / 100` on bigquery"],
+  ["SKILL.md", "exact cents on duckdb", "`<col> * 0.01` on duckdb"],
+  ["interview-guide.md", "additive counts draft as sums", "drafted as `sum` with `format: integer`"],
+  ["interview-guide.md", "the avg fallback asks total or average", "whether people total or average it"],
+  ["interview-guide.md", "dimensions and measures are required", "write `[]` when a model has none"],
+  ["interview-guide.md", "join references read columns, not dimensions", "reads a physical column of the target's table, not the target model's dimension of the same name"],
+  ["interview-guide.md", "aggregate rules need a view and an open question", "record an open question with the exact definition and any figure the owner gave"],
+  ["interview-guide.md", "removing a measure removes what uses it", "Removing a measure also removes the draft metrics and goldens that use it"],
+  // Definition joins and access.
+  ["interview-guide.md", "definition joins ignore row filters", "joins it without the target's row filters"],
+  ["interview-guide.md", "no helper model for row filters", "No helper model is needed"],
+  ["SKILL.md", "definition joins apply whatever the role", "it applies whatever the role may see, without row filters"],
+  ["access.md", "definition joins section", "### Definition joins"],
+  ["access.md", "definition joins apply whatever the role may see", "The compiler applies it whenever the field is used, whatever the role may see, and joins it without the target's row filters"],
+  ["access.md", "no helper model for row filters", "No helper model over the same table is needed"],
+  ["access.md", "validate warns on dimensions through hidden models", "`sl validate` warns when a role is allowed a dimension whose `expr` reads through a join"],
+  ["access.md", "measure filters do not warn", "A measure filter does not warn"],
+  ["access.md", "a missing user attribute returns no rows", "returns no rows of that model; the compiler enforces it"],
+  ["access.md", "comment-only edits need no new readback", "an edit to comments only is not one"],
+  ["SKILL.md", "comment-only edits need no new readback", "a comment-only edit is not a change"],
+  ["joins.md", "definition joins ignore row filters", "the compiler joins it without the target's row filters"],
+  ["joins.md", "joins are named after their target's role", "Name a join after the role its target plays"],
+  ["joins.md", "renaming keeps evidence", "Renaming a join keeps its evidence"],
+  ["joins.md", "stale evidence warns", "differ from the join's current `keys` or `to`"],
+  // Status, verification and handoff.
+  ["SKILL.md", "next_step.after_owner_yes", "`next_step.after_owner_yes` is true whenever the command is an `sl approve` or `sl goldens confirm`"],
+  ["SKILL.md", "the plain-output wait line", "Only after the owner says yes to its readback: <command>"],
+  ["SKILL.md", "handoff names roles without goldens", "naming each role in `roles_without_goldens`"],
+  ["SKILL.md", "coverage checklist at handoff", "Coverage is a checklist checked at handoff"],
+  ["SKILL.md", "golden requests list metrics in measures", "there is no `metrics` key"],
+  ["SKILL.md", "removing a measure removes what uses it", "removing it also removes the draft metrics and goldens that use it"],
+  ["verification.md", "coverage checklist", "### Coverage checklist, checked at handoff"],
+  ["verification.md", "roles without goldens", "`roles_without_goldens` in `sl status --json`"],
+  ["verification.md", "a golden pins definition joins for a restricted role", "definition joins apply whatever the role may see is pinned"],
+  ["verification.md", "golden requests list metrics in measures", "there is no `metrics` key"],
+  ["verification.md", "draft goldens may name unknown fields", "`sl validate` warns rather than errors"],
+  ["verification.md", "golden SQL adds nothing", "no `round()` around a measure"],
+  ["verification.md", "definition joins in golden SQL", "write two joins"],
+  ["verification.md", "re-check after a revoke", "the recorded rows stand and no new confirm is needed"],
+  ["verification.md", "goldens check needs every source", "Without `--source` it checks every source"],
+  // Sources and scope.
+  ["SKILL.md", "cross-source formulas are recorded", "even when the owner keeps the metric in their own reports"],
+  ["SKILL.md", "cross-source rules route", "federating source"],
+  ["intake.md", "one view per dataset, noise included", "Make one view per dataset, including the ones that look like noise"],
+  ["intake.md", "duckdb views live in main", "live in schema `main`"],
+  ["intake.md", "validate catches credentials in duckdb connections", "naming the key and never the value"],
+  ["intake.md", "postgres has no in-layer views", "A Postgres or warehouse source has no such place"],
+  ["scoping.md", "duckdb views live in main", "are in schema `main`"],
+  ["scoping.md", "re-preview unless the exact list was stated", "skip the new preview only when the owner stated the exact final list"],
+  ["scoping.md", "tables --groups lists tables first", "It first lists the in-scope tables, then the groups"],
+  // Review fixes.
+  ["interview-guide.md", "two-hop nulls only when both hops are left", "When both hops are `left`, a refund whose order or customer is missing reads null at the end"],
+  ["interview-guide.md", "an inner hop drops rows", "An `inner` hop drops such refunds instead, and an `inner` second hop also drops refunds whose order is missing"],
+  ["interview-guide.md", "the column-not-dimension warning stays", "The warning stays while the filter names that column"],
+  ["interview-guide.md", "a hedge on a measured fact goes in the description", "a hedge on a measured fact goes in the description"],
+  ["access.md", "row-filtered targets of a dimension do not warn", "the definition join carries no row filter; `sl validate` does not warn"],
+  ["SKILL.md", "row-filtered targets of a dimension do not warn", "A dimension that reads a model the role row-filters shows every row's value and validate does not warn"],
+  ["SKILL.md", "coverage includes metrics and owner figures", "every approved measure and metric in at least one approved golden"],
+  ["SKILL.md", "federating source is the route if modelled", "do not model it in either source. If the owner wants it modelled"],
 ];
 
 describe("readbacks and examples", () => {
@@ -189,6 +268,14 @@ describe("readbacks and examples", () => {
 
   test('sign-off readbacks end with a bare "Approve?"', () => {
     for (const d of docs) expect(read(d)).not.toMatch(/Approve (this|the) [a-z ]+\?/);
+  });
+
+  test("join references are not limited to one hop", () => {
+    for (const d of DOCS) expect(read(d)).not.toMatch(/one hop only|only one hop/i);
+  });
+
+  test("example joins are named after their target's role, not a column", () => {
+    for (const d of DOCS) expect(read(d)).not.toContain("`orders.region`");
   });
 
   test("examples do not use the fixture's test-account email rule", () => {

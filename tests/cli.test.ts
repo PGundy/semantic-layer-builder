@@ -43,6 +43,48 @@ describe("cli", () => {
     expect(bad.err).toContain("read-only");
   });
 
+  test("run --limit takes a positive integer, defaults to 100 and counts every row", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    await duckdbSource(t.root, t.dir, "wh", ["create table orders as select range as id from range(150)"]);
+    const all = await sl(t.root, ["run", "--source", "wh", "--sql", "select id from orders order by id", "--json"]);
+    expect(all.code).toBe(0);
+    const out = all.json<{ rows: unknown[]; row_count: number; truncated: boolean }>();
+    expect(out.rows).toHaveLength(100);
+    expect(out.row_count).toBe(150);
+    expect(out.truncated).toBe(true);
+    const two = await sl(t.root, ["run", "--source", "wh", "--sql", "select id from orders order by id", "--limit", "2"]);
+    expect(two.code).toBe(0);
+    expect(two.out).toContain("(150 rows, showing 2)");
+    for (const bad of ["abc", "0", "-3", "2.5", "", "1e3"]) {
+      const r = await sl(t.root, ["run", "--source", "wh", "--sql", "select 1", `--limit=${bad}`]);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("--limit must be a positive integer");
+      expect(r.out).toBe("");
+    }
+    const help = await sl(t.root, ["run", "--help"]);
+    expect(help.out).toContain("--limit defaults to 100; all rows are counted, at most n are shown");
+  });
+
+  test("every command's --help names the global flags", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    for (const command of ["run", "status", "goldens", "check-join", "init"]) {
+      const r = await sl(t.root, [command, "--help"]);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("Usage: sl ");
+      expect(r.out).toEndWith("\n\nEvery command also takes --root <dir> (or SEMANTIC_ROOT) and --json.");
+    }
+  });
+
+  test("sl help names the global flags", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    const r = await sl(t.root, ["help"]);
+    expect(r.out).toStartWith("Usage: sl <command> [flags]\nEvery command also takes --root <dir> (or SEMANTIC_ROOT) and --json.\n");
+  });
+
   test("unknown command fails cleanly", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;

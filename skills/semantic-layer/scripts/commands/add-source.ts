@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
+import { credentialHint, hasCredential } from "../lib/credentials.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject, paths } from "../lib/project.ts";
@@ -10,17 +11,6 @@ import { writeYaml } from "../lib/yaml.ts";
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const VIEW_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-// user:password@ inside a URL.
-const URL_CREDENTIALS = /:\/\/[^/\s'"]*@/;
-// A key named like a credential set to a quoted literal, as in SET s3_secret_access_key='...',
-// CREATE SECRET (KEY_ID '...', SECRET '...') or SET azure_storage_connection_string='...'.
-const QUOTED_CREDENTIAL =
-  /([A-Za-z0-9_]*(?:secret|key_id|access_key|password|passwd|token|account_key|connection_string|client_secret)[A-Za-z0-9_]*)\s*[=:]?\s*'[^']+'/gi;
-// Settings whose names look like credentials but hold none.
-const NOT_CREDENTIALS = new Set(["secret_directory"]);
-// key=value inside a string: libpq 'password=...', 'AccountKey=...', 'md:db?motherduck_token=...', SAS '&sig=...'.
-const INLINE_CREDENTIAL =
-  /(?:^|[^A-Za-z0-9_])(?:password|passwd|pwd|[A-Za-z0-9_]*token|[A-Za-z0-9_]*secret[A-Za-z0-9_]*|accountkey|account_key|sharedaccesssignature|sig)\s*=\s*[^\s'"]/i;
 // A database value with a scheme (md:, s3://) names no local file.
 const NOT_A_FILE = /^[A-Za-z][A-Za-z0-9+.-]+:/;
 
@@ -31,31 +21,13 @@ function many(values: Record<string, unknown>, key: string): string[] {
   return typeof v === "string" ? [v] : [];
 }
 
-// Credential checks per flag. Values are never echoed: they may hold the secret.
-// --database is a path or URL; --setup is a statement that may assign settings;
-// --view is a relation, whose string literals (paths, URLs) are checked.
-function hasCredential(flag: "--database" | "--setup" | "--view", value: string): boolean {
-  if (flag === "--view") {
-    return [...value.matchAll(/'([^']*)'/g)].some((m) => URL_CREDENTIALS.test(m[1] ?? "") || INLINE_CREDENTIAL.test(m[1] ?? ""));
-  }
-  if (URL_CREDENTIALS.test(value) || INLINE_CREDENTIAL.test(value)) return true;
-  if (flag === "--database") return false;
-  for (const m of value.matchAll(QUOTED_CREDENTIAL)) {
-    if (!NOT_CREDENTIALS.has((m[1] ?? "").toLowerCase())) return true;
-  }
-  return false;
-}
-
-function refuseCredentials(flag: "--database" | "--setup" | "--view", value: string, hint: string): void {
-  if (hasCredential(flag, value)) {
-    throw new UserError(`${flag} contains a credential. Credentials never go in source files; ${hint}`);
+// Values are never echoed: they may hold the secret.
+function refuseCredentials(flag: "--database" | "--setup" | "--view", value: string): void {
+  const slot = flag === "--database" ? "database" : flag === "--setup" ? "setup" : "view";
+  if (hasCredential(slot, value)) {
+    throw new UserError(`${flag} contains a credential. Credentials never go in source files; ${credentialHint(slot)}`);
   }
 }
-
-const SECRET_HINT =
-  "use a secret provider that reads the environment instead, for example CREATE SECRET (TYPE s3, PROVIDER credential_chain).";
-const DATABASE_HINT =
-  "put the token in an environment variable (MOTHERDUCK_TOKEN for md: databases) or a DuckDB secret provider, and pass the database without it.";
 
 const spec: CommandSpec = {
   summary: "Write sources/<name>.yaml for a new data source.",
@@ -111,10 +83,10 @@ const spec: CommandSpec = {
     if (dialect === "duckdb") {
       const db = database ?? ":memory:";
       if (!db.trim()) throw new UserError("--database must not be empty.");
-      refuseCredentials("--database", db, DATABASE_HINT);
+      refuseCredentials("--database", db);
       connection.database = db;
       if (setup.length) {
-        for (const stmt of setup) refuseCredentials("--setup", stmt, SECRET_HINT);
+        for (const stmt of setup) refuseCredentials("--setup", stmt);
         connection.setup = setup;
       }
       if (views.length) {
@@ -126,7 +98,7 @@ const spec: CommandSpec = {
           if (!viewName || !relation) throw new UserError(`--view must be name=relation, for example events=read_parquet('data/events/*.parquet'); got "${v}".`);
           if (!VIEW_NAME.test(viewName)) throw new UserError(`View name "${viewName}" must be letters, digits and underscores, starting with a letter or underscore.`);
           if (viewName in out) throw new UserError(`View "${viewName}" is given twice.`);
-          refuseCredentials("--view", relation, SECRET_HINT);
+          refuseCredentials("--view", relation);
           out[viewName] = relation;
         }
         connection.views = out;

@@ -7,26 +7,45 @@ A golden is a question with an answer the owner trusts. It proves the approved d
 Draft goldens may be written at any phase. Write one as soon as the owner offers a trusted figure, or ties a sign-off to matching one ("I'll approve revenue once 2025 matches the close"), and `sl goldens run` it during the interview. Phase 9 rounds the set out to about ten.
 
 - Until `access.yaml` exists, leave `role` and `user` out; `sl validate` warns about a golden that names a role with no access file. Add them in Phase 9 for the goldens asked as a restricted role.
+- A draft golden may name a measure, dimension or metric that does not exist yet; `sl validate` warns rather than errors, so the owner's figure is recorded as soon as they give it, before its measure is written. An approved golden naming an unknown field is an error.
 - Confirm a golden only after the measures, dimensions and metrics its request uses are approved.
 
 ## Choosing the questions
 
 Pick about ten questions with the owner. Together they should:
 
-- use every approved measure and metric at least once;
+- use every approved measure and metric at least once, a measure as `model.measure` and a metric by bare name, both in `measures`;
 - include each important time dimension at a grain people report on (month, quarter);
 - include one or two breakdowns by a category (region, product line, channel);
 - include each approved filter that changes totals (excluded statuses, test data);
 - cross at least one approved join;
 - if access is approved, include one question per restricted role with its user attributes set, and for a role with row filters on two joined models, one that crosses that join (revenue by customer for a sales rep), so the left-join rule is pinned;
+- for a restricted role whose measure reads through a join to a model the role cannot see or row-filters (revenue's test-account rule for marketing), one question as that role, so the rule that definition joins apply whatever the role may see is pinned;
 - cover every reference figure the owner gave, including its breakdowns (spend by channel as well as total spend);
 - have a known answer: a monthly close, a board deck, a dashboard the owner trusts. Ask: "Which numbers do you already know by heart or can look up? Last month's revenue, last quarter's order count?"
 
 Write each question exactly as a person would ask it.
 
+### Coverage checklist, checked at handoff
+
+Before the handoff, tick each line, and name every line that stays unticked in the handoff with the reason:
+
+- [ ] Every approved measure and metric is in at least one approved golden.
+- [ ] Every restricted role has at least one approved golden; `roles_without_goldens` in `sl status --json` lists the roles of `access.yaml` that no approved golden uses, and the handoff names each one.
+- [ ] At least one approved golden crosses a join to a model with a row filter, as the role that has the filter.
+- [ ] Every reference figure the owner gave has a golden, draft or approved.
+
 ## Writing a golden
 
-Create `goldens/<name>.yaml` yourself with `status: draft`. The `request` names approved fields relative to its `source`; the `sql` is the query you write by hand from the model YAML, applying exactly what the YAML says: each measure's `expr`, `agg` and `filter`, each dimension's `expr`, each join's `keys` and `type`, and, for a restricted role, its row filters with the user's values.
+Create `goldens/<name>.yaml` yourself with `status: draft`. The `request` names approved fields relative to its `source`; the `sql` is the query you write by hand from the model YAML, applying exactly what the YAML says: each measure's `expr`, `agg` and `filter`, each dimension's `expr`, each join's `keys` and `type`, and, for a restricted role, its row filters with the user's values. Add nothing the YAML does not say: no `round()` around a measure (fix the measure's `expr` instead, such as cents as `<col> * 0.01` on duckdb), and no join the request and its fields do not use.
+
+The request's `measures` lists measures as `model.measure` and metrics by bare name; there is no `metrics` key, and `sl validate` says so when it sees `request.metrics`:
+
+```yaml
+request:
+  source: warehouse
+  measures: [orders.revenue, average_order_value]
+```
 
 ```yaml
 name: revenue_by_month_2025
@@ -53,7 +72,7 @@ status: draft
 
 ### Fields on other models
 
-A dimension or filter field on another model is named `model.field` of that model, and is reached from the model of the request's first measure through joins (approved or draft) that are `many_to_one` or `one_to_one`, at most two hops. The shortest such path is used and must be unique, so a direct join wins over a route through another model; `sl validate` reports an error when there is no path or two shortest paths tie. For revenue by region name, `orders.revenue` reaches `regions.region_name` through `orders.region`:
+A dimension or filter field on another model is named `model.field` of that model, and is reached from the model of the request's first measure through joins (approved or draft) that are `many_to_one` or `one_to_one`, at most two hops. The shortest such path is used and must be unique, so a direct join wins over a route through another model; `sl validate` reports an error when there is no path or two shortest paths tie. For revenue by region name, `orders.revenue` reaches `regions.region_name` through `orders.ship_to_region`:
 
 ```yaml
 request:
@@ -68,7 +87,8 @@ When a field cannot be reached that way (refunds by the order's month), add a di
 
 - Output column names match the request: a measure by its name (`revenue`), a time dimension with its grain (`order_date_month`).
 - A filter on a measure goes inside its aggregate (`filter (where ...)` in duckdb and postgres, `sum(case when ... then x end)` elsewhere), not in `where`, so other measures in the same query are not affected.
-- A join reference in a filter or dimension (`customer.is_test_account`) becomes the join itself, with the join's `type` and keys: `left join public.dim_customers customer on customer.customer_id = o.customer_id`, and the filter's null handling as written.
+- A join reference in a filter or dimension (`customer.is_test_account`) becomes the join itself, with the join's `type` and keys: `left join public.dim_customers customer on customer.customer_id = o.customer_id`, and the filter's null handling as written. A two-hop reference (`order.customer.is_test_account` on refunds) chains both joins, each with its own `type`.
+- Such a definition join carries no row filter, whatever the role. When the request also reaches that model's fields for a role with a row filter on it, write two joins: the definition join without the filter, and the request's join with the filter in its `on` clause.
 - A row filter on the base model goes in `where`; a row filter on a joined model goes in that join's `on` clause, so a left join keeps the row with blank joined columns.
 - Time grains bucket in UTC, as the CLI runs every query with the session time zone UTC: `date_trunc('month', created_at)` on a timestamp-with-time-zone column is a UTC month. A dimension whose `expr` converts (`created_at at time zone 'America/New_York'`) is written the same way in the SQL.
 - A `one_to_many` join aggregates the many side in a subquery before joining.
@@ -111,7 +131,7 @@ A mismatch means a definition is wrong or the trusted figure means something els
 4. **Joins**: rows dropped by an inner join, rows repeated by a fan-out. Check the join's `evidence`.
 5. **The reference itself**: the report may include adjustments not in the data. Record that in `reference` and as an open question.
 
-Fix the definition in the model YAML, return the changed item to draft (`sl approve --target <ref> --revoke`), read it back, approve it again, then rerun the golden. Note what you learned in the item's `description` so the next reader does not repeat the mistake.
+Fix the definition in the model YAML, return the changed item to draft (`sl approve --target <ref> --revoke`), read it back, approve it again, then rerun the golden. For an approved golden, `sl goldens check --name <g>` compares with the recorded rows: when it passes, the recorded rows stand and no new confirm is needed; when the rows changed, show the new figure to the owner and confirm again only on their yes. Note what you learned in the item's `description` so the next reader does not repeat the mistake.
 
 ## The regression gate
 
@@ -119,4 +139,4 @@ Fix the definition in the model YAML, return the changed item to draft (`sl appr
 sl goldens check
 ```
 
-It reruns every approved golden and fails when any result drifts beyond its tolerance. For a warehouse dialect a plan covers one source: run `sl goldens check --source <s> --emit-sql`, run the queries as in `intake.md`, then `sl goldens check --source <s> --results <file>`; repeat per source. Run it at the end of every session, after any change to an approved model, metric or access rule, and before handing the layer to a downstream tool. A failure after a data refresh can be legitimate (late rows); discuss it with the owner before confirming new rows.
+It reruns every approved golden and fails when any result drifts beyond its tolerance. Without `--source` it checks every source, so each runnable source's connection variable must be set; `--source <s>` checks one. For a warehouse dialect a plan covers one source: run `sl goldens check --source <s> --emit-sql`, run the queries as in `intake.md`, then `sl goldens check --source <s> --results <file>`; repeat per source. Run it at the end of every session, after any change to an approved model, metric or access rule, and before handing the layer to a downstream tool. A failure after a data refresh can be legitimate (late rows); discuss it with the owner before confirming new rows.

@@ -18,6 +18,11 @@ interface CheckOut {
   skipped: { model: string; join: string; reason: string }[];
 }
 
+// The evidence written to a model's join, with the to and keys check-join records.
+function measured(m: Model, index: number): JoinEvidence | undefined {
+  return m.joins![index]!.evidence;
+}
+
 const DATA = [
   "create table customers as select range + 1 as customer_id, 'c' || range as name from range(10)",
   // 20 orders: 17 point at customers 1..10, two at a missing customer 99, one has no customer.
@@ -186,6 +191,20 @@ describe("evaluateJoin", () => {
     expect(evaluateJoin(row({ right_max_dup: 3 }), "many_to_one").evidence.suggested_relationship).toBe("many_to_many");
   });
 
+  test("records the join's to and keys it measured when given, as plain {from, to} pairs", () => {
+    const keys = [{ from: "order_id", to: "order_id", extra: 1 } as unknown as { from: string; to: string }, { from: "line_no", to: "line_no" }];
+    const e = evaluateJoin(row({}), "many_to_one", { checkedAt: FIXED_NOW, to: "order_lines", keys }).evidence;
+    expect(e.to).toBe("order_lines");
+    expect(e.keys).toEqual([
+      { from: "order_id", to: "order_id" },
+      { from: "line_no", to: "line_no" },
+    ]);
+    expect(Object.keys(e).slice(0, 3)).toEqual(["checked_at", "to", "keys"]);
+    const bare = evaluateJoin(row({}), "many_to_one", { checkedAt: FIXED_NOW }).evidence;
+    expect("to" in bare).toBe(false);
+    expect("keys" in bare).toBe(false);
+  });
+
   test("rounds the match rate, handles empty tables and string counts", () => {
     const e = evaluateJoin({ ...row({ left_rows: 3, matched_rows: 2, left_distinct_keys: 2, left_max_dup: 2 }) }, "many_to_one", { checkedAt: FIXED_NOW }).evidence;
     expect(e.match_rate).toBe(0.6667);
@@ -304,6 +323,8 @@ describe("check-join on duckdb", () => {
     const c = out.checks[0]!;
     expect(c.evidence).toEqual({
       checked_at: FIXED_NOW,
+      to: "customers",
+      keys: [{ from: "customer_id", to: "customer_id" }],
       left_rows: 20,
       left_null_keys: 1,
       matched_rows: 17,
@@ -391,6 +412,38 @@ describe("check-join on duckdb", () => {
       suggested_relationship: "many_to_one",
     });
     expect(s.read("shipments")).toContain("# composite");
+    expect(e.to).toBe("order_lines");
+    expect(e.keys).toEqual([
+      { from: "order_id", to: "order_id" },
+      { from: "line_no", to: "line_no" },
+    ]);
+    expect(s.model("shipments").joins![0]!.evidence).toEqual(e);
+  });
+
+  test("evidence records the keys as the YAML declares them, not as the snapshot spells the columns", async () => {
+    const s = await setup();
+    writeFileSync(s.modelPath("shipments"), SHIPMENTS_YAML.replace("{ from: order_id, to: order_id }", "{ from: ORDER_ID, to: Order_Id }"));
+    const r = await sl(s.root, ["check-join", "--source", "wh", "--model", "shipments", "--join", "line", "--json"]);
+    expect(r.code).toBe(0);
+    const e = r.json<CheckOut>().checks[0]!.evidence;
+    expect(e.matched_rows).toBe(4);
+    expect(e.keys).toEqual([
+      { from: "ORDER_ID", to: "Order_Id" },
+      { from: "line_no", to: "line_no" },
+    ]);
+    expect(measured(s.model("shipments"), 0)?.keys).toEqual(e.keys);
+  });
+
+  test("a recheck after the join's keys or target change records the new ones", async () => {
+    const s = await setup();
+    await sl(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "dup_customer"]);
+    expect(measured(s.model("orders"), 1)?.to).toBe("dup_customers");
+    writeFileSync(s.modelPath("orders"), s.read("orders").replace("to: dup_customers", "to: customers"));
+    const r = await sl(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "dup_customer", "--json"]);
+    expect(r.code).toBe(0);
+    const e = measured(s.model("orders"), 1)!;
+    expect(e.to).toBe("customers");
+    expect(e.suggested_relationship).toBe("many_to_one");
   });
 
   test("--all checks every join in the source; --no-write leaves files alone", async () => {

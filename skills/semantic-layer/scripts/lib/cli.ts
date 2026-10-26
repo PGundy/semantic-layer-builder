@@ -17,6 +17,9 @@ const GLOBAL_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+// The line every command's --help ends with.
+export const GLOBAL_HELP = "Every command also takes --root <dir> (or SEMANTIC_ROOT) and --json.";
+
 function clock(env: Record<string, string | undefined>): () => Date {
   const fixed = env.SL_NOW;
   if (fixed) {
@@ -28,7 +31,7 @@ function clock(env: Record<string, string | undefined>): () => Date {
 }
 
 async function usage(io: CliIO): Promise<void> {
-  const lines = ["Usage: sl <command> [flags]   (every command takes --root <dir> and --json)", ""];
+  const lines = ["Usage: sl <command> [flags]", GLOBAL_HELP, ""];
   for (const [name, load] of Object.entries(COMMANDS)) {
     try {
       lines.push(`  ${name.padEnd(12)} ${(await load()).default.summary}`);
@@ -61,7 +64,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     });
     const values = parsed.values as Record<string, string | boolean | string[] | undefined>;
     if (values.help) {
-      io.out(`${spec.summary}\n\nUsage: sl ${spec.usage}`);
+      io.out(`${spec.summary}\n\nUsage: sl ${spec.usage}\n\n${GLOBAL_HELP}`);
       return 0;
     }
     const ctx: CommandContext = {

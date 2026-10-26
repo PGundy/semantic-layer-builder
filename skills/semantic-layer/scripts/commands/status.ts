@@ -40,6 +40,7 @@ function render(st: ProjectStatus): string {
   lines.push(
     `metrics ${ratio(st.metrics)}; access ${st.access.state}${st.access.state === "missing" ? "" : ` (${st.access.roles} role(s)${accessQuestions})`}; goldens ${ratio(st.goldens)}`,
   );
+  if (st.roles_without_goldens.length) lines.push(`roles without an approved golden: ${st.roles_without_goldens.join(", ")}`);
   if (st.next_batch) {
     lines.push(`Next batch (${st.next_batch.source}):`);
     for (const b of st.next_batch.tables) {
@@ -47,7 +48,11 @@ function render(st: ProjectStatus): string {
     }
   }
   lines.push(`Next step (${st.next_step.phase}): ${st.next_step.message}`);
-  lines.push(`  ${st.next_step.command}`);
+  lines.push(
+    st.next_step.after_owner_yes
+      ? `  Only after the owner says yes to its readback: ${st.next_step.command}`
+      : `  ${st.next_step.command}`,
+  );
   return lines.join("\n");
 }
 

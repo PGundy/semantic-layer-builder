@@ -1,6 +1,6 @@
 // Turns a join-check result row into evidence, findings and a plain-English sentence.
 import { UserError } from "./errors.ts";
-import type { JoinEvidence, Relationship } from "./types.ts";
+import type { JoinEvidence, JoinKey, Relationship } from "./types.ts";
 
 export type SuggestedRelationship = JoinEvidence["suggested_relationship"];
 
@@ -24,6 +24,9 @@ export interface EvaluateOptions {
   right?: string;
   // ISO timestamp for evidence.checked_at; callers pass the command clock.
   checkedAt?: string;
+  // The join's target model and keys as declared, recorded in the evidence when given.
+  to?: string;
+  keys?: JoinKey[];
 }
 
 // A non-negative integer count from a result row; a missing or null value is an error, never 0.
@@ -137,6 +140,8 @@ export function evaluateJoin(
   const suggested = suggestRelationship(leftUnique, rightUnique);
   const evidence: JoinEvidence = {
     checked_at: opts.checkedAt ?? new Date().toISOString(),
+    ...(opts.to !== undefined ? { to: opts.to } : {}),
+    ...(opts.keys !== undefined ? { keys: opts.keys.map((k) => ({ from: k.from, to: k.to })) } : {}),
     left_rows: leftRows,
     left_null_keys: leftNull,
     matched_rows: matched,

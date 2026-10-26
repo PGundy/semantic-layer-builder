@@ -45,9 +45,13 @@ sl add-source --name lake --dialect duckdb
 sl run --source lake --sql "select file from glob('../data/lake/**')"
 ```
 
-The path in `glob` is relative to the semantic root, like a view's. Read the listing for datasets: a folder of yearly or dated Parquet files is one dataset, so its view reads them all with a glob (`read_parquet('../data/lake/web_events/*.parquet')`); a single file is one view. Show the owner the dataset names, not the file list.
+The path in `glob` is relative to the semantic root, like a view's. Read the listing for datasets: a folder of yearly or dated Parquet files is one dataset, so its view reads them all with a glob (`read_parquet('../data/lake/web_events/*.parquet')`); a single file is one view. Make one view per dataset, including the ones that look like noise (archives, `tmp` copies, dated exports), so `sl tables --groups` flags them and the owner excludes them in scoping. Show the owner the dataset names, not the file list.
 
-**Adding or changing a view later.** Edit `connection.views` in `sources/<source>.yaml` in place, one `name: relation` line per dataset, then rerun `sl introspect --source <source>`. There is no need to delete the source file or rerun `add-source`. A view for a dataset the owner rules out can simply be removed from the list.
+**Adding or changing a view later.** Edit `connection.views` in `sources/<source>.yaml` in place, one `name: relation` line per dataset, then rerun `sl introspect --source <source>`. There is no need to delete the source file or rerun `add-source`. A view for a dataset the owner rules out can simply be removed from the list. `sl validate` reports an error, naming the key and never the value, when `connection.database`, `connection.setup` or `connection.views` holds something that looks like a credential, so a hand edit cannot put a key in the repo unnoticed.
+
+The views of an in-memory DuckDB source live in schema `main`: `sl tables` prints `main.web_events`. A scope pattern without a dot (`web_*`) matches the view name, and `main.*` matches them all; the source name (`lake.*`) matches nothing.
+
+`connection.views` is also where a DuckDB source holds a rule the model YAML cannot express (a customer's first order). A Postgres or warehouse source has no such place: such a rule needs a view or table the owner's engineers create, so say so as soon as one comes up (`interview-guide.md`).
 
 ## Live intake
 

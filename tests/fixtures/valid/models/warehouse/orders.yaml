@@ -65,6 +65,9 @@ joins:
     approved_at: 2026-01-15
     evidence:
       checked_at: 2026-01-15T12:10:00.000Z
+      to: customers
+      keys:
+        - { from: customer_id, to: customer_id }
       left_rows: 10000
       left_null_keys: 0
       matched_rows: 10000

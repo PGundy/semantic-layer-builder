@@ -54,6 +54,15 @@ const WHOLE_UNITS_TEXT = /\b(dollars|euros|pounds|yen|whole (currency )?units|ma
 // payment_count, total_qty, units_refunded, count_of_refunds. A singular unit is not a count word: price_per_unit.
 const COUNT_SUFFIX = /(^|_)(qty|quantity|quantities|units|count)s?$/;
 const COUNT_PREFIX = /^(qty|quantity|quantities|units|count)_/;
+// Plural nouns of things counted per row, which add up across rows: page_views, clicks, email_opens.
+// A name counts them when it ends with one, or starts with one and names no money or duration
+// (impressions_served, clicks_total, not conversions_value_cents or sessions_duration_seconds), and names no
+// ratio or statistic (clicks_per_session, avg_clicks, max_views, impressions_share).
+const ADDITIVE_COUNT_SUFFIX = /(^|_)(impressions|clicks|views|visits|sessions|signups|conversions|installs|opens|events|pageviews|sends)$/;
+const ADDITIVE_COUNT_PREFIX = /^(impressions|clicks|views|visits|sessions|signups|conversions|installs|opens|events|pageviews|sends)_/;
+// Money names other than total: clicks_total totals clicks, conversions_value_cents is money.
+const MONEY_UNIT_NAME = /(^|_)(sub)?(amount|price|cost|revenue|value|spend|fee|tax|discount|balance|shipping|freight|gross|net|profit|margin|payment|charge|refund|refunded|cents|pennies|salary|wage|income|budget)(s|es)?(_|$)/;
+const NOT_ADDITIVE = /(^|_)(per|avg|average|mean|median|min|max|p\d+|share)(_|$)/;
 // Per-unit prices: averaged, never summed. A total, subtotal, line or extended price is not per unit.
 const PER_UNIT_PRICE = /(^|_)(prices?|unit_costs?)(_|$)/;
 // A money name ending _per_unit is a per-unit price: cost_per_unit, revenue_per_unit_cents.
@@ -131,6 +140,15 @@ export function stripTablePrefix(name: string, prefixes: string[]): string {
 
 function tableKey(t: { schema?: string | null; name: string }): string {
   return qualifiedName(t).toLowerCase();
+}
+
+// A money expression stored in hundredths, in whole currency units and exact numeric arithmetic:
+// DuckDB multiplies by the DECIMAL 0.01 (dividing by 100.0 gives a DOUBLE there), BigQuery
+// divides a NUMERIC, and the other dialects divide by the numeric literal 100.0.
+export function centsExpr(dialect: Dialect, expr: string): string {
+  if (dialect === "duckdb") return `${expr} * 0.01`;
+  if (dialect === "bigquery") return `cast(${expr} as numeric) / 100`;
+  return `${expr} / 100.0`;
 }
 
 // A physical column name as an expression. It is bare only when the dialect resolves the bare
@@ -363,18 +381,24 @@ interface NumericRule {
 // The measure rule a numeric column's name selects, or null when its name selects none.
 // Per-unit prices and names ending _rate are averaged; other rates select no rule. Money names are
 // tested before count names, except that a name ending or starting with a count word is a count.
+// A name ending with an additive count noun (impressions, clicks, sessions, ...), or starting with
+// one and naming no money or duration, is a count summed as an integer unless it names a ratio or
+// statistic.
 export function numericRule(norm: string): NumericRule | null {
   if (RATE_NAME.test(norm)) {
     const perUnit = PER_UNIT_RATE.test(norm);
     if (!perUnit) return null;
     return { agg: "avg", format: CENTS_NAME.test(norm) ? "currency" : "number", perUnit };
   }
-  const isCount = COUNT_SUFFIX.test(norm) || COUNT_PREFIX.test(norm);
+  const isAdditiveCount =
+    !NOT_ADDITIVE.test(norm) &&
+    (ADDITIVE_COUNT_SUFFIX.test(norm) || (ADDITIVE_COUNT_PREFIX.test(norm) && !MONEY_UNIT_NAME.test(norm) && !DURATION_NAME.test(norm)));
+  const isCount = COUNT_SUFFIX.test(norm) || COUNT_PREFIX.test(norm) || isAdditiveCount;
   const perUnitPrice = (PER_UNIT_PRICE.test(norm) && !NOT_PER_UNIT.test(norm)) || (PER_UNIT_SUFFIX.test(norm) && MONEY_NAME.test(norm));
   if (perUnitPrice && !isCount) {
     return { agg: "avg", format: "currency", perUnit: true };
   }
-  if (!SUM_NAME.test(norm)) return null;
+  if (!SUM_NAME.test(norm) && !isAdditiveCount) return null;
   const format: Format = isCount
     ? "integer"
     : DURATION_NAME.test(norm)
@@ -512,6 +536,8 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
   const pii: string[] = [];
   // Money columns drafted divided by 100.
   const cents: string[] = [];
+  // Columns averaged because no name rule says how they add up, with their measure names once claimed.
+  const fallbackAvg: { column: string; name?: string }[] = [];
   const money: string[] = [];
   const rows = table.row_count ?? null;
   const currency = singleCurrency(table);
@@ -543,7 +569,7 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
     (CENTS_NAME.test(toSpecName(col.name)) || (centsText(col.description) ?? centsText(table.description) ?? false));
   const valueExprOf = (col: SnapshotColumn, rule: NumericRule) => {
     const expr = columnExpr(dialect, col.name);
-    return isDivided(col, rule) ? `${expr} / 100.0` : expr;
+    return isDivided(col, rule) ? centsExpr(dialect, expr) : expr;
   };
 
   // The quantity a line total multiplies by: an integer count column, an exact quantity name first.
@@ -655,9 +681,14 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
         dimensions.push({ name: ns.claim(norm), expr, type: "number", ...extras(col), status: "draft" });
         continue;
       }
+      const fallback: { column: string; name?: string } = { column: col.name };
+      fallbackAvg.push(fallback);
       columnMeasures.push({
         names: () => [`avg_${norm}`, `average_${norm}`],
-        build: (name) => ({ name, expr, agg: "avg", format: "number", ...extras(col), status: "draft" }),
+        build: (name) => {
+          fallback.name = name;
+          return { name, expr, agg: "avg", format: "number", ...extras(col), status: "draft" };
+        },
       });
       continue;
     }
@@ -702,7 +733,12 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
   }
   for (const c of cents) {
     questions.push(
-      `Is ${c} stored in cents? The draft divides it by 100 (expr: ${columnExpr(dialect, c)} / 100.0) to report whole currency units; confirm the division.`,
+      `Is ${c} stored in cents? The draft divides it by 100 (expr: ${centsExpr(dialect, columnExpr(dialect, c))}) to report whole currency units; confirm the division.`,
+    );
+  }
+  for (const f of fallbackAvg) {
+    questions.push(
+      `The name ${f.column} does not say how it adds up, so the draft averages it (${f.name}). Do people total ${f.column} or average it?`,
     );
   }
   if (lineTotalColumn && quantity && lineTotal) {

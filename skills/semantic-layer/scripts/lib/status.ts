@@ -92,6 +92,17 @@ export interface NextStep {
   message: string;
   command: string;
   source?: string;
+  // True when the command records the owner's approval (sl approve, sl goldens confirm):
+  // it runs only after the owner says yes to its readback.
+  after_owner_yes: boolean;
+}
+
+// A next step before after_owner_yes is derived from its command.
+type Step = Omit<NextStep, "after_owner_yes">;
+
+// Whether a command records the owner's approval, so it waits for their yes.
+export function needsOwnerYes(command: string): boolean {
+  return /^sl (approve|goldens confirm)(\s|$)/.test(command);
 }
 
 export interface ProjectStatus {
@@ -104,6 +115,9 @@ export interface ProjectStatus {
   // Open questions across the reported sources' models and access.yaml.
   open_questions: number;
   goldens: ApprovalCount;
+  // Roles in access.yaml that no approved golden uses. A golden without a role key uses
+  // access.yaml's default_role.
+  roles_without_goldens: string[];
   next_batch: { source: string; tables: BatchEntry[] } | null;
   next_step: NextStep;
 }
@@ -123,6 +137,16 @@ function accessOpenQuestions(access: unknown): number {
     stringCount(a.open_questions) +
     roles.reduce<number>((n, r) => n + (r && typeof r === "object" ? stringCount((r as { open_questions?: unknown }).open_questions) : 0), 0)
   );
+}
+
+// The role names of access.yaml, read defensively: entries without a string name are skipped.
+function roleNames(access: unknown): string[] {
+  const roles = access && typeof access === "object" ? (access as { roles?: unknown }).roles : undefined;
+  if (!Array.isArray(roles)) return [];
+  return roles.flatMap((r) => {
+    const name = r && typeof r === "object" ? (r as { name?: unknown }).name : undefined;
+    return typeof name === "string" && name !== "" ? [name] : [];
+  });
 }
 
 function count(items: (Approval | undefined)[]): ApprovalCount {
@@ -220,7 +244,7 @@ function preview(names: string[], max = 5): string {
   return names.length > max ? `${names.slice(0, max).join(", ")} and ${names.length - max} more` : names.join(", ");
 }
 
-function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSources: number): NextStep {
+function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSources: number): Step {
   const { sources } = status;
   if (allSources === 0) {
     return {
@@ -430,6 +454,13 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
       : "missing";
   const goldens = listGoldens(root).map((g) => g.golden);
   const accessQuestions = accessOpenQuestions(access);
+  const defaultRole = access && typeof access.default_role === "string" ? access.default_role : undefined;
+  const goldenRoles = new Set(
+    goldens
+      .filter((g) => g && typeof g === "object" && g.status === "approved")
+      .map((g) => (typeof g.role === "string" ? g.role : g.role == null ? defaultRole : undefined))
+      .filter((r): r is string => r !== undefined),
+  );
 
   const base = {
     project: project.name,
@@ -439,8 +470,10 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
     access: { state: accessState, roles: Array.isArray(access?.roles) ? access.roles.length : 0, open_questions: accessQuestions },
     open_questions: sources.reduce((n, s) => n + s.open_questions, accessQuestions),
     goldens: count(goldens),
+    roles_without_goldens: roleNames(access).filter((r) => !goldenRoles.has(r)),
   };
-  const step = nextStep(base, names.length);
+  const found = nextStep(base, names.length);
+  const step: NextStep = { ...found, after_owner_yes: needsOwnerYes(found.command) };
   const batchSource = sources.find((s) => s.source === step.source && s.next_batch.length) ?? sources.find((s) => s.next_batch.length);
   return {
     ...base,

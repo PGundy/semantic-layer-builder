@@ -80,6 +80,8 @@ interface Case {
   setup?: (root: string) => void;
   // One expected issue, or the full list; the case produces exactly these issues and no others.
   expect: Expected | Expected[];
+  // Text every issue of the case must contain.
+  hint?: string;
 }
 
 // Asserts that issues are exactly the expected ones, each matched once.
@@ -112,6 +114,9 @@ const GOLDEN2 = "goldens/aov_by_region.yaml";
 const GOLDEN3 = "goldens/revenue_by_customer_region.yaml";
 const UNREACHABLE = "model customers is not reachable from orders";
 const ACCESS = "access.yaml";
+const SHIPMENTS = "models/warehouse/shipments.yaml";
+// The fixture's orders.customer evidence records the keys it measured, so editing them makes it stale.
+const STALE_KEYS: Expected = ["warning", ORDERS, "joins[0].evidence.keys", "the evidence was measured on keys customer_id = customer_id"];
 
 // Adds a model of the warehouse source over a new snapshot table.
 function addModel(root: string, model: string, table: string, columns: string[], body: Doc): void {
@@ -166,11 +171,19 @@ const CASES: Case[] = [
     edit: (d) => (d.dimensions[1].name = "Status"),
     expect: [
       ["error", ORDERS, "dimensions[1].name", "must match"],
-      ["error", GOLDEN2, "request.filters[0].field", 'no dimension or measure "status"'],
+      ["warning", GOLDEN2, "request.filters[0].field", 'no dimension or measure "status"; a draft golden may name a field before it exists'],
     ],
   },
   { name: "approved without approved_by", file: ORDERS, edit: (d) => delete d.measures[0].approved_by, expect: ["error", ORDERS, "measures[0].approved_by", "is required"] },
   { name: "approved model without approved_at", file: ORDERS, edit: (d) => delete d.approved_at, expect: ["error", ORDERS, "approved_at", "is required"] },
+  ...(["dimensions", "measures"] as const).map(
+    (key): Case => ({
+      name: `model without ${key}`,
+      file: "",
+      setup: (r) => (addModel(r, "notes", "dim_notes", ["note_id"], {}), mutate(r, "models/warehouse/notes.yaml", (d) => delete d[key])),
+      expect: ["error", "models/warehouse/notes.yaml", key, `is required; write ${key}: [] when the model has none`],
+    }),
+  ),
   { name: "measure without expr", file: CUSTOMERS, edit: (d) => delete d.measures[0].expr, expect: ["error", CUSTOMERS, "measures[0].expr", "is required"] },
   { name: "connection url in source", file: "sources/warehouse.yaml", edit: (d) => (d.connection.url = "postgres://x"), expect: ["error", "sources/warehouse.yaml", "connection.url", "not a known property"] },
   { name: "env holding a url", file: "sources/warehouse.yaml", edit: (d) => (d.connection.env = "postgres://u@h/db"), expect: ["error", "sources/warehouse.yaml", "connection.env", "must match"] },
@@ -217,13 +230,13 @@ const CASES: Case[] = [
   },
   { name: "table missing from snapshot", file: ORDERS, edit: (d) => (d.table = "public.fct_orderz"), expect: ["warning", ORDERS, "table", "not in snapshots/warehouse.json"] },
   { name: "dimension expr names a missing column", file: ORDERS, edit: (d) => (d.dimensions[1].expr = "order_status"), expect: ["error", ORDERS, "dimensions[1].expr", "not a column of public.fct_orders"] },
-  { name: "join key from missing", file: ORDERS, edit: (d) => (d.joins[0].keys[0].from = "cust_id"), expect: ["error", ORDERS, "joins[0].keys[0].from", "not a column"] },
-  { name: "join key to missing", file: ORDERS, edit: (d) => (d.joins[0].keys[0].to = "id"), expect: ["error", ORDERS, "joins[0].keys[0].to", "not a column of public.dim_customers"] },
+  { name: "join key from missing", file: ORDERS, edit: (d) => (d.joins[0].keys[0].from = "cust_id"), expect: [["error", ORDERS, "joins[0].keys[0].from", "not a column"], STALE_KEYS] },
+  { name: "join key to missing", file: ORDERS, edit: (d) => (d.joins[0].keys[0].to = "id"), expect: [["error", ORDERS, "joins[0].keys[0].to", "not a column of public.dim_customers"], STALE_KEYS] },
   { name: "primary key missing column", file: CUSTOMERS, edit: (d) => (d.primary_key = ["id"]), expect: ["error", CUSTOMERS, "primary_key[0]", "not a column"] },
   { name: "hyphenated primary key", file: ORDERS, edit: (d) => (d.primary_key = ["order-id"]), expect: ["error", ORDERS, "primary_key[0]", '"order-id" is not a column of public.fct_orders'] },
   { name: "primary key in another case", file: ORDERS, edit: (d) => (d.primary_key = ["ORDER_ID"]), expect: [] },
-  { name: "quoted join key", file: ORDERS, edit: (d) => (d.joins[0].keys[0].from = '"customer_id"'), expect: ["error", ORDERS, "joins[0].keys[0].from", "without quotes"] },
-  { name: "spaced join key", file: ORDERS, edit: (d) => (d.joins[0].keys[0].to = "customer id"), expect: ["error", ORDERS, "joins[0].keys[0].to", '"customer id" is not a column of public.dim_customers'] },
+  { name: "quoted join key", file: ORDERS, edit: (d) => (d.joins[0].keys[0].from = '"customer_id"'), expect: [["error", ORDERS, "joins[0].keys[0].from", "without quotes"], STALE_KEYS] },
+  { name: "spaced join key", file: ORDERS, edit: (d) => (d.joins[0].keys[0].to = "customer id"), expect: [["error", ORDERS, "joins[0].keys[0].to", '"customer id" is not a column of public.dim_customers'], STALE_KEYS] },
   {
     name: "join key with a space that exists",
     file: "",
@@ -231,7 +244,7 @@ const CASES: Case[] = [
       mutate(r, SNAP_WH, (d) => d.tables.find((t: Doc) => t.name === "fct_orders").columns.push({ name: "Customer Ref", type: "integer", nullable: true, description: null }));
       mutate(r, ORDERS, (d) => (d.joins[0].keys[0].from = "customer ref"));
     },
-    expect: [],
+    expect: [STALE_KEYS],
   },
   { name: "postgres: bare mixed-case expr folds to lower case", file: "", setup: (r) => mixedCase(r, "MixedCase"), expect: ["error", ORDERS, "dimensions[4].expr", 'resolves to mixedcase in postgres, but the column is "MixedCase"; write "MixedCase"'] },
   { name: "postgres: quoted mixed-case expr resolves", file: "", setup: (r) => mixedCase(r, '"MixedCase"'), expect: [] },
@@ -247,7 +260,7 @@ const CASES: Case[] = [
     expect: [
       ["error", ORDERS, "measures[1].name", "already used by dimensions[1]"],
       ["error", "metrics.yaml", "metrics[0].denominator", 'has no measure "order_count"'],
-      ["error", GOLDEN2, "request.measures[1]", 'has no measure "order_count"'],
+      ["warning", GOLDEN2, "request.measures[1]", 'has no measure "order_count"'],
     ],
   },
   {
@@ -256,6 +269,7 @@ const CASES: Case[] = [
     edit: (d) => (d.joins[0].to = "clients"),
     expect: [
       ["error", ORDERS, "joins[0].to", "not a model of source warehouse"],
+      ["warning", ORDERS, "joins[0].evidence.to", "measured for a join to customers"],
       ["error", GOLDEN3, "request.dimensions[0]", UNREACHABLE],
     ],
   },
@@ -265,6 +279,7 @@ const CASES: Case[] = [
     edit: (d) => (d.joins[0].to = "web_events"),
     expect: [
       ["error", ORDERS, "joins[0].to", "not a model of source warehouse"],
+      ["warning", ORDERS, "joins[0].evidence.to", "measured for a join to customers"],
       ["error", GOLDEN3, "request.dimensions[0]", UNREACHABLE],
     ],
   },
@@ -358,9 +373,21 @@ const CASES: Case[] = [
   { name: "golden name differs from file", file: GOLDEN, edit: (d) => (d.name = "revenue_2025"), expect: ["error", GOLDEN, "name", "file is named revenue_by_month_2025.yaml"] },
   { name: "golden source unknown", file: GOLDEN, edit: (d) => (d.request.source = "crm"), expect: ["error", GOLDEN, "request.source", "unknown source"] },
   { name: "golden measure unresolved", file: GOLDEN, edit: (d) => (d.request.measures = ["orders.gmv"]), expect: ["error", GOLDEN, "request.measures[0]", "no measure \"gmv\""] },
-  { name: "golden metric unknown", file: GOLDEN2, edit: (d) => (d.request.measures[0] = "aov"), expect: ["error", GOLDEN2, "request.measures[0]", "not a metric"] },
+  { name: "golden metric unknown", file: GOLDEN, edit: (d) => (d.request.measures[0] = "aov"), expect: ["error", GOLDEN, "request.measures[0]", "not a metric"] },
+  { name: "draft golden metric unknown", file: GOLDEN2, edit: (d) => (d.request.measures[0] = "aov"), expect: ["warning", GOLDEN2, "request.measures[0]", '"aov" is not a metric; a draft golden may name a field before it exists; add the field before confirming the golden, because sl validate errors on it once the golden is approved'] },
+  { name: "draft golden model unknown", file: GOLDEN3, edit: (d) => (d.request.measures = ["new_customers.new_customer_count"]), expect: ["warning", GOLDEN3, "request.measures[0]", '"new_customers" is not a model of source warehouse; a draft golden'] },
+  { name: "draft golden measure in a dimension slot stays an error", file: GOLDEN3, edit: (d) => (d.request.dimensions = ["orders.revenue"]), expect: ["error", GOLDEN3, "request.dimensions[0]", 'model orders has no dimension "revenue"'] },
+  { name: "draft golden malformed field stays an error", file: GOLDEN3, edit: (d) => (d.request.dimensions = ["orders"]), expect: ["error", GOLDEN3, "request.dimensions[0]", '"orders" must be model.field'] },
+  { name: "draft golden grain problem stays an error", file: GOLDEN2, edit: (d) => (d.request.dimensions = ["orders.ship_region:month"]), expect: ["error", GOLDEN2, "request.dimensions[0]", "only to time dimensions"] },
   { name: "golden dimension used as measure", file: GOLDEN, edit: (d) => (d.request.measures = ["orders.status"]), expect: ["error", GOLDEN, "request.measures[0]", "no measure \"status\""] },
-  { name: "golden dimension unresolved", file: GOLDEN2, edit: (d) => (d.request.dimensions = ["orders.region"]), expect: ["error", GOLDEN2, "request.dimensions[0]", "no dimension \"region\""] },
+  { name: "golden dimension unresolved", file: GOLDEN, edit: (d) => (d.request.dimensions = ["orders.region"]), expect: ["error", GOLDEN, "request.dimensions[0]", "no dimension \"region\""] },
+  { name: "draft golden dimension unresolved", file: GOLDEN2, edit: (d) => (d.request.dimensions = ["orders.region"]), expect: ["warning", GOLDEN2, "request.dimensions[0]", "no dimension \"region\""] },
+  {
+    name: "golden request with a metrics key",
+    file: GOLDEN2,
+    edit: (d) => (d.request.metrics = ["average_order_value"]),
+    expect: ["error", GOLDEN2, "request.metrics", "is not a known property; there is no metrics key: request.measures lists measures as model.measure and metrics by bare name"],
+  },
   { name: "golden grain not allowed", file: GOLDEN, edit: (d) => (d.request.dimensions = ["orders.order_date:hour"]), expect: ["error", GOLDEN, "request.dimensions[0]", "grain hour is not in"] },
   { name: "golden grain on non-time", file: GOLDEN2, edit: (d) => (d.request.dimensions = ["orders.ship_region:month"]), expect: ["error", GOLDEN2, "request.dimensions[0]", "only to time dimensions"] },
   { name: "golden filter field unresolved", file: GOLDEN, edit: (d) => (d.request.filters[0].field = "orders.placed_at"), expect: ["error", GOLDEN, "request.filters[0].field", "placed_at"] },
@@ -404,7 +431,7 @@ const CASES: Case[] = [
     },
     expect: [
       ["warning", CUSTOMERS, "table", "not in snapshots/warehouse.json"],
-      ["error", ORDERS, "dimensions[3].expr", "goes more than one hop"],
+      ["error", ORDERS, "dimensions[3].expr", '"home" is not a join of model customers, and the table of customers is not in the snapshot'],
     ],
   },
   { name: "join reference in a measure expr", file: ORDERS, edit: (d) => (d.measures[1] = { ...d.measures[1], agg: "sum", expr: "customer.is_test_account::int" }), expect: ["error", ORDERS, "measures[1].expr", "a measure expr is over the model's own columns"] },
@@ -412,7 +439,7 @@ const CASES: Case[] = [
     name: "subquery in a measure filter",
     file: ORDERS,
     edit: (d) => (d.measures[0].filter = "status <> 'cancelled' and customer_id not in (select customer_id from public.dim_customers where is_test_account)"),
-    expect: ["error", ORDERS, "measures[0].filter", "has a subquery; a measure filter may name only this model's columns and <join>.<column> join references"],
+    expect: ["error", ORDERS, "measures[0].filter", "has a subquery; a measure filter may name only this model's columns and <join>.<column> or <join>.<join>.<column> join references"],
   },
   { name: "subquery in a dimension expr", file: ORDERS, edit: (d) => (d.dimensions[1].expr = "(SELECT max(status) FROM public.fct_orders)"), expect: ["error", ORDERS, "dimensions[1].expr", "has a subquery"] },
   { name: "subquery in a measure expr", file: CUSTOMERS, edit: (d) => (d.measures[0].expr = "(select 1)"), expect: ["error", CUSTOMERS, "measures[0].expr", "has a subquery; a measure expr may name only this model's columns; put a joined column in the measure's filter or in a dimension, or ask the owner for a view"] },
@@ -637,7 +664,7 @@ const CASES: Case[] = [
       ["error", CUSTOMERS, "xdims", "not a known property"],
       ["warning", "access.yaml", "roles[0].deny.tags[0]", "not used"],
       ["error", "access.yaml", "roles[1].deny.fields[0]", "not a dimension or measure"],
-      ["error", GOLDEN3, "request.dimensions[0]", 'model customers has no dimension "region"'],
+      ["warning", GOLDEN3, "request.dimensions[0]", 'model customers has no dimension "region"'],
     ],
   },
 
@@ -655,6 +682,220 @@ const CASES: Case[] = [
     expect: ["warning", "models/warehouse/customers.yml", "", "rename this file"],
   },
 
+  // Two-hop join references
+  { name: "two-hop join reference in a dimension expr", file: "", setup: (r) => (addShipments(r), mutate(r, SHIPMENTS, (d) => d.dimensions.push({ name: "customer_region", expr: "order.customer.region", type: "string", status: "draft" }))), expect: [] },
+  {
+    name: "two-hop join reference in a measure filter",
+    file: "",
+    setup: (r) => (addShipments(r), mutate(r, SHIPMENTS, (d) => (d.measures[0].filter = "coalesce(order.customer.is_test_account, false) = false and order.status <> 'cancelled'"))),
+    expect: [],
+  },
+  {
+    name: "two-hop join reference to a missing column",
+    file: "",
+    setup: (r) => (addShipments(r), mutate(r, SHIPMENTS, (d) => (d.measures[0].filter = "order.customer.home_region = 'x'"))),
+    expect: ["error", SHIPMENTS, "measures[0].filter", 'order.customer.home_region: "home_region" is not a column of public.dim_customers, the table of model customers that join customer of model orders reaches'],
+  },
+  {
+    name: "two-hop join reference through a name that is neither a column nor a join",
+    file: "",
+    setup: (r) => (addShipments(r), mutate(r, SHIPMENTS, (d) => (d.measures[0].filter = "order.buyer.region = 'x'"))),
+    expect: ["error", SHIPMENTS, "measures[0].filter", '"buyer" is not a column of public.fct_orders, the table of model orders that join order reaches, nor a join of model orders'],
+  },
+  {
+    name: "two-hop join reference whose second join is one_to_many",
+    file: "",
+    setup: (r) => {
+      addShipments(r);
+      mutate(r, ORDERS, (d) => d.joins.push({ name: "shipments", to: "shipments", keys: [{ from: "order_id", to: "order_id" }], relationship: "one_to_many", status: "draft" }));
+      mutate(r, SHIPMENTS, (d) => (d.measures[0].filter = "order.shipments.shipment_id is not null"));
+    },
+    expect: [
+      ["warning", ORDERS, "joins[1].relationship", "fans out"],
+      ["error", SHIPMENTS, "measures[0].filter", "order.shipments.shipment_id goes through join shipments of model orders, which is one_to_many"],
+    ],
+  },
+  {
+    name: "join reference of three hops",
+    file: "",
+    setup: (r) => (addRegions(r), addShipments(r), mutate(r, SHIPMENTS, (d) => (d.measures[0].filter = "order.customer.home_region.region_name = 'West'"))),
+    expect: ["error", SHIPMENTS, "measures[0].filter", "order.customer.home_region.region_name goes more than two hops"],
+  },
+  { name: "two-hop join reference ending in a struct field", file: "", setup: (r) => (addShipments(r), mutate(r, SHIPMENTS, (d) => (d.measures[0].filter = "order.customer.region.code = 'x'"))), expect: [] },
+  {
+    name: "two-hop join reference when the last table is not in the snapshot",
+    file: "",
+    setup: (r) => (addShipments(r), mutate(r, CUSTOMERS, (d) => (d.table = "public.dim_customer")), mutate(r, SHIPMENTS, (d) => (d.measures[0].filter = "order.customer.anything = 1"))),
+    expect: ["warning", CUSTOMERS, "table", "not in snapshots/warehouse.json"],
+  },
+
+  // A join reference reads a column, not a same-named dimension of the target
+  {
+    name: "join reference to a column that a target dimension redefines",
+    file: CUSTOMERS,
+    edit: (d) => (d.dimensions[2].expr = "is_test_account or email like '%@example-test.com'"),
+    expect: [
+      "warning",
+      ORDERS,
+      "measures[0].filter",
+      "customer.is_test_account reads the column is_test_account of public.dim_customers, not dimension is_test_account of model customers (expr: is_test_account or email like '%@example-test.com')",
+    ],
+  },
+  { name: "join reference to a column that a target dimension quotes", file: CUSTOMERS, edit: (d) => (d.dimensions[2].expr = ' "is_test_account" '), expect: [] },
+  {
+    name: "two-hop join reference to a column that a target dimension redefines",
+    file: "",
+    setup: (r) => {
+      addShipments(r);
+      mutate(r, CUSTOMERS, (d) => (d.dimensions[1].expr = "upper(region)"));
+      mutate(r, SHIPMENTS, (d) => (d.measures[0].filter = "order.customer.region = 'WEST'"));
+    },
+    expect: [
+      ["warning", ORDERS, "dimensions[3].expr", "customer.region reads the column region of public.dim_customers, not dimension region of model customers (expr: upper(region))"],
+      ["warning", SHIPMENTS, "measures[0].filter", "order.customer.region reads the column region of public.dim_customers, not dimension region of model customers"],
+    ],
+  },
+
+  // Definition joins and what a role may see
+  {
+    name: "a role allowed a dimension that reads through a join to a model it is not allowed",
+    file: ACCESS,
+    edit: (d) => d.roles.push({ name: "marketing", allow: { models: ["warehouse.orders"] } }),
+    expect: [
+      "warning",
+      ACCESS,
+      "roles[2]",
+      "may see dimension warehouse.orders.customer_region, whose expr reads customer.region through join customer to model warehouse.customers, which the role is not allowed; the dimension would show the values of warehouse.customers to this role",
+    ],
+  },
+  {
+    name: "a role that denies the joined model",
+    file: ACCESS,
+    edit: (d) => (d.roles[1].deny.models = ["warehouse.customers"]),
+    expect: ["warning", ACCESS, "roles[1]", "to model warehouse.customers, which the role denies;"],
+  },
+  {
+    name: "a role that denies the joined model by tag",
+    file: "",
+    setup: (r) => mutate(r, CUSTOMERS, (d) => (d.tags = ["pii"])),
+    expect: ["warning", ACCESS, "roles[0]", "to model warehouse.customers, which the role denies by tag;"],
+  },
+  { name: "a role that denies the dimension itself", file: ACCESS, edit: (d) => d.roles.push({ name: "marketing", allow: { models: ["warehouse.orders"] }, deny: { fields: ["warehouse.orders.customer_region"] } }), expect: [] },
+  { name: "a role that cannot see the dimension's own model", file: ACCESS, edit: (d) => d.roles.push({ name: "finance", allow: { models: ["warehouse.customers"] } }), expect: [] },
+  {
+    name: "a measure filter through a join the role cannot see does not warn",
+    file: "",
+    setup: (r) => {
+      mutate(r, ORDERS, (d) => d.dimensions.splice(3, 1));
+      mutate(r, ACCESS, (d) => d.roles.push({ name: "marketing", allow: { models: ["warehouse.orders"] } }));
+    },
+    expect: [],
+  },
+  {
+    name: "a two-hop dimension through a model the role cannot see",
+    file: "",
+    setup: (r) => {
+      addShipments(r);
+      mutate(r, SHIPMENTS, (d) => d.dimensions.push({ name: "customer_region", expr: "order.customer.region", type: "string", status: "draft" }));
+      mutate(r, ACCESS, (d) => d.roles.push({ name: "ops", allow: { models: ["warehouse.shipments", "warehouse.orders"] }, deny: { fields: ["warehouse.orders.customer_region"] } }));
+    },
+    expect: ["warning", ACCESS, "roles[2]", "may see dimension warehouse.shipments.customer_region, whose expr reads order.customer.region through joins order.customer to model warehouse.customers, which the role is not allowed"],
+  },
+  {
+    name: "a two-hop dimension through a middle model the role cannot see",
+    file: "",
+    setup: (r) => {
+      addShipments(r);
+      mutate(r, SHIPMENTS, (d) => d.dimensions.push({ name: "customer_region", expr: "order.customer.region", type: "string", status: "draft" }));
+      mutate(r, ACCESS, (d) => d.roles.push({ name: "ops", allow: { models: ["warehouse.shipments", "warehouse.customers"] }, deny: { fields: ["warehouse.shipments.order_date"] } }));
+    },
+    expect: [
+      "warning",
+      ACCESS,
+      "roles[2]",
+      "may see dimension warehouse.shipments.customer_region, whose expr reads order.customer.region through join order to model warehouse.orders, which the role is not allowed; the dimension would show the values of warehouse.orders to this role",
+    ],
+  },
+  {
+    name: "a two-hop dimension through two models the role cannot see warns for each",
+    file: "",
+    setup: (r) => {
+      addShipments(r);
+      mutate(r, SHIPMENTS, (d) => d.dimensions.push({ name: "customer_region", expr: "order.customer.region", type: "string", status: "draft" }));
+      mutate(r, ACCESS, (d) => d.roles.push({ name: "ops", allow: { models: ["warehouse.shipments"] }, deny: { fields: ["warehouse.shipments.order_date"] } }));
+    },
+    expect: [
+      ["warning", ACCESS, "roles[2]", "warehouse.shipments.customer_region, whose expr reads order.customer.region through join order to model warehouse.orders, which the role is not allowed"],
+      ["warning", ACCESS, "roles[2]", "warehouse.shipments.customer_region, whose expr reads order.customer.region through joins order.customer to model warehouse.customers, which the role is not allowed"],
+    ],
+  },
+
+  // Credentials in a source file
+  ...(
+    [
+      ["setup", (d: Doc) => (d.connection.setup = ["SET threads=2", "SET s3_secret_access_key='wJalrXUtnFEMI'"]), "connection.setup[1]", "secret provider"],
+      ["views", (d: Doc) => (d.connection.views.web_events = "read_parquet('https://a.blob.core.windows.net/c/x.parquet?sv=1&sig=abcSECRET')"), "connection.views.web_events", "secret provider"],
+      ["database", (d: Doc) => (d.connection.database = "md:analytics?motherduck_token=eyJsecret"), "connection.database", "MOTHERDUCK_TOKEN"],
+      ["database url", (d: Doc) => (d.connection.database = "postgres://admin:hunter2@db/prod"), "connection.database", "environment variable"],
+    ] as [string, (d: Doc) => void, string, string][]
+  ).map(
+    ([what, edit, path, hint]): Case => ({
+      name: `credential in a duckdb source's ${what}`,
+      file: "sources/lake.yaml",
+      edit,
+      expect: ["error", "sources/lake.yaml", path, `contains a credential; credentials never go in source files, so`],
+      hint,
+    }),
+  ),
+  {
+    name: "credential in a source file that fails its schema",
+    file: "sources/lake.yaml",
+    edit: (d) => ((d.connection.setup = ["CREATE SECRET (TYPE s3, KEY_ID 'AKIA123', SECRET 'abcSECRET')"]), (d.owner = "x")),
+    expect: [
+      ["error", "sources/lake.yaml", "owner", "not a known property"],
+      ["error", "sources/lake.yaml", "connection.setup[0]", "contains a credential"],
+    ],
+  },
+  {
+    name: "credential in a duckdb source's setup written as one string",
+    file: "sources/lake.yaml",
+    edit: (d) => (d.connection.setup = "SET s3_secret_access_key='wJalrXUtnFEMI'"),
+    expect: [
+      ["error", "sources/lake.yaml", "connection.setup", "must be array"],
+      ["error", "sources/lake.yaml", "connection.setup", "contains a credential; credentials never go in source files, so"],
+    ],
+  },
+  { name: "secret provider settings in a duckdb source", file: "sources/lake.yaml", edit: (d) => (d.connection.setup = ["SET secret_directory='/tmp/s'", "CREATE SECRET (TYPE s3, PROVIDER credential_chain)"]), expect: [] },
+
+  // Join evidence measured for other keys or another target
+  { name: "evidence keys in another order and case", file: ORDERS, edit: (d) => (d.joins[0].evidence.keys = [{ from: "CUSTOMER_ID", to: "customer_id" }]), expect: [] },
+  {
+    name: "evidence measured on other keys",
+    file: ORDERS,
+    edit: (d) => (d.joins[0].keys = [{ from: "order_id", to: "customer_id" }]),
+    expect: ["warning", ORDERS, "joins[0].evidence.keys", "the evidence was measured on keys customer_id = customer_id, but the join's keys are now order_id = customer_id; run `sl check-join` again"],
+  },
+  {
+    name: "evidence measured for another target",
+    file: ORDERS,
+    edit: (d) => (d.joins[0].evidence.to = "clients"),
+    expect: ["warning", ORDERS, "joins[0].evidence.to", "measured for a join to clients, but the join now goes to customers"],
+  },
+  { name: "evidence without keys or to predates them", file: ORDERS, edit: (d) => (delete d.joins[0].evidence.keys, delete d.joins[0].evidence.to, (d.joins[0].keys[0].to = "CUSTOMER_ID")), expect: [] },
+  {
+    name: "renaming a join keeps its evidence",
+    file: "",
+    setup: (r) => {
+      mutate(r, ORDERS, (d) => {
+        d.joins[0].name = "buyer";
+        d.dimensions[3].expr = "buyer.region";
+        d.measures[0].filter = "status <> 'cancelled' and coalesce(buyer.is_test_account, false) = false";
+      });
+    },
+    expect: [],
+  },
+  { name: "evidence keys that are not key pairs", file: ORDERS, edit: (d) => (d.joins[0].evidence.keys = [{ from: "customer_id" }]), expect: ["error", ORDERS, "joins[0].evidence.keys[0].to", "is required"] },
+
   // Snapshots
   { name: "snapshot source differs from file", file: "snapshots/lake.json", edit: (d) => (d.source = "lakehouse"), expect: ["error", "snapshots/lake.json", "source", "file is named lake.json"] },
 ];
@@ -668,6 +909,9 @@ describe("mutations of the valid fixture", () => {
       const issues = validateProject(root);
       const expected = c.expect.length && Array.isArray(c.expect[0]) ? (c.expect as Expected[]) : c.expect.length ? [c.expect as Expected] : [];
       expectExactly(issues, expected);
+      if (c.hint) for (const i of issues) expect(i.message).toContain(c.hint);
+      // A value that holds a secret is never echoed.
+      for (const secret of ["wJalrXUtnFEMI", "abcSECRET", "eyJsecret", "hunter2", "AKIA123"]) expect(JSON.stringify(issues)).not.toContain(secret);
     });
   }
 
