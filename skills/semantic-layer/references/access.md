@@ -6,16 +6,28 @@ Run this phase after the important models are approved, so you can name real tab
 
 ## The access interview
 
-Ask one topic at a time, offering a default each time.
+Batch it like the rest of the interview: numbered items, one topic each, each with a suggestion, except the default-role question, which is asked open; up to about 8 per message. The roles, models, attributes and values in this file's examples are illustrative, not defaults: the owner's answers decide. These are the topics:
 
 1. **Who uses the data?** "Who will ask questions of this: analysts, sales reps, support, executives, customers, partners?" List each group and roughly how many people.
 2. **Roles.** Group people who should see exactly the same things into one role. Fewer roles is better: "It sounds like there are three: analysts, sales reps and support. Is that right?" A user holds exactly one role, so a person who needs two views needs a role that covers both.
-3. **The default.** "If we don't know someone's role, what should they see?" Suggest the most restricted role, and record it as `default_role`.
+3. **The default.** Ask it open: "If a tool doesn't know someone's role, should they get the most limited view (support) or a wider one, such as the analyst view?" Note that the most limited role is the safe default, and state the concrete consequence of the owner's answer before recording it as `default_role`: "With analyst as the default, anyone whose role fails to load sees every region, refunds and the lake data." The owner's policy decides; do not steer it.
 4. **What each role may see.** "Analysts see every approved model in the warehouse and the lake. Sales reps see orders and customers only." These become `allow.models` patterns over `source.model` names.
 5. **What each role must never see.** Whole models ("support never sees payments"), single fields ("sales reps never see customer email"), and anything personal ("only analysts see personal details").
 6. **Row-level rules.** "Should a sales rep see every order, or only their region's?" For each yes, ask which column holds the value ("`ship_region`") and what fact about the user it compares to ("the region the rep covers"). That fact is a user attribute.
 
 Use the profile to make row rules concrete: "`ship_region` has 4 values: `north` (3,100 orders), `south`, `east`, `west`. Is a rep assigned one of those?"
+
+Once the roles are named, one item per role can carry a fill-in template. The bracketed values are your guesses, each grounded in a fact the owner gave or the profile shows; the owner corrects or confirms each line, and the per-role readback that follows is the gate, not this reply:
+
+> **3. Sales reps.** My guesses in brackets, from what you said about reps and the `ship_region` values; correct each line.
+> - May see: [orders, customers, regions]
+> - Never sees: [customer email and phone]
+> - Rows limited to: [orders shipped to the rep's region]
+> - When a rep looks at customers alongside orders: [keep every order of their region, with customer details blank for customers outside it]
+
+### "Totals only"
+
+There is no aggregates-only grant. When the owner wants a role to see a model only as totals ("marketing sees order revenue, never single orders"), approximate it: with `deny.fields`, deny the dimension that exposes the primary key (for example `warehouse.orders.order_id`), if there is one, and every row-identifying dimension (email, exact timestamps), keep only coarse dimensions, and write the finest grain the role may use in its description ("by status, region and month; never by day or by order"). Tell the owner that a downstream tool must honour the description, and record the gap in `open_questions`.
 
 ## Tags for personal data
 
@@ -52,7 +64,16 @@ row_filters:
     expr: account_id in {{ user.account_ids }}
 ```
 
-Several filters on one model in one role combine with `and`. A filter on a model also applies whenever that model is joined into a query, so restricting `orders` also restricts any question that joins to orders. Point this out in the readback. Ask what should happen to a user whose attribute is missing; the safe answer is that they see no rows, and the calling tool must enforce it.
+A row filter names only its model's own columns: no join references, subqueries or other tables. A row filter on a related model limits that model's rows. On a left join it blanks the joined columns and keeps every row of the base model; it drops base rows only on an inner join. To limit the base model by a related value, filter a column of the base model, make the join inner (read back what that does to every query), or ask for a view that carries the column.
+
+Several filters on one model in one role combine with `and`. Where a filter goes depends on the model's place in the query:
+
+- On the query's **base model** (the model of the first measure), the filter goes in `where`: rows outside it are gone from every figure.
+- On a **joined model**, the filter goes in that join's `on` clause. On a `left` join the left row stays and the joined columns come back empty for rows outside the filter; on an `inner` join the left row is dropped.
+
+So for a sales rep with filters on both `orders` (`ship_region`) and `customers` (`home_region`), revenue by customer counts every order shipped to the rep's region, and orders whose customer lives elsewhere show with blank customer details, as long as `orders.customer` is a left join. Say which applies in the readback, with a count from the data where you can ("31 orders ship to a different region than their customer's home region"). If the owner wants such rows dropped instead, the join must be `inner`, which changes every query that uses it; read that consequence back too.
+
+Ask what should happen to a user whose attribute is missing; the safe answer is that they see no rows, and the calling tool must enforce it.
 
 ## Writing access.yaml
 
@@ -81,6 +102,10 @@ roles:
     row_filters:
       - model: warehouse.orders
         expr: ship_region = {{ user.region }}
+      - model: warehouse.customers
+        expr: home_region = {{ user.region }}
+    open_questions:
+      - Should reps also see refunds for their region? Owner to check with Sales (Lee).
   - name: support
     description: Support agents. Order status only, no revenue or personal details.
     allow:
@@ -92,17 +117,21 @@ roles:
 
 - `allow.models` uses scope patterns over `source.model`: `warehouse.*` is every model in a source, `warehouse.fct_*` a prefix, `*.orders` the orders model in every source.
 - Denials subtract from what `allow` grants: `deny.models`, `deny.fields` (`source.model.field`) and `deny.tags`.
+- `deny.fields` names dimensions and measures only, never a join. A join is hidden from a role when its target model is not allowed or is denied for that role: to stop sales reps reaching customers through `orders.customer`, leave `warehouse.customers` out of their `allow.models` or add it to `deny.models`. `sl validate` says so when a join is named in `deny.fields`.
+- `open_questions`, at the top level and on each role, holds what is still unsettled about access, such as notes for tool builders ("A downstream tool must not show sales reps single orders by hour"). `sl status` counts them. Read them back with the whole file. Approval may stand with open questions that are notes for tool builders or are waiting on someone; list them in the handoff. Delete the ones the owner has answered.
 - Avoid `*` alone as an allow pattern; name sources so a new source is not exposed by accident.
 
 Run `sl validate`; it checks that every referenced model, field and attribute exists.
 
 ## Readback
 
-Read each role back as what its members can and cannot see, with the row rule in words:
+Read each role back as what its members can and cannot see, with the row rule in words, including what happens when a filtered model is joined:
 
-> "Sales reps see orders and customers only. They never see customer email. They see only orders whose shipping region matches the region they cover, and that also limits any question that combines customers with orders. Someone with no region sees no orders. Right?"
+> "Sales reps see orders and customers only. They never see customer email. They see only orders shipped to the region they cover, and only customers whose home region it is. When they look at customers alongside orders, every one of those orders is still counted; customers outside their region show with blank details. Someone with no region sees no orders. Approve?"
 
-Then the whole file: "Three roles: analysts, sales reps and support. Anyone without a role is treated as support. Every other table is hidden from everyone until we add it here. Shall I approve the access rules?"
+Then the whole file, with the default and its consequence, and every change settled along the way (a model added to a role, a join made inner, a new denial): "Three roles: analysts, sales reps and support. Anyone without a role is treated as support, so they see order status only. Since the per-role readbacks we added regions to sales reps. Every other table is hidden from everyone until we add it here. Approve?"
+
+Any change after the per-role readbacks, however small, means the whole-file readback comes again before `sl approve --target access`.
 
 After an explicit yes:
 
@@ -111,4 +140,6 @@ sl approve --target access --by "Dana Ruiz"
 sl validate
 ```
 
-Approval covers the whole file. Any later change (a new role, a widened pattern, a new source) needs a new approval: edit the file, set `status: draft`, remove `approved_by` and `approved_at`, and read the change back before approving again.
+Approval covers the whole file. Any later change (a new role, a widened pattern, a new source) needs a new approval: run `sl approve --target access --revoke`, edit the file, and read the whole file back before approving again.
+
+A role often relies on fields that are still draft (marketing's agreed breakdown by `orders.status`). Before approving access, check each role's agreed breakdowns against `draft_fields` in `sl status --json`; read those fields back and approve them, or name them in the handoff.

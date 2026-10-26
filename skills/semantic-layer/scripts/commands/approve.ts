@@ -138,7 +138,7 @@ function validDate(s: string): boolean {
 const spec: CommandSpec = {
   summary: "Mark a model, field, metric or the access file approved, or revoke an approval.",
   usage:
-    "approve --target <source.model | source.model.field | metric:<name> | access | golden:<name> (see sl goldens confirm)> " +
+    "approve --target <source.model | source.model.field | metric:<name> | access> " +
     "--by <name> [--recursive] [--revoke] [--date YYYY-MM-DD]",
   options: {
     target: { type: "string" },
@@ -184,7 +184,7 @@ const spec: CommandSpec = {
       case "golden":
         throw new UserError(
           `Goldens are confirmed against their rows, not approved here. Run sl goldens run --name ${target.name}, read the rows ` +
-            `back to the owner, then sl goldens confirm --name ${target.name} --by "<owner>".`,
+            `back to the owner, then sl goldens confirm --name ${target.name} --by "<owner>" --tolerance <t>.`,
         );
 
       case "access": {

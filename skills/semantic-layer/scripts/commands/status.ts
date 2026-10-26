@@ -26,6 +26,9 @@ function sourceLines(s: SourceStatus): string[] {
   if (s.joins_without_evidence) extras.push(`${s.joins_without_evidence} join(s) without evidence`);
   if (s.open_questions) extras.push(`${s.open_questions} open question(s)`);
   if (extras.length) lines.push(`  ${extras.join(", ")}`);
+  // Draft fields inside approved models do not block later phases; they are listed for the handoff.
+  const approvedDrafts = s.draft_fields.filter((f) => s.models_with_draft_fields.includes(f.split(".")[0]!));
+  if (approvedDrafts.length) lines.push(`  draft fields in approved models: ${approvedDrafts.join(", ")}`);
   return lines;
 }
 
@@ -33,8 +36,9 @@ function render(st: ProjectStatus): string {
   const lines = [`Project ${st.project}`];
   for (const s of st.sources) lines.push(...sourceLines(s));
   if (!st.sources.length) lines.push("No sources.");
+  const accessQuestions = st.access.open_questions ? `, ${st.access.open_questions} open question(s)` : "";
   lines.push(
-    `metrics ${ratio(st.metrics)}; access ${st.access.state}${st.access.state === "missing" ? "" : ` (${st.access.roles} role(s))`}; goldens ${ratio(st.goldens)}`,
+    `metrics ${ratio(st.metrics)}; access ${st.access.state}${st.access.state === "missing" ? "" : ` (${st.access.roles} role(s)${accessQuestions})`}; goldens ${ratio(st.goldens)}`,
   );
   if (st.next_batch) {
     lines.push(`Next batch (${st.next_batch.source}):`);

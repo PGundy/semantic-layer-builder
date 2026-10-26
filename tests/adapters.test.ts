@@ -1,7 +1,17 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { openAdapter } from "../skills/semantic-layer/scripts/lib/adapters/index.ts";
+import { UserError } from "../skills/semantic-layer/scripts/lib/errors.ts";
+import { executePlan } from "../skills/semantic-layer/scripts/lib/plan.ts";
 import { assertReadOnly } from "../skills/semantic-layer/scripts/lib/sql-guard.ts";
-import { PG_URL } from "./helpers.ts";
+import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
+import { duckdbSource, initProject, PG_URL, sl, tempRoot } from "./helpers.ts";
+
+let cleanup: (() => void) | undefined;
+afterEach(() => {
+  cleanup?.();
+  cleanup = undefined;
+});
 
 const TYPED =
   "select 42::bigint as b, 1.5::numeric(10,2) as d, 2.5::double precision as f, date '2025-01-02' as dt, " +
@@ -43,4 +53,98 @@ describe("read-only guard", () => {
       expect(() => assertReadOnly(q)).toThrow();
     },
   );
+});
+
+describe("database errors are user errors", () => {
+  async function project() {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    await duckdbSource(t.root, t.dir, "wh", ["create table orders (id integer)", "insert into orders values (1)"]);
+    return t;
+  }
+
+  test("sl run on duckdb: a SQL error exits 1 with Query failed and no stack", async () => {
+    const t = await project();
+    const r = await sl(t.root, ["run", "--source", "wh", "--sql", "select nope from orders"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toStartWith("sl run: Query failed: ");
+    expect(r.err).toContain("nope");
+    expect(r.err).not.toContain("unexpected error");
+    expect(r.err).not.toMatch(/\n\s+at /);
+    const ok = await sl(t.root, ["run", "--source", "wh", "--sql", "select count(*) as n from orders", "--json"]);
+    expect(ok.code).toBe(0);
+    expect(ok.json<{ rows: unknown[] }>().rows).toEqual([{ n: 1 }]);
+  });
+
+  test.skipIf(!PG_URL)("sl run on postgres: a syntax error exits 1 with Query failed and no stack", async () => {
+    const t = await project();
+    writeYaml(join(t.root, "sources", "pg.yaml"), { source: "pg", dialect: "postgres", connection: { env: "PG_URL" } });
+    const r = await sl(t.root, ["run", "--source", "pg", "--sql", "select to_char(now(), 'YYYY') month from"], { PG_URL });
+    expect(r.code).toBe(1);
+    expect(r.err).toStartWith("sl run: Query failed: ");
+    expect(r.err).toContain("syntax error");
+    expect(r.err).not.toContain("unexpected error");
+    expect(r.err).not.toContain(PG_URL!);
+  });
+
+  test("executePlan turns a failing query into a UserError that names the query", async () => {
+    const t = await project();
+    const source = { source: "wh", dialect: "duckdb" as const, connection: { database: join(t.dir, "wh.duckdb") } };
+    const plan = { command: "test", source: "wh", dialect: "duckdb" as const, queries: [{ id: "q1", purpose: "A broken query", sql: "select nope from orders" }] };
+    const err = await executePlan(plan, { root: t.root, source, env: {} }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(UserError);
+    const message = (err as Error).message;
+    expect(message.split("\n")[0]).toStartWith("Query failed: ");
+    expect(message.split("\n")[0]).toContain("nope");
+    expect(message).toEndWith('\nQuery "q1" (A broken query):\nselect nope from orders');
+  });
+});
+
+describe("timestamptz values render in UTC whatever the process time zone", () => {
+  async function project() {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    await duckdbSource(t.root, t.dir, "wh", [
+      "create table orders (id integer, created_at timestamptz)",
+      "insert into orders values (1, '2025-01-01 00:30:00+00')",
+    ]);
+    return t;
+  }
+  const SQL = "select current_setting('TimeZone') as tz, date_trunc('day', created_at) as d, created_at from orders";
+  const UTC_ROW = { tz: "UTC", d: "2025-01-01 00:00:00+00", created_at: "2025-01-01 00:30:00+00" };
+
+  test("sl run and executePlan reset the DuckDB client's local offset", async () => {
+    const t = await project();
+    const { DuckDBTimestampTZValue } = await import("@duckdb/node-api");
+    const before = DuckDBTimestampTZValue.timezoneOffsetInMinutes;
+    try {
+      DuckDBTimestampTZValue.timezoneOffsetInMinutes = -240;
+      const r = await sl(t.root, ["run", "--source", "wh", "--sql", SQL, "--json"]);
+      expect(r.code).toBe(0);
+      expect(r.json<{ rows: unknown[] }>().rows).toEqual([UTC_ROW]);
+
+      DuckDBTimestampTZValue.timezoneOffsetInMinutes = 330;
+      const source = { source: "wh", dialect: "duckdb" as const, connection: { database: join(t.dir, "wh.duckdb") } };
+      const plan = { command: "test", source: "wh", dialect: "duckdb" as const, queries: [{ id: "q", purpose: "tz", sql: SQL }] };
+      expect((await executePlan(plan, { root: t.root, source, env: {} })).q).toEqual([UTC_ROW]);
+    } finally {
+      DuckDBTimestampTZValue.timezoneOffsetInMinutes = before;
+    }
+  });
+
+  test("the CLI under TZ=America/New_York prints +00 values", async () => {
+    const t = await project();
+    const cli = join(import.meta.dir, "..", "skills", "semantic-layer", "scripts", "sl.ts");
+    const proc = Bun.spawnSync([process.execPath, cli, "run", "--source", "wh", "--sql", SQL, "--json", "--root", t.root], {
+      env: { ...process.env, TZ: "America/New_York" },
+      cwd: t.root,
+    });
+    expect(proc.exitCode).toBe(0);
+    expect(JSON.parse(proc.stdout.toString()).rows).toEqual([UTC_ROW]);
+  });
 });

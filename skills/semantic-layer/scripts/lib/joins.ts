@@ -106,7 +106,7 @@ function article(word: string): string {
 
 export function evaluateJoin(
   row: Record<string, unknown>,
-  declared: Relationship | undefined,
+  yamlRelationship: Relationship | undefined,
   opts: EvaluateOptions = {},
 ): JoinEvaluation {
   const leftRows = count(row, "left_rows");
@@ -195,10 +195,10 @@ export function evaluateJoin(
     });
   }
   if (leftNull > 0) findings.push(nullFinding(leftNull, L));
-  if (declared === undefined) {
-    findings.push({ level: "warn", message: `The join has no declared relationship; the data says ${suggested}.` });
-  } else if (declared !== suggested) {
-    findings.push({ level: "warn", message: `The join is declared ${declared}, but the data says ${suggested}.` });
+  if (yamlRelationship === undefined) {
+    findings.push({ level: "warn", message: `The YAML gives this join no relationship; the data says ${suggested}.` });
+  } else if (yamlRelationship !== suggested) {
+    findings.push({ level: "warn", message: `The YAML says ${yamlRelationship}, but the data says ${suggested}.` });
   }
   if (suggested === "many_to_many") {
     findings.push({

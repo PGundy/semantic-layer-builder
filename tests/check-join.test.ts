@@ -203,7 +203,7 @@ describe("evaluateJoin", () => {
       right: "customers",
     });
     expect(keyless.measured).toBe(false);
-    expect(keyless.findings.map((f) => f.message).join("\n")).not.toContain("declared");
+    expect(keyless.findings.map((f) => f.message).join("\n")).not.toMatch(/YAML|declared/);
     const noRight = evaluateJoin(row({ matched_rows: 0, right_rows: 0, right_distinct_keys: 0, right_max_dup: 0 }), "many_to_one", {
       left: "orders",
       right: "customers",
@@ -233,10 +233,15 @@ describe("evaluateJoin", () => {
     const declaredFan = evaluateJoin(row({}), "one_to_many", { left: "orders", right: "customers" });
     const messages = declaredFan.findings.map((f) => f.message);
     expect(messages.some((m) => m.includes("fans out"))).toBe(false);
-    expect(messages).toContain("The join is declared one_to_many, but the data says many_to_one.");
+    expect(messages).toContain("The YAML says one_to_many, but the data says many_to_one.");
     const none = evaluateJoin(row({}), undefined, { left: "orders", right: "customers" });
-    expect(none.findings.map((f) => f.message)).toContain("The join has no declared relationship; the data says many_to_one.");
+    expect(none.findings.map((f) => f.message)).toContain("The YAML gives this join no relationship; the data says many_to_one.");
     expect(none.findings.map((f) => f.message).join("\n")).not.toContain("undefined");
+    // The YAML relationship is the YAML's, not a declaration in the database.
+    for (const rel of [undefined, "many_to_one", "one_to_one", "one_to_many"] as const) {
+      const e = evaluateJoin(row({ left_max_dup: 2, right_max_dup: 2 }), rel, { left: "orders", right: "customers" });
+      expect(e.findings.map((f) => f.message).join("\n")).not.toContain("declared");
+    }
   });
 
   test("writes the owner's sentence", () => {
@@ -245,7 +250,7 @@ describe("evaluateJoin", () => {
     expect(r.findings).toEqual([{ level: "warn", message: "Match rate is 99.2%: 40 of 5,000 orders find no customer." }]);
     const fan = evaluateJoin(row({ left_max_dup: 1, right_max_dup: 7 }), "many_to_one", { left: "orders", right: "order_items" });
     expect(fan.sentence).toContain("Each order can match up to 7 order items");
-    expect(fan.findings.map((f) => f.message).join("\n")).toContain("declared many_to_one, but the data says one_to_many");
+    expect(fan.findings.map((f) => f.message).join("\n")).toContain("The YAML says many_to_one, but the data says one_to_many");
     expect(fan.findings.some((f) => f.message.includes("fans out"))).toBe(true);
   });
 
@@ -340,7 +345,7 @@ describe("check-join on duckdb", () => {
     // Orders for customer 1 match all three of its rows but count once.
     expect(c.evidence.matched_rows).toBe(17);
     const messages = c.findings.map((f) => f.message).join("\n");
-    expect(messages).toContain("declared many_to_one, but the data says many_to_many");
+    expect(messages).toContain("The YAML says many_to_one, but the data says many_to_many");
     expect(messages).toContain("bridge table");
     expect(s.model("orders").joins![1]!.relationship).toBe("many_to_one");
     expect(s.model("orders").joins![1]!.status).toBe("draft");
@@ -399,7 +404,8 @@ describe("check-join on duckdb", () => {
 
     const human = await sl(s.root, ["check-join", "--source", "wh", "--all"]);
     expect(human.code).toBe(0);
-    expect(human.out).toContain("orders.customer -> customers  (declared many_to_one, data says many_to_one)");
+    expect(human.out).toContain("orders.customer -> customers  (YAML says many_to_one, data says many_to_one)");
+    expect(human.out).not.toContain("declared");
     expect(human.out).toContain("Each order points to at most one customer");
     expect(human.out).toContain("warn: ");
     expect(human.out).toContain("Wrote evidence to 5 joins.");
@@ -515,7 +521,7 @@ describe("check-join edge cases", () => {
     const e = empty.json<CheckOut>().checks[0]!;
     expect(e.evidence).toBeNull();
     expect(e.sentence).toBe("There are no empty orders to check, so this join could not be measured.");
-    expect(e.findings.map((f) => f.message).join("\n")).not.toContain("declared");
+    expect(e.findings.map((f) => f.message).join("\n")).not.toMatch(/YAML|declared/);
 
     const keyless = await sl(s.root, ["check-join", "--source", "wh", "--model", "keyless_orders", "--join", "customer"]);
     expect(keyless.code).toBe(0);
@@ -567,9 +573,9 @@ describe("check-join edge cases", () => {
     const c = r.json<CheckOut>().checks[0]!;
     expect(c.evidence.suggested_relationship).toBe("many_to_one");
     expect(c.sentence).toBe("Each employee points to at most one manager, and 75% of employees find their manager (1 does not).");
-    expect(c.findings.map((f) => f.message)).toContain("The join has no declared relationship; the data says many_to_one.");
+    expect(c.findings.map((f) => f.message)).toContain("The YAML gives this join no relationship; the data says many_to_one.");
     const human = await sl(s.root, ["check-join", "--source", "wh", "--model", "employees", "--join", "manager", "--no-write"]);
-    expect(human.out).toContain("(declared none, data says many_to_one)");
+    expect(human.out).toContain("(YAML says none, data says many_to_one)");
     expect(human.out).toContain("matched 3 (75%), unmatched 1");
   });
 
@@ -676,7 +682,7 @@ describe("check-join on postgres", () => {
       max_fanout: 1,
       suggested_relationship: "many_to_one",
     });
-    expect(c.findings.map((f) => f.message).join("\n")).toContain("declared one_to_one, but the data says many_to_one");
+    expect(c.findings.map((f) => f.message).join("\n")).toContain("The YAML says one_to_one, but the data says many_to_one");
     const text = readFileSync(join(dir, "orders.yaml"), "utf8");
     expect(text).toContain("# pg");
     expect(readYaml<Model>(join(dir, "orders.yaml")).joins![0]!.relationship).toBe("one_to_one");

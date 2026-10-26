@@ -563,7 +563,8 @@ describe.skipIf(!PG_URL)("profile (postgres live)", () => {
       expect.objectContaining({
         table: `${schema}.customers`,
         row_count: 4,
-        candidate_keys: ["customer_id", "signup", "seen_at"],
+        // signup (a date) and seen_at (a timestamp) are unique here but are not key types.
+        candidate_keys: ["customer_id"],
         low_cardinality: ["email", "tier", "balance", "active"],
       }),
     ]);

@@ -17,14 +17,15 @@ Outputs, all under the semantic root (`./semantic` by default):
 
 ## Principles
 
-1. **Measure facts, ask for meaning.** Row counts, null rates, top values, key uniqueness and join match rates come from the CLI. Ask the owner only what the data cannot tell you: what a row means, which values count, which date is "the" date, who may see what.
-2. **Never approve without a yes.** Read the item back in plain English and run `sl approve` only after the owner explicitly says yes to that readback. "I think so", "probably" or "ask Sam" is not a yes: record an open question instead. Never write `status: approved` by hand; only `sl approve` does that.
-3. **No secrets in files or chat.** Connection URLs and keys live in environment variables the owner sets. Source files name the variable (`connection.env`), never its value. If the owner pastes a credential, do not write it anywhere and suggest they rotate it.
-4. **Read-only.** Every query is a `select`. Never write to the owner's data.
-5. **One batch at a time.** Scope first, then interview `batch_size` tables at a time, most important first. Never ask about 20 tables at once.
-6. **Write as you go.** Put each answer into the YAML the moment you have it, so a stopped session resumes from the files. Edit existing YAML in place and keep the owner's comments.
-7. **Plain language.** Say "each order appears once" rather than "unique key", "some orders have no matching customer" rather than "orphans", "this join would double count revenue" rather than "fan-out". Show real values from the profile ("`status` is `completed` in 88% of rows, then `cancelled`, `refunded`, `pending`").
-8. **Finish every phase with `sl validate`** and fix every error before moving on.
+1. **Measure facts, ask for meaning.** Row counts, null rates, top values, key uniqueness and join match rates come from the CLI. Ask the owner only what the data cannot tell you: what a row means, which values count, which date is "the" date, which time zone a day is in, who may see what.
+2. **Never approve without a yes.** Every sign-off readback ends with "Approve?", and you run `sl approve` only after the owner explicitly says yes to it. A yes to a factual check ("is that right?") is not an approval, and neither is "I think so", "probably" or "ask Sam": record an open question instead. Never write `status: approved` by hand; only `sl approve` does that.
+3. **Suggestions about business rules are guesses.** Label each one as a guess and ground it in a profile fact ("my guess, since 88% of rows are `completed`: count only `completed`"). Never invite the owner to accept business-rule suggestions wholesale; the examples in the references are illustrative, not defaults.
+4. **No secrets in files or chat.** Connection URLs and keys live in environment variables the owner sets. Source files name the variable (`connection.env`), never its value. If the owner pastes a credential, do not write it anywhere and suggest they rotate it.
+5. **Read-only.** Every query is a `select`. Never write to the owner's data.
+6. **Batch per round trip.** Each message to the owner holds numbered items, one topic each with a suggestion, up to about 8. Put sign-offs (yes/no readbacks) in a block separate from open questions. Interview `batch_size` tables at a time, most important first; never ask about 20 tables at once.
+7. **Write as you go.** Files are the only state that survives between turns. Put each answer into the YAML the moment you have it, so a stopped session resumes from the files. Edit existing YAML in place and keep the owner's comments; CLI writes change only the keys they set and leave the rest of the file byte for byte.
+8. **Plain language.** Say "each order appears once" rather than "unique key", "some orders have no matching customer" rather than "orphans", "this join would double count revenue" rather than "fan-out". Show real values from the profile ("`status` is `completed` in 88% of rows, then `cancelled`, `refunded`, `pending`").
+9. **Finish every phase with `sl validate`** and fix every error before moving on.
 
 ## Setup
 
@@ -36,17 +37,17 @@ bun <skill dir>/scripts/sl.ts <command> [flags]
 
 Below, `sl` is short for that. Every command takes `--root <dir>` (or `SEMANTIC_ROOT`) and `--json`; use `--json` whenever you read output yourself and plain output when you show it to the owner. `sl <command> --help` prints the flags.
 
-At the start, ask the owner for the name to record as the approver (`--by "Dana Ruiz"`) and use it for every approval in the session.
-
-## Phase 0: resume
+## Phase 0: resume, or start in the first turn
 
 ```
 sl status --json
 ```
 
-If there is no `semantic.yaml`, ask what to call the project and run `sl init --name <name>`. Otherwise read the per-source progress (a source with `needs_focus: true` must be scoped before anything else; it clears once the owner has chosen a focus and the scope is at or under `settings.focus_threshold`, or the threshold was raised to the count the owner agreed, see Phase 2), `next_step` (its `phase`, a `message` and a suggested `command`) and `next_batch` (the tables to interview next, with the reasons they rank first), then continue from `next_step`.
+**No `semantic.yaml` yet.** Do the setup in this same turn, before asking any scoping question: propose a default project name from the company or the source (`acme`), run `sl init --name <default>`, then `sl add-source` and `sl introspect` (Phase 1) for every source the owner has already named. Then send one message that says what you found, that the project name can be changed by editing `name` in `semantic.yaml`, asks for the name to record as the approver (`--by "Dana Ruiz"`, used for every approval in the session), and opens scoping (Phase 2).
 
-`next_step.command` is a hint, not an instruction. Never run an `sl approve` or `sl goldens confirm` from it until you have read that item back and the owner has said yes. In the interview phase approve item by item as in Phase 5, and run Phase 6 (`sl check-join` plus a readback) before approving any join. Skim `open_questions` in the models of the current batch and raise them early. Tell the owner in one or two sentences where things stand ("Orders and customers are signed off; next are refunds, products and shipments").
+**Otherwise** read the per-source progress (a source with `needs_focus: true` must be scoped before anything else; it clears once the owner has chosen a focus and the scope is at or under `settings.focus_threshold`, or the threshold was raised to the count the owner agreed, see Phase 2), `next_step` (its `phase`, a `message` and a suggested `command`) and `next_batch` (the tables to interview next, with the reasons they rank first), then continue from `next_step`.
+
+`next_step.command` is a hint, not an instruction. In the interview phase it is the `sl check-join` of an unchecked join in the batch, or else an `sl approve` of a model that stands only as a placeholder for after its readback. Never run an `sl approve` or `sl goldens confirm` from it until you have read that item back and the owner has said yes. Skim `open_questions` in the models of the current batch and raise them early. Tell the owner in one or two sentences where things stand ("Orders and customers are signed off; next are refunds, products and shipments").
 
 ## Phase 1: intake, per source
 
@@ -57,11 +58,13 @@ sl add-source --name warehouse --dialect postgres --env WAREHOUSE_URL
 sl add-source --name lake --dialect duckdb --view "web_events=read_parquet('../data/web_events/*.parquet')"
 ```
 
-Then capture its tables by one of three paths. Load `references/intake.md` for details, dialect notes and the shared-context formats.
+Then capture its tables by one of three paths. Load `references/intake.md` for details, dialect notes, lake discovery and the shared-context formats.
 
 - **Live** (duckdb, postgres): `sl introspect --source <s>`.
 - **The agent's own SQL tool** (snowflake, bigquery, databricks, or any source the CLI cannot reach): `sl introspect --source <s> --emit-sql`, run each query with your warehouse connector or CLI, save `{"<id>": [rows]}`, then `sl introspect --source <s> --results <file>`. BigQuery: ask which datasets matter first and add `--schemas <dataset>,<dataset>`.
 - **Shared context** (no query access yet): `sl import --source <s> --format information_schema|dbt_manifest|ddl --file <path>`.
+
+For a lake folder whose datasets you do not know yet, register the duckdb source without views and list its files with `sl run` (see `intake.md`). To add or change a view later, edit `connection.views` in `sources/<s>.yaml` and rerun `sl introspect --source <s>`. Views have no row count until `sl profile` measures them.
 
 ## Phase 2: scope and focus
 
@@ -69,16 +72,14 @@ Then capture its tables by one of three paths. Load `references/intake.md` for d
 sl tables --source <s> --json
 ```
 
-Read `focus_threshold` from `semantic.yaml` (default 12). If more tables are in scope than that, **always** ask the owner whether to focus on specific tables before profiling anything. Load `references/scoping.md`, then:
+`semantic.yaml` holds `settings.focus_threshold` (12 unless changed). If more tables are in scope than that, **always** ask the owner whether to focus on specific tables before profiling anything. Load `references/scoping.md`, then:
 
-1. Run `sl tables --source <s> --groups` and summarise it in plain words: schemas, common prefixes (`fct_`, `dim_`, `stg_`), suffixes (`_daily`, `_backup`), and tables that look like noise.
-2. Offer choices by pattern: prefix `fct_*`, suffix `*_daily`, contains `*orders*`, a schema `analytics.*`, exact names, or `re:` for anything else. Suggest a default ("start with the 8 `fct_` and `dim_` tables, skip the `_backup` and `_tmp` copies").
-3. Preview: `sl scope --source <s> --include 'fct_*' --include 'dim_*' --exclude '*_backup'`. Read back the count and names.
-4. After the owner confirms, rerun the same command with `--write`.
+1. Run `sl tables --source <s> --groups` and summarise it in plain words: schemas, common prefixes (`fct_`, `dim_`, `stg_`), suffixes (`_daily`, `_backup`), and tables that look like noise. Its `Suggested scope` line (`suggested_scope` in `--json`) is one combined `sl scope` command: the include-suggested groups, less the noise tables they would catch. Start from it.
+2. Offer the default and the choices. Prefer patterns when the owner's rule is a pattern ("all the fact tables": `fct_*`) and exact names when the owner names a few tables (`--tables a,b,c`); with exact names, say that new tables are not picked up automatically.
+3. Preview: `sl scope --source <s> --include 'fct_*' --include 'dim_*' --exclude '*_backup'`. Read back the count and names, and preview again after every change.
+4. After the owner confirms the final list, rerun the same command with `--write`.
 
-Tell the owner tables can be added later with another `sl scope ... --write`. Even under the threshold, confirm that obvious noise is excluded.
-
-If the owner confirms they want more tables than `focus_threshold`, set `settings.focus_threshold` in `semantic.yaml` to the agreed count, editing the file in place and keeping its comments (add a `settings:` block with `focus_threshold: <n>` if the file has none), then run `sl validate`. Otherwise `sl status` keeps asking for focus and `sl draft` refuses. You can also draft one batch at a time with `sl draft --source <s> --tables a,b,c`.
+The first scoping message always says tables can be added later with another `sl scope ... --write`. Even under the threshold, confirm that obvious noise is excluded. If the owner wants more tables than `focus_threshold`, set `settings.focus_threshold` in `semantic.yaml` to the agreed count, editing the file in place, then run `sl validate`; otherwise `sl status` keeps asking for focus and `sl draft` refuses. You can also draft one batch at a time with `sl draft --source <s> --tables a,b,c`.
 
 ## Phase 3: profile
 
@@ -94,60 +95,61 @@ Profiles in-scope tables only. On a large source, profile one batch at a time wi
 sl draft --source <s> [--strip-prefix fct_,dim_]
 ```
 
-Writes draft models with inferred keys, dimensions, measures and joins for in-scope tables that have none. It never overwrites a model. Use `--strip-prefix` when the owner prefers `orders` to `fct_orders`. Run `sl validate`, then skim the drafts so your questions are concrete.
+Writes draft models with inferred keys, dimensions, measures and joins for in-scope tables that have none. It never overwrites a model. Use `--strip-prefix` when the owner prefers `orders` to `fct_orders`. Its guesses (a grain copied from "one row per ..." in a table comment, cents divided by 100.0, a currency taken from a single-valued `currency` column, unit prices as averages with a drafted `line_total`) come with open questions; each is something to confirm, not a fact. Run `sl validate`, then skim the drafts so your questions are concrete.
 
 ## Phase 5: interview, one batch at a time
 
 Load `references/interview-guide.md`. Take the tables in `next_batch` from `sl status --json` (`batch_size` tables, most important first). For each table:
 
-1. Ask what one row is, then go column by column only where the profile raises a question: status values, test data, units, time zones, which date counts, sensitive columns.
-2. Write each answer into `models/<source>/<model>.yaml` immediately: `description`, `grain`, `primary_key`, `filter`, `synonyms`, `tags`, `open_questions`.
-3. Read each measure and dimension back; on a yes, `sl approve --target <source>.<model>.<field> --by "<name>"`.
+1. Ask what one row is, then go column by column only where the profile raises a question: status values, test data, units, which date counts, sensitive columns, and for every time dimension which time zone "a day" means.
+2. Write each answer into `models/<source>/<model>.yaml` immediately: `description`, `grain`, `primary_key`, `filter`, `synonyms`, `tags`, `open_questions`. A rule that depends on a related table (test accounts flagged on customers, refunds of counted orders) is a join reference, `<join>.<column>`, through one of the model's own many_to_one or one_to_one joins; never a subquery or another table's name. See the guide.
+3. Check and read back any join a join reference uses (Phase 6) before reading back that measure or dimension. Read each measure and dimension back, ending with "Approve?"; on a yes, `sl approve --target <source>.<model>.<field> --by "<name>"`.
 4. When the grain, key and description are agreed, read the table back and `sl approve --target <source>.<model> --by "<name>"`.
 
-Offer sensible defaults, let the owner skip a column or table and come back, and stop for the day whenever they want: the files hold the state. After each batch, `sl validate` and `sl status`.
+A known caveat on an approved item (a period known to be wrong, a segment not covered) goes into that item's own `description`. When the owner offers a trusted figure, write a draft golden for it right away (Phase 9) and `sl goldens run` it during the interview. A table the owner leaves for later leaves scope (`sl scope --source <s> --exclude <table> --write`, naming the table as `sl tables` prints it and checking the preview lists it under Removed) and is named in the handoff; draft fields inside approved models do not block later phases and are named there too. Let the owner skip a column and come back, and stop whenever they want: the files hold the state. After each batch, `sl validate` and `sl status`.
 
 ## Phase 6: joins
 
-Load `references/joins.md`. For every join in the batch's models:
+Load `references/joins.md`. For every join in the batch's models, including joins a measure filter or dimension uses through a join reference:
 
 ```
 sl check-join --source <s> --model <m> --join <j>
 ```
 
-It writes `evidence` into the model; `sl check-join --source <s> --model <m> --all` checks every join of one model. Explain the result plainly (how many rows match, whether each side appears once, whether the join would repeat rows). Flag every `one_to_many` join: it multiplies the left table's totals. A `many_to_many` result cannot be approved as is; it needs a bridge table or a pre-aggregated model. Read the join back and approve it with `sl approve --target <s>.<m>.<j> --by "<name>"`.
+It writes `evidence` into the model; `sl check-join --source <s> --model <m> --all` checks every join of one model. Explain the result plainly (how many rows match, whether each side appears once, whether the join would repeat rows). Flag every `one_to_many` join: it multiplies the left table's totals. A `many_to_many` result cannot be approved as is; it needs a bridge table or a pre-aggregated model. A join you add yourself, guessed from names or from matching values, has `origin: inferred`. Read the join back and approve it with `sl approve --target <s>.<m>.<j> --by "<name>"`.
 
 ## Phase 7: metrics
 
-Once the underlying measures are approved, ask which ratios and combined figures the business reports (average order value, conversion rate, net revenue). Write them in `metrics.yaml` as `ratio` or `derived` per `spec.md`, each with a `description`, `format` and the measures it uses. Read back the formula in words ("revenue divided by number of orders, both excluding cancelled orders"), then `sl approve --target metric:<name> --by "<name>"`. An approved metric may use approved measures only.
+Once the underlying measures are approved, ask which ratios and combined figures the business reports (average order value, conversion rate, net revenue). Write them in `metrics.yaml` as `ratio` or `derived` per `spec.md`, each with a `description`, `format` and the measures it uses. A metric that combines measures of several models groups only by dimensions that exist, with the same name, in every model it uses: to date refunds by the original order's month, give the refunds model a dimension `order_date` with `expr: order.created_at` (a join reference) and approve it. Read back the formula in words ("revenue divided by number of orders, both excluding cancelled orders. Approve?"), then `sl approve --target metric:<name> --by "<name>"`. An approved metric may use approved measures only.
 
 ## Phase 8: access
 
-Load `references/access.md`. Ask who will use the data, group them into roles, and for each role what it may see, what it must never see, and which rows it is limited to. Write `access.yaml`: allow lists that fail closed, `deny.tags: [pii]` for sensitive columns, row filters with `{{ user.<attribute> }}`. Read every role back, then `sl approve --target access --by "<name>"`.
+Load `references/access.md`. Ask who will use the data, group them into roles, and for each role what it may see, what it must never see, and which rows it is limited to. Ask the default-role question open, note that the most limited role is the safe default, and state the concrete consequence of the owner's choice. Write `access.yaml`: allow lists that fail closed, `deny.tags: [pii]` for sensitive columns, row filters with `{{ user.<attribute> }}`, `open_questions` for anything unsettled. `deny.fields` names dimensions and measures only; a join is hidden when its target model is not allowed or is denied. A row filter on a joined model limits only the joined rows on a left join; say so in the readback. Read every role back, then the whole file (again after any change made after the per-role readbacks), then `sl approve --target access --by "<name>"`.
 
 ## Phase 9: verify with goldens
 
-Load `references/verification.md`. Pick about ten questions the owner already knows the answer to that together cover the approved measures and metrics. Write each as `goldens/<name>.yaml` with a request and hand-written SQL taken from the model YAML, then:
+Load `references/verification.md`. Pick about ten questions the owner already knows the answer to that together cover the approved measures and metrics. Write each as `goldens/<name>.yaml` with a request and hand-written SQL taken from the model YAML; leave `role` and `user` out until `access.yaml` exists. Then:
 
 ```
 sl goldens run --name <g>
 ```
 
-Compare the answer with a figure the owner trusts. Only when they agree it matches: `sl goldens confirm --name <g> --by "<name>"`. A mismatch sends you back to the interview for that measure. `sl goldens check` reruns every approved golden and is the regression gate after any change.
+Compare the answer with a figure the owner trusts and agree a tolerance (0 for figures finance signs off). Only when the measures it uses are approved and the owner agrees it matches: `sl goldens confirm --name <g> --by "<name>" --tolerance <t>`. It prints any draft fields the request uses; approve them after a readback first. A mismatch sends you back to the interview for that measure. `sl goldens check` reruns every approved golden and is the regression gate after any change.
 
 ## Phase 10: handoff
 
-`sl validate`, `sl status`, then give the owner a short summary:
+`sl validate`, `sl status --json`, then give the owner a short summary:
 
 - **Approved**: models, measures, metrics, joins, access roles and goldens, by source.
-- **Still draft**: what is left and why (skipped, waiting on someone, out of the current scope).
-- **Open questions**: every `open_questions` entry and cross-source question, with who could answer it.
+- **Still draft**: deferred tables (now out of scope), draft fields in approved models (`draft_fields` in status), and draft fields a role or golden relies on, each with why (skipped, waiting on someone, deferred). A draft measure known to give a wrong number is fixed or removed first.
+- **Open questions**: every `open_questions` entry in the models and in `access.yaml`, and every cross-source question, with who could answer it. Delete questions the owner has since answered.
 - **How to continue**: "Ask me to continue the semantic layer"; the next batch from `sl status`; how to widen scope.
 
 ## Data lakes and many sources
 
 - Register each source separately (a warehouse, a lake of Parquet files, an events database) and run Phases 1 to 6 per source: scope, profile and interview each one on its own.
 - Joins exist only within one source. When the owner asks a question that spans sources ("revenue by marketing campaign" with orders in the warehouse and campaigns in the lake), record it as an open question on the relevant models and in the handoff; do not model it.
+- A metric spanning two sources (customer acquisition cost = lake spend / warehouse new customers) is two measures, one per source, each approved with its own golden. Describe the combination and its formula in both measures' descriptions and in the handoff; do not write a metric.
 - The same table name may appear in two sources; models are named per source (`warehouse.orders`, `lake.orders`). Ask which one is the trusted one for each figure and say so in the descriptions.
 - For a lake of files, one DuckDB source with a view per dataset keeps scoping and profiling the same as a database.
 
@@ -155,10 +157,10 @@ Compare the answer with a figure the owner trusts. Only when they agree it match
 
 | Moment | Load |
 |---|---|
-| Adding a source, any warehouse dialect, `--emit-sql`, imports, manual snapshots | `references/intake.md` |
-| More tables than `focus_threshold`, or widening scope | `references/scoping.md` |
-| Interviewing a batch, writing model YAML, readbacks, approvals | `references/interview-guide.md` |
+| Adding a source, any warehouse dialect, `--emit-sql`, imports, lake files, manual snapshots | `references/intake.md` |
+| More tables than `focus_threshold`, widening scope, deferring a table | `references/scoping.md` |
+| Interviewing a batch, model YAML, join references, time zones, readbacks, approvals | `references/interview-guide.md` |
 | Checking or explaining a join | `references/joins.md` |
 | Roles, PII, row-level rules | `references/access.md` |
-| Goldens and regression checks | `references/verification.md` |
+| Goldens, tolerances and regression checks | `references/verification.md` |
 | Exact file formats, names, CLI flags | `references/spec.md` |

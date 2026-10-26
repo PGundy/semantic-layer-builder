@@ -201,8 +201,10 @@ function mergePrevious(tables: Map<string, SnapshotTable>, previous: Snapshot, k
       return merged;
     });
     t.description = t.description ?? prev.description ?? null;
-    if ((t.row_count === null || t.row_count === undefined) && t.kind !== "view") t.row_count = prev.row_count ?? null;
-    if (prev.profiled_at && unprofiled === 0) t.profiled_at = prev.profiled_at;
+    const keepProfile = Boolean(prev.profiled_at) && unprofiled === 0;
+    if (keepProfile) t.profiled_at = prev.profiled_at;
+    // A view's count comes from profiling, so it survives as long as the profile does.
+    if ((t.row_count === null || t.row_count === undefined) && (t.kind !== "view" || keepProfile)) t.row_count = prev.row_count ?? null;
     const covered = (cols: string[]) => cols.length > 0 && cols.every((c) => names.has(c));
     t.unique_keys = (prev.unique_keys ?? []).filter(covered);
     if (keepKeys.primary && !t.primary_key?.length && prev.primary_key && covered(prev.primary_key)) t.primary_key = prev.primary_key;

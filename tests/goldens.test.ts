@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
-import { compareRows, goldenPlan } from "../skills/semantic-layer/scripts/lib/goldens.ts";
-import type { Golden, QueryPlan } from "../skills/semantic-layer/scripts/lib/types.ts";
+import { compareRows, goldenDraftFields, goldenPlan } from "../skills/semantic-layer/scripts/lib/goldens.ts";
+import type { Golden, Metric, Model, QueryPlan } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { duckdbSource, initProject, sl, tempRoot } from "./helpers.ts";
 
@@ -199,6 +199,82 @@ describe("goldenPlan", () => {
   });
 });
 
+const APPROVED = { status: "approved" as const, approved_by: "Dana", approved_at: "2026-01-15" };
+
+function ordersModel(revenue: "draft" | "approved", region: "draft" | "approved" = "approved"): Model {
+  return {
+    model: "orders",
+    source: "wh",
+    table: "main.orders",
+    status: "draft",
+    dimensions: [
+      { name: "region", expr: "region", type: "string", ...(region === "approved" ? APPROVED : { status: "draft" as const }) },
+      { name: "created", expr: "created_at", type: "time", ...APPROVED },
+    ],
+    measures: [
+      { name: "revenue", expr: "amount", agg: "sum", description: "Revenue.", ...(revenue === "approved" ? APPROVED : { status: "draft" as const }) },
+      { name: "order_count", agg: "count", description: "Orders.", ...APPROVED },
+    ],
+    joins: [{ name: "customer", to: "customers", keys: [{ from: "customer_id", to: "id" }], relationship: "many_to_one", status: "draft" }],
+  };
+}
+
+describe("goldenDraftFields", () => {
+  const golden = (request: Golden["request"]): Golden => ({ name: "g", question: "?", request, sql: "select 1", status: "draft" });
+
+  test("lists draft measures and dimensions from measures, dimensions, filters and order_by, once each", () => {
+    const g = golden({
+      source: "wh",
+      measures: ["orders.revenue", "orders.order_count"],
+      dimensions: ["orders.region", "orders.created:month"],
+      filters: [{ field: "orders.region", op: "eq", value: "east" }],
+      order_by: [{ field: "orders.revenue", direction: "desc" }],
+    });
+    expect(goldenDraftFields(g, [ordersModel("draft", "draft")], [])).toEqual(["wh.orders.revenue", "wh.orders.region"]);
+    expect(goldenDraftFields(g, [ordersModel("approved")], [])).toEqual([]);
+  });
+
+  test("a metric lists itself when draft and the draft measures it combines", () => {
+    const metrics: Metric[] = [
+      { name: "aov", source: "wh", type: "ratio", numerator: "orders.revenue", denominator: "orders.order_count", status: "draft" },
+      { name: "net", source: "wh", type: "derived", expr: "{orders.revenue} - {orders.order_count}", ...APPROVED },
+      { name: "aov", source: "lake", type: "ratio", numerator: "x.y", denominator: "x.z", ...APPROVED },
+    ];
+    expect(goldenDraftFields(golden({ source: "wh", measures: ["aov"] }), [ordersModel("draft")], metrics)).toEqual(["metric:aov", "wh.orders.revenue"]);
+    expect(goldenDraftFields(golden({ source: "wh", measures: ["net"] }), [ordersModel("draft")], metrics)).toEqual(["wh.orders.revenue"]);
+    expect(goldenDraftFields(golden({ source: "wh", measures: ["net"] }), [ordersModel("approved")], metrics)).toEqual([]);
+  });
+
+  test("a metric reference sl approve rejects (spaces in a placeholder or a ratio side) resolves to nothing", () => {
+    const metrics: Metric[] = [
+      { name: "spaced", source: "wh", type: "derived", expr: "{ orders.revenue } - {orders.order_count}", ...APPROVED },
+      { name: "odd_ratio", source: "wh", type: "ratio", numerator: " orders.revenue", denominator: "orders.order_count", ...APPROVED },
+    ];
+    expect(goldenDraftFields(golden({ source: "wh", measures: ["spaced"] }), [ordersModel("draft")], metrics)).toEqual([]);
+    expect(goldenDraftFields(golden({ source: "wh", measures: ["odd_ratio"] }), [ordersModel("draft")], metrics)).toEqual([]);
+  });
+
+  test("malformed models and metrics are skipped, not thrown on", () => {
+    const g = golden({ source: "wh", measures: ["orders.revenue", "aov"], dimensions: ["orders.region"] });
+    const badDims = { ...ordersModel("draft", "draft"), dimensions: {} } as unknown as Model;
+    const nullItem = { ...ordersModel("draft", "draft"), measures: [null] } as unknown as Model;
+    expect(goldenDraftFields(g, [badDims], [])).toEqual([]);
+    expect(goldenDraftFields(g, [nullItem], [])).toEqual([]);
+    expect(goldenDraftFields(g, [null as unknown as Model, ordersModel("draft")], "x" as unknown as Metric[])).toEqual(["wh.orders.revenue"]);
+    expect(goldenDraftFields(g, "x" as unknown as Model[], [null as unknown as Metric])).toEqual([]);
+    const noDims = { ...ordersModel("draft"), dimensions: null } as unknown as Model;
+    expect(goldenDraftFields(g, [noDims], [])).toEqual(["wh.orders.revenue"]);
+  });
+
+  test("unknown references, other sources, joins and malformed requests are left to validate", () => {
+    const other: Model = { ...ordersModel("draft"), source: "lake" };
+    expect(goldenDraftFields(golden({ source: "wh", measures: ["orders.revenue"] }), [other], [])).toEqual([]);
+    expect(goldenDraftFields(golden({ source: "wh", measures: ["orders.nope", "nope", "orders.customer", "Bad Ref"] }), [ordersModel("draft")], [])).toEqual([]);
+    expect(goldenDraftFields({ ...golden({ source: "wh" }), request: undefined as unknown as Golden["request"] }, [], [])).toEqual([]);
+    expect(goldenDraftFields(golden({ source: "wh", measures: "orders.revenue" as unknown as string[], filters: [null as never] }), [ordersModel("draft")], [])).toEqual([]);
+  });
+});
+
 const GOLDEN_YAML = `# Revenue by region, as Finance reports it in the Q1 pack.
 name: revenue_by_region
 question: What was revenue by region?
@@ -339,6 +415,95 @@ describe("goldens CLI on duckdb", () => {
     expect(r.err).toContain("read-only");
     const emit = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region", "--emit-sql"]);
     expect(emit.code).toBe(1);
+  });
+
+  test("confirm lists the draft fields the request uses before recording, and JSON carries them", async () => {
+    const t = await setup();
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), ordersModel("draft"));
+    const human = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0"]);
+    expect(human.code).toBe(0);
+    const notice = human.out.indexOf("This golden's request uses draft field(s): wh.orders.revenue.");
+    expect(notice).toBe(0);
+    expect(human.out).toContain("then confirm this golden again; sl validate warns until then.");
+    expect(human.out).not.toContain("rests on draft definitions");
+    expect(human.out.indexOf("Recorded 3 expected rows")).toBeGreaterThan(notice);
+    expect(human.out).toContain("(tolerance 0)");
+
+    const json = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--json"]);
+    expect(json.code).toBe(0);
+    expect(json.json<{ draft_fields: string[]; tolerance: number }>()).toMatchObject({ draft_fields: ["wh.orders.revenue"], tolerance: 0 });
+
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), ordersModel("approved"));
+    const clean = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0"]);
+    expect(clean.out).not.toContain("draft field");
+    expect(clean.out).toContain("(tolerance 0)");
+    const cleanJson = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0", "--json"]);
+    expect(cleanJson.json<{ draft_fields: string[] }>().draft_fields).toEqual([]);
+  });
+
+  test("confirm records the rows when models or metrics.yaml are malformed, noting the files it could not read", async () => {
+    const t = await setup();
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), ordersModel("draft"));
+    writeFileSync(join(t.root, "metrics.yaml"), 'metrics: "x"\n');
+    const nonArray = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0"]);
+    expect(nonArray.code).toBe(0);
+    expect(nonArray.out).toContain("draft field(s): wh.orders.revenue.");
+    expect(nonArray.out).toContain("Recorded 3 expected rows");
+    expect(nonArray.err).not.toContain("TypeError");
+
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), { ...ordersModel("draft"), dimensions: {} });
+    const badDims = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0"]);
+    expect(badDims.code).toBe(0);
+    expect(badDims.out).not.toContain("draft field");
+    expect(badDims.err).not.toContain("TypeError");
+
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), ordersModel("draft"));
+    writeFileSync(join(t.root, "models", "wh", "broken.yaml"), "model: [unclosed\n");
+    writeFileSync(join(t.root, "metrics.yaml"), "metrics: [\n");
+    const broken = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0", "--json"]);
+    expect(broken.code).toBe(0);
+    expect(broken.json<{ written: boolean; draft_fields: string[] }>()).toMatchObject({ written: true, draft_fields: ["wh.orders.revenue"] });
+    expect(broken.err).toContain("Could not read models/wh/broken.yaml, metrics.yaml to list draft fields (");
+    expect(broken.err).toContain("run sl validate.");
+    expect(readYaml<Golden>(join(t.root, "goldens", "revenue_by_region.yaml")).status).toBe("approved");
+  });
+
+  test("confirming again with a new --tolerance re-records the rows; without it the file's tolerance is kept", async () => {
+    const t = await setup();
+    const first = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana"]);
+    expect(first.out).toContain("(tolerance 0.005, the default; agree one with the owner and pass --tolerance)");
+    await mutate(join(t.dir, "wh.duckdb"), "update orders set amount = 300.00 where id = 3");
+    const again = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Lee", "--tolerance", "0"]);
+    expect(again.code).toBe(0);
+    const saved = readYaml<Golden>(t.goldenPath);
+    expect(saved.expected?.tolerance).toBe(0);
+    expect(saved.expected?.rows).toContainEqual({ region: "west", revenue: 300, orders: 1 });
+    expect(saved.confirmed_by).toBe("Lee");
+    const kept = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Lee"]);
+    expect(kept.out).toContain("(tolerance 0, kept from the file)");
+    expect(readYaml<Golden>(t.goldenPath).expected?.tolerance).toBe(0);
+  });
+
+  test("a SQL error from the database is a plain user error in run, confirm and check", async () => {
+    const t = await setup(GOLDEN_YAML.replace("from orders\n", "from no_such_table\n"));
+    for (const sub of ["run", "confirm"]) {
+      const r = await sl(t.root, ["goldens", sub, "--name", "revenue_by_region", "--by", "Dana"]);
+      expect(r.code).toBe(1);
+      expect(r.err).toStartWith(`sl goldens: Query failed: `);
+      expect(r.err).toContain("no_such_table");
+      expect(r.err).not.toContain("unexpected error");
+      expect(r.err).not.toMatch(/\n\s+at /);
+    }
+    expect(readYaml<Golden>(t.goldenPath).status).toBe("draft");
+
+    const g = readYaml<Golden>(t.goldenPath);
+    writeYaml(t.goldenPath, { ...g, status: "approved", confirmed_by: "Dana", confirmed_at: "2026-01-15", expected: { tolerance: 0, rows: [{ n: 1 }] } });
+    const check = await sl(t.root, ["goldens", "check", "--json"]);
+    expect(check.code).toBe(1);
+    const diff = check.json<{ results: { diffs: string[] }[] }>().results[0]!.diffs[0]!;
+    expect(diff).toStartWith("The query did not run: ");
+    expect(diff).not.toContain("Query failed");
+    expect(diff).toContain("no_such_table");
   });
 
   test("usage errors are user errors", async () => {

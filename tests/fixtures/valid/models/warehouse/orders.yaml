@@ -27,14 +27,19 @@ dimensions:
     type: string
     description: Region the order ships to.
     status: draft
+  - name: customer_region
+    expr: customer.region
+    type: string
+    description: Home region of the customer who placed the order; blank when the customer is missing.
+    status: draft
 measures:
   - name: revenue
     expr: amount_cents / 100.0
     agg: sum
-    filter: status <> 'cancelled'
+    filter: status <> 'cancelled' and coalesce(customer.is_test_account, false) = false
     format: currency
     currency: USD
-    description: Order value excluding cancelled orders.
+    description: Order value excluding cancelled orders and orders from test accounts; orders whose customer is missing count.
     synonyms: [sales]
     status: approved
     approved_by: Dana Ruiz

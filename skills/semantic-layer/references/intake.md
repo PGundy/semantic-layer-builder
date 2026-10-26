@@ -38,6 +38,17 @@ sl add-source --name local --dialect duckdb --database ../data/analytics.duckdb
 
 Relative paths resolve from the semantic root. For cloud storage, add `connection.setup` statements to `sources/<source>.yaml` by hand (see `spec.md`), for example `INSTALL httpfs`, `LOAD httpfs` and `CREATE SECRET (TYPE s3, PROVIDER credential_chain)`, which picks up credentials from the environment or the owner's AWS profile. Never write a key into `setup`.
 
+**Finding the datasets in a folder.** When you do not yet know what a lake folder holds, register the source without views and list its files:
+
+```
+sl add-source --name lake --dialect duckdb
+sl run --source lake --sql "select file from glob('../data/lake/**')"
+```
+
+The path in `glob` is relative to the semantic root, like a view's. Read the listing for datasets: a folder of yearly or dated Parquet files is one dataset, so its view reads them all with a glob (`read_parquet('../data/lake/web_events/*.parquet')`); a single file is one view. Show the owner the dataset names, not the file list.
+
+**Adding or changing a view later.** Edit `connection.views` in `sources/<source>.yaml` in place, one `name: relation` line per dataset, then rerun `sl introspect --source <source>`. There is no need to delete the source file or rerun `add-source`. A view for a dataset the owner rules out can simply be removed from the list.
+
 ## Live intake
 
 ```
@@ -45,7 +56,9 @@ sl introspect --source warehouse
 sl tables --source warehouse
 ```
 
-`introspect` captures schemas, tables, columns, types, declared keys and row estimates. Rerun it when the owner adds tables. Then go to scoping.
+`introspect` captures schemas, tables, columns, types, declared keys and row estimates. Rerun it when the owner adds tables. Views, including every view of a DuckDB lake, have no row count yet; introspect says so ("5 views have no row count yet; sl profile measures them.") and `sl tables` shows `?` until `sl profile` runs. When the owner needs sizes to choose a focus, profile the candidate tables first or count one with `sl run --source <s> --sql "select count(*) from <view>"`. Then go to scoping.
+
+Do this in the first turn of a new project, right after `sl init` and `sl add-source` and before asking any scoping question (SKILL.md Phase 0): a later turn resumes only from what is written under the semantic root.
 
 ## The query-plan protocol
 
@@ -92,6 +105,10 @@ If a query fails because of a dialect detail (a function name, quoting, permissi
 Profiles and join checks produce one query per table or join. For a large source, profile in batches (`sl profile --source wh --tables a,b,c --emit-sql`) so each results file stays small.
 
 ## Dialect notes
+
+### Time zones, every dialect
+
+The CLI runs every query with the session time zone UTC, so a time grain over a timestamp-with-time-zone column (`timestamptz` in Postgres, `TIMESTAMP WITH TIME ZONE` in DuckDB, `TIMESTAMP_TZ` and `TIMESTAMP_LTZ` in Snowflake) buckets in UTC, and goldens are recorded that way. When you run a plan with your own tool, set the session to UTC first: Snowflake `alter session set timezone = 'UTC'`, Databricks `SET TIME ZONE 'UTC'`; BigQuery truncates in UTC unless a function is given a zone. A dimension that must follow another zone converts in its `expr` (Postgres and DuckDB: `created_at at time zone 'America/New_York'`); the interview asks which zone "a day" means for every time dimension (`interview-guide.md`).
 
 ### Snowflake
 

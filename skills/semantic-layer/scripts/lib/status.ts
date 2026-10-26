@@ -62,9 +62,10 @@ export interface SourceStatus {
   tables_without_model: number;
   unmodeled_tables: string[];
   unprofiled_tables: string[];
-  // Draft models on in-scope tables.
+  // Draft models on in-scope tables; only these hold the interview phase open.
   draft_models: string[];
   // Approved models on in-scope tables that still hold draft dimensions, measures or joins.
+  // They do not block later phases; the handoff names them.
   models_with_draft_fields: string[];
   // Draft dimensions, measures and joins of models on in-scope tables, as model.field.
   draft_fields: string[];
@@ -98,10 +99,30 @@ export interface ProjectStatus {
   settings: { focus_threshold: number; batch_size: number };
   sources: SourceStatus[];
   metrics: ApprovalCount;
-  access: { state: "missing" | "draft" | "approved"; roles: number };
+  // open_questions counts access.yaml's top-level and per-role open questions.
+  access: { state: "missing" | "draft" | "approved"; roles: number; open_questions: number };
+  // Open questions across the reported sources' models and access.yaml.
+  open_questions: number;
   goldens: ApprovalCount;
   next_batch: { source: string; tables: BatchEntry[] } | null;
   next_step: NextStep;
+}
+
+// The number of strings in a value read from YAML that should be a string list.
+function stringCount(v: unknown): number {
+  return Array.isArray(v) ? v.filter((q) => typeof q === "string" && q.trim() !== "").length : 0;
+}
+
+// Open questions in access.yaml, at the top level and per role. The file is read
+// defensively: anything that is not a list of strings counts as none.
+function accessOpenQuestions(access: unknown): number {
+  if (!access || typeof access !== "object") return 0;
+  const a = access as { open_questions?: unknown; roles?: unknown };
+  const roles = Array.isArray(a.roles) ? a.roles : [];
+  return (
+    stringCount(a.open_questions) +
+    roles.reduce<number>((n, r) => n + (r && typeof r === "object" ? stringCount((r as { open_questions?: unknown }).open_questions) : 0), 0)
+  );
 }
 
 function count(items: (Approval | undefined)[]): ApprovalCount {
@@ -291,27 +312,31 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     };
   }
 
-  const drafty = sources.find((s) => s.draft_models.length > 0 || s.models_with_draft_fields.length > 0);
+  // Only draft models hold the interview open; draft fields inside approved models are
+  // reported in draft_fields and models_with_draft_fields and named in the handoff.
+  const drafty = sources.find((s) => s.draft_models.length > 0);
   if (drafty) {
     const s = drafty.source;
-    const batchModels = drafty.next_batch.map((b) => b.model).filter((m): m is string => m !== null);
-    const target = batchModels[0] ?? drafty.draft_models[0] ?? drafty.models_with_draft_fields[0]!;
+    const batchModels = drafty.next_batch
+      .map((b) => b.model)
+      .filter((m): m is string => m !== null && drafty.draft_models.includes(m));
+    const models = batchModels.length ? batchModels : drafty.draft_models.slice(0, 1);
+    const target = models[0]!;
     const what = batchModels.length
       ? `the next batch in "${s}": ${batchModels.join(", ")}`
-      : `the draft models in "${s}": ${preview([...drafty.draft_models, ...drafty.models_with_draft_fields])}`;
-    // The first draft field of the target model, else the model itself once its fields are settled.
-    const field = drafty.draft_fields.find((f) => f.startsWith(`${target}.`));
+      : `the draft models in "${s}": ${preview(drafty.draft_models)}`;
+    // A join is measured before it is read back, so an unchecked join in the batch comes first.
+    const join = drafty.unchecked_joins.find((j) => models.includes(j.split(".")[0]!));
     return {
       phase: "interview",
       source: s,
       message:
         `Interview the owner about ${what}. Read each dimension, measure and join back in plain English and approve it ` +
-        "on its own once the owner confirms it; then settle the model's open questions, grain and key and approve the model.",
-      // A join is measured before it is read back, so an unchecked join points at check-join first.
-      command:
-        field && drafty.unchecked_joins.includes(field)
-          ? `sl check-join --source ${s} --model ${field.split(".")[0]} --join ${field.split(".")[1]}`
-          : `sl approve --target ${s}.${field ?? target} --by "<owner>"`,
+        "on its own only after the owner confirms that readback; then settle the model's open questions, grain and key, " +
+        "read the model back and approve it once they confirm. Fields the owner leaves for later stay draft and go in the handoff.",
+      command: join
+        ? `sl check-join --source ${s} --model ${join.split(".")[0]} --join ${join.split(".")[1]}`
+        : `sl approve --target ${s}.${target} --by "<owner>"`,
     };
   }
 
@@ -343,7 +368,9 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     if (status.access.state === "draft" && status.access.roles === 0) {
       return {
         phase: "access",
-        message: "access.yaml has no roles yet. Ask the owner who may see what: roles, row filters and denied fields or tags. Write them as a draft.",
+        message:
+          "access.yaml has no roles yet. Ask the owner who may see what: roles, row filters and denied fields or tags. Write them as a draft." +
+          (status.access.open_questions ? ` Settle its ${status.access.open_questions} open question(s) with them.` : ""),
         command: "sl validate",
       };
     }
@@ -355,7 +382,9 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         }
       : {
           phase: "access",
-          message: "access.yaml is a draft. Read every role back to the owner and approve it once they confirm.",
+          message:
+            "access.yaml is a draft. Read every role back to the owner and approve it once they confirm." +
+            (status.access.open_questions ? ` Settle its ${status.access.open_questions} open question(s) first.` : ""),
           command: `sl approve --target access --by "<owner>"`,
         };
   }
@@ -370,7 +399,14 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     };
   }
 
-  return { phase: "done", message: "Every phase is complete. Rerun sl validate after any change.", command: "sl validate" };
+  const left = sources.flatMap((s) => s.draft_fields.map((f) => `${s.source}.${f}`));
+  return {
+    phase: "done",
+    message:
+      "Every phase is complete. Rerun sl validate after any change." +
+      (left.length ? ` ${left.length} field(s) stay draft; name them in the handoff: ${preview(left)}.` : ""),
+    command: "sl validate",
+  };
 }
 
 // Reads the project and every source (or only `only`) and works out where the layer stands.
@@ -393,13 +429,15 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
       ? "draft"
       : "missing";
   const goldens = listGoldens(root).map((g) => g.golden);
+  const accessQuestions = accessOpenQuestions(access);
 
   const base = {
     project: project.name,
     settings,
     sources,
     metrics: count(metrics),
-    access: { state: accessState, roles: access?.roles?.length ?? 0 },
+    access: { state: accessState, roles: Array.isArray(access?.roles) ? access.roles.length : 0, open_questions: accessQuestions },
+    open_questions: sources.reduce((n, s) => n + s.open_questions, accessQuestions),
     goldens: count(goldens),
   };
   const step = nextStep(base, names.length);

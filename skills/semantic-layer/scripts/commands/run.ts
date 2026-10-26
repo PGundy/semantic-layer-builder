@@ -1,12 +1,23 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { openAdapter } from "../lib/adapters/index.ts";
+import type { Adapter, QueryResult } from "../lib/adapters/index.ts";
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
+import { errorMessage, openQueryAdapter } from "../lib/plan.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
 import { loadSource } from "../lib/project.ts";
 import { assertReadOnly } from "../lib/sql-guard.ts";
+
+// Runs the query, turning a database error (a typo, an unknown column) into a plain UserError.
+async function queryOrFail(adapter: Adapter, sql: string): Promise<QueryResult> {
+  try {
+    return await adapter.query(sql);
+  } catch (e) {
+    if (e instanceof UserError) throw e;
+    throw new UserError(`Query failed: ${errorMessage(e)}`);
+  }
+}
 
 const spec: CommandSpec = {
   summary: "Run one read-only query against a duckdb or postgres source.",
@@ -21,9 +32,9 @@ const spec: CommandSpec = {
     const sql = inline ?? readFileSync(resolve(ctx.cwd, file!), "utf8");
     assertReadOnly(sql);
     const limit = Number(str(values, "limit") ?? 100);
-    const adapter = await openAdapter(ctx.root, loadSource(ctx.root, sourceName), ctx.env);
+    const adapter = await openQueryAdapter(ctx.root, loadSource(ctx.root, sourceName), ctx.env);
     try {
-      const { columns, rows } = await adapter.query(sql);
+      const { columns, rows } = await queryOrFail(adapter, sql);
       const shown = rows.slice(0, limit);
       if (ctx.json) ctx.out(formatJson({ columns, rows: shown, row_count: rows.length, truncated: rows.length > shown.length }));
       else {

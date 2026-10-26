@@ -9,9 +9,12 @@ request:
   filters:
     - { field: orders.status, op: in, value: [completed, shipped] }
 sql: |
-  select ship_region, sum(amount_cents / 100.0) filter (where status <> 'cancelled') / count(*) as average_order_value,
+  select o.ship_region,
+         sum(o.amount_cents / 100.0) filter (where o.status <> 'cancelled' and coalesce(c.is_test_account, false) = false)
+           / count(*) as average_order_value,
          count(*) as order_count
-  from public.fct_orders
-  where ship_region = 'west' and status in ('completed', 'shipped')
+  from public.fct_orders o
+  left join public.dim_customers c on c.customer_id = o.customer_id
+  where o.ship_region = 'west' and o.status in ('completed', 'shipped')
   group by 1
 status: draft

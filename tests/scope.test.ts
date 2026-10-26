@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DATE_PATTERN, NOISE_PATTERN, groupTables } from "../skills/semantic-layer/scripts/lib/groups.ts";
+import { groupRowsText, scopeCommand } from "../skills/semantic-layer/scripts/commands/tables.ts";
+import { DATE_PATTERN, NOISE_PATTERN, groupTables, suggestScope } from "../skills/semantic-layer/scripts/lib/groups.ts";
 import { qualifiedName } from "../skills/semantic-layer/scripts/lib/naming.ts";
 import { matchesPattern } from "../skills/semantic-layer/scripts/lib/patterns.ts";
 import { noiseReason } from "../skills/semantic-layer/scripts/lib/rank.ts";
@@ -136,6 +137,7 @@ describe("groupTables", () => {
     ]);
     expect(find("prefix", "fct_")?.tables).toContain("analytics.fct_orders_v2");
     expect(find("prefix", "fct_")?.total_rows).toBe(78000);
+    expect(find("prefix", "fct_")?.rows_unknown).toBe(0);
     expect(find("prefix", "raw_hubspot_")).toBeUndefined();
     for (const g of groups) expect(g.reason.length).toBeGreaterThan(10);
   });
@@ -192,6 +194,87 @@ describe("groupTables", () => {
 });
 
 describe("groupTables edge cases", () => {
+  test("unknown row counts stay unknown in group totals", () => {
+    const unknown = (name: string): SnapshotTable => ({ ...table("p", name, 0), row_count: null });
+    const { row_count: _r, ...noCount } = table("p", "fct_c", 0);
+    const tabs = [table("p", "fct_a", 30551), unknown("fct_b"), noCount, unknown("dim_a"), unknown("dim_b")];
+    const groups = groupTables(tabs);
+    const fct = groups.find((g) => g.key === "fct_");
+    expect(fct).toMatchObject({ total_rows: 30551, rows_unknown: 2 });
+    expect(groupRowsText(fct!)).toBe("30,551+");
+    const dim = groups.find((g) => g.key === "dim_");
+    expect(dim).toMatchObject({ total_rows: null, rows_unknown: 2 });
+    expect(groupRowsText(dim!)).toBe("?");
+    expect(groupRowsText({ total_rows: 0, rows_unknown: 0 })).toBe("0");
+    expect(groupRowsText({ total_rows: 1234, rows_unknown: 0 })).toBe("1,234");
+  });
+
+  test("the suggested scope includes the include groups and excludes the noise they would select", () => {
+    expect(suggestScope(TABLES, groupTables(TABLES))).toEqual({ include: ["dim_*", "fct_*"], exclude: [] });
+
+    const tabs = [
+      table("p", "fct_orders", 10),
+      table("p", "fct_payments", 10),
+      table("p", "fct_orders_backup", 10),
+      table("p", "fct_payments_backup", 10),
+      table("p", "fct_sessions_tmp", 10),
+      table("p", "dim_customers", 10),
+      table("p", "dim_products", 10),
+      table("p", "orders_backup", 10),
+      table("p", "events_2024", 10),
+    ];
+    const groups = groupTables(tabs);
+    const suggested = suggestScope(tabs, groups);
+    expect(suggested).toEqual({ include: ["fct_*", "dim_*"], exclude: ["*_backup", "p.fct_sessions_tmp"] });
+    const selected = tabs.filter(
+      (t) => suggested.include.some((p) => matchesPattern(p, t)) && !suggested.exclude.some((p) => matchesPattern(p, t)),
+    );
+    expect(selected.map((t) => t.name).sort()).toEqual(["dim_customers", "dim_products", "fct_orders", "fct_payments"]);
+
+    // An include group inside another include group adds nothing.
+    const nested = [table("p", "fct_a", 1), table("p", "fct_sales_a", 1), table("p", "fct_sales_b", 1)];
+    expect(suggestScope(nested, groupTables(nested)).include).toEqual(["fct_*"]);
+
+    // With no include group every table is selected, so every noise table is excluded.
+    const plain = [table("p", "orders", 1), table("p", "orders_tmp", 1), table("p", "payments_tmp", 1), table("p", "schema_migrations", 1)];
+    expect(suggestScope(plain, groupTables(plain))).toEqual({ include: [], exclude: ["*_tmp", "p.schema_migrations"] });
+    expect(suggestScope([table("p", "orders", 1)], [])).toEqual({ include: [], exclude: [] });
+  });
+
+  test("the suggested scope excludes an exclude-suggested schema whose tables an include selects", () => {
+    const tabs = [
+      table("analytics", "fct_orders", 10),
+      table("analytics", "fct_payments", 10),
+      table("analytics", "dim_customers", 10),
+      table("analytics", "dim_products", 10),
+      table("raw", "fct_orders", 10),
+      table("raw", "customers", 10),
+    ];
+    const groups = groupTables(tabs);
+    expect(groups.find((g) => g.pattern === "raw.*")?.suggestion).toBe("exclude");
+    const suggested = suggestScope(tabs, groups);
+    expect(suggested.exclude).toEqual(["raw.*"]);
+    const selected = tabs.filter(
+      (t) => suggested.include.some((p) => matchesPattern(p, t)) && !suggested.exclude.some((p) => matchesPattern(p, t)),
+    );
+    expect(selected.map((t) => `${t.schema}.${t.name}`).sort()).toEqual([
+      "analytics.dim_customers",
+      "analytics.dim_products",
+      "analytics.fct_orders",
+      "analytics.fct_payments",
+    ]);
+
+    // An include that selects none of the schema's tables leaves it out of the excludes.
+    const clean = [table("analytics", "fct_orders", 10), table("analytics", "fct_payments", 10), table("raw", "orders", 1), table("raw", "payments", 1)];
+    expect(suggestScope(clean, groupTables(clean))).toEqual({ include: ["fct_*"], exclude: [] });
+  });
+
+  test("the suggested scope command quotes patterns for the shell", () => {
+    expect(scopeCommand("wh", { include: ["fct_*", "dim_*"], exclude: ["p.it's_tmp", "a.b"] })).toBe(
+      "sl scope --source wh --include 'fct_*' --include 'dim_*' --exclude 'p.it'\\''s_tmp' --exclude a.b",
+    );
+  });
+
   test("the noise pattern is built from rules, stays short and agrees with noiseReason", () => {
     expect(NOISE_PATTERN.length).toBeLessThan(400);
     const names = [
@@ -282,8 +365,18 @@ describe("sl tables", () => {
     expect(r.out).toContain("sl tables --source wh --groups");
     expect(r.out).toContain("orders (draft)");
     expect(r.out).toContain("raw_stripe_*");
-    const j = (await sl(root, ["tables", "--source", "wh", "--groups", "--json"])).json<{ groups: { pattern: string }[] }>();
+    expect(r.out).toContain("Suggested scope");
+    expect(r.out).toContain("  sl scope --source wh --include 'dim_*' --include 'fct_*'\n");
+    expect(r.out).toContain("add --write to save it");
+    const j = (await sl(root, ["tables", "--source", "wh", "--groups", "--json"])).json<{
+      groups: { pattern: string; total_rows: number | null; rows_unknown: number }[];
+      suggested_scope: { include: string[]; exclude: string[] };
+    }>();
     expect(j.groups.map((g) => g.pattern)).toContain("fct_*");
+    expect(j.groups.find((g) => g.pattern === "fct_*")).toMatchObject({ total_rows: 78000, rows_unknown: 0 });
+    expect(j.suggested_scope).toEqual({ include: ["dim_*", "fct_*"], exclude: [] });
+    const plain = (await sl(root, ["tables", "--source", "wh", "--json"])).json<{ suggested_scope?: unknown }>();
+    expect(plain.suggested_scope).toBeUndefined();
   });
 
   test("scope narrows the list, --all shows every table, and a small scope needs no focus", async () => {

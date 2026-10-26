@@ -46,6 +46,27 @@ const COUNT_NAME = /(^|_)(qty|quantity|units?|count)s?(_|$)/;
 const DURATION_NAME = /(^|_)(duration|minutes|seconds)s?(_|$)/;
 const MONEY_NAME = /(^|_)(sub)?(amount|price|cost|revenue|total|value|spend|fee|tax|discount|balance|shipping|freight|gross|net|profit|margin|payment|charge|refund|refunded|cents|pennies|salary|wage|income|budget)(s|es)?(_|$)/;
 const CENTS_NAME = /_(cents|pennies)$/;
+const CENTS_TEXT = /\b(cents|pennies)\b/i;
+const NOT_CENTS_TEXT = /\bnot (in )?(cents|pennies)\b/i;
+// A description naming whole currency units says the column is not in cents.
+const WHOLE_UNITS_TEXT = /\b(dollars|euros|pounds|yen|whole (currency )?units|major units)\b/i;
+// A name that ends or starts with a count word counts things even when it also names money:
+// payment_count, total_qty, units_refunded, count_of_refunds. A singular unit is not a count word: price_per_unit.
+const COUNT_SUFFIX = /(^|_)(qty|quantity|quantities|units|count)s?$/;
+const COUNT_PREFIX = /^(qty|quantity|quantities|units|count)_/;
+// Per-unit prices: averaged, never summed. A total, subtotal, line or extended price is not per unit.
+const PER_UNIT_PRICE = /(^|_)(prices?|unit_costs?)(_|$)/;
+// A money name ending _per_unit is a per-unit price: cost_per_unit, revenue_per_unit_cents.
+const PER_UNIT_SUFFIX = /_per_units?(_cents|_pennies)?$/;
+const NOT_PER_UNIT = /(^|_)(total|subtotal|line|extended)s?(_|$)/;
+const PER_UNIT_RATE = /_rates?(_cents|_pennies)?$/;
+// The column a line total multiplies a per-unit price by.
+const QUANTITY_NAME = /(^|_)(qty|quantity|quantities|units)(_|$)/;
+const EXACT_QUANTITY_NAME = /^(qty|quantity|quantities|units)$/;
+// "Orders from the storefront, one row per order." -> order. The capture stops at a line break or bracket.
+const GRAIN_TEXT = /one row per ([^.,;:()[\]\r\n]+)/i;
+// A foreign key whose target has at most this many rows gets no count measure.
+const SMALL_TARGET_ROWS = 20;
 const PII_NAME =
   /(^|_)(email|phone|mobile|ssn|social_security|address|street|postal|zip|first_name|last_name|full_name|birth|dob|ip_address|passport|tax_id)/;
 
@@ -331,6 +352,71 @@ function joinCandidates(ctx: Context, self: SnapshotTable, x: string): Candidate
   );
 }
 
+// How a numeric column that is neither a key nor personal data drafts as a measure.
+interface NumericRule {
+  agg: "sum" | "avg";
+  format: Format;
+  // A per-unit price or a name ending _rate: averaged, and offered as a line total.
+  perUnit: boolean;
+}
+
+// The measure rule a numeric column's name selects, or null when its name selects none.
+// Per-unit prices and names ending _rate are averaged; other rates select no rule. Money names are
+// tested before count names, except that a name ending or starting with a count word is a count.
+export function numericRule(norm: string): NumericRule | null {
+  if (RATE_NAME.test(norm)) {
+    const perUnit = PER_UNIT_RATE.test(norm);
+    if (!perUnit) return null;
+    return { agg: "avg", format: CENTS_NAME.test(norm) ? "currency" : "number", perUnit };
+  }
+  const isCount = COUNT_SUFFIX.test(norm) || COUNT_PREFIX.test(norm);
+  const perUnitPrice = (PER_UNIT_PRICE.test(norm) && !NOT_PER_UNIT.test(norm)) || (PER_UNIT_SUFFIX.test(norm) && MONEY_NAME.test(norm));
+  if (perUnitPrice && !isCount) {
+    return { agg: "avg", format: "currency", perUnit: true };
+  }
+  if (!SUM_NAME.test(norm)) return null;
+  const format: Format = isCount
+    ? "integer"
+    : DURATION_NAME.test(norm)
+      ? "number"
+      : MONEY_NAME.test(norm)
+        ? "currency"
+        : COUNT_NAME.test(norm)
+          ? "integer"
+          : "number";
+  return { agg: "sum", format, perUnit: false };
+}
+
+// The single value of a string column named currency, when its profile holds exactly one.
+function singleCurrency(table: SnapshotTable): string | undefined {
+  for (const c of table.columns) {
+    if (toSpecName(c.name) !== "currency" || classifyType(c.type) !== "string") continue;
+    const top = c.profile?.top_values;
+    const distinct = c.profile?.distinct_count;
+    if (distinct !== undefined && distinct !== 1) continue;
+    const value = top?.length === 1 && typeof top[0]!.value === "string" ? top[0]!.value.trim() : "";
+    if (value) return value;
+  }
+  return undefined;
+}
+
+// What a description says about cents: true when it says cents, false when it says not cents or
+// names whole currency units, undefined when it says nothing about units.
+function centsText(text: string | null | undefined): boolean | undefined {
+  if (!text) return undefined;
+  if (NOT_CENTS_TEXT.test(text)) return false;
+  if (CENTS_TEXT.test(text)) return true;
+  if (WHOLE_UNITS_TEXT.test(text)) return false;
+  return undefined;
+}
+
+// A measure name for a column reported in whole currency units: amount_cents -> amount.
+function unitName(norm: string, divided: boolean): string {
+  if (!divided) return norm;
+  const stripped = norm.replace(CENTS_NAME, "");
+  return stripped && stripped !== norm ? stripped : norm;
+}
+
 interface PendingJoin {
   target: SnapshotTable;
   keys: JoinKey[];
@@ -342,7 +428,9 @@ interface PendingJoin {
 function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: string[]): Model {
   const { dialect } = ctx.snapshot;
   const q = qualifiedName(table);
-  const questions: string[] = [`What does one row of ${q} represent?`];
+  // A grain stated in the table comment is drafted, and the first question confirms it.
+  const grain = table.description?.match(GRAIN_TEXT)?.[1]?.trim();
+  const questions: string[] = [grain ? `Is one row of ${q} one ${grain}?` : `What does one row of ${q} represent?`];
   const ns = new Namespace();
 
   const pk = inferPrimaryKey(table, ctx.opts.stripPrefixes, dialect);
@@ -415,21 +503,59 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
 
   // Dimensions and column measures, in column order.
   const dimensions: Dimension[] = [];
-  const columnMeasures: { col: SnapshotColumn; build: (name: string) => Measure; names: string[] }[] = [];
+  // Measure names are chosen after the joins are named, so a key's count can take its join's name.
+  const columnMeasures: { names: () => string[]; build: (name: string) => Measure }[] = [];
   const nearUnique: string[] = [];
   // Near-unique columns left out whose names look like personal data.
   const nearUniquePii: string[] = [];
   // Columns emitted with the pii tag.
   const pii: string[] = [];
+  // Money columns drafted divided by 100.
   const cents: string[] = [];
   const money: string[] = [];
   const rows = table.row_count ?? null;
+  const currency = singleCurrency(table);
+  const currencyField = (format: Format) => (format === "currency" && currency ? { currency } : {});
+  // Join -> its name, filled in once the joins are named.
+  const joinNames = new Map<PendingJoin, string>();
 
   // Optional fields in file order, present only when they hold something.
   const extras = (col: SnapshotColumn, tags?: string[]) => ({
     ...(col.description ? { description: col.description } : {}),
     ...(tags ? { tags } : {}),
   });
+
+  const isKeyColumn = (col: SnapshotColumn) => {
+    const lower = col.name.toLowerCase();
+    const norm = toSpecName(col.name);
+    return pkSet.has(lower) || joinColumns.has(lower) || fkColumns.has(lower) || /_id$/.test(norm) || norm === "id";
+  };
+  // The numeric rule of a column that drafts as a measure by its name, or null.
+  const ruleOf = (col: SnapshotColumn): NumericRule | null => {
+    const norm = toSpecName(col.name);
+    if (!isNumeric(classifyType(col.type)) || isKeyColumn(col) || PII_NAME.test(norm)) return null;
+    return numericRule(norm);
+  };
+  // A money column stored in hundredths: by its name, or by its own description, or, when that
+  // says nothing about units, by its table's description.
+  const isDivided = (col: SnapshotColumn, rule: NumericRule) =>
+    rule.format === "currency" &&
+    (CENTS_NAME.test(toSpecName(col.name)) || (centsText(col.description) ?? centsText(table.description) ?? false));
+  const valueExprOf = (col: SnapshotColumn, rule: NumericRule) => {
+    const expr = columnExpr(dialect, col.name);
+    return isDivided(col, rule) ? `${expr} / 100.0` : expr;
+  };
+
+  // The quantity a line total multiplies by: an integer count column, an exact quantity name first.
+  const quantities = table.columns.filter((c) => {
+    const rule = ruleOf(c);
+    return QUANTITY_NAME.test(toSpecName(c.name)) && rule?.agg === "sum" && rule.format === "integer";
+  });
+  const quantity = quantities.find((c) => EXACT_QUANTITY_NAME.test(toSpecName(c.name))) ?? quantities[0];
+  // The per-unit column a line total multiplies: the first per-unit money column.
+  const perUnitColumns = table.columns.filter((c) => ruleOf(c)?.perUnit);
+  const lineTotalColumn = quantity ? perUnitColumns.find((c) => ruleOf(c)!.format === "currency") : undefined;
+  let lineTotal: { name: string; expr: string } | undefined;
 
   for (const col of table.columns) {
     const lower = col.name.toLowerCase();
@@ -441,16 +567,22 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
       if (isPii) pii.push(col.name);
     };
     const expr = columnExpr(dialect, col.name);
-    const isKey = pkSet.has(lower) || joinColumns.has(lower) || fkColumns.has(lower) || /_id$/.test(norm) || norm === "id";
-    if (isKey) {
+    if (isKeyColumn(col)) {
       const single = !isSolePk([col.name]) && (joinColumns.has(lower) || fkColumns.has(lower) || /_id$/.test(norm));
       const composite = (table.foreign_keys ?? []).some((fk) => fk.columns.length > 1 && fk.columns.some((c) => c.toLowerCase() === lower));
       if (single && !composite) {
+        const join = pending.find((j) => j.columns.length === 1 && j.columns[0]!.toLowerCase() === lower);
+        const targetRows = join?.target.row_count;
+        if (join && typeof targetRows === "number" && targetRows <= SMALL_TARGET_ROWS) {
+          notes.push(
+            `${q}: no count of ${col.name} drafted; its join reaches ${qualifiedName(join.target)}, which has ${targetRows} row${targetRows === 1 ? "" : "s"}.`,
+          );
+          continue;
+        }
         emitted();
         const x = norm.replace(/_id$/, "");
         columnMeasures.push({
-          col,
-          names: [`${x}_count`, `distinct_${norm}_count`],
+          names: () => [...(join ? [`${joinNames.get(join)!}_count`] : []), `${x}_count`, `distinct_${norm}_count`],
           build: (name) => ({ name, expr, agg: "count_distinct", format: "integer", ...extras(col, tags), status: "draft" }),
         });
       } else if (!pkSet.has(lower)) {
@@ -494,21 +626,29 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
         dimensions.push({ name: ns.claim(norm), expr, type: "number", ...extras(col, ["pii"]), status: "draft" });
         continue;
       }
-      if (SUM_NAME.test(norm) && !RATE_NAME.test(norm)) {
-        const format: Format = COUNT_NAME.test(norm)
-          ? "integer"
-          : DURATION_NAME.test(norm)
-            ? "number"
-            : MONEY_NAME.test(norm)
-              ? "currency"
-              : "number";
-        if (CENTS_NAME.test(norm)) cents.push(col.name);
+      const rule = numericRule(norm);
+      if (rule) {
+        const { agg, format } = rule;
+        const divided = isDivided(col, rule);
+        const valueExpr = valueExprOf(col, rule);
+        const unit = unitName(norm, divided);
+        if (divided) cents.push(col.name);
         if (format === "currency") money.push(col.name);
         columnMeasures.push({
-          col,
-          names: [norm, `total_${norm}`],
-          build: (name) => ({ name, expr, agg: "sum", format, ...extras(col), status: "draft" }),
+          names: () => (agg === "avg" ? [`avg_${unit}`, `average_${unit}`] : [unit, norm, `total_${unit}`]),
+          build: (name) => ({ name, expr: valueExpr, agg, format, ...currencyField(format), ...extras(col), status: "draft" }),
         });
+        if (col === lineTotalColumn && quantity) {
+          // A divided price is parenthesized so the product is taken in numeric, not integer, arithmetic.
+          const totalExpr = `${columnExpr(dialect, quantity.name)} * ${divided ? `(${valueExpr})` : valueExpr}`;
+          columnMeasures.push({
+            names: () => ["line_total", `line_total_${unit}`],
+            build: (name) => {
+              lineTotal = { name, expr: totalExpr };
+              return { name, expr: totalExpr, agg: "sum", format: "currency", ...currencyField("currency"), status: "draft" };
+            },
+          });
+        }
         continue;
       }
       if (typeof distinct === "number" && distinct <= NUMBER_DIMENSION_MAX_DISTINCT) {
@@ -516,8 +656,7 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
         continue;
       }
       columnMeasures.push({
-        col,
-        names: [`avg_${norm}`, `average_${norm}`],
+        names: () => [`avg_${norm}`, `average_${norm}`],
         build: (name) => ({ name, expr, agg: "avg", format: "number", ...extras(col), status: "draft" }),
       });
       continue;
@@ -529,6 +668,7 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
     const to = tableKey(p.target) === tableKey(table) ? modelName : ctx.names.get(tableKey(p.target))!;
     const fromName = p.columns.map((c) => toSpecName(c).replace(/_id$/, "")).join("_");
     const name = tableKey(p.target) === tableKey(table) ? ns.claim(fromName, `parent_${singular(to)}`) : ns.claim(singular(to), fromName);
+    joinNames.set(p, name);
     const targetKey = tableKey(p.target);
     if (targetKey !== tableKey(table) && !ctx.modeled.has(targetKey) && !ctx.drafting.has(targetKey)) {
       const prefixes = ctx.opts.stripPrefixes.filter(Boolean);
@@ -544,7 +684,7 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
   // The row count leads; column measures keep column order.
   const measures: Measure[] = [
     { name: ns.claim(`${singular(modelName)}_count`, "row_count"), agg: "count", format: "integer", status: "draft" },
-    ...columnMeasures.map((m) => m.build(ns.claim(...m.names))),
+    ...columnMeasures.map((m) => m.build(ns.claim(...m.names()))),
   ];
 
   if (nearUnique.length) {
@@ -561,9 +701,39 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
     );
   }
   for (const c of cents) {
-    questions.push(`Is ${c} stored in cents? The draft sums it as stored; divide by 100 (expr: ${columnExpr(dialect, c)} / 100.0) to report whole currency units?`);
+    questions.push(
+      `Is ${c} stored in cents? The draft divides it by 100 (expr: ${columnExpr(dialect, c)} / 100.0) to report whole currency units; confirm the division.`,
+    );
   }
-  if (money.length) questions.push(`Which currency ${money.length === 1 ? "is" : "are"} ${listPhrase(money)} in?`);
+  if (lineTotalColumn && quantity && lineTotal) {
+    questions.push(
+      `${lineTotalColumn.name} is a per-unit figure, so the draft averages it rather than summing it. Is a line's total ${quantity.name} times ${lineTotalColumn.name}? The draft adds the measure ${lineTotal.name}, the sum of ${lineTotal.expr}.`,
+    );
+  }
+  const otherPerUnit = perUnitColumns.filter((c) => c !== lineTotalColumn);
+  // Another per-unit money column is offered as a line total too; a non-money per-unit figure is not.
+  const offerTotal = quantity ? otherPerUnit.filter((c) => ruleOf(c)!.format === "currency").map((c) => c.name) : [];
+  const averageOnly = otherPerUnit.map((c) => c.name).filter((c) => !offerTotal.includes(c));
+  for (const [group, withTotal] of [
+    [offerTotal, true],
+    [averageOnly, false],
+  ] as const) {
+    if (!group.length) continue;
+    const one = group.length === 1;
+    questions.push(
+      `${listPhrase(group)} ${one ? "is a per-unit figure" : "are per-unit figures"}, so the draft averages ${one ? "it" : "them"} rather than summing. ${
+        withTotal && quantity ? `Should ${quantity.name} times ${one ? "it" : "each"} be a line-total measure too?` : "Is an average what people report?"
+      }`,
+    );
+  }
+  if (money.length) {
+    const one = money.length === 1;
+    questions.push(
+      currency
+        ? `The currency column of ${q} holds only ${currency}, so ${listPhrase(money)} ${one ? "is" : "are"} drafted with currency ${currency}. Is every row in ${currency}?`
+        : `Which currency ${one ? "is" : "are"} ${listPhrase(money)} in?`,
+    );
+  }
   if (pii.length) {
     questions.push(`${listPhrase(pii)} look${pii.length === 1 ? "s" : ""} like personal data and ${pii.length === 1 ? "is" : "are"} tagged pii. Who may see ${pii.length === 1 ? "it" : "them"}?`);
   }
@@ -574,6 +744,7 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
     table: q,
     status: "draft",
     ...(table.description ? { description: table.description } : {}),
+    ...(grain ? { grain: `One row per ${grain}.` } : {}),
     ...(pkCols.length ? { primary_key: pkCols } : {}),
     open_questions: questions,
     dimensions,

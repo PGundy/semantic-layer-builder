@@ -1,14 +1,14 @@
-import { existsSync } from "node:fs";
-import { basename, relative, resolve, sep } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { canRun } from "../lib/adapters/index.ts";
 import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.ts";
 import { bool, str, today } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
-import { compareRows, goldenPlan, goldenQueryId, resultColumns } from "../lib/goldens.ts";
+import { compareRows, goldenDraftFields, goldenPlan, goldenQueryId, resultColumns } from "../lib/goldens.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
 import { executePlan } from "../lib/plan.ts";
-import { listGoldens, loadSource, paths, stem, type LoadedGolden } from "../lib/project.ts";
-import type { Golden, ResultRows, SourceConfig } from "../lib/types.ts";
+import { listGoldens, loadMetrics, loadSource, paths, stem, type LoadedGolden } from "../lib/project.ts";
+import type { Golden, Model, ResultRows, SourceConfig } from "../lib/types.ts";
 import { NAME_PATTERN } from "../lib/types.ts";
 import { readJson, readYaml, updateYaml } from "../lib/yaml.ts";
 
@@ -86,12 +86,46 @@ function lowerKeys(rows: Record<string, unknown>[]): Record<string, unknown>[] {
   return rows.map((r) => Object.fromEntries(Object.entries(r ?? {}).map(([k, v]) => [k.toLowerCase(), v])));
 }
 
-function parseTolerance(values: OptionValues, g: Golden): number {
+// The tolerance to record: --tolerance, else the one already in the file, else the default.
+function parseTolerance(values: OptionValues, g: Golden): { tolerance: number; from: "flag" | "file" | "default" } {
   const raw = str(values, "tolerance");
-  if (raw === undefined) return g.expected?.tolerance ?? DEFAULT_TOLERANCE;
+  if (raw === undefined) {
+    const kept = g.expected?.tolerance;
+    return typeof kept === "number" ? { tolerance: kept, from: "file" } : { tolerance: DEFAULT_TOLERANCE, from: "default" };
+  }
   const t = Number(raw);
   if (!Number.isFinite(t) || t < 0 || t >= 1) throw new UserError(`--tolerance must be a number from 0 up to 1, such as 0.005; got "${raw}".`);
-  return t;
+  return { tolerance: t, from: "flag" };
+}
+
+// Draft fields and metrics the golden's request uses, read from the source's models and
+// metrics.yaml. The list is advisory: a file that cannot be read is skipped with a notice
+// on stderr pointing to sl validate, and confirm goes on.
+function draftFieldsOf(ctx: CommandContext, g: Golden, source: SourceConfig): string[] {
+  const unread: string[] = [];
+  let firstError = "";
+  const attempt = <T>(path: string, read: () => T): T | undefined => {
+    try {
+      return read();
+    } catch (e) {
+      if (!(e instanceof UserError)) throw e;
+      unread.push(relative(ctx.root, path));
+      firstError ||= e.message.split("\n")[0] ?? "";
+      return undefined;
+    }
+  };
+  const dir = paths(ctx.root).modelsDir(source.source);
+  const files = existsSync(dir) ? readdirSync(dir).filter((f) => /\.ya?ml$/.test(f)).sort() : [];
+  const models = files.flatMap((f) => {
+    const m = attempt(join(dir, f), () => readYaml<Model>(join(dir, f)));
+    return m ? [m] : [];
+  });
+  const metricsFile = attempt(paths(ctx.root).metrics, () => loadMetrics(ctx.root));
+  const metrics = metricsFile && Array.isArray(metricsFile.metrics) ? metricsFile.metrics : [];
+  if (unread.length) {
+    ctx.err(`Could not read ${unread.join(", ")} to list draft fields (${firstError}); run sl validate.`);
+  }
+  return goldenDraftFields(g, models, metrics);
 }
 
 async function runCommand(ctx: CommandContext, values: OptionValues): Promise<number> {
@@ -108,7 +142,7 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
     ctx.out(`${golden.name}: ${golden.question}`);
     ctx.out(formatTable(rows, columns));
     ctx.out(`(${rows.length} row${rows.length === 1 ? "" : "s"})`);
-    ctx.out(`Read these rows back to the owner. Once they confirm them: sl goldens confirm --name ${golden.name} --by "<owner>".`);
+    ctx.out(`Read these rows back to the owner. Once they confirm them: sl goldens confirm --name ${golden.name} --by "<owner>" --tolerance <agreed tolerance>.`);
   }
   return 0;
 }
@@ -117,11 +151,18 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   const { path, golden } = loadGolden(ctx, requireName(values, "confirm"));
   const by = str(values, "by")?.trim();
   if (!by) throw new UserError('goldens confirm needs --by "<name of the owner who confirmed the rows>".');
-  const tolerance = parseTolerance(values, golden);
+  const { tolerance, from: toleranceFrom } = parseTolerance(values, golden);
   const source = goldenSource(ctx, golden);
   if (bool(values, "emit-sql")) {
     ctx.out(formatJson(goldenPlan(golden, source)));
     return 0;
+  }
+  const draftFields = draftFieldsOf(ctx, golden, source);
+  if (draftFields.length && !ctx.json) {
+    ctx.out(
+      `This golden's request uses draft field(s): ${draftFields.join(", ")}. A golden is confirmed after its measures are ` +
+        "approved. Approve them once the owner confirms their readbacks, then confirm this golden again; sl validate warns until then.",
+    );
   }
   const rows = await runGolden(ctx, golden, source, resultsPath(ctx, values));
   if (!rows.length) throw new UserError(`Golden "${golden.name}" returned no rows; a golden needs at least one expected row.`);
@@ -138,11 +179,13 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
     doc.set("confirmed_by", by);
     doc.set("confirmed_at", confirmedAt);
   });
-  if (ctx.json) ctx.out(formatJson({ name: golden.name, rows, written: true }));
+  if (ctx.json) ctx.out(formatJson({ name: golden.name, rows, written: true, tolerance, draft_fields: draftFields }));
   else {
+    const toleranceNote =
+      toleranceFrom === "flag" ? "" : toleranceFrom === "file" ? ", kept from the file" : ", the default; agree one with the owner and pass --tolerance";
     ctx.out(formatTable(rows, resultColumns(rows)));
     ctx.out(
-      `Recorded ${rows.length} expected row${rows.length === 1 ? "" : "s"} in ${relative(ctx.root, path)} (tolerance ${tolerance}), ` +
+      `Recorded ${rows.length} expected row${rows.length === 1 ? "" : "s"} in ${relative(ctx.root, path)} (tolerance ${tolerance}${toleranceNote}), ` +
         `confirmed by ${by} on ${confirmedAt}.`,
     );
   }
@@ -156,7 +199,7 @@ function selectForCheck(ctx: CommandContext, values: OptionValues): LoadedGolden
     if (sourceFilter) throw new UserError("Pass --name <g> or --source <s> to goldens check, not both.");
     const loaded = loadGolden(ctx, name);
     if (!loaded.golden.expected?.rows?.length) {
-      throw new UserError(`Golden "${name}" has no expected rows yet. Run sl goldens confirm --name ${name} --by "<owner>" first.`);
+      throw new UserError(`Golden "${name}" has no expected rows yet. Run sl goldens confirm --name ${name} --by "<owner>" --tolerance <t> first.`);
     }
     return [loaded];
   }
@@ -232,7 +275,7 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
         actual = await runGolden(ctx, g, source, fromFile);
       } catch (e) {
         if (!(e instanceof UserError)) throw e;
-        checks.push({ name: g.name, ok: false, diffs: [`The query did not run: ${e.message.split("\n")[0]}`] });
+        checks.push({ name: g.name, ok: false, diffs: [`The query did not run: ${e.message.split("\n")[0]!.replace(/^Query failed: /, "")}`] });
         continue;
       }
       const { ok, diffs } = compareRows(lowerKeys(g.expected?.rows ?? []), actual, {
@@ -263,7 +306,7 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
 const spec: CommandSpec = {
   summary: "Run a golden's SQL, record the owner-confirmed rows, or recheck approved goldens.",
   usage:
-    "goldens run --name <g> | goldens confirm --name <g> --by <name> [--tolerance 0.005] [--force] | " +
+    "goldens run --name <g> | goldens confirm --name <g> --by <name> [--tolerance <t>] [--force] | " +
     "goldens check [--name <g>] [--source <s>]   (each takes --emit-sql and --results <file>)",
   options: {
     name: { type: "string" },

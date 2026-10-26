@@ -121,10 +121,14 @@ export const AGGREGATIONS = ["sum", "count", "count_distinct", "avg", "min", "ma
 export type Aggregation = (typeof AGGREGATIONS)[number];
 export type Format = "number" | "integer" | "currency" | "percent";
 export type Relationship = "many_to_one" | "one_to_one" | "one_to_many";
+// Relationships whose join adds at most one target row per row: join references and request
+// fields on other models travel only through these.
+export const TO_ONE_RELATIONSHIPS: readonly Relationship[] = ["many_to_one", "one_to_one"];
 export type JoinOrigin = "declared" | "inferred" | "owner";
 
 export interface Dimension extends Approval {
   name: string;
+  // SQL over the model's own columns and <join>.<column> join references through its to-one joins.
   expr: string;
   type: DimensionType;
   time_grains?: TimeGrain[];
@@ -137,6 +141,7 @@ export interface Measure extends Approval {
   name: string;
   expr?: string;
   agg: Aggregation;
+  // SQL predicate over the model's own columns and <join>.<column> join references.
   filter?: string;
   format?: Format;
   currency?: string;
@@ -236,14 +241,17 @@ export interface Role {
   name: string;
   description?: string;
   allow: { models: string[] };
+  // fields names dimensions and measures as source.model.field; a join is hidden with its target model.
   deny?: { models?: string[]; fields?: string[]; tags?: string[] };
   row_filters?: RowFilter[];
+  open_questions?: string[];
 }
 
 export interface AccessFile extends Approval {
   default_role?: string;
   user_attributes?: UserAttribute[];
   roles: Role[];
+  open_questions?: string[];
 }
 
 // Goldens

@@ -3,7 +3,7 @@ import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { paths } from "../lib/project.ts";
-import { NAME_PATTERN, type Project } from "../lib/types.ts";
+import { DEFAULT_BATCH_SIZE, DEFAULT_FOCUS_THRESHOLD, NAME_PATTERN, type Project } from "../lib/types.ts";
 import { writeYaml } from "../lib/yaml.ts";
 
 const spec: CommandSpec = {
@@ -20,6 +20,8 @@ const spec: CommandSpec = {
     if (description) project.description = description;
     const def = str(values, "default-source");
     if (def) project.default_source = def;
+    // The settings are written out so the owner can see and change them.
+    project.settings = { focus_threshold: DEFAULT_FOCUS_THRESHOLD, batch_size: DEFAULT_BATCH_SIZE };
     writeYaml(p.project, project);
     for (const dir of [p.sourcesDir, p.snapshotsDir, `${ctx.root}/models`, p.goldensDir]) mkdirSync(dir, { recursive: true });
     if (ctx.json) ctx.out(JSON.stringify({ root: ctx.root, project }));

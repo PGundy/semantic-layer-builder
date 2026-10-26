@@ -12,10 +12,11 @@ request:
   order_by: [{ field: "orders.order_date:month", direction: asc }]
   limit: 100
 sql: |
-  select date_trunc('month', created_at) as order_date_month,
-         sum(amount_cents / 100.0) filter (where status <> 'cancelled') as revenue
-  from public.fct_orders
-  where created_at >= '2025-01-01' and created_at < '2026-01-01'
+  select date_trunc('month', o.created_at) as order_date_month,
+         sum(o.amount_cents / 100.0) filter (where o.status <> 'cancelled' and coalesce(c.is_test_account, false) = false) as revenue
+  from public.fct_orders o
+  left join public.dim_customers c on c.customer_id = o.customer_id
+  where o.created_at >= '2025-01-01' and o.created_at < '2026-01-01'
   group by 1 order by 1
 expected:
   tolerance: 0.005

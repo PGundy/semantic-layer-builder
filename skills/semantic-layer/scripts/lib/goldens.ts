@@ -1,6 +1,8 @@
 import { UserError } from "./errors.ts";
+import { findField, parseRequestField } from "./refs.ts";
 import { assertReadOnly } from "./sql-guard.ts";
-import type { Golden, QueryPlan, ResultRows, SourceConfig } from "./types.ts";
+import type { Golden, Metric, Model, QueryPlan, ResultRows, SourceConfig } from "./types.ts";
+import { NAME_PATTERN } from "./types.ts";
 
 export const MAX_DIFFS = 10;
 
@@ -297,6 +299,65 @@ export function goldenPlan(golden: Golden, source: SourceConfig): QueryPlan {
     dialect: source.dialect,
     queries: [{ id: goldenQueryId(golden.name), purpose: golden.question || `Golden ${golden.name}`, sql: golden.sql.trim() }],
   };
+}
+
+// The measure references a metric combines, in the exact model.measure form sl approve
+// accepts: a ratio's numerator and denominator, or an expr's {model.measure} placeholders
+// with no spaces. Anything else is left to sl validate and sl approve.
+const MEASURE_REF = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/;
+function metricMeasures(metric: Metric): string[] {
+  if (metric.type === "ratio") {
+    return [metric.numerator, metric.denominator].filter((r): r is string => typeof r === "string" && MEASURE_REF.test(r));
+  }
+  if (typeof metric.expr !== "string") return [];
+  return [...metric.expr.matchAll(/\{([^}]*)\}/g)].map((m) => m[1]!).filter((r) => MEASURE_REF.test(r));
+}
+
+// Whether a model has the field lists findField reads; a malformed model is skipped.
+function readableModel(m: unknown): m is Model {
+  if (!m || typeof m !== "object") return false;
+  const { dimensions, measures, joins } = m as Partial<Record<"dimensions" | "measures" | "joins", unknown>>;
+  return [dimensions, measures, joins].every(
+    (v) => v === undefined || v === null || (Array.isArray(v) && v.every((x) => !!x && typeof x === "object")),
+  );
+}
+
+// The draft dimensions, measures and metrics a golden's request uses, as approve
+// targets (source.model.field, metric:<name>), in the order the request names them.
+// A metric used by the request also contributes the draft measures it combines.
+// References that resolve to nothing, and models or metrics too malformed to read, are
+// left to sl validate.
+export function goldenDraftFields(golden: Golden, models: Model[], metrics: Metric[]): string[] {
+  const request = golden.request;
+  if (!request || typeof request !== "object") return [];
+  const usableModels = (Array.isArray(models) ? models : []).filter(readableModel);
+  const usableMetrics = (Array.isArray(metrics) ? metrics : []).filter((m): m is Metric => !!m && typeof m === "object");
+  const source = request.source;
+  const out = new Set<string>();
+  const field = (ref: string): void => {
+    const parsed = parseRequestField(ref);
+    if (!parsed) return;
+    const model = usableModels.find((m) => m.model === parsed.model && m.source === source);
+    if (!model) return;
+    const match = findField(model, parsed.field);
+    if (!match || match.kind === "join") return;
+    if (match.item.status !== "approved") out.add(`${source}.${model.model}.${parsed.field}`);
+  };
+  const ref = (r: unknown): void => {
+    if (typeof r !== "string") return;
+    if (r.includes(".")) return field(r);
+    if (!NAME_PATTERN.test(r)) return;
+    const metric = usableMetrics.find((m) => m.name === r && (m.source ?? source) === source);
+    if (!metric) return;
+    if (metric.status !== "approved") out.add(`metric:${metric.name}`);
+    for (const measure of metricMeasures(metric)) field(measure);
+  };
+  const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+  for (const m of list(request.measures)) ref(m);
+  for (const d of list(request.dimensions)) ref(d);
+  for (const f of list(request.filters)) ref((f as { field?: unknown } | null)?.field);
+  for (const o of list(request.order_by)) ref((o as { field?: unknown } | null)?.field);
+  return [...out];
 }
 
 // The column names of a result, in the order the first row that holds each one gives.

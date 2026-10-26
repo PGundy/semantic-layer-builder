@@ -151,9 +151,9 @@ function writeEvidence(root: string, path: string, joinName: string, evidence: J
 
 function humanReport(r: CheckJoinResult, target: Target, measuredEvidence: JoinEvidence): string {
   const e = measuredEvidence;
-  const declared = target.join.relationship ?? "none";
+  const yaml = target.join.relationship ?? "none";
   const lines = [
-    `${r.model}.${r.join} -> ${target.join.to}  (declared ${declared}, ${r.evidence ? `data says ${e.suggested_relationship}` : "not measured"})`,
+    `${r.model}.${r.join} -> ${target.join.to}  (YAML says ${yaml}, ${r.evidence ? `data says ${e.suggested_relationship}` : "not measured"})`,
     `  ${r.sentence}`,
     `  left rows ${e.left_rows}, matched ${e.matched_rows} (${pct(e.matched_rows, e.left_rows)}), unmatched ${e.left_rows - e.matched_rows}, null keys ${e.left_null_keys}, right rows ${e.right_rows}` +
       (r.evidence

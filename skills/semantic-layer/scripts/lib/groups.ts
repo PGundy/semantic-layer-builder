@@ -14,7 +14,10 @@ export interface TableGroup {
   key: string;
   pattern: string;
   tables: string[];
-  total_rows: number;
+  // The sum of the known row counts; null when no table in the group has one.
+  total_rows: number | null;
+  // How many tables in the group have no row count yet.
+  rows_unknown: number;
   in_scope: number;
   suggestion: Suggestion;
   reason: string;
@@ -101,12 +104,14 @@ interface Member {
 
 function build(kind: GroupKind, key: string, pattern: string, members: Member[], rated: Rated, scope?: Scope): TableGroup {
   const sorted = [...members].sort((a, b) => compare(a.qualified, b.qualified));
+  const known = sorted.filter((m) => typeof m.table.row_count === "number");
   return {
     kind,
     key,
     pattern,
     tables: sorted.map((m) => m.qualified),
-    total_rows: sorted.reduce((sum, m) => sum + (m.table.row_count ?? 0), 0),
+    total_rows: known.length ? known.reduce((sum, m) => sum + (m.table.row_count as number), 0) : null,
+    rows_unknown: sorted.length - known.length,
     in_scope: sorted.filter((m) => inScope(scope, m.table)).length,
     suggestion: rated.suggestion,
     reason: rated.reason,
@@ -200,4 +205,54 @@ export function groupTables(tables: SnapshotTable[], scope?: Scope): TableGroup[
   return groups.sort(
     (a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || b.tables.length - a.tables.length || compare(a.key, b.key),
   );
+}
+
+export interface SuggestedScope {
+  include: string[];
+  exclude: string[];
+}
+
+// One scope built from the groups: the patterns of the include-suggested groups
+// (less one whose tables another included group already holds), and excludes for
+// the excludable tables those includes select. A table is excludable when its name
+// looks like noise or its schema group is exclude-suggested (raw.*, tmp.*, staging.*).
+// An exclude-suggested group's pattern is used when every table it adds to the
+// excludes is excludable; the noise tables no such group covers are named exactly.
+// With no include group, the scope selects every table, so the excludes cover every
+// noise table and every exclude-suggested schema.
+export function suggestScope(tables: SnapshotTable[], groups: TableGroup[]): SuggestedScope {
+  const includeGroups = groups.filter((g) => g.suggestion === "include" && g.kind !== "noise");
+  const kept = includeGroups.filter(
+    (g) =>
+      !includeGroups.some(
+        (o) =>
+          o !== g &&
+          o.tables.length >= g.tables.length &&
+          g.tables.every((t) => o.tables.includes(t)) &&
+          (o.tables.length > g.tables.length || includeGroups.indexOf(o) < includeGroups.indexOf(g)),
+      ),
+  );
+  const include = kept.map((g) => g.pattern);
+  const selected = tables.filter((t) => !include.length || include.some((p) => matchesPattern(p, t)));
+  const caughtNoise = new Set(selected.filter((t) => noiseReason(t.name) !== null).map(qualifiedName));
+  const selectedNames = new Set(selected.map(qualifiedName));
+  const excludable = new Set(caughtNoise);
+  for (const g of groups) {
+    if (g.kind !== "schema" || g.suggestion !== "exclude") continue;
+    for (const t of g.tables) if (selectedNames.has(t)) excludable.add(t);
+  }
+
+  const exclude: string[] = [];
+  const covered = new Set<string>();
+  const candidates = groups
+    .filter((g) => g.suggestion === "exclude" && g.kind !== "noise")
+    .sort((a, b) => b.tables.length - a.tables.length || compare(a.pattern, b.pattern));
+  for (const g of candidates) {
+    const hit = g.tables.filter((t) => selectedNames.has(t));
+    if (!hit.length || !hit.every((t) => excludable.has(t)) || hit.every((t) => covered.has(t))) continue;
+    exclude.push(g.pattern);
+    for (const t of hit) covered.add(t);
+  }
+  for (const t of [...caughtNoise].sort(compare)) if (!covered.has(t)) exclude.push(t);
+  return { include, exclude };
 }

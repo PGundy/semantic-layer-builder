@@ -356,6 +356,14 @@ describe("approve refusals", () => {
     expect(r.err).toContain("sl goldens confirm --name revenue_2025");
   });
 
+  test("the usage lists the targets approve takes and leaves goldens out", async () => {
+    const root = await project();
+    const r = await sl(root, ["approve", "--help"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("approve --target <source.model | source.model.field | metric:<name> | access>");
+    expect(r.out).not.toContain("golden");
+  });
+
   test("unknown targets and fields", async () => {
     const root = await project();
     const field = await approve(root, ["--target", "wh.orders.nope", "--by", "Dana"]);

@@ -45,6 +45,14 @@
       "items": {
         "$ref": "#/$defs/role"
       }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Questions about access still open with the owner; sl status counts them."
     }
   },
   "allOf": [
@@ -152,7 +160,7 @@
                 "type": "string",
                 "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
               },
-              "description": "Fields as source.model.field."
+              "description": "Dimensions and measures as source.model.field. A join cannot be named here: it is hidden from the role when its target model is not allowed or is denied."
             },
             "tags": {
               "type": "array",
@@ -167,7 +175,7 @@
         },
         "row_filters": {
           "type": "array",
-          "description": "Predicates applied whenever a model is queried or joined in; several on one model combine with AND.",
+          "description": "Predicates over a model's own columns. On the query's base model a row filter goes in WHERE; on a joined model it goes in that join's ON clause, so a left join keeps the row with blank joined columns and an inner join drops it. Several on one model combine with AND.",
           "items": {
             "type": "object",
             "description": "A row filter.",
@@ -185,10 +193,18 @@
               "expr": {
                 "type": "string",
                 "minLength": 1,
-                "description": "SQL predicate over the model's columns; {{ user.<attribute> }} binds as a parameter."
+                "description": "SQL predicate over the model's own columns, with no subquery or other table; {{ user.<attribute> }} binds as a parameter."
               }
             }
           }
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Questions about this role still open with the owner; sl status counts them."
         }
       }
     }

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SQL } from "bun";
 import { DuckDBInstance } from "@duckdb/node-api";
+import { rowCountNote } from "../skills/semantic-layer/scripts/commands/introspect.ts";
 import { buildSnapshot, nullable } from "../skills/semantic-layer/scripts/lib/introspect.ts";
 import { introspectionPlan, schemaMatcher } from "../skills/semantic-layer/scripts/lib/sql/introspection.ts";
 import type { QueryPlan, Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
@@ -55,6 +56,12 @@ describe("introspect: duckdb", () => {
     const out = r.json<{ source: string; tables: number; columns: number; primary_keys: number; foreign_keys: number; snapshot: string }>();
     expect(out).toMatchObject({ source: "wh", tables: 5, columns: 4 + 3 + 4 + 4 + 3, primary_keys: 4, foreign_keys: 3 });
     expect(out.snapshot).toBe(join(t.root, "snapshots", "wh.json"));
+    expect(r.json<{ no_row_count: number; row_count_note: string }>()).toMatchObject({
+      no_row_count: 1,
+      row_count_note: "1 view has no row count yet; sl profile measures it.",
+    });
+    const human = await sl(t.root, ["introspect", "--source", "wh"]);
+    expect(human.out).toContain("1 view has no row count yet; sl profile measures it.");
 
     const s = snapshotOf(t.root, "wh");
     expect(s).toMatchObject({ snapshot_version: 1, source: "wh", dialect: "duckdb", method: "live", captured_at: FIXED_NOW });
@@ -193,6 +200,9 @@ describe("introspect: duckdb", () => {
     const r = await sl(t.root, ["introspect", "--source", "lake", "--json"]);
     expect(r.err).toBe("");
     expect(r.json<{ tables: number }>().tables).toBe(2);
+    expect(r.json<{ no_row_count: number }>().no_row_count).toBe(2);
+    const human = await sl(t.root, ["introspect", "--source", "lake"]);
+    expect(human.out).toContain("2 views have no row count yet; sl profile measures them.");
     const s = snapshotOf(t.root, "lake");
     const events = table(s, "main", "events");
     expect(events.kind).toBe("view");
@@ -228,6 +238,80 @@ describe("introspect: duckdb", () => {
     await duckdbSource(t.root, t.dir, "small", ["create table a (id integer)"]);
     const s = await sl(t.root, ["introspect", "--source", "small"]);
     expect(s.out).toContain("sl profile --source small");
+    expect(s.out).not.toContain("no row count");
+    const j = await sl(t.root, ["introspect", "--source", "small", "--json"]);
+    expect(j.json<{ no_row_count: number; row_count_note?: string }>()).toMatchObject({ no_row_count: 0 });
+    expect(j.json<{ row_count_note?: string }>().row_count_note).toBeUndefined();
+  });
+
+  test("names the tables without a row count by kind", () => {
+    const mk = (name: string, kind: SnapshotTable["kind"], row_count?: number | null): SnapshotTable => ({ schema: "s", name, kind, row_count, columns: [] });
+    const snap = (tables: SnapshotTable[]): Snapshot => ({ snapshot_version: 1, source: "wh", dialect: "postgres", captured_at: FIXED_NOW, method: "live", tables });
+    expect(rowCountNote(snap([mk("a", "table", 10), mk("b", "view", 0)]))).toBeNull();
+    expect(rowCountNote(snap([mk("a", "table", null), mk("b", "view", null), mk("c", "view"), mk("d", "external", null), mk("e", "table", 3)]))).toEqual({
+      count: 4,
+      note: "1 table, 2 views and 1 external table have no row count yet; sl profile measures them.",
+    });
+    expect(rowCountNote(snap([mk("a", "table", null), mk("b", "table", null)]))?.note).toBe(
+      "2 tables have no row count yet; sl profile measures them.",
+    );
+  });
+
+  test("the row count note leaves out out-of-scope tables and sends profiled ones to --refresh", () => {
+    const mk = (name: string, kind: SnapshotTable["kind"], profiled_at?: string): SnapshotTable => ({
+      schema: "s",
+      name,
+      kind,
+      row_count: null,
+      columns: [],
+      ...(profiled_at ? { profiled_at } : {}),
+    });
+    const snap = (tables: SnapshotTable[]): Snapshot => ({ snapshot_version: 1, source: "wh", dialect: "postgres", captured_at: FIXED_NOW, method: "live", tables });
+    expect(rowCountNote(snap([mk("a", "view"), mk("b", "view")]), { exclude: ["s.a", "s.b"] })).toBeNull();
+    expect(rowCountNote(snap([mk("a", "view"), mk("b", "table")]), { include: ["s.b"] })).toEqual({
+      count: 1,
+      note: "1 table has no row count yet; sl profile measures it.",
+    });
+    expect(rowCountNote(snap([mk("v", "view", FIXED_NOW)]))).toEqual({
+      count: 1,
+      note: "1 view profiled earlier has no row count; sl profile --refresh --tables s.v measures it.",
+    });
+    expect(rowCountNote(snap([mk("a", "table"), mk("v", "view", FIXED_NOW), mk("w", "view", FIXED_NOW)]))).toEqual({
+      count: 3,
+      note:
+        "1 table has no row count yet; sl profile measures it. " +
+        "2 views profiled earlier have no row count; sl profile --refresh --tables s.v,s.w measures them.",
+    });
+    const many = Array.from({ length: 9 }, (_, i) => mk(`v${i}`, "view", FIXED_NOW));
+    expect(rowCountNote(snap(many))?.note).toBe("9 views profiled earlier have no row count; sl profile --refresh measures them.");
+    expect(rowCountNote(snap([mk("my view", "view", FIXED_NOW)]))?.note).toBe(
+      "1 view profiled earlier has no row count; sl profile --refresh measures it.",
+    );
+  });
+
+  test("re-introspecting after a profile, or after excluding a view, does not send the agent to a no-op profile", async () => {
+    const t = await setup();
+    await duckdbSource(t.root, t.dir, "wh", ["create table a (id integer)", "insert into a values (1), (2)", "create view v as select * from a"]);
+    expect((await sl(t.root, ["introspect", "--source", "wh"])).out).toContain("1 view has no row count yet; sl profile measures it.");
+    const p = await sl(t.root, ["profile", "--source", "wh"]);
+    expect(p.code).toBe(0);
+    const again = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    expect(again.code).toBe(0);
+    const out = again.json<{ no_row_count: number; row_count_note?: string }>();
+    if (out.no_row_count) {
+      expect(out.row_count_note).toBe("1 view profiled earlier has no row count; sl profile --refresh --tables main.v measures it.");
+      const refresh = await sl(t.root, ["profile", "--source", "wh", "--refresh", "--tables", "main.v"]);
+      expect(refresh.err).toBe("");
+      expect(refresh.code).toBe(0);
+      expect(typeof table(snapshotOf(t.root, "wh"), "main", "v").row_count).toBe("number");
+    } else {
+      expect(out.row_count_note).toBeUndefined();
+    }
+
+    expect((await sl(t.root, ["scope", "--source", "wh", "--exclude", "v", "--write"])).code).toBe(0);
+    const excluded = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    expect(excluded.json<{ no_row_count: number; row_count_note?: string }>()).toMatchObject({ no_row_count: 0 });
+    expect(excluded.json<{ row_count_note?: string }>().row_count_note).toBeUndefined();
   });
 
   test("--emit-sql prints the plan and writes nothing", async () => {

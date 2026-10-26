@@ -7,8 +7,10 @@ A join says how two tables in the same source connect, for example each order to
 `sl draft` writes joins with an `origin`:
 
 - `declared`: the database has a foreign key between the columns. Usually right, still checked.
-- `inferred`: guessed from names, such as `orders.customer_id` and `customers.customer_id`. Often right, sometimes not (`created_by_id` is not a customer).
+- `inferred`: guessed by a tool or by you, from names (`orders.customer_id` and `customers.customer_id`) or from matching values (every `orders.ship_region` value is a `regions.region_code`). Often right, sometimes not (`created_by_id` is not a customer). A join you find yourself and add to the model's `joins` list gets `origin: inferred` and `status: draft`.
 - `owner`: the owner told you, for example "`shipments.order_ref` is the order number". Write it yourself in the model's `joins` list with `origin: owner` and `status: draft`.
+
+To test a join you suspect from values before writing it, compare the columns with `sl run` on duckdb and postgres: `select count(*) filter (where r.region_code is null) as unmatched, count(*) as total from public.fct_orders o left join public.dim_regions r on r.region_code = o.ship_region`. Then write the join and measure it with `sl check-join`.
 
 Every join, whatever its origin, goes through `sl check-join` and a readback.
 
@@ -18,7 +20,7 @@ Every join, whatever its origin, goes through `sl check-join` and a readback.
 sl check-join --source warehouse --model orders --join customer
 ```
 
-For warehouse dialects, add `--emit-sql`, run the query, and finish with `--results <file>` (see `intake.md`). The command writes `evidence` into the join:
+For warehouse dialects, add `--emit-sql`, run the query, and finish with `--results <file>` (see `intake.md`). The command prints how the relationship written in the YAML compares with the data, for example `(YAML says many_to_one, data says many_to_one)`, and writes `evidence` into the join:
 
 ```yaml
 evidence:
@@ -54,6 +56,8 @@ Rows on the left that find no match are orphans. They matter for `type`:
 
 When orphans are more than about 1% of rows, ask about them and write the answer in the join's `description` or as an open question.
 
+The join's `type` also decides what a join reference through it sees. A measure filter or dimension on the left model that reads `customer.<column>` makes the compiler add the `customer` join with its own `type`: on a `left` join an orphan's `customer.<column>` is empty (null), so a filter meant to keep orphans handles null, as in `coalesce(customer.is_test_account, false) = false`; on an `inner` join orphans are gone from every measure that uses the reference. Choose the type with the owner and read the consequence back (`interview-guide.md`, join references).
+
 ## Relationships
 
 - `many_to_one`: many rows on the left, one on the right (orders to customer). Safe: totals on the left stay correct.
@@ -64,7 +68,9 @@ When orphans are more than about 1% of rows, ask about them and write the answer
   2. A pre-aggregated model, for example a view or table with one row per order and the promotion count, that the owner or their engineers create.
   3. Leave it out and record an open question.
 
-When `relationship` in the YAML differs from `suggested_relationship`, change the YAML to match the evidence, or ask the owner why the data disagrees with what they expect. Never approve a join whose declared relationship the evidence contradicts.
+When `relationship` in the YAML differs from `suggested_relationship`, change the YAML to match the evidence, or ask the owner why the data disagrees with what they expect. Never approve a join whose YAML relationship the evidence contradicts.
+
+Only `many_to_one` and `one_to_one` joins carry join references and request fields on other models; a `one_to_many` join never does, because it repeats the left model's rows.
 
 ## Joins only within a source
 
@@ -74,7 +80,9 @@ A join's `to` is a model in the same source. When the owner wants to connect tab
 
 Read back what the join does, how well it matched, and any risk, then ask for a yes:
 
-> "Each order connects to the customer who placed it, using `customer_id`. 9,978 of 10,000 orders find their customer; 12 have no customer recorded and 10 point at a missing one. Each customer appears once, so joining never repeats an order. Orders without a customer are kept, with empty customer details. Approve this join?"
+> "Each order connects to the customer who placed it, using `customer_id`. 9,978 of 10,000 orders find their customer; 12 have no customer recorded and 10 point at a missing one. Each customer appears once, so joining never repeats an order. Orders without a customer are kept, with empty customer details. Approve?"
+
+A row filter on the joined model in `access.yaml` behaves the same way: on a left join it blanks the joined columns and keeps the left row; on an inner join it drops the row (`access.md`).
 
 For a `one_to_many` join, add the multiplication warning in the readback itself. After an explicit yes:
 

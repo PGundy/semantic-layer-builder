@@ -25,11 +25,11 @@
     "role": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9_]*$",
-      "description": "Role the question is asked as."
+      "description": "Role the question is asked as. Leave it out until access.yaml exists."
     },
     "user": {
       "type": "object",
-      "description": "User attribute values for row filters.",
+      "description": "User attribute values for row filters. Leave it out until access.yaml exists.",
       "propertyNames": {
         "pattern": "^[a-z][a-z0-9_]*$"
       }
@@ -119,7 +119,7 @@
         "tolerance": {
           "type": "number",
           "minimum": 0,
-          "description": "Relative tolerance for numbers."
+          "description": "Relative tolerance for numbers, agreed with the owner and passed to sl goldens confirm --tolerance; 0 for figures finance signs off."
         },
         "rows": {
           "type": "array",

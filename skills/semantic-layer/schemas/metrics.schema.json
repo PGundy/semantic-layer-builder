@@ -19,7 +19,7 @@
   "$defs": {
     "metric": {
       "type": "object",
-      "description": "A ratio or derived metric.",
+      "description": "A ratio or derived metric. Its measures may come from several models of its source; it then groups by dimensions that exist, with the same name, in every model it uses.",
       "additionalProperties": false,
       "required": [
         "name",
@@ -72,7 +72,7 @@
         "currency": {
           "type": "string",
           "pattern": "^[A-Z]{3}$",
-          "description": "ISO 4217 currency code, only with format currency."
+          "description": "ISO 4217 currency code, only with format currency. An approved metric with format currency and no currency gets a warning."
         },
         "description": {
           "type": "string",

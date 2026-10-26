@@ -3,7 +3,7 @@ import { SQL } from "bun";
 import { cpSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Issue, type SchemaKind, schemaIssues, validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
+import { type Issue, type SchemaKind, schemaIssues, sqlNames, validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { sl } from "./helpers.ts";
 
@@ -109,6 +109,44 @@ const ORDERS = "models/warehouse/orders.yaml";
 const CUSTOMERS = "models/warehouse/customers.yaml";
 const GOLDEN = "goldens/revenue_by_month_2025.yaml";
 const GOLDEN2 = "goldens/aov_by_region.yaml";
+const GOLDEN3 = "goldens/revenue_by_customer_region.yaml";
+const UNREACHABLE = "model customers is not reachable from orders";
+const ACCESS = "access.yaml";
+
+// Adds a model of the warehouse source over a new snapshot table.
+function addModel(root: string, model: string, table: string, columns: string[], body: Doc): void {
+  mutate(root, SNAP_WH, (d) =>
+    d.tables.push({
+      schema: "public",
+      name: table,
+      kind: "table",
+      row_count: 6,
+      description: null,
+      primary_key: [columns[0]],
+      unique_keys: [],
+      foreign_keys: [],
+      columns: columns.map((name) => ({ name, type: "text", nullable: false, description: null })),
+    }),
+  );
+  writeYaml(join(root, `models/warehouse/${model}.yaml`), { model, source: "warehouse", table: `public.${table}`, status: "draft", dimensions: [], measures: [], ...body });
+}
+
+// Adds a regions model reached from customers by a home_region join, two hops from orders.
+function addRegions(root: string): void {
+  addModel(root, "regions", "dim_regions", ["region", "region_name"], {
+    dimensions: [{ name: "region_name", expr: "region_name", type: "string", status: "draft" }],
+  });
+  mutate(root, CUSTOMERS, (d) => (d.joins = [{ name: "home_region", to: "regions", keys: [{ from: "region", to: "region" }], relationship: "many_to_one", status: "draft" }]));
+}
+
+// Adds a shipments model joined to orders, so regions is three hops from shipments.
+function addShipments(root: string): void {
+  addModel(root, "shipments", "fct_shipments", ["shipment_id", "order_id"], {
+    dimensions: [{ name: "order_date", expr: "order.created_at", type: "time", status: "draft" }],
+    measures: [{ name: "shipment_count", agg: "count", status: "draft" }],
+    joins: [{ name: "order", to: "orders", keys: [{ from: "order_id", to: "order_id" }], relationship: "many_to_one", status: "draft" }],
+  });
+}
 
 const CASES: Case[] = [
   // Structure
@@ -195,9 +233,9 @@ const CASES: Case[] = [
     },
     expect: [],
   },
-  { name: "postgres: bare mixed-case expr folds to lower case", file: "", setup: (r) => mixedCase(r, "MixedCase"), expect: ["error", ORDERS, "dimensions[3].expr", 'resolves to mixedcase in postgres, but the column is "MixedCase"; write "MixedCase"'] },
+  { name: "postgres: bare mixed-case expr folds to lower case", file: "", setup: (r) => mixedCase(r, "MixedCase"), expect: ["error", ORDERS, "dimensions[4].expr", 'resolves to mixedcase in postgres, but the column is "MixedCase"; write "MixedCase"'] },
   { name: "postgres: quoted mixed-case expr resolves", file: "", setup: (r) => mixedCase(r, '"MixedCase"'), expect: [] },
-  { name: "postgres: quoted expr is case-sensitive", file: "", setup: (r) => mixedCase(r, '"mixedcase"'), expect: ["error", ORDERS, "dimensions[3].expr", 'write "MixedCase"'] },
+  { name: "postgres: quoted expr is case-sensitive", file: "", setup: (r) => mixedCase(r, '"mixedcase"'), expect: ["error", ORDERS, "dimensions[4].expr", 'write "MixedCase"'] },
   { name: "postgres: bare expr matching a lower-case column", file: ORDERS, edit: (d) => (d.dimensions[1].expr = "STATUS"), expect: [] },
   { name: "postgres: case is not enforced on a manual snapshot", file: "", setup: (r) => mixedCase(r, "MixedCase", "manual"), expect: [] },
   { name: "duckdb: bare expr is case-insensitive", file: "models/lake/web_events.yaml", edit: (d) => (d.dimensions[1].expr = "Event_Type"), expect: [] },
@@ -212,8 +250,24 @@ const CASES: Case[] = [
       ["error", GOLDEN2, "request.measures[1]", 'has no measure "order_count"'],
     ],
   },
-  { name: "join to unknown model", file: ORDERS, edit: (d) => (d.joins[0].to = "clients"), expect: ["error", ORDERS, "joins[0].to", "not a model of source warehouse"] },
-  { name: "join across sources", file: ORDERS, edit: (d) => (d.joins[0].to = "web_events"), expect: ["error", ORDERS, "joins[0].to", "not a model of source warehouse"] },
+  {
+    name: "join to unknown model",
+    file: ORDERS,
+    edit: (d) => (d.joins[0].to = "clients"),
+    expect: [
+      ["error", ORDERS, "joins[0].to", "not a model of source warehouse"],
+      ["error", GOLDEN3, "request.dimensions[0]", UNREACHABLE],
+    ],
+  },
+  {
+    name: "join across sources",
+    file: ORDERS,
+    edit: (d) => (d.joins[0].to = "web_events"),
+    expect: [
+      ["error", ORDERS, "joins[0].to", "not a model of source warehouse"],
+      ["error", GOLDEN3, "request.dimensions[0]", UNREACHABLE],
+    ],
+  },
   {
     name: "one_to_many warns about fan-out",
     file: CUSTOMERS,
@@ -228,7 +282,23 @@ const CASES: Case[] = [
   { name: "approved measure without description", file: ORDERS, edit: (d) => delete d.measures[1].description, expect: ["error", ORDERS, "measures[1].description", "approved measure"] },
   { name: "time_grains on a string dimension", file: ORDERS, edit: (d) => (d.dimensions[1].time_grains = ["day"]), expect: ["error", ORDERS, "dimensions[1].time_grains", "only allowed on time"] },
   { name: "currency without format currency", file: ORDERS, edit: (d) => (d.measures[1].currency = "USD"), expect: ["error", ORDERS, "measures[1].currency", "only allowed with format currency"] },
-  { name: "format currency without a code", file: ORDERS, edit: (d) => delete d.measures[0].currency, expect: [] },
+  { name: "approved currency measure without a code", file: ORDERS, edit: (d) => delete d.measures[0].currency, expect: ["warning", ORDERS, "measures[0].currency", "is missing on an approved item with format currency"] },
+  {
+    name: "draft currency measure without a code",
+    file: ORDERS,
+    edit: (d) => {
+      delete d.measures[0].currency;
+      d.measures[0].status = "draft";
+      delete d.measures[0].approved_by;
+      delete d.measures[0].approved_at;
+    },
+    expect: [
+      ["error", "metrics.yaml", "metrics[0].numerator", "only approved measures"],
+      ["warning", GOLDEN, "request.measures[0]", "an approved golden uses draft measure orders.revenue"],
+    ],
+  },
+  { name: "approved currency metric without a code", file: "metrics.yaml", edit: (d) => delete d.metrics[0].currency, expect: ["warning", "metrics.yaml", "metrics[0].currency", "is missing on an approved item"] },
+  { name: "draft currency metric without a code", file: "metrics.yaml", edit: (d) => delete d.metrics[1].currency, expect: [] },
   { name: "impossible approval date", file: ORDERS, edit: (d) => (d.approved_at = "2026-13-45"), expect: ["error", ORDERS, "approved_at", "real calendar date"] },
   { name: "malformed approval date", file: ORDERS, edit: (d) => (d.approved_at = "15/01/2026"), expect: ["error", ORDERS, "approved_at", "must match"] },
 
@@ -239,7 +309,15 @@ const CASES: Case[] = [
   { name: "denominator in another source", file: "metrics.yaml", edit: (d) => (d.metrics[0].denominator = "web_events.event_count"), expect: ["error", "metrics.yaml", "metrics[0].denominator", "not a model of source warehouse"] },
   { name: "derived placeholder unresolved", file: "metrics.yaml", edit: (d) => (d.metrics[1].expr = "{orders.revenue} - {refunds.refund_amount}"), expect: ["error", "metrics.yaml", "metrics[1].expr", "refunds.refund_amount does not resolve"] },
   { name: "derived expr beyond arithmetic", file: "metrics.yaml", edit: (d) => (d.metrics[1].expr = "coalesce({orders.revenue}, 0)"), expect: ["error", "metrics.yaml", "metrics[1].expr", "only"] },
-  { name: "approved metric uses a draft measure", file: "metrics.yaml", edit: (d) => (d.metrics[0].denominator = "customers.customer_count"), expect: ["error", "metrics.yaml", "metrics[0].denominator", "only approved measures"] },
+  {
+    name: "approved metric uses a draft measure",
+    file: "metrics.yaml",
+    edit: (d) => (d.metrics[0].denominator = "customers.customer_count"),
+    expect: [
+      ["error", "metrics.yaml", "metrics[0].denominator", "only approved measures"],
+      ["error", GOLDEN2, "request.dimensions[0]", 'customers has no dimension "ship_region"'],
+    ],
+  },
   { name: "approved metric without description", file: "metrics.yaml", edit: (d) => delete d.metrics[0].description, expect: ["error", "metrics.yaml", "metrics[0].description", "approved metric"] },
 
   // Access
@@ -292,6 +370,247 @@ const CASES: Case[] = [
   { name: "eq filter with a list", file: GOLDEN, edit: (d) => (d.request.filters[0].value = ["2025-01-01"]), expect: ["error", GOLDEN, "request.filters[0].value", "must be a single value, not a list or object"] },
   { name: "approved golden without rows", file: GOLDEN, edit: (d) => (d.expected.rows = []), expect: ["error", GOLDEN, "expected.rows", "at least one expected row"] },
 
+  // Join references in exprs and filters
+  { name: "join reference to a missing column", file: ORDERS, edit: (d) => (d.dimensions[3].expr = "customer.home_region"), expect: ["error", ORDERS, "dimensions[3].expr", '"home_region" is not a column of public.dim_customers, the table of model customers that join customer reaches'] },
+  { name: "join reference to a column in another case", file: ORDERS, edit: (d) => (d.dimensions[3].expr = "customer.REGION"), expect: [] },
+  { name: "join reference through an unknown join", file: ORDERS, edit: (d) => (d.dimensions[3].expr = "buyer.region"), expect: ["error", ORDERS, "dimensions[3].expr", '"buyer" is neither a column nor a join of model orders (its joins are customer)'] },
+  {
+    name: "join reference through a one_to_many join",
+    file: ORDERS,
+    edit: (d) => (d.joins[0].relationship = "one_to_many"),
+    expect: [
+      ["error", ORDERS, "dimensions[3].expr", "goes through join customer, which is one_to_many"],
+      ["error", ORDERS, "measures[0].filter", "goes through join customer, which is one_to_many"],
+      ["warning", ORDERS, "joins[0].relationship", "fans out"],
+      ["warning", ORDERS, "joins[0].relationship", "evidence suggests many_to_one"],
+      ["error", GOLDEN3, "request.dimensions[0]", UNREACHABLE],
+    ],
+  },
+  { name: "join reference through a one_to_one join", file: ORDERS, edit: (d) => ((d.joins[0].relationship = "one_to_one"), (d.joins[0].evidence.suggested_relationship = "one_to_one")), expect: [] },
+  { name: "join reference with two hops", file: ORDERS, edit: (d) => (d.dimensions[3].expr = "customer.home.region_name"), expect: ["error", ORDERS, "dimensions[3].expr", '"home" is not a column of public.dim_customers'] },
+  {
+    name: "join reference when the target table is not in the snapshot",
+    file: CUSTOMERS,
+    edit: (d) => (d.table = "public.dim_customer"),
+    expect: ["warning", CUSTOMERS, "table", "not in snapshots/warehouse.json"],
+  },
+  { name: "join reference named after a reserved word", file: "", setup: (r) => addShipments(r), expect: [] },
+  {
+    name: "join reference beyond one hop when the target table is unknown",
+    file: "",
+    setup: (r) => {
+      mutate(r, CUSTOMERS, (d) => (d.table = "public.dim_customer"));
+      mutate(r, ORDERS, (d) => (d.dimensions[3].expr = "customer.home.region_name"));
+    },
+    expect: [
+      ["warning", CUSTOMERS, "table", "not in snapshots/warehouse.json"],
+      ["error", ORDERS, "dimensions[3].expr", "goes more than one hop"],
+    ],
+  },
+  { name: "join reference in a measure expr", file: ORDERS, edit: (d) => (d.measures[1] = { ...d.measures[1], agg: "sum", expr: "customer.is_test_account::int" }), expect: ["error", ORDERS, "measures[1].expr", "a measure expr is over the model's own columns"] },
+  {
+    name: "subquery in a measure filter",
+    file: ORDERS,
+    edit: (d) => (d.measures[0].filter = "status <> 'cancelled' and customer_id not in (select customer_id from public.dim_customers where is_test_account)"),
+    expect: ["error", ORDERS, "measures[0].filter", "has a subquery; a measure filter may name only this model's columns and <join>.<column> join references"],
+  },
+  { name: "subquery in a dimension expr", file: ORDERS, edit: (d) => (d.dimensions[1].expr = "(SELECT max(status) FROM public.fct_orders)"), expect: ["error", ORDERS, "dimensions[1].expr", "has a subquery"] },
+  { name: "subquery in a measure expr", file: CUSTOMERS, edit: (d) => (d.measures[0].expr = "(select 1)"), expect: ["error", CUSTOMERS, "measures[0].expr", "has a subquery; a measure expr may name only this model's columns; put a joined column in the measure's filter or in a dimension, or ask the owner for a view"] },
+  { name: "schema-qualified table in a dimension expr", file: ORDERS, edit: (d) => (d.dimensions[3].expr = "public.dim_customers.region"), expect: ["error", ORDERS, "dimensions[3].expr", "public.dim_customers.region names a table or schema directly"] },
+  { name: "table name in a measure filter", file: ORDERS, edit: (d) => (d.measures[0].filter = "dim_customers.is_test_account = false"), expect: ["error", ORDERS, "measures[0].filter", "dim_customers.is_test_account names a table or schema directly"] },
+  { name: "model's own name as a qualifier", file: ORDERS, edit: (d) => (d.measures[0].filter = "orders.status <> 'cancelled'"), expect: ["error", ORDERS, "measures[0].filter", "orders.status names a table or schema directly"] },
+  {
+    name: "dots inside literals, comments, casts and function calls are not references",
+    file: ORDERS,
+    edit: (d) => (d.dimensions[1].expr = "case when status = 'a.b' then pg_catalog.lower(status) /* x.y */ else status::text end -- p.q"),
+    expect: [],
+  },
+  { name: "select inside a string literal is not a subquery", file: ORDERS, edit: (d) => (d.measures[0].filter = "status <> 'select'"), expect: [] },
+  { name: "struct field on an own column", file: "models/lake/web_events.yaml", edit: (d) => (d.dimensions[1].expr = "event_type.kind"), expect: [] },
+  { name: "lambda parameter fields are not references", file: "models/lake/web_events.yaml", edit: (d) => (d.dimensions[1].expr = "list_filter(event_type, x -> x.kind = 'a')"), expect: [] },
+  { name: "two-parameter lambda fields are not references", file: "models/lake/web_events.yaml", edit: (d) => (d.dimensions[1].expr = "list_transform(event_type, (x, i) -> x.a + i)"), expect: [] },
+  { name: "lambda keyword parameter fields are not references", file: "models/lake/web_events.yaml", edit: (d) => (d.dimensions[1].expr = "list_filter(event_type, lambda x: x.kind = 'a')"), expect: [] },
+  {
+    name: "a qualifier that is not a lambda parameter still errors next to a lambda",
+    file: "models/lake/web_events.yaml",
+    edit: (d) => (d.dimensions[1].expr = "list_filter(event_type, x -> y.kind = 'a')"),
+    expect: ["error", "models/lake/web_events.yaml", "dimensions[1].expr", '"y" is neither a column nor a join of model web_events'],
+  },
+  { name: "unquoted join name in another case", file: ORDERS, edit: (d) => (d.dimensions[3].expr = "Customer.region"), expect: [] },
+  { name: "quoted join name in another case", file: ORDERS, edit: (d) => (d.dimensions[3].expr = '"Customer".region'), expect: ["error", ORDERS, "dimensions[3].expr", '"Customer" is neither a column nor a join of model orders'] },
+  {
+    name: "quoted join reference column in another case on a live postgres snapshot",
+    file: ORDERS,
+    edit: (d) => (d.dimensions[3].expr = 'customer."REGION"'),
+    expect: ["error", ORDERS, "dimensions[3].expr", 'customer.REGION: "REGION" is not a column of public.dim_customers, the table of model customers that join customer reaches; quoted names are case-sensitive, write \"region\"'],
+  },
+  {
+    name: "quoted join reference column in another case on a DDL snapshot",
+    file: "",
+    setup: (r) => {
+      mutate(r, SNAP_WH, (d) => (d.method = "ddl"));
+      mutate(r, ORDERS, (d) => (d.dimensions[3].expr = 'customer."REGION"'));
+    },
+    expect: [],
+  },
+  {
+    name: "a reference after an escape string is still read",
+    file: ORDERS,
+    edit: (d) => (d.measures[0].filter = "status <> E'it\\'s' and orders.status = 'x'"),
+    expect: ["error", ORDERS, "measures[0].filter", "orders.status names a table or schema directly"],
+  },
+  { name: "FROM-first subquery", file: ORDERS, edit: (d) => (d.measures[0].filter = "customer_id in (from customers_tmp select customer_id)"), expect: ["error", ORDERS, "measures[0].filter", "has a subquery"] },
+  { name: "FROM-first subquery without select", file: ORDERS, edit: (d) => (d.measures[0].filter = "customer_id in (from customers_tmp)"), expect: ["error", ORDERS, "measures[0].filter", "has a subquery"] },
+  { name: "TABLE subquery", file: ORDERS, edit: (d) => (d.measures[0].filter = "customer_id in (table customers_tmp)"), expect: ["error", ORDERS, "measures[0].filter", "has a subquery"] },
+  { name: "trim(from x) is not a subquery", file: ORDERS, edit: (d) => (d.dimensions[1].expr = "trim(from status)"), expect: [] },
+  {
+    name: "table name in a measure expr gets the measure expr hint",
+    file: ORDERS,
+    edit: (d) => (d.measures[0].expr = "dim_customers.is_test_account::int"),
+    expect: ["error", ORDERS, "measures[0].expr", "a measure expr may name only this model's columns; put a joined column in the measure's filter or in a dimension, or ask the owner for a view"],
+  },
+  {
+    name: "join reference in a row filter",
+    file: ACCESS,
+    edit: (d) => (d.roles[1].row_filters[0].expr = "customer.region = {{ user.region }}"),
+    expect: ["error", ACCESS, "roles[1].row_filters[0].expr", "a row filter is over its model's own columns"],
+  },
+  {
+    name: "subquery in a row filter",
+    file: ACCESS,
+    edit: (d) => (d.roles[1].row_filters[0].expr = "customer_id in (select customer_id from public.dim_customers where region = {{ user.region }})"),
+    expect: ["error", ACCESS, "roles[1].row_filters[0].expr", "has a subquery; a row filter may name only its model's columns; write a row filter on the joined model, or ask the owner for a view"],
+  },
+  {
+    name: "table name in a row filter gets the row filter hint",
+    file: ACCESS,
+    edit: (d) => (d.roles[1].row_filters[0].expr = "dim_customers.region = {{ user.region }}"),
+    expect: ["error", ACCESS, "roles[1].row_filters[0].expr", "dim_customers.region names a table or schema directly; a row filter may name only its model's columns; write a row filter on the joined model, or ask the owner for a view"],
+  },
+  { name: "row filter on a joined model's own columns", file: ACCESS, edit: (d) => d.roles[1].row_filters.push({ model: "warehouse.customers", expr: "region = {{ user.region }}" }), expect: [] },
+
+  // Request fields on other models
+  { name: "golden dimension on an unreachable model", file: GOLDEN3, edit: (d) => ((d.request.measures = ["customers.customer_count"]), (d.request.dimensions = ["orders.status"])), expect: ["error", GOLDEN3, "request.dimensions[0]", "model orders is not reachable from customers"] },
+  {
+    name: "golden dimension reached by two join paths",
+    file: ORDERS,
+    edit: (d) => d.joins.push({ name: "buyer", to: "customers", keys: [{ from: "customer_id", to: "customer_id" }], relationship: "many_to_one", status: "draft" }),
+    expect: ["error", GOLDEN3, "request.dimensions[0]", "more than one shortest join path (orders.customer; orders.buyer)"],
+  },
+  { name: "golden dimension two hops away", file: "", setup: (r) => (addRegions(r), mutate(r, GOLDEN3, (d) => (d.request.dimensions = ["regions.region_name"]))), expect: [] },
+  {
+    name: "a direct join wins over a two-hop route to the same model",
+    file: "",
+    setup: (r) => (
+      addRegions(r),
+      mutate(r, ORDERS, (d) => d.joins.push({ name: "shipped_to", to: "regions", keys: [{ from: "ship_region", to: "region" }], relationship: "many_to_one", status: "draft" })),
+      mutate(r, GOLDEN3, (d) => (d.request.dimensions = ["regions.region_name"]))
+    ),
+    expect: [],
+  },
+  {
+    name: "golden dimension three hops away",
+    file: "",
+    setup: (r) => {
+      addRegions(r);
+      addShipments(r);
+      mutate(r, GOLDEN3, (d) => ((d.request.measures = ["shipments.shipment_count"]), (d.request.dimensions = ["regions.region_name"])));
+    },
+    expect: ["error", GOLDEN3, "request.dimensions[0]", "model regions is not reachable from shipments"],
+  },
+  {
+    name: "golden dimension two hops from a model with a join reference",
+    file: "",
+    setup: (r) => {
+      addShipments(r);
+      mutate(r, GOLDEN3, (d) => ((d.request.measures = ["shipments.shipment_count"]), (d.request.dimensions = ["customers.region", "shipments.order_date:month"])));
+    },
+    expect: [],
+  },
+  {
+    name: "golden filter on another model's dimension",
+    file: GOLDEN3,
+    edit: (d) => ((d.request.measures = ["customers.customer_count"]), (d.request.dimensions = []), (d.request.filters = [{ field: "orders.status", op: "eq", value: "shipped" }])),
+    expect: ["error", GOLDEN3, "request.filters[0].field", "model orders is not reachable from customers"],
+  },
+  {
+    name: "golden filter on another model's measure",
+    file: GOLDEN3,
+    edit: (d) => ((d.request.measures = ["customers.customer_count"]), (d.request.dimensions = []), (d.request.filters = [{ field: "orders.order_count", op: "gt", value: 1 }])),
+    expect: ["error", GOLDEN3, "request.filters[0].field", "model orders is not reachable from customers, the model of the request's first measure,"],
+  },
+  { name: "golden filter on a reachable model's measure", file: GOLDEN3, edit: (d) => (d.request.filters = [{ field: "customers.customer_count", op: "gt", value: 1 }]), expect: [] },
+  {
+    name: "golden with no measures names its first dimension as the base",
+    file: GOLDEN3,
+    edit: (d) => ((d.request.measures = []), (d.request.dimensions = ["customers.region", "orders.status"])),
+    expect: ["error", GOLDEN3, "request.dimensions[1]", "model orders is not reachable from customers, the model of the request's first dimension, as it has no measures,"],
+  },
+  { name: "golden with no measures starts from its first dimension", file: GOLDEN3, edit: (d) => ((d.request.measures = []), (d.request.dimensions = ["orders.status", "customers.region"])), expect: [] },
+
+  // Metrics across models
+  {
+    name: "metric across models grouped by a dimension one model lacks",
+    file: GOLDEN3,
+    edit: (d) => (d.request.measures = ["revenue_per_customer"]),
+    expect: ["error", GOLDEN3, "request.dimensions[0]", 'metric revenue_per_customer combines measures of orders, customers, so it groups by dimensions that exist with the same name in each; orders has no dimension "region"'],
+  },
+  {
+    name: "metric across models grouped by a dimension both models carry",
+    file: "",
+    setup: (r) => {
+      mutate(r, ORDERS, (d) => (d.dimensions[3].name = "region"));
+      mutate(r, GOLDEN3, (d) => (d.request.measures = ["revenue_per_customer"]));
+    },
+    expect: [],
+  },
+
+  // deny.fields and joins
+  {
+    name: "deny field naming a join",
+    file: ACCESS,
+    edit: (d) => d.roles[1].deny.fields.push("warehouse.orders.customer"),
+    expect: ["error", ACCESS, "roles[1].deny.fields[1]", '"warehouse.orders.customer" is a join; deny.fields names dimensions and measures only; a join is hidden from a role when its target model is not allowed or is denied for that role, so deny warehouse.customers to hide it'],
+  },
+
+  // Goldens before access, and approved goldens over draft fields
+  {
+    name: "golden role and user before access.yaml exists",
+    file: "",
+    setup: (r) => rmSync(join(r, ACCESS)),
+    expect: [
+      ["warning", GOLDEN, "role", 'names role "analyst" but there is no access.yaml yet'],
+      ["warning", GOLDEN2, "role", 'names role "sales_rep" but there is no access.yaml yet'],
+      ["warning", GOLDEN2, "user.region", "there is no access.yaml yet"],
+    ],
+  },
+  {
+    name: "approved golden uses a draft dimension",
+    file: GOLDEN,
+    edit: (d) => d.request.filters.push({ field: "customers.region", op: "eq", value: "west" }),
+    expect: ["warning", GOLDEN, "request.filters[2].field", "an approved golden uses draft dimension customers.region"],
+  },
+  {
+    name: "approved golden uses a draft metric",
+    file: "",
+    setup: (r) => {
+      mutate(r, "metrics.yaml", (d) => ((d.metrics[0].status = "draft"), delete d.metrics[0].approved_by, delete d.metrics[0].approved_at));
+      mutate(r, GOLDEN, (d) => (d.request.measures = ["average_order_value"]));
+    },
+    expect: ["warning", GOLDEN, "request.measures[0]", "an approved golden uses draft metric average_order_value"],
+  },
+  { name: "draft golden over draft fields", file: GOLDEN2, edit: (d) => d.request.dimensions.push("orders.status"), expect: [] },
+  { name: "draft field named twice warns once", file: GOLDEN, edit: (d) => ((d.request.dimensions = ["orders.status"]), (d.request.order_by = [{ field: "orders.status" }])), expect: ["warning", GOLDEN, "request.dimensions[0]", "draft dimension orders.status"] },
+
+  // Access open questions
+  {
+    name: "access open questions",
+    file: ACCESS,
+    edit: (d) => ((d.open_questions = ["Who may see refunds?"]), (d.roles[1].open_questions = ["Do reps see other regions' totals?"])),
+    expect: [],
+  },
+  { name: "access open questions must be strings", file: ACCESS, edit: (d) => (d.roles[0].open_questions = [3]), expect: ["error", ACCESS, "roles[0].open_questions[0]", "must be string"] },
+
   // Shapes that fail the schema but are still read for references
   { name: "null dimension item", file: CUSTOMERS, edit: (d) => d.dimensions.unshift(null), expect: ["error", CUSTOMERS, "dimensions[0]", "must be object"] },
   { name: "null measure item", file: ORDERS, edit: (d) => d.measures.unshift(null), expect: ["error", ORDERS, "measures[0]", "must be object"] },
@@ -318,6 +637,7 @@ const CASES: Case[] = [
       ["error", CUSTOMERS, "xdims", "not a known property"],
       ["warning", "access.yaml", "roles[0].deny.tags[0]", "not used"],
       ["error", "access.yaml", "roles[1].deny.fields[0]", "not a dimension or measure"],
+      ["error", GOLDEN3, "request.dimensions[0]", 'model customers has no dimension "region"'],
     ],
   },
 
@@ -403,6 +723,44 @@ describe("mutations of the valid fixture", () => {
   });
 });
 
+describe("sqlNames", () => {
+  test("reads dotted names outside literals, comments and placeholders", () => {
+    expect(sqlNames("coalesce(customer.is_test_account, false) = false and 'x.y' <> \"t\".\"c\" -- a.b\n /* c.d */ {{ user.region }}")).toEqual({
+      subquery: false,
+      chains: [
+        { parts: ["customer", "is_test_account"], quoted: [false, false], text: "customer.is_test_account" },
+        { parts: ["t", "c"], quoted: [true, true], text: "t.c" },
+      ],
+    });
+  });
+
+  test("skips function calls, casts, numbers and semi-structured paths", () => {
+    expect(sqlNames("pg_catalog.lower(x)::pg_catalog.text + 1.5e3 + payload:customer.id + $$a.b$$").chains).toEqual([]);
+  });
+
+  test("splits a backtick path and finds select in any case", () => {
+    expect(sqlNames("x in (SeLeCt id from `proj.ds.tbl`)")).toEqual({
+      subquery: true,
+      chains: [{ parts: ["proj", "ds", "tbl"], quoted: [true, true, true], text: "proj.ds.tbl" }],
+    });
+    expect(sqlNames("'select'").subquery).toBe(false);
+  });
+
+  test("skips the fields of lambda parameters", () => {
+    expect(sqlNames("list_filter(a, x -> x.k = 1) + transform(b, (y, i) -> y.k) + list_apply(c, lambda z, w: z.k) + q.k").chains.map((c) => c.text)).toEqual(["q.k"]);
+    expect(sqlNames("customer.payload -> 'k' = payload.k").chains.map((c) => c.text)).toEqual(["customer.payload", "payload.k"]);
+  });
+
+  test("reads strings the way the dialect does", () => {
+    expect(sqlNames("E'it\\'s' || t.c").chains.map((c) => c.text)).toEqual(["t.c"]);
+    expect(sqlNames("'it\\'s' || t.c", "snowflake").chains.map((c) => c.text)).toEqual(["t.c"]);
+    expect(sqlNames("'a\\\\' || t.c", "databricks").chains.map((c) => c.text)).toEqual(["t.c"]);
+    expect(sqlNames('"a" = t.c and "select"', "bigquery")).toEqual({ subquery: false, chains: [{ parts: ["t", "c"], quoted: [false, false], text: "t.c" }] });
+    expect(sqlNames("x in (from t) or y in (TABLE u)").subquery).toBe(true);
+    expect(sqlNames("trim(from x)").subquery).toBe(false);
+  });
+});
+
 // The validator's verdict on a bare or quoted identifier agrees with how Postgres resolves it.
 const PG_URL = process.env.PG_URL;
 describe.skipIf(!PG_URL)("postgres identifier resolution", () => {
@@ -421,7 +779,7 @@ describe.skipIf(!PG_URL)("postgres identifier resolution", () => {
     test(exprText, async () => {
       const root = copyFixture();
       mixedCase(root, exprText);
-      const flagged = validateProject(root).some((i) => i.level === "error" && i.path === "dimensions[3].expr");
+      const flagged = validateProject(root).some((i) => i.level === "error" && i.path === "dimensions[4].expr");
       let runs = true;
       try {
         await sql.unsafe(`select ${exprText} from ${SCHEMA}.c`);

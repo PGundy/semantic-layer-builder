@@ -142,7 +142,7 @@
         "expr": {
           "type": "string",
           "minLength": 1,
-          "description": "SQL expression over this table's columns."
+          "description": "SQL expression over this table's columns, and <join>.<column> join references through this model's many_to_one or one_to_one joins. No other table, schema-qualified name or subquery."
         },
         "type": {
           "enum": [
@@ -247,7 +247,7 @@
         "expr": {
           "type": "string",
           "minLength": 1,
-          "description": "SQL expression aggregated. Optional only for count, which then counts rows."
+          "description": "SQL expression aggregated, over this table's columns only. Optional only for count, which then counts rows."
         },
         "agg": {
           "enum": [
@@ -263,7 +263,7 @@
         "filter": {
           "type": "string",
           "minLength": 1,
-          "description": "Optional SQL predicate over this table's columns."
+          "description": "Optional SQL predicate over this table's columns and <join>.<column> join references through this model's many_to_one or one_to_one joins. No other table, schema-qualified name or subquery."
         },
         "format": {
           "enum": [
@@ -277,7 +277,7 @@
         "currency": {
           "type": "string",
           "pattern": "^[A-Z]{3}$",
-          "description": "ISO 4217 currency code, only with format currency."
+          "description": "ISO 4217 currency code, only with format currency. An approved measure with format currency and no currency gets a warning."
         },
         "description": {
           "type": "string",

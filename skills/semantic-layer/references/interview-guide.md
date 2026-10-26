@@ -2,9 +2,21 @@
 
 The interview turns measured facts into agreed meaning. You bring the facts (from the snapshot profile and the draft model); the owner supplies what they mean. Work through `next_batch` from `sl status --json`, one table at a time, and write every answer into `models/<source>/<model>.yaml` as soon as you hear it.
 
+Every example below (status values, which statuses count, test-account rules, column names, time zones) is illustrative. None is a default for the owner's business: their data and their answers decide.
+
 ## Before each table
 
 Read the draft model and the table's profile in `snapshots/<source>.json`: row count, each column's `null_fraction`, `distinct_count`, `min`, `max` and `top_values`, declared and inferred keys. Pick the handful of columns that raise a question. Do not walk through every column: an `id` that is unique and never empty, or a `created_at` that obviously means creation time, needs no question unless it matters for a measure.
+
+`sl draft` writes some guesses that each need a yes before they stand, and each comes with an open question:
+
+- a `grain` copied from "one row per ..." in the table comment, with the first open question a confirmation ("Is one row of fct_orders one order?");
+- a money column named `*_cents` or `*_pennies`, or described as cents, drafted as `expr: <col> / 100.0` with `format: currency`;
+- `currency` taken from a `currency` column that holds one value only;
+- per-unit prices (`unit_price`, `price`, `unit_cost`, `list_price`, `*_rate`) drafted as `avg`, never `sum`, and, when the table has a quantity column, a draft `line_total` measure (sum of quantity times price);
+- a count per foreign key named after its join (`customer_count`), left out when the target table has 20 rows or fewer.
+
+Confirm each guess in the readback, fix it when it is wrong, and remove an open question once the owner has answered it.
 
 ## Question bank
 
@@ -16,13 +28,25 @@ Ask in this order, skipping what the facts already settle.
 | Which columns matter | "Which of these do people actually report on? I see `amount_cents`, `discount_cents`, `shipping_cents`, `tax_cents`." |
 | Business terms and synonyms | "What do people call this number? Revenue, sales, GMV, bookings? Do any of those mean something different?" |
 | Status values that count | "`status` is `completed` in 8,800 rows, `cancelled` in 700, `refunded` in 300, `pending` in 200. Which ones count as a real sale?" |
-| Filters and test data | "I see 42 orders where `email` ends in `@acme-test.com`. Should those always be left out?" |
+| Filters and test data | "I see 42 orders where `source` is `qa_script`. Should those always be left out?" |
+| Rules held on another table | "Test accounts are flagged in `customers.is_test_account`. Should orders from those accounts be left out of every order figure? And 12 orders point at a customer that no longer exists: keep them?" |
 | Units | "`amount_cents` goes from 199 to 1,250,000. Is that cents, so $1.99 to $12,500? Which currency?" |
-| Time zones | "`created_at` has no time zone. Is it UTC, or the store's local time?" |
+| Time zones, timestamp with a time zone | Ask for every time dimension: "`created_at` is stored as an exact moment. When someone says 'orders on March 3rd' or 'March revenue', which time zone is that day or month in: UTC, or the business's local time (which zone)?" |
+| Time zones, timestamp without a time zone | "`created_at` has no time zone. Is it recorded in UTC or in local time? And when people say 'a day', which zone do they mean?" |
 | Which date is "the" date | "There's `created_at`, `paid_at` and `shipped_at`. When someone says 'orders in March', which one do they mean?" |
 | Sensitive columns | "`email`, `phone` and `shipping_address` identify people. Should most users be unable to see them?" |
 | Empty values | "`coupon_code` is empty in 92% of rows. Does empty mean no coupon was used?" |
 | Ownership | "If a number looks wrong, who would know the answer? Anything you're unsure of, I'll note as an open question for them." |
+
+Settle the time zone before the dimension's readback; do not park it as an open question when the owner is there to answer.
+
+## Suggestions
+
+Offer a suggestion with every item, because owners confirm faster than they compose. A suggestion about a fact (a unit, a key, what empty means) can be stated plainly. A suggestion about a business rule (which statuses count, which date is "the" date, how a new customer is defined, how refunds are dated) is a guess: label it so and ground it in a profile fact.
+
+> "My guess, since `pending` orders are under 2% and none has a `paid_at`: revenue counts `completed` only. Which statuses should count?"
+
+Never invite blanket acceptance ("say 'all OK' if these look right") on business-rule items. The readback with real totals is the gate for each one.
 
 ## Turning profile facts into questions
 
@@ -47,30 +71,30 @@ grain: One row per order.
 primary_key: [order_id]
 ```
 
-A measure with the agreed filter, unit and synonyms:
+A measure with the agreed filter, unit and synonyms (the statuses are an example, not a default):
 
 ```yaml
 measures:
   - name: revenue
     expr: amount_cents / 100.0
     agg: sum
-    filter: status in ('completed', 'refunded') and email not like '%@acme-test.com'
+    filter: status <> 'cancelled' and source <> 'qa_script'
     format: currency
     currency: USD
-    description: Order value in dollars after discounts, counting completed and refunded orders, excluding test orders. Shipping and tax are not included.
+    description: Order value in dollars after discounts, leaving out cancelled orders and test orders. Shipping and tax are not included.
     synonyms: [sales, gmv]
     status: draft
 ```
 
-The date that counts, with its time zone:
+The date that counts, with its time zone. The CLI runs every query in UTC, so a bare `created_at` on a timestamp-with-time-zone column buckets days and months in UTC; when the owner's day is local, convert in the `expr`:
 
 ```yaml
 dimensions:
   - name: order_date
-    expr: created_at
+    expr: created_at                 # UTC days; for New York days: created_at at time zone 'America/New_York'
     type: time
     time_grains: [day, week, month, quarter, year]
-    description: When the customer placed the order, in UTC. This is the date for "orders in March".
+    description: When the customer placed the order, with days and months in UTC. This is the date for "orders in March".
     status: draft
 ```
 
@@ -92,23 +116,88 @@ open_questions:
   - Do refunded orders count toward revenue in the monthly board report? Owner to check with Finance (Sam).
 ```
 
+### Rules that depend on a related table: join references
+
+A rule often lives on another table: test accounts are flagged on customers but must be left out of order revenue, or only refunds of counted orders count. Write it as a join reference, `<join name>.<column>`, where the join is one of this model's own joins with `relationship: many_to_one` or `one_to_one`, and the column is a physical column of the joined model's table. A dimension `expr` and a measure `filter` may use join references; a measure `expr` stays over the model's own columns.
+
+Worked example: leave orders from test accounts out of revenue, and keep orders whose customer row is missing (deleted accounts). The flag is `is_test_account` on `dim_customers`, which the `orders` model reaches through its `customer` join:
+
+```yaml
+joins:
+  - name: customer
+    to: customers
+    keys:
+      - { from: customer_id, to: customer_id }
+    relationship: many_to_one
+    type: left                       # keeps orders with no matching customer
+    status: draft
+measures:
+  - name: revenue
+    expr: amount_cents / 100.0
+    agg: sum
+    filter: status <> 'cancelled' and coalesce(customer.is_test_account, false) = false
+    format: currency
+    currency: USD
+    description: >-
+      Order value in dollars, leaving out cancelled orders and orders from test accounts
+      (flagged on the customer). Orders whose customer no longer exists are kept.
+    status: draft
+```
+
+The compiler adds the `customer` join with its declared `type`. On a `left` join an order with no matching customer has an empty `customer.is_test_account`, so a filter meant to keep those orders handles null: `coalesce(customer.is_test_account, false) = false`. Written as `customer.is_test_account = false`, it would drop them. Ask the owner which they want, with the count from the join's evidence ("12 orders point at a customer that no longer exists"), and say it in the readback.
+
+The same pattern covers a refunds rule: on `refunds`, with a `many_to_one` join `order` to `orders`, `filter: order.status <> 'cancelled'` counts only refunds of orders that revenue counts.
+
+Limits, which `sl validate` enforces:
+
+- One hop only. A rule two joins away (refunds to orders to customers) needs a join of its own on the model (`refunds.customer` through `refunds.customer_id`) or a view.
+- Only many_to_one and one_to_one joins: a `one_to_many` join repeats rows.
+- No subqueries and no table or schema names in `expr` or `filter`; validate reports an error that points to join references. When a rule cannot be written with a join reference (the customer's first order, a running total), ask the owner whether their engineers can create a view or table that holds it, model that, and record an open question until it exists; for a DuckDB source the view can live in `connection.views`. The CLI never writes to the owner's database.
+- Check the join with `sl check-join` and read it back before you read back a measure that relies on it (`joins.md`).
+
+### Dimensions through joins
+
+A dimension can also come from a joined table. To date refunds by the original order's month, the refunds model carries:
+
+```yaml
+  - name: order_date
+    expr: order.created_at
+    type: time
+    time_grains: [day, week, month, quarter, year]
+    description: When the refunded order was placed, in UTC. Net revenue dates refunds by this date.
+    status: draft
+```
+
+A metric that combines measures of several models (`net_revenue` = orders revenue minus refunds) groups only by dimensions that exist with the same name in every model it uses, so give such dimensions the same name in each model (`order_date` on both) and approve each. Give the joined dimension the same conversion as the original (`order.created_at at time zone 'America/New_York'` when `orders.order_date` converts), so both sides bucket the same way.
+
 Rules of thumb:
 
 - A filter that applies to every use of the table (test data, soft-deleted rows) goes in each measure's `filter` and in the model `description`, so readers and tools both see it.
 - Units go in `expr` (divide cents by 100.0) and `format`/`currency`, and the description says the unit in words.
-- Remove a drafted dimension or measure the owner says is meaningless, or leave it as draft with a description saying why; never approve it to tidy up.
+- A known caveat on an approved item (a period known to be wrong, a segment it does not cover) goes into that item's own `description`, not only into `open_questions`, so a tool serving the figure carries the warning: "Counts from 2024 include 12 deleted test accounts and read about 10% high."
+- Remove a drafted dimension or measure the owner says is meaningless, or leave it as draft with a description saying why; never approve it to tidy up. Fix or remove a draft measure you know gives a wrong number (a sum of unit prices), even in a table the owner defers.
 - Add a measure the owner names that the draft missed, with `status: draft`, then read it back.
-- Record a disagreement or a hedge as an open question with a name next to it.
+- Record a disagreement or a hedge as an open question with a name next to it. Delete an open question once it is answered, and write the answer where it belongs.
+
+## Goldens during the interview
+
+When the owner offers a figure they trust ("2025 revenue was $1,204,330.50 in the close"), or ties a sign-off to matching one, write a draft golden for it at once and run it (`verification.md`):
+
+```
+sl goldens run --name revenue_2025
+```
+
+Leave `role` and `user` out of the golden until `access.yaml` exists. Show the result next to the owner's figure before the measure's readback. Confirm the golden only after the measures it uses are approved.
 
 ## Readback templates
 
-Read back in the owner's own words, with the numbers and values the YAML will use. End with a yes-or-no question.
+Read back in the owner's own words, with the numbers and values the YAML will use. Every sign-off readback ends with "Approve?". A factual check ("10,000 rows, each order once: is that right?") is a question, not an approval; when the owner answers it, follow with the sign-off readback.
 
-- **Measure**: "So *revenue* is the total of `amount_cents` divided by 100, in US dollars, counting completed and refunded orders and leaving out test orders. Shipping and tax are not included. People also call it sales or GMV. Shall I approve that?"
-- **Dimension**: "*Order date* is when the customer placed the order, in UTC, and it's the date we use for 'orders in March'. Approve?"
-- **Table**: "The *orders* table has one row per order, each with its own `order_id`. It covers web store orders since 2019, 10,000 rows. Test orders are excluded from every number. Is that the right description to sign off?"
+- **Measure**: "So *revenue* is the total of `amount_cents` divided by 100, in US dollars, leaving out cancelled orders and orders from test accounts. Orders whose customer was deleted are kept. Shipping and tax are not included. 2025 comes to $1,204,330.50 from 9,012 orders. People also call it sales or GMV. Approve?"
+- **Dimension**: "*Order date* is when the customer placed the order, with days and months in UTC, and it's the date we use for 'orders in March'. Approve?"
+- **Table**: "The *orders* table has one row per order, each with its own `order_id`. It covers web store orders since 2019, 10,000 rows. Test orders are excluded from every number. Approve?"
 
-Then run, only after an explicit yes:
+Put the sign-offs of one round trip in their own numbered block, separate from the open questions, so a "yes to 1 to 4" is unambiguous. Then run, only after an explicit yes to each:
 
 ```
 sl approve --target warehouse.orders.revenue --by "Dana Ruiz"
@@ -125,13 +214,18 @@ sl approve --target warehouse.orders --by "Dana Ruiz"
 | The access file | `access` |
 | A golden | use `sl goldens confirm`, see `verification.md` |
 
-An approved measure needs a `description`; an approved model needs `grain` and `primary_key`; `sl validate` reports an error otherwise, so fill them in before approving. If the owner later changes their mind about an approved item, edit it, set `status: draft`, remove `approved_by` and `approved_at`, and read it back again.
+An approved measure needs a `description`; an approved model needs `grain` and `primary_key`; `sl validate` reports an error otherwise, so fill them in before approving. If the owner later changes their mind about an approved item, return it to draft with `sl approve --target <ref> --revoke`, edit it, and read it back again.
+
+## Leaving things for later
+
+- A table the owner wants to leave for later leaves scope: `sl scope --source <s> --exclude <table>` to preview, then the same with `--write` (`scoping.md`). Name it in the handoff.
+- A field the owner skips in an otherwise agreed table stays draft. The table can still be approved, and `sl status` moves on to the later phases once no draft models remain in scope; it reports the leftover fields in `draft_fields` and `models_with_draft_fields`. Name them in the handoff, and approve after a readback any draft field that a role's agreed breakdown or a golden relies on.
 
 ## Keeping momentum
 
 - Work in batches of `batch_size` tables, most important first, as `next_batch` lists them. Tell the owner the plan: "five tables today: orders, customers, products, refunds, shipments".
-- Offer a default with every question: "I'd count completed and refunded; does that sound right?" Owners confirm faster than they compose.
-- Group similar columns: one question for all `*_cents` columns, one for all timestamps.
+- Batch per round trip. One message holds numbered items, one topic per item, each with a suggestion, up to about 8. Never pack several topics into one item.
+- Lay a round trip out in two blocks: **Sign-offs** (readbacks ending in "Approve?", answered yes or no) and **Questions** (open items, each with your suggestion or labelled guess).
+- Group similar columns: one item for all `*_cents` columns, one for all timestamps.
 - Let the owner skip. Leave the item as draft, add an open question, and move on. Come back to skipped items at the end of the batch.
-- Keep each turn short: one to three questions, never a wall of text.
 - After each table, say what was approved and what is left; after each batch, run `sl validate` and `sl status` and ask whether to continue or stop. Everything is saved, so stopping costs nothing.

@@ -1,7 +1,7 @@
 import type { CommandContext, CommandSpec } from "../lib/command.ts";
 import { bool, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
-import { groupTables, type TableGroup } from "../lib/groups.ts";
+import { groupTables, suggestScope, type SuggestedScope, type TableGroup } from "../lib/groups.ts";
 import { findTable, qualifiedName } from "../lib/naming.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
 import { inScope } from "../lib/patterns.ts";
@@ -53,12 +53,32 @@ function shortPattern(pattern: string): string {
   return pattern.length > PATTERN_WIDTH ? `${pattern.slice(0, PATTERN_WIDTH)}…` : pattern;
 }
 
+// A group's row total: ? when no table has a row count, "N+" when some lack one.
+export function groupRowsText(g: Pick<TableGroup, "total_rows" | "rows_unknown">): string {
+  if (g.total_rows === null) return "?";
+  const total = g.total_rows.toLocaleString("en-US");
+  return g.rows_unknown > 0 ? `${total}+` : total;
+}
+
+// Quotes a pattern for a POSIX shell when it holds anything beyond plain name characters.
+function shellQuote(s: string): string {
+  return /^[A-Za-z0-9_.-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+export function scopeCommand(source: string, scope: SuggestedScope): string {
+  return [
+    `sl scope --source ${source}`,
+    ...scope.include.map((p) => `--include ${shellQuote(p)}`),
+    ...scope.exclude.map((p) => `--exclude ${shellQuote(p)}`),
+  ].join(" ");
+}
+
 function groupRows(groups: TableGroup[]): Record<string, unknown>[] {
   return groups.map((g) => ({
     kind: g.kind,
     pattern: shortPattern(g.pattern),
     tables: g.tables.length,
-    rows: g.total_rows.toLocaleString("en-US"),
+    rows: groupRowsText(g),
     in_scope: g.in_scope,
     suggest: g.suggestion,
     reason: g.reason,
@@ -100,6 +120,7 @@ const spec: CommandSpec = {
     }
     const needsFocus = inScopeCount > focus_threshold;
     const groups = bool(values, "groups") ? groupTables(snapshot.tables, source.scope) : undefined;
+    const suggested = groups ? suggestScope(snapshot.tables, groups) : undefined;
 
     if (ctx.json) {
       ctx.out(
@@ -110,7 +131,7 @@ const spec: CommandSpec = {
           focus_threshold,
           needs_focus: needsFocus,
           tables: rows,
-          ...(groups ? { groups } : {}),
+          ...(groups ? { groups, suggested_scope: suggested } : {}),
         }),
       );
       return 0;
@@ -145,6 +166,12 @@ const spec: CommandSpec = {
       lines.push(groups.length ? formatTable(groupRows(groups)) : "(no groups of 2 or more tables)");
       if (groups.some((g) => g.pattern.length > PATTERN_WIDTH)) {
         lines.push(`Patterns longer than ${PATTERN_WIDTH} characters end in …; pass --json for the full text.`);
+      }
+      if (suggested && (suggested.include.length || suggested.exclude.length)) {
+        lines.push("");
+        lines.push("Suggested scope (the include-suggested groups, less the noise tables they would select):");
+        lines.push(`  ${scopeCommand(sourceName, suggested)}`);
+        lines.push("Preview it, agree it with the owner, then add --write to save it.");
       }
     }
     ctx.out(lines.join("\n"));

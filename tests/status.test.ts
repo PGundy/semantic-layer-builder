@@ -260,13 +260,29 @@ describe("status next_step", () => {
     expect(s.sources[0]!.unmodeled_tables).toEqual(["main.dim_customers", "main.orders_tmp", "main.stg_events", "main.web_events"]);
   });
 
-  test("draft models -> interview the next batch, one field at a time", async () => {
+  test("draft models -> interview the next batch; the command never approves a field", async () => {
     const s = await status({ models: "draft" });
     expect(s.next_step.phase).toBe("interview");
-    expect(s.next_step.command).toBe('sl approve --target wh.customers.id_dim --by "<owner>"');
+    expect(s.next_step.command).toBe('sl approve --target wh.customers --by "<owner>"');
     expect(s.next_step.command).not.toContain("--recursive");
     expect(s.next_step.message).toContain("customers, orders, web_events");
-    expect(s.next_step.message).toContain("on its own");
+    expect(s.next_step.message).toContain("on its own only after the owner confirms that readback");
+  });
+
+  test("a draft model in the batch with an unchecked join -> check-join first", async () => {
+    const s = await status({ models: "draft", evidence: false });
+    expect(s.next_step).toMatchObject({ phase: "interview", command: "sl check-join --source wh --model orders --join customer" });
+  });
+
+  test("an unchecked join outside the batch does not replace the interview command", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, {});
+    // Only customers is a draft model; the unchecked join sits on the approved orders model.
+    writeYaml(join(t.root, "models", "wh", "customers.yaml"), { ...model("dim_customers", true), status: "draft", approved_by: undefined, approved_at: undefined });
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), model("fct_orders", true, { evidence: false }));
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.next_step).toMatchObject({ phase: "interview", command: 'sl approve --target wh.customers --by "<owner>"' });
   });
 
   test("a draft model whose fields are approved -> approve the model itself", async () => {
@@ -278,11 +294,11 @@ describe("status next_step", () => {
     expect(s.next_step).toMatchObject({ phase: "interview", command: 'sl approve --target wh.customers --by "<owner>"' });
   });
 
-  test("an approved model with draft fields -> interview its fields", async () => {
+  test("an approved model with draft fields does not block later phases; the fields are reported", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     build(t.root, {});
-    const m = model("fct_orders", true);
+    const m = model("fct_orders", true, { evidence: true });
     m.measures[0] = { ...m.measures[0]!, status: "draft", approved_by: undefined, approved_at: undefined };
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), m);
     const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
@@ -291,11 +307,29 @@ describe("status next_step", () => {
     expect(w.models_with_draft_fields).toEqual(["orders"]);
     expect(w.draft_fields).toEqual(["orders.total"]);
     expect(s.next_batch).toBeNull();
-    expect(s.next_step).toMatchObject({ phase: "interview", command: 'sl approve --target wh.orders.total --by "<owner>"' });
-    expect(s.next_step.message).toContain('the draft models in "wh": orders');
+    expect(s.next_step.phase).toBe("done");
+    expect(s.next_step.message).toContain("1 field(s) stay draft; name them in the handoff: wh.orders.total");
+
+    const human = await sl(t.root, ["status"]);
+    expect(human.out).toContain("draft fields in approved models: orders.total");
   });
 
-  test("an interview reaching a join without evidence -> check-join before approving it", async () => {
+  test("a draft field of an approved model in a draft model's batch is still not suggested for approval", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, {});
+    const m = model("fct_orders", true, { evidence: true });
+    m.measures[0] = { ...m.measures[0]!, status: "draft", approved_by: undefined, approved_at: undefined };
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), m);
+    writeYaml(join(t.root, "models", "wh", "web_events.yaml"), model("web_events", false));
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.next_step).toMatchObject({ phase: "interview", command: 'sl approve --target wh.web_events --by "<owner>"' });
+    expect(s.next_step.message).toContain("web_events");
+    expect(s.next_step.message).not.toContain("orders");
+    expect(s.sources[0]!.models_with_draft_fields).toEqual(["orders"]);
+  });
+
+  test("a draft join without evidence in an approved model -> check-join, not interview", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     build(t.root, {});
@@ -303,7 +337,7 @@ describe("status next_step", () => {
     m.joins![0] = { ...m.joins![0]!, status: "draft", approved_by: undefined, approved_at: undefined };
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), m);
     const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.next_step).toMatchObject({ phase: "interview", command: "sl check-join --source wh --model orders --join customer" });
+    expect(s.next_step).toMatchObject({ phase: "check-join", command: "sl check-join --source wh --model orders --join customer" });
   });
 
   test("draft models on out-of-scope tables do not hold the interview open", async () => {
@@ -337,10 +371,31 @@ describe("status next_step", () => {
   test("access missing or draft -> access", async () => {
     const missing = await status({ access: "missing" });
     expect(missing.next_step.phase).toBe("access");
-    expect(missing.access).toEqual({ state: "missing", roles: 0 });
+    expect(missing.access).toEqual({ state: "missing", roles: 0, open_questions: 0 });
     const draft = await status({ access: "draft" });
     expect(draft.next_step).toMatchObject({ phase: "access", command: 'sl approve --target access --by "<owner>"' });
-    expect(draft.access).toEqual({ state: "draft", roles: 2 });
+    expect(draft.access).toEqual({ state: "draft", roles: 2, open_questions: 0 });
+  });
+
+  test("access open questions, top level and per role, are counted and named in the access step", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, { access: "missing" });
+    writeYaml(join(t.root, "access.yaml"), {
+      status: "draft",
+      open_questions: ["Does a joined row filter blank the columns?", 7],
+      roles: [
+        { name: "analyst", allow: { models: ["wh.*"] }, open_questions: ["Aggregates only?"] },
+        { name: "viewer", allow: { models: ["wh.orders"] }, open_questions: "not a list" },
+        "not a role",
+      ],
+    });
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.access).toEqual({ state: "draft", roles: 3, open_questions: 2 });
+    expect(s.open_questions).toBe(4);
+    expect(s.next_step.message).toContain("Settle its 2 open question(s) first.");
+    const human = await sl(t.root, ["status"]);
+    expect(human.out).toContain("access draft (3 role(s), 2 open question(s))");
   });
 
   test("an access.yaml holding only comments is a draft with no roles", async () => {
@@ -349,9 +404,22 @@ describe("status next_step", () => {
     build(t.root, { access: "missing" });
     writeFileSync(join(t.root, "access.yaml"), "# todo: roles\n");
     const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.access).toEqual({ state: "draft", roles: 0 });
+    expect(s.access).toEqual({ state: "draft", roles: 0, open_questions: 0 });
     expect(s.next_step).toMatchObject({ phase: "access", command: "sl validate" });
     expect(s.next_step.message).toContain("no roles yet");
+    expect(s.next_step.message).not.toContain("open question");
+  });
+
+  test("an access.yaml with no roles names its top-level open questions in the access step", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, { access: "missing" });
+    writeYaml(join(t.root, "access.yaml"), { status: "draft", open_questions: ["Is the default role the most limited?"], roles: [] });
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.access).toEqual({ state: "draft", roles: 0, open_questions: 1 });
+    expect(s.next_step).toMatchObject({ phase: "access", command: "sl validate" });
+    expect(s.next_step.message).toContain("no roles yet");
+    expect(s.next_step.message).toContain("Settle its 1 open question(s) with them.");
   });
 
   test("fewer than 5 approved goldens -> verify, otherwise done", async () => {
@@ -383,7 +451,8 @@ describe("status counts and batches", () => {
     });
     expect(w.snapshot).toEqual({ method: "live", captured_at: FIXED_NOW, tables: 5, in_scope: 5, profiled: 5 });
     expect(s.metrics).toEqual({ approved: 1, draft: 1 });
-    expect(s.access).toEqual({ state: "approved", roles: 2 });
+    expect(s.access).toEqual({ state: "approved", roles: 2, open_questions: 0 });
+    expect(s.open_questions).toBe(2);
     expect(s.settings).toEqual({ focus_threshold: 12, batch_size: 3 });
     expect(w.next_batch).toEqual([]);
     expect(s.next_batch).toBeNull();

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { draftModels, inferPrimaryKey, singular } from "../skills/semantic-layer/scripts/lib/draft.ts";
+import { draftModels, inferPrimaryKey, numericRule, singular } from "../skills/semantic-layer/scripts/lib/draft.ts";
 import type { ColumnProfile, Snapshot, SnapshotColumn, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { SQL } from "bun";
@@ -166,7 +166,7 @@ open_questions:
   - What does one row of analytics.fct_orders represent?
   - store_id looks like a key to ops.stores, which is out of scope and has no model. Bring it into scope to draft this join?
   - tracking_code has a different value on nearly every row and was left out as a dimension. Should it be one?
-  - "Is amount_cents stored in cents? The draft sums it as stored; divide by 100 (expr: amount_cents / 100.0) to report whole currency units?"
+  - "Is amount_cents stored in cents? The draft divides it by 100 (expr: amount_cents / 100.0) to report whole currency units; confirm the division."
   - Which currency are amount_cents and discount in?
   - shipping_zip looks like personal data and is tagged pii. Who may see it?
 dimensions:
@@ -230,8 +230,8 @@ measures:
     agg: count_distinct
     format: integer
     status: draft
-  - name: amount_cents
-    expr: amount_cents
+  - name: amount
+    expr: amount_cents / 100.0
     agg: sum
     format: currency
     description: Order value in cents.
@@ -325,7 +325,8 @@ describe("draft command", () => {
     expect(payments).toContain("  - name: customer\n    to: customers\n    keys:\n      - from: customer_id\n        to: customer_id\n");
     expect(payments).toContain("warehouse_id references ops.warehouses, which is out of scope and has no model.");
     expect(payments).not.toContain("to: warehouses");
-    expect(payments).toContain("Is fee_pennies stored in cents?");
+    expect(payments).toContain("Is fee_pennies stored in cents? The draft divides it by 100 (expr: fee_pennies / 100.0)");
+    expect(payments).toContain("  - name: fee\n    expr: fee_pennies / 100.0\n    agg: sum\n    format: currency\n");
     // A rate is averaged, never summed, even though its name holds "tax".
     expect(payments).toContain("  - name: avg_tax_rate\n    expr: tax_rate\n    agg: avg\n    format: number\n");
 
@@ -711,4 +712,339 @@ describe("draftModels", () => {
     }
   });
 
+});
+
+describe("draft heuristics on Acme-like tables", () => {
+  const usd = (count: number): ColumnProfile => ({ distinct_count: 1, null_fraction: 0, top_values: [{ value: "USD", count }] });
+  const ORDERS: SnapshotTable = {
+    schema: "acme",
+    name: "fct_orders",
+    kind: "table",
+    row_count: 2500,
+    description: "Orders from the storefront, one row per order. Amounts in integer cents.",
+    primary_key: ["order_id"],
+    foreign_keys: [{ columns: ["customer_id"], references: { schema: "acme", table: "dim_customers", columns: ["customer_id"] } }],
+    columns: [
+      col("order_id", "integer", p(2500)),
+      col("customer_id", "integer", p(400)),
+      col("status", "varchar", p(4)),
+      col("created_at", "timestamp with time zone", p(2500)),
+      col("amount_cents", "bigint", p(2000)),
+      col("shipping_cents", "bigint", p(30)),
+      col("currency", "varchar", usd(2500)),
+    ],
+  };
+  const ITEMS: SnapshotTable = {
+    schema: "acme",
+    name: "fct_order_items",
+    kind: "table",
+    row_count: 6000,
+    primary_key: ["order_item_id"],
+    columns: [
+      col("order_item_id", "integer", p(6000)),
+      col("order_id", "integer", p(2500)),
+      col("product_id", "integer", p(40)),
+      col("quantity", "integer", p(5)),
+      col("unit_price_cents", "integer", p(300)),
+    ],
+  };
+  const PRODUCTS: SnapshotTable = {
+    schema: "acme",
+    name: "dim_products",
+    kind: "table",
+    row_count: 40,
+    primary_key: ["product_id"],
+    columns: [col("product_id", "integer", p(40)), col("category", "varchar", p(5)), col("list_price_cents", "integer", p(35))],
+  };
+  const CUSTOMERS: SnapshotTable = {
+    schema: "acme",
+    name: "dim_customers",
+    kind: "table",
+    row_count: 400,
+    primary_key: ["customer_id"],
+    foreign_keys: [{ columns: ["region_code"], references: { schema: "acme", table: "dim_regions", columns: ["region_code"] } }],
+    columns: [col("customer_id", "integer", p(400)), col("region_code", "varchar", p(6)), col("is_test_account", "boolean", p(2))],
+  };
+  const REGIONS: SnapshotTable = {
+    schema: "acme",
+    name: "dim_regions",
+    kind: "table",
+    row_count: 6,
+    primary_key: ["region_code"],
+    columns: [col("region_code", "varchar", p(6)), col("region_name", "varchar", p(6))],
+  };
+  const ACME = [ORDERS, ITEMS, PRODUCTS, CUSTOMERS, REGIONS];
+
+  function draftAcme(tables = ACME) {
+    const snap: Snapshot = { ...snapshotOf(tables), dialect: "postgres" };
+    const { models, notes } = draftModels(snap, tables, [], { source: "warehouse", stripPrefixes: ["fct_", "dim_"], knownTables: tables });
+    return { model: (name: string) => models.find((m) => m.model === name)!, notes };
+  }
+
+  test("a grain in the table comment is drafted and the first question confirms it", () => {
+    const orders = draftAcme().model("orders");
+    expect(orders.description).toBe(ORDERS.description!);
+    expect(orders.grain).toBe("One row per order.");
+    expect(orders.open_questions![0]).toBe("Is one row of acme.fct_orders one order?");
+    // Without such a comment the question stays open.
+    expect(draftAcme().model("order_items").grain).toBeUndefined();
+    expect(draftAcme().model("order_items").open_questions![0]).toBe("What does one row of acme.fct_order_items represent?");
+    const items = draftAcme([{ ...ITEMS, description: "One row per line item; prices per unit." }, PRODUCTS]).model("order_items");
+    expect(items.grain).toBe("One row per line item.");
+    expect(items.open_questions![0]).toBe("Is one row of acme.fct_order_items one line item?");
+  });
+
+  test("cents are divided by 100 and a single-valued currency column sets currency", () => {
+    const orders = draftAcme().model("orders");
+    expect(orders.measures).toEqual([
+      { name: "order_count", agg: "count", format: "integer", status: "draft" },
+      { name: "customer_count", expr: "customer_id", agg: "count_distinct", format: "integer", status: "draft" },
+      { name: "amount", expr: "amount_cents / 100.0", agg: "sum", format: "currency", currency: "USD", status: "draft" },
+      { name: "shipping", expr: "shipping_cents / 100.0", agg: "sum", format: "currency", currency: "USD", status: "draft" },
+    ]);
+    expect(orders.dimensions.map((d) => d.name)).toEqual(["status", "created_at", "currency"]);
+    expect(orders.open_questions).toEqual([
+      "Is one row of acme.fct_orders one order?",
+      "Is amount_cents stored in cents? The draft divides it by 100 (expr: amount_cents / 100.0) to report whole currency units; confirm the division.",
+      "Is shipping_cents stored in cents? The draft divides it by 100 (expr: shipping_cents / 100.0) to report whole currency units; confirm the division.",
+      "The currency column of acme.fct_orders holds only USD, so amount_cents and shipping_cents are drafted with currency USD. Is every row in USD?",
+    ]);
+  });
+
+  test("a currency column with several values sets none, and a description saying cents divides an unsuffixed column", () => {
+    const mixed: SnapshotTable = {
+      ...ORDERS,
+      columns: ORDERS.columns.map((c) =>
+        c.name === "currency" ? col("currency", "varchar", { distinct_count: 2, top_values: [{ value: "USD", count: 2000 }, { value: "EUR", count: 500 }] }) : c,
+      ),
+    };
+    const orders = draftAcme([mixed, CUSTOMERS, REGIONS]).model("orders");
+    expect(orders.measures.every((m) => m.currency === undefined)).toBe(true);
+    expect(orders.open_questions).toContain("Which currency are amount_cents and shipping_cents in?");
+
+    const ledger: SnapshotTable = {
+      schema: "acme",
+      name: "ledger",
+      kind: "table",
+      row_count: 100,
+      description: "Ledger entries.",
+      columns: [col("amount", "bigint", p(90), "Entry value in cents."), col("fee", "bigint", p(60))],
+    };
+    const m = draftAcme([ledger]).model("ledger");
+    expect(m.measures.map((x) => [x.name, x.expr, x.format])).toEqual([
+      ["ledger_count", undefined, "integer"],
+      ["amount", "amount / 100.0", "currency"],
+      ["fee", "fee", "currency"],
+    ]);
+    const centsTable = draftAcme([{ ...ledger, description: "Ledger entries. Amounts in integer cents." }]).model("ledger");
+    expect(centsTable.measures.map((x) => x.expr)).toEqual([undefined, "amount / 100.0", "fee / 100.0"]);
+  });
+
+  test("a per-unit price is averaged and a quantity column adds a line total", () => {
+    const items = draftAcme().model("order_items");
+    expect(items.measures).toEqual([
+      { name: "order_item_count", agg: "count", format: "integer", status: "draft" },
+      { name: "order_count", expr: "order_id", agg: "count_distinct", format: "integer", status: "draft" },
+      { name: "product_count", expr: "product_id", agg: "count_distinct", format: "integer", status: "draft" },
+      { name: "quantity", expr: "quantity", agg: "sum", format: "integer", status: "draft" },
+      { name: "avg_unit_price", expr: "unit_price_cents / 100.0", agg: "avg", format: "currency", status: "draft" },
+      { name: "line_total", expr: "quantity * (unit_price_cents / 100.0)", agg: "sum", format: "currency", status: "draft" },
+    ]);
+    expect(items.open_questions).toContain(
+      "unit_price_cents is a per-unit figure, so the draft averages it rather than summing it. Is a line's total quantity times unit_price_cents? The draft adds the measure line_total, the sum of quantity * (unit_price_cents / 100.0).",
+    );
+    expect(items.open_questions).toContain("Which currency is unit_price_cents in?");
+
+    const products = draftAcme().model("products");
+    expect(products.measures).toEqual([
+      { name: "product_count", agg: "count", format: "integer", status: "draft" },
+      { name: "avg_list_price", expr: "list_price_cents / 100.0", agg: "avg", format: "currency", status: "draft" },
+    ]);
+    expect(products.open_questions).toContain(
+      "list_price_cents is a per-unit figure, so the draft averages it rather than summing. Is an average what people report?",
+    );
+    expect(products.open_questions!.some((x) => x.includes("line_total"))).toBe(false);
+  });
+
+  test("a foreign key count is named after its join and skipped for a small target", () => {
+    const { model, notes } = draftAcme();
+    const customers = model("customers");
+    expect(customers.joins!.map((j) => [j.name, j.to])).toEqual([["region", "regions"]]);
+    expect(customers.measures.map((m) => m.name)).toEqual(["customer_count"]);
+    expect(notes).toContain("acme.dim_customers: no count of region_code drafted; its join reaches acme.dim_regions, which has 6 rows.");
+
+    const bigRegions = draftAcme([CUSTOMERS, { ...REGIONS, row_count: 21 }]).model("customers");
+    expect(bigRegions.measures.map((m) => [m.name, m.expr])).toEqual([
+      ["customer_count", undefined],
+      ["region_count", "region_code"],
+    ]);
+  });
+
+  test("numericRule tests money before counts and averages per-unit names", () => {
+    const rule = (n: string) => {
+      const r = numericRule(n);
+      return r ? `${r.agg}:${r.format}${r.perUnit ? ":per_unit" : ""}` : null;
+    };
+    expect(rule("unit_price_cents")).toBe("avg:currency:per_unit");
+    expect(rule("unit_price")).toBe("avg:currency:per_unit");
+    expect(rule("price")).toBe("avg:currency:per_unit");
+    expect(rule("unit_cost")).toBe("avg:currency:per_unit");
+    expect(rule("list_price_cents")).toBe("avg:currency:per_unit");
+    expect(rule("hourly_rate")).toBe("avg:number:per_unit");
+    expect(rule("tax_rate")).toBe("avg:number:per_unit");
+    expect(rule("total_price")).toBe("sum:currency");
+    expect(rule("extended_price_cents")).toBe("sum:currency");
+    expect(rule("amount_cents")).toBe("sum:currency");
+    expect(rule("unit_amount")).toBe("sum:currency");
+    expect(rule("payment_count")).toBe("sum:integer");
+    expect(rule("total_qty")).toBe("sum:integer");
+    expect(rule("units_sold")).toBe("sum:integer");
+    expect(rule("quantity")).toBe("sum:integer");
+    expect(rule("total_minutes")).toBe("sum:number");
+    expect(rule("ratio_pct")).toBeNull();
+    expect(rule("weight_kg")).toBeNull();
+    // A per-unit money name ending _per_unit is averaged; a singular unit is not a count word.
+    expect(rule("price_per_unit")).toBe("avg:currency:per_unit");
+    expect(rule("cost_per_unit")).toBe("avg:currency:per_unit");
+    expect(rule("revenue_per_unit")).toBe("avg:currency:per_unit");
+    expect(rule("cost_per_unit_cents")).toBe("avg:currency:per_unit");
+    // A name starting with a count word counts things even when it names money.
+    expect(rule("units_refunded")).toBe("sum:integer");
+    expect(rule("count_of_refunds")).toBe("sum:integer");
+    expect(rule("qty_shipped")).toBe("sum:integer");
+    expect(rule("units")).toBe("sum:integer");
+  });
+
+  test("a multi-line table comment drafts a grain from its first line only", () => {
+    const items = draftAcme([{ ...ITEMS, description: "One row per order line\nBuilt by dbt from raw.order_items." }]).model("order_items");
+    expect(items.grain).toBe("One row per order line.");
+    expect(items.open_questions![0]).toBe("Is one row of acme.fct_order_items one order line?");
+    const bracket = draftAcme([{ ...ITEMS, description: "One row per line item (refunds excluded)." }]).model("order_items");
+    expect(bracket.grain).toBe("One row per line item.");
+  });
+
+  test("the line total's quantity is an integer count, an exact quantity name first", () => {
+    const refunds: SnapshotTable = {
+      schema: "acme",
+      name: "refund_lines",
+      kind: "table",
+      row_count: 100,
+      columns: [col("id", "integer", p(100)), col("units_refunded", "integer", p(5)), col("quantity", "integer", p(5)), col("unit_price", "decimal(10,2)", p(50))],
+    };
+    const m = draftAcme([refunds]).model("refund_lines");
+    expect(m.measures.map((x) => `${x.name}:${x.expr}:${x.agg}:${x.format}`)).toEqual([
+      "refund_line_count:undefined:count:integer",
+      "units_refunded:units_refunded:sum:integer",
+      "quantity:quantity:sum:integer",
+      "avg_unit_price:unit_price:avg:currency",
+      "line_total:quantity * unit_price:sum:currency",
+    ]);
+    expect(m.open_questions).toContain(
+      "unit_price is a per-unit figure, so the draft averages it rather than summing it. Is a line's total quantity times unit_price? The draft adds the measure line_total, the sum of quantity * unit_price.",
+    );
+    // Without an exact quantity name, a count column still serves, and a money column never does.
+    const only = draftAcme([{ ...refunds, columns: refunds.columns.filter((c) => c.name !== "quantity") }]).model("refund_lines");
+    expect(only.measures.find((x) => x.name === "line_total")?.expr).toBe("units_refunded * unit_price");
+    const moneyOnly: SnapshotTable = { ...refunds, columns: [col("id", "integer", p(100)), col("refund_amount", "decimal(10,2)", p(50)), col("unit_price", "decimal(10,2)", p(50))] };
+    expect(draftAcme([moneyOnly]).model("refund_lines").measures.some((x) => x.name === "line_total")).toBe(false);
+  });
+
+  test("a non-money rate beside a quantity drafts no line total", () => {
+    const t: SnapshotTable = {
+      schema: "acme",
+      name: "tax_lines",
+      kind: "table",
+      row_count: 100,
+      columns: [col("id", "integer", p(100)), col("quantity", "integer", p(5)), col("tax_rate", "double", p(8))],
+    };
+    const m = draftAcme([t]).model("tax_lines");
+    expect(m.measures.map((x) => `${x.name}:${x.agg}:${x.format}`)).toEqual(["tax_line_count:count:integer", "quantity:sum:integer", "avg_tax_rate:avg:number"]);
+    expect(m.open_questions!.some((x) => x.includes("line_total") || x.includes("line-total"))).toBe(false);
+    expect(m.open_questions).toContain("tax_rate is a per-unit figure, so the draft averages it rather than summing. Is an average what people report?");
+
+    // A second per-unit money column is offered as a line total; a rate beside it is not.
+    const both: SnapshotTable = { ...t, columns: [...t.columns, col("unit_price", "decimal(10,2)", p(50)), col("unit_cost", "decimal(10,2)", p(50))] };
+    const b = draftAcme([both]).model("tax_lines");
+    expect(b.measures.find((x) => x.name === "line_total")?.expr).toBe("quantity * unit_price");
+    expect(b.open_questions).toContain("unit_cost is a per-unit figure, so the draft averages it rather than summing. Should quantity times it be a line-total measure too?");
+    expect(b.open_questions).toContain("tax_rate is a per-unit figure, so the draft averages it rather than summing. Is an average what people report?");
+  });
+
+  test("the column's description decides cents before the table's, and a negation does not divide", () => {
+    const ledger = (tableDesc: string, colDesc?: string): SnapshotTable => ({
+      schema: "acme",
+      name: "ledger",
+      kind: "table",
+      row_count: 100,
+      description: tableDesc,
+      columns: [col("amount", "bigint", p(90), colDesc), col("fee", "bigint", p(60))],
+    });
+    const exprs = (t: SnapshotTable) => draftAcme([t]).model("ledger").measures.map((x) => x.expr);
+    expect(exprs(ledger("All amounts are in dollars, not cents."))).toEqual([undefined, "amount", "fee"]);
+    expect(exprs(ledger("Amounts in integer cents.", "Entry value in dollars."))).toEqual([undefined, "amount", "fee / 100.0"]);
+    expect(exprs(ledger("Amounts in integer cents.", "The entry's posted value."))).toEqual([undefined, "amount / 100.0", "fee / 100.0"]);
+    expect(exprs(ledger("Ledger entries.", "Not in cents."))).toEqual([undefined, "amount", "fee"]);
+  });
+
+  test("a single currency is trimmed and needs a distinct count of one", () => {
+    const withCurrency = (profile: ColumnProfile) => ({
+      ...ORDERS,
+      columns: ORDERS.columns.map((c) => (c.name === "currency" ? col("currency", "varchar", profile) : c)),
+    });
+    const trimmed = draftAcme([withCurrency({ distinct_count: 1, top_values: [{ value: " USD ", count: 2500 }] }), CUSTOMERS, REGIONS]).model("orders");
+    expect(trimmed.measures.find((m) => m.name === "amount")?.currency).toBe("USD");
+    const noDistinct = draftAcme([withCurrency({ top_values: [{ value: "USD", count: 2500 }] }), CUSTOMERS, REGIONS]).model("orders");
+    expect(noDistinct.measures.find((m) => m.name === "amount")?.currency).toBe("USD");
+    const many = draftAcme([withCurrency({ distinct_count: 3, top_values: [{ value: "USD", count: 2400 }] }), CUSTOMERS, REGIONS]).model("orders");
+    expect(many.measures.every((m) => m.currency === undefined)).toBe(true);
+  });
+
+  test("the drafted Acme models validate and their expressions run on DuckDB", async () => {
+    const root = await setup(ACME, { include: ["acme.*"] });
+    const r = await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json<DraftJson>().drafted.map((d) => d.model).sort()).toEqual(["customers", "order_items", "orders", "products", "regions"]);
+    expect(readModel(root, "orders")).toContain(
+      "description: Orders from the storefront, one row per order. Amounts in integer cents.\ngrain: One row per order.\nprimary_key:\n",
+    );
+    expect(readModel(root, "orders")).toContain("    format: currency\n    currency: USD\n    status: draft\n");
+    const v = await sl(root, ["validate", "--json"]);
+    expect(v.json<{ errors: number }>().errors).toBe(0);
+
+    const { DuckDBInstance } = await import("@duckdb/node-api");
+    const db = await DuckDBInstance.create(":memory:");
+    const c = await db.connect();
+    await c.run("create table items (quantity integer, unit_price_cents integer)");
+    await c.run("insert into items values (2, 1999), (1, 500)");
+    const items = draftAcme().model("order_items");
+    const line = items.measures.find((m) => m.name === "line_total")!;
+    const avg = items.measures.find((m) => m.name === "avg_unit_price")!;
+    const rows = (await (await c.runAndReadAll(`select sum(${line.expr}) as line, avg(${avg.expr}) as avg from items`)).getRowObjects()) as {
+      line: unknown;
+      avg: unknown;
+    }[];
+    expect(Number(rows[0]!.line)).toBeCloseTo(44.98, 6);
+    expect(Number(rows[0]!.avg)).toBeCloseTo(12.495, 6);
+    // The divided price is taken in numeric arithmetic, so a large integer line does not overflow.
+    await c.run("insert into items values (100, 25000000)");
+    const big = (await (await c.runAndReadAll(`select sum(${line.expr}) as line from items`)).getRowObjects()) as { line: unknown }[];
+    expect(Number(big[0]!.line)).toBeCloseTo(25000044.98, 4);
+    c.closeSync();
+    db.closeSync();
+  });
+
+  test.skipIf(!PG_URL)("the drafted line total runs on Postgres without integer overflow", async () => {
+    const sql = new SQL(PG_URL!);
+    try {
+      await sql.unsafe(`drop schema if exists t_draft_line cascade; create schema t_draft_line`);
+      await sql.unsafe(`create table t_draft_line.items (quantity integer, unit_price_cents integer)`);
+      await sql.unsafe(`insert into t_draft_line.items values (2, 1999), (1, 500), (100, 25000000)`);
+      const line = draftAcme().model("order_items").measures.find((m) => m.name === "line_total")!;
+      const rows = (await sql.unsafe(`select sum(${line.expr}) as line from t_draft_line.items`)) as { line: unknown }[];
+      expect(Number(rows[0]!.line)).toBeCloseTo(25000044.98, 4);
+    } finally {
+      await sql.unsafe(`drop schema if exists t_draft_line cascade`);
+      await sql.close();
+    }
+  });
 });

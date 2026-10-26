@@ -19,6 +19,7 @@
         { "name": "customer_id", "type": "integer", "nullable": false, "description": null },
         { "name": "email", "type": "text", "nullable": false, "description": null },
         { "name": "region", "type": "text", "nullable": true, "description": null },
+        { "name": "is_test_account", "type": "boolean", "nullable": true, "description": null },
         { "name": "signed_up_at", "type": "timestamp", "nullable": false, "description": null }
       ]
     },

@@ -4,7 +4,9 @@
 
 A real database holds staging copies, backups, dated snapshots, migration bookkeeping and tables nobody remembers. Interviewing an owner about all of them wastes their time, and a semantic layer with 200 half-defined tables is worse than one with 15 well-defined ones. Scope decides which tables the CLI profiles, drafts and lists in `next_batch`; everything else is ignored until someone widens the scope.
 
-Rule: when a source has more in-scope tables than `settings.focus_threshold` in `semantic.yaml` (default 12), always ask the owner whether to focus before profiling. Below the threshold, still check that obvious noise is excluded.
+Rule: when a source has more in-scope tables than `settings.focus_threshold` in `semantic.yaml` (12 as `sl init` writes it), always ask the owner whether to focus before profiling. Below the threshold, still check that obvious noise is excluded.
+
+Run `sl init`, `sl add-source` and `sl introspect` before the first scoping question (SKILL.md Phase 0), so the next turn can resume from the files.
 
 ## Pattern syntax
 
@@ -40,7 +42,19 @@ When `sl tables` prints three-part names (a DuckDB file with attached databases,
 sl tables --source warehouse --groups
 ```
 
-The output clusters tables by schema, shared prefix and shared suffix, with counts and sizes, and suggests patterns. Do not paste it raw to a non-technical owner. Summarise in a few lines with real names and plain words, then propose a default:
+The output clusters tables by schema, shared prefix and shared suffix, with counts and sizes, and suggests patterns. A group's rows read `?` when none of its tables has a row count yet (views before `sl profile`) and `30,551+` when only some do; `--json` carries `total_rows` (`null` when all are unknown) and `rows_unknown`. Never tell the owner a group is empty because its total is unknown.
+
+It ends with one combined command:
+
+```
+Suggested scope (the include-suggested groups, less the noise tables they would select):
+  sl scope --source warehouse --include 'dim_*' --include 'fct_*' --exclude acme.dim_customers_archive --exclude acme.fct_orders_v2_test
+Preview it, agree it with the owner, then add --write to save it.
+```
+
+`--json` carries the same as `suggested_scope: { include, exclude }`. It already removes the noise tables that the include patterns would also catch (`fct_*` catches `fct_orders_v2_test`), by exact qualified name, so start the preview from it rather than combining the group rows yourself. It is a starting point for the owner's choice, not their answer.
+
+Do not paste the output raw to a non-technical owner. Summarise in a few lines with real names and plain words, then propose a default:
 
 > Your warehouse has 64 tables. Most fall into a few groups:
 > - 9 tables starting `fct_` (orders, refunds, shipments...) and 7 starting `dim_` (customers, products...): these look like the main reporting tables.
@@ -50,17 +64,25 @@ The output clusters tables by schema, shared prefix and shared suffix, with coun
 >
 > I suggest we start with the 16 `fct_` and `dim_` tables and leave out the rest for now. We can add any table later. Does that work, or are there tables you know you need?
 
+Every first scoping message says that tables can be added later, whatever else it holds.
+
 Lead with the biggest and most referenced groups, name two or three example tables per group, and flag likely noise with the reason (`name contains "tmp"`, `name ends in a date`). Never use the words "regex", "glob" or "pattern" with the owner unless they use them first.
 
 ## Question script
 
-Ask one or two at a time, and offer a default each time.
+Batch the scoping questions into one message: numbered items, one topic each, each with a suggestion, up to about 8. These are the usual items; drop the ones the facts already settle.
 
 1. "Which business questions do you most want answered first?" (revenue, signups, churn, inventory). Map the answers to table groups.
-2. "These groups look like the main tables: ... Should we start with them?"
-3. "These look like copies, staging or old data: ... Can we leave them out?"
+2. "These groups look like the main tables: ... I suggest we start with them."
+3. "These look like copies, staging or old data: ... I suggest we leave them out."
 4. "Are there tables you know are important that I haven't mentioned?" (search with `*<word>*` patterns)
 5. "Are any of these off limits for this project?" (exclude them now; access rules come later)
+
+Keep the confirmation of the final table list as its own yes/no, after the preview.
+
+### Patterns or exact names
+
+Match the owner's own rule. When they state a rule that is a pattern ("all the fact and dimension tables", "everything in analytics"), write the pattern (`fct_*`, `analytics.*`), and say that new tables matching it later are included too. When they name a few tables ("orders, customers and refunds"), use exact names, with `--tables orders,customers,refunds` or an `--include` per name, and say that exact names do not pick up new tables: a new `fct_` table will need another `sl scope ... --write`. On a small source, exact names are often clearest.
 
 If the scope is still above `focus_threshold` after these, say so and suggest splitting it ("let's do orders and customers first, then marketing next session"). The threshold is a prompt to ask, not a hard limit: if the owner wants 30 tables, write 30. Batching in the interview keeps it manageable.
 
@@ -74,14 +96,14 @@ Preview never changes anything:
 sl scope --source warehouse --include 'fct_*' --include 'dim_*' --exclude '*_backup' --exclude 'tmp_*'
 ```
 
-Read the result back: how many tables, the names, and anything surprising ("this also picks up `fct_orders_old`; leave it out?"). Adjust with more `--exclude` patterns, or drop a pattern you added with `--remove <pattern>`; start over with `--clear`. When the owner confirms, rerun the exact same command with `--write`:
+Read the result back: how many tables, the names, and anything surprising ("this also picks up `fct_orders_old`; leave it out?"). Adjust with more `--exclude` patterns, or drop a pattern you added with `--remove <pattern>`; start over with `--clear`. After any change, preview again and read back the final count and names. When the owner confirms that list, rerun the exact same command with `--write`:
 
 ```
 sl scope --source warehouse --include 'fct_*' --include 'dim_*' --exclude '*_backup' --exclude 'tmp_*' --write
 sl validate
 ```
 
-`--write` saves the patterns, not a table list, so new tables that match later are picked up automatically. Mention this to the owner: "any new `fct_` table will be included too".
+`--write` saves the patterns, not a table list, so new tables that match a pattern later are picked up automatically; exact names match only those tables. Tell the owner which applies: "any new `fct_` table will be included too", or "a new table will need adding".
 
 ## Expanding scope later
 
@@ -89,6 +111,19 @@ sl validate
 - Drop a pattern: `sl scope --source warehouse --remove 'stg_*'`, preview, then `--write`. Models already drafted for those tables stay on disk; they simply leave scope.
 - After widening, run `sl profile` and `sl draft` again for the new tables (`--tables` names them). `sl draft` never touches an existing model; `sl profile --refresh` reprofiles tables that already have a profile.
 - `sl tables --source warehouse --all` lists every table with its scope and modeling state, useful when the owner asks "what did we leave out?".
+
+## Deferring a table
+
+When the owner wants to leave an in-scope table for later ("skip order items for now"), take it out of scope instead of leaving it as a draft:
+
+```
+sl scope --source warehouse --exclude fct_order_items
+sl scope --source warehouse --exclude fct_order_items --write
+```
+
+Name the table as `sl tables` prints it, not the model name (`fct_order_items`, not `order_items` after `--strip-prefix`), and check that the preview shows it under Removed before you `--write`.
+
+Its draft model stays on disk, out of scope, so `sl status` stops offering it in `next_batch` and the later phases can finish. Name every deferred table in the handoff, and bring it back later with `sl scope --source warehouse --remove fct_order_items --write`.
 
 ## Per-source scoping in a lake
 
