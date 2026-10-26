@@ -10,10 +10,10 @@ A semantic layer built by running the skill end to end on the synthetic Acme dat
 To check it yourself:
 
 ```sh
-eval "$(bash scripts/pg-local.sh)"
+eval "$(bash scripts/pg-local.sh)"     # a throwaway local Postgres on port 54329
 psql "$PG_URL" -c "create database acme"
-PG_URL="${PG_URL/\/postgres?//acme?}" bun fixtures/acme/load-postgres.ts
-export WAREHOUSE_URL="${PG_URL/\/postgres?//acme?}"
+export WAREHOUSE_URL='postgres://postgres@localhost:54329/acme?host=/tmp/sl-pg'
+PG_URL="$WAREHOUSE_URL" bun fixtures/acme/load-postgres.ts
 cd examples/acme
 bun ../../skills/semantic-layer/scripts/sl.ts validate --root semantic
 bun ../../skills/semantic-layer/scripts/sl.ts goldens check --root semantic
