@@ -1,0 +1,34 @@
+name: spend_by_channel_2025
+question: How much did we spend on each marketing channel in 2025?
+request:
+  source: lake
+  measures: [marketing_spend.spend]
+  dimensions: [marketing_spend.channel]
+  filters:
+    - { field: marketing_spend.spend_date, op: gte, value: "2025-01-01" }
+    - { field: marketing_spend.spend_date, op: lt, value: "2026-01-01" }
+  order_by: [{ field: marketing_spend.channel, direction: asc }]
+sql: |
+  select channel, round(sum(spend_cents / 100.0), 2) as spend
+  from marketing_spend
+  where spend_date >= '2025-01-01' and spend_date < '2026-01-01'
+  group by 1 order by 1
+reference: >-
+  Dana Ruiz's 2025 spend by channel - affiliate $1,479.93, display $2,014.56, email $676.67, paid_search $6,978.18,
+  paid_social $5,353.00.
+status: approved
+expected:
+  tolerance: 0
+  rows:
+    - channel: affiliate
+      spend: 1479.93
+    - channel: display
+      spend: 2014.56
+    - channel: email
+      spend: 676.67
+    - channel: paid_search
+      spend: 6978.18
+    - channel: paid_social
+      spend: 5353
+confirmed_by: Dana Ruiz
+confirmed_at: 2026-10-26

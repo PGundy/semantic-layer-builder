@@ -1,0 +1,38 @@
+name: revenue_2025
+question: What was revenue, the number of orders and average order value in 2025?
+request:
+  source: warehouse
+  measures: [orders.revenue, orders.order_count, average_order_value]
+  filters:
+    - { field: orders.order_date, op: gte, value: "2025-01-01" }
+    - { field: orders.order_date, op: lt, value: "2026-01-01" }
+sql: |
+  select sum(o.amount_cents / 100.0)
+           filter (where o.status in ('completed', 'shipped')
+                     and coalesce(test_account.is_test_account, false) = false
+                     and coalesce(test_account.email, '') not like '%@example-test.com') as revenue,
+         count(*)
+           filter (where o.status in ('completed', 'shipped')
+                     and coalesce(test_account.is_test_account, false) = false
+                     and coalesce(test_account.email, '') not like '%@example-test.com') as order_count,
+         round(sum(o.amount_cents / 100.0)
+           filter (where o.status in ('completed', 'shipped')
+                     and coalesce(test_account.is_test_account, false) = false
+                     and coalesce(test_account.email, '') not like '%@example-test.com')
+           / count(*)
+           filter (where o.status in ('completed', 'shipped')
+                     and coalesce(test_account.is_test_account, false) = false
+                     and coalesce(test_account.email, '') not like '%@example-test.com'), 2) as average_order_value
+  from acme.fct_orders o
+  left join acme.dim_customers test_account on test_account.customer_id = o.customer_id
+  where o.created_at >= '2025-01-01' and o.created_at < '2026-01-01'
+reference: Finance sign-off figure for 2025 (UTC days), given by Dana Ruiz - revenue $301,050.82 from 2,239 orders, AOV $134.46.
+status: approved
+expected:
+  tolerance: 0
+  rows:
+    - revenue: 301050.82
+      order_count: 2239
+      average_order_value: 134.46
+confirmed_by: Dana Ruiz
+confirmed_at: 2026-10-26

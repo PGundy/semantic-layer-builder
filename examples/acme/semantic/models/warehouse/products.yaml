@@ -1,0 +1,75 @@
+model: products
+source: warehouse
+table: acme.dim_products
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-10-26
+description: >-
+  Product catalogue, one row per product: 60 products, each with its own product_id and sku, in 5 categories of 12.
+  "By product" groups by product_id or sku, never by product_name, because 5 names appear on more than one product.
+  list_price is the current list price in US cents; what customers actually paid is unit_price on order items. No
+  figures are defined on this table. The 60 products and 12 per category are measured from the data, not checked
+  against a report.
+grain: One row per product.
+primary_key:
+  - product_id
+open_questions:
+  - "Why do 5 product names appear on more than one product (Canvas Candle 3 times; Classic Throw Blanket, Coastal Tent, Lightweight Tent and Summit Hoodie twice each), with different prices and sometimes one active and one not? Dana Ruiz does not know; the merchandising team would."
+  - "launched_on: the reading is the date the product went on sale, but that comes from the column name only (Dana Ruiz). Left as draft until someone who knows confirms it, probably the merchandising team."
+dimensions:
+  - name: sku
+    expr: sku
+    type: string
+    description: Stock-keeping unit code, different on every product, such as SKU-HOM-0009. One sku is one product.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: product_name
+    expr: product_name
+    type: string
+    description: >-
+      Product name. Not unique: 5 names appear on more than one product, so group "by product" by product_id or sku,
+      not by name.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: category
+    expr: category
+    type: string
+    description: "Product category: accessories, apparel, footwear, home or outdoor (12 products each)."
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: is_active
+    expr: is_active
+    type: boolean
+    description: >-
+      Whether the product is still on sale today. False on 10 products, which are no longer sold; their order history
+      stays (1,981 order lines).
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: launched_on
+    expr: launched_on
+    type: time
+    description: >-
+      A plain date from 2021-01-09 to 2024-06-24, read as the date the product went on sale. Not confirmed: the reading
+      comes from the column name only.
+    time_grains:
+      - day
+      - week
+      - month
+      - quarter
+      - year
+    status: draft
+  - name: list_price
+    expr: list_price_cents / 100.0
+    type: number
+    description: >-
+      The product's current list price in US dollars (list_price_cents / 100), $4.99 to $75.49. It is today's catalogue
+      price, not the price on the day of an order, so it is not a historical price and the gap to an order line's
+      unit_price is not the discount the customer got.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+measures: []

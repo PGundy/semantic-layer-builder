@@ -1,0 +1,62 @@
+# Drafted from Dana Ruiz's answers on who sees what (three roles, analyst the default, reps limited by a `region`
+# user attribute, reps option (b) for customers, marketing totals by date, status and region). Reps got regions and
+# their customer list was limited to their own home region, with the test-account rule read through
+# warehouse.test_accounts (her choice (a)); the sales_rep role and the whole file were read back after those changes.
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-10-26
+default_role: analyst
+user_attributes:
+  - name: region
+    type: string
+    description: The sales region a rep covers, as a ship region code (NE, WC, SE, MW, SW or INT). Each rep has one.
+roles:
+  - name: analyst
+    description: >-
+      The default role, so anyone whose role does not come through gets this view. Every model in scope in the warehouse
+      and the lake, all rows, without personal details (customer email, phone, first name and last name). Customer ids
+      are internal and may be shown.
+    allow:
+      models: ["warehouse.*", "lake.*"]
+    deny:
+      tags: [pii]
+  - name: sales_rep
+    description: >-
+      Sales reps. Orders, customers and regions (for region names; 6 rows, nothing about orders or customers) only: no
+      products, order items, refunds or lake data. Orders are limited to those shipped to the rep's own region
+      (ship_region, the sales region). Customers are limited to those whose home region (region_code) is the rep's
+      region; reps see their names and phone numbers but never their email. Orders shipped to the rep's region from a
+      customer who lives elsewhere still count, with the customer details blank. A rep's customer list holds only their
+      own region's customers (their own region's test accounts included). Test accounts from every region are still left
+      out of a rep's revenue and order count, through warehouse.test_accounts, which reps cannot see or list. Someone
+      with no region sees no orders and no customers.
+    allow:
+      models: ["warehouse.orders", "warehouse.customers", "warehouse.regions"]
+    deny:
+      models: [warehouse.test_accounts]
+      fields: [warehouse.customers.email]
+    row_filters:
+      - model: warehouse.orders
+        expr: ship_region = {{ user.region }}
+      - model: warehouse.customers
+        expr: region_code = {{ user.region }}
+  - name: marketing
+    description: >-
+      Marketing. All of the lake (sessions, marketing spend, web events), every region, and order figures as totals
+      only: revenue, order count and AOV broken down by order date (day or coarser), status and ship region. Never single
+      orders, customers, refunds, order items, products or personal details. Region names come from regions.
+    allow:
+      models: ["lake.*", "warehouse.orders", "warehouse.regions"]
+    deny:
+      models: [warehouse.test_accounts]
+      tags: [pii]
+    open_questions:
+      - >-
+        For tool builders: totals only is approximate, since there is no aggregates-only grant. A downstream tool must
+        not show marketing single orders or order times finer than a day (Dana Ruiz: the tool must enforce it).
+open_questions:
+  - >-
+    For tool builders: revenue and order count leave out test accounts through the orders-to-test_accounts join
+    (test_account.is_test_account and test_account.email, read from dim_customers). That rule must apply for every
+    role, including sales reps and marketing, who are not given warehouse.test_accounts: a figure's built-in filter
+    runs through its joins whatever the role may list. Row filters on warehouse.customers never apply to it.

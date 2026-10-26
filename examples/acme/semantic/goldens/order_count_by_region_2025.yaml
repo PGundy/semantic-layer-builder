@@ -1,0 +1,48 @@
+name: order_count_by_region_2025
+question: How many orders did we have in each region in 2025?
+request:
+  source: warehouse
+  measures: [orders.order_count]
+  dimensions: [orders.ship_region, orders.ship_region_name]
+  filters:
+    - { field: orders.order_date, op: gte, value: "2025-01-01" }
+    - { field: orders.order_date, op: lt, value: "2026-01-01" }
+  order_by: [{ field: orders.ship_region, direction: asc }]
+sql: |
+  select o.ship_region as ship_region,
+         ship_to_region.region_name as ship_region_name,
+         count(*)
+           filter (where o.status in ('completed', 'shipped')
+                     and coalesce(test_account.is_test_account, false) = false
+                     and coalesce(test_account.email, '') not like '%@example-test.com') as order_count
+  from acme.fct_orders o
+  left join acme.dim_customers test_account on test_account.customer_id = o.customer_id
+  left join acme.dim_regions ship_to_region on ship_to_region.region_code = o.ship_region
+  where o.created_at >= '2025-01-01' and o.created_at < '2026-01-01'
+  group by 1, 2
+  order by 1
+reference: "Dana Ruiz's 2025 order counts by region report (UTC days, region = ship_region): WC 529, NE 513, SE 444, SW 344, MW 283, INT 126."
+status: approved
+expected:
+  tolerance: 0
+  rows:
+    - ship_region: INT
+      ship_region_name: International
+      order_count: 126
+    - ship_region: MW
+      ship_region_name: Midwest
+      order_count: 283
+    - ship_region: NE
+      ship_region_name: Northeast
+      order_count: 513
+    - ship_region: SE
+      ship_region_name: Southeast
+      order_count: 444
+    - ship_region: SW
+      ship_region_name: Southwest
+      order_count: 344
+    - ship_region: WC
+      ship_region_name: West Coast
+      order_count: 529
+confirmed_by: Dana Ruiz
+confirmed_at: 2026-10-26

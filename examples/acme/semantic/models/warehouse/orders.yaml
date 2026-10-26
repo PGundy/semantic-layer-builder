@@ -1,0 +1,171 @@
+model: orders
+source: warehouse
+table: acme.fct_orders
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-10-26
+description: >-
+  Orders from the storefront, one row per order. Amounts in integer cents; every order is priced and charged in USD.
+  A sale is an order with status completed or shipped; cancelled orders were never charged and refunded orders were
+  refunded in full, so neither counts. Orders from test accounts (customers flagged is_test_account, or whose email ends
+  in @example-test.com) are left out of every order figure. Orders whose customer record was deleted at the customer's
+  request (customer_id 501 to 560, no row in customers) are real and count. Days and months are UTC.
+grain: One row per order.
+primary_key:
+  - order_id
+dimensions:
+  - name: order_date
+    expr: created_at
+    type: time
+    description: When the customer placed the order (created_at), with days, weeks, months and years in UTC, as Finance reports. This is the date for "orders in March" and "2025 revenue".
+    synonyms: [order day, purchase date]
+    time_grains:
+      - hour
+      - day
+      - week
+      - month
+      - quarter
+      - year
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: status
+    expr: status
+    type: string
+    description: >-
+      The order's status: completed (3,950 orders), cancelled (484), shipped (398) or refunded (168). Only completed and
+      shipped orders count as sales, so revenue, order count and AOV broken down by status show only those two.
+    synonyms: [order status]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: ship_region
+    expr: ship_region
+    type: string
+    description: >-
+      Code of the region the order shipped to: NE, WC, SE, MW, SW or INT. This is Acme's sales region: "revenue by
+      region", regional reports and sales territories use it, not the customer's home region (customers.home_region), which
+      differs on 307 of 5,000 orders.
+    synonyms: [region, sales region, sales territory]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: ship_region_name
+    expr: ship_to_region.region_name
+    type: string
+    description: >-
+      Name of the region the order shipped to (Northeast, West Coast, Southeast, Midwest, Southwest, International), from
+      regions. Same region as ship_region; use it for "revenue by region".
+    synonyms: [region name, sales region name]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: currency
+    expr: currency
+    type: string
+    status: draft
+measures:
+  - name: order_count
+    agg: count
+    filter: status in ('completed', 'shipped') and coalesce(test_account.is_test_account, false) = false and coalesce(test_account.email, '') not like '%@example-test.com'
+    format: integer
+    description: >-
+      Number of orders that count as sales: status completed or shipped, leaving out cancelled and refunded orders and
+      orders from test accounts (flagged is_test_account on the customer, or customer email ending in @example-test.com,
+      read through the test_account join so the rule holds for every role). Orders whose customer record was deleted
+      count. Same rules as revenue.
+    synonyms: [orders, number of orders]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: revenue
+    expr: amount_cents / 100.0
+    agg: sum
+    filter: status in ('completed', 'shipped') and coalesce(test_account.is_test_account, false) = false and coalesce(test_account.email, '') not like '%@example-test.com'
+    format: currency
+    currency: USD
+    description: >-
+      Revenue as Finance signs it off: order value in US dollars (amount_cents / 100, the sum of the order's line items)
+      on orders with status completed or shipped. Cancelled and refunded orders are left out, and so are orders from test
+      accounts (flagged is_test_account on the customer, or customer email ending in @example-test.com, read through the
+      test_account join so the rule holds for every role). Orders whose customer record was deleted count. Shipping and tax are not included. Dated by order_date in UTC.
+    synonyms: [sales]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+joins:
+  - name: customer
+    to: customers
+    keys:
+      - from: customer_id
+        to: customer_id
+    relationship: many_to_one
+    type: left
+    origin: inferred
+    description: >-
+      The customer who placed the order. 59 orders (customer_id 501 to 560) have no customer row because those customers
+      asked for their accounts to be deleted; the orders are real, so the join is left and keeps them with blank customer
+      details. There is no foreign key on customer_id for the same reason.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+    evidence:
+      checked_at: 2026-10-26T08:56:43.946Z
+      left_rows: 5000
+      left_null_keys: 0
+      matched_rows: 4941
+      match_rate: 0.9882
+      right_rows: 500
+      right_key_unique: true
+      left_key_unique: false
+      max_fanout: 1
+      suggested_relationship: many_to_one
+  - name: ship_to_region
+    to: regions
+    keys:
+      - from: ship_region
+        to: region_code
+    relationship: many_to_one
+    type: left
+    origin: inferred
+    description: The region the order shipped to, through ship_region = region_code.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+    evidence:
+      checked_at: 2026-10-26T09:17:52.838Z
+      left_rows: 5000
+      left_null_keys: 0
+      matched_rows: 5000
+      match_rate: 1
+      right_rows: 6
+      right_key_unique: true
+      left_key_unique: false
+      max_fanout: 1
+      suggested_relationship: many_to_one
+  - name: test_account
+    to: test_accounts
+    keys:
+      - from: customer_id
+        to: customer_id
+    relationship: many_to_one
+    type: left
+    origin: owner
+    description: >-
+      The test-account rule for the order's customer, through customer_id. Revenue and order count read it here rather
+      than through the customer join, so a role that sees only some customers (sales reps) or none (marketing) still has
+      every test account left out. Left join: the 59 orders of deleted customers have no row and still count.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+    evidence:
+      checked_at: 2026-10-26T09:37:35.200Z
+      left_rows: 5000
+      left_null_keys: 0
+      matched_rows: 4941
+      match_rate: 0.9882
+      right_rows: 500
+      right_key_unique: true
+      left_key_unique: false
+      max_fanout: 1
+      suggested_relationship: many_to_one

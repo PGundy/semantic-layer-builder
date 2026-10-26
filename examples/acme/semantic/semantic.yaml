@@ -1,0 +1,7 @@
+version: 1
+name: acme
+description: Acme's Postgres warehouse and Parquet event lake.
+default_source: warehouse
+settings:
+  focus_threshold: 12
+  batch_size: 5

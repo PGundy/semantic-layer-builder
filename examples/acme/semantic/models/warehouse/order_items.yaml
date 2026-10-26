@@ -1,0 +1,97 @@
+model: order_items
+source: warehouse
+table: acme.fct_order_items
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-10-26
+description: >-
+  Product lines on storefront orders, one row per product line: 12,343 lines on 5,000 orders, quantity 1 to 3.
+  quantity * unit_price_cents adds up exactly to the order's amount_cents on every order. No figures are defined on
+  this table (Dana Ruiz: the warehouse figures are order counts, revenue and new customers). Revenue, order count and
+  AOV must never be worked out through order items: an order has several lines, so joining lines onto orders repeats
+  each order and inflates those figures. A product revenue figure, if defined later, has to leave out test accounts like
+  every other figure; the test-account rule sits on customers, two steps away from a line. The 12,343 lines are
+  measured from the data and have not been checked against a report.
+grain: One row per product line on an order.
+primary_key:
+  - order_item_id
+dimensions:
+  - name: order_id
+    expr: order_id
+    type: number
+    description: The order this line belongs to (order_id in orders).
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: product_id
+    expr: product_id
+    type: number
+    description: The product on this line (product_id in products).
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: quantity
+    expr: quantity
+    type: number
+    description: Number of units of the product on this line, 1 to 3.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: unit_price
+    expr: unit_price_cents / 100.0
+    type: number
+    description: >-
+      What the customer actually paid per unit, in US dollars (unit_price_cents / 100), after any discount. Compare
+      with care: products.list_price is the product's current list price, not the price on the day of the order, so the
+      gap is not the discount the customer got.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+measures: []
+joins:
+  - name: order
+    to: orders
+    keys:
+      - from: order_id
+        to: order_id
+    relationship: many_to_one
+    type: left
+    origin: declared
+    description: The order the line belongs to. Every line finds its order, and each order appears once in orders.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+    evidence:
+      checked_at: 2026-10-26T08:56:43.946Z
+      left_rows: 12343
+      left_null_keys: 0
+      matched_rows: 12343
+      match_rate: 1
+      right_rows: 5000
+      right_key_unique: true
+      left_key_unique: false
+      max_fanout: 1
+      suggested_relationship: many_to_one
+  - name: product
+    to: products
+    keys:
+      - from: product_id
+        to: product_id
+    relationship: many_to_one
+    type: left
+    origin: declared
+    description: The product on the line. Every line finds its product, and each product appears once in products.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+    evidence:
+      checked_at: 2026-10-26T08:56:43.946Z
+      left_rows: 12343
+      left_null_keys: 0
+      matched_rows: 12343
+      match_rate: 1
+      right_rows: 60
+      right_key_unique: true
+      left_key_unique: false
+      max_fanout: 1
+      suggested_relationship: many_to_one

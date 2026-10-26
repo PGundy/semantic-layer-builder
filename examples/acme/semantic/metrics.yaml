@@ -1,0 +1,15 @@
+metrics:
+  - name: average_order_value
+    source: warehouse
+    type: ratio
+    numerator: orders.revenue
+    denominator: orders.order_count
+    format: currency
+    currency: USD
+    description: >-
+      Average order value (AOV): revenue divided by the number of orders, with the same rules on both (completed or
+      shipped orders only, test accounts left out, orders of deleted customers kept, shipping and tax not included). Checked against Finance for 2025 ($134.46); the 2024 figure ($129.46) has not been compared with an independent report.
+    synonyms: [aov]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26

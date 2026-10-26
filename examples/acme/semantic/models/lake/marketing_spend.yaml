@@ -1,0 +1,55 @@
+model: marketing_spend
+source: lake
+table: main.marketing_spend
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-10-26
+description: >-
+  Daily marketing spend per paid channel, one row per day per channel: 3,655 rows, 731 days (1 Jan 2024 to 31 Dec 2025)
+  times 5 channels (affiliate, display, email, paid_search, paid_social), every channel present on every day. Amounts
+  are US cents. The table also holds clicks and impressions, which are not modeled: Dana Ruiz has not defined figures
+  for them.
+grain: One row per day per channel.
+primary_key:
+  - spend_date
+  - channel
+dimensions:
+  - name: spend_date
+    expr: spend_date
+    type: time
+    description: >-
+      The day the spend applies to, a calendar date with no time of day (1 Jan 2024 to 31 Dec 2025, every day
+      present), used as is; the ad accounts report UTC days. This is the date for "March spend".
+    time_grains:
+      - day
+      - week
+      - month
+      - quarter
+      - year
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: channel
+    expr: channel
+    type: string
+    description: >-
+      Paid marketing channel the money was spent on: affiliate, display, email, paid_search or paid_social. These
+      values match utm_channel in sessions exactly; organic, referral and direct traffic have no spend.
+    synonyms: [marketing channel]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+measures:
+  - name: spend
+    expr: spend_cents / 100.0
+    agg: sum
+    format: currency
+    currency: USD
+    description: >-
+      Marketing spend in US dollars: spend_cents divided by 100, summed over days and channels. 2025 comes to
+      $16,502.34 (affiliate $1,479.93, display $2,014.56, email $676.67, paid_search $6,978.18, paid_social $5,353.00),
+      matching Dana Ruiz's figures. The 2024 total ($13,763.07) has not been checked against an independent report.
+    synonyms: [marketing spend, ad spend]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26

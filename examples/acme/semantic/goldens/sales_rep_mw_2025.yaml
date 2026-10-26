@@ -1,0 +1,36 @@
+name: sales_rep_mw_2025
+question: As a sales rep for Midwest (MW), what were my revenue and number of orders in 2025?
+role: sales_rep
+user:
+  region: MW
+request:
+  source: warehouse
+  measures: [orders.revenue, orders.order_count]
+  filters:
+    - { field: orders.order_date, op: gte, value: "2025-01-01" }
+    - { field: orders.order_date, op: lt, value: "2026-01-01" }
+sql: |
+  -- The sales_rep role with region MW: the orders row filter in where, the customers row filter in the customer
+  -- join's on clause, and the test-account rule through test_accounts, which no row filter touches.
+  select sum(o.amount_cents / 100.0)
+           filter (where o.status in ('completed', 'shipped')
+                     and coalesce(test_account.is_test_account, false) = false
+                     and coalesce(test_account.email, '') not like '%@example-test.com') as revenue,
+         count(*)
+           filter (where o.status in ('completed', 'shipped')
+                     and coalesce(test_account.is_test_account, false) = false
+                     and coalesce(test_account.email, '') not like '%@example-test.com') as order_count
+  from acme.fct_orders o
+  left join acme.dim_customers test_account on test_account.customer_id = o.customer_id
+  left join acme.dim_customers customer on customer.customer_id = o.customer_id and customer.region_code = 'MW'
+  where o.ship_region = 'MW'
+    and o.created_at >= '2025-01-01' and o.created_at < '2026-01-01'
+reference: "Dana Ruiz's 2025 regional reports (UTC days, region = ship_region): MW revenue $37,431.78 from 283 orders."
+status: approved
+expected:
+  tolerance: 0
+  rows:
+    - revenue: 37431.78
+      order_count: 283
+confirmed_by: Dana Ruiz
+confirmed_at: 2026-10-26

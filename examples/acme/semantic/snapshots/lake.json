@@ -1,0 +1,577 @@
+{
+  "snapshot_version": 1,
+  "source": "lake",
+  "dialect": "duckdb",
+  "captured_at": "2026-10-26T08:54:18.536Z",
+  "method": "live",
+  "tables": [
+    {
+      "schema": "main",
+      "name": "marketing_spend",
+      "kind": "view",
+      "row_count": 3655,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "spend_date",
+          "type": "DATE",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 731,
+            "min": "2024-01-01",
+            "max": "2025-12-31",
+            "sampled": false
+          }
+        },
+        {
+          "name": "channel",
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 5,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "affiliate",
+                "count": 731
+              },
+              {
+                "value": "display",
+                "count": 731
+              },
+              {
+                "value": "email",
+                "count": 731
+              },
+              {
+                "value": "paid_search",
+                "count": 731
+              },
+              {
+                "value": "paid_social",
+                "count": 731
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "spend_cents",
+          "type": "INTEGER",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 1557,
+            "min": 96,
+            "max": 3989,
+            "sampled": false
+          }
+        },
+        {
+          "name": "impressions",
+          "type": "INTEGER",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 2271,
+            "min": 382,
+            "max": 10486,
+            "sampled": false
+          }
+        },
+        {
+          "name": "clicks",
+          "type": "INTEGER",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 226,
+            "min": 4,
+            "max": 346,
+            "sampled": false
+          }
+        }
+      ],
+      "profiled_at": "2026-10-26T08:56:11.772Z"
+    },
+    {
+      "schema": "main",
+      "name": "sessions",
+      "kind": "view",
+      "row_count": 8000,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "session_id",
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 8000,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "ses_000677c5",
+                "count": 1
+              },
+              {
+                "value": "ses_0012252d",
+                "count": 1
+              },
+              {
+                "value": "ses_00189cf2",
+                "count": 1
+              },
+              {
+                "value": "ses_00244a5a",
+                "count": 1
+              },
+              {
+                "value": "ses_002ac21f",
+                "count": 1
+              },
+              {
+                "value": "ses_002ff7c2",
+                "count": 1
+              },
+              {
+                "value": "ses_00366f87",
+                "count": 1
+              },
+              {
+                "value": "ses_00421cef",
+                "count": 1
+              },
+              {
+                "value": "ses_004894b4",
+                "count": 1
+              },
+              {
+                "value": "ses_0054421c",
+                "count": 1
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "customer_id",
+          "type": "INTEGER",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0.6,
+            "distinct_count": 497,
+            "min": 1,
+            "max": 500,
+            "sampled": false
+          }
+        },
+        {
+          "name": "started_at",
+          "type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 7998,
+            "min": "2024-01-01 04:32:27+00",
+            "max": "2025-12-31 20:19:32+00",
+            "sampled": false
+          }
+        },
+        {
+          "name": "utm_channel",
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0.22075,
+            "distinct_count": 7,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "organic",
+                "count": 2035
+              },
+              {
+                "value": "paid_search",
+                "count": 1468
+              },
+              {
+                "value": "paid_social",
+                "count": 925
+              },
+              {
+                "value": "email",
+                "count": 561
+              },
+              {
+                "value": "referral",
+                "count": 501
+              },
+              {
+                "value": "affiliate",
+                "count": 428
+              },
+              {
+                "value": "display",
+                "count": 316
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "device",
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 3,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "mobile",
+                "count": 4380
+              },
+              {
+                "value": "desktop",
+                "count": 3017
+              },
+              {
+                "value": "tablet",
+                "count": 603
+              }
+            ],
+            "sampled": false
+          }
+        }
+      ],
+      "profiled_at": "2026-10-26T08:56:11.772Z"
+    },
+    {
+      "schema": "main",
+      "name": "tmp_session_dedupe",
+      "kind": "view",
+      "row_count": null,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "session_id",
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "duplicate_count",
+          "type": "INTEGER",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "kept",
+          "type": "BOOLEAN",
+          "nullable": true,
+          "description": null
+        }
+      ]
+    },
+    {
+      "schema": "main",
+      "name": "web_events",
+      "kind": "view",
+      "row_count": 30551,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "event_id",
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 30551,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "evt_00014222",
+                "count": 1
+              },
+              {
+                "value": "evt_00028444",
+                "count": 1
+              },
+              {
+                "value": "evt_000677c5",
+                "count": 1
+              },
+              {
+                "value": "evt_0007b9e7",
+                "count": 1
+              },
+              {
+                "value": "evt_0008fc09",
+                "count": 1
+              },
+              {
+                "value": "evt_000cef8a",
+                "count": 1
+              },
+              {
+                "value": "evt_000e31ac",
+                "count": 1
+              },
+              {
+                "value": "evt_000f73ce",
+                "count": 1
+              },
+              {
+                "value": "evt_0012252d",
+                "count": 1
+              },
+              {
+                "value": "evt_0013674f",
+                "count": 1
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "session_id",
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 8000,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "ses_00efd6ca",
+                "count": 8
+              },
+              {
+                "value": "ses_016d98e3",
+                "count": 8
+              },
+              {
+                "value": "ses_02092d91",
+                "count": 8
+              },
+              {
+                "value": "ses_02270026",
+                "count": 8
+              },
+              {
+                "value": "ses_035e2982",
+                "count": 8
+              },
+              {
+                "value": "ses_03704eaf",
+                "count": 8
+              },
+              {
+                "value": "ses_03a6be36",
+                "count": 8
+              },
+              {
+                "value": "ses_03d03e33",
+                "count": 8
+              },
+              {
+                "value": "ses_03d6b5f8",
+                "count": 8
+              },
+              {
+                "value": "ses_04125b22",
+                "count": 8
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "event_at",
+          "type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 30535,
+            "min": "2024-01-01 04:32:27+00",
+            "max": "2025-12-31 20:32:24+00",
+            "sampled": false
+          }
+        },
+        {
+          "name": "event_type",
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 5,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "page_view",
+                "count": 22306
+              },
+              {
+                "value": "search",
+                "count": 2542
+              },
+              {
+                "value": "add_to_cart",
+                "count": 2231
+              },
+              {
+                "value": "checkout_start",
+                "count": 1736
+              },
+              {
+                "value": "purchase",
+                "count": 1736
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "page_path",
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 65,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "/",
+                "count": 3966
+              },
+              {
+                "value": "/search",
+                "count": 2542
+              },
+              {
+                "value": "/cart",
+                "count": 2231
+              },
+              {
+                "value": "/checkout",
+                "count": 1736
+              },
+              {
+                "value": "/checkout/complete",
+                "count": 1736
+              },
+              {
+                "value": "/products/48",
+                "count": 339
+              },
+              {
+                "value": "/products/53",
+                "count": 335
+              },
+              {
+                "value": "/products/31",
+                "count": 333
+              },
+              {
+                "value": "/products/19",
+                "count": 329
+              },
+              {
+                "value": "/products/2",
+                "count": 328
+              }
+            ],
+            "sampled": false
+          }
+        }
+      ],
+      "profiled_at": "2026-10-26T08:56:11.772Z"
+    },
+    {
+      "schema": "main",
+      "name": "web_events_2024_archive",
+      "kind": "view",
+      "row_count": null,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "event_id",
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "session_id",
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "event_at",
+          "type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "event_type",
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "page_path",
+          "type": "VARCHAR",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "archived_at",
+          "type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": true,
+          "description": null
+        }
+      ]
+    }
+  ]
+}

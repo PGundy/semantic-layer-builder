@@ -1,0 +1,36 @@
+model: test_accounts
+source: warehouse
+table: acme.dim_customers
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-10-26
+description: >-
+  Helper for the test-account rule, one row per customer in dim_customers (the same table as customers). It holds only
+  the customer id and whether the customer is a test account: true when QA set is_test_account or the email ends in
+  @example-test.com. Revenue and order count read the test-account rule through this model (orders.test_account), so
+  the rule sees every test account whatever a role may see of customers. It exposes no name, phone or email, and only
+  the analyst role may list it; sales reps and marketing are not given it. Orders whose customer was deleted have no row
+  here and still count.
+grain: One row per customer.
+primary_key:
+  - customer_id
+dimensions:
+  - name: customer_id
+    expr: customer_id
+    type: number
+    description: The customer's internal id, the same as customers.customer_id.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: is_test_account
+    expr: is_test_account or email like '%@example-test.com'
+    type: boolean
+    description: >-
+      Whether the customer is an internal test account: true when QA set the is_test_account flag or the email ends in
+      @example-test.com. The same rule as customers.is_test_account. True on 20 customers (as measured, not checked
+      against a report).
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+measures: []
+joins: []

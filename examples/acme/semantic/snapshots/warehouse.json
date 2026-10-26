@@ -1,0 +1,1726 @@
+{
+  "snapshot_version": 1,
+  "source": "warehouse",
+  "dialect": "postgres",
+  "captured_at": "2026-10-26T08:54:18.201Z",
+  "method": "live",
+  "tables": [
+    {
+      "schema": "acme",
+      "name": "audit_log",
+      "kind": "table",
+      "row_count": 500,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "audit_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "actor",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "action",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "entity",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "entity_id",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "logged_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "customers_tmp",
+      "kind": "table",
+      "row_count": 50,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "region_code",
+          "type": "text",
+          "nullable": true,
+          "description": null
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "dim_currency",
+      "kind": "table",
+      "row_count": 3,
+      "description": null,
+      "primary_key": [
+        "currency_code"
+      ],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "currency_code",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "currency_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "minor_units",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "dim_customers",
+      "kind": "table",
+      "row_count": 500,
+      "description": "Customer accounts, one row per customer. Includes internal test accounts.",
+      "primary_key": [
+        "customer_id"
+      ],
+      "unique_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "region_code"
+          ],
+          "references": {
+            "schema": "acme",
+            "table": "dim_regions",
+            "columns": [
+              "region_code"
+            ]
+          }
+        }
+      ],
+      "columns": [
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 500,
+            "min": 1,
+            "max": 500,
+            "sampled": false
+          }
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 500,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "ada.adeyemi181@mail.example.com",
+                "count": 1
+              },
+              {
+                "value": "ada.fischer80@post.example.org",
+                "count": 1
+              },
+              {
+                "value": "ada.garcia406@mail.example.com",
+                "count": 1
+              },
+              {
+                "value": "ada.haddad489@example.net",
+                "count": 1
+              },
+              {
+                "value": "ada.kim56@example.org",
+                "count": 1
+              },
+              {
+                "value": "ada.lopez27@example.org",
+                "count": 1
+              },
+              {
+                "value": "ada.lopez323@example.org",
+                "count": 1
+              },
+              {
+                "value": "ada.moreau270@mail.example.com",
+                "count": 1
+              },
+              {
+                "value": "ada.novak123@post.example.org",
+                "count": 1
+              },
+              {
+                "value": "ada.ortiz264@inbox.example.com",
+                "count": 1
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "phone",
+          "type": "text",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0.122,
+            "distinct_count": 437,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "+1-246-555-0154",
+                "count": 2
+              },
+              {
+                "value": "+1-423-555-0173",
+                "count": 2
+              },
+              {
+                "value": "+1-203-555-0123",
+                "count": 1
+              },
+              {
+                "value": "+1-208-555-0192",
+                "count": 1
+              },
+              {
+                "value": "+1-209-555-0195",
+                "count": 1
+              },
+              {
+                "value": "+1-210-555-0100",
+                "count": 1
+              },
+              {
+                "value": "+1-210-555-0182",
+                "count": 1
+              },
+              {
+                "value": "+1-211-555-0120",
+                "count": 1
+              },
+              {
+                "value": "+1-214-555-0141",
+                "count": 1
+              },
+              {
+                "value": "+1-215-555-0159",
+                "count": 1
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "first_name",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 40,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "Leah",
+                "count": 20
+              },
+              {
+                "value": "Noah",
+                "count": 20
+              },
+              {
+                "value": "Lena",
+                "count": 18
+              },
+              {
+                "value": "Omar",
+                "count": 18
+              },
+              {
+                "value": "Ada",
+                "count": 17
+              },
+              {
+                "value": "Hugo",
+                "count": 16
+              },
+              {
+                "value": "Kenji",
+                "count": 16
+              },
+              {
+                "value": "Wren",
+                "count": 16
+              },
+              {
+                "value": "Ethan",
+                "count": 15
+              },
+              {
+                "value": "Silas",
+                "count": 15
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "last_name",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 30,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "Garcia",
+                "count": 24
+              },
+              {
+                "value": "Tanaka",
+                "count": 24
+              },
+              {
+                "value": "Muller",
+                "count": 23
+              },
+              {
+                "value": "Singh",
+                "count": 23
+              },
+              {
+                "value": "Silva",
+                "count": 22
+              },
+              {
+                "value": "Kowalski",
+                "count": 21
+              },
+              {
+                "value": "Novak",
+                "count": 20
+              },
+              {
+                "value": "Adeyemi",
+                "count": 19
+              },
+              {
+                "value": "Haddad",
+                "count": 19
+              },
+              {
+                "value": "Ivanova",
+                "count": 19
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "signup_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 500,
+            "min": "2022-06-06 18:33:00+00",
+            "max": "2025-09-22 09:55:00+00",
+            "sampled": false
+          }
+        },
+        {
+          "name": "region_code",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 6,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "NE",
+                "count": 114
+              },
+              {
+                "value": "WC",
+                "count": 114
+              },
+              {
+                "value": "SE",
+                "count": 100
+              },
+              {
+                "value": "SW",
+                "count": 74
+              },
+              {
+                "value": "MW",
+                "count": 72
+              },
+              {
+                "value": "INT",
+                "count": 26
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "is_test_account",
+          "type": "boolean",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 2,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": false,
+                "count": 488
+              },
+              {
+                "value": true,
+                "count": 12
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "acquisition_channel",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 7,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "organic",
+                "count": 161
+              },
+              {
+                "value": "paid_search",
+                "count": 117
+              },
+              {
+                "value": "paid_social",
+                "count": 69
+              },
+              {
+                "value": "referral",
+                "count": 49
+              },
+              {
+                "value": "email",
+                "count": 38
+              },
+              {
+                "value": "affiliate",
+                "count": 35
+              },
+              {
+                "value": "display",
+                "count": 31
+              }
+            ],
+            "sampled": false
+          }
+        }
+      ],
+      "profiled_at": "2026-10-26T08:56:11.365Z"
+    },
+    {
+      "schema": "acme",
+      "name": "dim_customers_archive",
+      "kind": "table",
+      "row_count": 100,
+      "description": null,
+      "primary_key": [
+        "customer_id"
+      ],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "first_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "last_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "region_code",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "archived_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "dim_products",
+      "kind": "table",
+      "row_count": 60,
+      "description": null,
+      "primary_key": [
+        "product_id"
+      ],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "product_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 60,
+            "min": 1,
+            "max": 60,
+            "sampled": false
+          }
+        },
+        {
+          "name": "sku",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 60,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "SKU-ACC-0003",
+                "count": 1
+              },
+              {
+                "value": "SKU-ACC-0008",
+                "count": 1
+              },
+              {
+                "value": "SKU-ACC-0013",
+                "count": 1
+              },
+              {
+                "value": "SKU-ACC-0018",
+                "count": 1
+              },
+              {
+                "value": "SKU-ACC-0023",
+                "count": 1
+              },
+              {
+                "value": "SKU-ACC-0028",
+                "count": 1
+              },
+              {
+                "value": "SKU-ACC-0033",
+                "count": 1
+              },
+              {
+                "value": "SKU-ACC-0038",
+                "count": 1
+              },
+              {
+                "value": "SKU-ACC-0043",
+                "count": 1
+              },
+              {
+                "value": "SKU-ACC-0048",
+                "count": 1
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "product_name",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 54,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "Canvas Candle",
+                "count": 3
+              },
+              {
+                "value": "Classic Throw Blanket",
+                "count": 2
+              },
+              {
+                "value": "Coastal Tent",
+                "count": 2
+              },
+              {
+                "value": "Lightweight Tent",
+                "count": 2
+              },
+              {
+                "value": "Summit Hoodie",
+                "count": 2
+              },
+              {
+                "value": "Alpine Hiking Boot",
+                "count": 1
+              },
+              {
+                "value": "Alpine Slip-On",
+                "count": 1
+              },
+              {
+                "value": "Alpine Throw Blanket",
+                "count": 1
+              },
+              {
+                "value": "Canvas Chinos",
+                "count": 1
+              },
+              {
+                "value": "Canvas Headlamp",
+                "count": 1
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "category",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 5,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "accessories",
+                "count": 12
+              },
+              {
+                "value": "apparel",
+                "count": 12
+              },
+              {
+                "value": "footwear",
+                "count": 12
+              },
+              {
+                "value": "home",
+                "count": 12
+              },
+              {
+                "value": "outdoor",
+                "count": 12
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "list_price_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 53,
+            "min": 499,
+            "max": 7549,
+            "sampled": false
+          }
+        },
+        {
+          "name": "is_active",
+          "type": "boolean",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 2,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": true,
+                "count": 50
+              },
+              {
+                "value": false,
+                "count": 10
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "launched_on",
+          "type": "date",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 60,
+            "min": "2021-01-09",
+            "max": "2024-06-24",
+            "sampled": false
+          }
+        }
+      ],
+      "profiled_at": "2026-10-26T08:56:11.365Z"
+    },
+    {
+      "schema": "acme",
+      "name": "dim_regions",
+      "kind": "table",
+      "row_count": 6,
+      "description": "Sales regions. One row per region.",
+      "primary_key": [
+        "region_code"
+      ],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "region_code",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 6,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "INT",
+                "count": 1
+              },
+              {
+                "value": "MW",
+                "count": 1
+              },
+              {
+                "value": "NE",
+                "count": 1
+              },
+              {
+                "value": "SE",
+                "count": 1
+              },
+              {
+                "value": "SW",
+                "count": 1
+              },
+              {
+                "value": "WC",
+                "count": 1
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "region_name",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 6,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "International",
+                "count": 1
+              },
+              {
+                "value": "Midwest",
+                "count": 1
+              },
+              {
+                "value": "Northeast",
+                "count": 1
+              },
+              {
+                "value": "Southeast",
+                "count": 1
+              },
+              {
+                "value": "Southwest",
+                "count": 1
+              },
+              {
+                "value": "West Coast",
+                "count": 1
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "country_code",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 2,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "US",
+                "count": 5
+              },
+              {
+                "value": "ZZ",
+                "count": 1
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "timezone",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 5,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "America/New_York",
+                "count": 2
+              },
+              {
+                "value": "America/Chicago",
+                "count": 1
+              },
+              {
+                "value": "America/Los_Angeles",
+                "count": 1
+              },
+              {
+                "value": "America/Phoenix",
+                "count": 1
+              },
+              {
+                "value": "UTC",
+                "count": 1
+              }
+            ],
+            "sampled": false
+          }
+        }
+      ],
+      "profiled_at": "2026-10-26T08:56:11.365Z"
+    },
+    {
+      "schema": "acme",
+      "name": "etl_job_runs",
+      "kind": "table",
+      "row_count": 120,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "run_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "job_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "finished_at",
+          "type": "timestamp with time zone",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "state",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "rows_loaded",
+          "type": "integer",
+          "nullable": true,
+          "description": null
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "fct_order_items",
+      "kind": "table",
+      "row_count": 12343,
+      "description": null,
+      "primary_key": [
+        "order_item_id"
+      ],
+      "unique_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "order_id"
+          ],
+          "references": {
+            "schema": "acme",
+            "table": "fct_orders",
+            "columns": [
+              "order_id"
+            ]
+          }
+        },
+        {
+          "columns": [
+            "product_id"
+          ],
+          "references": {
+            "schema": "acme",
+            "table": "dim_products",
+            "columns": [
+              "product_id"
+            ]
+          }
+        }
+      ],
+      "columns": [
+        {
+          "name": "order_item_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 12343,
+            "min": 1,
+            "max": 12343,
+            "sampled": false
+          }
+        },
+        {
+          "name": "order_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 5000,
+            "min": 100001,
+            "max": 105000,
+            "sampled": false
+          }
+        },
+        {
+          "name": "product_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 60,
+            "min": 1,
+            "max": 60,
+            "sampled": false
+          }
+        },
+        {
+          "name": "quantity",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 3,
+            "min": 1,
+            "max": 3,
+            "sampled": false
+          }
+        },
+        {
+          "name": "unit_price_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 100,
+            "min": 399,
+            "max": 7549,
+            "sampled": false
+          }
+        }
+      ],
+      "profiled_at": "2026-10-26T08:56:11.365Z"
+    },
+    {
+      "schema": "acme",
+      "name": "fct_orders",
+      "kind": "table",
+      "row_count": 5000,
+      "description": "Orders from the storefront, one row per order. Amounts in integer cents.",
+      "primary_key": [
+        "order_id"
+      ],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "order_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 5000,
+            "min": 100001,
+            "max": 105000,
+            "sampled": false
+          }
+        },
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 530,
+            "min": 1,
+            "max": 560,
+            "sampled": false
+          }
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 5000,
+            "min": "2024-01-01 01:24:14+00",
+            "max": "2025-12-31 21:25:37+00",
+            "sampled": false
+          }
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 4,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "completed",
+                "count": 3950
+              },
+              {
+                "value": "cancelled",
+                "count": 484
+              },
+              {
+                "value": "shipped",
+                "count": 398
+              },
+              {
+                "value": "refunded",
+                "count": 168
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "amount_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 2500,
+            "min": 399,
+            "max": 52193,
+            "sampled": false
+          }
+        },
+        {
+          "name": "shipping_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 3,
+            "min": 0,
+            "max": 1999,
+            "sampled": false
+          }
+        },
+        {
+          "name": "ship_region",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 6,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "NE",
+                "count": 1134
+              },
+              {
+                "value": "WC",
+                "count": 1055
+              },
+              {
+                "value": "SE",
+                "count": 1023
+              },
+              {
+                "value": "MW",
+                "count": 795
+              },
+              {
+                "value": "SW",
+                "count": 704
+              },
+              {
+                "value": "INT",
+                "count": 289
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "currency",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 1,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "USD",
+                "count": 5000
+              }
+            ],
+            "sampled": false
+          }
+        }
+      ],
+      "profiled_at": "2026-10-26T08:56:11.365Z"
+    },
+    {
+      "schema": "acme",
+      "name": "fct_orders_v2_test",
+      "kind": "table",
+      "row_count": 200,
+      "description": null,
+      "primary_key": [
+        "order_id"
+      ],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "order_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "amount_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "discount_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "ship_region",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "fct_refunds",
+      "kind": "table",
+      "row_count": 344,
+      "description": "Refunds issued against orders. An order can have several partial refunds.",
+      "primary_key": [
+        "refund_id"
+      ],
+      "unique_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "order_id"
+          ],
+          "references": {
+            "schema": "acme",
+            "table": "fct_orders",
+            "columns": [
+              "order_id"
+            ]
+          }
+        }
+      ],
+      "columns": [
+        {
+          "name": "refund_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 344,
+            "min": 1,
+            "max": 344,
+            "sampled": false
+          }
+        },
+        {
+          "name": "order_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 291,
+            "min": 100017,
+            "max": 104987,
+            "sampled": false
+          }
+        },
+        {
+          "name": "refunded_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 330,
+            "min": 83,
+            "max": 48391,
+            "sampled": false
+          }
+        },
+        {
+          "name": "refunded_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 344,
+            "min": "2024-02-01 11:14:17+00",
+            "max": "2026-01-30 23:31:53+00",
+            "sampled": false
+          }
+        },
+        {
+          "name": "reason",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 5,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "price_adjustment",
+                "count": 82
+              },
+              {
+                "value": "wrong_item",
+                "count": 76
+              },
+              {
+                "value": "damaged",
+                "count": 68
+              },
+              {
+                "value": "customer_request",
+                "count": 62
+              },
+              {
+                "value": "late_delivery",
+                "count": 56
+              }
+            ],
+            "sampled": false
+          }
+        }
+      ],
+      "profiled_at": "2026-10-26T08:56:11.365Z"
+    },
+    {
+      "schema": "acme",
+      "name": "orders_backup_2024",
+      "kind": "table",
+      "row_count": 400,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "order_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "amount_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "raw_shopify_orders",
+      "kind": "table",
+      "row_count": 300,
+      "description": "Raw Shopify order export, loaded by the ingestion job. Not cleaned.",
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "created_at",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "total_price",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "financial_status",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "nullable": true,
+          "description": null
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "raw_stripe_charges",
+      "kind": "table",
+      "row_count": 300,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "charge_id",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "amount",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "currency",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "created",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "order_ref",
+          "type": "text",
+          "nullable": true,
+          "description": null
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "report_daily_sales_20250101",
+      "kind": "table",
+      "row_count": 6,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "report_date",
+          "type": "date",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "region_code",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "orders",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "revenue_usd",
+          "type": "numeric(12,2)",
+          "nullable": false,
+          "description": null
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "schema_migrations",
+      "kind": "table",
+      "row_count": 25,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "version",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "applied_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "stg_customers",
+      "kind": "table",
+      "row_count": 200,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "full_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "created_ts",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "stg_orders",
+      "kind": "table",
+      "row_count": 300,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "order_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "order_ts",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "amount_usd",
+          "type": "numeric(12,2)",
+          "nullable": false,
+          "description": null
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "tmp_import_errors",
+      "kind": "table",
+      "row_count": 20,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "error_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "source_file",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "line_no",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "message",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        }
+      ]
+    }
+  ]
+}

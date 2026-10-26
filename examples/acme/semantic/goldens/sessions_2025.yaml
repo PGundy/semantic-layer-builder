@@ -1,0 +1,20 @@
+name: sessions_2025
+question: How many sessions did we have in 2025?
+request:
+  source: lake
+  measures: [sessions.session_count]
+  filters:
+    - { field: sessions.started_at, op: gte, value: "2025-01-01" }
+    - { field: sessions.started_at, op: lt, value: "2026-01-01" }
+sql: |
+  select count(*) as session_count
+  from sessions
+  where started_at >= '2025-01-01' and started_at < '2026-01-01'
+reference: Dana Ruiz's 2025 sessions figure (every session, anonymous included, dated by started_at in UTC) - 4,551.
+status: approved
+expected:
+  tolerance: 0
+  rows:
+    - session_count: 4551
+confirmed_by: Dana Ruiz
+confirmed_at: 2026-10-26

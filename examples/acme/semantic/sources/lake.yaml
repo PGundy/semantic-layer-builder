@@ -1,0 +1,15 @@
+source: lake
+dialect: duckdb
+description: Acme's event lake of Parquet files.
+connection:
+  database: ":memory:"
+  views:
+    web_events: read_parquet('../../../fixtures/acme/data/lake/web_events/*.parquet')
+    sessions: read_parquet('../../../fixtures/acme/data/lake/sessions.parquet')
+    marketing_spend: read_parquet('../../../fixtures/acme/data/lake/marketing_spend.parquet')
+    web_events_2024_archive: read_parquet('../../../fixtures/acme/data/lake/web_events_2024_archive.parquet')
+    tmp_session_dedupe: read_parquet('../../../fixtures/acme/data/lake/tmp_session_dedupe.parquet')
+scope:
+  exclude:
+    - web_events_2024_archive
+    - tmp_session_dedupe

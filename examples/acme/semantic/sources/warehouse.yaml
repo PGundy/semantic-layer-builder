@@ -1,0 +1,17 @@
+source: warehouse
+dialect: postgres
+description: Acme's Postgres warehouse, schema acme.
+connection:
+  env: WAREHOUSE_URL
+scope:
+  include:
+    - dim_*
+    - fct_*
+  exclude:
+    - acme.dim_customers_archive
+    - acme.fct_orders_v2_test
+    - acme.dim_currency
+draft:
+  strip_prefixes:
+    - fct_
+    - dim_

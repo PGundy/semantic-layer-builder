@@ -1,0 +1,90 @@
+model: refunds
+source: warehouse
+table: acme.fct_refunds
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-10-26
+description: >-
+  Refunds issued against orders, one row per refund, amounts in integer cents (USD, as every order). Most refunds are
+  partial, an order can have several refunds, and a full refund is sometimes split over two rows (344 refunds on 291
+  orders, as measured; not checked against an independent report). Finance attributes a refund to the date of its order, not the
+  date it was issued, so order_date (the order's created_at, UTC) is the date for refund figures and net revenue.
+  Net revenue subtracts only refunds on orders that count in revenue (status completed or shipped, not a test account).
+grain: One row per refund.
+primary_key:
+  - refund_id
+open_questions:
+  - "Test-account refunds are two joins away (refunds to orders to customers) and fct_refunds has no customer_id, so the one-hop join rule cannot reach the test-account flag or email: 6 refunds ($214.34) on counted 2025 orders belong to test accounts and would still be in a refund total. Dana Ruiz chose to leave refunds and net revenue unsigned until Acme engineering adds the order's customer_id to refunds (a column, or a view such as fct_refunds_with_customer); she is sending the request, no date yet. Some refunds will carry a customer_id that is not in dim_customers (deleted customers); those refunds still count, because their orders count in revenue, so the join from refunds to customers must be left and never drop them. A hand-kept list of test customer numbers was rejected. When it exists, 2025 refunds must match $2,682.68 and net revenue $298,368.14 exactly before sign-off."
+  - >-
+    Refund and net revenue figures to build once customer_id is on refunds (removed for now because they would read
+    $214.34 off Finance): refund_amount = sum of refunded_cents / 100 in USD, only on refunds whose order counts in
+    revenue (status completed or shipped, not a test account by flag or @example-test.com email; refunds of deleted
+    customers count), dated by order_date (the order's created_at, UTC). Net revenue = orders.revenue minus that
+    refund_amount, each totalled on its own before subtracting, grouped by order_date. 2025 must match refunds
+    $2,682.68 and net revenue $298,368.14 exactly before Dana Ruiz signs. No count of all refunds issued (Dana Ruiz
+    declined it: it would include refunds on refunded orders, which are already outside revenue).
+dimensions:
+  - name: order_date
+    expr: order.created_at
+    type: time
+    description: >-
+      When the refunded order was placed (the order's created_at), with days, weeks, months and years in UTC. Finance
+      attributes a refund to this date, and net revenue dates refunds by it.
+    time_grains:
+      - day
+      - week
+      - month
+      - quarter
+      - year
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: refunded_at
+    expr: refunded_at
+    type: time
+    description: >-
+      When the refund was issued, in UTC. Not the date Finance uses for refunds or net revenue; use order_date for
+      those.
+    synonyms: [refund issued date]
+    time_grains:
+      - hour
+      - day
+      - week
+      - month
+      - quarter
+      - year
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: reason
+    expr: reason
+    type: string
+    status: draft
+measures: []
+joins:
+  - name: order
+    to: orders
+    keys:
+      - from: order_id
+        to: order_id
+    relationship: many_to_one
+    type: left
+    origin: declared
+    description: >-
+      The order each refund was issued against. Every refund finds its order, and each order appears once in orders, so
+      the join never repeats a refund. An order with several refunds appears once per refund on this side; net revenue
+      totals refunds on their own before subtracting them from revenue, so order rows are never duplicated.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+    evidence:
+      checked_at: 2026-10-26T08:56:43.946Z
+      left_rows: 344
+      left_null_keys: 0
+      matched_rows: 344
+      match_rate: 1
+      right_rows: 5000
+      right_key_unique: true
+      left_key_unique: false
+      max_fanout: 1
+      suggested_relationship: many_to_one

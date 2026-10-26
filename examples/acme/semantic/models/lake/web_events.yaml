@@ -1,0 +1,74 @@
+model: web_events
+source: lake
+table: main.web_events
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-10-26
+description: >-
+  Front-end tracking events on the website, one row per event, each with its own event_id: 30,551 events from 1 Jan
+  2024 to 31 Dec 2025, every one belonging to a session in sessions. No figures are defined on this table: Dana Ruiz
+  needs only sessions and spend from the lake. The purchase event is front-end tracking, not an order and not a
+  conversion; orders come from the warehouse (fct_orders), and the share of sessions with a purchase event is not
+  Acme's conversion rate. Acme's conversion rate (a session converts when its customer placed an order that counts in
+  revenue on the same UTC day; 17.29% for 2025) combines the lake and the warehouse and is worked out in reports, not
+  in this layer. The event count and date range are measured from the data and have not been checked against a report.
+grain: One row per event.
+primary_key:
+  - event_id
+dimensions:
+  - name: event_at
+    expr: event_at
+    type: time
+    description: When the event happened, with days, weeks, months and years in UTC, as every Acme report uses.
+    synonyms: [event date]
+    time_grains:
+      - hour
+      - day
+      - week
+      - month
+      - quarter
+      - year
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: event_type
+    expr: event_type
+    type: string
+    description: >-
+      Kind of event: page_view, search, add_to_cart, checkout_start or purchase. purchase is front-end tracking and is
+      not an order or a conversion; use the warehouse orders for those.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: page_path
+    expr: page_path
+    type: string
+    description: Path of the page the event happened on, such as /, /search, /cart, /checkout or /products/48 (65 paths, measured from the data and not checked against a report).
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+measures: []
+joins:
+  - name: session
+    to: sessions
+    keys:
+      - from: session_id
+        to: session_id
+    relationship: many_to_one
+    type: left
+    origin: inferred
+    description: The session the event belongs to. Every event finds its session, and each session appears once in sessions.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+    evidence:
+      checked_at: 2026-10-26T09:08:38.699Z
+      left_rows: 30551
+      left_null_keys: 0
+      matched_rows: 30551
+      match_rate: 1
+      right_rows: 8000
+      right_key_unique: true
+      left_key_unique: false
+      max_fanout: 1
+      suggested_relationship: many_to_one

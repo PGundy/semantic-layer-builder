@@ -1,0 +1,142 @@
+model: customers
+source: warehouse
+table: acme.dim_customers
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-10-26
+description: >-
+  Customer accounts, one row per customer: 500 customers, each with its own customer_id. Includes internal test
+  accounts: a customer is a test account when is_test_account is true or the email ends in @example-test.com (QA does
+  not always set the flag). 20 customers are test accounts: 12 flagged, 8 found only by email. The 500 and 20 counts
+  are measured from the data and not checked against a report. Customers who asked for
+  their accounts to be deleted have no row here, but their orders remain in orders and count in revenue. Email, phone,
+  first name and last name are personal data. The test-account rule reads the email column directly, so hiding the
+  email detail from a role does not change which orders are left out.
+grain: One row per customer.
+primary_key:
+  - customer_id
+open_questions:
+  - >-
+    New customers (Dana Ruiz needs this figure; it feeds CAC): a new customer is a customer in dim_customers, not a test
+    account, whose first order that counts in revenue (status completed or shipped) falls in the period; signup date
+    does not decide it, and deleted customers never count. 2025 must match 123 exactly (Dana Ruiz; a hand query gives
+    123: 101 who signed up in 2025, 22 earlier). It cannot be written as a join reference. Waiting on engineering for a
+    view acme.dim_customer_first_orders (one row per customer: customer_id, first_order_at = created_at of the
+    customer's earliest completed or shipped order), with rows only for customers that exist in dim_customers, so the
+    deleted customers' ids in fct_orders never appear. Dana Ruiz is sending this request to engineering together with
+    customer_id on refunds; no date yet. She accepts that the view repeats the "which statuses count" rule, so it must
+    change if that rule changes. If engineering cannot restrict it to dim_customers, the layer must leave deleted
+    customers out itself, and the test-account rule is applied in the layer either way. Until then there is no
+    new-customers measure, and no signup-date count is offered as "new customers".
+  - >-
+    acquisition_channel's paid values have the same names as marketing_spend.channel in the lake, but Dana Ruiz does not
+    know whether they are assigned the same way, so they may not line up. The marketing team would know. Cross-source:
+    not modeled.
+dimensions:
+  - name: email
+    expr: email
+    type: string
+    description: >-
+      The customer's email address. Personal data, and the most restricted of the customer's personal details. Hiding it
+      does not affect the test-account rule, which reads the column directly.
+    tags:
+      - pii
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: phone
+    expr: phone
+    type: string
+    description: The customer's phone number. Personal data. Often empty (12% of customers, as measured; not checked against a report).
+    tags:
+      - pii
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: first_name
+    expr: first_name
+    type: string
+    description: The customer's first name. Personal data.
+    tags:
+      - pii
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: last_name
+    expr: last_name
+    type: string
+    description: The customer's last name. Personal data.
+    tags:
+      - pii
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: signup_date
+    expr: signup_at
+    type: time
+    time_grains:
+      - hour
+      - day
+      - week
+      - month
+      - quarter
+      - year
+    description: >-
+      When the customer created their account (signup_at), with days, weeks, months and years in UTC. From 6 Jun 2022 to
+      22 Sep 2025 (as measured; not checked against a report). This is not the date for "new customers": a new customer is dated by their first order that counts in
+      revenue, so counting customers by signup date is not Acme's new-customers figure.
+    synonyms: [signup date, registration date]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: is_test_account
+    expr: is_test_account or email like '%@example-test.com'
+    type: boolean
+    description: >-
+      Whether the customer is an internal test account: true when QA set the is_test_account flag or the email ends in
+      @example-test.com, since QA does not always set the flag. True on 20 customers (12 flagged, 8 by email only; as
+      measured, not checked against a report).
+      Every order figure leaves these customers out.
+    synonyms: [test account]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: acquisition_channel
+    expr: acquisition_channel
+    type: string
+    description: >-
+      How the customer first found Acme: organic, paid_search, paid_social, referral, email, affiliate or display. Never
+      empty. The paid values have the same names as the marketing spend channels in the lake, but they may not be
+      assigned the same way. Acme reports CAC as one blended figure, never per channel, so this is not a basis for a
+      per-channel CAC.
+    synonyms: [signup channel, acquisition source]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+measures: []
+joins:
+  - name: home_region
+    to: regions
+    keys:
+      - from: region_code
+        to: region_code
+    relationship: many_to_one
+    type: left
+    origin: declared
+    description: >-
+      The customer's home region (region_code). This is not Acme's sales region: "revenue by region", regional reports
+      and sales territories use the order's ship_region, which differs from the home region on 307 of 5,000 orders.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+    evidence:
+      checked_at: 2026-10-26T09:25:13.778Z
+      left_rows: 500
+      left_null_keys: 0
+      matched_rows: 500
+      match_rate: 1
+      right_rows: 6
+      right_key_unique: true
+      left_key_unique: false
+      max_fanout: 1
+      suggested_relationship: many_to_one

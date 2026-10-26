@@ -1,0 +1,38 @@
+model: regions
+source: warehouse
+table: acme.dim_regions
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-10-26
+description: >-
+  Acme's sales regions, one row per region: 6 regions, each with its own region_code (NE, WC, SE, MW, SW, INT). Orders
+  reach it through ship_region, which is the sales region used for "revenue by region". No figures are defined on this
+  table.
+grain: One row per region.
+primary_key:
+  - region_code
+dimensions:
+  - name: region_name
+    expr: region_name
+    type: string
+    description: "Region name: Northeast, West Coast, Southeast, Midwest, Southwest or International."
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: country_code
+    expr: country_code
+    type: string
+    description: Country of the region. US for the five US regions; ZZ (not a real country code) for International.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: timezone
+    expr: timezone
+    type: string
+    description: >-
+      The region's local time zone (America/New_York, America/Chicago, America/Phoenix, America/Los_Angeles, or UTC for
+      International), as a label only. Every Acme report uses UTC days, so no date in this layer is converted to it.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+measures: []

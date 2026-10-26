@@ -1,0 +1,67 @@
+model: sessions
+source: lake
+table: main.sessions
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-10-26
+description: >-
+  Website sessions (visits), one row per session, each with its own session_id: 8,000 sessions from 1 Jan 2024 to
+  31 Dec 2025 (3,449 in 2024, 4,551 in 2025; only the 2025 total is checked against a report). Every session counts, anonymous visitors included: customer_id is empty
+  on 60% of sessions, which are visitors who were not logged in. A small share is test traffic that the lake cannot
+  identify: 188 sessions (about 2.4%; 74 in 2024, 114 in 2025) belong to warehouse test accounts and are counted.
+  The lake is not joined to the warehouse. The table is already deduplicated; the out-of-scope tmp_session_dedupe
+  file is a cleanup job's scratch table and does not change which sessions count.
+grain: One row per session.
+primary_key:
+  - session_id
+dimensions:
+  - name: started_at
+    expr: started_at
+    type: time
+    description: >-
+      When the session started, with days, weeks, months and years in UTC, as every Acme report uses. This is the date
+      for "sessions in March".
+    synonyms: [session date]
+    time_grains:
+      - hour
+      - day
+      - week
+      - month
+      - quarter
+      - year
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: utm_channel
+    expr: coalesce(utm_channel, 'direct')
+    type: string
+    description: >-
+      Marketing channel the visit came from: organic, paid_search, paid_social, email, referral, affiliate, display, or
+      direct when utm_channel is empty (22% of sessions, direct traffic). The paid channels match
+      marketing_spend.channel exactly; organic, referral and direct have no spend. The 2025 split by channel is measured
+      from the data and has not been checked against a report.
+    synonyms: [channel, traffic source]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+  - name: device
+    expr: device
+    type: string
+    description: >-
+      Device type of the visit, one of mobile, desktop or tablet. The 2025 split (mobile 2,461, desktop 1,739, tablet
+      351) is measured from the data and has not been checked against a report.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+measures:
+  - name: session_count
+    agg: count
+    format: integer
+    description: >-
+      Number of sessions (visits), every session counted, anonymous visitors included, dated by started_at in UTC.
+      Includes about 2.4% test-account traffic that the lake cannot identify. 2025 is 4,551, matching Dana Ruiz's
+      figure; the 2024 count (3,449) has not been checked against an independent report.
+    synonyms: [sessions, visits]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
