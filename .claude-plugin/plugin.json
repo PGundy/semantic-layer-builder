@@ -1,0 +1,7 @@
+{
+  "name": "semantic-layer-builder",
+  "version": "0.1.0",
+  "description": "Interview a data owner and build a governed semantic layer (models, approved measures, joins, access rules) across many data sources.",
+  "license": "MIT",
+  "keywords": ["semantic-layer", "metrics", "data", "duckdb", "postgres", "text-to-sql"]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "semantic-layer-builder",
+  "owner": { "name": "semantic-layer-builder contributors" },
+  "plugins": [
+    {
+      "name": "semantic-layer-builder",
+      "source": "./",
+      "description": "Interview a data owner and build a governed semantic layer across many data sources."
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "semantic-layer-skill",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Scripts behind the semantic-layer skill: introspect, scope, profile, draft, check joins, validate and verify a semantic layer.",
+  "bin": { "sl": "scripts/sl.ts" },
+  "dependencies": {
+    "@duckdb/node-api": "2.0.0-r.1",
+    "ajv": "8.20.0",
+    "yaml": "2.9.1"
+  }
+}
