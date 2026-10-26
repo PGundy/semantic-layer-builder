@@ -295,6 +295,17 @@ describe("status next_step", () => {
     expect(s.next_step.message).toContain('the draft models in "wh": orders');
   });
 
+  test("an interview reaching a join without evidence -> check-join before approving it", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, {});
+    const m = model("fct_orders", true);
+    m.joins![0] = { ...m.joins![0]!, status: "draft", approved_by: undefined, approved_at: undefined };
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), m);
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.next_step).toMatchObject({ phase: "interview", command: "sl check-join --source wh --model orders --join customer" });
+  });
+
   test("draft models on out-of-scope tables do not hold the interview open", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;

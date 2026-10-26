@@ -73,6 +73,8 @@ scope:
 profile:
   sample_rows: 100000        # profile over a sample when tables are larger; omit for full scans
   top_values: 10
+draft:
+  strip_prefixes: [fct_, dim_]   # written by sl draft --strip-prefix; model names drop these prefixes
 ```
 
 A DuckDB source, typically a lake over files:
@@ -328,21 +330,30 @@ For `duckdb` and `postgres` sources the command runs the plan itself. For any so
 
 ## CLI
 
-`bun skills/semantic-layer/scripts/sl.ts <command> [flags]`. Every command takes `--root <dir>` and `--json`. Commands never print secrets and never write outside the semantic root.
+`bun skills/semantic-layer/scripts/sl.ts <command> [flags]`. Every command takes `--root <dir>` and `--json`, and `sl <command> --help` prints its usage. Commands never print secrets and never write outside the semantic root. Every command that reads a database (`introspect`, `profile`, `check-join`, `goldens`) takes `--emit-sql` and `--results <file>`. A flag marked `...` repeats, and a repeated `--include`, `--exclude` or `--remove` value may hold several comma-separated globs; a value starting with `re:` is taken whole.
 
 | Command | Does |
 |---|---|
-| `init --name <name>` | Writes `semantic.yaml` and the directory layout. |
-| `add-source --name <s> --dialect <d> [--env VAR] [--database path] [--view name=relation]...` | Writes `sources/<s>.yaml`. |
-| `introspect --source <s>` | Captures tables, columns, keys and row estimates into the snapshot. Supports `--emit-sql`, `--results`. |
-| `import --source <s> --format information_schema\|dbt_manifest\|ddl --file <path>` | Builds the snapshot from shared context instead of a live connection. |
-| `tables --source <s> [--groups] [--all]` | Lists tables with size, scope and modeling state; `--groups` clusters them by schema, prefix and suffix and suggests patterns. |
-| `scope --source <s> [--include p]... [--exclude p]... [--remove p]... [--clear] [--write]` | Previews the tables a scope change selects; `--write` saves it. |
-| `profile --source <s> [--tables t,...] [--refresh]` | Profiles in-scope tables into the snapshot. Supports `--emit-sql`, `--results`. |
-| `draft --source <s> [--tables t,...] [--strip-prefix p,...]` | Writes draft models for in-scope tables that have none, with inferred keys and joins. Never overwrites a model. |
-| `check-join --source <s> --model <m> --join <j>` | Measures a join's match rate, key uniqueness and fan-out and writes `evidence`. Supports `--emit-sql`, `--results`. |
-| `approve --target <ref> --by <name> [--recursive]` | Marks an item approved. `<ref>` is `source.model`, `source.model.field`, `metric:<name>`, `access` or `golden:<name>`. |
+| `init --name <name> [--description <text>] [--default-source <s>]` | Writes `semantic.yaml` and the directory layout. |
+| `add-source --name <s> --dialect <d> [--env VAR] [--database <path>] [--view name=relation]... [--setup <statement>]... [--description <text>]` | Writes `sources/<s>.yaml`. `--env` is required for postgres and refuses anything that looks like a URL or a credential. |
+| `introspect --source <s> [--schemas a,b]` | Captures tables, columns, keys and row estimates into the snapshot. `--schemas` limits it to those schemas, or BigQuery datasets. |
+| `import --source <s> --format information_schema\|dbt_manifest\|ddl --file <path> [--catalog <catalog.json>]` | Builds the snapshot from shared context instead of a live connection: an information_schema.columns export as CSV or a JSON array, a dbt `manifest.json` with an optional `catalog.json`, or a `.sql` file of DDL. |
+| `tables --source <s> [--groups] [--all]` | Lists in-scope tables, or all with `--all`, with size, modeling and profiling state; `--groups` clusters them by schema, prefix and suffix and suggests patterns. |
+| `scope --source <s> [--include <p>]... [--exclude <p>]... [--remove <p>]... [--tables a,b] [--clear] [--write]` | Previews the tables a scope change selects; `--write` saves it. `--tables` adds exact names. |
+| `profile --source <s> [--tables t,...] [--refresh]` | Profiles in-scope tables into the snapshot, skipping profiled ones unless `--refresh`. |
+| `draft --source <s> [--tables t,...] [--strip-prefix p,...] [--force]` | Writes draft models for in-scope tables that have none, with inferred keys and joins. Never overwrites a model. Refuses more tables than `focus_threshold` without `--tables` or `--force`. `--strip-prefix` is saved as `draft.strip_prefixes`. |
+| `check-join --source <s> (--model <m> --join <j> \| --model <m> --all \| --all) [--no-write]` | Measures a join's match rate, key uniqueness and fan-out and writes `evidence`, nothing else. |
+| `approve --target <ref> --by <name> [--recursive] [--revoke] [--date YYYY-MM-DD]` | Marks an item approved, or draft again with `--revoke`. `<ref>` is `source.model`, `source.model.field`, `metric:<name>` or `access`; goldens use `goldens confirm`. |
 | `validate` | Checks structure and references; exits 1 on any error. |
-| `status [--source <s>]` | Shows progress per source and the next batch of tables to interview. |
-| `run --source <s> (--sql <q> \| --file <path>) [--limit n]` | Runs one read-only query. |
-| `goldens run\|confirm\|check [--name <g>] [--by <name>]` | Runs a golden's SQL, records confirmed rows, or rechecks every approved golden. |
+| `status [--source <s>]` | Shows progress per source, the next batch of tables to interview and the next step. |
+| `run --source <s> (--sql <query> \| --file <path>) [--limit <n>]` | Runs one read-only query against a duckdb or postgres source. |
+| `goldens run --name <g>` / `goldens confirm --name <g> --by <name> [--tolerance <t>] [--force]` / `goldens check [--name <g>] [--source <s>]` | Runs a golden's SQL, records its confirmed rows, or rechecks every approved golden. |
+
+### sl status --json
+
+The skill resumes from this output.
+
+- `settings`: `focus_threshold` and `batch_size`.
+- `sources[]`: per source, its dialect, snapshot state, `needs_focus`, model, dimension, measure and join counts by status, joins without evidence and open questions.
+- `next_batch`: `{ source, tables: [{ table, model, model_status, score, reasons }] }`, the next tables to interview, or `null`.
+- `next_step`: `{ phase, message, command, source? }`, the first unfinished phase. Phases in order: `add-source`, `introspect`, `scope`, `profile`, `draft`, `interview`, `check-join`, `metrics`, `access`, `verify`, `done`.

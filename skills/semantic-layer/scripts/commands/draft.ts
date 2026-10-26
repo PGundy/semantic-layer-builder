@@ -9,7 +9,7 @@ import { inScope, matchesPattern, validatePattern } from "../lib/patterns.ts";
 import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot } from "../lib/project.ts";
 import { rankTables } from "../lib/rank.ts";
 import type { SnapshotTable } from "../lib/types.ts";
-import { writeYaml } from "../lib/yaml.ts";
+import { updateYaml, writeYaml } from "../lib/yaml.ts";
 import { sourceFlag } from "./tables.ts";
 
 interface DraftedEntry {
@@ -50,7 +50,9 @@ const spec: CommandSpec = {
     const source = loadSource(ctx.root, sourceName);
     const snapshot = requireSnapshot(ctx.root, sourceName);
     const { focus_threshold } = projectSettings(project);
-    const stripPrefixes = list(values, "strip-prefix");
+    // --strip-prefix is saved in the source config the first time, so later drafts name models the same way.
+    const flagPrefixes = list(values, "strip-prefix");
+    const stripPrefixes = flagPrefixes.length ? flagPrefixes : (source.draft?.strip_prefixes ?? []);
     const force = bool(values, "force");
 
     const existing = listModels(ctx.root, sourceName).map((l) => l.model).filter((m) => m && typeof m === "object");
@@ -146,6 +148,10 @@ const spec: CommandSpec = {
         joins: model.joins?.length ?? 0,
         open_questions: model.open_questions?.length ?? 0,
       });
+    }
+
+    if (flagPrefixes.length && drafted.length && JSON.stringify(flagPrefixes) !== JSON.stringify(source.draft?.strip_prefixes ?? [])) {
+      updateYaml(paths(ctx.root).source(sourceName), (doc) => doc.setIn(["draft", "strip_prefixes"], flagPrefixes));
     }
 
     if (ctx.json) {

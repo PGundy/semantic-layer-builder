@@ -104,6 +104,21 @@
           "description": "How many most frequent values to keep per column."
         }
       }
+    },
+    "draft": {
+      "type": "object",
+      "description": "Settings sl draft remembers for this source.",
+      "additionalProperties": false,
+      "properties": {
+        "strip_prefixes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Prefixes removed from table names to form model names, such as fct_ and dim_."
+        }
+      }
     }
   }
 }

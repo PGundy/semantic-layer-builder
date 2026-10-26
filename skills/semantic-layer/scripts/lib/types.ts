@@ -54,6 +54,7 @@ export interface SourceConfig {
   connection?: SourceConnection;
   scope?: Scope;
   profile?: SourceProfileSettings;
+  draft?: { strip_prefixes?: string[] };
 }
 
 // Snapshot

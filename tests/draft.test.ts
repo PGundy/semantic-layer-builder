@@ -392,6 +392,14 @@ describe("draft command", () => {
     expect(existsSync(modelPath(root, "customers"))).toBe(false);
   });
 
+  test("--strip-prefix is saved in the source and reused by later drafts", async () => {
+    const root = await setup();
+    await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "analytics.fct_orders"]);
+    expect(readFileSync(join(root, "sources", "wh.yaml"), "utf8")).toContain("draft:\n  strip_prefixes:\n    - fct_\n    - dim_\n");
+    const later = await sl(root, ["draft", "--source", "wh", "--tables", "analytics.dim_customers", "--json"]);
+    expect(later.json<DraftJson>().drafted.map((d) => d.model)).toEqual(["customers"]);
+  });
+
   test("never overwrites a model and leaves the owner's edits alone", async () => {
     const root = await setup();
     await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "fct_orders"]);

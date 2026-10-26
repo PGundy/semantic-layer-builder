@@ -89,7 +89,8 @@ describe("profile (duckdb)", () => {
     const p = out.profiled[0]!;
     expect(p.table).toBe("main.orders");
     expect(p.row_count).toBe(8);
-    expect(p.candidate_keys).toEqual(["id", "code", "created_at"]);
+    // created_at is unique here but a timestamp, so it is neither a key nor low-cardinality.
+    expect(p.candidate_keys).toEqual(["id", "code"]);
     expect(p.low_cardinality).toEqual(["status", "channel", "amount", "order_date", "paid"]);
 
     const s = snap(t.root, "wh");
@@ -141,7 +142,7 @@ describe("profile (duckdb)", () => {
 
     const human = await sl(t.root, ["profile", "--source", "wh", "--refresh"]);
     expect(human.code).toBe(0);
-    expect(human.out).toContain("main.orders: 8 rows; candidate keys: id, code, created_at");
+    expect(human.out).toContain("main.orders: 8 rows; candidate keys: id, code; low-cardinality:");
   });
 
   test("samples large tables and extrapolates distinct keys", async () => {

@@ -104,6 +104,7 @@ Profiles and join checks produce one query per table or join. For a large source
 
 - Run queries with a BigQuery MCP connector or `bq query --use_legacy_sql=false --format=json --max_rows=100000 '<sql>'`. Use `bq query --dry_run` to see bytes scanned before a costly profile.
 - Datasets play the role of schemas. Name the datasets to read with `sl introspect --source bq --schemas analytics,marts --emit-sql`; without `--schemas`, introspect reads the datasets named in the source's `scope.include` patterns (such as `analytics.*`). Ask the owner which datasets matter before the first introspect: a project can hold hundreds.
+- Datasets passed together in `--schemas` must be in the same location; introspect datasets from other regions in separate runs.
 - BigQuery bills by bytes scanned, and `limit` does not reduce that. Profile only the in-scope tables, one batch at a time, and prefer partitioned tables' recent partitions when the owner agrees.
 - `bq --format=json` returns numbers as strings; save them as returned.
 
@@ -132,7 +133,7 @@ Postgres:
 
 ```sql
 select c.table_schema, c.table_name, t.table_type, c.column_name, c.ordinal_position,
-       c.data_type, c.is_nullable, pd.description
+       c.data_type, c.udt_name, c.is_nullable, pd.description
 from information_schema.columns c
 join information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name
 left join pg_catalog.pg_attribute a

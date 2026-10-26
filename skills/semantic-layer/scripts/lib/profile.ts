@@ -143,11 +143,14 @@ export function summarizeTable(table: SnapshotTable, dialect?: Dialect): TableSu
     const distinct = p?.distinct_count;
     if (!p || distinct === null || distinct === undefined) continue;
     let key = false;
-    if (rowCount !== null && rowCount > 0 && p.null_fraction === 0) {
+    const keyType = ((c) => c === "integer" || c === "string")(classifyType(col.type));
+    if (keyType && rowCount !== null && rowCount > 0 && p.null_fraction === 0) {
       key = p.sampled || approximate ? Math.abs(distinct - rowCount) <= rowCount * KEY_TOLERANCE : distinct === rowCount;
     }
     if (key) candidate_keys.push(col.name);
-    else if (distinct > 0 && distinct <= LOW_CARDINALITY_MAX) low_cardinality.push(col.name);
+    // A column unique on every row is not low-cardinality, whatever its type.
+    else if (distinct > 0 && distinct <= LOW_CARDINALITY_MAX && !(rowCount !== null && distinct === rowCount && p.null_fraction === 0))
+      low_cardinality.push(col.name);
   }
   return { candidate_keys, low_cardinality };
 }

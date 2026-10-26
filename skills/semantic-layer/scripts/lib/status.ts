@@ -307,7 +307,11 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       message:
         `Interview the owner about ${what}. Read each dimension, measure and join back in plain English and approve it ` +
         "on its own once the owner confirms it; then settle the model's open questions, grain and key and approve the model.",
-      command: `sl approve --target ${s}.${field ?? target} --by "<owner>"`,
+      // A join is measured before it is read back, so an unchecked join points at check-join first.
+      command:
+        field && drafty.unchecked_joins.includes(field)
+          ? `sl check-join --source ${s} --model ${field.split(".")[0]} --join ${field.split(".")[1]}`
+          : `sl approve --target ${s}.${field ?? target} --by "<owner>"`,
     };
   }
 
@@ -373,7 +377,8 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
 export function computeStatus(root: string, only?: string): ProjectStatus {
   const project = loadProject(root);
   const settings = projectSettings(project);
-  const names = listSourceNames(root);
+  // The default source comes first, so its tables are interviewed first.
+  const names = listSourceNames(root).sort((x, y) => Number(y === project.default_source) - Number(x === project.default_source));
   if (only) loadSource(root, only);
   const sources = (only ? [only] : names).map((s) => sourceStatus(root, s, settings));
 

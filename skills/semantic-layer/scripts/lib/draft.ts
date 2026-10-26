@@ -40,11 +40,11 @@ const TIMESTAMP_GRAINS: TimeGrain[] = ["hour", ...DATE_GRAINS];
 
 // Name rules match whole snake_case tokens, so country_code is not a count and duration is not a ratio.
 const SUM_NAME =
-  /(^|_)(sub)?(amount|price|cost|revenue|total|value|spend|fee|tax|discount|balance|qty|quantity|units?|count|duration|minutes|seconds)(s|es)?(_|$)/;
+  /(^|_)(sub)?(amount|price|cost|revenue|total|value|spend|fee|tax|discount|balance|shipping|freight|gross|net|profit|margin|payment|charge|refund|refunded|cents|pennies|salary|wage|income|budget|qty|quantity|units?|count|duration|minutes|seconds)(s|es)?(_|$)/;
 const RATE_NAME = /(^|_)(rate|pct|percent|percentage|ratio)s?(_|$)/;
 const COUNT_NAME = /(^|_)(qty|quantity|units?|count)s?(_|$)/;
 const DURATION_NAME = /(^|_)(duration|minutes|seconds)s?(_|$)/;
-const MONEY_NAME = /(^|_)(sub)?(amount|price|cost|revenue|total|value|spend|fee|tax|discount|balance)(s|es)?(_|$)/;
+const MONEY_NAME = /(^|_)(sub)?(amount|price|cost|revenue|total|value|spend|fee|tax|discount|balance|shipping|freight|gross|net|profit|margin|payment|charge|refund|refunded|cents|pennies|salary|wage|income|budget)(s|es)?(_|$)/;
 const CENTS_NAME = /_(cents|pennies)$/;
 const PII_NAME =
   /(^|_)(email|phone|mobile|ssn|social_security|address|street|postal|zip|first_name|last_name|full_name|birth|dob|ip_address|passport|tax_id)/;

@@ -19,9 +19,9 @@ export function quoteTable(dialect: Dialect, table: { schema?: string | null; na
 export function approxCountDistinct(dialect: Dialect, expr: string): string {
   switch (dialect) {
     case "postgres":
+    case "duckdb":
+      // DuckDB's HyperLogLog is far off on small sets, so counts there are exact.
       return `count(distinct ${expr})`;
-    case "bigquery":
-      return `approx_count_distinct(${expr})`;
     default:
       return `approx_count_distinct(${expr})`;
   }
@@ -47,11 +47,11 @@ export function sampledFrom(dialect: Dialect, quotedTable: string, rows: number 
     case "duckdb":
       return `(select * from ${quotedTable} using sample reservoir(${n} rows) repeatable (42))`;
     case "postgres":
-      return `(select * from ${quotedTable} limit ${n})`;
+      return `(select * from ${quotedTable} order by random() limit ${n})`;
     case "snowflake":
       return `(select * from ${quotedTable} sample (${n} rows))`;
     case "bigquery":
-      return `(select * from ${quotedTable} limit ${n})`;
+      return `(select * from ${quotedTable} order by rand() limit ${n})`;
     case "databricks":
       return `(select * from ${quotedTable} tablesample (${n} rows))`;
   }
