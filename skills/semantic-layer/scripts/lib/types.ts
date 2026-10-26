@@ -159,7 +159,7 @@ export interface JoinEvidence {
   right_key_unique: boolean;
   left_key_unique: boolean;
   max_fanout: number;
-  suggested_relationship: Relationship;
+  suggested_relationship: Relationship | "many_to_many";
 }
 
 export interface Join extends Approval {

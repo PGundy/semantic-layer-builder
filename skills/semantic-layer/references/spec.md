@@ -212,8 +212,10 @@ joins:
       right_key_unique: true
       left_key_unique: false
       max_fanout: 1
-      suggested_relationship: many_to_one
+      suggested_relationship: many_to_one   # many_to_one | one_to_one | one_to_many | many_to_many
 ```
+
+`many_to_many` evidence means neither side is unique: the join cannot be modeled directly and needs a bridge table or a pre-aggregated model.
 
 A `one_to_many` join fans out and multiplies the left model's measures. The compiler must aggregate the many side before joining, and the skill flags every such join to the owner.
 
