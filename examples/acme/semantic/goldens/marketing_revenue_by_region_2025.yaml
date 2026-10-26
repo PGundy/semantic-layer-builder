@@ -1,0 +1,62 @@
+name: marketing_revenue_by_region_2025
+question: As marketing, what were 2025 revenue and the number of orders by region?
+role: marketing
+user: {}
+request:
+  source: warehouse
+  measures: [orders.revenue, orders.order_count]
+  dimensions: [orders.ship_region, orders.ship_region_name]
+  filters:
+    - { field: orders.order_date, op: gte, value: "2025-01-01" }
+    - { field: orders.order_date, op: lt, value: "2026-01-01" }
+  order_by: [{ field: orders.ship_region, direction: asc }]
+sql: |
+  -- The marketing role: no row filters, and no access to customers or test_accounts. The test-account rule still
+  -- applies through revenue's and order count's own test_account join.
+  select o.ship_region as ship_region,
+         ship_to_region.region_name as ship_region_name,
+         sum(o.amount_cents / 100.0)
+           filter (where o.status in ('completed', 'shipped')
+                     and coalesce(test_account.is_test_account, false) = false
+                     and coalesce(test_account.email, '') not like '%@example-test.com') as revenue,
+         count(*)
+           filter (where o.status in ('completed', 'shipped')
+                     and coalesce(test_account.is_test_account, false) = false
+                     and coalesce(test_account.email, '') not like '%@example-test.com') as order_count
+  from acme.fct_orders o
+  left join acme.dim_customers test_account on test_account.customer_id = o.customer_id
+  left join acme.dim_regions ship_to_region on ship_to_region.region_code = o.ship_region
+  where o.created_at >= '2025-01-01' and o.created_at < '2026-01-01'
+  group by 1, 2
+  order by 1
+reference: "Dana Ruiz's 2025 regional reports (UTC days, region = ship_region): WC 529 / $71,664.18, NE 513 / $70,911.41, SE 444 / $59,479.62, SW 344 / $43,547.31, MW 283 / $37,431.78, INT 126 / $18,016.52."
+status: approved
+expected:
+  tolerance: 0
+  rows:
+    - ship_region: INT
+      ship_region_name: International
+      revenue: 18016.52
+      order_count: 126
+    - ship_region: MW
+      ship_region_name: Midwest
+      revenue: 37431.78
+      order_count: 283
+    - ship_region: NE
+      ship_region_name: Northeast
+      revenue: 70911.41
+      order_count: 513
+    - ship_region: SE
+      ship_region_name: Southeast
+      revenue: 59479.62
+      order_count: 444
+    - ship_region: SW
+      ship_region_name: Southwest
+      revenue: 43547.31
+      order_count: 344
+    - ship_region: WC
+      ship_region_name: West Coast
+      revenue: 71664.18
+      order_count: 529
+confirmed_by: Dana Ruiz
+confirmed_at: 2026-10-26

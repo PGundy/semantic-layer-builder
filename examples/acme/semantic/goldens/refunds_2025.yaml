@@ -1,0 +1,25 @@
+name: refunds_2025
+question: What were refunds in 2025?
+request:
+  source: warehouse
+  measures: [refunds.refund_amount]
+  filters:
+    - { field: refunds.order_date, op: gte, value: "2025-01-01" }
+    - { field: refunds.order_date, op: lt, value: "2026-01-01" }
+sql: |
+  select sum(r.refunded_cents / 100.0)
+           filter (where o.status in ('completed', 'shipped')
+                     and coalesce(test_account.is_test_account, false) = false
+                     and coalesce(test_account.email, '') not like '%@example-test.com') as refund_amount
+  from acme.fct_refunds r
+  left join acme.fct_orders o on o.order_id = r.order_id
+  left join acme.dim_customers test_account on test_account.customer_id = o.customer_id
+  where o.created_at >= '2025-01-01' and o.created_at < '2026-01-01'
+reference: "Dana Ruiz's 2025 refunds figure, dated by the order's date (UTC), as Finance attributes refunds: $2,682.68."
+status: approved
+expected:
+  tolerance: 0
+  rows:
+    - refund_amount: 2682.68
+confirmed_by: Dana Ruiz
+confirmed_at: 2026-10-26

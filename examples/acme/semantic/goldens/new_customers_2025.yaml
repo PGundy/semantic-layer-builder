@@ -1,0 +1,25 @@
+name: new_customers_2025
+question: How many new customers did we get in 2025?
+request:
+  source: warehouse
+  measures: [customers.new_customers]
+sql: |
+  -- Hand-computed: the layer has no new-customers measure yet. It needs the view acme.dim_customer_first_orders
+  -- (see the open question on customers). A new customer is in dim_customers, is not a test account, and has the
+  -- earliest order that counts in revenue (status completed or shipped) in the period; deleted customers never count.
+  with first_orders as (
+    select o.customer_id, min(o.created_at) as first_order_at
+    from acme.fct_orders o
+    where o.status in ('completed', 'shipped')
+    group by 1
+  )
+  select count(*) as new_customers
+  from acme.dim_customers c
+  join first_orders f on f.customer_id = c.customer_id
+  where coalesce(c.is_test_account, false) = false
+    and coalesce(c.email, '') not like '%@example-test.com'
+    and f.first_order_at >= '2025-01-01' and f.first_order_at < '2026-01-01'
+reference: >-
+  Dana Ruiz's 2025 new-customers figure, which feeds blended CAC and must match exactly: 123. Hand-computed here; the
+  layer cannot express it until engineering adds acme.dim_customer_first_orders.
+status: draft

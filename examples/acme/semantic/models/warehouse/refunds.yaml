@@ -13,16 +13,6 @@ description: >-
 grain: One row per refund.
 primary_key:
   - refund_id
-open_questions:
-  - "Test-account refunds are two joins away (refunds to orders to customers) and fct_refunds has no customer_id, so the one-hop join rule cannot reach the test-account flag or email: 6 refunds ($214.34) on counted 2025 orders belong to test accounts and would still be in a refund total. Dana Ruiz chose to leave refunds and net revenue unsigned until Acme engineering adds the order's customer_id to refunds (a column, or a view such as fct_refunds_with_customer); she is sending the request, no date yet. Some refunds will carry a customer_id that is not in dim_customers (deleted customers); those refunds still count, because their orders count in revenue, so the join from refunds to customers must be left and never drop them. A hand-kept list of test customer numbers was rejected. When it exists, 2025 refunds must match $2,682.68 and net revenue $298,368.14 exactly before sign-off."
-  - >-
-    Refund and net revenue figures to build once customer_id is on refunds (removed for now because they would read
-    $214.34 off Finance): refund_amount = sum of refunded_cents / 100 in USD, only on refunds whose order counts in
-    revenue (status completed or shipped, not a test account by flag or @example-test.com email; refunds of deleted
-    customers count), dated by order_date (the order's created_at, UTC). Net revenue = orders.revenue minus that
-    refund_amount, each totalled on its own before subtracting, grouped by order_date. 2025 must match refunds
-    $2,682.68 and net revenue $298,368.14 exactly before Dana Ruiz signs. No count of all refunds issued (Dana Ruiz
-    declined it: it would include refunds on refunded orders, which are already outside revenue).
 dimensions:
   - name: order_date
     expr: order.created_at
@@ -59,8 +49,32 @@ dimensions:
   - name: reason
     expr: reason
     type: string
-    status: draft
-measures: []
+    description: >-
+      Why the refund was issued: price_adjustment (82 refunds), wrong_item (76), damaged (68), customer_request (62) or
+      late_delivery (56); never empty. The counts are measured over all 344 refunds and not checked against a report.
+    synonyms: [refund reason]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
+measures:
+  - name: refund_amount
+    expr: refunded_cents / 100.0
+    agg: sum
+    filter: order.status in ('completed', 'shipped') and coalesce(order.test_account.is_test_account, false) = false and coalesce(order.test_account.email, '') not like '%@example-test.com'
+    format: currency
+    currency: USD
+    description: >-
+      Refunds as Finance subtracts them from revenue: refunded_cents / 100 in US dollars, only on refunds whose order
+      counts in revenue (order status completed or shipped, and not a test account: QA flag is_test_account or email
+      ending in @example-test.com, read through the order's test_account join, the same rule as revenue). Refunds on
+      cancelled or refunded orders are left out, because those orders are already outside revenue. Refunds on orders of
+      deleted customers count. Dated by order_date (the order's created_at, UTC), not by refunded_at. An order with
+      several refunds has them all added up here on their own, so net revenue never repeats an order. There is no
+      figure for all refunds issued.
+    synonyms: [refunds, refund total]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26
 joins:
   - name: order
     to: orders
@@ -78,7 +92,11 @@ joins:
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
     evidence:
-      checked_at: 2026-10-26T08:56:43.946Z
+      checked_at: 2026-10-26T10:43:46.981Z
+      to: orders
+      keys:
+        - from: order_id
+          to: order_id
       left_rows: 344
       left_null_keys: 0
       matched_rows: 344

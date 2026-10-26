@@ -60,10 +60,6 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-  - name: currency
-    expr: currency
-    type: string
-    status: draft
 measures:
   - name: order_count
     agg: count
@@ -159,7 +155,11 @@ joins:
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
     evidence:
-      checked_at: 2026-10-26T09:37:35.200Z
+      checked_at: 2026-10-26T10:43:47.169Z
+      to: test_accounts
+      keys:
+        - from: customer_id
+          to: customer_id
       left_rows: 5000
       left_null_keys: 0
       matched_rows: 4941

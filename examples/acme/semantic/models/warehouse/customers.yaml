@@ -23,8 +23,8 @@ open_questions:
     123: 101 who signed up in 2025, 22 earlier). It cannot be written as a join reference. Waiting on engineering for a
     view acme.dim_customer_first_orders (one row per customer: customer_id, first_order_at = created_at of the
     customer's earliest completed or shipped order), with rows only for customers that exist in dim_customers, so the
-    deleted customers' ids in fct_orders never appear. Dana Ruiz is sending this request to engineering together with
-    customer_id on refunds; no date yet. She accepts that the view repeats the "which statuses count" rule, so it must
+    deleted customers' ids in fct_orders never appear. Dana Ruiz is sending this request to engineering; no date
+    yet. She accepts that the view repeats the "which statuses count" rule, so it must
     change if that rule changes. If engineering cannot restrict it to dim_customers, the layer must leave deleted
     customers out itself, and the test-account rule is applied in the layer either way. Until then there is no
     new-customers measure, and no signup-date count is offered as "new customers".

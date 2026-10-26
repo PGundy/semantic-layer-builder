@@ -1,0 +1,64 @@
+name: sales_rep_ne_by_channel_2025
+question: As the Northeast (NE) sales rep, what were my 2025 revenue and number of orders by customer acquisition channel?
+role: sales_rep
+user:
+  region: NE
+request:
+  source: warehouse
+  measures: [orders.revenue, orders.order_count]
+  dimensions: [customers.acquisition_channel]
+  filters:
+    - { field: orders.order_date, op: gte, value: "2025-01-01" }
+    - { field: orders.order_date, op: lt, value: "2026-01-01" }
+  order_by: [{ field: customers.acquisition_channel, direction: asc }]
+sql: |
+  -- The sales_rep role with region NE: the orders row filter in where; the request's customer join carries the
+  -- customers row filter in its on clause, so orders whose customer lives outside NE (or was deleted) keep counting
+  -- with a blank channel; the test-account rule goes through its own test_account join, which no row filter touches.
+  select customer.acquisition_channel as acquisition_channel,
+         sum(o.amount_cents / 100.0)
+           filter (where o.status in ('completed', 'shipped')
+                     and coalesce(test_account.is_test_account, false) = false
+                     and coalesce(test_account.email, '') not like '%@example-test.com') as revenue,
+         count(*)
+           filter (where o.status in ('completed', 'shipped')
+                     and coalesce(test_account.is_test_account, false) = false
+                     and coalesce(test_account.email, '') not like '%@example-test.com') as order_count
+  from acme.fct_orders o
+  left join acme.dim_customers test_account on test_account.customer_id = o.customer_id
+  left join acme.dim_customers customer on customer.customer_id = o.customer_id and customer.region_code = 'NE'
+  where o.ship_region = 'NE'
+    and o.created_at >= '2025-01-01' and o.created_at < '2026-01-01'
+  group by 1
+  order by 1 nulls last
+reference: "Total checked against Dana Ruiz's 2025 NE regional report (513 orders, $70,911.41); the split by channel is measured from the data, not checked against a report."
+status: approved
+expected:
+  tolerance: 0
+  rows:
+    - acquisition_channel: affiliate
+      revenue: 4382.99
+      order_count: 29
+    - acquisition_channel: display
+      revenue: 5344.6
+      order_count: 38
+    - acquisition_channel: email
+      revenue: 5429.35
+      order_count: 36
+    - acquisition_channel: organic
+      revenue: 20895.45
+      order_count: 149
+    - acquisition_channel: paid_search
+      revenue: 13861.23
+      order_count: 105
+    - acquisition_channel: paid_social
+      revenue: 6172.94
+      order_count: 52
+    - acquisition_channel: referral
+      revenue: 8173.45
+      order_count: 60
+    - acquisition_channel: null
+      revenue: 6651.4
+      order_count: 44
+confirmed_by: Dana Ruiz
+confirmed_at: 2026-10-26

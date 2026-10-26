@@ -54,9 +54,3 @@ roles:
       - >-
         For tool builders: totals only is approximate, since there is no aggregates-only grant. A downstream tool must
         not show marketing single orders or order times finer than a day (Dana Ruiz: the tool must enforce it).
-open_questions:
-  - >-
-    For tool builders: revenue and order count leave out test accounts through the orders-to-test_accounts join
-    (test_account.is_test_account and test_account.email, read from dim_customers). That rule must apply for every
-    role, including sales reps and marketing, who are not given warehouse.test_accounts: a figure's built-in filter
-    runs through its joins whatever the role may list. Row filters on warehouse.customers never apply to it.

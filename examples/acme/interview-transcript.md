@@ -1,5 +1,7 @@
 # Interview transcript
 
+Session 1 built the layer; session 2, at the end, extended it.
+
 An end-to-end run of the semantic-layer skill on the synthetic Acme dataset. One agent followed `skills/semantic-layer/SKILL.md`; another played the data owner, Dana Ruiz, from `fixtures/acme/owner-brief.md`. Each agent turn starts a fresh agent that resumes from the files, as a real session would after a break. The semantic layer it produced is in `semantic/`.
 
 ## Dana (owner)
@@ -707,3 +709,93 @@ When either one exists, I'll match it to your figures exactly before bringing it
 - **Not in the layer, by your choice:** conversion rate and blended CAC combine the lake and the warehouse, so they stay in your reports.
 
 **How to continue.** When engineering delivers, or if you want to add a table, just say "continue the semantic layer". Any table we left out can be brought into scope then.
+
+# Session 2, weeks later
+
+The owner came back after the tool gained two-hop join references. A fresh agent resumed from the files and this transcript.
+
+## Dana (owner)
+
+Hi again, it's Dana. Picking up from our last session (the conversation is in examples/acme/interview-transcript.md and the layer is in examples/acme/semantic). Our engineers say the tool now handles rules that sit two joins away, and that a measure's own rules apply whatever a role is allowed to see. Could we finish what was left: refunds and net revenue, anything else still open from last time, and a check for each role? New customers can wait if it still needs a view from engineering. Same as before, please keep my part focused.
+
+## Agent
+
+Hi Dana. Refunds and net revenue now work without anything from engineering, and both match your figures to the cent. That means you can drop item (b), customer_id on refunds, from the engineering request. New customers still needs item (a), and the warehouse has no new view yet, so it waits as you said. Your engineers confirmed that a figure's own rules apply for every role, so I removed the note about this that we'd left for the tool builders.
+
+**Sign-offs (yes/no)**
+1. **Refunds.** The total of `refunded_cents` ÷ 100 in US dollars. It counts only refunds whose order counts in revenue: `completed` or `shipped`, and not a test account (flag set or email ending `@example-test.com`, the same rule as revenue). Refunds from deleted customers count. A refund is dated by its order's date (UTC), never by when it was issued. An order with several refunds has them all added up on the refund side, so no order is repeated. It goes through the two connections you already approved, refunds → order → test-account helper; I re-measured both today and nothing changed. People can also call it "refunds". *Measured from the data, no need to confirm:* 2025 is **$2,682.68 from 80 refunds**. That leaves out 6 test-account refunds ($214.34) and 117 refunds ($11,908.54) on cancelled or refunded orders. Approve?
+2. **Net revenue.** Revenue minus refunds, each totalled on its own and then subtracted, both by order date (UTC), so a refund comes off the month its order was placed in. *Measured:* 2025 is **$298,368.14**. 2024 is $232,444.41, which hasn't been checked against a report. Approve?
+3. **Permanent checks for 1 and 2.** I'd save 2025 refunds of $2,682.68 and 2025 net revenue of $298,368.14 as checks at zero tolerance. Approve?
+4. **A check for the marketing role.** This is 2025 revenue and order count by region, as marketing sees it: WC 529 / $71,664.18, NE 513 / $70,911.41, SE 444 / $59,479.62, SW 344 / $43,547.31, MW 283 / $37,431.78, INT 126 / $18,016.52. These are your report's figures exactly. The check proves that test accounts stay out for a role that can't see customers. Zero tolerance. Approve?
+5. **A second check for sales reps, across customers.** This is the NE rep's 2025 revenue by customer acquisition channel. The total is 513 orders / $70,911.41, which matches your report. 44 orders ($6,651.40) show a blank channel but still count: 37 come from customers who live outside NE and 7 from deleted customers. The check fixes the rule "blank customer details, still counted" in place. The split by channel is measured, and the description will say it isn't checked against a report. Zero tolerance. Approve?
+6. **Spend (to sign again, a technical fix only).** The definition and figures are the same. The old formula left tiny rounding leftovers in unrounded totals, for example affiliate came out as $1,479.9299999999998. Now it's exact. 2025 is still $16,502.34 and all five channel figures are unchanged. The three lake checks still pass. Approve?
+7. **Refund reason.** Why the refund was issued. There are 5 values and it's never empty: price_adjustment (82), wrong_item (76), damaged (68), customer_request (62), late_delivery (56). That meaning is my reading of the values. If any value means something else, tell me. Approve?
+
+**Question**
+8. **Order currency.** The `currency` detail on orders is USD on all 5,000 orders, and nothing uses it. My suggestion: remove it. Remove?
+
+Next: once you reply, I'll record these and send you the final summary. Refunds and net revenue stay visible to analysts only, as before, since reps and marketing don't see refunds. Who sees what doesn't change.
+
+## Dana (owner)
+
+Thanks, that's good news about refunds. Answers in order:
+
+1. Refunds: yes, that's right, and $2,682.68 matches my report. Approved, Dana Ruiz.
+2. Net revenue: yes. $298,368.14 matches. I don't have a 2024 figure in my reports, so leave 2024 marked as not checked against a report. Approved, Dana Ruiz.
+3. Permanent checks for refunds and net revenue: yes. Approved, Dana Ruiz.
+4. Marketing check: those are my regional figures exactly. Approved, Dana Ruiz.
+5. NE rep check: the 513 / $70,911.41 total is right. Blank channel but still counted is the behaviour I want: a rep shouldn't see details of customers outside their region, and deleted customers' orders still count. Fine to leave the channel split described as measured, not checked against a report. Approved, Dana Ruiz.
+6. Spend fix: figures unchanged and affiliate is $1,479.93, as in my report. Approved, Dana Ruiz.
+7. Refund reason: yes, it's why the refund was issued, and those are the five values. I don't have the counts per reason to hand, so I can't confirm those, but the meaning is right. Approved, Dana Ruiz.
+8. Order currency: remove it. Everything is priced and charged in US dollars, so it tells nobody anything.
+
+Keeping refunds and net revenue analyst-only is correct, since reps and marketing don't get refunds. Send the summary when it's ready.
+
+## Agent
+
+Thanks, Dana. Everything you approved is recorded, and the layer is complete for this round. All 16 saved checks pass at zero tolerance and the files validate.
+
+**Signed off**
+
+*Warehouse*
+- **Tables:** orders, order items, refunds, customers, products, regions, and the test-account helper.
+- **Figures:**
+  - Revenue: $301,050.82 for 2025.
+  - Order count: 2,239.
+  - Refunds: $2,682.68, dated by the order's date.
+  - AOV: $134.46.
+  - Net revenue: $298,368.14. Its 2024 figure ($232,444.41) is marked as not checked against a report.
+- **Details:** refund reason is now signed off. Its description says the counts per reason are measured, not checked. The order `currency` detail is removed.
+- **Connections:** 7. Orders to customer, to ship region and to the test-account helper. Refunds to order. Order items to order and to product. Customers to home region.
+
+*Lake*
+- Sessions, marketing spend and web events, with session count and spend. Spend is now exact, and affiliate is $1,479.93.
+- Web events connect to sessions.
+
+*Who sees what*
+- Three roles, unchanged: analyst (the default), sales_rep and marketing. Refunds and net revenue are for analysts only.
+
+*Saved checks (16, all at zero tolerance)*
+- Revenue, order count and AOV.
+- Refunds and net revenue.
+- Revenue by region, and order count by region.
+- One check per regional sales rep (6), plus the NE rep by acquisition channel. Its channel split is described as measured, not checked against a report.
+- Marketing's revenue and orders by region.
+- Spend, spend by channel, and sessions.
+
+Every signed-off figure is covered by at least one check, and so is every role.
+
+**Not signed off yet**
+- **New customers.** This waits on the engineering view below. I've saved your 123 as a draft check. A hand-written query already gives 123, and the layer will be matched to it exactly once the view exists.
+- **`launched_on` on products.** This waits on the merchandising team. Nothing uses it.
+
+**Engineering request (ready to forward; only one item is left)**
+> Please add a view `acme.dim_customer_first_orders` with one row per customer and two columns: `customer_id`, and `first_order_at`, which is the `created_at` of that customer's earliest order with status `completed` or `shipped`. The view should only have rows for customers who exist in `dim_customers`. The ids of deleted customers that still appear in `fct_orders` must not appear in it. (The view repeats the rule for which statuses count, so if that rule ever changes, the view has to change with it.)
+
+**Open questions, and who could answer them**
+- **Merchandising team:** why 5 product names repeat across products, and whether `launched_on` is the date a product went on sale.
+- **Marketing team:** whether a customer's paid acquisition channel is assigned the same way as the spend channels.
+- **The team that runs the chat tool:** marketing must see order figures as totals only, never single orders or anything finer than a day. The tool has to enforce this.
+- **Not in the layer, by your choice:** conversion rate and blended CAC (one figure, never per channel) combine the lake and the warehouse, so they stay in your reports.
+
+**How to continue.** When engineering delivers the view, or if you want to add a table, say "continue the semantic layer". Any table we left out can be brought into scope then.

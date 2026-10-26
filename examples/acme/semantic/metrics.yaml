@@ -13,3 +13,20 @@ metrics:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+  - name: net_revenue
+    source: warehouse
+    type: derived
+    expr: "{orders.revenue} - {refunds.refund_amount}"
+    format: currency
+    currency: USD
+    description: >-
+      Net revenue as Finance reports it: revenue minus refunds on orders that count in revenue, each totalled on its own
+      before subtracting, so an order with several refunds is never counted twice. Both sides use the same rules
+      (completed or shipped orders only, test accounts left out, orders of deleted customers kept, shipping and tax not
+      included) and both are dated by the order's date (order_date, UTC), so a refund comes off the month its order was
+      placed in. Group it by order_date. 2025 is $298,368.14 (revenue $301,050.82 less refunds $2,682.68), matching
+      Finance; the 2024 figure ($232,444.41) has not been checked against an independent report.
+    synonyms: [net sales]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-26

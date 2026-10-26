@@ -41,12 +41,12 @@ dimensions:
     approved_at: 2026-10-26
 measures:
   - name: spend
-    expr: spend_cents / 100.0
+    expr: spend_cents * 0.01
     agg: sum
     format: currency
     currency: USD
     description: >-
-      Marketing spend in US dollars: spend_cents divided by 100, summed over days and channels. 2025 comes to
+      Marketing spend in US dollars: spend_cents divided by 100 (written spend_cents * 0.01, an exact amount), summed over days and channels. 2025 comes to
       $16,502.34 (affiliate $1,479.93, display $2,014.56, email $676.67, paid_search $6,978.18, paid_social $5,353.00),
       matching Dana Ruiz's figures. The 2024 total ($13,763.07) has not been checked against an independent report.
     synonyms: [marketing spend, ad spend]
