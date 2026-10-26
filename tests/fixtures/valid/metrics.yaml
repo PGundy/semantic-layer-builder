@@ -1,0 +1,20 @@
+metrics:
+  - name: average_order_value
+    source: warehouse
+    type: ratio
+    numerator: orders.revenue
+    denominator: orders.order_count
+    format: currency
+    currency: USD
+    description: Revenue per order.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-01-15
+  - name: revenue_per_customer
+    source: warehouse
+    type: derived
+    expr: "{orders.revenue} / {customers.customer_count}"
+    format: currency
+    currency: USD
+    description: Revenue divided by distinct customers.
+    status: draft

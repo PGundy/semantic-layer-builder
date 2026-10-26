@@ -1,0 +1,22 @@
+status: draft
+default_role: analyst
+user_attributes:
+  - name: region
+    type: string
+    description: The sales region a rep covers.
+roles:
+  - name: analyst
+    description: Full read access.
+    allow:
+      models: ["warehouse.*", "lake.*"]
+    deny:
+      tags: [pii]
+  - name: sales_rep
+    description: Sees only their own region's orders.
+    allow:
+      models: ["warehouse.orders", "warehouse.customers"]
+    deny:
+      fields: [warehouse.customers.email]
+    row_filters:
+      - model: warehouse.orders
+        expr: ship_region = {{ user.region }}

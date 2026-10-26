@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { Document, parse, parseDocument, stringify } from "yaml";
 import { UserError } from "./errors.ts";
 
-const STRINGIFY = { lineWidth: 0, indent: 2 } as const;
+const STRINGIFY = { lineWidth: 0, indent: 2, flowCollectionPadding: false } as const;
 
 export function readYaml<T>(path: string): T {
   const text = readFileSync(path, "utf8");
@@ -11,6 +11,14 @@ export function readYaml<T>(path: string): T {
     return parse(text) as T;
   } catch (e) {
     throw new UserError(`${path}: invalid YAML: ${(e as Error).message}`);
+  }
+}
+
+export function parseYamlText(text: string, label = "input"): unknown {
+  try {
+    return parse(text);
+  } catch (e) {
+    throw new UserError(`${label}: invalid YAML: ${(e as Error).message}`);
   }
 }
 

@@ -1,0 +1,12 @@
+table_schema,table_name,table_type,column_name,ordinal_position,data_type,is_nullable,description,row_count
+public,customers,BASE TABLE,customer_id,1,integer,NO,"Surrogate key, one per customer",2000
+public,customers,BASE TABLE,email,2,character varying,YES,"The customer's email, as entered: may be ""unknown""",2000
+public,customers,BASE TABLE,created_at,3,timestamp with time zone,NO,,2000
+public,orders,BASE TABLE,status,3,character varying,NO,"Lifecycle state.
+One of: placed, shipped, completed, cancelled",10000
+public,orders,BASE TABLE,order_id,1,integer,NO,Primary key,10000
+public,orders,BASE TABLE,customer_id,2,integer,YES,,10000
+public,orders,BASE TABLE,amount_cents,4,bigint,NO,"Order value in cents, net of discounts",10000
+reporting,daily_revenue,VIEW,day,1,date,YES,,
+reporting,daily_revenue,VIEW,revenue,2,numeric,YES,,
+pg_catalog,pg_class,BASE TABLE,oid,1,oid,NO,,

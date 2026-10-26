@@ -1,0 +1,10 @@
+source: warehouse
+dialect: postgres
+description: Production replica of the order system.
+connection:
+  env: WAREHOUSE_URL
+scope:
+  include: ["public.fct_*", "public.dim_*"]
+  exclude: ["*_tmp"]
+profile:
+  top_values: 10

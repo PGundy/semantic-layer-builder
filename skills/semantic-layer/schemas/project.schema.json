@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "semantic.yaml",
+  "description": "The project file at the root of a semantic layer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "name"
+  ],
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "Spec version. Always 1."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Project name."
+    },
+    "description": {
+      "type": "string",
+      "description": "What this semantic layer covers."
+    },
+    "default_source": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Source used when a command or request names none."
+    },
+    "settings": {
+      "type": "object",
+      "description": "Tuning for the skill's interview.",
+      "additionalProperties": false,
+      "properties": {
+        "focus_threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "More in-scope tables than this and the skill asks the owner to focus on a subset."
+        },
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Tables per interview batch."
+        }
+      }
+    }
+  }
+}

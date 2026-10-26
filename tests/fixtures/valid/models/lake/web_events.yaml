@@ -1,0 +1,26 @@
+model: web_events
+source: lake
+table: web_events
+status: draft
+description: Clickstream events, one row per event.
+dimensions:
+  - name: event_time
+    expr: event_ts
+    type: time
+    time_grains: [hour, day]
+    status: draft
+  - name: event_type
+    expr: event_type
+    type: string
+    status: draft
+measures:
+  - name: event_count
+    agg: count
+    format: integer
+    status: draft
+  - name: session_count
+    expr: session_id
+    agg: count_distinct
+    format: integer
+    status: draft
+joins: []

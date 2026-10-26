@@ -1,0 +1,71 @@
+model: orders
+source: warehouse
+table: public.fct_orders
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-01-15
+description: Customer orders, one row per order.
+grain: One row per order.
+primary_key: [order_id]
+tags: []
+dimensions:
+  - name: order_date
+    expr: created_at
+    type: time
+    time_grains: [day, week, month, quarter, year]
+    description: When the order was placed, UTC.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-01-15
+  - name: status
+    expr: status
+    type: string
+    description: Order lifecycle state.
+    status: draft
+  - name: ship_region
+    expr: ship_region
+    type: string
+    description: Region the order ships to.
+    status: draft
+measures:
+  - name: revenue
+    expr: amount_cents / 100.0
+    agg: sum
+    filter: status <> 'cancelled'
+    format: currency
+    currency: USD
+    description: Order value excluding cancelled orders.
+    synonyms: [sales]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-01-15
+  - name: order_count
+    agg: count
+    format: integer
+    description: Number of orders.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-01-15
+joins:
+  - name: customer
+    to: customers
+    keys:
+      - { from: customer_id, to: customer_id }
+    relationship: many_to_one
+    type: left
+    origin: declared
+    description: The customer who placed the order.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-01-15
+    evidence:
+      checked_at: 2026-01-15T12:10:00.000Z
+      left_rows: 10000
+      left_null_keys: 0
+      matched_rows: 10000
+      match_rate: 1
+      right_rows: 2000
+      right_key_unique: true
+      left_key_unique: false
+      max_fanout: 1
+      suggested_relationship: many_to_one

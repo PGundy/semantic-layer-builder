@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "sources/<source>.yaml",
+  "description": "One data source: its dialect, how to connect and which tables are in scope.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source",
+    "dialect"
+  ],
+  "properties": {
+    "source": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Source name. Equals the file name."
+    },
+    "dialect": {
+      "enum": [
+        "duckdb",
+        "postgres",
+        "snowflake",
+        "bigquery",
+        "databricks"
+      ],
+      "description": "SQL dialect. Only duckdb and postgres run queries directly; the others use the query-plan protocol."
+    },
+    "description": {
+      "type": "string",
+      "description": "What this source holds."
+    },
+    "connection": {
+      "type": "object",
+      "description": "How to connect. Never holds a URL or a secret.",
+      "additionalProperties": false,
+      "properties": {
+        "env": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "Name of the environment variable holding the connection URL; never the URL itself."
+        },
+        "database": {
+          "type": "string",
+          "minLength": 1,
+          "description": "DuckDB only: \":memory:\" or a .duckdb file path relative to the semantic root."
+        },
+        "setup": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "DuckDB only: statements run on every connection, in order."
+        },
+        "views": {
+          "type": "object",
+          "description": "DuckDB only: view name to relation, such as read_parquet('../data/x/*.parquet'). Relative paths resolve from the semantic root.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Relation the view selects from."
+          }
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "description": "Which tables are in scope. Exclude wins over include.",
+      "additionalProperties": false,
+      "properties": {
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Patterns a table must match one of; empty or absent includes every table. Globs with * and ?, or re:<regex>; a dot matches schema.table."
+        },
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Patterns that remove a table from scope."
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "description": "Profiling settings.",
+      "additionalProperties": false,
+      "properties": {
+        "sample_rows": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Profile over a sample of this many rows when a table is larger; omit for full scans."
+        },
+        "top_values": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many most frequent values to keep per column."
+        }
+      }
+    }
+  }
+}

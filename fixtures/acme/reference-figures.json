@@ -1,0 +1,181 @@
+{
+  "dataset": "acme",
+  "period": "Calendar year 2025, UTC.",
+  "note": "Synthetic figures computed from fixtures/acme/data by fixtures/acme/reference-figures.ts. Money is in US dollars.",
+  "figures": [
+    {
+      "name": "revenue_2025",
+      "unit": "USD",
+      "value": 301050.82,
+      "definition": "Sum of fct_orders.amount_cents / 100 for orders created in 2025 (UTC) with status completed or shipped, excluding orders by test accounts (dim_customers.is_test_account is true, or the email ends in @example-test.com). Orders whose customer_id has no row in dim_customers count. Shipping is not revenue."
+    },
+    {
+      "name": "order_count_2025",
+      "unit": "orders",
+      "value": 2239,
+      "definition": "Number of orders that count toward revenue_2025, by the same rule."
+    },
+    {
+      "name": "average_order_value_2025",
+      "unit": "USD",
+      "value": 134.46,
+      "definition": "revenue_2025 divided by order_count_2025, rounded to the cent."
+    },
+    {
+      "name": "revenue_by_region_2025",
+      "unit": "USD",
+      "definition": "revenue_2025 split by fct_orders.ship_region (the region the order shipped to, which is the sales region), joined to dim_regions for the name.",
+      "rows": [
+        {
+          "region_code": "INT",
+          "region_name": "International",
+          "revenue": 18016.52,
+          "orders": 126
+        },
+        {
+          "region_code": "MW",
+          "region_name": "Midwest",
+          "revenue": 37431.78,
+          "orders": 283
+        },
+        {
+          "region_code": "NE",
+          "region_name": "Northeast",
+          "revenue": 70911.41,
+          "orders": 513
+        },
+        {
+          "region_code": "SE",
+          "region_name": "Southeast",
+          "revenue": 59479.62,
+          "orders": 444
+        },
+        {
+          "region_code": "SW",
+          "region_name": "Southwest",
+          "revenue": 43547.31,
+          "orders": 344
+        },
+        {
+          "region_code": "WC",
+          "region_name": "West Coast",
+          "revenue": 71664.18,
+          "orders": 529
+        }
+      ]
+    },
+    {
+      "name": "refunds_on_2025_orders",
+      "unit": "USD",
+      "value": 2682.68,
+      "definition": "Sum of fct_refunds.refunded_cents / 100 over refunds of the orders counted in revenue_2025, whenever the refund was issued."
+    },
+    {
+      "name": "net_revenue_2025",
+      "unit": "USD",
+      "value": 298368.14,
+      "definition": "revenue_2025 minus refunds_on_2025_orders. Refunds of orders with status refunded are not subtracted, because those orders are already outside revenue."
+    },
+    {
+      "name": "sessions_2025",
+      "unit": "sessions",
+      "value": 4551,
+      "definition": "Number of rows in lake sessions with started_at in 2025 (UTC), anonymous sessions included."
+    },
+    {
+      "name": "converted_sessions_2025",
+      "unit": "sessions",
+      "value": 787,
+      "definition": "Sessions in 2025 with a non-null customer_id whose customer placed an order counted in revenue on the same UTC date as the session started."
+    },
+    {
+      "name": "conversion_rate_2025",
+      "unit": "ratio",
+      "value": 0.1729,
+      "definition": "converted_sessions_2025 divided by sessions_2025, rounded to four decimals."
+    },
+    {
+      "name": "marketing_spend_by_channel_2025",
+      "unit": "USD",
+      "definition": "Sum of marketing_spend.spend_cents / 100 for spend_date in 2025, by channel.",
+      "rows": [
+        {
+          "channel": "affiliate",
+          "spend": 1479.93
+        },
+        {
+          "channel": "display",
+          "spend": 2014.56
+        },
+        {
+          "channel": "email",
+          "spend": 676.67
+        },
+        {
+          "channel": "paid_search",
+          "spend": 6978.18
+        },
+        {
+          "channel": "paid_social",
+          "spend": 5353
+        }
+      ]
+    },
+    {
+      "name": "marketing_spend_2025",
+      "unit": "USD",
+      "value": 16502.34,
+      "definition": "Total of marketing_spend_by_channel_2025."
+    },
+    {
+      "name": "new_customers_2025",
+      "unit": "customers",
+      "value": 123,
+      "definition": "Customers in dim_customers whose first order counted in revenue (any year) was created in 2025."
+    },
+    {
+      "name": "blended_cac_2025",
+      "unit": "USD",
+      "value": 134.17,
+      "definition": "marketing_spend_2025 divided by new_customers_2025, rounded to the cent."
+    }
+  ],
+  "common_mistakes": [
+    {
+      "name": "revenue_2025_all_statuses",
+      "unit": "USD",
+      "value": 344517.51,
+      "definition": "Revenue with cancelled and refunded orders left in."
+    },
+    {
+      "name": "revenue_2025_with_test_accounts",
+      "unit": "USD",
+      "value": 323286.12,
+      "definition": "Revenue without excluding test accounts."
+    },
+    {
+      "name": "revenue_2025_flag_only",
+      "unit": "USD",
+      "value": 308866.23,
+      "definition": "Revenue excluding is_test_account but not the example-test.com emails."
+    },
+    {
+      "name": "revenue_2025_inner_join",
+      "unit": "USD",
+      "value": 296564.09,
+      "definition": "Revenue with an inner join to dim_customers, which drops orders whose customer is missing."
+    },
+    {
+      "name": "revenue_2025_with_shipping",
+      "unit": "USD",
+      "value": 305494.15,
+      "definition": "Revenue with shipping_cents added."
+    },
+    {
+      "name": "refunds_issued_in_2025",
+      "unit": "USD",
+      "value": 15020.18,
+      "definition": "All refunds issued in 2025, including refunds of refunded orders, which double-count against revenue."
+    }
+  ]
+}

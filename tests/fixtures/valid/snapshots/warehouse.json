@@ -1,0 +1,60 @@
+{
+  "snapshot_version": 1,
+  "source": "warehouse",
+  "dialect": "postgres",
+  "captured_at": "2026-01-15T12:00:00.000Z",
+  "method": "live",
+  "tables": [
+    {
+      "schema": "public",
+      "name": "dim_customers",
+      "kind": "table",
+      "row_count": 2000,
+      "description": null,
+      "primary_key": ["customer_id"],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "profiled_at": null,
+      "columns": [
+        { "name": "customer_id", "type": "integer", "nullable": false, "description": null },
+        { "name": "email", "type": "text", "nullable": false, "description": null },
+        { "name": "region", "type": "text", "nullable": true, "description": null },
+        { "name": "signed_up_at", "type": "timestamp", "nullable": false, "description": null }
+      ]
+    },
+    {
+      "schema": "public",
+      "name": "fct_orders",
+      "kind": "table",
+      "row_count": 10000,
+      "description": null,
+      "primary_key": ["order_id"],
+      "unique_keys": [],
+      "foreign_keys": [
+        { "columns": ["customer_id"], "references": { "schema": "public", "table": "dim_customers", "columns": ["customer_id"] } }
+      ],
+      "profiled_at": "2026-01-15T12:05:00.000Z",
+      "columns": [
+        { "name": "order_id", "type": "integer", "nullable": false, "description": null },
+        { "name": "customer_id", "type": "integer", "nullable": false, "description": null },
+        { "name": "created_at", "type": "timestamp", "nullable": false, "description": null },
+        {
+          "name": "status",
+          "type": "varchar",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 3,
+            "min": null,
+            "max": null,
+            "top_values": [{ "value": "completed", "count": 8800 }, { "value": "cancelled", "count": 900 }],
+            "sampled": false
+          }
+        },
+        { "name": "amount_cents", "type": "bigint", "nullable": false, "description": null },
+        { "name": "ship_region", "type": "text", "nullable": true, "description": null }
+      ]
+    }
+  ]
+}

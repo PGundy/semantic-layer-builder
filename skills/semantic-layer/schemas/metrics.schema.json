@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "metrics.yaml",
+  "description": "Derived and ratio metrics built from model measures.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "metrics"
+  ],
+  "properties": {
+    "metrics": {
+      "type": "array",
+      "description": "Metrics, unique by name.",
+      "items": {
+        "$ref": "#/$defs/metric"
+      }
+    }
+  },
+  "$defs": {
+    "metric": {
+      "type": "object",
+      "description": "A ratio or derived metric.",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "source",
+        "type",
+        "status"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Metric name, unique across the file."
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Source whose models the measure references resolve in."
+        },
+        "type": {
+          "enum": [
+            "ratio",
+            "derived"
+          ],
+          "description": "ratio divides two measures after both aggregate; derived combines measures with arithmetic."
+        },
+        "numerator": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
+          "description": "Ratio only: model.measure on top."
+        },
+        "denominator": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
+          "description": "Ratio only: model.measure below."
+        },
+        "expr": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Derived only: arithmetic over {model.measure} placeholders."
+        },
+        "format": {
+          "enum": [
+            "number",
+            "integer",
+            "currency",
+            "percent"
+          ],
+          "description": "How values are displayed."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$",
+          "description": "ISO 4217 currency code, only with format currency."
+        },
+        "description": {
+          "type": "string",
+          "description": "What the metric means. Required when approved."
+        },
+        "synonyms": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Other words people use for it."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "uniqueItems": true,
+          "description": "Tags, such as pii."
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "approved"
+          ],
+          "description": "Whether the owner has signed off this metric. Tools only write draft; sl approve sets approved."
+        },
+        "approved_by": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Who approved it. Required when status is approved."
+        },
+        "approved_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "ISO date of approval, YYYY-MM-DD. Required when status is approved.",
+          "format": "date"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "approved"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "approved_by",
+              "approved_at"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "ratio"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "numerator",
+              "denominator"
+            ],
+            "properties": {
+              "expr": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "derived"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "expr"
+            ],
+            "properties": {
+              "numerator": false,
+              "denominator": false
+            }
+          }
+        }
+      ]
+    }
+  }
+}

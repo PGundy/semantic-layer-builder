@@ -2,11 +2,17 @@ import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { UserError } from "./errors.ts";
 import type { AccessFile, Golden, MetricsFile, Model, Project, Snapshot, SourceConfig } from "./types.ts";
-import { DEFAULT_BATCH_SIZE, DEFAULT_FOCUS_THRESHOLD } from "./types.ts";
+import { DEFAULT_BATCH_SIZE, DEFAULT_FOCUS_THRESHOLD, NAME_PATTERN } from "./types.ts";
 import { readJson, readYaml, readYamlIfExists, writeJson } from "./yaml.ts";
 
 export function resolveRoot(flag: string | undefined, env: Record<string, string | undefined>, cwd: string): string {
   return resolve(cwd, flag ?? env.SEMANTIC_ROOT ?? "semantic");
+}
+
+// Rejects a name that could escape the semantic root when used in a path.
+function safe(kind: string, name: string): string {
+  if (!NAME_PATTERN.test(name)) throw new UserError(`${kind} "${name}" must match ^[a-z][a-z0-9_]*$.`);
+  return name;
 }
 
 export function paths(root: string) {
@@ -14,15 +20,15 @@ export function paths(root: string) {
     root,
     project: join(root, "semantic.yaml"),
     sourcesDir: join(root, "sources"),
-    source: (s: string) => join(root, "sources", `${s}.yaml`),
+    source: (s: string) => join(root, "sources", `${safe("Source", s)}.yaml`),
     snapshotsDir: join(root, "snapshots"),
-    snapshot: (s: string) => join(root, "snapshots", `${s}.json`),
-    modelsDir: (s: string) => join(root, "models", s),
-    model: (s: string, m: string) => join(root, "models", s, `${m}.yaml`),
+    snapshot: (s: string) => join(root, "snapshots", `${safe("Source", s)}.json`),
+    modelsDir: (s: string) => join(root, "models", safe("Source", s)),
+    model: (s: string, m: string) => join(root, "models", safe("Source", s), `${safe("Model", m)}.yaml`),
     metrics: join(root, "metrics.yaml"),
     access: join(root, "access.yaml"),
     goldensDir: join(root, "goldens"),
-    golden: (g: string) => join(root, "goldens", `${g}.yaml`),
+    golden: (g: string) => join(root, "goldens", `${safe("Golden", g)}.yaml`),
   };
 }
 

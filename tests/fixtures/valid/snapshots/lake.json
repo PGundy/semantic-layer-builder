@@ -1,0 +1,26 @@
+{
+  "snapshot_version": 1,
+  "source": "lake",
+  "dialect": "duckdb",
+  "captured_at": "2026-01-15T12:00:00.000Z",
+  "method": "live",
+  "tables": [
+    {
+      "schema": null,
+      "name": "web_events",
+      "kind": "view",
+      "row_count": 50000,
+      "description": null,
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "profiled_at": null,
+      "columns": [
+        { "name": "event_id", "type": "VARCHAR", "nullable": true, "description": null },
+        { "name": "session_id", "type": "VARCHAR", "nullable": true, "description": null },
+        { "name": "event_ts", "type": "TIMESTAMP", "nullable": true, "description": null },
+        { "name": "event_type", "type": "VARCHAR", "nullable": true, "description": null }
+      ]
+    }
+  ]
+}

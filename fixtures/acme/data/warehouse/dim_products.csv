@@ -1,0 +1,61 @@
+product_id,sku,product_name,category,list_price_cents,is_active,launched_on
+1,SKU-APP-0001,Urban Jacket,apparel,3299,false,2024-01-01
+2,SKU-FOO-0002,Trail Hiking Boot,footwear,3299,true,2022-10-16
+3,SKU-ACC-0003,Merino Sunglasses,accessories,7349,false,2021-11-04
+4,SKU-HOM-0004,Alpine Throw Blanket,home,4049,true,2023-04-20
+5,SKU-OUT-0005,Lightweight Tent,outdoor,6949,true,2021-03-15
+6,SKU-APP-0006,Urban Tee,apparel,6199,true,2022-04-02
+7,SKU-FOO-0007,Alpine Hiking Boot,footwear,1749,true,2021-09-25
+8,SKU-ACC-0008,Coastal Backpack,accessories,3049,true,2023-05-16
+9,SKU-HOM-0009,Classic Throw Blanket,home,4999,true,2023-06-26
+10,SKU-OUT-0010,Lightweight Camp Chair,outdoor,2249,true,2023-04-11
+11,SKU-APP-0011,Summit Jacket,apparel,1299,true,2023-08-23
+12,SKU-FOO-0012,Heritage Slip-On,footwear,4299,true,2021-10-31
+13,SKU-ACC-0013,Everyday Backpack,accessories,7049,false,2021-10-29
+14,SKU-HOM-0014,Trail Candle,home,1849,true,2024-03-06
+15,SKU-OUT-0015,Coastal Tent,outdoor,4949,true,2021-06-01
+16,SKU-APP-0016,Canvas Chinos,apparel,3549,true,2023-07-22
+17,SKU-FOO-0017,Alpine Slip-On,footwear,6299,false,2022-01-28
+18,SKU-ACC-0018,Everyday Beanie,accessories,4699,true,2021-02-09
+19,SKU-HOM-0019,Canvas Candle,home,4249,true,2024-05-23
+20,SKU-OUT-0020,Urban Camp Chair,outdoor,3149,true,2022-11-03
+21,SKU-APP-0021,Canvas Hoodie,apparel,5199,true,2024-02-23
+22,SKU-FOO-0022,Lightweight Hiking Boot,footwear,5749,true,2023-07-25
+23,SKU-ACC-0023,Merino Beanie,accessories,499,true,2024-06-24
+24,SKU-HOM-0024,Woven Mug Set,home,5499,true,2024-06-09
+25,SKU-OUT-0025,Coastal Headlamp,outdoor,7399,true,2022-07-30
+26,SKU-APP-0026,Coastal Hoodie,apparel,1949,true,2021-01-10
+27,SKU-FOO-0027,Coastal Hiking Boot,footwear,4199,true,2022-08-26
+28,SKU-ACC-0028,Trail Sunglasses,accessories,2799,true,2024-04-17
+29,SKU-HOM-0029,Canvas Candle,home,4799,true,2021-08-26
+30,SKU-OUT-0030,Canvas Tent,outdoor,7249,true,2021-06-24
+31,SKU-APP-0031,Everyday Flannel Shirt,apparel,7549,true,2023-02-20
+32,SKU-FOO-0032,Canvas Slip-On,footwear,3199,true,2023-11-29
+33,SKU-ACC-0033,Classic Sunglasses,accessories,3499,false,2024-04-18
+34,SKU-HOM-0034,Merino Candle,home,5799,true,2024-04-12
+35,SKU-OUT-0035,Woven Water Bottle,outdoor,2149,true,2024-02-24
+36,SKU-APP-0036,Summit Hoodie,apparel,7099,true,2024-04-10
+37,SKU-FOO-0037,Coastal Sandal,footwear,5249,true,2023-07-13
+38,SKU-ACC-0038,Woven Wallet,accessories,5399,true,2021-04-25
+39,SKU-HOM-0039,Lightweight Cushion,home,5649,true,2024-05-16
+40,SKU-OUT-0040,Coastal Tent,outdoor,3999,false,2021-04-30
+41,SKU-APP-0041,Summit Hoodie,apparel,949,false,2023-08-22
+42,SKU-FOO-0042,Everyday Sandal,footwear,1149,false,2022-09-27
+43,SKU-ACC-0043,Urban Backpack,accessories,3749,false,2024-02-11
+44,SKU-HOM-0044,Classic Throw Blanket,home,1099,true,2023-09-28
+45,SKU-OUT-0045,Lightweight Tent,outdoor,3899,true,2022-09-05
+46,SKU-APP-0046,Lightweight Jacket,apparel,1299,true,2022-10-10
+47,SKU-FOO-0047,Coastal Slip-On,footwear,5899,true,2022-01-09
+48,SKU-ACC-0048,Trail Backpack,accessories,4899,true,2023-04-06
+49,SKU-HOM-0049,Summit Mug Set,home,6799,true,2021-09-05
+50,SKU-OUT-0050,Canvas Headlamp,outdoor,2599,true,2022-01-10
+51,SKU-APP-0051,Trail Tee,apparel,5199,true,2021-05-23
+52,SKU-FOO-0052,Urban Slip-On,footwear,2499,true,2021-10-23
+53,SKU-ACC-0053,Lightweight Backpack,accessories,3199,true,2022-02-26
+54,SKU-HOM-0054,Canvas Candle,home,3199,false,2023-06-05
+55,SKU-OUT-0055,Merino Water Bottle,outdoor,1499,true,2024-04-23
+56,SKU-APP-0056,Heritage Hoodie,apparel,3399,true,2024-03-20
+57,SKU-FOO-0057,Classic Sandal,footwear,7549,true,2021-01-09
+58,SKU-ACC-0058,Woven Beanie,accessories,5949,true,2021-09-16
+59,SKU-HOM-0059,Urban Mug Set,home,799,true,2022-12-02
+60,SKU-OUT-0060,Trail Tent,outdoor,4999,true,2023-03-19

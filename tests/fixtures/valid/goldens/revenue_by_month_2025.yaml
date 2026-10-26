@@ -1,0 +1,27 @@
+name: revenue_by_month_2025
+question: What was revenue by month in 2025?
+role: analyst
+user: {}
+request:
+  source: warehouse
+  measures: [orders.revenue]
+  dimensions: ["orders.order_date:month"]
+  filters:
+    - { field: orders.order_date, op: gte, value: "2025-01-01" }
+    - { field: orders.order_date, op: lt, value: "2026-01-01" }
+  order_by: [{ field: "orders.order_date:month", direction: asc }]
+  limit: 100
+sql: |
+  select date_trunc('month', created_at) as order_date_month,
+         sum(amount_cents / 100.0) filter (where status <> 'cancelled') as revenue
+  from public.fct_orders
+  where created_at >= '2025-01-01' and created_at < '2026-01-01'
+  group by 1 order by 1
+expected:
+  tolerance: 0.005
+  rows:
+    - { order_date_month: "2025-01-01", revenue: 104233.5 }
+reference: Finance monthly close, 2025.
+status: approved
+confirmed_by: Dana Ruiz
+confirmed_at: 2026-01-15

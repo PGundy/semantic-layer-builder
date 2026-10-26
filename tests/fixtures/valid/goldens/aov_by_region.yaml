@@ -1,0 +1,17 @@
+name: aov_by_region
+question: What is the average order value in my region?
+role: sales_rep
+user: { region: west }
+request:
+  source: warehouse
+  measures: [average_order_value, orders.order_count]
+  dimensions: [orders.ship_region]
+  filters:
+    - { field: orders.status, op: in, value: [completed, shipped] }
+sql: |
+  select ship_region, sum(amount_cents / 100.0) filter (where status <> 'cancelled') / count(*) as average_order_value,
+         count(*) as order_count
+  from public.fct_orders
+  where ship_region = 'west' and status in ('completed', 'shipped')
+  group by 1
+status: draft

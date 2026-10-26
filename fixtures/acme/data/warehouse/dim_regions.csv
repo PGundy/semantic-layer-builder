@@ -1,0 +1,7 @@
+region_code,region_name,country_code,timezone
+NE,Northeast,US,America/New_York
+SE,Southeast,US,America/New_York
+MW,Midwest,US,America/Chicago
+SW,Southwest,US,America/Phoenix
+WC,West Coast,US,America/Los_Angeles
+INT,International,ZZ,UTC

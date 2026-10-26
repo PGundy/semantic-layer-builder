@@ -1,0 +1,550 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "models/<source>/<model>.yaml",
+  "description": "One modeled table: its dimensions, measures and joins.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "model",
+    "source",
+    "table",
+    "status",
+    "dimensions",
+    "measures"
+  ],
+  "properties": {
+    "model": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Model name, unique within its source. Equals the file name."
+    },
+    "source": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Source the model belongs to. Equals the directory name."
+    },
+    "table": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Qualified physical table name as in the snapshot."
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "approved"
+      ],
+      "description": "Whether the owner has signed off this model as a whole. Tools only write draft; sl approve sets approved."
+    },
+    "approved_by": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Who approved it. Required when status is approved."
+    },
+    "approved_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "ISO date of approval, YYYY-MM-DD. Required when status is approved.",
+      "format": "date"
+    },
+    "description": {
+      "type": "string",
+      "description": "What one row is and anything a reader must know."
+    },
+    "grain": {
+      "type": "string",
+      "description": "One sentence naming what one row represents. Required when approved."
+    },
+    "primary_key": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Columns that identify a row. Required when approved.",
+      "minItems": 1
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "uniqueItems": true,
+      "description": "Tags, such as pii, that access rules can deny."
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Questions still open with the owner."
+    },
+    "dimensions": {
+      "type": "array",
+      "description": "Fields to group and filter by.",
+      "items": {
+        "$ref": "#/$defs/dimension"
+      }
+    },
+    "measures": {
+      "type": "array",
+      "description": "Aggregations over the table.",
+      "items": {
+        "$ref": "#/$defs/measure"
+      }
+    },
+    "joins": {
+      "type": "array",
+      "description": "Joins to other models of the same source.",
+      "items": {
+        "$ref": "#/$defs/join"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "approved"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "approved_by",
+          "approved_at"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "dimension": {
+      "type": "object",
+      "description": "A dimension.",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "expr",
+        "type",
+        "status"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Dimension name. Shares one namespace with the model's measures and joins."
+        },
+        "expr": {
+          "type": "string",
+          "minLength": 1,
+          "description": "SQL expression over this table's columns."
+        },
+        "type": {
+          "enum": [
+            "time",
+            "string",
+            "number",
+            "boolean"
+          ],
+          "description": "Dimension type."
+        },
+        "time_grains": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "hour",
+              "day",
+              "week",
+              "month",
+              "quarter",
+              "year"
+            ]
+          },
+          "description": "Grains a time dimension can be truncated to. Only on type time."
+        },
+        "description": {
+          "type": "string",
+          "description": "What the dimension means."
+        },
+        "synonyms": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Other words people use for it."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "uniqueItems": true,
+          "description": "Tags, such as pii."
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "approved"
+          ],
+          "description": "Whether the owner has signed off this dimension. Tools only write draft; sl approve sets approved."
+        },
+        "approved_by": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Who approved it. Required when status is approved."
+        },
+        "approved_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "ISO date of approval, YYYY-MM-DD. Required when status is approved.",
+          "format": "date"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "approved"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "approved_by",
+              "approved_at"
+            ]
+          }
+        }
+      ]
+    },
+    "measure": {
+      "type": "object",
+      "description": "A measure.",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "agg",
+        "status"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Measure name. Shares one namespace with the model's dimensions and joins."
+        },
+        "expr": {
+          "type": "string",
+          "minLength": 1,
+          "description": "SQL expression aggregated. Optional only for count, which then counts rows."
+        },
+        "agg": {
+          "enum": [
+            "sum",
+            "count",
+            "count_distinct",
+            "avg",
+            "min",
+            "max"
+          ],
+          "description": "Aggregation."
+        },
+        "filter": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional SQL predicate over this table's columns."
+        },
+        "format": {
+          "enum": [
+            "number",
+            "integer",
+            "currency",
+            "percent"
+          ],
+          "description": "How values are displayed."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$",
+          "description": "ISO 4217 currency code, only with format currency."
+        },
+        "description": {
+          "type": "string",
+          "description": "What the measure means. Required when approved."
+        },
+        "synonyms": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Other words people use for it."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "uniqueItems": true,
+          "description": "Tags, such as pii."
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "approved"
+          ],
+          "description": "Whether the owner has signed off this measure. Tools only write draft; sl approve sets approved."
+        },
+        "approved_by": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Who approved it. Required when status is approved."
+        },
+        "approved_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "ISO date of approval, YYYY-MM-DD. Required when status is approved.",
+          "format": "date"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "approved"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "approved_by",
+              "approved_at"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "agg": {
+                "not": {
+                  "const": "count"
+                }
+              }
+            },
+            "required": [
+              "agg"
+            ]
+          },
+          "then": {
+            "required": [
+              "expr"
+            ]
+          }
+        }
+      ]
+    },
+    "join": {
+      "type": "object",
+      "description": "A join to another model of the same source.",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "to",
+        "keys",
+        "relationship",
+        "status"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Join name. Shares one namespace with the model's dimensions and measures."
+        },
+        "to": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Target model, a bare name in the same source."
+        },
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Column pairs that must be equal.",
+          "items": {
+            "type": "object",
+            "description": "One key pair.",
+            "additionalProperties": false,
+            "required": [
+              "from",
+              "to"
+            ],
+            "properties": {
+              "from": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Column of this model's table."
+              },
+              "to": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Column of the target model's table."
+              }
+            }
+          }
+        },
+        "relationship": {
+          "enum": [
+            "many_to_one",
+            "one_to_one",
+            "one_to_many"
+          ],
+          "description": "Rows of this model per row of the target. one_to_many fans out."
+        },
+        "type": {
+          "enum": [
+            "left",
+            "inner"
+          ],
+          "description": "Join type. Defaults to left."
+        },
+        "origin": {
+          "enum": [
+            "declared",
+            "inferred",
+            "owner"
+          ],
+          "description": "declared (a foreign key), inferred (naming) or owner (stated by the owner)."
+        },
+        "description": {
+          "type": "string",
+          "description": "What the join means."
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "approved"
+          ],
+          "description": "Whether the owner has signed off this join. Tools only write draft; sl approve sets approved."
+        },
+        "approved_by": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Who approved it. Required when status is approved."
+        },
+        "approved_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "ISO date of approval, YYYY-MM-DD. Required when status is approved.",
+          "format": "date"
+        },
+        "evidence": {
+          "type": "object",
+          "description": "Measurements written by sl check-join.",
+          "additionalProperties": false,
+          "required": [
+            "checked_at",
+            "left_rows",
+            "left_null_keys",
+            "matched_rows",
+            "match_rate",
+            "right_rows",
+            "right_key_unique",
+            "left_key_unique",
+            "max_fanout",
+            "suggested_relationship"
+          ],
+          "properties": {
+            "checked_at": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:?\\d{2})?$",
+              "description": "ISO timestamp of the check."
+            },
+            "left_rows": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Rows in this model's table."
+            },
+            "left_null_keys": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Rows of this table with a null key."
+            },
+            "matched_rows": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Rows of this table with a match."
+            },
+            "match_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "matched_rows / left_rows."
+            },
+            "right_rows": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Rows in the target table."
+            },
+            "right_key_unique": {
+              "type": "boolean",
+              "description": "Whether the target key is unique."
+            },
+            "left_key_unique": {
+              "type": "boolean",
+              "description": "Whether this table's key is unique."
+            },
+            "max_fanout": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Most target rows matching one row of this table."
+            },
+            "suggested_relationship": {
+              "enum": [
+                "many_to_one",
+                "one_to_one",
+                "one_to_many",
+                "many_to_many"
+              ],
+              "description": "Relationship the data supports. many_to_many needs a bridge table."
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "approved"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "approved_by",
+              "approved_at"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

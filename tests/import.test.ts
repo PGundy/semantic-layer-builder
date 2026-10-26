@@ -1,0 +1,619 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { importDbt, parseRefExpr, splitRelationName } from "../skills/semantic-layer/scripts/lib/importers/dbt.ts";
+import { parseCsv, parseCsvRecords } from "../skills/semantic-layer/scripts/lib/importers/csv.ts";
+import { importDdl } from "../skills/semantic-layer/scripts/lib/importers/ddl.ts";
+import { importInformationSchema } from "../skills/semantic-layer/scripts/lib/importers/information-schema.ts";
+import type { Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
+import { runCli } from "../skills/semantic-layer/scripts/lib/cli.ts";
+import { writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
+import { FIXED_NOW, initProject, sl, tempRoot } from "./helpers.ts";
+
+const FIX = join(import.meta.dir, "fixtures", "imports");
+const fixture = (name: string) => join(FIX, name);
+const read = (name: string) => readFileSync(fixture(name), "utf8");
+
+let cleanup: (() => void) | undefined;
+afterEach(() => {
+  cleanup?.();
+  cleanup = undefined;
+});
+
+function table(tables: SnapshotTable[], qualified: string): SnapshotTable {
+  const t = tables.find((x) => `${x.schema}.${x.name}` === qualified);
+  if (!t) throw new Error(`no table ${qualified} in ${tables.map((x) => `${x.schema}.${x.name}`).join(", ")}`);
+  return t;
+}
+
+function source(root: string, name: string, dialect: SourceConfig["dialect"], extra: Partial<SourceConfig> = {}): void {
+  writeYaml(join(root, "sources", `${name}.yaml`), { source: name, dialect, ...extra });
+}
+
+interface ImportJson {
+  source: string;
+  method: string;
+  tables: number;
+  columns: number;
+  primary_keys: number;
+  foreign_keys: number;
+  warnings: string[];
+  next: string;
+}
+
+describe("csv", () => {
+  test("reads quoted fields with commas, doubled quotes and line breaks, and CRLF records", () => {
+    const text = 'Name,"Note, long",N\r\nalpha,"say ""hi"", then\r\nleave",1\r\nbeta,,2\r\n\r\n';
+    expect(parseCsvRecords(text)).toEqual([
+      ["Name", "Note, long", "N"],
+      ["alpha", 'say "hi", then\r\nleave', "1"],
+      ["beta", "", "2"],
+    ]);
+    expect(parseCsv(text)).toEqual([
+      { name: "alpha", "note, long": 'say "hi", then\r\nleave', n: "1" },
+      { name: "beta", "note, long": "", n: "2" },
+    ]);
+  });
+
+  test("handles a BOM, a missing final newline, short rows and tab delimiters", () => {
+    expect(parseCsv("﻿a,b\n1")).toEqual([{ a: "1", b: "" }]);
+    expect(parseCsv("a\tb\nx\ty")).toEqual([{ a: "x", b: "y" }]);
+  });
+
+  test("rejects an unterminated quoted field", () => {
+    expect(() => parseCsv('a,b\n1,"open\n')).toThrow(/never closed/);
+  });
+});
+
+describe("information_schema importer", () => {
+  test("reads a Postgres CSV export", () => {
+    const { tables, warnings } = importInformationSchema(read("info_schema_postgres.csv"));
+    expect(tables.map((t) => `${t.schema}.${t.name}`).sort()).toEqual(["public.customers", "public.orders", "reporting.daily_revenue"]);
+    const orders = table(tables, "public.orders");
+    expect(orders.kind).toBe("table");
+    expect(orders.row_count).toBe(10000);
+    expect(orders.primary_key).toBeUndefined();
+    expect(orders.columns.map((c) => c.name)).toEqual(["order_id", "customer_id", "status", "amount_cents"]);
+    const status = orders.columns.find((c) => c.name === "status")!;
+    expect(status.nullable).toBe(false);
+    expect(status.description).toContain("One of: placed, shipped");
+    const customers = table(tables, "public.customers");
+    expect(customers.columns[1]).toEqual({
+      name: "email",
+      type: "character varying",
+      nullable: true,
+      description: 'The customer\'s email, as entered: may be "unknown"',
+    });
+    expect(customers.columns[2]!.description).toBeNull();
+    expect(table(tables, "reporting.daily_revenue").kind).toBe("view");
+    expect(warnings.some((w) => w.includes("system table"))).toBe(true);
+  });
+
+  test("reads a Snowflake JSON export with uppercase headers and NUMBER precision", () => {
+    const { tables, warnings } = importInformationSchema(read("info_schema_snowflake.json"));
+    expect(tables.map((t) => `${t.schema}.${t.name}`).sort()).toEqual([
+      "MARTS.DIM_CUSTOMERS",
+      "MARTS.FCT_ORDERS",
+      "MARTS.V_ORDERS_DAILY",
+      "RAW.EVENTS_EXT",
+    ]);
+    const orders = table(tables, "MARTS.FCT_ORDERS");
+    expect(orders.columns.map((c) => [c.name, c.type])).toEqual([
+      ["ORDER_ID", "NUMBER(38,0)"],
+      ["ORDERED_AT", "TIMESTAMP_NTZ"],
+      ["ORDER_TOTAL", "NUMBER(12,2)"],
+    ]);
+    expect(orders.description).toBeNull();
+    expect(orders.columns[0]!.description).toBe("One row per order");
+    expect(orders.row_count).toBe(125000);
+    expect(table(tables, "RAW.EVENTS_EXT").kind).toBe("external");
+    expect(table(tables, "MARTS.V_ORDERS_DAILY").kind).toBe("view");
+    expect(warnings.some((w) => w.includes("system table"))).toBe(true);
+  });
+
+  test("prefixes the catalog when an export spans several catalogs", () => {
+    const rows = [
+      { table_catalog: "a", table_schema: "s", table_name: "t", column_name: "x", data_type: "int" },
+      { table_catalog: "b", table_schema: "s", table_name: "t", column_name: "x", data_type: "int" },
+    ];
+    const { tables } = importInformationSchema(JSON.stringify({ rows }));
+    expect(tables.map((t) => t.schema).sort()).toEqual(["a.s", "b.s"]);
+  });
+
+  test("uses udt_name for Postgres USER-DEFINED and ARRAY columns", () => {
+    const csv = "table_schema,table_name,column_name,data_type,udt_name\npublic,t,st,USER-DEFINED,order_status\npublic,t,tags,ARRAY,_text\npublic,t,n,integer,int4\n";
+    const { tables } = importInformationSchema(csv);
+    expect(table(tables, "public.t").columns.map((c) => [c.name, c.type])).toEqual([
+      ["st", "order_status"],
+      ["tags", "text[]"],
+      ["n", "integer"],
+    ]);
+  });
+
+  test("names the missing required columns", () => {
+    expect(() => importInformationSchema("schema,tbl,col\npublic,t,c\n")).toThrow(/missing required columns table_name, column_name, data_type/);
+  });
+});
+
+describe("dbt importer", () => {
+  test("parses relation names and ref/source expressions", () => {
+    expect(splitRelationName('"jaffle"."analytics"."fct_orders"')).toEqual(["jaffle", "analytics", "fct_orders"]);
+    expect(splitRelationName("`proj`.`ds`.`t`")).toEqual(["proj", "ds", "t"]);
+    expect(splitRelationName("ANALYTICS.MARTS.ORDERS")).toEqual(["ANALYTICS", "MARTS", "ORDERS"]);
+    expect(parseRefExpr("ref('customers')")).toEqual({ kind: "ref", pkg: null, name: "customers", version: null });
+    expect(parseRefExpr('{{ ref("pkg", "orders", v=2) }}')).toEqual({ kind: "ref", pkg: "pkg", name: "orders", version: "2" });
+    expect(parseRefExpr("source('raw','payments')")).toEqual({ kind: "source", source: "raw", table: "payments" });
+    expect(parseRefExpr("{{ get_where_subquery(ref('orders')) }}")).toMatchObject({ name: "orders" });
+  });
+
+  test("reads models, seeds and sources with tests as keys, and the catalog for types and row counts", () => {
+    const { tables, warnings } = importDbt(read("dbt/manifest.json"), read("dbt/catalog.json"));
+    expect(tables.map((t) => `${t.schema}.${t.name}`).sort()).toEqual([
+      "analytics.customers",
+      "analytics.fct_orders",
+      "analytics.order_items",
+      "raw.payments_v2",
+      "reporting.order_summary",
+      "seeds.country_codes",
+    ]);
+    const customers = table(tables, "analytics.customers");
+    expect(customers.description).toBe("One row per customer, with lifetime order stats.");
+    expect(customers.row_count).toBe(2000);
+    expect(customers.primary_key).toEqual(["customer_id"]);
+    expect(customers.unique_keys).toEqual([["email"]]);
+    expect(customers.columns.map((c) => [c.name, c.type])).toEqual([
+      ["customer_id", "integer"],
+      ["email", "text"],
+      ["first_order_at", "timestamp with time zone"],
+      ["lifetime_value", "numeric(12,2)"],
+    ]);
+    expect(customers.columns[0]).toMatchObject({ nullable: false, description: "Primary key of the customer." });
+    expect(customers.columns[2]!.description).toBe("Set by the loader");
+
+    const orders = table(tables, "analytics.fct_orders");
+    expect(orders.primary_key).toEqual(["order_id"]);
+    expect(orders.foreign_keys).toEqual([{ columns: ["customer_id"], references: { schema: "analytics", table: "customers", columns: ["customer_id"] } }]);
+    expect(orders.columns.find((c) => c.name === "status")!.type).toBe("character varying(20)");
+    expect(orders.columns.some((c) => c.name === "country")).toBe(false);
+
+    const items = table(tables, "analytics.order_items");
+    expect(items.primary_key).toEqual([]);
+    expect(items.unique_keys).toEqual([["order_id", "line_number"]]);
+    expect(items.foreign_keys).toEqual([{ columns: ["order_id"], references: { schema: "analytics", table: "fct_orders", columns: ["order_id"] } }]);
+
+    const payments = table(tables, "raw.payments_v2");
+    expect(payments.description).toBe("Payments as loaded by the ingestion tool.");
+    expect(payments.row_count).toBe(11000);
+    expect(payments.foreign_keys).toEqual([{ columns: ["order_id"], references: { schema: "analytics", table: "fct_orders", columns: ["order_id"] } }]);
+
+    expect(table(tables, "reporting.order_summary").kind).toBe("view");
+    expect(warnings.some((w) => w.includes("ephemeral"))).toBe(true);
+    expect(warnings.some((w) => w.includes("could not be resolved"))).toBe(true);
+  });
+
+  test("without a catalog, keeps documented types and asks for catalog.json", () => {
+    const { tables, warnings } = importDbt(read("dbt/manifest.json"));
+    const orders = table(tables, "analytics.fct_orders");
+    expect(orders.columns.map((c) => [c.name, c.type])).toEqual([
+      ["order_id", "integer"],
+      ["customer_id", "integer"],
+      ["status", "text"],
+      ["country", "unknown"],
+    ]);
+    expect(table(tables, "analytics.order_items").columns.map((c) => c.name)).toEqual(["order_id", "line_number"]);
+    expect(warnings.some((w) => w.includes("--catalog"))).toBe(true);
+  });
+
+  test("reads tests on quoted column names, and warns about tests on columns the table lacks", () => {
+    const manifest = {
+      metadata: { dbt_schema_version: "https://schemas.getdbt.com/dbt/manifest/v12.json" },
+      nodes: {
+        "model.p.orders": {
+          resource_type: "model", name: "orders", package_name: "p", schema: "s", alias: "orders", database: "d", config: { materialized: "table" },
+          columns: { "Order Id": { name: "Order Id", data_type: "int" }, total: { name: "total", data_type: "int" } },
+        },
+        "test.p.unique_orders_order_id": {
+          resource_type: "test", name: "unique_orders_order_id", package_name: "p", attached_node: "model.p.orders", column_name: '"Order Id"',
+          test_metadata: { name: "unique", kwargs: { column_name: '"Order Id"', model: "{{ get_where_subquery(ref('orders')) }}" } },
+        },
+        "test.p.not_null_orders_order_id": {
+          resource_type: "test", name: "not_null_orders_order_id", package_name: "p", attached_node: "model.p.orders", column_name: '"Order Id"',
+          test_metadata: { name: "not_null", kwargs: { column_name: '"Order Id"', model: "{{ get_where_subquery(ref('orders')) }}" } },
+        },
+        "test.p.unique_orders_gone": {
+          resource_type: "test", name: "unique_orders_gone", package_name: "p", attached_node: "model.p.orders", column_name: "gone column",
+          test_metadata: { name: "unique", kwargs: { column_name: "gone column", model: "{{ get_where_subquery(ref('orders')) }}" } },
+        },
+      },
+      sources: {},
+    };
+    const { tables, warnings } = importDbt(JSON.stringify(manifest));
+    expect(table(tables, "s.orders").primary_key).toEqual(["Order Id"]);
+    expect(warnings.some((w) => w.startsWith("1 unique, not_null or unique_combination_of_columns test names a column not found"))).toBe(true);
+  });
+
+  test("reads contract constraints", () => {
+    const manifest = {
+      metadata: { dbt_schema_version: "https://schemas.getdbt.com/dbt/manifest/v11.json" },
+      nodes: {
+        "model.p.a": {
+          resource_type: "model", name: "a", package_name: "p", schema: "s", alias: "a", database: "d", config: { materialized: "table" },
+          columns: { id: { name: "id", data_type: "int", constraints: [{ type: "not_null" }, { type: "primary_key" }] } },
+        },
+        "model.p.b": {
+          resource_type: "model", name: "b", package_name: "p", schema: "s", alias: "b", database: "d", config: { materialized: "table" },
+          columns: { a_id: { name: "a_id", data_type: "int", constraints: [{ type: "foreign_key", to: "ref('a')", to_columns: ["id"] }] } },
+          constraints: [{ type: "primary_key", columns: ["a_id"] }],
+        },
+      },
+      sources: {},
+    };
+    const { tables } = importDbt(JSON.stringify(manifest));
+    expect(table(tables, "s.a").primary_key).toEqual(["id"]);
+    expect(table(tables, "s.b").primary_key).toEqual(["a_id"]);
+    expect(table(tables, "s.b").foreign_keys).toEqual([{ columns: ["a_id"], references: { schema: "s", table: "a", columns: ["id"] } }]);
+  });
+});
+
+describe("ddl importer", () => {
+  test("reads pg_dump output: ALTER TABLE keys, unique indexes, comments, enum types, views", async () => {
+    const { tables, warnings } = await importDdl(read("ddl_postgres.sql"), "postgres");
+    expect(tables.map((t) => `${t.schema}.${t.name}`).sort()).toEqual([
+      "public.audit_log",
+      "sales.customer_orders",
+      "sales.customers",
+      "sales.order_lines",
+      "sales.orders",
+    ]);
+    const customers = table(tables, "sales.customers");
+    expect(customers.description).toBe("One row per customer; test accounts excluded.");
+    expect(customers.primary_key).toEqual(["customer_id"]);
+    expect(customers.unique_keys).toEqual([["email"]]);
+    expect(customers.columns.map((c) => [c.name, c.type, c.nullable])).toEqual([
+      ["customer_id", "integer", false],
+      ["email", "character varying(255)", false],
+      ["Region", "text", true],
+      ["created_at", "timestamp with time zone", false],
+      ["tags", "text[]", true],
+      ["profile", "jsonb", true],
+    ]);
+    expect(customers.columns[1]!.description).toBe("Login email, lowercased");
+
+    const orders = table(tables, "sales.orders");
+    expect(orders.primary_key).toEqual(["order_id"]);
+    expect(orders.columns[0]).toMatchObject({ name: "order_id", type: "bigint", nullable: false });
+    expect(orders.columns.find((c) => c.name === "status")!.type).toBe("sales.order_status");
+    expect(orders.foreign_keys).toEqual([{ columns: ["customer_id"], references: { schema: "sales", table: "customers", columns: ["customer_id"] } }]);
+
+    const lines = table(tables, "sales.order_lines");
+    expect(lines.primary_key).toEqual(["order_id", "line_number"]);
+    expect(lines.foreign_keys).toEqual([{ columns: ["order_id"], references: { schema: "sales", table: "orders", columns: ["order_id"] } }]);
+
+    const view = table(tables, "sales.customer_orders");
+    expect(view.kind).toBe("view");
+    expect(view.description).toBe("Orders per customer");
+    expect(view.columns.map((c) => c.name)).toEqual(["customer_id", "orders", "amount_cents"]);
+
+    expect(table(tables, "public.audit_log").primary_key).toEqual(["id"]);
+    expect(warnings.some((w) => w.startsWith("Skipped CREATE VIEW sales.monthly_labels:") && w.includes("to_char"))).toBe(true);
+    expect(warnings.some((w) => w.includes("order_lines_2025") && w.includes("partition"))).toBe(true);
+    expect(warnings.some((w) => w.startsWith("Ignored") && w.includes("CREATE SEQUENCE (1)"))).toBe(true);
+  });
+
+  test("reads mysqldump output: backticks, inline comments, KEY lines, table options, versioned comments", async () => {
+    const { tables, warnings } = await importDdl(read("ddl_mysql.sql"), "duckdb");
+    expect(tables.map((t) => `${t.schema}.${t.name}`).sort()).toEqual(["shop.order_items", "shop.orders", "shop.paid_orders", "shop.products"]);
+    const items = table(tables, "shop.order_items");
+    expect(items.description).toBe("Order lines");
+    expect(items.primary_key).toEqual(["id"]);
+    expect(items.columns.map((c) => [c.name, c.type])).toEqual([
+      ["id", "int(11) unsigned"],
+      ["order_id", "int(11)"],
+      ["product_id", "int(11)"],
+      ["qty", "smallint(6)"],
+      ["unit_price", "decimal(10,2)"],
+    ]);
+    expect(items.columns[1]!.description).toBe("The order this line belongs to");
+    expect(items.columns[4]!.description).toBe("Price per unit, in EUR; it's VAT inclusive");
+    expect(items.foreign_keys).toEqual([
+      { columns: ["order_id"], references: { schema: "shop", table: "orders", columns: ["id"] } },
+      { columns: ["product_id"], references: { schema: "shop", table: "products", columns: ["id"] } },
+    ]);
+    const orders = table(tables, "shop.orders");
+    expect(orders.unique_keys).toEqual([["customer_email", "created_at"]]);
+    expect(orders.columns.find((c) => c.name === "status")!.type).toBe("enum('new','paid','shipped','refunded')");
+    expect(orders.columns.find((c) => c.name === "updated_at")!.nullable).toBe(true);
+    const products = table(tables, "shop.products");
+    expect(products.columns.map((c) => c.name)).toEqual(["id", "sku", "name", "key"]);
+    expect(products.columns[3]!.description).toBe("Legacy lookup key");
+    expect(products.unique_keys).toEqual([["sku"]]);
+    expect(table(tables, "shop.paid_orders").kind).toBe("view");
+    expect(warnings.some((w) => w.startsWith("Skipped CREATE VIEW shop.legacy_returns:") && w.includes("returns"))).toBe(true);
+  });
+
+  test("reads Snowflake get_ddl output: three-part names, NUMBER and VARIANT, external tables, secure views", async () => {
+    const { tables, warnings } = await importDdl(read("ddl_snowflake.sql"), "snowflake");
+    expect(tables.map((t) => `${t.schema}.${t.name}`).sort()).toEqual([
+      "MARTS.CUSTOMER_REVENUE",
+      "MARTS.DIM_CUSTOMERS",
+      "MARTS.DIM_DATES",
+      "MARTS.FCT_ORDERS",
+      "RAW.WEB_EVENTS",
+    ]);
+    const dates = table(tables, "MARTS.DIM_DATES");
+    expect(dates.columns.map((c) => [c.name, c.type, c.nullable])).toEqual([
+      ["DATE_DAY", "DATE", false],
+      ["PERIOD", "VARCHAR(7)", true],
+    ]);
+    expect(dates.columns[1]!.description).toBe("Year and month, as YYYY-MM");
+    const customers = table(tables, "MARTS.DIM_CUSTOMERS");
+    expect(customers.description).toBe("One row per customer");
+    expect(customers.primary_key).toEqual(["CUSTOMER_ID"]);
+    expect(customers.columns.map((c) => [c.name, c.type])).toEqual([
+      ["CUSTOMER_ID", "NUMBER(38,0)"],
+      ["EMAIL", "VARCHAR(16777216)"],
+      ["SIGNUP_AT", "TIMESTAMP_NTZ(9)"],
+      ["ATTRIBUTES", "VARIANT"],
+    ]);
+    expect(customers.columns[0]!.description).toBe("Surrogate key");
+    const orders = table(tables, "MARTS.FCT_ORDERS");
+    expect(orders.description).toBe("One row per order");
+    expect(orders.primary_key).toEqual(["ORDER_ID"]);
+    expect(orders.columns.map((c) => c.name)).toContain("lineItems");
+    expect(orders.columns.find((c) => c.name === "ORDER_TOTAL")!.description).toBe("Order total in USD");
+    expect(orders.foreign_keys).toEqual([{ columns: ["CUSTOMER_ID"], references: { schema: "MARTS", table: "DIM_CUSTOMERS", columns: ["CUSTOMER_ID"] } }]);
+    const events = table(tables, "RAW.WEB_EVENTS");
+    expect(events.kind).toBe("external");
+    expect(events.columns.map((c) => [c.name, c.type])).toEqual([
+      ["EVENT_ID", "VARCHAR"],
+      ["EVENT_DATE", "DATE"],
+      ["USER_ID", "NUMBER(38,0)"],
+    ]);
+    const view = table(tables, "MARTS.CUSTOMER_REVENUE");
+    expect(view.kind).toBe("view");
+    expect(view.description).toBe("Revenue per customer, completed orders only");
+    expect(view.columns.map((c) => c.name)).toEqual(["CUSTOMER_ID", "REVENUE"]);
+    expect(view.columns[0]!.description).toBe("The customer");
+    expect(warnings.some((w) => w.startsWith("Skipped CREATE VIEW ANALYTICS.MARTS.ORDER_ITEMS_FLAT:"))).toBe(true);
+    expect(warnings.some((w) => w.includes("CREATE STAGE"))).toBe(true);
+  });
+
+  test("keeps the catalog in the schema when tables span databases, and reads Hive partition columns", async () => {
+    const ddl = `
+      CREATE TABLE lake.web.events (id BIGINT, payload STRING) PARTITIONED BY (dt STRING) STORED AS PARQUET LOCATION 's3://b/events';
+      CREATE TABLE crm.public.accounts (id BIGINT PRIMARY KEY);
+      CREATE TABLE lake.web.sessions (account_id BIGINT REFERENCES crm.public.accounts);
+    `;
+    const { tables } = await importDdl(ddl, "databricks");
+    const events = table(tables, "lake.web.events");
+    expect(events.kind).toBe("external");
+    expect(events.columns.map((c) => [c.name, c.type])).toEqual([
+      ["id", "BIGINT"],
+      ["payload", "STRING"],
+      ["dt", "STRING"],
+    ]);
+    expect(table(tables, "lake.web.sessions").foreign_keys).toEqual([
+      { columns: ["account_id"], references: { schema: "crm.public", table: "accounts", columns: ["id"] } },
+    ]);
+  });
+
+  test("backticks and MySQL words inside Postgres strings and comments keep double-quoted identifiers", async () => {
+    const ddl = `
+      -- Unlike MySQL there is no AUTO_INCREMENT or ENGINE = here.
+      CREATE TABLE "public"."Orders" ("Id" integer PRIMARY KEY, "Amount Cents" bigint);
+      COMMENT ON TABLE "public"."Orders" IS 'Use \`amount\`, not the AUTO_INCREMENT id';
+      COMMENT ON COLUMN "public"."Orders"."Amount Cents" IS 'In cents';
+    `;
+    for (const dialect of ["postgres", "duckdb"] as const) {
+      const { tables, warnings } = await importDdl(ddl, dialect);
+      const orders = table(tables, "public.Orders");
+      expect(orders.description).toBe("Use `amount`, not the AUTO_INCREMENT id");
+      expect(orders.primary_key).toEqual(["Id"]);
+      expect(orders.columns.map((c) => [c.name, c.description])).toEqual([
+        ["Id", null],
+        ["Amount Cents", "In cents"],
+      ]);
+      expect(warnings).toEqual([]);
+    }
+  });
+
+  test("columns named period, exclude, check, fulltext or spatial are columns, not constraints", async () => {
+    const { tables, warnings } = await importDdl(
+      "create table s.t (id int primary key, period varchar(7), exclude boolean, check int, fulltext varchar(10), spatial text, constraint c check (id > 0));",
+      "postgres",
+    );
+    expect(table(tables, "s.t").columns.map((c) => [c.name, c.type])).toEqual([
+      ["id", "int"],
+      ["period", "varchar(7)"],
+      ["exclude", "boolean"],
+      ["check", "int"],
+      ["fulltext", "varchar(10)"],
+      ["spatial", "text"],
+    ]);
+    expect(warnings).toEqual([]);
+    const mysql = await importDdl(
+      "CREATE TABLE `t` (`id` int, `body` text, `g` text, FULLTEXT KEY `ft` (`body`), FULLTEXT `ft2` (`body`), SPATIAL INDEX (`g`)) ENGINE=InnoDB;",
+      "duckdb",
+    );
+    expect(mysql.tables[0]!.columns.map((c) => c.name)).toEqual(["id", "body", "g"]);
+  });
+
+  test("keeps STRUCT, MAP and ARRAY<...> types whole for BigQuery and Databricks", async () => {
+    const bq = await importDdl(
+      'CREATE TABLE `proj.ds.t` (id INT64, s STRUCT<a INT64, b STRING>, arr ARRAY<STRING>, n ARRAY<STRUCT<x INT64, y ARRAY<STRING>>> OPTIONS(description="Nested lines"), r RANGE<DATE>)',
+      "bigquery",
+    );
+    const t = table(bq.tables, "ds.t");
+    expect(t.columns.map((c) => [c.name, c.type])).toEqual([
+      ["id", "INT64"],
+      ["s", "STRUCT<a INT64, b STRING>"],
+      ["arr", "ARRAY<STRING>"],
+      ["n", "ARRAY<STRUCT<x INT64, y ARRAY<STRING>>>"],
+      ["r", "RANGE<DATE>"],
+    ]);
+    expect(t.columns[3]!.description).toBe("Nested lines");
+    const dbx = await importDdl(
+      "CREATE TABLE spark_catalog.default.t (id BIGINT, s STRUCT<a: INT, b: STRING>, m MAP<STRING, INT>, period STRING COMMENT 'YYYY-MM') USING delta",
+      "databricks",
+    );
+    expect(table(dbx.tables, "default.t").columns.map((c) => [c.name, c.type, c.description])).toEqual([
+      ["id", "BIGINT", null],
+      ["s", "STRUCT<a: INT, b: STRING>", null],
+      ["m", "MAP<STRING, INT>", null],
+      ["period", "STRING", "YYYY-MM"],
+    ]);
+  });
+
+  test("COMMENT ON finds a table whether or not either statement names the default schema", async () => {
+    const a = await importDdl(
+      "create table orders (id int); comment on table public.orders is 'x'; comment on column public.orders.id is 'y'; create view v as select * from public.orders;",
+      "postgres",
+    );
+    expect(a.warnings).toEqual([]);
+    expect(table(a.tables, "public.orders")).toMatchObject({ description: "x", columns: [{ name: "id", description: "y" }] });
+    expect(table(a.tables, "public.v").columns.map((c) => c.name)).toEqual(["id"]);
+    const b = await importDdl("create table public.orders (id int); comment on table orders is 'x'; comment on column orders.id is 'y';", "postgres");
+    expect(b.warnings).toEqual([]);
+    expect(table(b.tables, "public.orders")).toMatchObject({ description: "x", columns: [{ name: "id", description: "y" }] });
+    const c = await importDdl("create table orders (id int); create table public.orders (id int, extra int);", "postgres");
+    expect(c.tables.length).toBe(1);
+  });
+
+  test("a CREATE TABLE or VIEW whose name cannot be read is reported as skipped", async () => {
+    const { tables, warnings } = await importDdl("create table (id int); create table ok (id int);", "postgres");
+    expect(tables.map((t) => t.name)).toEqual(["ok"]);
+    expect(warnings).toEqual(['Skipped CREATE TABLE: could not read the name at "(id int)".']);
+  });
+
+  test("unqualified names take the dialect's default schema", async () => {
+    const { tables } = await importDdl("create table t (a int not null, b text);", "postgres");
+    expect(tables.map((t) => `${t.schema}.${t.name}`)).toEqual(["public.t"]);
+    const none = await importDdl("create table t (a int);", "bigquery");
+    expect(none.tables[0]!.schema).toBeNull();
+  });
+});
+
+describe("sl import", () => {
+  test("imports an information_schema CSV for a non-runnable source and suggests draft", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    source(t.root, "wh", "snowflake");
+    const r = await sl(t.root, ["import", "--source", "wh", "--format", "information_schema", "--file", fixture("info_schema_snowflake.json"), "--json"]);
+    expect(r.code).toBe(0);
+    const out = r.json<ImportJson>();
+    expect(out).toMatchObject({ source: "wh", method: "information_schema", tables: 4, columns: 6, primary_keys: 0, foreign_keys: 0 });
+    expect(out.next).toBe("sl draft --source wh");
+    const snap = JSON.parse(readFileSync(join(t.root, "snapshots", "wh.json"), "utf8")) as Snapshot;
+    expect(snap).toMatchObject({ snapshot_version: 1, source: "wh", dialect: "snowflake", method: "information_schema", captured_at: FIXED_NOW });
+    expect(snap.tables.map((x) => `${x.schema}.${x.name}`)).toEqual(["MARTS.DIM_CUSTOMERS", "MARTS.FCT_ORDERS", "MARTS.V_ORDERS_DAILY", "RAW.EVENTS_EXT"]);
+  });
+
+  test("imports a dbt manifest with a catalog, resolving paths from the working directory", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    source(t.root, "wh", "postgres", { connection: { env: "WH_URL" } });
+    const r = await sl(t.root, [
+      "import", "--source", "wh", "--format", "dbt_manifest",
+      "--file", fixture("dbt/manifest.json"), "--catalog", fixture("dbt/catalog.json"), "--json",
+    ]);
+    expect(r.code).toBe(0);
+    const out = r.json<ImportJson>();
+    expect(out).toMatchObject({ method: "dbt_manifest", tables: 6, primary_keys: 2, foreign_keys: 3 });
+    expect(out.next).toBe("sl profile --source wh");
+  });
+
+  test("imports DDL, prints a plain summary and keeps profiles of unchanged columns", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    source(t.root, "shop", "duckdb");
+    const previous: Snapshot = {
+      snapshot_version: 1,
+      source: "shop",
+      dialect: "duckdb",
+      captured_at: "2026-01-01T00:00:00.000Z",
+      method: "live",
+      tables: [
+        {
+          schema: "shop",
+          name: "orders",
+          kind: "table",
+          row_count: 500,
+          profiled_at: "2026-01-01T00:05:00.000Z",
+          columns: [
+            { name: "id", type: "int(11) unsigned", nullable: false, profile: { null_fraction: 0, distinct_count: 500 } },
+            { name: "status", type: "varchar(20)", nullable: false, profile: { null_fraction: 0, distinct_count: 4 } },
+          ],
+        },
+        { schema: "shop", name: "old_table", kind: "table", columns: [] },
+      ],
+    };
+    writeJson(join(t.root, "snapshots", "shop.json"), previous);
+    const r = await sl(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql")]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Imported 4 tables");
+    expect(r.out).toContain("Skipped CREATE VIEW shop.legacy_returns");
+    expect(r.out).toContain("old_table");
+    expect(r.out).toContain("Next: `sl profile --source shop`");
+    const snap = JSON.parse(readFileSync(join(t.root, "snapshots", "shop.json"), "utf8")) as Snapshot;
+    expect(snap.method).toBe("ddl");
+    const orders = table(snap.tables, "shop.orders");
+    expect(orders.row_count).toBe(500);
+    expect(orders.profiled_at).toBe("2026-01-01T00:05:00.000Z");
+    expect(orders.columns.find((c) => c.name === "id")!.profile).toEqual({ null_fraction: 0, distinct_count: 500 });
+    expect(orders.columns.find((c) => c.name === "status")!.profile).toBeUndefined();
+  });
+
+  test("suggests focusing when more tables are in scope than the threshold", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    writeYaml(join(t.root, "semantic.yaml"), { version: 1, name: "test", settings: { focus_threshold: 2 } });
+    source(t.root, "pg", "postgres", { scope: { exclude: ["audit_*"] } });
+    const r = await sl(t.root, ["import", "--source", "pg", "--format", "ddl", "--file", fixture("ddl_postgres.sql")]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("4 tables are in scope, more than the focus threshold of 2");
+    expect(r.out).toContain("sl tables --source pg --groups");
+  });
+
+  test("resolves a relative --file against the working directory", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    source(t.root, "wh", "bigquery");
+    writeFileSync(join(t.dir, "cols.csv"), "table_schema,table_name,column_name,data_type\nds,t,a,INT64\nds,t,b,STRING\n");
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await runCli(["import", "--source", "wh", "--format", "information_schema", "--file", "cols.csv", "--json", "--root", t.root], {
+      cwd: t.dir,
+      env: { SL_NOW: FIXED_NOW },
+      out: (x) => out.push(x),
+      err: (x) => err.push(x),
+    });
+    expect(err.join("\n")).toBe("");
+    expect(code).toBe(0);
+    expect(JSON.parse(out.join("\n")) as ImportJson).toMatchObject({ tables: 1, columns: 2 });
+  });
+
+  test("rejects bad arguments with a clear message", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    source(t.root, "wh", "postgres");
+    const badFormat = await sl(t.root, ["import", "--source", "wh", "--format", "xlsx", "--file", "x"]);
+    expect(badFormat.code).toBe(1);
+    expect(badFormat.err).toContain("--format is required");
+    const missing = await sl(t.root, ["import", "--source", "wh", "--format", "ddl", "--file", "nope.sql"]);
+    expect(missing.code).toBe(1);
+    expect(missing.err).toContain("No such file");
+    const catalogOnDdl = await sl(t.root, ["import", "--source", "wh", "--format", "ddl", "--file", fixture("ddl_postgres.sql"), "--catalog", fixture("dbt/catalog.json")]);
+    expect(catalogOnDdl.code).toBe(1);
+    expect(catalogOnDdl.err).toContain("--catalog applies only");
+    writeFileSync(join(t.root, "empty.sql"), "SET x = 1;\n");
+    const empty = await sl(t.root, ["import", "--source", "wh", "--format", "ddl", "--file", "empty.sql"]);
+    expect(empty.code).toBe(1);
+    expect(empty.err).toContain("No tables found");
+  });
+});

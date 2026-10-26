@@ -1,0 +1,320 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "goldens/<name>.yaml",
+  "description": "A confirmed question and answer pair: the regression test a compiler must pass.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "question",
+    "request",
+    "sql",
+    "status"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Golden name. Equals the file name."
+    },
+    "question": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The question in plain English."
+    },
+    "role": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Role the question is asked as."
+    },
+    "user": {
+      "type": "object",
+      "description": "User attribute values for row filters.",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      }
+    },
+    "request": {
+      "type": "object",
+      "description": "The semantic request answering the question, relative to its source.",
+      "additionalProperties": false,
+      "required": [
+        "source"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Source the request runs against."
+        },
+        "measures": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "model.measure or a bare metric name."
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "model.field, or model.field:grain for a time dimension."
+        },
+        "filters": {
+          "type": "array",
+          "description": "Filters combined with AND.",
+          "items": {
+            "$ref": "#/$defs/filter"
+          }
+        },
+        "order_by": {
+          "type": "array",
+          "description": "Sort order.",
+          "items": {
+            "type": "object",
+            "description": "A sort key.",
+            "additionalProperties": false,
+            "required": [
+              "field"
+            ],
+            "properties": {
+              "field": {
+                "type": "string",
+                "minLength": 1,
+                "description": "A requested field."
+              },
+              "direction": {
+                "enum": [
+                  "asc",
+                  "desc"
+                ],
+                "description": "Sort direction. Defaults to asc."
+              }
+            }
+          }
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Row limit."
+        }
+      }
+    },
+    "sql": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The query that produced the expected rows."
+    },
+    "expected": {
+      "type": "object",
+      "description": "The confirmed answer.",
+      "additionalProperties": false,
+      "required": [
+        "rows"
+      ],
+      "properties": {
+        "tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Relative tolerance for numbers."
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Expected rows, column name to value."
+        }
+      }
+    },
+    "reference": {
+      "type": "string",
+      "description": "Where the owner confirmed the answer, such as a report."
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "approved"
+      ],
+      "description": "Whether the owner has confirmed the expected rows."
+    },
+    "confirmed_by": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Who confirmed the answer. Required when approved."
+    },
+    "confirmed_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "ISO date of confirmation. Required when approved.",
+      "format": "date"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "approved"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "confirmed_by",
+          "confirmed_at",
+          "expected"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "filter": {
+      "type": "object",
+      "description": "A filter.",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "op"
+      ],
+      "properties": {
+        "field": {
+          "type": "string",
+          "minLength": 1,
+          "description": "model.field, model.field:grain or a metric name."
+        },
+        "op": {
+          "enum": [
+            "eq",
+            "neq",
+            "in",
+            "not_in",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "between",
+            "is_null",
+            "not_null"
+          ],
+          "description": "Operator."
+        },
+        "value": {
+          "description": "Operand: a list for in and not_in, a pair for between, absent for is_null and not_null."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "eq",
+                  "neq",
+                  "gt",
+                  "gte",
+                  "lt",
+                  "lte"
+                ]
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "not": {
+                  "type": [
+                    "array",
+                    "object"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "in",
+                  "not_in"
+                ]
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "array",
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "between"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "is_null",
+                  "not_null"
+                ]
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "value": false
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,21 @@
+error_id,source_file,line_no,message
+1,shopify_export_2025_11.csv,447,duplicate id
+2,shopify_export_2025_08.csv,2235,bad currency
+3,shopify_export_2025_08.csv,770,bad currency
+4,shopify_export_2025_10.csv,1058,bad currency
+5,shopify_export_2025_11.csv,1937,duplicate id
+6,shopify_export_2025_08.csv,3665,duplicate id
+7,shopify_export_2025_03.csv,734,duplicate id
+8,shopify_export_2025_08.csv,330,bad currency
+9,shopify_export_2025_01.csv,888,missing email
+10,shopify_export_2025_06.csv,352,invalid date
+11,shopify_export_2025_12.csv,3371,bad currency
+12,shopify_export_2025_06.csv,3737,duplicate id
+13,shopify_export_2025_05.csv,2670,bad currency
+14,shopify_export_2025_04.csv,990,bad currency
+15,shopify_export_2025_03.csv,1123,bad currency
+16,shopify_export_2025_05.csv,667,duplicate id
+17,shopify_export_2025_01.csv,2359,missing email
+18,shopify_export_2025_03.csv,2088,duplicate id
+19,shopify_export_2025_08.csv,113,bad currency
+20,shopify_export_2025_03.csv,357,invalid date

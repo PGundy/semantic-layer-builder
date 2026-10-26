@@ -1,0 +1,9 @@
+source: lake
+dialect: duckdb
+description: Clickstream events as parquet files.
+connection:
+  database: ":memory:"
+  views:
+    web_events: read_parquet('../data/lake/web_events/*.parquet')
+scope:
+  include: ["re:web_.*"]

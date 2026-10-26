@@ -1,0 +1,310 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "snapshots/<source>.json",
+  "description": "Schema snapshot of one source, written by sl introspect, sl import and sl profile.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "snapshot_version",
+    "source",
+    "dialect",
+    "captured_at",
+    "method",
+    "tables"
+  ],
+  "properties": {
+    "snapshot_version": {
+      "const": 1,
+      "description": "Snapshot format version. Always 1."
+    },
+    "source": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Source this snapshot describes. Equals the file name."
+    },
+    "dialect": {
+      "enum": [
+        "duckdb",
+        "postgres",
+        "snowflake",
+        "bigquery",
+        "databricks"
+      ],
+      "description": "Dialect of the source."
+    },
+    "captured_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:?\\d{2})?$",
+      "description": "ISO timestamp of capture."
+    },
+    "method": {
+      "enum": [
+        "live",
+        "information_schema",
+        "dbt_manifest",
+        "ddl",
+        "manual"
+      ],
+      "description": "How the snapshot was built."
+    },
+    "tables": {
+      "type": "array",
+      "description": "Tables sorted by qualified name.",
+      "items": {
+        "$ref": "#/$defs/table"
+      }
+    }
+  },
+  "$defs": {
+    "table": {
+      "type": "object",
+      "description": "One table or view.",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "name",
+        "kind",
+        "columns"
+      ],
+      "properties": {
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Schema name, or null when the source has no schemas."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Table name as in the database."
+        },
+        "kind": {
+          "enum": [
+            "table",
+            "view",
+            "external"
+          ],
+          "description": "Relation kind."
+        },
+        "row_count": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Row count or estimate."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Comment from the database or documentation."
+        },
+        "primary_key": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Primary key columns."
+        },
+        "unique_keys": {
+          "type": "array",
+          "description": "Unique key column sets.",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "foreign_keys": {
+          "type": "array",
+          "description": "Declared foreign keys.",
+          "items": {
+            "$ref": "#/$defs/foreign_key"
+          }
+        },
+        "profiled_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ISO timestamp of the last profile, or null."
+        },
+        "columns": {
+          "type": "array",
+          "description": "Columns in ordinal order.",
+          "items": {
+            "$ref": "#/$defs/column"
+          }
+        }
+      }
+    },
+    "foreign_key": {
+      "type": "object",
+      "description": "A foreign key.",
+      "additionalProperties": false,
+      "required": [
+        "columns",
+        "references"
+      ],
+      "properties": {
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Referencing columns in this table.",
+          "minItems": 1
+        },
+        "references": {
+          "type": "object",
+          "description": "The referenced table and columns.",
+          "additionalProperties": false,
+          "required": [
+            "table",
+            "columns"
+          ],
+          "properties": {
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Referenced schema, or null."
+            },
+            "table": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Referenced table name."
+            },
+            "columns": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Referenced columns.",
+              "minItems": 1
+            }
+          }
+        }
+      }
+    },
+    "column": {
+      "type": "object",
+      "description": "One column.",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Column name as in the database."
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Database type as reported."
+        },
+        "nullable": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether the column allows nulls, or null when unknown."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Column comment."
+        },
+        "profile": {
+          "type": "object",
+          "description": "Statistics written by sl profile.",
+          "additionalProperties": false,
+          "properties": {
+            "null_fraction": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Fraction of rows that are null."
+            },
+            "distinct_count": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "Number of distinct values."
+            },
+            "min": {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ],
+              "description": "Smallest value."
+            },
+            "max": {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ],
+              "description": "Largest value."
+            },
+            "top_values": {
+              "type": "array",
+              "description": "Most frequent values with counts.",
+              "items": {
+                "type": "object",
+                "description": "A frequent value.",
+                "additionalProperties": false,
+                "required": [
+                  "value",
+                  "count"
+                ],
+                "properties": {
+                  "value": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null"
+                    ],
+                    "description": "The value."
+                  },
+                  "count": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Rows holding it."
+                  }
+                }
+              }
+            },
+            "sampled": {
+              "type": "boolean",
+              "description": "Whether the profile came from a sample."
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,30 @@
+# The customer dimension table.
+model: customers
+source: warehouse
+table: public.dim_customers
+status: draft
+description: One row per customer.
+grain: One row per customer.
+primary_key: [customer_id]
+dimensions:
+  - name: email
+    expr: email
+    type: string
+    tags: [pii]
+    status: draft
+  - name: region
+    expr: region
+    type: string
+    status: draft
+  - name: signup_date
+    expr: signed_up_at
+    type: time
+    time_grains: [day, month]
+    status: draft
+measures:
+  - name: customer_count
+    expr: customer_id
+    agg: count_distinct
+    format: integer
+    description: Distinct customers.
+    status: draft
