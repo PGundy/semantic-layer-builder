@@ -1,9 +1,13 @@
 status: draft
+mode: closed
 default_role: analyst
 user_attributes:
   - name: region
     type: string
     description: The sales region a rep covers.
+  - name: department
+    type: string
+    description: The user's department in the identity system.
 roles:
   - name: analyst
     description: Full read access.
@@ -13,6 +17,7 @@ roles:
       tags: [pii]
   - name: sales_rep
     description: Sees only their own region's orders.
+    assign_when: user.department == 'sales' and user.region is set
     allow:
       models: ["warehouse.orders", "warehouse.customers"]
     deny:
@@ -20,3 +25,10 @@ roles:
     row_filters:
       - model: warehouse.orders
         expr: ship_region = {{ user.region }}
+restrictions:
+  - name: unit_economics
+    description: Per-order figures stay with finance and analysts.
+    targets: ["metric:average_order_value"]
+    allow:
+      roles: [analyst, sales_rep]
+      when: user.department == 'finance'

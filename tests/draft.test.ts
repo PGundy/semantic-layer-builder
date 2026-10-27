@@ -2,9 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { centsExpr, draftModels, inferPrimaryKey, numericRule, singular } from "../skills/semantic-layer/scripts/lib/draft.ts";
-import type { ColumnProfile, Snapshot, SnapshotColumn, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
+import { centsExpr, draftModels, draftNewColumns, inferPrimaryKey, numericRule, singular } from "../skills/semantic-layer/scripts/lib/draft.ts";
+import { unreferencedColumns } from "../skills/semantic-layer/scripts/lib/snapshot-diff.ts";
+import type { ColumnProfile, Model, Snapshot, SnapshotColumn, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
+import { parseYamlText, updateYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { SQL } from "bun";
 import { initProject, PG_URL, sl, tempRoot } from "./helpers.ts";
 
@@ -170,6 +171,9 @@ open_questions:
   - The name weight_kg does not say how it adds up, so the draft averages it (avg_weight_kg). Do people total weight_kg or average it?
   - Which currency are amount_cents and discount in?
   - shipping_zip looks like personal data and is tagged pii. Who may see it?
+ignored_columns:
+  - tracking_code
+  - payload
 dimensions:
   - name: status
     expr: status
@@ -1199,5 +1203,437 @@ describe("draft heuristics on Acme-like tables", () => {
       await sql.unsafe(`drop schema if exists t_draft_line cascade`);
       await sql.close();
     }
+  });
+});
+
+describe("ignored_columns and sensitivity tags", () => {
+  test("every column a drafted model leaves out is listed in ignored_columns", async () => {
+    const root = await setup();
+    await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_"]);
+    const customers = parseYamlText(readModel(root, "customers")) as Model;
+    expect(customers.ignored_columns).toEqual(["email"]);
+    const products = parseYamlText(readModel(root, "products")) as Model;
+    expect(products.ignored_columns).toEqual(["name"]);
+    // A model that reads every column has no ignored_columns key.
+    expect(readModel(root, "web_events")).not.toContain("ignored_columns");
+    // Right after a draft, no column of a drafted table is new.
+    const snap = snapshotOf(TABLES);
+    for (const [name, table] of [
+      ["orders", FCT_ORDERS],
+      ["payments", FCT_PAYMENTS],
+      ["customers", DIM_CUSTOMERS],
+      ["products", DIM_PRODUCTS],
+      ["web_events", WEB_EVENTS],
+    ] as const) {
+      const model = parseYamlText(readModel(root, name)) as Model;
+      expect(unreferencedColumns(model, table, snap.dialect).map((c) => c.name)).toEqual([]);
+    }
+    const again = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+    expect(again.json()).toEqual({ source: "wh", updated: [] });
+  });
+
+  test("ignored_columns lists id columns that are not keys, unsupported types and composite keys with no join", () => {
+    const table: SnapshotTable = {
+      schema: "s",
+      name: "shipments",
+      kind: "table",
+      row_count: 100,
+      primary_key: ["shipment_id"],
+      foreign_keys: [{ columns: ["order_id", "line_no"], references: { schema: "s", table: "lines", columns: ["order_id", "line_no"] } }],
+      columns: [
+        col("shipment_id", "integer", p(100)),
+        col("id", "integer", p(100)),
+        col("order_id", "integer", p(40)),
+        col("line_no", "integer", p(5)),
+        col("geom", "geometry"),
+        col("carrier", "varchar", p(3)),
+      ],
+    };
+    const { models } = draftModels(snapshotOf([table]), [table], [], { source: "wh", stripPrefixes: [], knownTables: [table] });
+    // The composite key's columns drafts no field while its target is unknown, nor does the stray id column.
+    expect(models[0]!.ignored_columns).toEqual(["id", "order_id", "line_no", "geom"]);
+    const keys = Object.keys(models[0]!);
+    expect(keys.indexOf("ignored_columns")).toBe(keys.indexOf("open_questions") + 1);
+  });
+
+  test("sensitive names and pii names are tagged with an open question, whatever the column's type", () => {
+    const table: SnapshotTable = {
+      schema: "hr",
+      name: "employees",
+      kind: "table",
+      row_count: 500,
+      primary_key: ["employee_id"],
+      columns: [
+        col("employee_id", "integer", p(500)),
+        col("salary", "decimal(12,2)", p(400)),
+        col("comp_band", "varchar", p(6)),
+        col("manager_notes", "text", p(300)),
+        col("home_address", "varchar", p(300)),
+        col("comment_count", "integer", p(15)),
+        col("department", "varchar", p(12)),
+      ],
+    };
+    const { models } = draftModels(snapshotOf([table]), [table], [], { source: "wh", stripPrefixes: [], knownTables: [table] });
+    const m = models[0]!;
+    const tagsOf = (name: string) => [...m.dimensions, ...m.measures].find((f) => f.name === name)?.tags;
+    expect(tagsOf("salary")).toEqual(["sensitive"]);
+    expect(m.measures.find((f) => f.name === "salary")).toMatchObject({ expr: "salary", agg: "sum", format: "currency", status: "draft" });
+    expect(tagsOf("comp_band")).toEqual(["sensitive"]);
+    expect(tagsOf("manager_notes")).toEqual(["sensitive"]);
+    expect(tagsOf("home_address")).toEqual(["pii"]);
+    // The name list has no type condition: a count named for comments is tagged too.
+    expect(tagsOf("comment_count")).toEqual(["sensitive"]);
+    expect(tagsOf("department")).toBeUndefined();
+    expect(m.open_questions).toContain("home_address looks like personal data and is tagged pii. Who may see it?");
+    expect(m.open_questions).toContain(
+      "salary, comp_band, manager_notes and comment_count look sensitive (the name salary looks like pay, banking or health data; " +
+        "the name comp_band looks like pay, banking or health data; the name manager_notes looks like a credential or free text; " +
+        "the name comment_count looks like a credential or free text) " +
+        "and are tagged sensitive. Who may see them? If everyone may, replace the tag with public.",
+    );
+  });
+});
+
+describe("draft --new-columns", () => {
+  const ORDERS: SnapshotTable = {
+    schema: "analytics",
+    name: "orders",
+    kind: "table",
+    row_count: 1000,
+    primary_key: ["order_id"],
+    columns: [col("order_id", "integer", p(1000)), col("status", "varchar", p(4)), col("amount_cents", "bigint", p(900)), col("legacy_score", "double", p(700))],
+  };
+  const CUSTOMERS: SnapshotTable = {
+    schema: "analytics",
+    name: "customers",
+    kind: "table",
+    row_count: 200,
+    primary_key: ["customer_id"],
+    columns: [col("customer_id", "integer", p(200)), col("region", "varchar", p(5))],
+  };
+  // The owner's file: comments, an approved model and approved fields, and a column ignored on purpose.
+  const OWNER_YAML = `# Orders, as the finance team reads them.
+model: orders
+source: wh
+table: analytics.orders
+status: approved
+approved_by: dana
+approved_at: "2026-01-10"
+description: One row per order.
+grain: One row per order.
+primary_key: [order_id]
+open_questions:
+  - Is amount in cents? # answered: yes
+ignored_columns:
+  - legacy_score   # retired in 2024
+dimensions:
+  # The lifecycle state.
+  - name: status
+    expr: status
+    type: string
+    description: Order lifecycle state.
+    status: approved
+    approved_by: dana
+    approved_at: "2026-01-10"
+
+measures:
+  - name: order_count
+    agg: count
+    description: Orders placed.
+    status: approved
+    approved_by: dana
+    approved_at: "2026-01-10"
+  - name: revenue   # owner-named
+    expr: amount_cents * 0.01
+    agg: sum
+    format: currency
+    description: Order value.
+    status: approved
+    approved_by: dana
+    approved_at: "2026-01-10"
+`;
+
+  async function evolved(extraOrders: SnapshotColumn[], extraCustomers: SnapshotColumn[] = []) {
+    const root = await setup([ORDERS, CUSTOMERS], { include: ["analytics.*"] });
+    mkdirSync(join(root, "models", "wh"), { recursive: true });
+    writeFileSync(modelPath(root, "orders"), OWNER_YAML);
+    writeYaml(modelPath(root, "customers"), {
+      model: "customers",
+      source: "wh",
+      table: "analytics.customers",
+      status: "draft",
+      primary_key: ["customer_id"],
+      dimensions: [{ name: "region", expr: "region", type: "string", status: "draft" }],
+      measures: [],
+    });
+    const before = { orders: readModel(root, "orders"), customers: readModel(root, "customers") };
+    writeJson(
+      join(root, "snapshots", "wh.json"),
+      snapshotOf([
+        { ...ORDERS, columns: [...ORDERS.columns, ...extraOrders] },
+        { ...CUSTOMERS, columns: [...CUSTOMERS.columns, ...extraCustomers] },
+      ]),
+    );
+    return { root, before };
+  }
+
+  interface NewColumnsJson {
+    source: string;
+    updated: { model: string; added: string[]; skipped: { column: string; reason: string }[] }[];
+  }
+
+  test("appends only unreferenced, non-ignored columns and keeps every existing line byte-identical", async () => {
+    const { root, before } = await evolved([
+      col("notes", "varchar", p(40)),
+      col("refund_cents", "bigint", p(60)),
+      col("coupon_code", "varchar", p(995)),
+      col("extra", "json"),
+      col("Legacy_Score", "double", p(5)),
+    ]);
+    const r = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json<NewColumnsJson>()).toEqual({
+      source: "wh",
+      updated: [
+        {
+          model: "orders",
+          added: ["notes", "refund"],
+          skipped: [
+            { column: "coupon_code", reason: "a different value on nearly every row" },
+            { column: "extra", reason: "type json drafts as neither a dimension nor a measure" },
+          ],
+        },
+      ],
+    });
+    const after = readModel(root, "orders");
+    expect(after).toBe(`# Orders, as the finance team reads them.
+model: orders
+source: wh
+table: analytics.orders
+status: approved
+approved_by: dana
+approved_at: "2026-01-10"
+description: One row per order.
+grain: One row per order.
+primary_key: [order_id]
+open_questions:
+  - Is amount in cents? # answered: yes
+  - New column notes (varchar) appeared in analytics.orders; the draft adds the dimension notes, tagged sensitive (the name notes looks like a credential or free text). What does it hold, and should it stay?
+  - New column refund_cents (bigint) appeared in analytics.orders; the draft adds the measure refund. What does it hold, and should it stay?
+  - New column coupon_code (varchar) appeared in analytics.orders; the draft leaves it out (a different value on nearly every row) and lists it in ignored_columns. Should it be a field? If it is added, tag it sensitive (coupon_code has a different value on nearly every row).
+  - New column extra (json) appeared in analytics.orders; the draft leaves it out (type json drafts as neither a dimension nor a measure) and lists it in ignored_columns. Should it be a field?
+  - "Is refund_cents stored in cents? The draft divides it by 100 (expr: refund_cents * 0.01) to report whole currency units; confirm the division."
+  - Which currency are amount_cents and refund_cents in?
+ignored_columns:
+  - legacy_score   # retired in 2024
+  - coupon_code
+  - extra
+dimensions:
+  # The lifecycle state.
+  - name: status
+    expr: status
+    type: string
+    description: Order lifecycle state.
+    status: approved
+    approved_by: dana
+    approved_at: "2026-01-10"
+  - name: notes
+    expr: notes
+    type: string
+    tags:
+      - sensitive
+    status: draft
+
+measures:
+  - name: order_count
+    agg: count
+    description: Orders placed.
+    status: approved
+    approved_by: dana
+    approved_at: "2026-01-10"
+  - name: revenue   # owner-named
+    expr: amount_cents * 0.01
+    agg: sum
+    format: currency
+    description: Order value.
+    status: approved
+    approved_by: dana
+    approved_at: "2026-01-10"
+  - name: refund
+    expr: refund_cents * 0.01
+    agg: sum
+    format: currency
+    status: draft
+`);
+    // Every original line is still there, in order.
+    const lines = after.split("\n");
+    let at = 0;
+    for (const line of before.orders.split("\n")) {
+      at = lines.indexOf(line, at);
+      expect(at).toBeGreaterThanOrEqual(0);
+      at++;
+    }
+    expect(readModel(root, "customers")).toBe(before.customers);
+
+    // Nothing changed since: nothing is reported and the file stays as it is.
+    const again = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+    expect(again.json<NewColumnsJson>()).toEqual({ source: "wh", updated: [] });
+    expect(readModel(root, "orders")).toBe(after);
+    const human = await sl(root, ["draft", "--source", "wh", "--new-columns"]);
+    expect(human.out).toBe("No new columns in wh: every column of a modeled in-scope table is read by a field or listed in ignored_columns.");
+  });
+
+  test("names avoid the model's own fields, a key column says it may join, and a model without the lists gains them", async () => {
+    const { root } = await evolved([col("status_code", "varchar", p(3)), col("customer_id", "integer", p(150))], [col("Revenue", "decimal(10,2)", p(150)), col("region_notes", "text", p(10))]);
+    // The customers model gains a revenue measure; the orders model already has one named revenue.
+    const r = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+    const out = r.json<NewColumnsJson>();
+    expect(out.updated.map((u) => [u.model, u.added])).toEqual([
+      ["customers", ["region_notes", "revenue"]],
+      ["orders", ["status_code", "customer_count"]],
+    ]);
+    const orders = parseYamlText(readModel(root, "orders")) as Model;
+    expect(orders.measures.find((m) => m.name === "customer_count")).toEqual({
+      name: "customer_count",
+      expr: "customer_id",
+      agg: "count_distinct",
+      format: "integer",
+      status: "draft",
+    });
+    expect(orders.open_questions).toContain(
+      "New column customer_id (integer) appeared in analytics.orders; the draft adds the measure customer_count. What does it hold, and should it stay? It looks like a key to analytics.customers; should orders join to it?",
+    );
+    // No join is drafted, and the model's own status stays approved.
+    expect(orders.joins).toBeUndefined();
+    expect(orders.status).toBe("approved");
+    const customers = parseYamlText(readModel(root, "customers")) as Model;
+    expect(customers.status).toBe("draft");
+    expect(customers.ignored_columns).toBeUndefined();
+    expect(customers.measures.map((m) => m.name)).toEqual(["revenue"]);
+    expect(customers.dimensions.find((d) => d.name === "region_notes")!.tags).toEqual(["sensitive"]);
+    expect(customers.open_questions).toContain(
+      "New column region_notes (text) appeared in analytics.customers; the draft adds the dimension region_notes, tagged sensitive (the name region_notes looks like a credential or free text). What does it hold, and should it stay?",
+    );
+    const keys = Object.keys(customers);
+    expect(keys.indexOf("open_questions")).toBe(keys.indexOf("dimensions") - 1);
+  });
+
+  test("--tables limits the models, the focus threshold does not apply and out-of-scope models are skipped", async () => {
+    const { root, before } = await evolved([col("channel", "varchar", p(4))], [col("tier", "varchar", p(3))]);
+    updateYaml(join(root, "semantic.yaml"), (doc) => doc.setIn(["settings", "focus_threshold"], 1));
+    const one = await sl(root, ["draft", "--source", "wh", "--new-columns", "--tables", "analytics.customers", "--json"]);
+    expect(one.json<NewColumnsJson>().updated.map((u) => u.model)).toEqual(["customers"]);
+    expect(readModel(root, "orders")).toBe(before.orders);
+    const bad = await sl(root, ["draft", "--source", "wh", "--new-columns", "--tables", "nope"]);
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain('No table matches "nope"');
+
+    updateYaml(join(root, "sources", "wh.yaml"), (doc) => doc.set("scope", doc.createNode({ include: ["analytics.customers"] })));
+    const scoped = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+    expect(scoped.json<NewColumnsJson>().updated).toEqual([]);
+    expect(readModel(root, "orders")).toBe(before.orders);
+
+    updateYaml(join(root, "sources", "wh.yaml"), (doc) => doc.delete("scope"));
+    const all = await sl(root, ["draft", "--source", "wh", "--new-columns"]);
+    expect(all.code).toBe(0);
+    expect(all.out).toContain("Drafted new columns into 1 model in wh:");
+    expect(all.out).toContain(`  orders (analytics.orders, ${join("models", "wh", "orders.yaml")}): added channel`);
+    expect(all.out).toContain("the model's own status is unchanged");
+  });
+
+  test("an empty list's line comment moves to its key, and --force or --strip-prefix is refused", async () => {
+    const { root } = await evolved([], [col("tier", "varchar", p(3))]);
+    writeFileSync(
+      modelPath(root, "customers"),
+      `model: customers
+source: wh
+table: analytics.customers
+status: draft
+primary_key: [customer_id]
+dimensions: []   # none yet
+measures:
+  - name: customer_count
+    agg: count
+    status: draft
+`,
+    );
+    for (const flag of [["--force"], ["--strip-prefix", "dim_"]]) {
+      const r = await sl(root, ["draft", "--source", "wh", "--new-columns", ...flag]);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain(`${flag[0]} applies only when drafting new models`);
+    }
+    const r = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+    expect(r.json<NewColumnsJson>().updated.map((u) => [u.model, u.added])).toEqual([["customers", ["region", "tier"]]]);
+    expect(readModel(root, "customers")).toBe(`model: customers
+source: wh
+table: analytics.customers
+status: draft
+primary_key: [customer_id]
+open_questions:
+  - New column region (varchar) appeared in analytics.customers; the draft adds the dimension region. What does it hold, and should it stay?
+  - New column tier (varchar) appeared in analytics.customers; the draft adds the dimension tier. What does it hold, and should it stay?
+dimensions: # none yet
+  - name: region
+    expr: region
+    type: string
+    status: draft
+  - name: tier
+    expr: tier
+    type: string
+    status: draft
+measures:
+  - name: customer_count
+    agg: count
+    status: draft
+`);
+  });
+
+  test("a new column named like a unit next to an extract or cast expr is drafted", async () => {
+    const { root } = await evolved([col("year", "integer", p(5)), col("channel", "varchar", p(4))]);
+    updateYaml(modelPath(root, "orders"), (doc) => {
+      const dims = doc.get("dimensions", true) as { items: unknown[] };
+      dims.items.push(doc.createNode({ name: "order_year", expr: "cast(extract(year from now()) as integer)", type: "number", status: "draft" }));
+    });
+    const r = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+    const orders = r.json<NewColumnsJson>().updated.find((u) => u.model === "orders")!;
+    expect([...orders.added, ...orders.skipped.map((x) => x.column)].sort()).toEqual(["channel", "year"].sort());
+    const model = parseYamlText(readModel(root, "orders")) as Model;
+    expect(model.open_questions!.some((q) => q.startsWith("New column year (integer) appeared in analytics.orders;"))).toBe(true);
+  });
+
+  test("draftNewColumns reads incoming join keys, filters and the model's primary key as used", () => {
+    const table: SnapshotTable = {
+      schema: null,
+      name: "accounts",
+      kind: "table",
+      row_count: 100,
+      columns: [col("acct_key", "integer", p(100)), col("is_test", "boolean", p(2)), col("plan", "varchar", p(3)), col("opened_on", "date", p(90))],
+    };
+    const model: Model = {
+      model: "accounts",
+      source: "wh",
+      table: "accounts",
+      status: "draft",
+      primary_key: ["acct_key"],
+      dimensions: [],
+      measures: [{ name: "live_accounts", agg: "count", filter: "not is_test", status: "draft" }],
+    };
+    const other = {
+      model: "orders",
+      source: "wh",
+      table: "orders",
+      status: "draft",
+      dimensions: [],
+      measures: [],
+      joins: [{ name: "account", to: "accounts", keys: [{ from: "acct", to: "plan" }], relationship: "many_to_one", status: "draft" }],
+    } as Model;
+    const r = draftNewColumns(snapshotOf([table]), table, model, [model, other], { source: "wh", stripPrefixes: [], knownTables: [table] });
+    expect(r.columns.map((c) => c.name)).toEqual(["opened_on"]);
+    expect(r.dimensions.map((d) => d.name)).toEqual(["opened_on"]);
+    expect(r.measures).toEqual([]);
+    expect(r.skipped).toEqual([]);
+    expect(r.open_questions).toEqual([
+      "New column opened_on (date) appeared in accounts; the draft adds the dimension opened_on. What does it hold, and should it stay?",
+    ]);
   });
 });

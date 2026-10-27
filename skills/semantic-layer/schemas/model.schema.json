@@ -70,7 +70,16 @@
         "pattern": "^[a-z][a-z0-9_]*$"
       },
       "uniqueItems": true,
-      "description": "Tags, such as pii, that access rules can deny."
+      "description": "Tags that access rules read. pii and sensitive are protected: the model and all its fields are hidden from everyone but the roles that grant the tag in allow.tags. public records that the owner confirmed everyone may see it."
+    },
+    "ignored_columns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true,
+      "description": "Columns of the table left out on purpose; sl draft --new-columns and sl status skip them."
     },
     "open_questions": {
       "type": "array",
@@ -187,7 +196,7 @@
             "pattern": "^[a-z][a-z0-9_]*$"
           },
           "uniqueItems": true,
-          "description": "Tags, such as pii."
+          "description": "Tags that access rules read. pii and sensitive are protected: the field is hidden from everyone but the roles that grant the tag in allow.tags. public records that the owner confirmed everyone may see it although it looks sensitive; it never overrides pii or sensitive."
         },
         "status": {
           "enum": [
@@ -298,7 +307,7 @@
             "pattern": "^[a-z][a-z0-9_]*$"
           },
           "uniqueItems": true,
-          "description": "Tags, such as pii."
+          "description": "Tags that access rules read. pii and sensitive are protected: the field is hidden from everyone but the roles that grant the tag in allow.tags. public records that the owner confirmed everyone may see it although it looks sensitive; it never overrides pii or sensitive."
         },
         "status": {
           "enum": [

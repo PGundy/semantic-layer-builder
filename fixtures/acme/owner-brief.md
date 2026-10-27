@@ -148,3 +148,29 @@ People who use this are in one of three roles:
 ## Figures I trust
 
 The numbers from my own reports are in `fixtures/acme/reference-figures.json`, each with its definition. When asked what a figure should be, or whether a result looks right, compare against that file. For example, 2025 revenue there is the figure finance signs off on. If a result is off, the `common_mistakes` section in that file shows what you get when a rule is missed; say which rule looks missed in plain words ("that looks like it includes test accounts"), rather than quoting the file.
+
+## Later changes (third session only)
+
+Engineering changed the warehouse after our second session, and we changed our access policy. This section applies only when the agent says the warehouse has changed or asks about access again. Until then, answer from the sections above.
+
+**New columns on `fct_orders`.**
+
+- `discount_cents`: the discount given on the order, in cents. `amount_cents` is already after the discount, so it does not change revenue. A total of discounts is useful ("discounts"), counted with the same rules as revenue.
+- `gift_message`: a note the buyer wrote for a gift. Nobody using the chat tool may see it, ever. Leave it out of the layer.
+- `sales_rep_id`: the sales rep credited with the order. Every order has one.
+
+**New in sales.** `dim_sales_reps` has one row per person in sales: `rep_id`, `full_name`, `email`, `region_code` and `manager_id`. `full_name` and `email` are personal data. Reps report to one of three managers (201, 202, 203), who report to the head of sales, Morgan Hale (301). The view `sales_team_closure` pairs every manager with everyone below them, at any depth, as `manager_id` and `member_id`.
+
+**Our new access policy.** We want it simple: everyone at Acme may see every approved figure, with these exceptions.
+
+- Personal data (customer email, phone, first and last name, and sales people's names and emails): only analysts. Analysts are people whose `department` is `analytics`.
+- Refunds and net revenue: only people whose `department` is `finance` or `analytics`.
+- People in sales (`department` is `sales`) see only orders credited to them or to someone below them in the sales hierarchy. Their user attribute `employee_id` is their `rep_id`. A rep sees their own orders; a manager sees their team's; Morgan sees every order. This replaces the old region rule, so the region-based sales rep checks go away.
+- Marketing no longer needs its own restrictions.
+- Anyone with no department attribute gets the everyone view.
+
+**Figures I know for 2025** (same revenue rules as always):
+
+- Revenue on orders credited to manager 201's team: $130,391.03 from 957 orders. Manager 202's team: $115,211.49 from 873. Manager 203's team: $55,448.30 from 409.
+- Rep 101 (Avery Patel): $34,938.49 from 251 orders.
+- Discounts on counted 2025 orders: $2,340.00 across 311 orders.

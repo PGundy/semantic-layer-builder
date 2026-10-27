@@ -112,6 +112,7 @@ sl validate
 - Add tables: `sl scope --source warehouse --include 'mkt_*'` to preview, then `--write`. Existing patterns stay.
 - Drop a pattern: `sl scope --source warehouse --remove 'stg_*'`, preview, then `--write`. Models already drafted for those tables stay on disk; they simply leave scope.
 - After widening, run `sl profile` and `sl draft` again for the new tables (`--tables` names them). `sl draft` never touches an existing model; `sl profile --refresh` reprofiles tables that already have a profile.
+- A rerun of `sl introspect` lists the tables added since the last snapshot. A new table that matches an include pattern is in scope at once, and `sl status` routes it to profile and draft; one that exact names do not cover stays out until you ask the owner and add it.
 - `sl tables --source warehouse --all` lists every table with its scope and modeling state, useful when the owner asks "what did we leave out?".
 
 ## Deferring a table

@@ -7,7 +7,8 @@ import { qualifiedName } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
 import { filterInScope } from "../lib/patterns.ts";
 import { executePlan } from "../lib/plan.ts";
-import { loadProject, loadSnapshot, loadSource, paths, projectSettings, saveSnapshot } from "../lib/project.ts";
+import { listModels, loadProject, loadSnapshot, loadSource, paths, projectSettings, saveSnapshot } from "../lib/project.ts";
+import { changeLines, diffSnapshots, modeledTables } from "../lib/snapshot-diff.ts";
 import { introspectionPlan, schemaMatcher } from "../lib/sql/introspection.ts";
 import type { Scope, Snapshot, SnapshotTable, SourceConfig, TableKind } from "../lib/types.ts";
 
@@ -122,6 +123,7 @@ const spec: CommandSpec = {
       snapshot.tables.sort((a, b) => `${a.schema ?? ""}.${a.name}`.localeCompare(`${b.schema ?? ""}.${b.name}`));
     }
     saveSnapshot(ctx.root, snapshot);
+    const changes = previous ? diffSnapshots(previous, snapshot) : null;
 
     const counts = snapshotCounts(snapshot);
     const inScope = filterInScope(source.scope, snapshot.tables).length;
@@ -144,6 +146,7 @@ const spec: CommandSpec = {
           no_row_count: unknownRows?.count ?? 0,
           ...(unknownRows ? { row_count_note: unknownRows.note } : {}),
           snapshot: snapshotPath,
+          changes,
           next,
         }),
       );
@@ -153,6 +156,8 @@ const spec: CommandSpec = {
           `${counts.primary_keys} primary keys, ${counts.foreign_keys} foreign keys.`,
       );
       ctx.out(`Wrote ${relative(ctx.cwd, snapshotPath) || snapshotPath}.`);
+      const modeled = changes ? modeledTables(snapshot, () => listModels(ctx.root, source.source).map((l) => l.model), source.scope) : undefined;
+      for (const line of changeLines(changes, source.source, modeled)) ctx.out(line);
       if (unknownRows) ctx.out(unknownRows.note);
       ctx.out(next);
     }

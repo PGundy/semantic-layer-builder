@@ -16,7 +16,9 @@ Read the draft model and the table's profile in `snapshots/<source>.json` (each 
 - per-unit prices (`unit_price`, `price`, `unit_cost`, `list_price`, `*_rate`) drafted as `avg`, never `sum`, and, when the table has a quantity column, a draft `line_total` measure (sum of quantity times price);
 - a count per foreign key named after its join (`customer_count`), left out when the target table has 20 rows or fewer;
 - additive counts (`impressions`, `clicks`, `views`, `visits`, `sessions`, `signups`, `conversions`, `installs`, `opens`, `events`, `pageviews`, `sends`) drafted as `sum` with `format: integer`; any other number with no unit in its name is drafted as `avg`, with an open question asking whether people total or average it;
-- time dimensions named after their column (`created_at`). Rename each to the business name of that date (`order_date`) before its readback, and use the same name in every model a metric combines (`orders.order_date` and `refunds.order_date`).
+- time dimensions named after their column (`created_at`). Rename each to the business name of that date (`order_date`) before its readback, and use the same name in every model a metric combines (`orders.order_date` and `refunds.order_date`);
+- `tags: [pii]` on columns that look personal by name (`email`, `phone`, `address`, `date_of_birth`, government IDs), and `tags: [sensitive]` on ones that look sensitive by name (pay such as `salary`, `bonus` or `comp_band`; bank, card and account numbers; health; passwords, secrets, tokens and API keys; free text such as `notes`, `comment`, `message` or `body`), each with an open question asking who may see it;
+- `ignored_columns`: the columns it leaves out of the model on purpose (by profile, a text column that is different on nearly every row and is not a key, which gets no tag but an open question naming the tag to add, `pii` or `sensitive`, if the owner wants it as a field; anything else it skips that is not a key or a join key), so `sl draft --new-columns` and `sl status` do not raise them again.
 
 A model's `dimensions` and `measures` keys are required; write `[]` when a model has none.
 
@@ -38,7 +40,7 @@ Ask in this order, skipping what the facts already settle.
 | Time zones, timestamp with a time zone | Ask for every time dimension: "`created_at` is stored as an exact moment. When someone says 'orders on March 3rd' or 'March revenue', which time zone is that day or month in: UTC, or the business's local time (which zone)?" |
 | Time zones, timestamp without a time zone | "`created_at` has no time zone. Is it recorded in UTC or in local time? And when people say 'a day', which zone do they mean?" |
 | Which date is "the" date | "There's `created_at`, `paid_at` and `shipped_at`. When someone says 'orders in March', which one do they mean?" |
-| Sensitive columns | "`email`, `phone` and `shipping_address` identify people. Should most users be unable to see them?" |
+| Sensitive columns | "`email`, `phone` and `shipping_address` identify people, so the draft tagged them personal, and `notes` is tagged sensitive. Once approved, everyone who uses the tools sees a field unless it carries such a tag. Keep these hidden from most people, and who may see them? Should any of them be visible to everyone?" A field the owner says everyone may see gets `public` in place of the tag. |
 | Empty values | "`coupon_code` is empty in 92% of rows. Does empty mean no coupon was used?" |
 | Ownership | "If a number looks wrong, who would know the answer? Anything you're unsure of, I'll note as an open question for them." |
 
@@ -102,7 +104,7 @@ dimensions:
     status: draft
 ```
 
-A sensitive column:
+A sensitive column. `pii` and `sensitive` hide a field from everyone unless a role they hold is allowed the tag (`access.md`); `public` records that the owner confirmed everyone may see a field that looks sensitive, and never sits beside `pii` or `sensitive`:
 
 ```yaml
   - name: email
@@ -218,7 +220,9 @@ Read back every synonym you will write ("People also call it sales or GMV"), and
 
 - **Measure**: "So *revenue* is the total of `amount_cents` divided by 100, in US dollars, leaving out cancelled orders and orders from test accounts. Orders whose customer was deleted are kept. Shipping and tax are not included. People also call it sales or GMV. Measured from the data, no need to confirm: 2025 comes to $1,204,330.50 from 9,012 orders. Approve?"
 - **Dimension**: "*Order date* is when the customer placed the order, with days and months in UTC, and it's the date we use for 'orders in March'. Measured from the data, no need to confirm: orders run from March 2019 to today. Approve?"
-- **Table**: "The *orders* table has one row per order, each with its own `order_id`, covering web store orders. Test orders are excluded from every number. Measured from the data, no need to confirm: 10,000 rows since 2019, each `order_id` once. Approve?"
+- **Table**: "The *orders* table has one row per order, each with its own `order_id`, covering web store orders. Test orders are excluded from every number. Everyone will be able to see this once approved; is that right? Measured from the data, no need to confirm: 10,000 rows since 2019, each `order_id` once. Approve?"
+
+Access is open by default (`access.md`), so in open mode, or before `access.yaml` exists, every table readback says "everyone will be able to see this once approved; is that right?", and so does the readback of a field approved into a table already signed off. Name what stays hidden when the table holds some ("everyone except the email and phone columns, which are tagged personal"). A no is an access exception: write it down before you approve the table (a tag in the model file, or a restriction or denial in `access.yaml`), and check with `sl access` that it is hidden for a reason other than `draft`. In `mode: closed`, say instead which roles will see it.
 
 Put the sign-offs of one round trip in their own numbered block, separate from the open questions, so a "yes to 1 to 4" is unambiguous. Then run, only after an explicit yes to each:
 
@@ -241,12 +245,41 @@ An approved measure needs a `description`; an approved model needs `grain` and `
 
 ## Leaving things for later
 
+- A column the owner does not want in the layer goes into the model's `ignored_columns` (`ignored_columns: [raw_payload]`), and its drafted field, if any, is removed; `sl status` and `sl draft --new-columns` then stop raising it. A column `sl draft` listed there that the owner does want: remove it from `ignored_columns` and add its field by hand with `status: draft`.
 - A table the owner wants to leave for later leaves scope: `sl scope --source <s> --exclude <table>` to preview, then the same with `--write` (`scoping.md`). Name it in the handoff.
 - A field the owner skips in an otherwise agreed table stays draft. The table can still be approved, and `sl status` moves on to the later phases once no draft models remain in scope; it reports the leftover fields in `draft_fields` and `models_with_draft_fields`, and draft metrics and goldens in `draft_metrics` and `draft_goldens`. `next_step` can reach `done` with them left deliberately; name each in the handoff, and approve after a readback any draft field that a role's agreed breakdown or a golden relies on.
 
 ### Warnings that stand
 
 A `sl validate` warning left on purpose has its reason written in the file it points at: the field's `description` ("reads the column on purpose", "waiting for the tool: ..."), or an open question on the model or in `access.yaml`. A resumed session fixes every warning without such a reason (`SKILL.md`, Phase 0). A fix to an approved item goes through `sl approve --target <ref> --revoke`, the edit, a readback and approval; after fixing a warning on an approved measure or golden, run `sl goldens check`, and when the rows changed, show the new figure and confirm again only on the owner's yes (`verification.md`).
+
+## Keeping the layer current
+
+Rerun `sl introspect --source <s>` on the schedule the owner agreed, such as weekly, and whenever the owner says tables changed (`sl import` with a fresh export on the shared-context path; `--emit-sql` and `--results` on warehouse dialects). It prints what changed since the last snapshot, and `--json` carries it as `changes`: `tables_added`, `tables_removed`, and per table the columns `added` (with type), `removed` and `retyped` (`from`, `to`). Tell the owner in plain words ("`fct_orders` gained `coupon_code` and `channel` and lost `discount_cents`"), then run `sl validate` and `sl status --json`, which lists per source `missing_columns` (`model`, `field`, `column`) and `new_columns` (`model`, `column`, `type`).
+
+**Missing columns come first.** A field that reads a column the table no longer has gives a wrong answer or fails: `sl validate` errors on it, and when the field is approved `next_step` is the `drift` phase ("the table changed; read the affected items back to the owner"). For each approved item affected, and each approved metric and golden that uses it:
+
+1. Say what changed and what the item did with the column: "`discount_cents` is gone from `fct_orders`. Revenue subtracted it, so revenue can't be computed as approved."
+2. Ask what replaced it. A rename shows as a removed column and an added one with a similar name and type ("`discount_cents` went and `discount_amount_cents` arrived; same thing?"); a column moved to another table may now be a join reference.
+3. `sl approve --target <ref> --revoke`, edit the field, read it back and approve it on a yes; or remove the field, which `sl validate` then traces to the metrics and goldens that used it.
+4. `sl goldens check`: when the rows changed, show the new figure and confirm again only on the owner's yes (`verification.md`).
+
+A draft field reading a missing column is fixed or removed the same way, without the revoke. Rerun `sl check-join` for a join whose key column changed (`joins.md`).
+
+**Retyped columns.** Only the rerun's output shows a retype: `sl status` does not list it, and the next rerun compares against the updated snapshot. As soon as the rerun shows one, before the missing-column readbacks, write an open question on each model with a field that reads a retyped column ("<column> changed from <from> to <to> on <date>; read back <fields>"), and delete it after the readback. Read back each approved field that reads a retyped column when its unit or meaning may have changed: cents that became decimal dollars, a number turned text, a date turned a timestamp (ask its time zone).
+
+**New tables.** A new table that matches a scope pattern is in scope already; `sl status` routes it to profile, draft and the interview like any other. Exact names do not pick up new tables: ask whether to add it (`scoping.md`).
+
+**New columns.** Profile them, then draft them into the existing models:
+
+```
+sl profile --source warehouse --tables fct_orders --refresh
+sl draft --source warehouse --new-columns --tables fct_orders
+```
+
+`--new-columns` works on every in-scope model, or the tables `--tables` names, whatever `focus_threshold` is. For each existing model, every column of its table that no field reads (bare columns in an `expr` or `filter`, join keys, `primary_key`) and that `ignored_columns` does not list becomes a draft dimension or measure by the same rules as a new model, sensitivity tags included, each with an open question ("New column coupon_code (varchar) appeared in public.fct_orders; ..."). Columns the rules skip go into `ignored_columns` with an open question. Approved items, comments and the model's own `status` stay as they were; `--json` lists per model the fields `added` and the columns `skipped` with the reason.
+
+Interview only the new fields, as a short batch of their own: the same questions, guesses labelled as guesses, readbacks ending in "Approve?". In open mode each new field's readback says that everyone will be able to see it once approved, unless it carries a protected tag; settle its tag first. A column the owner does not want goes into `ignored_columns` (Leaving things for later). Then `sl validate`, `sl status` and `sl goldens check`.
 
 ## Keeping momentum
 

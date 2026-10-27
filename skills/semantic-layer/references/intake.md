@@ -60,7 +60,7 @@ sl introspect --source warehouse
 sl tables --source warehouse
 ```
 
-`introspect` captures schemas, tables, columns, types, declared keys and row estimates. Rerun it when the owner adds tables. Views, including every view of a DuckDB lake, have no row count yet; introspect says so ("5 views have no row count yet; sl profile measures them.") and `sl tables` shows `?` until `sl profile` runs. When the owner needs sizes to choose a focus, profile the candidate tables first or count one with `sl run --source <s> --sql "select count(*) from <view>"`. Then go to scoping.
+`introspect` captures schemas, tables, columns, types, declared keys and row estimates. Rerun it when the owner adds tables or says tables changed, and on the schedule the owner agreed. A rerun prints what changed since the previous snapshot, tables added and removed and columns added, removed and retyped, and `--json` carries it as `changes`; `sl import` does the same when a source already has a snapshot. What to do with each change is in `interview-guide.md` (Keeping the layer current). Views, including every view of a DuckDB lake, have no row count yet; introspect says so ("5 views have no row count yet; sl profile measures them.") and `sl tables` shows `?` until `sl profile` runs. When the owner needs sizes to choose a focus, profile the candidate tables first or count one with `sl run --source <s> --sql "select count(*) from <view>"`. Then go to scoping.
 
 Do this in the first turn of a new project, right after `sl init` and `sl add-source` and before asking any scoping question (SKILL.md Phase 0): a later turn resumes only from what is written under the semantic root.
 

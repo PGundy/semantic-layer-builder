@@ -14,6 +14,7 @@ Money is in integer cents and timestamps are UTC. The data carries the traps a r
 | `load-postgres.ts` | Drops and recreates a Postgres schema and loads the warehouse CSVs into it. |
 | `reference-figures.ts` | Computes `reference-figures.json` from the files with DuckDB. |
 | `reference-figures.json` | The 2025 figures the owner knows from their reports, each with its definition, and the figures common mistakes produce. |
+| `evolve.sql` | A later schema change: new order columns, a sales team with managers and a closure view. Apply it after loading to test how the skill keeps a layer current. |
 | `owner-brief.md` | The brief for whoever plays the data owner, Dana Ruiz, in an end-to-end run. |
 
 ## Regenerate

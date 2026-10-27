@@ -74,6 +74,10 @@ When `relationship` in the YAML differs from `suggested_relationship`, change th
 
 Only `many_to_one` and `one_to_one` joins carry join references and request fields on other models; a `one_to_many` join never does, because it repeats the left model's rows.
 
+## Closure models for span of control
+
+A span-of-control row filter (`access.md`) reads a closure model, one row per manager and member pair at any depth, through its `hierarchy` rule, not through a join: the filtered model needs no join to it, and the compiler reads it without its own row filters. Model it like any other table, with grain "one row per manager and member pair" and the pair as its `primary_key`, and check with the owner that a director is paired with everyone below them, not only their direct reports.
+
 ## Joins only within a source
 
 A join's `to` is a model in the same source. When the owner wants to connect tables in two sources (warehouse orders with lake web sessions), do not write the join: record it as an open question on both models, for example "Connect `lake.sessions.order_id` to `warehouse.orders` once both live in one engine", and list it in the handoff.
@@ -93,4 +97,4 @@ sl approve --target warehouse.orders.customer --by "Dana Ruiz"
 sl validate
 ```
 
-`sl validate` warns about an approved join without `evidence`. Evidence also records the keys and the target model (`to`) it measured, and `sl validate` warns when they differ from the join's current `keys` or `to`; evidence that does not record them gives no such warning. Rerun `sl check-join` after the data, the keys or the target change, then read the join back again. Renaming a join keeps its evidence, since the measurement does not depend on the name; update every join reference that uses the old name (`sl validate` reports them).
+`sl validate` warns about an approved join without `evidence`. Evidence also records the keys and the target model (`to`) it measured, and `sl validate` warns when they differ from the join's current `keys` or `to`; evidence that does not record them gives no such warning. Rerun `sl check-join` after the data, the keys or the target change, including when a rerun of `sl introspect` shows a key column removed, renamed or retyped (`interview-guide.md`, Keeping the layer current), then read the join back again. Renaming a join keeps its evidence, since the measurement does not depend on the name; update every join reference that uses the old name (`sl validate` reports them).

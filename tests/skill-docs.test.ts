@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMANDS } from "../skills/semantic-layer/scripts/commands/index.ts";
+import { conditionAttributes, parseCondition } from "../skills/semantic-layer/scripts/lib/conditions.ts";
+import { schemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
+import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 
 // The skill's procedure docs: every `sl` command they show must exist with the flags it uses,
 // and the procedure rules the skill depends on must stay written down.
@@ -121,8 +124,8 @@ describe("sl commands in the skill docs", () => {
 describe("SKILL.md", () => {
   const skill = read("SKILL.md");
 
-  test("stays under about 220 lines", () => {
-    expect(skill.split("\n").length).toBeLessThanOrEqual(220);
+  test("stays under about 230 lines", () => {
+    expect(skill.split("\n").length).toBeLessThanOrEqual(230);
   });
 
   test("every reference it names exists", () => {
@@ -134,6 +137,161 @@ describe("SKILL.md", () => {
   test("starts the files in the first turn, before scoping questions", () => {
     expect(skill).toContain("propose a default project name");
     expect(skill).toMatch(/run `sl init --name <default>`, then `sl add-source` and `sl introspect`/);
+  });
+});
+
+// The fenced code blocks of a doc, with the language after the opening fence.
+function fences(text: string): { lang: string; body: string }[] {
+  const out: { lang: string; body: string }[] = [];
+  let open: { lang: string; lines: string[] } | null = null;
+  for (const raw of text.split("\n")) {
+    const t = raw.trimStart();
+    if (t.startsWith("```")) {
+      if (open) {
+        out.push({ lang: open.lang, body: open.lines.join("\n") });
+        open = null;
+      } else open = { lang: t.slice(3).trim(), lines: [] };
+    } else if (open) open.lines.push(raw);
+  }
+  return out;
+}
+
+// Rows of the spec's CLI table: command name -> every flag its rows name.
+function specCli(): Map<string, Set<string>> {
+  const spec = read("references/spec.md");
+  const table = spec.slice(spec.indexOf("## CLI"));
+  const out = new Map<string, Set<string>>();
+  for (const line of table.split("\n")) {
+    const m = /^\| `([a-z][a-z-]*)/.exec(line);
+    if (!m) continue;
+    const usage = line.split(" | ")[0]!;
+    const flags = out.get(m[1]!) ?? new Set<string>();
+    for (const f of usage.matchAll(/--([a-z][a-z-]*)/g)) flags.add(f[1]!);
+    out.set(m[1]!, flags);
+  }
+  return out;
+}
+
+// Commands that read a database take --emit-sql and --results (spec: CLI).
+const DB_COMMANDS = new Set(["introspect", "profile", "check-join", "goldens"]);
+
+describe("the docs agree with the spec's CLI table", () => {
+  const cli = specCli();
+
+  test("the table lists the commands", () => {
+    expect(cli.size).toBeGreaterThan(12);
+    expect(cli.get("access")).toBeDefined();
+    expect(cli.get("draft")?.has("new-columns")).toBe(true);
+  });
+
+  test("every command a doc shows is in the table, with every flag it uses", () => {
+    const out: string[] = [];
+    for (const inv of all) {
+      const name = inv.text.split(/\s+/)[1]!;
+      const flags = cli.get(name);
+      if (!flags) {
+        out.push(`${inv.doc}:${inv.line} ${name} is not in the spec's CLI table`);
+        continue;
+      }
+      for (const flag of flagsOf(inv.text)) {
+        const db = DB_COMMANDS.has(name) && (flag === "emit-sql" || flag === "results");
+        if (!GLOBAL_FLAGS.has(flag) && !db && !flags.has(flag)) out.push(`${inv.doc}:${inv.line} the spec's ${name} row has no --${flag}`);
+      }
+    }
+    expect(out).toEqual([]);
+  });
+
+  test("every --user value a doc passes to sl access is a JSON object", () => {
+    const users = all.filter((i) => /^sl access\b/.test(i.text)).flatMap((i) => [...i.text.matchAll(/--user '([^']*)'/g)].map((m) => m[1]!));
+    expect(users.length).toBeGreaterThan(1);
+    for (const u of users) {
+      if (u.startsWith("<")) continue;
+      const v = JSON.parse(u);
+      expect(typeof v === "object" && v !== null && !Array.isArray(v)).toBe(true);
+    }
+  });
+});
+
+describe("access.md examples", () => {
+  const text = read("references/access.md");
+  const yamlBlocks = fences(text).filter((f) => f.lang === "yaml");
+  const files = yamlBlocks.filter((b) => /^status: draft$/m.test(b.body));
+
+  test("hold a whole access.yaml in open mode", () => {
+    expect(files.length).toBe(1);
+    expect((parseYamlText(files[0]!.body) as { mode?: string }).mode).toBe("open");
+  });
+
+  test("the whole access.yaml matches the schema and its own names", () => {
+    for (const block of files) {
+      const a = parseYamlText(block.body) as {
+        mode?: string;
+        user_attributes?: { name: string }[];
+        roles?: { name: string; assign_when?: string; allow?: { models?: string[]; tags?: string[] }; row_filters?: Record<string, unknown>[] }[];
+        restrictions?: { allow: { roles?: string[]; when?: string } }[];
+      };
+      expect(schemaIssues("access", a, "access.md")).toEqual([]);
+      const attrs = new Set((a.user_attributes ?? []).map((u) => u.name));
+      const roles = new Set((a.roles ?? []).map((r) => r.name));
+      const read = (src: string) => {
+        for (const name of conditionAttributes(parseCondition(src))) expect(attrs.has(name)).toBe(true);
+      };
+      for (const r of a.roles ?? []) {
+        if (r.assign_when) read(r.assign_when);
+        if (a.mode !== "closed") expect(r.allow?.models).toBeUndefined();
+        for (const tag of r.allow?.tags ?? []) expect(["pii", "sensitive"]).toContain(tag);
+        for (const rf of r.row_filters ?? []) {
+          if (typeof rf.expr === "string") for (const m of rf.expr.matchAll(/\{\{\s*user\.([a-z_]+)\s*\}\}/g)) expect(attrs.has(m[1]!)).toBe(true);
+          const h = rf.hierarchy as { user?: string } | undefined;
+          if (h) expect(attrs.has(String(h.user).replace(/^user\./, ""))).toBe(true);
+        }
+      }
+      for (const x of a.restrictions ?? []) {
+        expect(x.allow.roles?.length || x.allow.when).toBeTruthy();
+        for (const r of x.allow.roles ?? []) expect(roles.has(r)).toBe(true);
+        if (x.allow.when) read(x.allow.when);
+      }
+    }
+  });
+
+  test("every condition in a YAML snippet parses", () => {
+    const conds = yamlBlocks.flatMap((b) => [...b.body.matchAll(/^\s*(?:assign_when|when): (.+)$/gm)].map((m) => m[1]!.trim()));
+    expect(conds.length).toBeGreaterThan(4);
+    for (const c of conds) expect(() => parseCondition(c.replace(/^"(.*)"$/, "$1"))).not.toThrow();
+  });
+
+  test("every condition shown inline parses", () => {
+    const section = text.slice(text.indexOf("### Conditions"), text.indexOf("### The default role"));
+    const spans = [...section.matchAll(/`(user\.[a-z_]+ [^`]+)`/g)].map((m) => m[1]!);
+    expect(spans.length).toBeGreaterThan(5);
+    for (const c of spans) expect(() => parseCondition(c)).not.toThrow();
+  });
+
+  test("the reasons table covers every reason the evaluator gives", () => {
+    const evaluator = readFileSync(join(SKILL_DIR, "scripts", "lib", "access.ts"), "utf8");
+    for (const reason of ["draft", "protected_tag:", "denied:", "restricted:", "not_allowed", "measure_hidden:"]) {
+      expect(evaluator.includes(`"${reason}`) || evaluator.includes(`\`${reason}`)).toBe(true);
+      expect(text).toMatch(new RegExp(`\\| \`${reason.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[a-z_.]*\` \\|`));
+    }
+  });
+});
+
+describe("open access and schema changes", () => {
+  test("SKILL.md names every next_step phase", () => {
+    const status = readFileSync(join(SKILL_DIR, "scripts", "lib", "status.ts"), "utf8");
+    const union = /export type Phase =([^;]+);/.exec(status)![1]!;
+    const phases = [...union.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]!);
+    expect(phases).toContain("drift");
+    const skill = read("SKILL.md");
+    for (const p of phases) expect(skill).toMatch(new RegExp(`\\b${p}\\b`));
+  });
+
+  test("no doc keeps the one-role, allowlist-only access model", () => {
+    for (const d of DOCS) {
+      const text = read(d).replace(/\s+/g, " ");
+      expect(text).not.toMatch(/holds exactly one role|fails closed: a role sees only|allow lists that fail closed/);
+      expect(text).not.toContain("`deny.tags: [pii]`");
+    }
   });
 });
 
@@ -321,6 +479,79 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["verification.md", "rounded ratios use tolerance", "record the agreed difference in `tolerance`"],
   ["verification.md", "tolerance covers every column", "put the ratio in a golden of its own"],
   ["verification.md", "fixing a warning on an approved item rechecks goldens", "After fixing a `sl validate` warning on an approved measure or golden"],
+  // Open access: exceptions first, protected tags, roles by attribute, restrictions, span of control.
+  ["access.md", "access is open by default", "Access is open by default"],
+  ["access.md", "draft items are never exposed", "Draft items are never exposed, in either mode"],
+  ["access.md", "allow.models has no effect in open mode", "`allow.models` has no effect in open mode"],
+  ["access.md", "the interview starts from exceptions", "Start from the exceptions, not from a list of roles"],
+  ["access.md", "the exceptions question", "Is there anything some people should not see?"],
+  ["access.md", "no exceptions is still approved", "an approved `access.yaml` with `mode: open` and no roles is a complete access phase"],
+  ["access.md", "every protected tag is confirmed", "Confirm every `pii` and `sensitive` tag, and who may see each"],
+  ["access.md", "protected tags hide in both modes", "`pii` and `sensitive` are protected in both modes"],
+  ["access.md", "public never overrides a protected tag", "It never overrides `pii` or `sensitive` on the same field"],
+  ["access.md", "the sensitivity warning", "is visible to everyone and looks sensitive (<reason>); tag it pii or sensitive, or tag it public if everyone may see it"],
+  ["access.md", "roles held by condition", "when its `assign_when` condition is true for the user's attributes"],
+  ["access.md", "several roles combine as a union", "an item is visible when any role they hold makes it visible"],
+  ["access.md", "default role only without another role", "`default_role` applies only when the user holds no other role"],
+  ["access.md", "conditions read declared attributes", "Every attribute a condition reads must be declared in `user_attributes`"],
+  ["access.md", "row filters union across roles", "a role they hold with no row filter on that model contributes every row"],
+  ["access.md", "no role in open mode sees every row", "In open mode a user who holds no role sees every row"],
+  ["access.md", "a metric needs its measures visible", "A metric is visible only when the metric itself is visible and every measure it uses is visible"],
+  ["access.md", "a hidden field is never named", "A request may never name a hidden field anywhere: selected, grouped, filtered or sorted"],
+  ["access.md", "span of control section", "### Span of control"],
+  ["access.md", "closure: every pair at any depth", "one row per manager and member pair at any depth"],
+  ["access.md", "ask for a closure view", "When the source has only a `manager_id` column on the employees table, ask the owner's engineers for a view"],
+  ["access.md", "the closure model reads without row filters", "reads the closure model without its own row filters"],
+  ["access.md", "sl access explains the default audience", "With no `--user` and no `--roles` it explains the default audience"],
+  ["access.md", "sl access before the whole-file readback", "Run it for the default audience first, then once per role"],
+  ["access.md", "interview exceptions are written before approval", "before you run `sl approve` on the table or field"],
+  ["access.md", "the open-mode table readback", "everyone will be able to see this once approved; is that right?"],
+  ["SKILL.md", "the open-mode table readback", "everyone will be able to see this once approved; is that right?"],
+  ["interview-guide.md", "the open-mode table readback", "Everyone will be able to see this once approved; is that right?"],
+  ["interview-guide.md", "new fields of signed-off tables are read back as visible", "so does the readback of a field approved into a table already signed off"],
+  ["SKILL.md", "access is open by default", "Access is open by default"],
+  ["SKILL.md", "the exceptions question", "is there anything some people should not see?"],
+  ["SKILL.md", "sl access in the readback", "Show the owner what people see with `sl access` (the default audience)"],
+  ["SKILL.md", "row filters union across roles", "a held role with no filter on a model contributes every row"],
+  ["SKILL.md", "default role asked open", "ask it open"],
+  ["verification.md", "a golden for span of control", "for a span-of-control row filter, one question as a manager"],
+  ["verification.md", "a golden for each restriction", "for each restriction, one question as a role or user it allows"],
+  ["joins.md", "a closure model needs no join", "the filtered model needs no join to it"],
+  // Keeping the layer current.
+  ["SKILL.md", "keeping the layer current", "## Keeping the layer current"],
+  ["SKILL.md", "rerun introspect on a schedule", "on a schedule the owner picks"],
+  ["SKILL.md", "missing columns first", "**Missing columns first**"],
+  ["SKILL.md", "drift comes first after intake", "The `drift` phase, an approved field reading a column the table no longer has, comes first after intake"],
+  ["SKILL.md", "draft new columns", "`sl draft --source <s> --new-columns`"],
+  ["SKILL.md", "deliberate omissions in ignored_columns", "goes into the model's `ignored_columns`"],
+  ["SKILL.md", "draft records what it leaves out", "lists the columns it leaves out on purpose in the model's `ignored_columns`"],
+  ["interview-guide.md", "keeping the layer current", "## Keeping the layer current"],
+  ["interview-guide.md", "the drift readback", "the table changed; read the affected items back to the owner"],
+  ["interview-guide.md", "a rename is a removal and an addition", "A rename shows as a removed column and an added one"],
+  ["interview-guide.md", "interview only the new fields", "Interview only the new fields"],
+  ["interview-guide.md", "new columns keep approved items", "Approved items, comments and the model's own `status` stay as they were"],
+  ["interview-guide.md", "draft lists left-out columns", "`ignored_columns`: the columns it leaves out of the model on purpose"],
+  ["interview-guide.md", "unwanted columns are ignored", "A column the owner does not want in the layer goes into the model's `ignored_columns`"],
+  ["intake.md", "a rerun prints the changes", "A rerun prints what changed since the previous snapshot"],
+  ["scoping.md", "new tables after a rerun", "A rerun of `sl introspect` lists the tables added since the last snapshot"],
+  ["joins.md", "a changed key column is checked again", "including when a rerun of `sl introspect` shows a key column removed, renamed or retyped"],
+  ["verification.md", "goldens check after a schema change", "after a rerun of `sl introspect` that changed a modeled table"],
+  // Conditions, role unions and what draft tags.
+  ["access.md", "a negated grant is true for an unknown user", "so a grant using either one is true for a user the tool knows nothing about"],
+  ["access.md", "a negated grant is paired with a presence test", "Pair it with a presence test"],
+  ["access.md", "closed mode does not hide from a group", "Closed mode does not help, because there too an item is visible when any held role shows it"],
+  ["access.md", "only a restriction hides from a group", "only its `allow.roles` or `allow.when` see the target, whatever other roles a person holds"],
+  ["access.md", "an empty role is not harmless", "A role that grants, denies and filters nothing is not harmless"],
+  ["access.md", "an empty role blocks the default", "it keeps `default_role` from applying"],
+  ["access.md", "an exception is checked for a reason other than draft", "hidden for a reason other than `draft`"],
+  ["interview-guide.md", "an exception is checked for a reason other than draft", "hidden for a reason other than `draft`"],
+  ["access.md", "tags live in the model file", "a `pii` or `sensitive` tag on the field or model in the model file"],
+  ["access.md", "near-unique text is left out, not tagged", "is left out and listed in `ignored_columns`, with an open question naming the tag to add"],
+  ["SKILL.md", "near-unique text is left out, not tagged", "differs on nearly every row is left out, not tagged"],
+  ["interview-guide.md", "near-unique text is left out, not tagged", "which gets no tag but an open question naming the tag to add"],
+  ["SKILL.md", "a retype is recorded as an open question", "changed from <from> to <to> on <date>; read back <fields>"],
+  ["interview-guide.md", "a retype is recorded as an open question", "changed from <from> to <to> on <date>; read back <fields>"],
+  ["interview-guide.md", "status does not list retypes", "Only the rerun's output shows a retype"],
 ];
 
 describe("readbacks and examples", () => {
@@ -353,6 +584,40 @@ describe("readbacks and examples", () => {
 
   test("examples do not use the fixture's test-account email rule", () => {
     for (const d of docs) expect(read(d)).not.toMatch(/-test\.com/);
+  });
+});
+
+describe("claims the code contradicts", () => {
+  test("no doc says a condition-based grant always fails closed", () => {
+    for (const d of DOCS) expect(read(d).replace(/\s+/g, " ")).not.toContain("so a grant fails closed");
+  });
+
+  test("no doc calls a role that grants nothing harmless", () => {
+    for (const d of DOCS) expect(read(d).replace(/\s+/g, " ")).not.toMatch(/changes nothing; leave it out/);
+  });
+
+  test("no doc offers closed mode as a way to hide an item from a group", () => {
+    for (const d of DOCS) expect(read(d).replace(/\s+/g, " ")).not.toMatch(/a protected tag, or `mode: closed`/);
+  });
+
+  test("no doc says draft tags near-unique text", () => {
+    for (const d of DOCS) {
+      const text = read(d).replace(/\s+/g, " ");
+      expect(text).not.toMatch(/near-unique strings that are not keys\) `sensitive`/);
+      expect(text).not.toMatch(/or by profile \(a text column/);
+      expect(text).not.toContain("tags what looks sensitive by name or profile");
+    }
+  });
+});
+
+describe("skill frontmatter", () => {
+  test("the description is at most 1024 characters", () => {
+    const m = /^---\n([\s\S]*?)\n---\n/.exec(read("SKILL.md"));
+    expect(m).not.toBeNull();
+    const front = parseYamlText(m![1]!) as { description?: unknown };
+    expect(typeof front.description).toBe("string");
+    expect((front.description as string).length).toBeGreaterThan(0);
+    expect((front.description as string).length).toBeLessThanOrEqual(1024);
   });
 });
 

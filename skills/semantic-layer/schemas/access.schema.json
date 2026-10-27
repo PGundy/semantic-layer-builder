@@ -1,12 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "access.yaml",
-  "description": "Roles, row filters and denials. Access fails closed.",
+  "description": "Who sees what: the access mode, protected-tag grants, roles with denials and row filters, and restrictions on metrics and fields.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "status",
-    "roles"
+    "status"
   ],
   "properties": {
     "status": {
@@ -27,23 +26,37 @@
       "description": "ISO date of approval, YYYY-MM-DD. Required when status is approved.",
       "format": "date"
     },
+    "mode": {
+      "enum": [
+        "open",
+        "closed"
+      ],
+      "description": "open (the default): everyone sees every approved item minus protected tags, restrictions and the denials of the roles they hold; allow.models has no effect. closed: a user sees only what allow.models of a role they hold matches, minus the same; every role needs allow.models."
+    },
     "default_role": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9_]*$",
-      "description": "Role used when a user names none."
+      "description": "Role a user holds when they hold no other role."
     },
     "user_attributes": {
       "type": "array",
-      "description": "Attributes a user carries, referenced in row filters as {{ user.<name> }}.",
+      "description": "Attributes a user carries, read by row filters as {{ user.<name> }}, by hierarchy filters, and by conditions (assign_when, restrictions' allow.when) as user.<name>.",
       "items": {
         "$ref": "#/$defs/user_attribute"
       }
     },
     "roles": {
       "type": "array",
-      "description": "Roles; a user holds exactly one.",
+      "description": "Roles. A user may hold several: those the identity system assigns by name and those whose assign_when holds; an item is visible when any held role makes it visible. Optional in open mode.",
       "items": {
         "$ref": "#/$defs/role"
+      }
+    },
+    "restrictions": {
+      "type": "array",
+      "description": "Grants on metrics and fields, applied in both modes after role visibility: a target is visible only to users who hold one of allow.roles or satisfy allow.when.",
+      "items": {
+        "$ref": "#/$defs/restriction"
       }
     },
     "open_questions": {
@@ -97,7 +110,7 @@
             "string_list",
             "number_list"
           ],
-          "description": "Value type; a _list binds as a list for IN."
+          "description": "Value type; a _list binds as a list for IN and is tested with in or contains in conditions."
         },
         "description": {
           "type": "string",
@@ -110,8 +123,7 @@
       "description": "A role.",
       "additionalProperties": false,
       "required": [
-        "name",
-        "allow"
+        "name"
       ],
       "properties": {
         "name": {
@@ -123,13 +135,15 @@
           "type": "string",
           "description": "Who holds this role and what it sees."
         },
+        "assign_when": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A condition over user attributes, such as user.department == 'finance'; the role is held whenever it is true, as well as when the identity system assigns the role by name."
+        },
         "allow": {
           "type": "object",
-          "description": "What the role can see.",
+          "description": "What the role grants.",
           "additionalProperties": false,
-          "required": [
-            "models"
-          ],
           "properties": {
             "models": {
               "type": "array",
@@ -137,13 +151,22 @@
                 "type": "string",
                 "minLength": 1
               },
-              "description": "Scope patterns over source.model names, such as warehouse.* or warehouse.orders."
+              "description": "Scope patterns over source.model names, such as warehouse.* or warehouse.orders. Required in closed mode; no effect in open mode."
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]*$"
+              },
+              "uniqueItems": true,
+              "description": "Protected tags (pii, sensitive) whose models and fields the role may see."
             }
           }
         },
         "deny": {
           "type": "object",
-          "description": "What is subtracted from allow.",
+          "description": "What the role does not see, subtracted from what it would otherwise see.",
           "additionalProperties": false,
           "properties": {
             "models": {
@@ -169,33 +192,15 @@
                 "pattern": "^[a-z][a-z0-9_]*$"
               },
               "uniqueItems": true,
-              "description": "Tags whose models, dimensions and measures are hidden."
+              "description": "Tags whose models, dimensions, measures and metrics this role does not see."
             }
           }
         },
         "row_filters": {
           "type": "array",
-          "description": "Predicates over a model's own columns. On the query's base model a row filter goes in WHERE; on a joined model it goes in that join's ON clause, so a left join keeps the row with blank joined columns and an inner join drops it. Several on one model combine with AND.",
+          "description": "Rows of a model the role sees: a SQL predicate (expr) or a span-of-control rule (hierarchy). On the query's base model a row filter goes in WHERE; on a joined model it goes in that join's ON clause, so a left join keeps the row with blank joined columns and an inner join drops it. Several on one model within a role combine with AND; across held roles, the user sees the union.",
           "items": {
-            "type": "object",
-            "description": "A row filter.",
-            "additionalProperties": false,
-            "required": [
-              "model",
-              "expr"
-            ],
-            "properties": {
-              "model": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
-                "description": "Model as source.model."
-              },
-              "expr": {
-                "type": "string",
-                "minLength": 1,
-                "description": "SQL predicate over the model's own columns, with no subquery or other table; {{ user.<attribute> }} binds as a parameter."
-              }
-            }
+            "$ref": "#/$defs/row_filter"
           }
         },
         "open_questions": {
@@ -205,6 +210,135 @@
             "minLength": 1
           },
           "description": "Questions about this role still open with the owner; sl status counts them."
+        }
+      }
+    },
+    "row_filter": {
+      "type": "object",
+      "description": "A row filter: exactly one of expr and hierarchy.",
+      "additionalProperties": false,
+      "required": [
+        "model"
+      ],
+      "properties": {
+        "model": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
+          "description": "Model as source.model."
+        },
+        "expr": {
+          "type": "string",
+          "minLength": 1,
+          "description": "SQL predicate over the model's own columns, with no subquery or other table; {{ user.<attribute> }} binds as a parameter."
+        },
+        "hierarchy": {
+          "$ref": "#/$defs/hierarchy"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "expr"
+          ]
+        },
+        {
+          "required": [
+            "hierarchy"
+          ]
+        }
+      ]
+    },
+    "hierarchy": {
+      "type": "object",
+      "description": "Rows whose column is the user's id (with include_self) or the id of anyone below the user in the closure model via: column = :user_id OR column IN (SELECT member FROM via WHERE manager = :user_id).",
+      "additionalProperties": false,
+      "required": [
+        "column",
+        "via",
+        "manager",
+        "member",
+        "user"
+      ],
+      "properties": {
+        "column": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Column of the filtered model holding a person's id."
+        },
+        "via": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
+          "description": "The closure model, as source.model in the filtered model's source: one row per manager and member pair at any depth. It is read without its own row filters."
+        },
+        "manager": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Column of via holding the manager's id."
+        },
+        "member": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Column of via holding the id of someone at any depth below that manager."
+        },
+        "user": {
+          "type": "string",
+          "pattern": "^(user\\.)?[a-z][a-z0-9_]*$",
+          "description": "The user attribute holding the user's own id, as user.<name>; a user without it sees no rows of the model."
+        },
+        "include_self": {
+          "type": "boolean",
+          "description": "Whether the user's own rows are included. Default true."
+        }
+      }
+    },
+    "restriction": {
+      "type": "object",
+      "description": "A restriction: its targets are visible only to users who hold one of allow.roles or satisfy allow.when.",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "targets",
+        "allow"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Restriction name, unique; a hidden item's reason is restricted:<name>."
+        },
+        "description": {
+          "type": "string",
+          "description": "What it protects and why."
+        },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "metric:<name>, source.model or source.model.field, with scope-pattern globs (metric:finance_*, warehouse.payroll.*)."
+        },
+        "allow": {
+          "type": "object",
+          "description": "Who may see the targets: at least one of roles and when.",
+          "additionalProperties": false,
+          "properties": {
+            "roles": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]*$"
+              },
+              "uniqueItems": true,
+              "description": "Roles whose holders see the targets."
+            },
+            "when": {
+              "type": "string",
+              "minLength": 1,
+              "description": "A condition over user attributes; users for whom it is true see the targets."
+            }
+          }
         }
       }
     }

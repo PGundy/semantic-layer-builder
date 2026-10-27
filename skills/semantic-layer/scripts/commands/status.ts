@@ -1,10 +1,24 @@
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { formatJson } from "../lib/output.ts";
-import { computeStatus, type ApprovalCount, type ProjectStatus, type SourceStatus } from "../lib/status.ts";
+import { computeStatus, preview, type ApprovalCount, type ProjectStatus, type SourceStatus } from "../lib/status.ts";
 
 function ratio(c: ApprovalCount): string {
   return `${c.approved}/${c.approved + c.draft} approved`;
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+// One line naming the access mode and what a user with no attributes and no roles sees.
+function audienceLine(st: ProjectStatus): string {
+  const a = st.access.default_audience;
+  const hidden = a.hidden_by_protected_tags ? `; ${a.hidden_by_protected_tags} hidden by protected tags` : "";
+  return (
+    `access mode ${st.access.mode}${st.access.state === "missing" ? " (no access.yaml)" : ""}; the default audience sees ` +
+    `${plural(a.models, "model")}, ${plural(a.fields, "field")}, ${plural(a.metrics, "metric")}${hidden}`
+  );
 }
 
 function sourceLines(s: SourceStatus): string[] {
@@ -29,6 +43,18 @@ function sourceLines(s: SourceStatus): string[] {
   // Draft fields inside approved models do not block later phases; they are listed for the handoff.
   const approvedDrafts = s.draft_fields.filter((f) => s.models_with_draft_fields.includes(f.split(".")[0]!));
   if (approvedDrafts.length) lines.push(`  draft fields in approved models: ${approvedDrafts.join(", ")}`);
+  if (s.missing_columns.length) {
+    const items = s.missing_columns.map((m) => `${m.model}.${m.field} reads ${m.column}`);
+    lines.push(`  missing columns: ${preview(items, 8)}`);
+  }
+  if (s.new_columns.length) {
+    const items = s.new_columns.map((c) => `${c.model}.${c.column} (${c.type})`);
+    lines.push(`  new columns without a field: ${preview(items, 8)}`);
+  }
+  if (s.missing_tables.length) {
+    const items = s.missing_tables.map((m) => `${m.model} (${m.table})`);
+    lines.push(`  models on tables the snapshot no longer has: ${preview(items, 8)}`);
+  }
   return lines;
 }
 
@@ -40,6 +66,7 @@ function render(st: ProjectStatus): string {
   lines.push(
     `metrics ${ratio(st.metrics)}; access ${st.access.state}${st.access.state === "missing" ? "" : ` (${st.access.roles} role(s)${accessQuestions})`}; goldens ${ratio(st.goldens)}`,
   );
+  lines.push(audienceLine(st));
   if (st.draft_metrics.length) lines.push(`draft metrics: ${st.draft_metrics.join(", ")}`);
   if (st.draft_goldens.length) lines.push(`draft goldens: ${st.draft_goldens.join(", ")}`);
   if (st.roles_without_goldens.length) lines.push(`roles without an approved golden: ${st.roles_without_goldens.join(", ")}`);

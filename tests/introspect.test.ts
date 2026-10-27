@@ -156,6 +156,90 @@ describe("introspect: duckdb", () => {
     ]);
   });
 
+  test("a rerun reports added, removed and retyped columns and tables, in text and JSON", async () => {
+    const t = await setup();
+    await duckdbSource(t.root, t.dir, "wh", [
+      "create table t (id integer, s varchar, amount integer, legacy boolean)",
+      "create table gone (id integer)",
+    ]);
+    const first = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    expect(first.json<{ changes: unknown }>().changes).toBeNull();
+    await duckdbSource(t.root, t.dir, "wh", [
+      "alter table t add column notes varchar",
+      "alter table t drop column legacy",
+      "alter table t alter column amount type bigint",
+      "drop table gone",
+      "create table fresh (id integer)",
+    ]);
+    const r = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json<{ changes: unknown }>().changes).toEqual({
+      tables_added: ["main.fresh"],
+      tables_removed: ["main.gone"],
+      columns: [
+        {
+          table: "main.t",
+          added: [{ name: "notes", type: "VARCHAR" }],
+          removed: ["legacy"],
+          retyped: [{ name: "amount", from: "INTEGER", to: "BIGINT" }],
+        },
+      ],
+    });
+
+    const same = await sl(t.root, ["introspect", "--source", "wh"]);
+    expect(same.out).toContain("No tables or columns changed since the previous snapshot.");
+    expect(same.out).not.toContain("--new-columns");
+
+    await duckdbSource(t.root, t.dir, "wh", ["alter table t add column refund_cents bigint", "alter table t drop column s"]);
+    const human = await sl(t.root, ["introspect", "--source", "wh"]);
+    // No model is built on main.t, so there is nothing for --new-columns to draft.
+    expect(human.out).toContain(
+      [
+        "Changes since the previous snapshot:",
+        "  main.t: added refund_cents (BIGINT); removed s.",
+        "Removed or retyped columns and tables: `sl validate` reports the fields that read a removed column; read the affected fields back to the owner.",
+      ].join("\n"),
+    );
+    expect(human.out).not.toContain("--new-columns");
+
+    // Once a model is built on main.t, the hint names it; fresh gains a column too but has no model.
+    writeYaml(join(t.root, "models", "wh", "t.yaml"), {
+      model: "t",
+      source: "wh",
+      table: "main.t",
+      status: "draft",
+      primary_key: ["id"],
+      dimensions: [],
+      measures: [],
+    });
+    await duckdbSource(t.root, t.dir, "wh", ["alter table t add column channel varchar", "alter table fresh add column label varchar"]);
+    const modeled = await sl(t.root, ["introspect", "--source", "wh"]);
+    expect(modeled.out).toContain(
+      [
+        "Changes since the previous snapshot:",
+        "  main.fresh: added label (VARCHAR).",
+        "  main.t: added channel (VARCHAR).",
+        "Modeled tables gained columns (main.t): `sl draft --source wh --new-columns` drafts them.",
+      ].join("\n"),
+    );
+
+    // A model file that does not parse falls back to the general hint rather than failing.
+    writeFileSync(join(t.root, "models", "wh", "broken.yaml"), "model: [unclosed\n");
+    await duckdbSource(t.root, t.dir, "wh", ["alter table fresh add column kind varchar"]);
+    const broken = await sl(t.root, ["introspect", "--source", "wh"]);
+    expect(broken.code).toBe(0);
+    expect(broken.out).toContain("Columns were added: `sl draft --source wh --new-columns` drafts the new columns of modeled tables.");
+  });
+
+  test("the first introspect prints no changes", async () => {
+    const t = await setup();
+    await duckdbSource(t.root, t.dir, "wh", ["create table t (id integer)"]);
+    const r = await sl(t.root, ["introspect", "--source", "wh"]);
+    expect(r.code).toBe(0);
+    expect(r.out).not.toContain("Changes since");
+    expect(r.out).not.toContain("No tables or columns changed");
+  });
+
   test("a source view that shadows a database table is captured as the view alone", async () => {
     const t = await setup();
     const src = await duckdbSource(t.root, t.dir, "wh", [

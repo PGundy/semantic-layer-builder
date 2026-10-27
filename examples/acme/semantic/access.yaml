@@ -2,6 +2,7 @@
 # user attribute, reps option (b) for customers, marketing totals by date, status and region). Reps got regions and
 # their customer list was limited to their own home region, with the test-account rule read through
 # warehouse.test_accounts (her choice (a)); the sales_rep role and the whole file were read back after those changes.
+mode: closed
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-26
@@ -32,6 +33,7 @@ roles:
       with no region sees no orders and no customers.
     allow:
       models: ["warehouse.orders", "warehouse.customers", "warehouse.regions"]
+      tags: [pii]   # names and phone of their region's customers; email stays denied below
     deny:
       models: [warehouse.test_accounts]
       fields: [warehouse.customers.email]

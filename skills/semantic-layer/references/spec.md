@@ -13,7 +13,7 @@ semantic/
   snapshots/<source>.json       schema snapshot per source, written by tools
   models/<source>/<model>.yaml  one per modeled table
   metrics.yaml                  derived and ratio metrics
-  access.yaml                   roles, row filters, denials
+  access.yaml                   access mode, roles, restrictions, row filters, denials
   goldens/<name>.yaml           confirmed question and answer pairs
 ```
 
@@ -21,10 +21,10 @@ File names equal the name inside the file: `sources/lake.yaml` holds `source: la
 
 ## Names and references
 
-- Every name (project, source, model, dimension, measure, join, metric, role, user attribute, golden) matches `^[a-z][a-z0-9_]*$`.
+- Every name (project, source, model, dimension, measure, join, metric, role, restriction, user attribute, golden) matches `^[a-z][a-z0-9_]*$`.
 - Model names are unique within a source. Two sources may each have an `orders` model.
 - Within one model, dimension, measure and join names share one namespace. Name a join after the role its target plays (`ship_to_region`, `home_region`), never after a column or dimension of the model.
-- References use dots. Inside a model's own file, a join's `to` is a bare model name in the same source. Inside `metrics.yaml`, a measure reference is `model.measure`, resolved in the metric's `source`. Inside `access.yaml`, a model reference is `source.model` and a field reference is `source.model.field`. A golden's request names fields relative to its source, as `model.field` (see goldens below).
+- References use dots. Inside a model's own file, a join's `to` is a bare model name in the same source. Inside `metrics.yaml`, a measure reference is `model.measure`, resolved in the metric's `source`. Inside `access.yaml`, a model reference is `source.model`, a field reference is `source.model.field` and a metric reference in a restriction's targets is `metric:<name>`. A golden's request names fields relative to its source, as `model.field` (see goldens below).
 - Physical column names in `expr`, `filter`, join `keys` and row filters are written as they appear in the snapshot. An `expr`, `filter` or row filter is a SQL expression in the source's dialect. The compiler qualifies columns, so a bare column is a column of the model's own table, and an expression never names a table or a table alias; join references, `<join>.<column>` and `<join>.<join>.<column>`, are the only qualified names (see below). A dotted name on one of the model's own columns, or on a lambda parameter such as `x` in `list_filter(items, x -> x.kind = 'a')`, reads a struct field.
 
 ### Join references
@@ -56,7 +56,7 @@ approved_by: Dana Ruiz # required when approved
 approved_at: 2026-10-26 # ISO date, required when approved
 ```
 
-Tools only ever write `status: draft`. The `sl approve` command sets `approved`, and the skill runs it only after the owner has explicitly confirmed a plain-English readback of that item. Downstream tools expose approved items by default and must flag any draft item they use.
+Tools only ever write `status: draft`. The `sl approve` command sets `approved`, and the skill runs it only after the owner has explicitly confirmed a plain-English readback of that item. Downstream tools expose only approved items to users (see access.yaml) and flag any draft item they use.
 
 Approval rules that `sl validate` enforces:
 
@@ -173,6 +173,8 @@ Written by `sl introspect`, `sl import` and `sl profile`; never hand-edited exce
 
 `method` is one of `live`, `information_schema`, `dbt_manifest`, `ddl`, `manual`. `kind` is one of `table`, `view`, `external`. `schema` is `null` when the source has no schemas. Tables are sorted by qualified name and columns keep their ordinal order. Profiles cover only the tables that were profiled.
 
+When `sl introspect` or `sl import` replaces a snapshot, it compares the two and prints the changes: tables added and removed, and per table the columns added (with their types), removed and retyped. `--json` carries them as `changes`: `{ tables_added, tables_removed, columns: [{ table, added: [{ name, type }], removed: [name], retyped: [{ name, from, to }] }] }`, or `null` when there was no previous snapshot. Tables and columns match by name, exactly or else ignoring case when that is unambiguous; a type change ignores case and spacing.
+
 ## models/<source>/<model>.yaml
 
 ```yaml
@@ -184,6 +186,7 @@ description: Customer orders, one row per order. Test orders are excluded upstre
 grain: One row per order.
 primary_key: [order_id]
 tags: []
+ignored_columns: [raw_payload]      # columns of the table left out on purpose; sl draft --new-columns skips them
 open_questions:
   - Does "revenue" include shipping?
 dimensions:
@@ -251,6 +254,15 @@ joins:
 
 `dimensions` and `measures` are required keys; write `[]` when a model has none. `joins` may be left out.
 
+`tags` on a model, dimension or measure feed access rules: `pii` and `sensitive` are protected tags, hidden from everyone but the roles that grant them, and a model's tag covers all its fields; `public` records that the owner confirmed everyone may see a field although it looks sensitive (see access.yaml).
+
+`ignored_columns` lists columns of the model's table left out on purpose. `sl draft` writes it for every column it deliberately leaves out of a new model (near-unique strings, and anything else it skips that is not a key or join key). `sl draft --new-columns` and `sl status` skip these columns. `sl validate` warns when an entry is not a column of the table (when the snapshot has it) or is read by a field, a join key, the primary key or another model's join to this one.
+
+When the table changes after the model is written:
+
+- A column no field reads (bare column references in exprs and filters, join keys and the primary key) and that `ignored_columns` does not list is a new column. `sl status` lists it under the source's `new_columns`, and `sl draft --source <s> --new-columns` drafts it as a new draft dimension or measure by the rules for a new model, sensitivity tags included, with an open question naming the column, its type and its table. It appends to the model file, leaving comments and approved items byte-identical, and never changes the model's own status.
+- A column a field reads that the snapshot no longer has is an error from `sl validate` for an expr that is one bare or quoted column; `sl status` lists such fields under `missing_columns`.
+
 Money stored in cents becomes an exact decimal amount, written per dialect: `amount_cents * 0.01` on duckdb, an exact DECIMAL there, where `amount_cents / 100.0` is a DOUBLE; `cast(amount_cents as numeric) / 100` on bigquery; and `amount_cents / 100.0` on every other dialect. `sl validate` warns on a duckdb measure `expr` that divides by a numeric literal, cast or not (`/ 100::decimal(18, 2)` is a DOUBLE too); integer division (`//`) is not flagged.
 
 `evidence` records the target model (`to`) and the `keys` the check measured. Renaming a join keeps its evidence. When the join's current `to` or `keys` differ from the evidence's, `sl validate` warns that the evidence is stale, and `sl check-join` measures the join again; evidence without `to` and `keys` gets no such warning.
@@ -290,14 +302,82 @@ A metric may combine measures of several models of its source. Each measure aggr
 
 ## access.yaml
 
-Access fails closed: a role sees only the models its `allow.models` patterns match, minus its denials.
+`access.yaml` says who sees what. No `access.yaml` means open mode with no roles: everyone sees every approved item. A draft model, dimension, measure or metric is never exposed to anyone in either mode; tools that read the layer flag every draft item they use, and `sl access` reports one hidden with the reason `draft`.
+
+The smallest file, written once the owner has answered the exceptions question ("is there anything some people should not see?") with no:
 
 ```yaml
 status: draft
+mode: open                          # open (the default) | closed
+```
+
+A file for a team where most people see everything:
+
+```yaml
+status: draft
+mode: open
+user_attributes:
+  - name: department
+    type: string                    # string | number | string_list | number_list
+    description: The user's department in the identity system.
+  - name: employee_id
+    type: number
+    description: The user's own id; equals rep_id on orders.
+  - name: region
+    type: string
+    description: The sales region a rep covers.
+roles:
+  - name: hr
+    description: People team; may see personal data.
+    assign_when: user.department == 'hr'
+    allow:
+      tags: [pii]                   # protected tags this role may see
+  - name: sales
+    description: Sales reps and their managers see their own and their team's orders.
+    assign_when: user.department == 'sales'
+    deny:
+      fields: [warehouse.customers.lifetime_value]
+    row_filters:
+      - model: warehouse.orders
+        hierarchy:
+          column: rep_id            # column of orders holding a person's id
+          via: warehouse.reporting_lines   # closure model: one row per manager and member pair at any depth
+          manager: manager_id
+          member: member_id
+          user: user.employee_id
+          include_self: true        # the default
+  - name: regional_rep
+    description: Contractors, assigned by the identity system, who see only their region's orders.
+    row_filters:
+      - model: warehouse.orders
+        expr: ship_region = {{ user.region }}
+  - name: finance_partner
+    description: The outside accountants, assigned by the identity system.
+restrictions:
+  - name: unit_economics
+    description: Margin figures stay with finance.
+    targets: ["metric:gross_margin*", warehouse.orders.cost]
+    allow:
+      roles: [finance_partner]
+      when: user.department == 'finance'
+  - name: board_pack
+    description: Board metrics are for finance and executives until they are published.
+    targets: ["metric:board_*"]
+    allow:
+      when: user.department in ['finance', 'executive']
+open_questions:
+  - Do sales managers need margin by rep?
+```
+
+A closed file, where a user sees only what a role they hold allows:
+
+```yaml
+status: draft
+mode: closed
 default_role: analyst
 user_attributes:
   - name: region
-    type: string                    # string | number | string_list | number_list
+    type: string
     description: The sales region a rep covers.
 roles:
   - name: analyst
@@ -305,7 +385,7 @@ roles:
     allow:
       models: ["warehouse.*", "lake.*"]
     deny:
-      tags: [pii]
+      tags: [finance_only]
   - name: sales_rep
     description: Sees only their own region's orders.
     allow:
@@ -321,16 +401,54 @@ open_questions:
   - Does finance need a role that sees refunds by customer?
 ```
 
-- `allow.models` uses the scope pattern syntax over `source.model` names.
-- `deny.models`, `deny.fields` and `deny.tags` subtract from what `allow` grants. A tag denial hides every dimension, measure and model carrying that tag.
-- `deny.fields` names dimensions and measures only, as `source.model.field`. A join is hidden from a role when its target model is not allowed or is denied for that role; `sl validate` says so when `deny.fields` names a join.
-- Visibility governs only what a request may name. A dimension or measure the role may see still applies the joins its own definition reads through (see Definition joins), so a hidden join never changes a figure. A dimension shows the values it reads, though: `sl validate` warns when a role may see a dimension whose expr reads through a join to a model the role is not allowed or is denied, as `orders.customer_region` would show `customers` values. A measure filter only narrows what is counted, so it gets no such warning.
-- A row filter is a SQL predicate over the model's own columns, with no join references, subqueries or other tables. `{{ user.<attribute> }}` placeholders are bound as query parameters by the compiler, never interpolated into SQL text. A `_list` attribute binds as a list for `IN`.
+### Modes
+
+- `open` (the default): a user sees every approved model, dimension, measure and metric, minus protected tags, restrictions and the denials of the roles they hold. `allow.models` has no effect; `sl validate` warns when a role sets it. A user who holds no role sees this open baseline with no row filters.
+- `closed`: a user sees only the models that `allow.models` of a role they hold matches, minus denials, protected tags and restrictions. Every role needs `allow.models`, and a user who holds no role sees nothing.
+
+### Protected tags
+
+`pii` and `sensitive` are protected in both modes: a model, dimension or measure carrying either tag is hidden unless a role the user holds lists that tag in `allow.tags`. A model's tag covers all its fields. The tag `public` on a field records that the owner confirmed everyone may see it although it looks sensitive; it never overrides `pii` or `sensitive` on the same field. `sl draft` tags the fields it drafts by their columns' names (see the CLI), and `sl validate` warns when an approved field the default audience sees looks sensitive and carries none of the three tags. That check reads the columns the field reads (for a dimension, also the columns it reads through joins) and the field's own name; a `count` or `count_distinct` measure shows no values, so it is not checked.
+
+### Roles
+
+- A user may hold several roles. A role is held when the identity system assigns it by name, or when its `assign_when` condition is true for the user's attributes. `default_role` applies only when the user holds no other role.
+- An item is visible when any held role makes it visible.
+- `allow.models` (closed mode) uses the scope pattern syntax over `source.model` names. `allow.tags` grants protected tags.
+- `deny.models`, `deny.fields` and `deny.tags` subtract from what the role would otherwise see. A tag denial hides every dimension, measure and model carrying that tag, and every metric carrying it.
+- `deny.fields` names dimensions and measures only, as `source.model.field`. A join is hidden from a role when its target model is not visible to that role; `sl validate` says so when `deny.fields` names a join.
+- Visibility governs only what a request may name. A dimension or measure the user may see still applies the joins its own definition reads through (see Definition joins), so a hidden join never changes a figure. A dimension shows the values it reads, though: `sl validate` warns when a role may see a dimension whose expr reads through a join to a model the role does not see (in closed mode not allowed; in either mode denied, or carrying a protected tag the role does not grant), as `orders.customer_region` would show `customers` values. It warns the same way when the default audience (a user with no attributes and no assigned roles, which in open mode with no roles is everyone) sees such a dimension while a protected tag or a restriction hides the joined model from it. A measure filter only narrows what is counted, so it gets no such warning.
+
+### Conditions
+
+`assign_when` and a restriction's `allow.when` are conditions over user attributes, never SQL:
+
+- Tests: `user.<attr> == 'x'`, `!=`, `<`, `<=`, `>`, `>=` against a quoted text, a number, `true` or `false`; `user.<attr> in ['a', 'b']` and `not in`; `user.<attr> contains 'a'` on a `_list` attribute; `user.<attr> is set` and `is not set`.
+- Tests combine with `and`, `or`, `not` and parentheses.
+- A test on an attribute the user lacks, or of the wrong type, is false, so a grant fails closed. `in` on a list attribute is true when any element is in the list.
+- Every attribute a condition reads is declared in `user_attributes`; `sl validate` errors otherwise, and warns on a test whose outcome the attribute's declared type fixes: one false for every user (`user.level == 'senior'` on a number), or a `not in` list holding no value of that type, which is true for every user who has the attribute.
+
+### Restrictions
+
+A restriction is a grant on metrics and fields. Each target is `metric:<name>`, `source.model` or `source.model.field`, with scope-pattern globs (`metric:finance_*`, `warehouse.payroll.*`). A target is visible only to users who hold one of `allow.roles` or for whom `allow.when` is true; at least one of the two is given. Restrictions apply in both modes after role visibility. `sl validate` errors on an unknown role in `allow.roles` and warns on a target that matches no metric, model or field.
+
+A metric is visible only when the metric itself is visible and every measure it uses is visible. A request never names a hidden field or metric anywhere: selected, grouped, filtered or sorted. The compiler refuses such a request; `checkRequest` in `scripts/lib/access.ts` is the reference check.
+
+### Row filters
+
+A row filter is either an `expr` or a `hierarchy`.
+
+- `expr` is a SQL predicate over the model's own columns, with no join references, subqueries or other tables. `{{ user.<attribute> }}` placeholders are bound as query parameters by the compiler, never interpolated into SQL text. A `_list` attribute binds as a list for `IN`.
+- `hierarchy` is a span-of-control rule: rows whose `column` equals the user's id (when `include_self`, the default) or is a `member` below the user in the closure model `via`, one row per manager and member pair at any depth. `via` is a model of the same source; when the source holds only a `manager_id` column, the owner provides a view that holds the closure. `user` names the attribute holding the user's own id. The compiler renders it as `column = :user_id OR column IN (SELECT member FROM via WHERE manager = :user_id)`, with the user id bound as a parameter (without `include_self`, only the `IN` part), and reads `via` without its own row filters.
 - A row filter whose user attribute the user lacks returns no rows of that model. The compiler enforces it, so an `expr` does not test for a missing value.
-- Several row filters on one model within a role combine with `AND`.
+- Within one role, several row filters on one model combine with `AND`. Across held roles, a user sees the union of what each role allows on a model; a held role with no row filter on that model contributes every row.
 - A row filter on the query's base model, the model of its first measure, goes in `WHERE`. A row filter on a model the request joins to reach a field it names goes in that join's `ON` clause: a `left` join keeps the left row with the joined columns blank, and an `inner` join drops it. A definition join never carries a row filter. Were `sales_rep` also to filter `warehouse.customers`, an orders query grouped by `customers.region` would keep the rep's orders whose customer that filter hides, with blank customer columns, because the `customer` join is `left`; `revenue` would still leave out every test account, since its filter reads `customer.is_test_account` through its own definition join.
-- A user holds exactly one role in version 1.
-- `open_questions`, at the top level and on each role, lists access questions still open with the owner; `sl status` counts them with the models' open questions.
+
+### Checking access
+
+`sl access` explains what one user sees: the roles they hold and why, every hidden model, field and metric with its reason (`draft`, `protected_tag:<tag>`, `denied:<role>`, `restricted:<name>`, `not_allowed`), and the row filters that apply per model with their bound attribute values, displayed and never interpolated into SQL, or `no rows` when an attribute is missing. With no `--user` and no `--roles` it explains the default audience: a user with no attributes and no assigned roles. `scripts/lib/access.ts` holds the evaluator (`evaluateAccess(root, user)`, `checkRequest(visibility, request)`) that a compiler reuses.
+
+`open_questions`, at the top level and on each role, lists access questions still open with the owner; `sl status` counts them with the models' open questions.
 
 ## goldens/<name>.yaml
 
@@ -401,15 +519,17 @@ For `duckdb` and `postgres` sources the command runs the plan itself. For any so
 |---|---|
 | `init --name <name> [--description <text>] [--default-source <s>]` | Writes `semantic.yaml` and the directory layout. |
 | `add-source --name <s> --dialect <d> [--env VAR] [--database <path>] [--view name=relation]... [--setup <statement>]... [--description <text>]` | Writes `sources/<s>.yaml`. `--env` is required for postgres and refuses anything that looks like a URL or a credential. |
-| `introspect --source <s> [--schemas a,b]` | Captures tables, columns, keys and row estimates into the snapshot. `--schemas` limits it to those schemas, or BigQuery datasets. |
-| `import --source <s> --format information_schema\|dbt_manifest\|ddl --file <path> [--catalog <catalog.json>]` | Builds the snapshot from shared context instead of a live connection: an information_schema.columns export as CSV or a JSON array, a dbt `manifest.json` with an optional `catalog.json`, or a `.sql` file of DDL. |
+| `introspect --source <s> [--schemas a,b]` | Captures tables, columns, keys and row estimates into the snapshot. `--schemas` limits it to those schemas, or BigQuery datasets. Prints what changed since the previous snapshot; `--json` adds it as `changes` (see snapshots). |
+| `import --source <s> --format information_schema\|dbt_manifest\|ddl --file <path> [--catalog <catalog.json>]` | Builds the snapshot from shared context instead of a live connection: an information_schema.columns export as CSV or a JSON array, a dbt `manifest.json` with an optional `catalog.json`, or a `.sql` file of DDL. Prints and reports `changes` as `introspect` does. |
 | `tables --source <s> [--groups] [--all]` | Lists in-scope tables, or all with `--all`, with size, modeling and profiling state; `--groups` clusters them by schema, prefix and suffix and suggests patterns. |
 | `scope --source <s> [--include <p>]... [--exclude <p>]... [--remove <p>]... [--tables a,b] [--clear] [--write]` | Previews the tables a scope change selects; `--write` saves it. `--tables` adds exact names. |
 | `profile --source <s> [--tables t,...] [--refresh]` | Profiles in-scope tables into the snapshot, skipping profiled ones unless `--refresh`. |
-| `draft --source <s> [--tables t,...] [--strip-prefix p,...] [--force]` | Writes draft models for in-scope tables that have none, with inferred keys and joins. Never overwrites a model. Refuses more tables than `focus_threshold` without `--tables` or `--force`. `--strip-prefix` is saved as `draft.strip_prefixes`. |
+| `draft --source <s> [--tables t,...] [--strip-prefix p,...] [--force]` | Writes draft models for in-scope tables that have none, with inferred keys and joins. Never overwrites a model. Refuses more tables than `focus_threshold` without `--tables` or `--force`. `--strip-prefix` is saved as `draft.strip_prefixes`. Tags a field `pii` when its column's name looks like personal data and `sensitive` when it looks like pay, banking, card, health, credential or free-text data, each with an open question. Leaves out a string column that is not a key and has a different value on nearly every row (more than 90% distinct over at least 50 rows), with an open question, and lists every column it leaves out in `ignored_columns`. |
+| `draft --source <s> --new-columns [--tables t,...]` | For each existing model on an in-scope table (or on `--tables`), drafts every snapshot column no field reads and `ignored_columns` does not list as a new draft dimension or measure, by the rules for a new model, with an open question "New column <c> (<type>) appeared in <table>; ...". Appends to the model file, keeping comments and approved items byte-identical, and never changes the model's status; works whatever `focus_threshold`. `--json`: `{ source, updated: [{ model, added: [field names], skipped: [{ column, reason }] }] }`. |
 | `check-join --source <s> (--model <m> --join <j> \| --model <m> --all \| --all) [--no-write]` | Measures a join's match rate, key uniqueness and fan-out and writes `evidence`, nothing else. |
 | `approve --target <ref> --by <name> [--recursive] [--revoke] [--date YYYY-MM-DD]` | Marks an item approved, or draft again with `--revoke`. `<ref>` is `source.model`, `source.model.field`, `metric:<name>` or `access`; goldens use `goldens confirm`. |
-| `validate` | Checks structure and references, and errors on a credential in a duckdb source's `connection.database`, `connection.setup` or `connection.views`, naming the key, never the value; exits 1 on any error. |
+| `validate` | Checks structure and references, and errors on a credential in a duckdb source's `connection.database`, `connection.setup` or `connection.views`, naming the key, never the value; exits 1 on any error. Warns when an approved field the default audience sees looks sensitive and carries no `pii`, `sensitive` or `public` tag: "<field> is visible to everyone and looks sensitive (<reason>); tag it pii or sensitive, or tag it public if everyone may see it". |
+| `access [--user <json object of attributes>] [--user-file <path>] [--roles r1,r2] [--show visible\|hidden\|all]` | Explains what one user sees: the roles they hold and why (`assigned`, `condition`, `default`), and per source the visible and hidden models, fields and metrics with the reason each is hidden, and the row filters per model with their bound attribute values or `no rows` (see access.yaml). With no `--user` and no `--roles`, the default audience. Human output shows hidden items by default; `--json` carries everything. |
 | `status [--source <s>]` | Shows progress per source, the next batch of tables to interview and the next step. |
 | `run --source <s> (--sql <query> \| --file <path>) [--limit <n>]` | Runs one read-only query against a duckdb or postgres source. Every row is counted and at most `--limit` rows, 100 by default, are shown. |
 | `goldens run --name <g>` / `goldens confirm --name <g> --by <name> [--tolerance <t>] [--force]` / `goldens check [--name <g>] [--source <s>]` | Runs a golden's SQL, records its confirmed rows, or rechecks every approved golden. `confirm` prints the draft fields the request uses, then records the rows with the tolerance agreed with the owner, passed explicitly (0 for figures finance signs off; without the flag the golden keeps its recorded tolerance, or 0.005); rerunning it with a new `--tolerance` records the rows again. `--force` only lifts the 200-row limit. |
@@ -419,11 +539,11 @@ For `duckdb` and `postgres` sources the command runs the plan itself. For any so
 The skill resumes from this output.
 
 - `settings`: `focus_threshold` and `batch_size`.
-- `sources[]`: per source, its dialect, snapshot state, `needs_focus`, model, dimension, measure and join counts by status, joins without evidence and open questions, `draft_models` (the draft models on in-scope tables, which alone hold the interview phase open), `draft_fields` (the draft dimensions, measures and joins of in-scope models, as `model.field`) and `models_with_draft_fields` (approved models that still hold draft fields; the handoff names them).
+- `sources[]`: per source, its dialect, snapshot state, `needs_focus`, model, dimension, measure and join counts by status, joins without evidence and open questions, `draft_models` (the draft models on in-scope tables, which alone hold the interview phase open), `draft_fields` (the draft dimensions, measures and joins of in-scope models, as `model.field`), `models_with_draft_fields` (approved models that still hold draft fields; the handoff names them), `new_columns` (`[{ model, column, type }]`: columns of the tables under in-scope approved or draft models that no field, join key or primary key reads and `ignored_columns` does not list) and `missing_columns` (`[{ model, field, column }]`: columns fields read that the snapshot no longer has).
 - `draft_metrics`: the names of the metrics in `metrics.yaml` that are not approved, one per metric `metrics.draft` counts; an entry without a name goes by its place in the list, as `metrics[1]`.
-- `access`: `{ state, roles, open_questions }`: `missing`, `draft` or `approved`, the number of roles, and the open questions of `access.yaml`, top level and per role.
+- `access`: `{ state, roles, open_questions, mode, default_audience }`: `missing`, `draft` or `approved`, the number of roles, the open questions of `access.yaml`, top level and per role, the mode (`open` without `access.yaml`), and what the default audience sees, as `{ models, fields, metrics, hidden_by_protected_tags }`: the visible counts and the number of approved items a protected tag hides from it. The human output names the mode and the default audience in one line.
 - `open_questions`: the open questions across the reported sources' models and `access.yaml`.
 - `next_batch`: `{ source, tables: [{ table, model, model_status, score, reasons }] }`, the next tables to interview, or `null`.
 - `draft_goldens`: the names of the goldens that are not approved, one per golden `goldens.draft` counts (the name in the file, or its file name); an empty golden file is neither counted nor listed.
 - `roles_without_goldens`: the roles in `access.yaml` that no approved golden runs as; a golden with no `role` runs as `default_role`. Any such role holds `next_step` in `verify` until a golden that runs as it is written and confirmed.
-- `next_step`: `{ phase, message, command, source?, after_owner_yes }`, the first unfinished phase. `after_owner_yes` is true when `command` is an `sl approve` or `sl goldens confirm`, which runs only after the owner says yes to its readback. Phases in order: `add-source`, `introspect`, `scope`, `profile`, `draft`, `interview`, `check-join`, `metrics`, `access`, `verify`, `done`. `verify` holds until there are 5 approved goldens and every role has one. `done` means the phases the CLI can measure are complete; it is reachable with draft metrics, goldens and fields the owner deferred, and its message names each of them and ends by asking for the coverage checklist in `verification.md` to be ticked before the handoff.
+- `next_step`: `{ phase, message, command, source?, after_owner_yes }`, the first unfinished phase. `after_owner_yes` is true when `command` is an `sl approve` or `sl goldens confirm`, which runs only after the owner says yes to its readback. Phases in order: `add-source`, `introspect`, `drift`, `scope`, `profile`, `draft`, `interview`, `check-join`, `metrics`, `access`, `verify`, `done`. `drift` holds while an approved field reads a column the snapshot no longer has: the table changed, so the affected items are read back to the owner. New columns route to `draft`, with the command `sl draft --source <s> --new-columns`. `access` holds until `access.yaml` exists and is approved: without it, `next_step` asks the owner the exceptions question ("is there anything some people should not see?"); an approved `access.yaml` in open mode with no roles is complete. `verify` holds until there are 5 approved goldens and every role has one. `done` means the phases the CLI can measure are complete; it is reachable with draft metrics, goldens and fields the owner deferred, and its message names each of them and ends by asking for the coverage checklist in `verification.md` to be ticked before the handoff.

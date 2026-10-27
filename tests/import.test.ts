@@ -566,6 +566,74 @@ describe("sl import", () => {
     expect(orders.columns.find((c) => c.name === "status")!.profile).toBeUndefined();
   });
 
+  test("reports added, removed and retyped columns and tables against the previous snapshot", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    source(t.root, "shop", "duckdb");
+    const first = await sl(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql"), "--json"]);
+    expect(first.json<{ changes: unknown }>().changes).toBeNull();
+    expect((await sl(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql")])).out).toContain(
+      "No tables or columns changed since the previous snapshot.",
+    );
+
+    const path = join(t.root, "snapshots", "shop.json");
+    const snap = JSON.parse(readFileSync(path, "utf8")) as Snapshot;
+    const orders = table(snap.tables, "shop.orders");
+    // The previous snapshot had a column the DDL no longer has, lacked notes, and typed status differently.
+    orders.columns = orders.columns.filter((c) => c.name !== "notes");
+    orders.columns.push({ name: "legacy_code", type: "varchar(8)" });
+    const status = orders.columns.find((c) => c.name === "status")!;
+    const statusType = status.type;
+    status.type = "varchar(20)";
+    snap.tables = snap.tables.filter((x) => x.name !== "products");
+    snap.tables.push({ schema: "shop", name: "old_table", kind: "table", columns: [] });
+    writeJson(path, snap);
+
+    const r = await sl(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql"), "--json"]);
+    expect(r.code).toBe(0);
+    const notesType = table((JSON.parse(readFileSync(path, "utf8")) as Snapshot).tables, "shop.orders").columns.find((c) => c.name === "notes")!.type;
+    expect(r.json<{ changes: unknown }>().changes).toEqual({
+      tables_added: ["shop.products"],
+      tables_removed: ["shop.old_table"],
+      columns: [
+        {
+          table: "shop.orders",
+          added: [{ name: "notes", type: notesType }],
+          removed: ["legacy_code"],
+          retyped: [{ name: "status", from: "varchar(20)", to: statusType }],
+        },
+      ],
+    });
+
+    writeJson(path, snap);
+    const human = await sl(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql")]);
+    expect(human.out).toContain(
+      [
+        "Changes since the previous snapshot:",
+        "  1 table added: shop.products.",
+        "  1 table removed: shop.old_table.",
+        `  shop.orders: added notes (${notesType}); removed legacy_code; retyped status from varchar(20) to ${statusType}.`,
+        "Removed or retyped columns and tables: `sl validate` reports the fields that read a removed column; read the affected fields back to the owner.",
+      ].join("\n"),
+    );
+    expect(human.out).not.toContain("--new-columns");
+
+    // With a model on shop.orders, the hint names the modeled table that gained a column.
+    writeYaml(join(t.root, "models", "shop", "orders.yaml"), {
+      model: "orders",
+      source: "shop",
+      table: "shop.orders",
+      status: "draft",
+      primary_key: ["id"],
+      dimensions: [],
+      measures: [],
+    });
+    writeJson(path, snap);
+    const modeled = await sl(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql")]);
+    expect(modeled.out).toContain("Modeled tables gained columns (shop.orders): `sl draft --source shop --new-columns` drafts them.");
+  });
+
   test("suggests focusing when more tables are in scope than the threshold", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;

@@ -2,8 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { needsOwnerYes, type ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
+import { validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import type { Model, Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
+import { readJson, readYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { FIXED_NOW, sl, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
@@ -375,10 +376,10 @@ describe("status next_step", () => {
   test("access missing or draft -> access", async () => {
     const missing = await status({ access: "missing" });
     expect(missing.next_step.phase).toBe("access");
-    expect(missing.access).toEqual({ state: "missing", roles: 0, open_questions: 0 });
+    expect(missing.access).toMatchObject({ state: "missing", roles: 0, open_questions: 0 });
     const draft = await status({ access: "draft" });
     expect(draft.next_step).toMatchObject({ phase: "access", command: 'sl approve --target access --by "<owner>"' });
-    expect(draft.access).toEqual({ state: "draft", roles: 2, open_questions: 0 });
+    expect(draft.access).toMatchObject({ state: "draft", roles: 2, open_questions: 0 });
   });
 
   test("access open questions, top level and per role, are counted and named in the access step", async () => {
@@ -395,7 +396,7 @@ describe("status next_step", () => {
       ],
     });
     const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.access).toEqual({ state: "draft", roles: 3, open_questions: 2 });
+    expect(s.access).toMatchObject({ state: "draft", roles: 3, open_questions: 2 });
     expect(s.open_questions).toBe(4);
     expect(s.next_step.message).toContain("Settle its 2 open question(s) first.");
     const human = await sl(t.root, ["status"]);
@@ -408,7 +409,7 @@ describe("status next_step", () => {
     build(t.root, { access: "missing" });
     writeFileSync(join(t.root, "access.yaml"), "# todo: roles\n");
     const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.access).toEqual({ state: "draft", roles: 0, open_questions: 0 });
+    expect(s.access).toMatchObject({ state: "draft", roles: 0, open_questions: 0 });
     expect(s.next_step).toMatchObject({ phase: "access", command: "sl validate" });
     expect(s.next_step.message).toContain("no roles yet");
     expect(s.next_step.message).not.toContain("open question");
@@ -420,7 +421,7 @@ describe("status next_step", () => {
     build(t.root, { access: "missing" });
     writeYaml(join(t.root, "access.yaml"), { status: "draft", open_questions: ["Is the default role the most limited?"], roles: [] });
     const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.access).toEqual({ state: "draft", roles: 0, open_questions: 1 });
+    expect(s.access).toMatchObject({ state: "draft", roles: 0, open_questions: 1 });
     expect(s.next_step).toMatchObject({ phase: "access", command: "sl validate" });
     expect(s.next_step.message).toContain("no roles yet");
     expect(s.next_step.message).toContain("Settle its 1 open question(s) with them.");
@@ -455,7 +456,7 @@ describe("status counts and batches", () => {
     });
     expect(w.snapshot).toEqual({ method: "live", captured_at: FIXED_NOW, tables: 5, in_scope: 5, profiled: 5 });
     expect(s.metrics).toEqual({ approved: 1, draft: 1 });
-    expect(s.access).toEqual({ state: "approved", roles: 2, open_questions: 0 });
+    expect(s.access).toMatchObject({ state: "approved", roles: 2, open_questions: 0 });
     expect(s.open_questions).toBe(2);
     expect(s.settings).toEqual({ focus_threshold: 12, batch_size: 3 });
     expect(w.next_batch).toEqual([]);
@@ -737,5 +738,491 @@ describe("status owner gates and golden coverage", () => {
     writeYaml(join(t.root, "access.yaml"), { status: "draft", roles: [{ name: "support", allow: { models: [] } }, "not a role", { allow: {} }] });
     const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.roles_without_goldens).toEqual(["support"]);
+  });
+});
+
+// Rewrites the wh snapshot of a built project.
+function editSnapshot(root: string, edit: (snap: Snapshot) => void): void {
+  const path = join(root, "snapshots", "wh.json");
+  const snap = readJson<Snapshot>(path);
+  edit(snap);
+  writeJson(path, snap);
+}
+
+function editModel(root: string, name: string, edit: (m: Model) => void): void {
+  const path = join(root, "models", "wh", `${name}.yaml`);
+  const m = readYaml<Model>(path);
+  edit(m);
+  writeYaml(path, m);
+}
+
+function tableOf(snap: Snapshot, name: string): SnapshotTable {
+  return snap.tables.find((t) => t.name === name)!;
+}
+
+async function built(b: Build, after: (root: string) => void = () => {}): Promise<{ root: string; st: ProjectStatus }> {
+  const t = tempRoot();
+  cleanup = t.cleanup;
+  build(t.root, b);
+  after(t.root);
+  const r = await sl(t.root, ["status", "--json"]);
+  if (r.code !== 0) throw new Error(r.err);
+  return { root: t.root, st: r.json<ProjectStatus>() };
+}
+
+describe("status access mode and default audience", () => {
+  test("an open access.yaml reports its mode and what the default audience sees", async () => {
+    const { st } = await built({});
+    expect(st.access).toEqual({
+      state: "approved",
+      roles: 2,
+      restrictions: 0,
+      open_questions: 0,
+      mode: "open",
+      // 5 approved models with a dimension and a measure each; avg_total is approved and its measures are visible.
+      default_audience: { models: 5, fields: 10, metrics: 1, hidden_by_protected_tags: 0 },
+    });
+  });
+
+  test("no access.yaml means open: the default audience sees every approved item", async () => {
+    const { st } = await built({ access: "missing" });
+    expect(st.access).toEqual({
+      state: "missing",
+      roles: 0,
+      restrictions: 0,
+      open_questions: 0,
+      mode: "open",
+      default_audience: { models: 5, fields: 10, metrics: 1, hidden_by_protected_tags: 0 },
+    });
+  });
+
+  test("draft items are not counted in the default audience", async () => {
+    const { st } = await built({ models: "draft", metrics: "draft" });
+    expect(st.access.default_audience).toEqual({ models: 0, fields: 0, metrics: 0, hidden_by_protected_tags: 0 });
+  });
+
+  test("closed mode: the default audience, holding no role, sees nothing", async () => {
+    const { st } = await built({}, (root) => {
+      const path = join(root, "access.yaml");
+      writeYaml(path, { ...readYaml<object>(path), mode: "closed" });
+    });
+    expect(st.access.mode).toBe("closed");
+    expect(st.access.default_audience).toEqual({ models: 0, fields: 0, metrics: 0, hidden_by_protected_tags: 0 });
+  });
+
+  test("protected tags hide fields and models from the default audience and are counted", async () => {
+    const { st } = await built({}, (root) => {
+      editModel(root, "customers", (m) => {
+        m.dimensions[0]!.tags = ["pii"];
+      });
+      editModel(root, "web_events", (m) => {
+        m.tags = ["sensitive"];
+      });
+    });
+    const a = st.access.default_audience;
+    // web_events and its two fields are hidden, and customers.id_dim; avg_total still sees customers.total.
+    expect(a.models).toBe(4);
+    expect(a.fields).toBe(7);
+    expect(a.metrics).toBe(1);
+    // web_events, its two fields (they carry the model's tag) and customers.id_dim.
+    expect(a.hidden_by_protected_tags).toBe(4);
+  });
+
+  test("a role granting a protected tag does not widen the default audience", async () => {
+    const { st } = await built({}, (root) => {
+      editModel(root, "customers", (m) => {
+        m.measures[0]!.tags = ["pii"];
+      });
+      writeYaml(join(root, "access.yaml"), {
+        ...approval(true),
+        mode: "open",
+        roles: [{ name: "hr", allow: { tags: ["pii"] } }],
+      });
+    });
+    // customers.total is hidden, so avg_total, which divides by it, is hidden too.
+    expect(st.access.default_audience).toEqual({ models: 5, fields: 9, metrics: 0, hidden_by_protected_tags: 1 });
+  });
+
+  test("--source counts the default audience of that source only", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, {});
+    writeYaml(join(t.root, "sources", "lake.yaml"), { source: "lake", dialect: "duckdb" });
+    writeJson(join(t.root, "snapshots", "lake.json"), {
+      snapshot_version: 1,
+      source: "lake",
+      dialect: "duckdb",
+      captured_at: FIXED_NOW,
+      method: "live",
+      tables: [table("events", 100, { profiled_at: FIXED_NOW })],
+    });
+    writeYaml(join(t.root, "models", "lake", "events.yaml"), { ...model("web_events", true), model: "events", source: "lake", table: "main.events" });
+    const all = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(all.access.default_audience.models).toBe(6);
+    const wh = (await sl(t.root, ["status", "--json", "--source", "wh"])).json<ProjectStatus>();
+    expect(wh.access.default_audience).toEqual({ models: 5, fields: 10, metrics: 1, hidden_by_protected_tags: 0 });
+  });
+
+  test("no access.yaml -> access asks the exceptions question", async () => {
+    const { st } = await built({ access: "missing" });
+    expect(st.next_step).toMatchObject({ phase: "access", command: "sl validate", after_owner_yes: false });
+    expect(st.next_step.message).toContain("access is open");
+    expect(st.next_step.message).toContain("is there anything some people should not see?");
+    expect(st.next_step.message).toContain("pii or sensitive");
+  });
+
+  test("a draft open access.yaml with no roles -> the exceptions question, then approve the open baseline", async () => {
+    const { st } = await built({ access: "missing" }, (root) => writeYaml(join(root, "access.yaml"), { status: "draft", mode: "open" }));
+    expect(st.access).toMatchObject({ state: "draft", roles: 0, mode: "open" });
+    expect(st.next_step).toMatchObject({ phase: "access", command: 'sl approve --target access --by "<owner>"', after_owner_yes: true });
+    expect(st.next_step.message).toContain("is there anything some people should not see?");
+    expect(st.next_step.message).toContain("no roles yet");
+  });
+
+  test("an access.yaml with no mode is open", async () => {
+    const { st } = await built({ access: "missing" }, (root) => writeYaml(join(root, "access.yaml"), { status: "draft" }));
+    expect(st.access.mode).toBe("open");
+    expect(st.next_step.message).toContain("is there anything some people should not see?");
+  });
+
+  test("an approved open access.yaml with no roles completes the access phase", async () => {
+    const { st } = await built({ access: "missing" }, (root) =>
+      writeYaml(join(root, "access.yaml"), { ...approval(true), mode: "open" }),
+    );
+    expect(st.access).toMatchObject({ state: "approved", roles: 0, mode: "open" });
+    expect(st.roles_without_goldens).toEqual([]);
+    expect(st.next_step.phase).toBe("done");
+  });
+
+  test("a draft closed access.yaml with no roles asks who may see what", async () => {
+    const { st } = await built({ access: "missing" }, (root) => writeYaml(join(root, "access.yaml"), { status: "draft", mode: "closed" }));
+    expect(st.access).toMatchObject({ state: "draft", roles: 0, mode: "closed" });
+    expect(st.next_step).toMatchObject({ phase: "access", command: "sl validate" });
+    expect(st.next_step.message).toContain("closed and has no roles yet, so nobody sees anything");
+  });
+
+  test("a draft access.yaml with roles names its mode in the readback step", async () => {
+    const { st } = await built({ access: "draft" });
+    expect(st.next_step.message).toContain("in open mode");
+    expect(st.next_step.message).toContain("every restriction");
+  });
+
+  test("a draft open access.yaml with no roles but a restriction -> read the restriction back, not the bare baseline", async () => {
+    const { st } = await built({ access: "missing" }, (root) =>
+      writeYaml(join(root, "access.yaml"), {
+        status: "draft",
+        mode: "open",
+        user_attributes: [{ name: "level", type: "number", description: "Seniority." }],
+        restrictions: [{ name: "orders_seniors", description: "Orders for seniors.", targets: ["wh.orders"], allow: { when: "user.level >= 5" } }],
+      }),
+    );
+    expect(st.access).toMatchObject({ state: "draft", roles: 0, restrictions: 1, mode: "open" });
+    expect(st.next_step).toMatchObject({ phase: "access", command: 'sl approve --target access --by "<owner>"', after_owner_yes: true });
+    expect(st.next_step.message).toContain("0 role(s) and 1 restriction(s)");
+    expect(st.next_step.message).toContain("every restriction");
+    expect(st.next_step.message).not.toContain("open baseline");
+  });
+
+  test("an unreadable mode is named as unreadable and treated as closed", async () => {
+    const { st } = await built({ access: "missing" }, (root) =>
+      writeYaml(join(root, "access.yaml"), { status: "draft", mode: "opne", roles: [{ name: "analyst", allow: { models: ["wh.*"] } }] }),
+    );
+    expect(st.access.mode).toBe("closed");
+    expect(st.next_step).toMatchObject({ phase: "access", command: "sl validate", after_owner_yes: false });
+    expect(st.next_step.message).toContain("its mode is unreadable");
+    expect(st.next_step.message).toContain('"opne" is not open or closed');
+    expect(st.next_step.message).not.toContain("closed and has no roles yet");
+  });
+
+  test("an unreadable mode with no roles is still named as unreadable", async () => {
+    const { st } = await built({ access: "missing" }, (root) => writeYaml(join(root, "access.yaml"), { status: "draft", mode: "opne" }));
+    expect(st.next_step.message).toContain("its mode is unreadable");
+    expect(st.next_step.message).not.toContain("closed and has no roles yet");
+  });
+
+  test("an approved access.yaml with an unreadable mode keeps the access phase open", async () => {
+    const { st } = await built({}, (root) => {
+      const path = join(root, "access.yaml");
+      writeYaml(path, { ...readYaml<object>(path), mode: "opne" });
+    });
+    expect(st.access.state).toBe("approved");
+    expect(st.next_step).toMatchObject({ phase: "access", command: "sl validate" });
+    expect(st.next_step.message).toContain("access.yaml is approved, but its mode is unreadable");
+  });
+
+  test("an access.yaml whose restrictions cannot be read says so and keeps the access phase open", async () => {
+    const { st } = await built({}, (root) => {
+      const path = join(root, "access.yaml");
+      writeYaml(path, { ...readYaml<object>(path), restrictions: "everything" });
+    });
+    expect(st.access.mode).toBe("closed");
+    expect(st.next_step).toMatchObject({ phase: "access", command: "sl validate" });
+    expect(st.next_step.message).toContain("cannot be read as written");
+    expect(st.next_step.message).toContain("nobody sees anything");
+  });
+
+  test("an approved closed access.yaml with no roles keeps the access phase open", async () => {
+    const { st } = await built({ access: "missing" }, (root) =>
+      writeYaml(join(root, "access.yaml"), { ...approval(true), mode: "closed" }),
+    );
+    expect(st.access).toMatchObject({ state: "approved", roles: 0, mode: "closed" });
+    expect(st.access.default_audience).toEqual({ models: 0, fields: 0, metrics: 0, hidden_by_protected_tags: 0 });
+    expect(st.next_step).toMatchObject({ phase: "access", command: "sl validate" });
+    expect(st.next_step.message).toContain("access.yaml is approved, but it is closed and has no roles yet, so nobody sees anything");
+  });
+
+  test("human output names the mode and the default audience in one line", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, {});
+    const open = await sl(t.root, ["status"]);
+    expect(open.out).toContain("access mode open; the default audience sees 5 models, 10 fields, 1 metric\n");
+    editModel(t.root, "customers", (m) => {
+      m.dimensions[0]!.tags = ["pii"];
+    });
+    rmSync(join(t.root, "access.yaml"));
+    const tagged = await sl(t.root, ["status"]);
+    expect(tagged.out).toContain("access mode open (no access.yaml); the default audience sees 5 models, 9 fields, 1 metric; 1 hidden by protected tags");
+  });
+});
+
+describe("status schema evolution", () => {
+  test("a layer whose tables match its models reports no new or missing columns", async () => {
+    const { st } = await built({});
+    expect(st.sources[0]!.new_columns).toEqual([]);
+    expect(st.sources[0]!.missing_columns).toEqual([]);
+  });
+
+  test("a column a modeled table gained -> new_columns and draft --new-columns", async () => {
+    const { st } = await built({}, (root) =>
+      editSnapshot(root, (snap) => {
+        tableOf(snap, "fct_orders").columns.push({ name: "discount", type: "DECIMAL(10,2)" });
+        tableOf(snap, "web_events").columns.push({ name: "referrer", type: "VARCHAR" });
+      }),
+    );
+    expect(st.sources[0]!.new_columns).toEqual([
+      { model: "orders", column: "discount", type: "DECIMAL(10,2)" },
+      { model: "web_events", column: "referrer", type: "VARCHAR" },
+    ]);
+    expect(st.next_step).toMatchObject({ phase: "draft", source: "wh", command: "sl draft --source wh --new-columns", after_owner_yes: false });
+    expect(st.next_step.message).toContain("orders.discount (DECIMAL(10,2)), web_events.referrer (VARCHAR)");
+  });
+
+  test("new columns on draft models are listed too", async () => {
+    const { st } = await built({ models: "draft" }, (root) =>
+      editSnapshot(root, (snap) => {
+        tableOf(snap, "fct_orders").columns.push({ name: "discount", type: "integer" });
+      }),
+    );
+    expect(st.sources[0]!.new_columns).toEqual([{ model: "orders", column: "discount", type: "integer" }]);
+    // The draft phase precedes the interview, so the new column is drafted first.
+    expect(st.next_step.command).toBe("sl draft --source wh --new-columns");
+  });
+
+  test("tables without a model are drafted before new columns", async () => {
+    const { st } = await built({ models: "some" }, (root) =>
+      editSnapshot(root, (snap) => {
+        tableOf(snap, "fct_orders").columns.push({ name: "discount", type: "integer" });
+      }),
+    );
+    expect(st.sources[0]!.new_columns).toEqual([{ model: "orders", column: "discount", type: "integer" }]);
+    expect(st.next_step.command).toBe("sl draft --source wh");
+  });
+
+  test("ignored columns, join keys, incoming keys and referenced columns are not new", async () => {
+    const { st } = await built({}, (root) => {
+      editSnapshot(root, (snap) => {
+        const orders = tableOf(snap, "fct_orders");
+        orders.columns.push({ name: "customer_id", type: "integer" }, { name: "raw_payload", type: "json" }, { name: "Status", type: "varchar" });
+        tableOf(snap, "dim_customers").columns.push({ name: "code", type: "varchar" });
+      });
+      editModel(root, "orders", (m) => {
+        m.ignored_columns = ["RAW_PAYLOAD"];
+        m.dimensions.push({ name: "status", expr: "lower(status)", type: "string", status: "draft" });
+        m.joins![0]!.keys = [{ from: "customer_id", to: "code" }];
+      });
+    });
+    expect(st.sources[0]!.new_columns).toEqual([]);
+  });
+
+  test("an out-of-scope model's new columns are not reported, but the columns it reads are checked", async () => {
+    const { st } = await built({ scope: { exclude: ["orders_tmp"] } }, (root) =>
+      editSnapshot(root, (snap) => {
+        tableOf(snap, "orders_tmp").columns.push({ name: "extra", type: "integer" });
+        tableOf(snap, "orders_tmp").columns = tableOf(snap, "orders_tmp").columns.filter((c) => c.name !== "amount");
+      }),
+    );
+    expect(st.sources[0]!.out_of_scope_models).toEqual(["orders_tmp"]);
+    expect(st.sources[0]!.new_columns).toEqual([]);
+    // The model is still served, so the column its approved measure reads opens drift.
+    expect(st.sources[0]!.missing_columns).toEqual([{ model: "orders_tmp", field: "total", column: "amount" }]);
+    expect(st.next_step).toMatchObject({ phase: "drift", source: "wh", command: "sl validate" });
+    expect(st.next_step.message).toContain("orders_tmp.total (reads amount)");
+  });
+
+  test("drafting the new column clears it", async () => {
+    const { st } = await built({}, (root) => {
+      editSnapshot(root, (snap) => {
+        tableOf(snap, "fct_orders").columns.push({ name: "discount", type: "integer" });
+      });
+      editModel(root, "orders", (m) => {
+        m.measures.push({ name: "discount_total", expr: "discount", agg: "sum", status: "draft" });
+      });
+    });
+    expect(st.sources[0]!.new_columns).toEqual([]);
+    expect(st.sources[0]!.draft_fields).toContain("orders.discount_total");
+    expect(st.next_step.phase).toBe("done");
+  });
+
+  test("an approved field reading a removed column -> drift, before scope and profile", async () => {
+    const { st } = await built({ wide: true, profiled: false }, (root) =>
+      editSnapshot(root, (snap) => {
+        const orders = tableOf(snap, "fct_orders");
+        orders.columns = orders.columns.filter((c) => c.name !== "amount");
+      }),
+    );
+    const w = st.sources[0]!;
+    expect(w.needs_focus).toBe(true);
+    expect(w.missing_columns).toEqual([{ model: "orders", field: "total", column: "amount" }]);
+    expect(st.next_step).toMatchObject({ phase: "drift", source: "wh", command: "sl validate", after_owner_yes: false });
+    expect(st.next_step.message).toContain("The table changed");
+    expect(st.next_step.message).toContain("orders.total (reads amount)");
+    expect(st.next_step.message).toContain("Read the affected items back to the owner");
+  });
+
+  test("a source without a snapshot is introspected before drift", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, {});
+    editSnapshot(t.root, (snap) => {
+      tableOf(snap, "fct_orders").columns = tableOf(snap, "fct_orders").columns.filter((c) => c.name !== "amount");
+    });
+    writeYaml(join(t.root, "sources", "lake.yaml"), { source: "lake", dialect: "duckdb" });
+    const st = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(st.next_step).toMatchObject({ phase: "introspect", source: "lake" });
+    const wh = (await sl(t.root, ["status", "--json", "--source", "wh"])).json<ProjectStatus>();
+    expect(wh.next_step.phase).toBe("drift");
+  });
+
+  test("a draft field reading a removed column is listed but does not open drift", async () => {
+    const { st } = await built({}, (root) => {
+      editSnapshot(root, (snap) => {
+        const orders = tableOf(snap, "fct_orders");
+        orders.columns = orders.columns.filter((c) => c.name !== "amount");
+      });
+      editModel(root, "orders", (m) => {
+        m.measures[0]!.status = "draft";
+        delete m.measures[0]!.approved_by;
+        delete m.measures[0]!.approved_at;
+      });
+    });
+    expect(st.sources[0]!.missing_columns).toEqual([{ model: "orders", field: "total", column: "amount" }]);
+    expect(st.next_step.phase).not.toBe("drift");
+  });
+
+  test("a dimension on a SQL keyword such as current_date does not open drift, matching validate", async () => {
+    const { root, st } = await built({}, (r) =>
+      editModel(r, "orders", (m) => {
+        m.dimensions.push({ name: "today", expr: "current_date", type: "time", description: "Today.", ...approval(true) });
+        m.dimensions.push({ name: "now_ts", expr: " NOW ", type: "time", description: "Now.", ...approval(true) });
+      }),
+    );
+    expect(st.sources[0]!.missing_columns).toEqual([]);
+    expect(st.next_step.phase).toBe("done");
+    expect(validateProject(root).filter((i) => i.level === "error" && i.file.includes("orders.yaml") && i.path.startsWith("dimensions"))).toEqual([]);
+  });
+
+  test("a table with no known columns is not checked for missing columns, matching validate", async () => {
+    const { root, st } = await built({}, (r) =>
+      editSnapshot(r, (snap) => {
+        tableOf(snap, "web_events").columns = [];
+      }),
+    );
+    expect(st.sources[0]!.missing_columns).toEqual([]);
+    expect(st.sources[0]!.new_columns).toEqual([]);
+    expect(st.next_step.phase).toBe("done");
+    expect(validateProject(root).filter((i) => i.level === "error" && i.file.includes("web_events"))).toEqual([]);
+  });
+
+  test("only exprs validate reads as one column are checked: not $ names or another dialect's quotes", async () => {
+    const { root, st } = await built({}, (r) =>
+      editModel(r, "orders", (m) => {
+        m.dimensions.push({ name: "dollar", expr: "amount$", type: "number", description: "D.", ...approval(true) });
+        m.dimensions.push({ name: "ticked", expr: "`gone`", type: "number", description: "T.", ...approval(true) });
+      }),
+    );
+    expect(st.sources[0]!.missing_columns).toEqual([]);
+    expect(st.next_step.phase).toBe("done");
+    expect(validateProject(root).filter((i) => i.level === "error" && i.file.includes("orders.yaml") && i.path.startsWith("dimensions"))).toEqual([]);
+  });
+
+  test("a quoted column the table lost opens drift, and validate errors on it too", async () => {
+    const { root, st } = await built({}, (r) =>
+      editModel(r, "orders", (m) => {
+        m.dimensions.push({ name: "quoted", expr: '"Gone Col"', type: "string", description: "Q.", ...approval(true) });
+      }),
+    );
+    expect(st.sources[0]!.missing_columns).toEqual([{ model: "orders", field: "quoted", column: "Gone Col" }]);
+    expect(st.next_step.phase).toBe("drift");
+    expect(validateProject(root).some((i) => i.level === "error" && i.message.includes("Gone Col"))).toBe(true);
+  });
+
+  test("an approved model whose table left the snapshot -> drift naming the model and its table", async () => {
+    const { st } = await built({}, (root) =>
+      editSnapshot(root, (snap) => {
+        snap.tables = snap.tables.filter((t) => t.name !== "web_events");
+      }),
+    );
+    const w = st.sources[0]!;
+    expect(w.missing_tables).toEqual([{ model: "web_events", table: "main.web_events" }]);
+    expect(w.out_of_scope_models).toEqual(["web_events"]);
+    expect(st.next_step).toMatchObject({ phase: "drift", source: "wh", command: "sl validate" });
+    expect(st.next_step.message).toContain("1 approved model(s) in \"wh\" are built on a table the snapshot no longer has: web_events (main.web_events)");
+  });
+
+  test("a draft model whose table left the snapshot is listed but does not open drift", async () => {
+    const { st } = await built({}, (root) => {
+      editSnapshot(root, (snap) => {
+        snap.tables = snap.tables.filter((t) => t.name !== "web_events");
+      });
+      editModel(root, "web_events", (m) => {
+        m.status = "draft";
+        delete m.approved_by;
+        delete m.approved_at;
+      });
+    });
+    expect(st.sources[0]!.missing_tables).toEqual([{ model: "web_events", table: "main.web_events" }]);
+    expect(st.next_step.phase).not.toBe("drift");
+  });
+
+  test("a retyped column is neither new nor missing", async () => {
+    const { st } = await built({}, (root) =>
+      editSnapshot(root, (snap) => {
+        tableOf(snap, "fct_orders").columns[1]!.type = "bigint";
+      }),
+    );
+    expect(st.sources[0]!.new_columns).toEqual([]);
+    expect(st.sources[0]!.missing_columns).toEqual([]);
+  });
+
+  test("human output lists missing and new columns per source", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, {});
+    editSnapshot(t.root, (snap) => {
+      const orders = tableOf(snap, "fct_orders");
+      orders.columns = orders.columns.filter((c) => c.name !== "amount");
+      orders.columns.push({ name: "discount", type: "integer" });
+    });
+    const r = await sl(t.root, ["status"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("  missing columns: orders.total reads amount");
+    expect(r.out).toContain("  new columns without a field: orders.discount (integer)");
+    expect(r.out).toContain("Next step (drift)");
+    editSnapshot(t.root, (snap) => {
+      snap.tables = snap.tables.filter((x) => x.name !== "web_events");
+    });
+    const gone = await sl(t.root, ["status"]);
+    expect(gone.out).toContain("  models on tables the snapshot no longer has: web_events (main.web_events)");
   });
 });

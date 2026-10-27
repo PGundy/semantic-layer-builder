@@ -7,7 +7,8 @@ import { IMPORT_FORMATS, type ImportFormat, importSnapshot } from "../lib/import
 import { qualifiedName } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
 import { filterInScope } from "../lib/patterns.ts";
-import { loadProject, loadSnapshot, loadSource, projectSettings, saveSnapshot } from "../lib/project.ts";
+import { listModels, loadProject, loadSnapshot, loadSource, projectSettings, saveSnapshot } from "../lib/project.ts";
+import { changeLines, diffSnapshots, modeledTables } from "../lib/snapshot-diff.ts";
 import { RUNNABLE_DIALECTS, type Snapshot } from "../lib/types.ts";
 
 const normType = (t: string) => t.replace(/\s+/g, " ").trim().toLowerCase();
@@ -76,7 +77,9 @@ const spec: CommandSpec = {
     if (!snapshot.tables.length) {
       throw new UserError(`No tables found in ${file}.${warnings.length ? ` ${warnings.join(" ")}` : ""}`);
     }
-    const { kept, dropped } = carryOver(snapshot, loadSnapshot(ctx.root, source.source));
+    const previous = loadSnapshot(ctx.root, source.source);
+    const changes = previous ? diffSnapshots(previous, snapshot) : null;
+    const { kept, dropped } = carryOver(snapshot, previous);
     if (kept) warnings.push(`Kept the profiles of ${kept} unchanged column${kept === 1 ? "" : "s"} from the previous snapshot.`);
     if (dropped.length) {
       warnings.push(
@@ -107,6 +110,7 @@ const spec: CommandSpec = {
           primary_keys: primaryKeys,
           foreign_keys: foreignKeys,
           warnings,
+          changes,
           next,
         }),
       );
@@ -117,6 +121,8 @@ const spec: CommandSpec = {
         `(${primaryKeys} with a primary key, ${foreignKeys} foreign key${foreignKeys === 1 ? "" : "s"}) from ${format} into snapshots/${source.source}.json.`,
     ];
     if (warnings.length) lines.push("Warnings:", ...warnings.map((w) => `  - ${w}`));
+    const modeled = changes ? modeledTables(snapshot, () => listModels(ctx.root, source.source).map((l) => l.model), source.scope) : undefined;
+    lines.push(...changeLines(changes, source.source, modeled));
     lines.push(
       inScope > focus_threshold
         ? `Next: ${inScope} tables are in scope, more than the focus threshold of ${focus_threshold}. Run \`${next}\` and choose which tables to focus on.`

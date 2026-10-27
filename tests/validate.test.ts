@@ -12,6 +12,7 @@ import {
   sqlNames,
   validateProject,
 } from "../skills/semantic-layer/scripts/lib/validate.ts";
+import { conditionAttributes, parseCondition } from "../skills/semantic-layer/scripts/lib/conditions.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { sl } from "./helpers.ts";
 
@@ -351,6 +352,7 @@ const CASES: Case[] = [
     expect: [
       ["error", "access.yaml", "roles[1].name", "already defined"],
       ["error", GOLDEN2, "role", 'unknown role "sales_rep"'],
+      ["error", "access.yaml", "restrictions[0].allow.roles[1]", 'names unknown role "sales_rep"'],
     ],
   },
   { name: "default_role unknown", file: "access.yaml", edit: (d) => (d.default_role = "admin"), expect: ["error", "access.yaml", "default_role", "unknown role"] },
@@ -894,7 +896,11 @@ const CASES: Case[] = [
     name: "a role that denies the joined model by tag",
     file: "",
     setup: (r) => mutate(r, CUSTOMERS, (d) => (d.tags = ["pii"])),
-    expect: ["warning", ACCESS, "roles[0]", "to model warehouse.customers, which the role denies by tag;"],
+    expect: [
+      ["warning", ACCESS, "roles[0]", "to model warehouse.customers, which the role denies by tag;"],
+      // pii is protected: sales_rep, which does not grant it, does not see customers either.
+      ["warning", ACCESS, "roles[1]", "which the role does not see, since it carries the protected tag pii; the dimension would show the values of warehouse.customers to this role, so grant pii in the role's allow.tags"],
+    ],
   },
   { name: "a role that denies the dimension itself", file: ACCESS, edit: (d) => d.roles.push({ name: "marketing", allow: { models: ["warehouse.orders"] }, deny: { fields: ["warehouse.orders.customer_region"] } }), expect: [] },
   { name: "a role that cannot see the dimension's own model", file: ACCESS, edit: (d) => d.roles.push({ name: "finance", allow: { models: ["warehouse.customers"] } }), expect: [] },
@@ -1015,6 +1021,575 @@ const CASES: Case[] = [
   // Snapshots
   { name: "snapshot source differs from file", file: "snapshots/lake.json", edit: (d) => (d.source = "lakehouse"), expect: ["error", "snapshots/lake.json", "source", "file is named lake.json"] },
 ];
+
+// ---------------------------------------------------------------------------
+// Access modes, conditions, restrictions, hierarchy filters, ignored columns and sensitivity.
+
+const APPROVED = { status: "approved", approved_by: "Dana Ruiz", approved_at: "2026-01-15" };
+const GOLDEN_FILES = [GOLDEN, GOLDEN2, GOLDEN3];
+
+// Leaves role and user out of every golden, so access.yaml can drop the fixture's roles.
+function noGoldenRoles(root: string): void {
+  for (const g of GOLDEN_FILES)
+    mutate(root, g, (d) => {
+      delete d.role;
+      delete d.user;
+    });
+}
+
+// Adds a column to the fct_orders snapshot table.
+function addOrdersColumn(root: string, column: Doc): void {
+  mutate(root, SNAP_WH, (d) => d.tables.find((t: Doc) => t.name === "fct_orders").columns.push({ nullable: true, description: null, ...column }));
+}
+
+// Adds a reporting_lines closure model to the warehouse, one row per manager and member pair.
+function addReportingLines(root: string): void {
+  addModel(root, "reporting_lines", "reporting_lines", ["manager_id", "member_id"], {});
+}
+
+const HIERARCHY = { column: "customer_id", via: "warehouse.reporting_lines", manager: "manager_id", member: "member_id", user: "user.employee_id" };
+
+// Adds a manager role whose row filter on orders is the given hierarchy, and the employee_id attribute.
+function managerRole(root: string, hierarchy: Doc = HIERARCHY, attrType = "number"): void {
+  addReportingLines(root);
+  mutate(root, ACCESS, (d) => {
+    d.user_attributes.push({ name: "employee_id", type: attrType });
+    d.roles.push({ name: "manager", allow: { models: ["warehouse.*"] }, row_filters: [{ model: "warehouse.orders", hierarchy }] });
+  });
+}
+
+// Adds an approved dimension to the approved orders model.
+function approvedDimension(root: string, dim: Doc): void {
+  mutate(root, ORDERS, (d) => d.dimensions.push({ type: "string", description: "x", ...dim, ...APPROVED }));
+}
+
+const OPEN_NO_EFFECT = "has no effect in open mode";
+const LOOKS_SENSITIVE = "is visible to everyone and looks sensitive";
+
+const ACCESS_CASES: Case[] = [
+  // Modes
+  {
+    name: "open mode: allow.models has no effect",
+    file: ACCESS,
+    edit: (d) => delete d.mode,
+    expect: [
+      ["warning", ACCESS, "roles[0].allow.models", OPEN_NO_EFFECT],
+      ["warning", ACCESS, "roles[1].allow.models", OPEN_NO_EFFECT],
+    ],
+  },
+  { name: "explicit open mode warns the same way", file: ACCESS, edit: (d) => ((d.mode = "open"), delete d.roles[1].allow), expect: ["warning", ACCESS, "roles[0].allow.models", OPEN_NO_EFFECT] },
+  {
+    name: "open mode without roles is valid",
+    file: "",
+    setup: (r) => (noGoldenRoles(r), writeYaml(join(r, ACCESS), { status: "draft", mode: "open" })),
+    expect: [],
+  },
+  { name: "open mode roles without allow are valid", file: ACCESS, edit: (d) => ((d.mode = "open"), delete d.roles[0].allow, delete d.roles[1].allow), expect: [] },
+  {
+    name: "access.yaml with only a status is open with no roles",
+    file: "",
+    setup: (r) => (noGoldenRoles(r), writeYaml(join(r, ACCESS), { status: "draft" })),
+    expect: [],
+  },
+  { name: "closed mode: a role needs allow.models", file: ACCESS, edit: (d) => delete d.roles[1].allow, expect: ["error", ACCESS, "roles[1].allow.models", "is required in closed mode"] },
+  { name: "closed mode: allow with tags only still needs models", file: ACCESS, edit: (d) => (d.roles[1].allow = { tags: ["pii"] }), expect: ["error", ACCESS, "roles[1].allow.models", "is required in closed mode"] },
+  {
+    name: "closed mode without roles sees nothing",
+    file: "",
+    setup: (r) => (noGoldenRoles(r), writeYaml(join(r, ACCESS), { status: "draft", mode: "closed" })),
+    expect: ["warning", ACCESS, "mode", "is closed but there are no roles, so no one sees anything"],
+  },
+  { name: "unknown mode", file: ACCESS, edit: (d) => (d.mode = "strict"), expect: ["error", ACCESS, "mode", "must be one of: open, closed"] },
+  {
+    name: "open mode: a pattern that matches nothing is not reported, an invalid one is",
+    file: ACCESS,
+    edit: (d) => ((d.mode = "open"), (d.roles[0].allow.models = ["crm.*", "re:ware(house"]), delete d.roles[1].allow),
+    expect: [
+      ["warning", ACCESS, "roles[0].allow.models", OPEN_NO_EFFECT],
+      ["error", ACCESS, "roles[0].allow.models[1]", "Invalid regex"],
+    ],
+  },
+
+  // Protected-tag grants
+  { name: "allow.tags grants a protected tag", file: ACCESS, edit: (d) => (d.roles[1].allow.tags = ["pii", "sensitive"]), expect: [] },
+  {
+    name: "allow.tags names a tag that is not protected",
+    file: ACCESS,
+    edit: (d) => (d.roles[1].allow.tags = ["finance"]),
+    expect: ["warning", ACCESS, "roles[1].allow.tags[0]", '"finance" is not a protected tag; allow.tags grants pii or sensitive'],
+  },
+  { name: "allow.tags must be names", file: ACCESS, edit: (d) => (d.roles[1].allow.tags = ["PII"]), expect: ["error", ACCESS, "roles[1].allow.tags[0]", "must match"] },
+
+  // assign_when
+  { name: "assign_when that does not parse", file: ACCESS, edit: (d) => (d.roles[1].assign_when = "user.department = 'sales'"), expect: ["error", ACCESS, "roles[1].assign_when", "Invalid condition"] },
+  { name: "assign_when with SQL in it", file: ACCESS, edit: (d) => (d.roles[1].assign_when = "department in (select 1)"), expect: ["error", ACCESS, "roles[1].assign_when", "expected user.<attribute>"] },
+  {
+    name: "assign_when reads an undeclared attribute",
+    file: ACCESS,
+    edit: (d) => (d.roles[1].assign_when = "user.title == 'rep' or user.department == 'sales'"),
+    expect: ["error", ACCESS, "roles[1].assign_when", "reads user.title, which is not a declared user attribute"],
+  },
+  { name: "assign_when must be text", file: ACCESS, edit: (d) => (d.roles[1].assign_when = 3), expect: ["error", ACCESS, "roles[1].assign_when", "must be string"] },
+  {
+    name: "assign_when tests that are false for every user",
+    file: ACCESS,
+    edit: (d) => {
+      d.user_attributes.push({ name: "teams", type: "string_list" }, { name: "level", type: "number" });
+      d.roles[1].assign_when = "user.department contains 'x' or user.teams == 'a' or user.level == 'senior' or user.teams contains 3 or user.level in ['a', 'b']";
+    },
+    expect: [
+      ["warning", ACCESS, "roles[1].assign_when", "user.department is a string, and contains needs a list attribute"],
+      ["warning", ACCESS, "roles[1].assign_when", "user.teams is a string_list, and == compares one value"],
+      ["warning", ACCESS, "roles[1].assign_when", 'user.level is a number, and "senior" is not a number'],
+      ["warning", ACCESS, "roles[1].assign_when", "user.teams holds strings, and 3 is not a string"],
+      ["warning", ACCESS, "roles[1].assign_when", "user.level holds numbers, and the list holds none"],
+    ],
+    hint: "false for every user",
+  },
+  {
+    name: "assign_when tests that fit their attributes' types",
+    file: ACCESS,
+    edit: (d) => {
+      d.user_attributes.push({ name: "teams", type: "string_list" }, { name: "level", type: "number" });
+      d.roles[1].assign_when =
+        "user.teams contains 'west' or user.teams in ['a'] or user.level >= 3 or not (user.region is not set) or user.department != 'x' or user.region >= 'm' or user.region < 'n'";
+    },
+    expect: [],
+  },
+  {
+    name: "a not in list that holds no value of the attribute's type",
+    file: ACCESS,
+    edit: (d) => {
+      d.user_attributes.push({ name: "level", type: "number" });
+      d.roles[1].assign_when = "user.level not in ['a', 'b']";
+    },
+    expect: [
+      "warning",
+      ACCESS,
+      "roles[1].assign_when",
+      "user.level holds numbers, and the list holds none, so that test is true for every user who has user.level; write user.level is set if that is meant",
+    ],
+  },
+  {
+    name: "a restriction's allow.when with a not in list that grants everyone who has the attribute",
+    file: ACCESS,
+    edit: (d) => {
+      d.user_attributes.push({ name: "level", type: "number" });
+      d.restrictions[0].allow.when = "user.level not in ['a', 'b']";
+    },
+    expect: ["warning", ACCESS, "restrictions[0].allow.when", "so that test is true for every user who has user.level"],
+  },
+  {
+    name: "a not around a test whose outcome the type fixes",
+    file: ACCESS,
+    edit: (d) => {
+      d.user_attributes.push({ name: "level", type: "number" });
+      d.roles[1].assign_when = "not (user.level == 'senior') or not (user.department == 'x' and user.level not in ['a']) or not not (user.level in ['b'])";
+    },
+    expect: [
+      ["warning", ACCESS, "roles[1].assign_when", 'user.level is a number, and "senior" is not a number, so that test is false for every user, and the not around it makes it true for every user'],
+      ["warning", ACCESS, "roles[1].assign_when", "and the not around it makes it true exactly for users who lack user.level"],
+      ["warning", ACCESS, "roles[1].assign_when", "user.level holds numbers, and the list holds none, so that test is false for every user"],
+    ],
+  },
+
+  // Restrictions
+  {
+    name: "a restriction on a field and a model glob",
+    file: ACCESS,
+    edit: (d) => d.restrictions.push({ name: "revenue_detail", targets: ["warehouse.orders.revenue", "warehouse.cust*"], allow: { roles: ["analyst"] } }),
+    expect: [],
+  },
+  {
+    name: "a restriction allowed by a condition alone",
+    file: ACCESS,
+    edit: (d) => d.restrictions.push({ name: "finance_only", targets: ["metric:*"], allow: { when: "user.department == 'finance'" } }),
+    expect: [],
+  },
+  {
+    name: "a restriction target that matches nothing",
+    file: ACCESS,
+    edit: (d) => (d.restrictions[0].targets = ["metric:payroll_*", "warehouse.payroll", "average_order_value"]),
+    expect: [
+      ["warning", ACCESS, "restrictions[0].targets[0]", '"metric:payroll_*" matches no metric, so it hides nothing'],
+      ["warning", ACCESS, "restrictions[0].targets[1]", '"warehouse.payroll" matches no model or field, so it hides nothing'],
+      ["warning", ACCESS, "restrictions[0].targets[2]", "write metric:average_order_value to name a metric"],
+    ],
+  },
+  { name: "a restriction target with an invalid regex", file: ACCESS, edit: (d) => (d.restrictions[0].targets = ["re:ware(house"]), expect: ["error", ACCESS, "restrictions[0].targets[0]", "Invalid regex"] },
+  { name: "a restriction target metric: with no name", file: ACCESS, edit: (d) => (d.restrictions[0].targets = ["metric:"]), expect: ["error", ACCESS, "restrictions[0].targets[0]", "names no metric"] },
+  { name: "a restriction with no targets", file: ACCESS, edit: (d) => (d.restrictions[0].targets = []), expect: ["error", ACCESS, "restrictions[0].targets", "must NOT have fewer than 1 items"] },
+  { name: "a restriction allow.roles names an unknown role", file: ACCESS, edit: (d) => (d.restrictions[0].allow.roles = ["analyst", "cfo"]), expect: ["error", ACCESS, "restrictions[0].allow.roles[1]", 'names unknown role "cfo"'] },
+  {
+    name: "a restriction that allows nobody",
+    file: ACCESS,
+    edit: (d) => (d.restrictions[0].allow = { roles: [] }),
+    expect: ["error", ACCESS, "restrictions[0].allow", "names neither roles nor when, so its targets are hidden from everyone"],
+  },
+  { name: "a restriction without allow", file: ACCESS, edit: (d) => delete d.restrictions[0].allow, expect: ["error", ACCESS, "restrictions[0].allow", "is required"] },
+  {
+    name: "a restriction's when reads an undeclared attribute",
+    file: ACCESS,
+    edit: (d) => (d.restrictions[0].allow.when = "user.cost_center == 'fin'"),
+    expect: ["error", ACCESS, "restrictions[0].allow.when", "reads user.cost_center, which is not a declared user attribute"],
+  },
+  { name: "a restriction's when that does not parse", file: ACCESS, edit: (d) => (d.restrictions[0].allow.when = "user.department =="), expect: ["error", ACCESS, "restrictions[0].allow.when", "Invalid condition"] },
+  {
+    name: "two restrictions with one name",
+    file: ACCESS,
+    edit: (d) => d.restrictions.push({ ...d.restrictions[0] }),
+    expect: ["error", ACCESS, "restrictions[1].name", '"unit_economics" is already defined at restrictions[0]'],
+  },
+  { name: "a restriction with an unknown key", file: ACCESS, edit: (d) => (d.restrictions[0].deny = {}), expect: ["error", ACCESS, "restrictions[0].deny", "not a known property"] },
+
+  // Hierarchy row filters
+  { name: "a hierarchy row filter", file: "", setup: (r) => managerRole(r), expect: [] },
+  { name: "a hierarchy row filter with a bare user attribute and include_self", file: "", setup: (r) => managerRole(r, { ...HIERARCHY, user: "employee_id", include_self: false }), expect: [] },
+  {
+    name: "a hierarchy row filter through a model of another source",
+    file: "",
+    setup: (r) => managerRole(r, { ...HIERARCHY, via: "lake.web_events" }),
+    expect: ["error", ACCESS, "roles[2].row_filters[0].hierarchy.via", '"lake.web_events" is in source lake, but warehouse.orders is in warehouse'],
+  },
+  {
+    name: "a hierarchy row filter through an unknown model",
+    file: "",
+    setup: (r) => managerRole(r, { ...HIERARCHY, via: "warehouse.org_chart" }),
+    expect: ["error", ACCESS, "roles[2].row_filters[0].hierarchy.via", '"warehouse.org_chart" is not a model; model the closure table'],
+  },
+  {
+    name: "a hierarchy row filter with missing columns",
+    file: "",
+    setup: (r) => managerRole(r, { ...HIERARCHY, column: "rep_id", manager: "boss_id", member: "report_id" }),
+    expect: [
+      ["error", ACCESS, "roles[2].row_filters[0].hierarchy.column", '"rep_id" is not a column of public.fct_orders'],
+      ["error", ACCESS, "roles[2].row_filters[0].hierarchy.manager", '"boss_id" is not a column of public.reporting_lines'],
+      ["error", ACCESS, "roles[2].row_filters[0].hierarchy.member", '"report_id" is not a column of public.reporting_lines'],
+    ],
+  },
+  {
+    name: "a hierarchy row filter with an undeclared user attribute",
+    file: "",
+    setup: (r) => managerRole(r, { ...HIERARCHY, user: "user.staff_id" }),
+    expect: ["error", ACCESS, "roles[2].row_filters[0].hierarchy.user", "user.staff_id is not a declared user attribute"],
+  },
+  {
+    name: "a hierarchy row filter over a list attribute",
+    file: "",
+    setup: (r) => managerRole(r, HIERARCHY, "number_list"),
+    expect: ["error", ACCESS, "roles[2].row_filters[0].hierarchy.user", "user.employee_id is a number_list; a hierarchy filter needs the user's own id"],
+  },
+  {
+    name: "a hierarchy row filter on an unknown model",
+    file: "",
+    setup: (r) => (managerRole(r), mutate(r, ACCESS, (d) => (d.roles[2].row_filters[0].model = "warehouse.tickets"))),
+    expect: ["error", ACCESS, "roles[2].row_filters[0].model", '"warehouse.tickets" is not a model'],
+  },
+  {
+    name: "a hierarchy without via",
+    file: "",
+    setup: (r) => managerRole(r, { ...HIERARCHY, via: undefined }),
+    expect: ["error", ACCESS, "roles[2].row_filters[0].hierarchy.via", "is required"],
+  },
+  {
+    name: "a hierarchy user that is not an attribute name",
+    file: "",
+    setup: (r) => managerRole(r, { ...HIERARCHY, user: "{{ user.employee_id }}" }),
+    expect: ["error", ACCESS, "roles[2].row_filters[0].hierarchy.user", "must match"],
+  },
+  {
+    name: "a row filter with both expr and hierarchy",
+    file: "",
+    setup: (r) => (managerRole(r), mutate(r, ACCESS, (d) => (d.roles[2].row_filters[0].expr = "1 = 1"))),
+    expect: ["error", ACCESS, "roles[2].row_filters[0]", "has more than one of expr, hierarchy; give exactly one"],
+  },
+  {
+    name: "a row filter with neither expr nor hierarchy",
+    file: ACCESS,
+    edit: (d) => delete d.roles[1].row_filters[0].expr,
+    expect: ["error", ACCESS, "roles[1].row_filters[0]", "needs one of expr, hierarchy"],
+  },
+
+  // Definition joins in open mode and with protected tags
+  {
+    name: "open mode: a role that denies the joined model",
+    file: ACCESS,
+    edit: (d) => ((d.mode = "open"), delete d.roles[0].allow, delete d.roles[1].allow, (d.roles[1].deny.models = ["warehouse.customers"])),
+    expect: ["warning", ACCESS, "roles[1]", "to model warehouse.customers, which the role denies;"],
+  },
+  {
+    name: "a role that grants the joined model's protected tag",
+    file: "",
+    setup: (r) => (mutate(r, CUSTOMERS, (d) => (d.tags = ["sensitive"])), mutate(r, ACCESS, (d) => (d.roles[1].allow.tags = ["sensitive"]))),
+    expect: ["warning", ACCESS, "roles[0]", "which the role does not see, since it carries the protected tag sensitive; the dimension would show the values of warehouse.customers to this role, so grant sensitive in the role's allow.tags"],
+  },
+
+  // Definition joins seen by the default audience
+  {
+    name: "no access.yaml: everyone sees a dimension that reads a protected model through a join",
+    file: "",
+    setup: (r) => (
+      rmSync(join(r, ACCESS)),
+      noGoldenRoles(r),
+      mutate(r, CUSTOMERS, (d) => (d.tags = ["sensitive"])),
+      mutate(r, ORDERS, (d) => Object.assign(d.dimensions[3], APPROVED))
+    ),
+    expect: [
+      "warning",
+      ORDERS,
+      "dimensions[3]",
+      "warehouse.orders.customer_region is visible to the default audience (a user with no attributes and no assigned roles), and its expr reads customer.region through join customer to model warehouse.customers, which that audience does not see (it carries the protected tag sensitive); the dimension would show the values of warehouse.customers to that audience, so tag warehouse.orders.customer_region sensitive, or confirm with the owner that everyone may see them",
+    ],
+  },
+  {
+    name: "open mode with no roles: everyone sees a dimension that reads a protected model through a join",
+    file: "",
+    setup: (r) => (
+      noGoldenRoles(r),
+      mutate(r, ACCESS, (d) => {
+        d.mode = "open";
+        delete d.roles;
+        delete d.default_role;
+        delete d.restrictions;
+      }),
+      mutate(r, CUSTOMERS, (d) => (d.tags = ["pii"])),
+      mutate(r, ORDERS, (d) => Object.assign(d.dimensions[3], APPROVED))
+    ),
+    expect: ["warning", ORDERS, "dimensions[3]", "which that audience does not see (it carries the protected tag pii); the dimension would show the values of warehouse.customers to that audience, so tag warehouse.orders.customer_region pii"],
+  },
+  {
+    name: "open mode with a role no one is assigned: the default audience and the role are both warned about",
+    file: "",
+    setup: (r) => (
+      noGoldenRoles(r),
+      mutate(r, ACCESS, (d) => {
+        d.mode = "open";
+        d.roles = [{ name: "everyone" }];
+        delete d.default_role;
+        delete d.restrictions;
+      }),
+      mutate(r, CUSTOMERS, (d) => (d.tags = ["sensitive"])),
+      mutate(r, ORDERS, (d) => Object.assign(d.dimensions[3], APPROVED))
+    ),
+    expect: [
+      ["warning", ORDERS, "dimensions[3]", "which that audience does not see (it carries the protected tag sensitive)"],
+      ["warning", ACCESS, "roles[0]", "which the role does not see, since it carries the protected tag sensitive"],
+    ],
+  },
+  {
+    name: "the default role is warned about once for a protected joined model",
+    file: "",
+    setup: (r) => (mutate(r, CUSTOMERS, (d) => (d.tags = ["sensitive"])), mutate(r, ORDERS, (d) => Object.assign(d.dimensions[3], APPROVED))),
+    expect: [
+      ["warning", ACCESS, "roles[0]", "which the role does not see, since it carries the protected tag sensitive"],
+      ["warning", ACCESS, "roles[1]", "which the role does not see, since it carries the protected tag sensitive"],
+    ],
+  },
+  {
+    name: "a restriction hides the joined model from the default audience",
+    file: "",
+    setup: (r) => (
+      mutate(r, ACCESS, (d) => d.restrictions.push({ name: "customer_detail", targets: ["warehouse.customers"], allow: { roles: ["sales_rep"] } })),
+      mutate(r, ORDERS, (d) => Object.assign(d.dimensions[3], APPROVED))
+    ),
+    expect: [
+      "warning",
+      ORDERS,
+      "dimensions[3]",
+      "which that audience does not see (restriction customer_detail hides it); the dimension would show the values of warehouse.customers to that audience, so add warehouse.orders.customer_region to the targets of restriction customer_detail",
+    ],
+  },
+  {
+    name: "a restriction that covers the dimension too",
+    file: "",
+    setup: (r) => (
+      mutate(r, ACCESS, (d) => d.restrictions.push({ name: "customer_detail", targets: ["warehouse.customers", "warehouse.orders.customer_region"], allow: { roles: ["sales_rep"] } })),
+      mutate(r, ORDERS, (d) => Object.assign(d.dimensions[3], APPROVED))
+    ),
+    expect: [],
+  },
+  {
+    name: "a draft dimension that reads a protected model is not exposed",
+    file: "",
+    setup: (r) => (rmSync(join(r, ACCESS)), noGoldenRoles(r), mutate(r, CUSTOMERS, (d) => (d.tags = ["sensitive"]))),
+    expect: [],
+  },
+
+  // ignored_columns
+  {
+    name: "an ignored column another model joins on",
+    file: "",
+    setup: (r) => mutate(r, CUSTOMERS, (d) => (delete d.primary_key, (d.measures[0].expr = "email"), (d.ignored_columns = ["customer_id"]))),
+    expect: ["warning", CUSTOMERS, "ignored_columns[0]", '"customer_id" is read by a field, a join key, the primary key of model customers or a join from another model'],
+  },
+  {
+    name: "ignored columns the model does not read",
+    file: ORDERS,
+    setup: (r) => addOrdersColumn(r, { name: "raw_payload", type: "json" }),
+    edit: (d) => (d.ignored_columns = ["raw_payload"]),
+    expect: [],
+  },
+  {
+    name: "an ignored column the table lacks",
+    file: ORDERS,
+    edit: (d) => (d.ignored_columns = ["raw_payload"]),
+    expect: ["warning", ORDERS, "ignored_columns[0]", '"raw_payload" is not a column of public.fct_orders; remove it from ignored_columns'],
+  },
+  {
+    name: "ignored columns a field, a join key or the primary key reads",
+    file: ORDERS,
+    edit: (d) => (d.ignored_columns = ["status", "customer_id", "order_id", "AMOUNT_CENTS"]),
+    expect: [
+      ["warning", ORDERS, "ignored_columns[0]", '"status" is read by a field, a join key, the primary key of model orders or a join from another model'],
+      ["warning", ORDERS, "ignored_columns[1]", '"customer_id" is read by a field'],
+      ["warning", ORDERS, "ignored_columns[2]", '"order_id" is read by a field'],
+      ["warning", ORDERS, "ignored_columns[3]", '"AMOUNT_CENTS" is read by a field'],
+    ],
+  },
+  {
+    name: "ignored columns read by a field, without a snapshot",
+    file: "",
+    setup: (r) => (rmSync(join(r, SNAP_WH)), mutate(r, ORDERS, (d) => (d.ignored_columns = ["ship_region", "raw_payload"]))),
+    expect: ["warning", ORDERS, "ignored_columns[0]", '"ship_region" is read by a field'],
+  },
+  { name: "ignored_columns must be unique", file: ORDERS, edit: (d) => (d.ignored_columns = ["x", "x"]), expect: ["error", ORDERS, "ignored_columns", "must NOT have duplicate items"] },
+
+  // Sensitivity of what everyone sees
+  {
+    name: "an approved dimension everyone sees reads a free-text column",
+    file: "",
+    setup: (r) => (addOrdersColumn(r, { name: "internal_notes", type: "text" }), approvedDimension(r, { name: "notes", expr: "internal_notes" })),
+    expect: ["warning", ORDERS, "dimensions[4]", "warehouse.orders.notes is visible to everyone and looks sensitive (the name internal_notes looks like a credential or free text); tag it pii or sensitive, or tag it public if everyone may see it"],
+  },
+  {
+    name: "an approved dimension reads personal data through a join",
+    file: "",
+    setup: (r) => approvedDimension(r, { name: "buyer_contact", expr: "lower(customer.email)" }),
+    expect: ["warning", ORDERS, "dimensions[4]", "warehouse.orders.buyer_contact is visible to everyone and looks sensitive (the name email looks like personal data)"],
+  },
+  {
+    name: "an approved dimension over a near-unique string",
+    file: "",
+    setup: (r) => (
+      addOrdersColumn(r, { name: "tracking_code", type: "text", profile: { null_fraction: 0, distinct_count: 9990 } }),
+      approvedDimension(r, { name: "tracking", expr: "tracking_code" })
+    ),
+    expect: ["warning", ORDERS, "dimensions[4]", "(tracking_code has a different value on nearly every row)"],
+  },
+  {
+    name: "an approved dimension whose name alone looks personal",
+    file: "",
+    setup: (r) => (rmSync(join(r, SNAP_WH)), approvedDimension(r, { name: "phone_number", expr: "ship_region" })),
+    expect: ["warning", ORDERS, "dimensions[4]", "(the name phone_number looks like personal data)"],
+  },
+  {
+    name: "an approved measure that sums pay",
+    file: "",
+    setup: (r) => (
+      addOrdersColumn(r, { name: "bonus_cents", type: "bigint" }),
+      mutate(r, ORDERS, (d) => d.measures.push({ name: "payouts", expr: "bonus_cents / 100.0", agg: "sum", description: "x", ...APPROVED }))
+    ),
+    expect: ["warning", ORDERS, "measures[2]", "warehouse.orders.payouts is visible to everyone and looks sensitive (the name bonus_cents looks like pay, banking or health data)"],
+  },
+  {
+    name: "a count of a sensitive column shows no values",
+    file: "",
+    setup: (r) => (
+      addOrdersColumn(r, { name: "internal_notes", type: "text" }),
+      mutate(r, ORDERS, (d) => d.measures.push({ name: "noted_orders", expr: "internal_notes", agg: "count_distinct", description: "x", ...APPROVED }))
+    ),
+    expect: [],
+  },
+  ...(["pii", "sensitive", "public", "Public"] as const).map(
+    (tag): Case => ({
+      name: `a sensitive-looking field tagged ${tag}`,
+      file: "",
+      setup: (r) => (
+        addOrdersColumn(r, { name: "internal_notes", type: "text" }),
+        approvedDimension(r, { name: "notes", expr: "internal_notes", tags: [tag.toLowerCase()] })
+      ),
+      expect: [],
+    }),
+  ),
+  {
+    name: "a sensitive-looking field in a model tagged public",
+    file: "",
+    setup: (r) => (addOrdersColumn(r, { name: "internal_notes", type: "text" }), approvedDimension(r, { name: "notes", expr: "internal_notes" }), mutate(r, ORDERS, (d) => (d.tags = ["public"]))),
+    expect: [],
+  },
+  {
+    name: "a draft sensitive-looking field is not exposed",
+    file: "",
+    setup: (r) => (addOrdersColumn(r, { name: "internal_notes", type: "text" }), mutate(r, ORDERS, (d) => d.dimensions.push({ name: "notes", expr: "internal_notes", type: "string", status: "draft" }))),
+    expect: [],
+  },
+  {
+    name: "a restricted sensitive-looking field is not visible to everyone",
+    file: "",
+    setup: (r) => (
+      addOrdersColumn(r, { name: "internal_notes", type: "text" }),
+      approvedDimension(r, { name: "notes", expr: "internal_notes" }),
+      mutate(r, ACCESS, (d) => d.restrictions.push({ name: "notes_for_reps", targets: ["warehouse.orders.notes"], allow: { roles: ["sales_rep"] } }))
+    ),
+    expect: [],
+  },
+  {
+    name: "a sensitive-looking field the default role denies",
+    file: "",
+    setup: (r) => (
+      addOrdersColumn(r, { name: "internal_notes", type: "text" }),
+      approvedDimension(r, { name: "notes", expr: "internal_notes" }),
+      mutate(r, ACCESS, (d) => (d.roles[0].deny.fields = ["warehouse.orders.notes"]))
+    ),
+    expect: [],
+  },
+  {
+    name: "closed mode: no default role means everyone sees nothing",
+    file: "",
+    setup: (r) => (
+      addOrdersColumn(r, { name: "internal_notes", type: "text" }),
+      approvedDimension(r, { name: "notes", expr: "internal_notes" }),
+      mutate(r, ACCESS, (d) => delete d.default_role)
+    ),
+    expect: [],
+  },
+  {
+    name: "open mode with no access.yaml: everyone sees every approved field",
+    file: "",
+    setup: (r) => (
+      rmSync(join(r, ACCESS)),
+      noGoldenRoles(r),
+      addOrdersColumn(r, { name: "internal_notes", type: "text" }),
+      approvedDimension(r, { name: "notes", expr: "internal_notes" })
+    ),
+    expect: ["warning", ORDERS, "dimensions[4]", LOOKS_SENSITIVE],
+  },
+];
+
+describe("access modes, conditions, restrictions, hierarchy filters, ignored columns and sensitivity", () => {
+  for (const c of ACCESS_CASES) {
+    test(c.name, () => {
+      const root = copyFixture();
+      if (c.setup) c.setup(root);
+      if (c.edit) mutate(root, c.file, c.edit);
+      const issues = validateProject(root);
+      const expected = c.expect.length && Array.isArray(c.expect[0]) ? (c.expect as Expected[]) : c.expect.length ? [c.expect as Expected] : [];
+      expectExactly(issues, expected);
+      if (c.hint) for (const i of issues) expect(i.message).toContain(c.hint);
+    });
+  }
+
+  test("sl validate --json reports the sensitivity warning and stays ok", async () => {
+    const root = copyFixture();
+    addOrdersColumn(root, { name: "internal_notes", type: "text" });
+    approvedDimension(root, { name: "notes", expr: "internal_notes" });
+    const r = await sl(root, ["validate", "--json"]);
+    expect(r.code).toBe(0);
+    const body = r.json<{ ok: boolean; warnings: number; issues: Issue[] }>();
+    expect(body).toMatchObject({ ok: true, errors: 0, warnings: 1 });
+    expect(body.issues[0]!.message).toContain(LOOKS_SENSITIVE);
+  });
+});
 
 describe("mutations of the valid fixture", () => {
   for (const c of CASES) {
@@ -1209,6 +1784,28 @@ describe("spec examples", () => {
     const kinds = new Set(blocks.map((b) => b.kind));
     expect([...kinds].sort()).toEqual(["access", "golden", "metrics", "model", "project", "snapshot", "source"]);
     expect(blocks.filter((b) => b.kind === "source")).toHaveLength(2);
+  });
+
+  test("access examples' conditions parse and read only declared attributes", () => {
+    const examples = blocks.filter((b) => b.kind === "access");
+    expect(examples.length).toBeGreaterThanOrEqual(3);
+    let conditions = 0;
+    for (const b of examples) {
+      const doc = parseYamlText(b.text) as Doc;
+      const declared = new Set((doc.user_attributes ?? []).map((u: Doc) => u.name));
+      const sources = [...(doc.roles ?? []).map((r: Doc) => r.assign_when), ...(doc.restrictions ?? []).map((x: Doc) => x.allow?.when)];
+      for (const src of sources.filter((x): x is string => typeof x === "string")) {
+        conditions++;
+        for (const attr of conditionAttributes(parseCondition(src))) expect(declared.has(attr)).toBe(true);
+      }
+      const roles = new Set((doc.roles ?? []).map((r: Doc) => r.name));
+      for (const x of doc.restrictions ?? []) for (const r of x.allow?.roles ?? []) expect(roles.has(r)).toBe(true);
+      for (const r of doc.roles ?? [])
+        for (const rf of r.row_filters ?? []) if (rf.hierarchy) expect(declared.has(String(rf.hierarchy.user).replace(/^user\./, ""))).toBe(true);
+      if (doc.mode === "closed") for (const r of doc.roles ?? []) expect(r.allow?.models).toBeDefined();
+      else for (const r of doc.roles ?? []) expect(r.allow?.models).toBeUndefined();
+    }
+    expect(conditions).toBeGreaterThan(0);
   });
 
   for (const b of blocks) {

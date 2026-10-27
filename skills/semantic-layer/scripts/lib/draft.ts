@@ -1,10 +1,12 @@
 // Drafts skeleton models from a snapshot by fixed rules: names, keys, joins,
-// dimensions, measures, PII tags and the open questions the owner must answer.
-// Every item is written as draft; nothing here guesses meaning beyond the rules.
+// dimensions, measures, pii and sensitive tags, the columns left out and the open questions the
+// owner must answer. Every item is written as draft; nothing here guesses meaning beyond the rules.
 import { classifyType, isNumeric } from "./column-types.ts";
 import { quoteIdent } from "./dialect.ts";
 import { findTable, qualifiedName, toSpecName } from "./naming.ts";
 import { summarizeTable } from "./profile.ts";
+import { nearUnique, PII_NAME, sensitivityOf } from "./sensitivity.ts";
+import { incomingKeyColumns, referencedColumns, sqlIdentifiers, unreferencedColumns } from "./snapshot-diff.ts";
 import type {
   Dialect,
   Dimension,
@@ -76,11 +78,6 @@ const EXACT_QUANTITY_NAME = /^(qty|quantity|quantities|units)$/;
 const GRAIN_TEXT = /one row per ([^.,;:()[\]\r\n]+)/i;
 // A foreign key whose target has at most this many rows gets no count measure.
 const SMALL_TARGET_ROWS = 20;
-const PII_NAME =
-  /(^|_)(email|phone|mobile|ssn|social_security|address|street|postal|zip|first_name|last_name|full_name|birth|dob|ip_address|passport|tax_id)/;
-
-const NEAR_UNIQUE_RATIO = 0.9;
-const NEAR_UNIQUE_MIN_ROWS = 50;
 const NUMBER_DIMENSION_MAX_DISTINCT = 20;
 
 // Words that name a keyword, built-in value or function in at least one supported dialect
@@ -197,7 +194,10 @@ export function inferPrimaryKey(table: SnapshotTable, stripPrefixes: string[], d
 
 // Hands out names within one model's shared namespace of dimensions, measures and joins.
 class Namespace {
-  private taken = new Set<string>();
+  private taken: Set<string>;
+  constructor(reserved: Iterable<string> = []) {
+    this.taken = new Set(reserved);
+  }
   claim(...options: string[]): string {
     for (const o of options) {
       if (o && !this.taken.has(o)) {
@@ -449,15 +449,38 @@ interface PendingJoin {
   relationship: Relationship;
 }
 
-function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: string[]): Model {
+// Settings for drafting a table that already has a model, so only its new columns are kept.
+interface DraftOneOptions {
+  // Names the model already uses; drafted fields take other names.
+  reserved?: Iterable<string>;
+  // The model's primary key, used in place of an inferred one.
+  primaryKey?: string[];
+}
+
+interface DraftedTable {
+  model: Model;
+  // Column -> why the draft gives it no dimension or measure.
+  leftOut: Map<string, string>;
+  // Column -> the sensitivity tag and reason of the fields drafted from it.
+  sensitivity: Map<string, { tag: string; reason: string }>;
+  // Column -> the table its inferred or declared join reaches.
+  joinTargets: Map<string, string>;
+}
+
+function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: string[], one: DraftOneOptions = {}): DraftedTable {
   const { dialect } = ctx.snapshot;
   const q = qualifiedName(table);
   // A grain stated in the table comment is drafted, and the first question confirms it.
   const grain = table.description?.match(GRAIN_TEXT)?.[1]?.trim();
   const questions: string[] = [grain ? `Is one row of ${q} one ${grain}?` : `What does one row of ${q} represent?`];
-  const ns = new Namespace();
+  const ns = new Namespace(one.reserved);
+  const leftOut = new Map<string, string>();
+  const sensitivity = new Map<string, { tag: string; reason: string }>();
+  const joinTargets = new Map<string, string>();
 
-  const pk = inferPrimaryKey(table, ctx.opts.stripPrefixes, dialect);
+  const pk: InferredKey | null = one.primaryKey?.length
+    ? { columns: [...one.primaryKey], how: "declared" }
+    : inferPrimaryKey(table, ctx.opts.stripPrefixes, dialect);
   const pkCols = pk?.columns ?? [];
   const pkSet = new Set(pkCols.map((c) => c.toLowerCase()));
   if (!pk) {
@@ -488,6 +511,7 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
       );
       continue;
     }
+    for (const c of fk.columns) joinTargets.set(c, qualifiedName(target));
     pending.push({
       target,
       keys: fk.columns.map((c, i) => ({ from: c, to: fk.references.columns[i] ?? c })),
@@ -511,6 +535,7 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
       );
       continue;
     }
+    joinTargets.set(col.name, qualifiedName(best.table));
     const others = found.filter((c) => c.known && c !== best).map((c) => qualifiedName(c.table));
     if (others.length) {
       questions.push(`${col.name} is joined to ${qualifiedName(best.table)} by its name; it could also mean ${listPhrase(others)}. Which is it?`);
@@ -529,11 +554,13 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
   const dimensions: Dimension[] = [];
   // Measure names are chosen after the joins are named, so a key's count can take its join's name.
   const columnMeasures: { names: () => string[]; build: (name: string) => Measure }[] = [];
-  const nearUnique: string[] = [];
+  const nearUniqueColumns: string[] = [];
   // Near-unique columns left out whose names look like personal data.
   const nearUniquePii: string[] = [];
   // Columns emitted with the pii tag.
   const pii: string[] = [];
+  // Columns emitted with the sensitive tag, with the reason.
+  const sensitive: { column: string; reason: string }[] = [];
   // Money columns drafted divided by 100.
   const cents: string[] = [];
   // Columns averaged because no name rule says how they add up, with their measure names once claimed.
@@ -586,11 +613,15 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
   for (const col of table.columns) {
     const lower = col.name.toLowerCase();
     const norm = toSpecName(col.name);
-    const isPii = PII_NAME.test(norm);
-    const tags = isPii ? ["pii"] : undefined;
-    // Records the pii tag for a column that is emitted as a dimension or measure.
+    const sens = sensitivityOf(col.name, col, rows, { key: isKeyColumn(col) });
+    const isPii = sens?.tag === "pii";
+    const tags = sens ? [sens.tag] : undefined;
+    // Records the tag of a column that is emitted as a dimension or measure.
     const emitted = () => {
+      if (!sens) return;
+      sensitivity.set(col.name, sens);
       if (isPii) pii.push(col.name);
+      else sensitive.push({ column: col.name, reason: sens.reason });
     };
     const expr = columnExpr(dialect, col.name);
     if (isKeyColumn(col)) {
@@ -600,9 +631,9 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
         const join = pending.find((j) => j.columns.length === 1 && j.columns[0]!.toLowerCase() === lower);
         const targetRows = join?.target.row_count;
         if (join && typeof targetRows === "number" && targetRows <= SMALL_TARGET_ROWS) {
-          notes.push(
-            `${q}: no count of ${col.name} drafted; its join reaches ${qualifiedName(join.target)}, which has ${targetRows} row${targetRows === 1 ? "" : "s"}.`,
-          );
+          const why = `its join reaches ${qualifiedName(join.target)}, which has ${targetRows} row${targetRows === 1 ? "" : "s"}`;
+          notes.push(`${q}: no count of ${col.name} drafted; ${why}.`);
+          leftOut.set(col.name, `no count drafted; ${why}`);
           continue;
         }
         emitted();
@@ -613,6 +644,9 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
         });
       } else if (!pkSet.has(lower)) {
         notes.push(`${q}: left out ${col.name}, an id column that is not the primary key.`);
+        leftOut.set(col.name, "an id column that is not the primary key");
+      } else {
+        leftOut.set(col.name, "part of the primary key");
       }
       continue;
     }
@@ -635,10 +669,10 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
       continue;
     }
     if (category === "string") {
-      const distinct = col.profile?.distinct_count;
-      if (typeof distinct === "number" && typeof rows === "number" && rows >= NEAR_UNIQUE_MIN_ROWS && distinct / rows > NEAR_UNIQUE_RATIO) {
-        nearUnique.push(col.name);
+      if (nearUnique(col.profile, rows)) {
+        nearUniqueColumns.push(col.name);
         if (isPii) nearUniquePii.push(col.name);
+        leftOut.set(col.name, "a different value on nearly every row");
         continue;
       }
       emitted();
@@ -654,6 +688,7 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
       }
       const rule = numericRule(norm);
       if (rule) {
+        emitted();
         const { agg, format } = rule;
         const divided = isDivided(col, rule);
         const valueExpr = valueExprOf(col, rule);
@@ -662,7 +697,7 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
         if (format === "currency") money.push(col.name);
         columnMeasures.push({
           names: () => (agg === "avg" ? [`avg_${unit}`, `average_${unit}`] : [unit, norm, `total_${unit}`]),
-          build: (name) => ({ name, expr: valueExpr, agg, format, ...currencyField(format), ...extras(col), status: "draft" }),
+          build: (name) => ({ name, expr: valueExpr, agg, format, ...currencyField(format), ...extras(col, tags), status: "draft" }),
         });
         if (col === lineTotalColumn && quantity) {
           // A divided price is parenthesized so the product is taken in numeric, not integer, arithmetic.
@@ -678,21 +713,24 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
         continue;
       }
       if (typeof distinct === "number" && distinct <= NUMBER_DIMENSION_MAX_DISTINCT) {
-        dimensions.push({ name: ns.claim(norm), expr, type: "number", ...extras(col), status: "draft" });
+        emitted();
+        dimensions.push({ name: ns.claim(norm), expr, type: "number", ...extras(col, tags), status: "draft" });
         continue;
       }
+      emitted();
       const fallback: { column: string; name?: string } = { column: col.name };
       fallbackAvg.push(fallback);
       columnMeasures.push({
         names: () => [`avg_${norm}`, `average_${norm}`],
         build: (name) => {
           fallback.name = name;
-          return { name, expr, agg: "avg", format: "number", ...extras(col), status: "draft" };
+          return { name, expr, agg: "avg", format: "number", ...extras(col, tags), status: "draft" };
         },
       });
       continue;
     }
     notes.push(`${q}: left out ${col.name} (type ${col.type}), which drafts as neither a dimension nor a measure.`);
+    leftOut.set(col.name, `type ${col.type} drafts as neither a dimension nor a measure`);
   }
 
   const joins: Join[] = pending.map((p) => {
@@ -718,11 +756,12 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
     ...columnMeasures.map((m) => m.build(ns.claim(...m.names()))),
   ];
 
-  if (nearUnique.length) {
+  if (nearUniqueColumns.length) {
+    const nu = nearUniqueColumns;
     questions.push(
-      `${listPhrase(nearUnique)} ${nearUnique.length === 1 ? "has" : "have"} a different value on nearly every row and ${
-        nearUnique.length === 1 ? "was" : "were"
-      } left out as ${nearUnique.length === 1 ? "a dimension. Should it be one" : "dimensions. Should any be one"}?${
+      `${listPhrase(nu)} ${nu.length === 1 ? "has" : "have"} a different value on nearly every row and ${
+        nu.length === 1 ? "was" : "were"
+      } left out as ${nu.length === 1 ? "a dimension. Should it be one" : "dimensions. Should any be one"}?${
         nearUniquePii.length
           ? ` ${listPhrase(nearUniquePii)} ${nearUniquePii.length === 1 ? "looks" : "look"} like personal data; tag ${
               nearUniquePii.length === 1 ? "it" : "each"
@@ -773,8 +812,16 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
   if (pii.length) {
     questions.push(`${listPhrase(pii)} look${pii.length === 1 ? "s" : ""} like personal data and ${pii.length === 1 ? "is" : "are"} tagged pii. Who may see ${pii.length === 1 ? "it" : "them"}?`);
   }
+  if (sensitive.length) {
+    const one = sensitive.length === 1;
+    questions.push(
+      `${listPhrase(sensitive.map((s) => s.column))} look${one ? "s" : ""} sensitive (${sensitive.map((s) => s.reason).join("; ")}) and ${
+        one ? "is" : "are"
+      } tagged sensitive. Who may see ${one ? "it" : "them"}? If everyone may, replace the tag with public.`,
+    );
+  }
 
-  return {
+  const model: Model = {
     model: modelName,
     source: ctx.opts.source,
     table: q,
@@ -787,11 +834,26 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
     measures,
     ...(joins.length ? { joins } : {}),
   };
+  return { model, leftOut, sensitivity, joinTargets };
 }
 
-// Drafts one model per table. Names avoid existing models and each other; joins
-// reach only known tables, and anything the rules cannot settle is an open question.
-export function draftModels(snapshot: Snapshot, tables: SnapshotTable[], existing: Model[], opts: DraftOptions): DraftResult {
+// The model with ignored_columns placed after open_questions, or without the key when empty.
+function withIgnored(model: Model, ignored: string[]): Model {
+  const out: Record<string, unknown> = {};
+  let placed = false;
+  for (const [k, v] of Object.entries(model)) {
+    if (k === "ignored_columns") continue;
+    if (!placed && (k === "dimensions" || k === "measures" || k === "joins")) {
+      if (ignored.length) out.ignored_columns = ignored;
+      placed = true;
+    }
+    out[k] = v;
+  }
+  if (!placed && ignored.length) out.ignored_columns = ignored;
+  return out as unknown as Model;
+}
+
+function buildContext(snapshot: Snapshot, tables: SnapshotTable[], existing: Model[], opts: DraftOptions, notes: string[]) {
   const modeledKeys = new Map<string, string[]>();
   const existingNames = new Map<string, string>();
   for (const m of existing) {
@@ -806,22 +868,131 @@ export function draftModels(snapshot: Snapshot, tables: SnapshotTable[], existin
   const known = new Set([...opts.knownTables, ...tables].map(tableKey));
   const byKey = new Map<string, SnapshotTable>();
   for (const t of [...opts.knownTables, ...tables]) if (!existingNames.has(tableKey(t))) byKey.set(tableKey(t), t);
-  const notes: string[] = [];
   const drafting = new Set(tables.map(tableKey).filter((k) => byKey.has(k)));
   const names = new Map([...existingNames, ...planNames([...byKey.values()], existing, opts.stripPrefixes, notes, drafting)]);
   const ctx: Context = { snapshot, opts, known, names, modeledKeys, modeled: new Set(existingNames.keys()), drafting };
-  const models: Model[] = [];
+  return { ctx, byKey, existingNames };
+}
+
+// Drafts one model per table. Names avoid existing models and each other; joins
+// reach only known tables, and anything the rules cannot settle is an open question.
+// Every column of the table that no drafted field, join key or primary key reads is listed in
+// the model's ignored_columns, so a later sl draft --new-columns finds only columns added since.
+export function draftModels(snapshot: Snapshot, tables: SnapshotTable[], existing: Model[], opts: DraftOptions): DraftResult {
+  const notes: string[] = [];
+  const { ctx, byKey, existingNames } = buildContext(snapshot, tables, existing, opts, notes);
+  const drafted: { model: Model; table: SnapshotTable }[] = [];
   const seen = new Set<string>();
   for (const t of tables) {
     const key = tableKey(t);
     if (seen.has(key)) continue;
     seen.add(key);
-    const planned = byKey.has(key) ? names.get(key)! : undefined;
+    const planned = byKey.has(key) ? ctx.names.get(key)! : undefined;
     if (!planned) {
       notes.push(`${qualifiedName(t)} already has the model ${existingNames.get(key)}; not drafted.`);
       continue;
     }
-    models.push(draftOne(ctx, t, planned, notes));
+    drafted.push({ model: draftOne(ctx, t, planned, notes).model, table: t });
   }
+  const all = [...existing, ...drafted.map((d) => d.model)];
+  const models = drafted.map(({ model, table }) => {
+    const ignored = unreferencedColumns(model, table, snapshot.dialect, incomingKeyColumns(model, all)).map((c) => c.name);
+    return withIgnored(model, ignored);
+  });
   return { models, notes };
+}
+
+export interface NewColumnsResult {
+  // The columns no field, join key or primary key reads and ignored_columns does not list.
+  columns: SnapshotColumn[];
+  dimensions: Dimension[];
+  measures: Measure[];
+  // New columns the rules give no dimension or measure; they are added to ignored_columns.
+  skipped: { column: string; reason: string }[];
+  open_questions: string[];
+}
+
+function mentions(text: string, column: string): boolean {
+  const escaped = column.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`).test(text);
+}
+
+// Drafts dimensions and measures for the columns of `table` that `model` does not read yet, by
+// the rules a new model is drafted with, under names the model does not use. Joins are not
+// drafted; a new column that looks like a key says so in its question.
+export function draftNewColumns(
+  snapshot: Snapshot,
+  table: SnapshotTable,
+  model: Model,
+  existing: Model[],
+  opts: DraftOptions,
+): NewColumnsResult {
+  const { dialect } = snapshot;
+  const incoming = incomingKeyColumns(model, existing);
+  const fresh = unreferencedColumns(model, table, dialect, incoming);
+  const result: NewColumnsResult = { columns: fresh, dimensions: [], measures: [], skipped: [], open_questions: [] };
+  if (!fresh.length) return result;
+  const isFresh = new Set(fresh.map((c) => c.name));
+  const used = new Set(referencedColumns(model, table, dialect, incoming));
+  const reserved = [
+    ...(Array.isArray(model.dimensions) ? model.dimensions : []),
+    ...(Array.isArray(model.measures) ? model.measures : []),
+    ...(Array.isArray(model.joins) ? model.joins : []),
+  ]
+    .map((f) => f?.name)
+    .filter((n): n is string => typeof n === "string");
+  const { ctx } = buildContext(snapshot, [], existing, opts, []);
+  const primaryKey = Array.isArray(model.primary_key) ? model.primary_key.filter((c): c is string => typeof c === "string") : undefined;
+  const drafted = draftOne(ctx, table, model.model, [], { reserved, primaryKey });
+  const q = qualifiedName(table);
+  const covered = new Set<string>();
+  const describe = new Map<string, string[]>();
+  const columnsOf = (sql: string[]) => {
+    const ids = sql.flatMap((x) => sqlIdentifiers(x, dialect));
+    return table.columns
+      .filter((c) => ids.some((id) => (id.quoted ? id.v === c.name : id.v.toLowerCase() === c.name.toLowerCase())))
+      .map((c) => c.name);
+  };
+  const take = (field: Dimension | Measure, kind: "dimension" | "measure", sql: (string | undefined)[]) => {
+    const cols = columnsOf(sql.filter((x): x is string => typeof x === "string"));
+    if (!cols.length || !cols.some((c) => isFresh.has(c)) || !cols.every((c) => isFresh.has(c) || used.has(c))) return false;
+    for (const c of cols.filter((c) => isFresh.has(c))) {
+      covered.add(c);
+      describe.set(c, [...(describe.get(c) ?? []), `the ${kind} ${field.name}`]);
+    }
+    return true;
+  };
+  for (const d of drafted.model.dimensions) if (take(d, "dimension", [d.expr])) result.dimensions.push(d);
+  for (const m of drafted.model.measures) if (take(m, "measure", [m.expr, m.filter])) result.measures.push(m);
+
+  for (const c of fresh) {
+    const head = `New column ${c.name} (${c.type}) appeared in ${q};`;
+    const fields = describe.get(c.name);
+    if (fields) {
+      const sens = drafted.sensitivity.get(c.name);
+      const target = drafted.joinTargets.get(c.name);
+      result.open_questions.push(
+        `${head} the draft adds ${listPhrase(fields)}${sens ? `, tagged ${sens.tag} (${sens.reason})` : ""}. ` +
+          `What does it hold, and should it stay?${target ? ` It looks like a key to ${target}; should ${model.model} join to it?` : ""}`,
+      );
+      continue;
+    }
+    const reason = drafted.leftOut.get(c.name) ?? (drafted.joinTargets.has(c.name) ? `a key to ${drafted.joinTargets.get(c.name)}` : "the rules draft no field for it");
+    result.skipped.push({ column: c.name, reason });
+    const sens = sensitivityOf(c.name, c, table.row_count, { key: drafted.joinTargets.has(c.name) || (primaryKey ?? []).includes(c.name) });
+    result.open_questions.push(
+      `${head} the draft leaves it out (${reason}) and lists it in ignored_columns. Should it be a field?${
+        sens ? ` If it is added, tag it ${sens.tag} (${sens.reason}).` : ""
+      }`,
+    );
+  }
+  // The draft's own questions about the new columns: cents, currency, per-unit figures, near-unique values.
+  const existingQuestions = new Set(Array.isArray(model.open_questions) ? model.open_questions : []);
+  const addedColumns = fresh.map((c) => c.name).filter((c) => covered.has(c));
+  for (const question of drafted.model.open_questions?.slice(1) ?? []) {
+    if (existingQuestions.has(question) || /tagged (pii|sensitive)\./.test(question)) continue;
+    if (/^primary_key \[|^Which column or columns identify/.test(question)) continue;
+    if (addedColumns.some((c) => mentions(question, c))) result.open_questions.push(question);
+  }
+  return result;
 }
