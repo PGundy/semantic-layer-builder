@@ -5,6 +5,7 @@ import {
   type AppliedRowFilter,
   type Counts,
   evaluateAccess,
+  lastApprovedNote,
   type ModelRows,
   type ModelVisibility,
   type RowFilterJoinRef,
@@ -89,17 +90,27 @@ function modelLines(m: ModelVisibility, mode: Show): string[] {
   return out;
 }
 
-function render(v: AccessVisibility, mode: Show): string {
+// The label on a draft access.yaml: with last_approved, the approved version that keeps applying.
+function draftLabel(v: AccessVisibility): string {
+  return v.last_approved
+    ? `This explains a draft. ${lastApprovedNote(v.last_approved)}`
+    : "This explains the draft access.yaml, which is awaiting sign-off: tools serve nothing under it until it is approved.";
+}
+
+const NO_ROW_FILTERS = "  row filters: none (every row of every visible model)";
+
+function render(v: AccessVisibility, mode: Show, rolesGiven: boolean): string {
   const lines: string[] = [];
   const file = v.access_file === "missing" ? "no access.yaml" : `access.yaml ${v.access_file}`;
   lines.push(`Access mode ${v.mode} (${file})`);
-  if (v.access_file === "draft")
-    lines.push("This explains the draft access.yaml, which is awaiting sign-off: tools serve nothing under it until it is approved.");
+  if (v.access_file === "draft") lines.push(draftLabel(v));
   const attrs = Object.entries(v.user.attributes);
+  // The assigned roles are named only when --roles gave them; roles held by condition or default follow.
+  const assigned = rolesGiven ? `; assigned roles: ${v.user.roles.length ? v.user.roles.join(", ") : "none"}` : "";
   lines.push(
     v.user.default_audience
       ? "User: the default audience (no attributes, no assigned roles)"
-      : `User: ${attrs.length ? attrs.map(([k, x]) => `${k}=${show(x)}`).join(", ") : "no attributes"}; assigned roles: ${v.user.roles.length ? v.user.roles.join(", ") : "none"}`,
+      : `User: ${attrs.length ? attrs.map(([k, x]) => `${k}=${show(x)}`).join(", ") : "no attributes"}${assigned}`,
   );
   const held = v.roles.map((r) => (r.how === "condition" ? `${r.name} (condition: ${r.condition})` : `${r.name} (${r.how})`));
   lines.push(`Roles held: ${held.length ? held.join(", ") : v.mode === "open" ? "none (the open baseline, no row filters)" : "none (closed mode: nothing is allowed)"}`);
@@ -118,7 +129,7 @@ function render(v: AccessVisibility, mode: Show): string {
   }
   const n = v.sources.length;
   lines.push(
-    `Visible across ${n} source${n === 1 ? "" : "s"}: ${allCounts(v.summary)}` +
+    `Items visible across ${n} source${n === 1 ? "" : "s"} (row filters limit rows, not these counts): ${allCounts(v.summary)}` +
       (v.summary.hidden_by_protected_tags ? `; ${v.summary.hidden_by_protected_tags} approved item(s) hidden by protected tags` : ""),
   );
   for (const s of v.sources) {
@@ -132,7 +143,7 @@ function render(v: AccessVisibility, mode: Show): string {
     lines.push(`  ${mode === "all" ? "items" : mode}:`);
     lines.push(...(items.length ? items : ["    none"]));
     const rows = s.models.filter((m) => m.row_filters).flatMap((m) => rowLines(m.ref, m.row_filters!));
-    if (rows.length) lines.push("  row filters:", ...rows);
+    lines.push(...(rows.length ? ["  row filters:", ...rows] : [NO_ROW_FILTERS]));
   }
   if (!v.sources.some((s) => s.models.length || s.metrics.length)) lines.push("No models or metrics.");
   return lines.join("\n");
@@ -162,7 +173,7 @@ const spec: CommandSpec = {
     const showValue = str(values, "show") ?? "hidden";
     if (!["visible", "hidden", "all"].includes(showValue)) throw new UserError(`--show must be visible, hidden or all, not "${showValue}".`);
     const result = evaluateAccess(ctx.root, { attributes, roles: list(values, "roles") });
-    ctx.out(ctx.json ? formatJson(result) : render(result, showValue as Show));
+    ctx.out(ctx.json ? formatJson(result) : render(result, showValue as Show, values.roles !== undefined));
     return 0;
   },
 };

@@ -1,7 +1,7 @@
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { formatJson } from "../lib/output.ts";
-import { computeStatus, preview, type ApprovalCount, type ProjectStatus, type SourceStatus } from "../lib/status.ts";
+import { computeStatus, preview, rowFilterJoinItems, type ApprovalCount, type ProjectStatus, type SourceStatus } from "../lib/status.ts";
 
 function ratio(c: ApprovalCount): string {
   return `${c.approved}/${c.approved + c.draft} approved`;
@@ -64,13 +64,18 @@ function render(st: ProjectStatus): string {
   for (const s of st.sources) lines.push(...sourceLines(s));
   if (!st.sources.length) lines.push("No sources.");
   const accessQuestions = st.access.open_questions ? `, ${st.access.open_questions} open question(s)` : "";
+  const last = st.access.last_approved;
+  const lastApproved = last ? `, the version approved by ${last.by} on ${last.at} keeps applying where it is deployed` : "";
   lines.push(
-    `metrics ${ratio(st.metrics)}; access ${st.access.state}${st.access.state === "missing" ? "" : ` (${st.access.roles} role(s)${accessQuestions})`}; goldens ${ratio(st.goldens)}`,
+    `metrics ${ratio(st.metrics)}; access ${st.access.state}${st.access.state === "missing" ? "" : ` (${st.access.roles} role(s)${accessQuestions}${lastApproved})`}; goldens ${ratio(st.goldens)}`,
   );
   lines.push(audienceLine(st));
   if (st.draft_metrics.length) lines.push(`draft metrics: ${st.draft_metrics.join(", ")}`);
   if (st.draft_goldens.length) lines.push(`draft goldens: ${st.draft_goldens.join(", ")}`);
   if (st.roles_without_goldens.length) lines.push(`roles without an approved golden: ${st.roles_without_goldens.join(", ")}`);
+  if (st.row_filter_joins_without_goldens.length) {
+    lines.push(`row-filtered joins without an approved golden as the role: ${rowFilterJoinItems(st.row_filter_joins_without_goldens).join(", ")}`);
+  }
   if (st.next_batch) {
     lines.push(`Next batch (${st.next_batch.source}):`);
     for (const b of st.next_batch.tables) {

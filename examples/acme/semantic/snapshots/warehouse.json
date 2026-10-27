@@ -161,51 +161,50 @@
           "profile": {
             "null_fraction": 0,
             "distinct_count": 500,
-            "min": null,
-            "max": null,
             "top_values": [
               {
-                "value": "ada.adeyemi181@mail.example.com",
+                "value": "sha256:50bef0d95e1ce90d",
                 "count": 1
               },
               {
-                "value": "ada.fischer80@post.example.org",
+                "value": "sha256:43c4e77079ac8721",
                 "count": 1
               },
               {
-                "value": "ada.garcia406@mail.example.com",
+                "value": "sha256:99c7445a0bdcf264",
                 "count": 1
               },
               {
-                "value": "ada.haddad489@example.net",
+                "value": "sha256:c3164d92fb0a92db",
                 "count": 1
               },
               {
-                "value": "ada.kim56@example.org",
+                "value": "sha256:a2f926a5c3bcef41",
                 "count": 1
               },
               {
-                "value": "ada.lopez27@example.org",
+                "value": "sha256:2d7ddd2b828290a0",
                 "count": 1
               },
               {
-                "value": "ada.lopez323@example.org",
+                "value": "sha256:5f50bac71f301eae",
                 "count": 1
               },
               {
-                "value": "ada.moreau270@mail.example.com",
+                "value": "sha256:7170f3385fbcddc8",
                 "count": 1
               },
               {
-                "value": "ada.novak123@post.example.org",
+                "value": "sha256:a0d00e403cf49db6",
                 "count": 1
               },
               {
-                "value": "ada.ortiz264@inbox.example.com",
+                "value": "sha256:99691bbf1cb69580",
                 "count": 1
               }
             ],
-            "sampled": false
+            "sampled": false,
+            "redacted": true
           }
         },
         {
@@ -216,51 +215,50 @@
           "profile": {
             "null_fraction": 0.122,
             "distinct_count": 437,
-            "min": null,
-            "max": null,
             "top_values": [
               {
-                "value": "+1-246-555-0154",
+                "value": "sha256:d7ce10aae71f487d",
                 "count": 2
               },
               {
-                "value": "+1-423-555-0173",
+                "value": "sha256:111b9289ad549be2",
                 "count": 2
               },
               {
-                "value": "+1-203-555-0123",
+                "value": "sha256:6136f82cbdb11af6",
                 "count": 1
               },
               {
-                "value": "+1-208-555-0192",
+                "value": "sha256:63e7e342e1a951d6",
                 "count": 1
               },
               {
-                "value": "+1-209-555-0195",
+                "value": "sha256:3edf46451431b64c",
                 "count": 1
               },
               {
-                "value": "+1-210-555-0100",
+                "value": "sha256:84f1844db75d4473",
                 "count": 1
               },
               {
-                "value": "+1-210-555-0182",
+                "value": "sha256:2997f6c72dd950db",
                 "count": 1
               },
               {
-                "value": "+1-211-555-0120",
+                "value": "sha256:e423c0f776055db4",
                 "count": 1
               },
               {
-                "value": "+1-214-555-0141",
+                "value": "sha256:33266040add3baae",
                 "count": 1
               },
               {
-                "value": "+1-215-555-0159",
+                "value": "sha256:5b6fc8d36a8f1176",
                 "count": 1
               }
             ],
-            "sampled": false
+            "sampled": false,
+            "redacted": true
           }
         },
         {
@@ -271,51 +269,50 @@
           "profile": {
             "null_fraction": 0,
             "distinct_count": 40,
-            "min": null,
-            "max": null,
             "top_values": [
               {
-                "value": "Leah",
+                "value": "sha256:2db317222c996b63",
                 "count": 20
               },
               {
-                "value": "Noah",
+                "value": "sha256:cf3a3bbe331c3950",
                 "count": 20
               },
               {
-                "value": "Lena",
+                "value": "sha256:cc967443070ab409",
                 "count": 18
               },
               {
-                "value": "Omar",
+                "value": "sha256:21297e6e966afbd0",
                 "count": 18
               },
               {
-                "value": "Ada",
+                "value": "sha256:fdee430d40bd57de",
                 "count": 17
               },
               {
-                "value": "Hugo",
+                "value": "sha256:0478721f1106c2a6",
                 "count": 16
               },
               {
-                "value": "Kenji",
+                "value": "sha256:57f62077f2be1597",
                 "count": 16
               },
               {
-                "value": "Wren",
+                "value": "sha256:b1e3c2ec1a80a8cc",
                 "count": 16
               },
               {
-                "value": "Ethan",
+                "value": "sha256:7b8bd6c0abf53d22",
                 "count": 15
               },
               {
-                "value": "Silas",
+                "value": "sha256:db9763c0e62cb499",
                 "count": 15
               }
             ],
-            "sampled": false
+            "sampled": false,
+            "redacted": true
           }
         },
         {
@@ -326,51 +323,50 @@
           "profile": {
             "null_fraction": 0,
             "distinct_count": 30,
-            "min": null,
-            "max": null,
             "top_values": [
               {
-                "value": "Garcia",
+                "value": "sha256:e9b71991b7f947a3",
                 "count": 24
               },
               {
-                "value": "Tanaka",
+                "value": "sha256:38f4b0788294de61",
                 "count": 24
               },
               {
-                "value": "Muller",
+                "value": "sha256:a8b1fc83cb92ad90",
                 "count": 23
               },
               {
-                "value": "Singh",
+                "value": "sha256:f4d25158ccdd82c2",
                 "count": 23
               },
               {
-                "value": "Silva",
+                "value": "sha256:d24e913a4107af87",
                 "count": 22
               },
               {
-                "value": "Kowalski",
+                "value": "sha256:a377e09c55929b46",
                 "count": 21
               },
               {
-                "value": "Novak",
+                "value": "sha256:64118260ecb916c2",
                 "count": 20
               },
               {
-                "value": "Adeyemi",
+                "value": "sha256:8cce9002d9db7fdc",
                 "count": 19
               },
               {
-                "value": "Haddad",
+                "value": "sha256:3e90907fc3ad3c1a",
                 "count": 19
               },
               {
-                "value": "Ivanova",
+                "value": "sha256:e2de02f344f594ea",
                 "count": 19
               }
             ],
-            "sampled": false
+            "sampled": false,
+            "redacted": true
           }
         },
         {
@@ -394,35 +390,34 @@
           "profile": {
             "null_fraction": 0,
             "distinct_count": 6,
-            "min": null,
-            "max": null,
             "top_values": [
               {
-                "value": "NE",
+                "value": "sha256:cb58e4600bf0142c",
                 "count": 114
               },
               {
-                "value": "WC",
+                "value": "sha256:9c7d3cc1bee7acc0",
                 "count": 114
               },
               {
-                "value": "SE",
+                "value": "sha256:ad9a67fefa847de8",
                 "count": 100
               },
               {
-                "value": "SW",
+                "value": "sha256:7865b7e6b9d241d7",
                 "count": 74
               },
               {
-                "value": "MW",
+                "value": "sha256:bade9ea57931f2ef",
                 "count": 72
               },
               {
-                "value": "INT",
+                "value": "sha256:6da88c34ba124c41",
                 "count": 26
               }
             ],
-            "sampled": false
+            "sampled": false,
+            "redacted": true
           }
         },
         {
@@ -975,51 +970,50 @@
           "profile": {
             "null_fraction": 0,
             "distinct_count": 16,
-            "min": null,
-            "max": null,
             "top_values": [
               {
-                "value": "Avery Patel",
+                "value": "sha256:16135434725342f5",
                 "count": 1
               },
               {
-                "value": "Blake Romero",
+                "value": "sha256:c4c9efc45a37f83d",
                 "count": 1
               },
               {
-                "value": "Casey Nguyen",
+                "value": "sha256:e70fb97553d760f9",
                 "count": 1
               },
               {
-                "value": "Drew Kowalski",
+                "value": "sha256:4810dc7fa1301346",
                 "count": 1
               },
               {
-                "value": "Emery Brooks",
+                "value": "sha256:9c8d6d098948e1a9",
                 "count": 1
               },
               {
-                "value": "Finley Adams",
+                "value": "sha256:51c99f2a7cdc06eb",
                 "count": 1
               },
               {
-                "value": "Gray Santos",
+                "value": "sha256:41ebbbd80e7def7b",
                 "count": 1
               },
               {
-                "value": "Harper Quinn",
+                "value": "sha256:083ccdea6c6530e0",
                 "count": 1
               },
               {
-                "value": "Indy Moreau",
+                "value": "sha256:729afc770fa99306",
                 "count": 1
               },
               {
-                "value": "Jamie Lindqvist",
+                "value": "sha256:81715777d5ea0065",
                 "count": 1
               }
             ],
-            "sampled": false
+            "sampled": false,
+            "redacted": true
           }
         },
         {
@@ -1030,51 +1024,50 @@
           "profile": {
             "null_fraction": 0,
             "distinct_count": 16,
-            "min": null,
-            "max": null,
             "top_values": [
               {
-                "value": "avery.patel@acme.example",
+                "value": "sha256:9a3d584d4a17c8ad",
                 "count": 1
               },
               {
-                "value": "blake.romero@acme.example",
+                "value": "sha256:abc173625b86ebd5",
                 "count": 1
               },
               {
-                "value": "casey.nguyen@acme.example",
+                "value": "sha256:6752cb0eda1795de",
                 "count": 1
               },
               {
-                "value": "drew.kowalski@acme.example",
+                "value": "sha256:3c746da0a893b3be",
                 "count": 1
               },
               {
-                "value": "emery.brooks@acme.example",
+                "value": "sha256:d569caead7534a7a",
                 "count": 1
               },
               {
-                "value": "finley.adams@acme.example",
+                "value": "sha256:3b47a8cd0130bbc2",
                 "count": 1
               },
               {
-                "value": "gray.santos@acme.example",
+                "value": "sha256:dce61f7883a00aaf",
                 "count": 1
               },
               {
-                "value": "harper.quinn@acme.example",
+                "value": "sha256:2d23ed388fa881f0",
                 "count": 1
               },
               {
-                "value": "indy.moreau@acme.example",
+                "value": "sha256:c4058520023d7f6a",
                 "count": 1
               },
               {
-                "value": "jamie.lindqvist@acme.example",
+                "value": "sha256:3fc707ef43b97dac",
                 "count": 1
               }
             ],
-            "sampled": false
+            "sampled": false,
+            "redacted": true
           }
         },
         {
@@ -1403,7 +1396,8 @@
             "distinct_count": 3,
             "min": 0,
             "max": 1999,
-            "sampled": false
+            "sampled": false,
+            "redacted": true
           }
         },
         {
@@ -1453,15 +1447,14 @@
           "profile": {
             "null_fraction": 0,
             "distinct_count": 1,
-            "min": null,
-            "max": null,
             "top_values": [
               {
-                "value": "USD",
+                "value": "sha256:d60fbd8718eceb7f",
                 "count": 5000
               }
             ],
-            "sampled": false
+            "sampled": false,
+            "redacted": true
           }
         },
         {
@@ -1485,51 +1478,50 @@
           "profile": {
             "null_fraction": 0.889,
             "distinct_count": 555,
-            "min": null,
-            "max": null,
             "top_values": [
               {
-                "value": "Gift note on order 100008: Enjoy the trip!",
+                "value": "sha256:14155af0dc9d59f4",
                 "count": 1
               },
               {
-                "value": "Gift note on order 100017: Thinking of you.",
+                "value": "sha256:e1560e7a1a4dfeeb",
                 "count": 1
               },
               {
-                "value": "Gift note on order 100026: Congratulations on the new home.",
+                "value": "sha256:0cb936af02d40641",
                 "count": 1
               },
               {
-                "value": "Gift note on order 100035: Happy birthday!",
+                "value": "sha256:0885caa83ebeb79b",
                 "count": 1
               },
               {
-                "value": "Gift note on order 100044: With love.",
+                "value": "sha256:234a691cf5a1a81c",
                 "count": 1
               },
               {
-                "value": "Gift note on order 100053: Enjoy the trip!",
+                "value": "sha256:1ac803fe9b748386",
                 "count": 1
               },
               {
-                "value": "Gift note on order 100062: Thinking of you.",
+                "value": "sha256:ccdc5f75f8e2f0f8",
                 "count": 1
               },
               {
-                "value": "Gift note on order 100071: Congratulations on the new home.",
+                "value": "sha256:08238fda20676cbe",
                 "count": 1
               },
               {
-                "value": "Gift note on order 100080: Happy birthday!",
+                "value": "sha256:86f73750a2b2e67a",
                 "count": 1
               },
               {
-                "value": "Gift note on order 100089: With love.",
+                "value": "sha256:cdc72bc11cd455b8",
                 "count": 1
               }
             ],
-            "sampled": false
+            "sampled": false,
+            "redacted": true
           }
         },
         {

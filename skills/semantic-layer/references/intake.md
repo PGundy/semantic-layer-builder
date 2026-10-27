@@ -106,7 +106,7 @@ Use this whenever the CLI cannot run the queries itself. The same steps work for
 
 If a query fails because of a dialect detail (a function name, quoting, permissions on one schema), fix only that query, keep its `id` and the names of its output columns, and tell the owner what you changed. If the owner's user cannot read some schema, scope it out rather than guess.
 
-Profiles and join checks produce one query per table or join. For a large source, profile in batches (`sl profile --source wh --tables a,b,c --emit-sql`) so each results file stays small.
+Profiles and join checks produce one query per table or join. For a large source, profile in batches (`sl profile --source wh --tables a,b,c --emit-sql`) so each results file stays small. A profile results file holds raw sample values; the snapshot does not: `sl profile` stores a protected column's top values only as hashes and leaves out its text `min` and `max` (`spec.md`, Profiles of protected columns). Delete the results file once the command has finished, and never copy its values into the snapshot or any other file under the semantic root. A column tagged after it was profiled is redacted with `sl profile --source <s> --redact`, which queries nothing.
 
 ## Dialect notes
 
@@ -222,7 +222,7 @@ Ways to get DDL: `pg_dump --schema-only --no-owner "$WAREHOUSE_URL" > schema.sql
 When the owner can only describe tables, share a spreadsheet of columns or paste a few screenshots, write `snapshots/<source>.json` yourself following the snapshot format in `spec.md`:
 
 - `"snapshot_version": 1`, the source's name and dialect, `"method": "manual"`, `captured_at` as the current UTC time in ISO format.
-- One entry per table with `schema` (or `null`), `name`, `kind`, `row_count` (or `null` if unknown), and `columns` in their real order with `name`, `type` and `nullable` where known. Omit `profile`.
+- One entry per table with `schema` (or `null`), `name`, `kind`, `row_count` (or `null` if unknown), and `columns` in their real order with `name`, `type` and `nullable` where known. Omit `profile`: only `sl profile` measures profiles, redacting protected columns (introspect and import keep existing ones).
 - Tables sorted by qualified name. Put only facts the owner gave you; leave unknowns `null` rather than guessing.
 
 Then run `sl tables --source <s>` to confirm the CLI reads it and `sl validate`. Tell the owner that measures drafted from a manual snapshot need extra care at readback because nothing has been measured.

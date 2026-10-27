@@ -778,7 +778,7 @@ describe("sl access", () => {
     expect(r.out).toContain("Access mode open (no access.yaml)");
     expect(r.out).toContain("User: the default audience (no attributes, no assigned roles)");
     expect(r.out).toContain("Roles held: none (the open baseline, no row filters)");
-    expect(r.out).toContain("Visible across 1 source: 4/6 models, 11/18 fields, 2/4 metrics; 6 approved item(s) hidden by protected tags");
+    expect(r.out).toContain("Items visible across 1 source (row filters limit rows, not these counts): 4/6 models, 11/18 fields, 2/4 metrics; 6 approved item(s) hidden by protected tags");
     expect(r.out).toContain("Source wh: visible 4/6 models, 11/18 fields, 2/4 metrics");
     expect(r.out).toContain("    measure wh.orders.cost: hidden (protected_tag:sensitive)");
     expect(r.out).toContain("    model wh.payroll: hidden (protected_tag:sensitive), with its 2 field(s)");
@@ -886,7 +886,7 @@ describe("sl access", () => {
     const r2 = await sl(root2, ["access"]);
     expect(r2.out).toContain("Access mode closed (access.yaml invalid)");
     expect(r2.out).toContain("access.yaml cannot be applied, so access is closed and nothing is visible (see skipped entries)");
-    expect(r2.out).toContain("Visible across 1 source: 0/6 models, 0/18 fields, 0/4 metrics");
+    expect(r2.out).toContain("Items visible across 1 source (row filters limit rows, not these counts): 0/6 models, 0/18 fields, 0/4 metrics");
   });
 
   test("no semantic layer is an error", async () => {
@@ -1111,7 +1111,7 @@ describe("sl access per-source counts and draft label", () => {
     writeYaml(join(root, "sources", "lake.yaml"), { source: "lake", dialect: "duckdb" });
     writeYaml(join(root, "models", "lake", "events.yaml"), { ...model("events", [dim("kind"), dim("email", { tags: ["pii"] })], [measure("event_count")]), source: "lake" });
     const r = await sl(root, ["access"]);
-    expect(r.out).toContain("Visible across 2 sources: 5/7 models, 13/21 fields, 2/4 metrics; 7 approved item(s) hidden by protected tags");
+    expect(r.out).toContain("Items visible across 2 sources (row filters limit rows, not these counts): 5/7 models, 13/21 fields, 2/4 metrics; 7 approved item(s) hidden by protected tags");
     expect(r.out).toContain("Source lake: visible 1/1 models, 2/3 fields, 0/0 metrics");
     expect(r.out).toContain("Source wh: visible 4/6 models, 11/18 fields, 2/4 metrics");
     const j = (await sl(root, ["access", "--json"])).json<AccessVisibility>();
@@ -1125,7 +1125,7 @@ describe("sl access per-source counts and draft label", () => {
     const root = await setup();
     writeYaml(join(root, "sources", "lake.yaml"), { source: "lake", dialect: "duckdb" });
     const r = await sl(root, ["access"]);
-    expect(r.out).toContain("Visible across 2 sources: 4/6 models, 11/18 fields, 2/4 metrics");
+    expect(r.out).toContain("Items visible across 2 sources (row filters limit rows, not these counts): 4/6 models, 11/18 fields, 2/4 metrics");
     expect(r.out).toContain("Source lake: visible 0/0 models, 0/0 fields, 0/0 metrics");
     expect(r.out).not.toContain("No models or metrics.");
     const j = (await sl(root, ["access", "--json"])).json<AccessVisibility>();
@@ -1135,7 +1135,7 @@ describe("sl access per-source counts and draft label", () => {
     await initProject(empty.root);
     writeYaml(join(empty.root, "sources", "wh.yaml"), { source: "wh", dialect: "duckdb" });
     const e = await sl(empty.root, ["access"]);
-    expect(e.out).toContain("Visible across 1 source: 0/0 models");
+    expect(e.out).toContain("Items visible across 1 source (row filters limit rows, not these counts): 0/0 models");
     expect(e.out).toContain("No models or metrics.");
   });
 
@@ -1146,5 +1146,53 @@ describe("sl access per-source counts and draft label", () => {
     expect(r.out).toContain("This explains the draft access.yaml, which is awaiting sign-off: tools serve nothing under it until it is approved.");
     const ok = await sl(await setup({ roles: [{ name: "a" }] }), ["access"]);
     expect(ok.out).not.toContain("awaiting sign-off");
+  });
+
+  test("a draft with last_approved names the approved version that keeps applying", async () => {
+    const root = await setup({ ...DRAFT, last_approved: { by: "Dana", at: "2026-01-15" }, roles: [{ name: "a" }] } as Partial<AccessFile>);
+    const r = await sl(root, ["access"]);
+    expect(r.out).toContain(
+      "This explains a draft. The version approved by Dana on 2026-01-15 keeps applying where it is deployed; tools that load this draft serve nothing.",
+    );
+    expect(r.out).not.toContain("awaiting sign-off");
+    const j = (await sl(root, ["access", "--json"])).json<AccessVisibility>();
+    expect(j.access_file).toBe("draft");
+    expect(j.last_approved).toEqual({ by: "Dana", at: "2026-01-15" });
+    // An approved file reports no last_approved, and an unreadable one is ignored.
+    const approved = (await sl(await setup({ last_approved: { by: "Dana", at: "2026-01-15" }, roles: [{ name: "a" }] } as Partial<AccessFile>), ["access", "--json"])).json<AccessVisibility>();
+    expect(approved.last_approved).toBeUndefined();
+    const odd = await sl(await setup({ ...DRAFT, last_approved: "Dana" as never, roles: [{ name: "a" }] } as Partial<AccessFile>), ["access"]);
+    expect(odd.out).toContain("This explains the draft access.yaml, which is awaiting sign-off");
+  });
+});
+
+describe("sl access wording", () => {
+  test("the totals line says row filters limit rows, not the counts", async () => {
+    const root = await setup();
+    const r = await sl(root, ["access"]);
+    expect(r.out).toContain("Items visible across 1 source (row filters limit rows, not these counts): ");
+    expect(r.out).not.toContain("\nVisible across");
+  });
+
+  test("the row filters section is always printed, as none when no filter applies", async () => {
+    const root = await setup();
+    const r = await sl(root, ["access"]);
+    expect(r.out).toContain("\n  row filters: none (every row of every visible model)");
+    const filtered = await setup({ user_attributes: ATTRS, roles: [{ name: "rep", row_filters: [{ model: "wh.orders", expr: "region = {{ user.region }}" }] }] });
+    const f = await sl(filtered, ["access", "--user", '{"region":"emea"}', "--roles", "rep"]);
+    expect(f.out).toContain("  row filters:\n    wh.orders: rows matching any of");
+    expect(f.out).not.toContain("row filters: none");
+  });
+
+  test("the assigned roles clause appears only when --roles is given", async () => {
+    const root = await setup({ user_attributes: ATTRS, roles: [{ name: "emea", assign_when: "user.region == 'emea'" }] });
+    const r = await sl(root, ["access", "--user", '{"region":"emea"}']);
+    expect(r.out).toContain('User: region="emea"\n');
+    expect(r.out).not.toContain("assigned roles");
+    expect(r.out).toContain("Roles held: emea (condition: user.region == 'emea')");
+    const given = await sl(root, ["access", "--user", '{"region":"emea"}', "--roles", "emea"]);
+    expect(given.out).toContain('User: region="emea"; assigned roles: emea');
+    const roleOnly = await sl(root, ["access", "--roles", "emea"]);
+    expect(roleOnly.out).toContain("User: no attributes; assigned roles: emea");
   });
 });

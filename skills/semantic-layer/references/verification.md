@@ -9,7 +9,7 @@ Draft goldens may be written at any phase. Write one as soon as the owner offers
 - Until `access.yaml` exists, leave `role` and `user` out; `sl validate` warns about a golden that names a role with no access file. Add them in Phase 9, so each role in `access.yaml` has a golden that runs as it.
 - A draft golden may name a measure, dimension or metric that does not exist yet; `sl validate` warns rather than errors, so the owner's figure is recorded as soon as they give it, before its measure is written. Add an open question on the model that measure belongs to, naming the golden, so the warning stands with its reason (`SKILL.md`, Phase 10). An approved golden naming an unknown field is an error.
 - Confirm a golden only after the measures, dimensions and metrics its request uses are approved.
-- Confirm a golden that runs as a role after `access.yaml` is approved. One confirmed while access is still a draft is rechecked with `sl goldens check --name <g>` and read back to the owner after every change to that role; `sl goldens confirm` warns when the golden's role is defined only in a draft `access.yaml`.
+- Confirm a golden that runs as a role after `access.yaml` is approved. One confirmed while access is still a draft is rechecked with `sl goldens check --name <g>` and read back to the owner after every change to that role; `sl goldens confirm` warns when the golden's role is defined only in a draft `access.yaml`. Once access is approved, such a golden stays valid, with no new confirm, when its `role` and `user` are unchanged and `sl goldens check` passes.
 
 ## Choosing the questions
 
@@ -39,8 +39,12 @@ A golden may pin a rule rather than a figure: the restricted-role golden above p
 
 - [ ] Every approved measure and metric is in at least one approved golden.
 - [ ] Every role in `access.yaml`, restricted or not, has at least one approved golden that runs as it (a golden with no `role` runs as `default_role`); `roles_without_goldens` in `sl status --json` lists the roles of `access.yaml` that no approved golden uses, and the handoff names each one.
-- [ ] At least one approved golden crosses a join to a model with a row filter, as the role that has the filter. The line is N/A, and named as such in the handoff with the reason, when no join the role may use reaches its row-filtered model (every model that joins to it is denied to the role).
+- [ ] At least one approved golden crosses a join to a model with a row filter, as the role that has the filter. The line is N/A, and named as such in the handoff with the reason, when no join the role may use reaches its row-filtered model (every model that joins to it is denied to the role). `row_filter_joins_without_goldens` in `sl status --json` lists, per role, each visible model that reaches a row-filtered model through a to-one join and that no approved golden running as the role names; the handoff names each one. A golden may have no measures: it starts from its first dimension, which is how a row-filtered child model with no measures (order lines limited through their order) is covered.
 - [ ] Every reference figure the owner gave has a golden, draft or approved.
+
+### Personal values in goldens
+
+A golden's `question` and `reference` never quote a value of a `pii` or `sensitive` column; name the id ("rep 301"). `sl validate` checks them against the profile's top values, hashed for protected columns (`spec.md`, Profiles of protected columns). Replacing a personal value with an id in an approved golden's `question` or `reference` changes no figure and needs no new confirm: edit it and run `sl goldens check`. A golden's `expected.rows` are exempt from the check: they are the answer as the golden's role, which may see the column.
 
 ## Writing a golden
 

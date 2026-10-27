@@ -6,7 +6,7 @@ Every example below (status values, which statuses count, test-account rules, co
 
 ## Before each table
 
-Read the draft model and the table's profile in `snapshots/<source>.json` (each column's `profile`, at `tables[].columns[].profile`): row count, each column's `null_fraction`, `distinct_count`, `min`, `max` and `top_values`, declared and inferred keys. Pick the handful of columns that raise a question. Do not walk through every column: an `id` that is unique and never empty, or a `created_at` that obviously means creation time, needs no question unless it matters for a measure.
+Read the draft model and the table's profile in `snapshots/<source>.json` (each column's `profile`, at `tables[].columns[].profile`): row count, each column's `null_fraction`, `distinct_count`, `min`, `max` and `top_values`, declared and inferred keys. A protected column (tagged `pii` or `sensitive`, listed in `ignored_columns`, or looking personal or sensitive by name or by being near-unique text) has a redacted profile: its top values are hashes (`sha256:...`) with their counts, a text column has no `min` or `max`, and the profile says `redacted: true` (`spec.md`, Profiles of protected columns). Ask about such a column with counts and shapes ("1,950 distinct values, 1% empty"), never with its values. Pick the handful of columns that raise a question. Do not walk through every column: an `id` that is unique and never empty, or a `created_at` that obviously means creation time, needs no question unless it matters for a measure.
 
 `sl draft` writes some guesses that each need a yes before they stand, and each comes with an open question:
 
@@ -54,6 +54,8 @@ Offer a suggestion with every item, because owners confirm faster than they comp
 > "My guess, since `pending` orders are under 2% and none has a `paid_at`: revenue counts `completed` only. Which statuses should count?"
 
 Never invite blanket acceptance ("say 'all OK' if these look right") on business-rule items. The readback with real totals is the gate for each one.
+
+A suggestion never reopens a decision the owner has recorded (in a description, an approved item or an answered question). When such a decision blocks a check (a warning that cannot clear, a golden that cannot run as asked), say so and offer options that keep the decision ("the warning stands with its reason written in the description, or a golden pins the rule instead").
 
 ## Turning profile facts into questions
 
@@ -170,7 +172,7 @@ Limits, which `sl validate` enforces:
 - At most two hops: `<join>.<column>` or `<join>.<join>.<column>`, where each hop is a join of the model it starts from. A rule further away needs a join of its own on the model or a view.
 - Only many_to_one and one_to_one joins, on every hop: a `one_to_many` join repeats rows.
 - No subqueries and no table or schema names in `expr` or `filter`; validate reports an error that points to join references. A rule that needs an aggregate (a customer's first counted order, a running total) or another source cannot be written with a join reference. It needs a view or table the owner's engineers create (on Postgres and the warehouse dialects that is the only route; a DuckDB source can define the view in `connection.views`), or, across sources, a federating source. Say so early, record an open question with the exact definition and any figure the owner gave ("New customers: customers whose first counted order falls in the period; 123 in 2025 per the Finance pack"), and write a draft golden for the figure (`verification.md`). The CLI never writes to the owner's database.
-- Ask engineering for a column or view only when no supported construct (a join reference within two hops, a filter that writes the rule out, or a DuckDB view in `connection.views`, on a DuckDB source) can express the rule. When one can, write the rule with it; where the CLI still falls short (a warning that does not fit the case, a check it cannot run yet), keep the rule, wait for the tool, and say so in the next message and in the handoff, and write in the field's `description` why its warning stands.
+- Ask engineering for a column or view only when no supported construct (a join reference within two hops, a filter that writes the rule out, or a DuckDB view in `connection.views`, on a DuckDB source) can express the rule. When one can, write the rule with it; where the CLI still falls short (a warning that does not fit the case, a check it cannot run yet), keep the rule, wait for the tool, and say so in the next message and in the handoff, and write in the field's `description` why its warning stands. On resume, check each open question and each item the owner was told needs engineering or waits on the tool against what the skill can now do (`SKILL.md`, Phase 0).
 - Check every join on the path with `sl check-join` and read it back before you read back a measure that relies on it (`joins.md`).
 
 ### Dimensions through joins

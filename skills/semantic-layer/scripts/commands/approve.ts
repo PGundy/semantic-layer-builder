@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
+import type { LastApproval } from "../lib/access.ts";
 import type { CommandSpec } from "../lib/command.ts";
 import { bool, str, today } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
@@ -15,11 +16,13 @@ interface Change {
   to: Status;
 }
 
-// One item to flip, located by its path inside one YAML file.
+// One item to flip, located by its path inside one YAML file. keepLast marks access.yaml, whose
+// revoke keeps the approval it sets aside in last_approved.
 interface Edit {
   target: string;
   path: (string | number)[];
   from: Status;
+  keepLast?: boolean;
 }
 
 type Mode = { revoke: false; by: string; at: string } | { revoke: true };
@@ -68,18 +71,45 @@ function setScalar(doc: Document, map: YAMLMap, key: string, value: string, afte
   map.items.unshift(pair);
 }
 
-function applyEdit(doc: Document, path: (string | number)[], mode: Mode): void {
+// The approved_by and approved_at a map holds, when both are non-empty text.
+function approvalOf(map: YAMLMap): LastApproval | undefined {
+  const by = map.get("approved_by");
+  const at = map.get("approved_at");
+  return typeof by === "string" && by.trim() && typeof at === "string" && at.trim() ? { by, at } : undefined;
+}
+
+// Sets last_approved to `last`, where approved_by stood, else after status.
+function setLastApproved(doc: Document, map: YAMLMap, last: LastApproval): void {
+  const value = doc.createNode(last);
+  const existing = keyIndex(map, "last_approved");
+  if (existing >= 0) {
+    map.items[existing]!.value = value;
+    return;
+  }
+  const by = keyIndex(map, "approved_by");
+  const at = by >= 0 ? by : keyIndex(map, "status") + 1;
+  map.items.splice(at, 0, doc.createPair("last_approved", value));
+}
+
+function applyEdit(doc: Document, edit: Edit, mode: Mode): LastApproval | undefined {
+  const { path } = edit;
   const node = path.length ? doc.getIn(path, true) : doc.contents;
   if (!isMap(node)) throw new UserError(`Cannot edit ${path.join(".") || "the document root"}: it is not a mapping.`);
   if (mode.revoke) {
     setScalar(doc, node, "status", "draft", STATUS_ANCHORS);
+    // access.yaml keeps the approval it sets aside: that version applies where it is deployed.
+    const last = edit.keepLast ? approvalOf(node) : undefined;
+    if (last) setLastApproved(doc, node, last);
     node.delete("approved_by");
     node.delete("approved_at");
-  } else {
-    setScalar(doc, node, "status", "approved", STATUS_ANCHORS);
-    setScalar(doc, node, "approved_by", mode.by, ["status"]);
-    setScalar(doc, node, "approved_at", mode.at, ["approved_by", "status"]);
+    return last;
   }
+  setScalar(doc, node, "status", "approved", STATUS_ANCHORS);
+  setScalar(doc, node, "approved_by", mode.by, ["status"]);
+  setScalar(doc, node, "approved_at", mode.at, ["approved_by", "status"]);
+  // A new approval replaces the one a revoke set aside.
+  if (edit.keepLast) node.delete("last_approved");
+  return undefined;
 }
 
 function modelProblems(ref: string, m: Model): string[] {
@@ -171,12 +201,12 @@ const spec: CommandSpec = {
     const warnings: string[] = [];
     // Items already in the requested state, reported when nothing changes.
     let skipped = 0;
-    const consider = (targetRef: string, path: (string | number)[], item: Approval): boolean => {
+    const consider = (targetRef: string, path: (string | number)[], item: Approval, keepLast = false): boolean => {
       if (settled(item, mode)) {
         skipped++;
         return false;
       }
-      edits.push({ target: targetRef, path, from: statusOf(item) });
+      edits.push({ target: targetRef, path, from: statusOf(item), ...(keepLast ? { keepLast } : {}) });
       return true;
     };
 
@@ -197,7 +227,7 @@ const spec: CommandSpec = {
               : `No access.yaml at ${file}. Write the roles first, then approve them.`,
           );
         }
-        consider("access", [], access);
+        consider("access", [], access, true);
         break;
       }
 
@@ -287,12 +317,18 @@ const spec: CommandSpec = {
       }
     }
 
-    if (edits.length) updateYaml(file, (doc) => edits.forEach((e) => applyEdit(doc, e.path, mode)));
+    // The approval a revoke of access.yaml set aside in last_approved.
+    let keptApproval: LastApproval | undefined;
+    if (edits.length) {
+      updateYaml(file, (doc) => {
+        for (const e of edits) keptApproval = applyEdit(doc, e, mode) ?? keptApproval;
+      });
+    }
     const to: Status = revoke ? "draft" : "approved";
     const changed: Change[] = edits.map((e) => ({ target: e.target, from: e.from, to }));
 
     if (ctx.json) {
-      ctx.out(formatJson({ changed, warnings }));
+      ctx.out(formatJson({ changed, warnings, ...(keptApproval ? { last_approved: keptApproval } : {}) }));
       return 0;
     }
     const lines: string[] = [];
@@ -301,6 +337,12 @@ const spec: CommandSpec = {
       lines.push(revoke ? `Revoked ${c.target} (${c.from} -> draft).` : `Approved ${c.target} (${c.from} -> approved) by ${by} on ${date}.`);
     }
     if (changed.length && skipped) lines.push(`${skipped} item(s) were already ${revoke ? "drafts" : "approved"}.`);
+    if (keptApproval) {
+      lines.push(
+        `access.yaml keeps that approval in last_approved: the version approved by ${keptApproval.by} on ${keptApproval.at} ` +
+          "keeps applying where it is deployed until the new one is approved; tell the owner so.",
+      );
+    }
     for (const w of warnings) lines.push(`Warning: ${w}`);
     ctx.out(lines.join("\n"));
     return 0;

@@ -12,10 +12,11 @@ The output is plain YAML under version control, meant to be read by a chat-with-
 4. **Draft.** It writes a skeleton model per table: time, category and boolean dimensions, sum and count measures, primary keys, declared and inferred joins, PII tags, and the open questions the data raises, such as whether an amount is in cents.
 5. **Interview.** It works through the tables a few at a time, most important first. It reads each item back in plain English and approves it only after the owner says yes.
 6. **Joins.** It measures every join's match rate, key uniqueness and fan-out before the owner signs it off, so orphaned rows and double counting surface as facts.
-7. **Metrics and access.** It records ratio and derived metrics, and access rules that fail closed: roles, allowed models, PII denials and row filters bound to user attributes.
+7. **Metrics and access.** It records ratio and derived metrics, and who may see what. Access is open by default: everyone sees what the owner approved, except personal and sensitive data, which stays hidden unless a role is granted it. Roles can come from user attributes such as department. Restrictions limit single metrics or fields to roles or conditions. Row filters can follow a reporting hierarchy, so a manager sees their team's rows. `sl access` shows the owner what any user would see before they sign. A strict mode turns access into an allowlist for regulated data.
 8. **Verify.** It writes golden questions with their SQL, compares each answer with a figure the owner already trusts, and keeps them as regression tests.
+9. **Keep current.** When tables change, `sl introspect` reports added, removed and retyped columns. `sl draft --new-columns` drafts only what is new, and status raises approved items whose columns disappeared.
 
-`sl status` records where the work stands, so a stopped session resumes from the files.
+`sl status` records where the work stands, so a stopped session resumes from the files. Snapshots never store sample values of personal or sensitive columns; they keep hashes so the validator can still catch a name quoted in a description.
 
 ## Install
 
@@ -77,7 +78,7 @@ Joins live within one source. A question that spans sources becomes an open ques
 
 ## Example
 
-[`examples/acme/`](examples/acme/) holds a semantic layer built by running the skill end to end against the synthetic Acme dataset in [`fixtures/acme/`](fixtures/acme/), a 20-table Postgres warehouse and a Parquet lake. An agent played the skill and another agent played the data owner from a private brief.
+[`examples/acme/`](examples/acme/) holds a semantic layer built by running the skill end to end against the synthetic Acme dataset in [`fixtures/acme/`](fixtures/acme/), a 20-table Postgres warehouse and a Parquet lake. An agent played the skill and another agent played the data owner from a private brief, over four sessions that include a schema change and a move to open access.
 
 ## Develop
 

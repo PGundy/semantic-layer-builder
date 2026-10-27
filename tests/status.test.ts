@@ -1343,3 +1343,183 @@ describe("status schema evolution", () => {
     expect(gone.out).toContain("  models on tables the snapshot no longer has: web_events (main.web_events)");
   });
 });
+
+describe("status after access.yaml is revoked", () => {
+  test("a draft with last_approved reports it and says which version keeps applying", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, { access: "draft" });
+    const plain = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(plain.access.last_approved).toBeUndefined();
+    expect(plain.next_step.message).not.toContain("keeps applying");
+    const access = readYaml<Record<string, unknown>>(join(t.root, "access.yaml"));
+    writeYaml(join(t.root, "access.yaml"), { ...access, last_approved: { by: "Dana", at: "2026-01-15" } });
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.access.state).toBe("draft");
+    expect(s.access.last_approved).toEqual({ by: "Dana", at: "2026-01-15" });
+    expect(s.next_step.phase).toBe("access");
+    expect(s.next_step.message).toContain(
+      "The version approved by Dana on 2026-01-15 keeps applying where it is deployed; tools that load this draft serve nothing.",
+    );
+    const human = await sl(t.root, ["status"]);
+    expect(human.out).toContain("access draft (2 role(s), the version approved by Dana on 2026-01-15 keeps applying where it is deployed)");
+  });
+
+  test("an approved access.yaml with a stale last_approved reports none", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, {});
+    const access = readYaml<Record<string, unknown>>(join(t.root, "access.yaml"));
+    writeYaml(join(t.root, "access.yaml"), { ...access, last_approved: { by: "Dana", at: "2026-01-15" } });
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().access.last_approved).toBeUndefined();
+  });
+});
+
+describe("status row_filter_joins_without_goldens", () => {
+  // A rep role filtered on customers; orders reaches customers through its customer join, and
+  // web_events through order.customer once it joins orders.
+  function repProject(root: string, role: Record<string, unknown> = {}): void {
+    build(root, {});
+    writeYaml(join(root, "access.yaml"), {
+      status: "approved",
+      approved_by: "Dana",
+      approved_at: "2026-01-15",
+      user_attributes: [{ name: "customer_id", type: "number" }],
+      roles: [
+        { name: "analyst", allow: { models: ["wh.*"] } },
+        { name: "viewer", allow: { models: ["wh.orders"] } },
+        { name: "rep", allow: { models: ["wh.*"] }, row_filters: [{ model: "wh.customers", expr: "id = {{ user.customer_id }}" }], ...role },
+      ],
+    });
+    const events = model("web_events", true);
+    const evidence = model("fct_orders", true, { evidence: true }).joins![0]!.evidence!;
+    events.joins = [
+      { name: "order", to: "orders", keys: [{ from: "id", to: "id" }], relationship: "many_to_one", ...approval(true), evidence },
+      { name: "visits", to: "stg_events", keys: [{ from: "id", to: "id" }], relationship: "one_to_many", ...approval(true), evidence },
+    ];
+    writeYaml(join(root, "models", "wh", "web_events.yaml"), events);
+  }
+  const golden = (root: string, name: string, extra: Record<string, unknown>) =>
+    writeYaml(join(root, "goldens", `${name}.yaml`), {
+      name,
+      question: "How much?",
+      sql: "select 1",
+      status: "approved",
+      confirmed_by: "Dana",
+      confirmed_at: "2026-01-15",
+      ...extra,
+    });
+
+  test("lists each visible model that reaches a row-filtered model through one or two to-one joins", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    repProject(t.root);
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.row_filter_joins_without_goldens).toEqual([
+      { role: "rep", model: "wh.orders", filtered_model: "wh.customers", join: "customer" },
+      { role: "rep", model: "wh.web_events", filtered_model: "wh.customers", join: "order.customer" },
+    ]);
+    const human = await sl(t.root, ["status"]);
+    expect(human.out).toContain(
+      "row-filtered joins without an approved golden as the role: wh.orders -> wh.customers through customer (role rep), " +
+        "wh.web_events -> wh.customers through order.customer (role rep)",
+    );
+  });
+
+  test("an approved golden as the role naming a field of the model covers it, a draft one or another role's does not", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    repProject(t.root);
+    golden(t.root, "rep_orders_draft", { role: "rep", request: { source: "wh", dimensions: ["orders.id_dim"] }, status: "draft" });
+    golden(t.root, "analyst_events", { role: "analyst", request: { source: "wh", measures: ["web_events.total"] } });
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens.map((x) => x.model)).toEqual([
+      "wh.orders",
+      "wh.web_events",
+    ]);
+    // A golden with no measures starts from its first dimension and covers that model.
+    golden(t.root, "rep_orders", { role: "rep", request: { source: "wh", dimensions: ["orders.id_dim"] } });
+    golden(t.root, "rep_events", { role: "rep", request: { source: "wh", measures: ["customers.total"], filters: [{ field: "web_events.id_dim", op: "eq", value: 1 }] } });
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.row_filter_joins_without_goldens).toEqual([]);
+    expect((await sl(t.root, ["status"])).out).not.toContain("row-filtered joins without");
+  });
+
+  test("a metric a golden names covers the models of its measures", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    repProject(t.root);
+    golden(t.root, "rep_avg", { role: "rep", request: { source: "wh", measures: ["avg_total"] } });
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens.map((x) => x.model)).toEqual(["wh.web_events"]);
+  });
+
+  test("a golden with no role covers default_role", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    repProject(t.root);
+    const access = readYaml<Record<string, unknown>>(join(t.root, "access.yaml"));
+    writeYaml(join(t.root, "access.yaml"), { ...access, default_role: "rep" });
+    golden(t.root, "default_orders", { request: { source: "wh", measures: ["orders.total", "web_events.total"] } });
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens).toEqual([]);
+  });
+
+  test("a golden with no role runs as the roles its user meets, and default_role only when it meets none", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    repProject(t.root, { assign_when: "user.department == 'sales'" });
+    const access = readYaml<Record<string, unknown>>(join(t.root, "access.yaml"));
+    writeYaml(join(t.root, "access.yaml"), {
+      ...access,
+      default_role: "viewer",
+      user_attributes: [...(access.user_attributes as unknown[]), { name: "department", type: "string" }],
+    });
+    // g0 is the only golden as viewer.
+    rmSync(join(t.root, "goldens", "g0.yaml"));
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual(["viewer", "rep"]);
+    // Its user meets rep's assign_when, so it runs as rep and covers orders; it does not run as viewer.
+    golden(t.root, "sales_orders", { user: { department: "sales", customer_id: 1 }, request: { source: "wh", dimensions: ["orders.id_dim"] } });
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.row_filter_joins_without_goldens.map((x) => x.model)).toEqual(["wh.web_events"]);
+    expect(s.roles_without_goldens).toEqual(["viewer"]);
+    // A role named in another letter case is the same role.
+    golden(t.root, "rep_events", { role: "Rep", request: { source: "wh", dimensions: ["web_events.id_dim"] } });
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens).toEqual([]);
+    // A user who meets no condition runs as default_role.
+    golden(t.root, "other_orders", { user: { department: "ops" }, request: { source: "wh", dimensions: ["orders.id_dim"] } });
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual([]);
+  });
+
+  test("a model the role does not see is not listed, and a one_to_many join is not followed", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    repProject(t.root, { deny: { models: ["wh.web_events"] } });
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.row_filter_joins_without_goldens).toEqual([{ role: "rep", model: "wh.orders", filtered_model: "wh.customers", join: "customer" }]);
+    // stg_events reaches nothing through to-one joins: web_events' visits join is one_to_many.
+    const t2 = tempRoot();
+    const c1 = cleanup;
+    cleanup = () => {
+      c1?.();
+      t2.cleanup();
+    };
+    repProject(t2.root, { row_filters: [{ model: "wh.stg_events", expr: "id = {{ user.customer_id }}" }] });
+    expect((await sl(t2.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens).toEqual([]);
+  });
+
+  test("no access.yaml or no row filters means none", async () => {
+    expect((await status({ access: "missing" })).row_filter_joins_without_goldens).toEqual([]);
+    expect((await status({})).row_filter_joins_without_goldens).toEqual([]);
+  });
+
+  test("the done step names them for the handoff", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    repProject(t.root);
+    golden(t.root, "rep_customers", { role: "rep", request: { source: "wh", measures: ["customers.total"] } });
+    golden(t.root, "rep_orders", { role: "rep", request: { source: "wh", measures: ["orders.total"] } });
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.next_step.phase).toBe("done");
+    expect(s.next_step.message).toContain(
+      "models that reach a row-filtered model through joins with no approved golden as the role: wh.web_events -> wh.customers through order.customer (role rep)",
+    );
+  });
+});

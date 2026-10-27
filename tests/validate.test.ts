@@ -11,7 +11,9 @@ import {
   schemaIssues,
   sqlNames,
   validateProject,
+  wordRuns,
 } from "../skills/semantic-layer/scripts/lib/validate.ts";
+import { hashValue } from "../skills/semantic-layer/scripts/lib/profile.ts";
 import { conditionAttributes, parseCondition } from "../skills/semantic-layer/scripts/lib/conditions.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { sl } from "./helpers.ts";
@@ -1477,6 +1479,7 @@ const ACCESS_CASES: Case[] = [
     file: ORDERS,
     edit: (d) => (d.ignored_columns = ["status", "customer_id", "order_id", "AMOUNT_CENTS"]),
     expect: [
+      // status is ignored but an untagged field reads it openly, so it is not protected and its raw top values may stay.
       ["warning", ORDERS, "ignored_columns[0]", '"status" is read by a field, a join key, the primary key of model orders or a join from another model'],
       ["warning", ORDERS, "ignored_columns[1]", '"customer_id" is read by a field'],
       ["warning", ORDERS, "ignored_columns[2]", '"order_id" is read by a field'],
@@ -1656,6 +1659,30 @@ function emailTopValue(root: string, value = "dana@example.com"): void {
     email.profile = { null_fraction: 0, distinct_count: 2000, top_values: [{ value, count: 1 }, { value: "ab", count: 1 }] };
   });
 }
+
+// Gives dim_customers.email a profile with a column's profile fields, written as given.
+function emailProfile(root: string, profile: Doc): void {
+  mutate(root, SNAP_WH, (d) => {
+    d.tables.find((t: Doc) => t.name === "dim_customers").columns.find((c: Doc) => c.name === "email").profile = profile;
+  });
+}
+
+// Gives dim_customers.email a redacted profile whose top values are the hashes of `values`.
+function emailHashedValues(root: string, values: string[]): void {
+  emailProfile(root, { null_fraction: 0, distinct_count: 2000, top_values: values.map((v) => ({ value: hashValue(v), count: 1 })), sampled: false, redacted: true });
+}
+
+const quotesHashed = (quoted: string) =>
+  `quotes "${quoted}", a value of column email of public.dim_customers, which warehouse.customers.email reads and tags pii; ` +
+  "this text is shown to people the tag hides that column from, so write an id or a count instead";
+
+// The snapshot holds dim_customers.email's raw top values, which emailTopValue writes.
+const RAW_EMAIL: Expected = [
+  "warning",
+  SNAP_WH,
+  "tables[0].columns[1].profile",
+  "public.dim_customers.email is protected but the snapshot holds raw sample values; run sl profile --source warehouse --redact",
+];
 
 const QUOTES_EMAIL =
   'quotes "dana@example.com", a value of column email of public.dim_customers, which warehouse.customers.email reads and tags pii; ' +
@@ -1854,13 +1881,14 @@ const JOIN_ACCESS_CASES: Case[] = [
       ["warning", "metrics.yaml", "metrics[0].description", QUOTES_EMAIL],
       ["warning", GOLDEN3, "question", QUOTES_EMAIL],
       ["warning", GOLDEN3, "reference", QUOTES_EMAIL],
+      RAW_EMAIL,
     ],
   },
   {
     name: "a short value, or one inside a longer word, is not flagged",
     file: "",
     setup: (r) => (emailTopValue(r, "west"), mutate(r, CUSTOMERS, (d) => (d.description = "One row per customer; ab is short, and midwest or westerly are other words."))),
-    expect: [],
+    expect: [RAW_EMAIL],
   },
   {
     name: "a dimension that reads a pii column through a join flags its values",
@@ -1870,7 +1898,7 @@ const JOIN_ACCESS_CASES: Case[] = [
       mutate(r, CUSTOMERS, (d) => delete d.dimensions[0].tags),
       mutate(r, ORDERS, (d) => (d.dimensions.push({ name: "buyer_email", expr: "customer.email", type: "string", tags: ["pii"], status: "draft" }), (d.description = "Orders, such as those of dana@example.com.")))
     ),
-    expect: ["warning", ORDERS, "description", 'quotes "dana@example.com", a value of column email of public.dim_customers, which warehouse.orders.buyer_email reads and tags pii'],
+    expect: [["warning", ORDERS, "description", 'quotes "dana@example.com", a value of column email of public.dim_customers, which warehouse.orders.buyer_email reads and tags pii'], RAW_EMAIL],
   },
   {
     name: "a model's tag flags values only of the columns that look personal",
@@ -1888,13 +1916,118 @@ const JOIN_ACCESS_CASES: Case[] = [
       ["warning", ACCESS, "roles[0]", "may see dimension warehouse.orders.customer_region"],
       ["warning", ACCESS, "roles[1]", "may see dimension warehouse.orders.customer_region"],
       GOLDEN3_REGION_HIDDEN,
+      RAW_EMAIL,
+      // The model's tag protects every column of its table, so region's raw top value is reported too.
+      ["warning", SNAP_WH, "tables[0].columns[2].profile", "public.dim_customers.region is protected but the snapshot holds raw sample values"],
     ],
   },
   {
     name: "values of an untagged column are not flagged",
     file: "",
     setup: (r) => (emailTopValue(r), mutate(r, CUSTOMERS, (d) => (delete d.dimensions[0].tags, (d.description = "Customers, such as dana@example.com.")))),
-    expect: ["warning", ACCESS, "roles[0].deny.tags[0]", 'tag "pii" is not used'],
+    // email stays protected by its name, so its raw top values are still reported.
+    expect: [["warning", ACCESS, "roles[0].deny.tags[0]", 'tag "pii" is not used'], RAW_EMAIL],
+  },
+  {
+    name: "a hashed top value matches a run of one to four words in any case",
+    file: "",
+    setup: (r) => (
+      emailHashedValues(r, ["Dana Ruiz", "dana@example.com", "ab"]),
+      mutate(r, CUSTOMERS, (d) => (d.description = "Customers such as DANA RUIZ; Dana alone, Ruiz alone and ab are not values.")),
+      mutate(r, GOLDEN3, (d) => ((d.question = 'What did "Dana Ruiz" buy?'), (d.reference = "Checked with dana@example.com.")))
+    ),
+    expect: [
+      ["warning", CUSTOMERS, "description", quotesHashed("DANA RUIZ")],
+      ["warning", GOLDEN3, "question", quotesHashed("Dana Ruiz")],
+      ["warning", GOLDEN3, "reference", quotesHashed("dana@example.com")],
+    ],
+  },
+  {
+    name: "a hashed value of more than four words is not matched",
+    file: "",
+    setup: (r) => (emailHashedValues(r, ["Mary Ann de la Cruz"]), mutate(r, CUSTOMERS, (d) => (d.description = "Ask Mary Ann de la Cruz, or Mary Ann de la Cruz again."))),
+    expect: [],
+  },
+  {
+    name: "a four-word value is matched, once per text",
+    file: "",
+    setup: (r) => (emailHashedValues(r, ["Mary Ann de Cruz"]), mutate(r, CUSTOMERS, (d) => (d.description = "Ask Mary Ann de Cruz, or (Mary Ann de Cruz) again."))),
+    expect: ["warning", CUSTOMERS, "description", quotesHashed("Mary Ann de Cruz")],
+  },
+  {
+    name: "a protected text column with a text min and max holds raw values",
+    file: "",
+    setup: (r) => emailProfile(r, { null_fraction: 0, distinct_count: 2000, min: "a@example.com", max: "z@example.com", sampled: false }),
+    expect: RAW_EMAIL,
+  },
+  {
+    name: "a redacted profile, and a protected number column's min and max, hold no raw values",
+    file: "",
+    setup: (r) => (
+      emailHashedValues(r, ["dana@example.com"]),
+      mutate(r, SNAP_WH, (d) => {
+        // The pii tag on the customers model protects customer_id, which keeps its min and max.
+        d.tables.find((t: Doc) => t.name === "dim_customers").columns.find((c: Doc) => c.name === "customer_id").profile = {
+          null_fraction: 0,
+          distinct_count: 2000,
+          min: 1,
+          max: 2000,
+          top_values: [{ value: hashValue("7"), count: 1 }],
+          redacted: true,
+        };
+      }),
+      mutate(r, CUSTOMERS, (d) => (d.tags = ["pii"]))
+    ),
+    expect: [
+      ["warning", ACCESS, "roles[0]", "may see dimension warehouse.orders.customer_region"],
+      ["warning", ACCESS, "roles[1]", "may see dimension warehouse.orders.customer_region"],
+      GOLDEN3_REGION_HIDDEN,
+    ],
+  },
+  {
+    name: "a redacted boolean column read by a sensitive field quotes nothing when a text says true or false",
+    file: "",
+    setup: (r) => (
+      mutate(r, SNAP_WH, (d) => {
+        d.tables.find((t: Doc) => t.name === "dim_customers").columns.find((c: Doc) => c.name === "is_test_account").profile = {
+          null_fraction: 0,
+          distinct_count: 2,
+          min: false,
+          max: true,
+          top_values: [{ value: hashValue("false"), count: 1990 }, { value: hashValue("true"), count: 10 }],
+          sampled: false,
+          redacted: true,
+        };
+      }),
+      mutate(r, CUSTOMERS, (d) => {
+        d.dimensions[2].tags = ["sensitive"];
+        d.dimensions[2].description = "True for an internal test account, false otherwise.";
+      })
+    ),
+    expect: [],
+  },
+  {
+    name: "a hashed value glued to other text by punctuation, or with a possessive, is matched",
+    file: "",
+    setup: (r) => (
+      emailHashedValues(r, ["Dana Ruiz", "dana@example.com"]),
+      mutate(r, CUSTOMERS, (d) => (d.description = "Write to contact:dana@example.com.")),
+      mutate(r, GOLDEN3, (d) => ((d.question = "What did Dana Ruiz's region buy?"), (d.reference = "Checked with email=dana@example.com.")))
+    ),
+    expect: [
+      ["warning", CUSTOMERS, "description", quotesHashed("dana@example.com")],
+      ["warning", GOLDEN3, "question", quotesHashed("Dana Ruiz")],
+      ["warning", GOLDEN3, "reference", quotesHashed("dana@example.com")],
+    ],
+  },
+  {
+    name: "an ignored column's raw top values are reported",
+    file: "",
+    setup: (r) => (
+      mutate(r, SNAP_WH, (d) => d.tables.find((t: Doc) => t.name === "fct_orders").columns.push({ name: "gift_message", type: "text", nullable: true, description: null, profile: { null_fraction: 0.5, distinct_count: 3, top_values: [{ value: "Happy birthday", count: 2 }] } })),
+      mutate(r, ORDERS, (d) => (d.ignored_columns = ["gift_message"]))
+    ),
+    expect: ["warning", SNAP_WH, "tables[1].columns[6].profile", "public.fct_orders.gift_message is protected but the snapshot holds raw sample values; run sl profile --source warehouse --redact"],
   },
 ];
 
@@ -1983,6 +2116,27 @@ describe("mutations of the valid fixture", () => {
     const r = await sl(join(tmpdir(), "sl-validate-does-not-exist"), ["validate"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("No semantic layer");
+  });
+});
+
+describe("wordRuns", () => {
+  test("reads runs of one to four words, with and without the punctuation around them", () => {
+    const runs = wordRuns('Ask "Dana Ruiz", then ab.');
+    expect(runs).toContain("Dana Ruiz");
+    expect(runs).toContain('"Dana Ruiz",');
+    expect(runs).toContain("Ask Dana Ruiz then");
+    expect(runs).toContain("Dana");
+    expect(runs).not.toContain("ab");
+    expect(runs.some((r) => r.split(" ").length > 4)).toBe(false);
+  });
+
+  test("also splits on : = / ; , ( ) and drops a possessive 's", () => {
+    const runs = wordRuns("contact:dana@example.com, email=lee@example.com (Dana Ruiz's) Kim\u2019s");
+    expect(runs).toContain("dana@example.com");
+    expect(runs).toContain("lee@example.com");
+    expect(runs).toContain("Dana Ruiz");
+    expect(runs).toContain("Kim");
+    expect(runs).toContain("contact:dana@example.com,");
   });
 });
 

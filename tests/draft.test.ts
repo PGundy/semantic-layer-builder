@@ -920,6 +920,17 @@ describe("draft heuristics on Acme-like tables", () => {
     ]);
   });
 
+  test("a redacted currency column never becomes a currency code", () => {
+    const redacted: SnapshotTable = {
+      ...ORDERS,
+      columns: ORDERS.columns.map((c) =>
+        c.name === "currency" ? { ...c, profile: { distinct_count: 1, null_fraction: 0, top_values: [{ value: "sha256:0123456789abcdef", count: 2500 }], redacted: true } } : c,
+      ),
+    };
+    const orders = draftAcme([redacted, ITEMS, PRODUCTS, CUSTOMERS, REGIONS]).model("orders");
+    for (const m of orders.measures) expect(m.currency).toBeUndefined();
+  });
+
   test("a currency column with several values sets none, and a description saying cents divides an unsuffixed column", () => {
     const mixed: SnapshotTable = {
       ...ORDERS,

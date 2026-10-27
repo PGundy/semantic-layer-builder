@@ -86,7 +86,8 @@
             "distinct_count": 2271,
             "min": 382,
             "max": 10486,
-            "sampled": false
+            "sampled": false,
+            "redacted": true
           }
         },
         {
@@ -99,7 +100,8 @@
             "distinct_count": 226,
             "min": 4,
             "max": 346,
-            "sampled": false
+            "sampled": false,
+            "redacted": true
           }
         }
       ],
@@ -180,7 +182,8 @@
             "distinct_count": 497,
             "min": 1,
             "max": 500,
-            "sampled": false
+            "sampled": false,
+            "redacted": true
           }
         },
         {

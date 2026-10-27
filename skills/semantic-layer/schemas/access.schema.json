@@ -26,6 +26,28 @@
       "description": "ISO date of approval, YYYY-MM-DD. Required when status is approved.",
       "format": "date"
     },
+    "last_approved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by",
+        "at"
+      ],
+      "description": "The approval sl approve --target access --revoke set aside: while this file is a draft, the version approved by by on at keeps applying where it is deployed. sl approve removes it when it approves the file again.",
+      "properties": {
+        "by": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Who approved the version that keeps applying."
+        },
+        "at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "ISO date of that approval, YYYY-MM-DD.",
+          "format": "date"
+        }
+      }
+    },
     "mode": {
       "enum": [
         "open",

@@ -73,8 +73,11 @@ export interface ColumnProfile {
   distinct_count?: number | null;
   min?: Scalar;
   max?: Scalar;
+  // For a protected column, each value is "sha256:" and 16 hex characters (lib/profile.ts hashValue).
   top_values?: TopValue[];
   sampled?: boolean;
+  // True on a protected column's profile: top values hashed, no text min or max.
+  redacted?: boolean;
 }
 
 export interface SnapshotColumn {
@@ -297,6 +300,8 @@ export interface Restriction {
 
 // Tools that serve users apply only an approved access file; a draft one is served by nothing.
 export interface AccessFile extends Approval {
+  // The approval a revoke replaced: the approved version that keeps applying where it is deployed.
+  last_approved?: { by: string; at: string };
   mode?: AccessMode; // default open
   default_role?: string;
   user_attributes?: UserAttribute[];

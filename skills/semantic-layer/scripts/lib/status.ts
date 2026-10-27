@@ -2,10 +2,21 @@
 // the skill should take. Nothing here touches a database.
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
-import { evaluateAccess, type AccessVisibility } from "./access.ts";
+import {
+  type AccessLayer,
+  type AccessVisibility,
+  evaluateAccess,
+  evaluateLayer,
+  type LastApproval,
+  lastApproval,
+  lastApprovedNote,
+  loadAccessLayer,
+  metricMeasureRefs,
+} from "./access.ts";
 import { canRun } from "./adapters/index.ts";
 import { findTable, qualifiedName } from "./naming.ts";
 import { inScope } from "./patterns.ts";
+import { parseRequestField } from "./refs.ts";
 import {
   listGoldens,
   listModels,
@@ -23,7 +34,8 @@ import {
 } from "./project.ts";
 import { rankTables } from "./rank.ts";
 import { incomingKeyColumns, missingColumns, referencedColumns, unreferencedColumns } from "./snapshot-diff.ts";
-import type { AccessMode, Approval, Dialect, Metric, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
+import { TO_ONE_RELATIONSHIPS } from "./types.ts";
+import type { AccessMode, Approval, Dialect, Golden, Metric, Model, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
 
 // Golden count below which the verify phase stays open.
 export const MIN_APPROVED_GOLDENS = 5;
@@ -180,6 +192,9 @@ export interface ProjectStatus {
     open_questions: number;
     mode: AccessMode;
     default_audience: DefaultAudience;
+    // Present while access.yaml is a draft that records the approval sl approve --revoke set aside:
+    // that approved version keeps applying where it is deployed.
+    last_approved?: LastApproval;
   };
   // Open questions across the reported sources' models and access.yaml.
   open_questions: number;
@@ -189,8 +204,22 @@ export interface ProjectStatus {
   // Roles in access.yaml that no approved golden uses. A golden without a role key uses
   // access.yaml's default_role.
   roles_without_goldens: string[];
+  // For each role, each model visible to it that reaches one of its row-filtered models through one
+  // or two to-one joins, when no approved golden running as that role names a field of that model.
+  row_filter_joins_without_goldens: RowFilterJoinWithoutGolden[];
   next_batch: { source: string; tables: BatchEntry[] } | null;
   next_step: NextStep;
+}
+
+// A model a role sees that reaches the role's row-filtered model through to-one joins, with no
+// approved golden running as the role that names a field of it. model and filtered_model are
+// source.model; join is the chain of join names from model, as a join reference writes it
+// (order, or order.customer).
+export interface RowFilterJoinWithoutGolden {
+  role: string;
+  model: string;
+  filtered_model: string;
+  join: string;
 }
 
 // The non-empty strings of a value read from YAML that should be a string list.
@@ -471,6 +500,11 @@ function shortQuestion(q: string): string {
   const cut = t.slice(0, QUESTION_WIDTH);
   const space = cut.lastIndexOf(" ");
   return `${(space > QUESTION_WIDTH / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:.]+$/, "")}…`;
+}
+
+// Each row-filtered join without a golden as "<model> -> <filtered_model> through <join> (role <role>)".
+export function rowFilterJoinItems(items: RowFilterJoinWithoutGolden[]): string[] {
+  return items.map((x) => `${x.model} -> ${x.filtered_model} through ${x.join} (role ${x.role})`);
 }
 
 // The first `max` names, and how many more there are.
@@ -799,6 +833,9 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     status.draft_metrics.length ? `draft metric(s) ${status.draft_metrics.join(", ")}` : "",
     status.draft_goldens.length ? `draft golden(s) ${status.draft_goldens.join(", ")}` : "",
     fields.length ? `draft field(s) ${fields.join(", ")}` : "",
+    status.row_filter_joins_without_goldens.length
+      ? `models that reach a row-filtered model through joins with no approved golden as the role: ${rowFilterJoinItems(status.row_filter_joins_without_goldens).join(", ")}`
+      : "",
   ].filter(Boolean);
   return {
     phase: "done",
@@ -838,6 +875,129 @@ function defaultAudience(v: AccessVisibility, sourceNames: Set<string>): Default
   };
 }
 
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+// The layer with every model, field, metric and access.yaml taken as approved, as sl validate
+// checks goldens: draft items have their own steps, and this asks only what a role may see.
+function approvedLayer(layer: AccessLayer): AccessLayer {
+  const approve = <T>(items: unknown): T[] => (Array.isArray(items) ? items.map((x) => (isRecord(x) ? ({ ...x, status: "approved" } as T) : (x as T))) : []);
+  return {
+    ...layer,
+    models: layer.models.map((m) => ({ ...m, status: "approved", dimensions: approve(m.dimensions), measures: approve(m.measures) })),
+    metrics: approve<Metric>(layer.metrics),
+    access: isRecord(layer.access) ? { ...layer.access, status: "approved" } : layer.access,
+  };
+}
+
+// The shortest chain of at most two many_to_one or one_to_one joins from one model to another of
+// the same source, as join names; the first found on a tie. Undefined when none reaches it.
+function toOneJoinChain(models: Map<string, Model>, from: string, to: string): string[] | undefined {
+  let best: string[] | undefined;
+  const walk = (at: string, chain: string[], visited: Set<string>) => {
+    if (chain.length >= 2) return;
+    const joins = models.get(at)?.joins;
+    for (const j of Array.isArray(joins) ? joins : []) {
+      if (!isRecord(j) || typeof j.name !== "string" || typeof j.to !== "string") continue;
+      if (!TO_ONE_RELATIONSHIPS.includes(j.relationship) || visited.has(j.to) || !models.has(j.to)) continue;
+      const next = [...chain, j.name];
+      if (j.to === to) {
+        if (!best || next.length < best.length) best = next;
+      } else walk(j.to, next, new Set([...visited, j.to]));
+    }
+  };
+  walk(from, [], new Set([from]));
+  return best;
+}
+
+// The models an approved golden's request names a field of, as source.model: through its measures,
+// dimensions, filters and order_by, and through the measures of a metric it names.
+function goldenModels(g: Golden, metrics: Metric[]): string[] {
+  const req: Partial<Golden["request"]> = isRecord(g.request) ? g.request : {};
+  const source = typeof req.source === "string" ? req.source : "";
+  const refs: unknown[] = [
+    ...(Array.isArray(req.measures) ? req.measures : []),
+    ...(Array.isArray(req.dimensions) ? req.dimensions : []),
+    ...(Array.isArray(req.filters) ? req.filters.map((f) => (isRecord(f) ? f.field : undefined)) : []),
+    ...(Array.isArray(req.order_by) ? req.order_by.map((o) => (isRecord(o) ? o.field : undefined)) : []),
+  ];
+  const out = new Set<string>();
+  for (const r of refs) {
+    if (typeof r !== "string") continue;
+    const field = parseRequestField(r.trim());
+    if (field) {
+      out.add(`${source}.${field.model}`);
+      continue;
+    }
+    const metric = metrics.find((m) => isRecord(m) && m.name === r.trim() && m.source === source);
+    for (const ref of metric ? metricMeasureRefs(metric) : []) {
+      const model = ref.split(".")[0];
+      if (model) out.add(`${source}.${model}`);
+    }
+  }
+  return [...out];
+}
+
+// The roles an approved golden runs as, the way sl validate evaluates it: its role (matched without
+// letter case) and its user's attributes, so a role whose assign_when the user meets is held, and
+// default_role only when no other role is.
+function goldenRunsAs(layer: AccessLayer, g: Golden): string[] {
+  const roles = typeof g.role === "string" && g.role.trim() ? [g.role] : [];
+  const attributes = isRecord(g.user) ? g.user : {};
+  return evaluateLayer(layer, { roles, attributes }).roles.map((r) => r.name);
+}
+
+// For each role of access.yaml, each model of the reported sources visible to it (taking every item
+// as approved) that reaches one of its row-filtered models through one or two to-one joins, when no
+// approved golden running as that role names a field of that model (see goldenRunsAs).
+function rowFilterJoinsWithoutGoldens(
+  layer: AccessLayer,
+  access: unknown,
+  sourceNames: Set<string>,
+  approved: Golden[],
+): RowFilterJoinWithoutGolden[] {
+  if (!isRecord(access) || !Array.isArray(access.roles)) return [];
+  const bySource = new Map<string, Map<string, Model>>();
+  for (const m of layer.models) {
+    if (typeof m.model !== "string" || !sourceNames.has(m.source)) continue;
+    if (!bySource.has(m.source)) bySource.set(m.source, new Map());
+    bySource.get(m.source)!.set(m.model, m);
+  }
+  const out: RowFilterJoinWithoutGolden[] = [];
+  const seen = new Set<string>();
+  for (const role of access.roles) {
+    if (!isRecord(role) || typeof role.name !== "string" || !role.name || seen.has(role.name)) continue;
+    const name = role.name;
+    seen.add(name);
+    const filtered = [
+      ...new Set(
+        (Array.isArray(role.row_filters) ? role.row_filters : [])
+          .map((rf) => (isRecord(rf) && typeof rf.model === "string" ? rf.model.trim() : ""))
+          .filter((ref) => sourceNames.has(ref.split(".")[0]!) && ref.split(".").length === 2),
+      ),
+    ];
+    if (!filtered.length) continue;
+    const vis = evaluateLayer(layer, { roles: [name] });
+    const visible = new Set(vis.sources.flatMap((s) => s.models.filter((m) => m.visible).map((m) => m.ref)));
+    const covered = new Set(
+      approved
+        .filter((g) => goldenRunsAs(layer, g).includes(name))
+        .flatMap((g) => goldenModels(g, layer.metrics)),
+    );
+    for (const target of filtered) {
+      const [source, targetModel] = target.split(".") as [string, string];
+      const models = bySource.get(source);
+      if (!models?.has(targetModel)) continue;
+      for (const child of models.keys()) {
+        const ref = `${source}.${child}`;
+        if (child === targetModel || !visible.has(ref) || covered.has(ref)) continue;
+        const chain = toOneJoinChain(models, child, targetModel);
+        if (chain) out.push({ role: name, model: ref, filtered_model: target, join: chain.join(".") });
+      }
+    }
+  }
+  return out;
+}
+
 // Reads the project and every source (or only `only`) and works out where the layer stands.
 export function computeStatus(root: string, only?: string): ProjectStatus {
   const project = loadProject(root);
@@ -861,17 +1021,15 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
       ? "draft"
       : "missing";
   const audience = evaluateAccess(root);
+  const lastApproved = accessState === "draft" ? lastApproval(access) : undefined;
   const loadedGoldens = listGoldens(root);
   const goldens = loadedGoldens.map((g) => g.golden);
   const accessQuestionTexts = accessQuestionList(access);
   const accessQuestions = accessQuestionTexts.length;
-  const defaultRole = access && typeof access.default_role === "string" ? access.default_role : undefined;
-  const goldenRoles = new Set(
-    goldens
-      .filter((g) => g && typeof g === "object" && g.status === "approved")
-      .map((g) => (typeof g.role === "string" ? g.role : g.role == null ? defaultRole : undefined))
-      .filter((r): r is string => r !== undefined),
-  );
+  // Goldens are read against the layer taken as approved, so a draft item does not hide a role.
+  const goldenLayer = approvedLayer(loadAccessLayer(root));
+  const approvedGoldens = goldens.filter((g): g is Golden => isRecord(g) && g.status === "approved");
+  const goldenRoles = new Set(approvedGoldens.flatMap((g) => goldenRunsAs(goldenLayer, g)));
 
   const base = {
     project: project.name,
@@ -886,11 +1044,13 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
       open_questions: accessQuestions,
       mode: audience.mode,
       default_audience: defaultAudience(audience, new Set(sources.map((s) => s.source))),
+      ...(lastApproved ? { last_approved: lastApproved } : {}),
     },
     open_questions: sources.reduce((n, s) => n + s.open_questions, accessQuestions),
     goldens: count(goldens),
     draft_goldens: draftGoldenNames(loadedGoldens),
     roles_without_goldens: roleNames(access).filter((r) => !goldenRoles.has(r)),
+    row_filter_joins_without_goldens: rowFilterJoinsWithoutGoldens(goldenLayer, access, new Set(sources.map((s) => s.source)), approvedGoldens),
   };
   const found = nextStep(base, names.length, {
     drift,
@@ -898,6 +1058,8 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
     accessProblem: accessProblem(audience),
     accessQuestions: accessQuestionTexts,
   });
+  // A draft that records the approval a revoke set aside says which version keeps applying.
+  if (found.phase === "access" && lastApproved) found.message += ` ${lastApprovedNote(lastApproved)}`;
   const step: NextStep = { ...found, after_owner_yes: needsOwnerYes(found.command) };
   const batchSource = sources.find((s) => s.source === step.source && s.next_batch.length) ?? sources.find((s) => s.next_batch.length);
   return {

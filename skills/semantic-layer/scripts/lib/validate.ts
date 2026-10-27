@@ -5,11 +5,13 @@ import Ajv2020 from "ajv/dist/2020.js";
 import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
 import { parseDocument } from "yaml";
 import { type AccessLayer, type AccessVisibility, checkRequest, evaluateLayer } from "./access.ts";
+import { classifyType } from "./column-types.ts";
 import { type Condition, conditionAttributes, type Literal, parseCondition } from "./conditions.ts";
 import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
 import { quoteIdent } from "./dialect.ts";
 import { findTable } from "./naming.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
+import { hashValue, holdsRawValues, isHashedValue, protectedColumns } from "./profile.ts";
 import { parseRequestField } from "./refs.ts";
 import { type Sensitivity, sensitivityOf } from "./sensitivity.ts";
 import { incomingKeyColumns, referencedColumns } from "./snapshot-diff.ts";
@@ -1868,11 +1870,40 @@ class Validator {
     );
   }
 
+  // Warns when a snapshot holds raw top values, or a text min or max, of a protected column (see
+  // protectedColumns in lib/profile.ts).
+  checkProtectedProfiles(): void {
+    for (const [source, l] of this.snapshots) {
+      const raw = arr<unknown>(l.data.tables);
+      const tables = this.snapshotTables(source) ?? [];
+      const models = [...(this.models.get(source)?.values() ?? [])].map((m) => m.data as unknown);
+      const prot = protectedColumns(tables, models, this.identRules(source).dialect);
+      if (!prot.size) continue;
+      raw.forEach((rt, i) => {
+        const t = usableTable(rt);
+        if (!t || !isObject(rt)) return;
+        const cols = prot.get(qualified(t));
+        if (!cols) return;
+        arr<unknown>(rt.columns).forEach((c, j) => {
+          if (!isObject(c) || typeof c.name !== "string" || typeof c.type !== "string" || !cols.has(c.name)) return;
+          if (!holdsRawValues(c.profile as SnapshotTable["columns"][number]["profile"], { type: c.type })) return;
+          this.warn(
+            l.file,
+            `tables[${i}].columns[${j}].profile`,
+            `${qualified(t)}.${c.name} is protected but the snapshot holds raw sample values; run sl profile --source ${source} --redact`,
+          );
+        });
+      });
+    }
+  }
+
   // Warns when a description, a synonym, a golden question or a golden reference quotes a value of a
   // column that a pii- or sensitive-tagged field reads: one of the column's top values in the
-  // snapshot profile, of at least 3 characters, matched as a whole word in any case. A field tagged
-  // only through its model counts only the columns it reads that look personal or sensitive
-  // themselves, so a status or region column of a pii-tagged model is not one.
+  // snapshot profile, of at least 3 characters, matched as a whole word in any case. A hashed top
+  // value (a redacted profile) matches when the hash of a run of 1 to 4 consecutive words of the
+  // text, of at least 3 characters, equals it (see wordRuns). Boolean columns are skipped. A field tagged only through its model counts only
+  // the columns it reads that look personal or sensitive themselves, so a status or region column
+  // of a pii-tagged model is not one.
   checkPersonalValues(): void {
     interface Hit {
       value: string;
@@ -1882,12 +1913,19 @@ class Validator {
       tag: string;
     }
     const values = new Map<string, Hit>();
+    const hashed = new Map<string, Hit>();
     const add = (source: string, tableName: string, column: string, field: string, tag: string, inherited: boolean, keys: unknown) => {
       const table = this.snapshotTable(source, tableName).table;
       const col = table?.columns.find((c) => c.name.toLowerCase() === column.toLowerCase());
       if (inherited && !sensitivityOf(column, col, table?.row_count, { key: strings(keys).some((k) => k.toLowerCase() === column.toLowerCase()) })) return;
+      // A boolean's values, raw or hashed, are the words true and false, which quote nobody.
+      if (col && classifyType(col.type) === "boolean") return;
       for (const tv of arr<{ value: unknown }>(col?.profile?.top_values)) {
         const v = isObject(tv) ? tv.value : undefined;
+        if (isHashedValue(v)) {
+          if (!hashed.has(v)) hashed.set(v, { value: v, column: col!.name, table: qualified(table!), field, tag });
+          continue;
+        }
         if (typeof v !== "string" && typeof v !== "number") continue;
         const text = String(v).trim();
         if (text.length < 3 || values.has(text.toLowerCase())) continue;
@@ -1927,21 +1965,30 @@ class Validator {
           }
       }
     }
-    if (!values.size) return;
+    if (!values.size && !hashed.size) return;
     const patterns = [...values.values()].map((hit) => ({
       hit,
       re: new RegExp(`(^|[^A-Za-z0-9_])${hit.value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^A-Za-z0-9_])`, "i"),
     }));
+    const quotes = (file: string, path: string, quoted: string, hit: Hit) =>
+      this.warn(
+        file,
+        path,
+        `quotes "${quoted}", a value of column ${hit.column} of ${hit.table}, which ${hit.field} reads and tags ${hit.tag}; ` +
+          "this text is shown to people the tag hides that column from, so write an id or a count instead",
+      );
     const scan = (file: string, path: string, text: unknown) => {
       if (typeof text !== "string") return;
-      for (const { hit, re } of patterns)
-        if (re.test(text))
-          this.warn(
-            file,
-            path,
-            `quotes "${hit.value}", a value of column ${hit.column} of ${hit.table}, which ${hit.field} reads and tags ${hit.tag}; ` +
-              "this text is shown to people the tag hides that column from, so write an id or a count instead",
-          );
+      for (const { hit, re } of patterns) if (re.test(text)) quotes(file, path, hit.value, hit);
+      if (!hashed.size) return;
+      const seen = new Set<string>();
+      for (const run of wordRuns(text)) {
+        const hit = hashed.get(hashValue(run));
+        const key = `${hit?.table}.${hit?.column}:${run.toLowerCase()}`;
+        if (!hit || seen.has(key)) continue;
+        seen.add(key);
+        quotes(file, path, run, hit);
+      }
     };
     const scanItem = (file: string, path: string, item: unknown) => {
       if (!isObject(item)) return;
@@ -1971,6 +2018,7 @@ class Validator {
     this.checkAccess();
     this.checkSensitivity();
     this.checkPersonalValues();
+    this.checkProtectedProfiles();
     this.checkGoldens();
     return this.issues;
   }
@@ -2003,6 +2051,40 @@ function isBareColumn(expr: string, column: string): boolean {
   const m = expr.trim().match(/^(?:"((?:[^"]|"")+)"|`((?:[^`]|``)+)`|([A-Za-z_][A-Za-z0-9_$]*))$/);
   const name = m?.[1] ?? m?.[2] ?? m?.[3];
   return name !== undefined && name.toLowerCase() === column.toLowerCase();
+}
+
+// Leading and trailing characters that are not letters or digits: quotes, brackets, punctuation.
+const EDGE_PUNCTUATION = /^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu;
+
+// Characters that also end a word when a value is glued to other text: "contact:dana@example.com",
+// "email=dana@example.com", "(Dana Ruiz)".
+const WORD_JOINERS = /[\s:=/;,()]+/;
+// A possessive ending: "Dana Ruiz's" names Dana Ruiz.
+const POSSESSIVE = /['\u2019]s$/i;
+
+// The runs of 1 to 4 consecutive words of a text that a hashed value can match, of at least 3
+// characters. Words are split on whitespace, and again on whitespace and the characters of
+// WORD_JOINERS. Each run is taken as written, with the punctuation around the run stripped, with the
+// punctuation around each word stripped ('"Jane Doe",' gives "Jane Doe"), and with a possessive 's
+// dropped from its last word.
+export function wordRuns(text: string): string[] {
+  const out = new Set<string>();
+  const add = (candidate: string) => {
+    if (candidate.trim().length >= 3) out.add(candidate);
+  };
+  const splits = [text.split(/\s+/).filter(Boolean), text.split(WORD_JOINERS).filter(Boolean)];
+  for (const words of splits) {
+    const stripped = words.map((w) => w.replace(EDGE_PUNCTUATION, ""));
+    for (let i = 0; i < words.length; i++) {
+      for (let n = 1; n <= 4 && i + n <= words.length; n++) {
+        const run = words.slice(i, i + n).join(" ");
+        const clean = stripped.slice(i, i + n).filter(Boolean).join(" ");
+        for (const candidate of [run, run.replace(EDGE_PUNCTUATION, ""), clean]) add(candidate);
+        if (POSSESSIVE.test(clean)) add(clean.replace(POSSESSIVE, ""));
+      }
+    }
+  }
+  return [...out];
 }
 
 // A sensitivity found on a column the field reads, worded so it names the column, not the field.

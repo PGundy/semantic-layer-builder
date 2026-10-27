@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMANDS } from "../skills/semantic-layer/scripts/commands/index.ts";
+import { lastApprovedNote } from "../skills/semantic-layer/scripts/lib/access.ts";
 import { conditionAttributes, parseCondition } from "../skills/semantic-layer/scripts/lib/conditions.ts";
 import { computeStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
 import { schemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
@@ -640,6 +641,46 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["SKILL.md", "new columns across models over one table", "A column is new only when no model over the same table reads it or lists it in `ignored_columns`"],
   ["interview-guide.md", "pair tables draft as keys", "for a table of 2 or 3 columns whose names all end in `_id`"],
   ["joins.md", "pair tables draft as keys", "a table of 2 or 3 columns whose names all end in `_id`"],
+  // Profile privacy.
+  ["SKILL.md", "protected columns are profiled as hashes", "is stored with hashed top values and no text min or max"],
+  ["SKILL.md", "redact after tagging", "after tagging a column already profiled, run `sl profile --source <s> --redact`"],
+  ["SKILL.md", "the personal-value check reads hashes", "`sl validate` warns, also on hashed values"],
+  ["SKILL.md", "expected rows are exempt", "A golden's `expected.rows` are exempt, since they are the answer as its role"],
+  ["access.md", "protected profiles are hashed", "only as hashes, with no text `min` or `max`"],
+  ["access.md", "the check hashes runs of words", "the check hashes every run of 1 to 4 words of the text, so a quoted name is still caught"],
+  ["access.md", "expected rows are exempt", "A golden's `expected.rows` are not checked: they are the answer as the golden's role, which may see the column"],
+  ["interview-guide.md", "redacted profiles are asked about by counts", "Ask about such a column with counts and shapes"],
+  ["intake.md", "profile results files are deleted", "Delete the results file once the command has finished"],
+  ["intake.md", "redact queries nothing", "`sl profile --source <s> --redact`, which queries nothing"],
+  ["verification.md", "personal values in goldens", "### Personal values in goldens"],
+  ["verification.md", "expected rows are exempt", "A golden's `expected.rows` are exempt from the check: they are the answer as the golden's role, which may see the column"],
+  // Replacing a personal value, goldens under a draft access file, goldens without measures.
+  ["verification.md", "an id replacing a personal value needs no confirm", "Replacing a personal value with an id in an approved golden's `question` or `reference` changes no figure and needs no new confirm: edit it and run `sl goldens check`"],
+  ["SKILL.md", "an id replacing a personal value needs no confirm", "Replacing such a value with an id in an approved golden's question or reference changes no figure: edit it and run `sl goldens check`, with no new confirm"],
+  ["verification.md", "draft-access goldens stay valid", "such a golden stays valid, with no new confirm, when its `role` and `user` are unchanged and `sl goldens check` passes"],
+  ["SKILL.md", "draft-access goldens stay valid", "one confirmed under a draft stays valid once access is approved when its role and user are unchanged and `sl goldens check` passes"],
+  ["verification.md", "a golden may have no measures", "A golden may have no measures: it starts from its first dimension, which is how a row-filtered child model with no measures"],
+  ["SKILL.md", "a golden may have no measures", "a golden may have no measures, starting from its first dimension, which covers a row-filtered child model with no measures"],
+  ["verification.md", "row-filter joins without goldens", "`row_filter_joins_without_goldens` in `sl status --json`"],
+  ["SKILL.md", "row-filter joins without goldens in coverage", "`row_filter_joins_without_goldens` in status lists the gaps"],
+  ["SKILL.md", "the handoff names row-filter joins without goldens", "each entry of `row_filter_joins_without_goldens` from `sl status --json`"],
+  // Handoff, suggestions, readbacks and resume.
+  ["SKILL.md", "cross-source formulas in the handoff", "every cross-source metric's formula in words, with any figure the owner gave"],
+  ["SKILL.md", "engineering waits tie to metrics", "each measure that waits on engineering (a missing column or view), tied to the metrics that need it"],
+  ["SKILL.md", "the handoff names exceptions, not counts", "Name exceptions rather than counts: \"every detail except `products.launched_on`\""],
+  ["SKILL.md", "suggestions keep recorded decisions", "A suggestion never reopens a decision the owner has recorded; when a decision blocks a check, say so and offer options that keep it"],
+  ["interview-guide.md", "suggestions keep recorded decisions", "A suggestion never reopens a decision the owner has recorded"],
+  ["interview-guide.md", "a blocking decision gets options that keep it", "say so and offer options that keep the decision"],
+  ["SKILL.md", "role and whole-file readbacks may share a message", 'they may share one message as separate "Approve?" items, the whole file last, and a no or correction to any of them voids the whole-file yes'],
+  ["access.md", "role and whole-file readbacks may share a message", 'may share one message as separate "Approve?" items, the whole file last; a no or a correction to any of them voids the yes to the whole file'],
+  ["SKILL.md", "resume re-checks open questions against new capabilities", "Re-check every open question, and anything the owner was told needs engineering or waits on the tool, against capabilities the skill has gained since"],
+  ["interview-guide.md", "resume re-checks engineering asks", "On resume, check each open question and each item the owner was told needs engineering or waits on the tool against what the skill can now do"],
+  // Revoke keeps the last approval; sl access wording.
+  ["SKILL.md", "a revoke keeps the sign-off", "the revoke keeps its sign-off as `last_approved`"],
+  ["access.md", "a revoke keeps the sign-off", "The revoke keeps the sign-off as `last_approved: { by, at }`"],
+  ["access.md", "sl access totals line", 'on the line "Items visible across N source(s) (row filters limit rows, not these counts)"'],
+  ["access.md", "row filters always printed", '"row filters: none (every row of every visible model)"'],
+  ["access.md", "assigned roles only with --roles", "names assigned roles only when `--roles` was given"],
 ];
 
 describe("readbacks and examples", () => {
@@ -786,6 +827,116 @@ describe("readbacks and examples", () => {
 
   test("examples do not use the fixture's test-account email rule", () => {
     for (const d of docs) expect(read(d)).not.toMatch(/-test\.com/);
+  });
+});
+
+// The decided wording of the privacy, revoke, sl access and status rules, as the spec documents it.
+describe("spec: profile privacy, last_approved, sl access wording, status gaps", () => {
+  const spec = read("references/spec.md");
+  const flat = spec.replace(/\s+/g, " ");
+  const DRAFT_WITH_LAST =
+    "This explains a draft. The version approved by <by> on <at> keeps applying where it is deployed; tools that load this draft serve nothing.";
+  const RAW_WARNING = "<table>.<column> is protected but the snapshot holds raw sample values; run sl profile --source <s> --redact";
+
+  test("documents protected columns and how their profiles are redacted", () => {
+    expect(spec).toContain("### Profiles of protected columns");
+    for (const phrase of [
+      "is tagged `pii` or `sensitive`, when a model over its table lists it in `ignored_columns`, or when `sensitivityOf` in `scripts/lib/sensitivity.ts` flags it",
+      "its `value` as `sha256:` followed by the first 16 hex characters of the SHA-256 of the value's text, lowercased and trimmed",
+      "no `min` and `max` for a text column; a number, date or boolean column keeps them, and its top values are hashed the same way",
+      "`redacted: true` on the column's profile",
+      "`sl profile --source <s> --redact` rewrites the existing snapshot's profiles of protected columns this way without querying the database",
+      "it hashes every run of 1 to 4 consecutive words of the checked text, lowercased and trimmed",
+      "A golden's `expected.rows` are not checked",
+    ])
+      expect(flat).toContain(phrase);
+    expect(flat).toContain(`"${RAW_WARNING}"`);
+    expect(read("references/access.md")).toContain("`sl profile --source <s> --redact`");
+  });
+
+  test("the snapshot example's redacted column holds only hashes", () => {
+    const snap = fences(spec).find((f) => f.lang === "json" && f.body.includes('"snapshot_version"'))!;
+    const doc = JSON.parse(snap.body) as { tables: { columns: { name: string; profile?: Record<string, unknown> }[] }[] };
+    const redacted = doc.tables.flatMap((t) => t.columns).filter((c) => c.profile?.redacted === true);
+    expect(redacted.length).toBeGreaterThan(0);
+    for (const c of redacted) {
+      expect(c.profile!.min).toBeUndefined();
+      expect(c.profile!.max).toBeUndefined();
+      const tops = c.profile!.top_values as { value: unknown; count: number }[];
+      expect(tops.length).toBeGreaterThan(0);
+      for (const t of tops) {
+        expect(String(t.value)).toMatch(/^sha256:[0-9a-f]{16}$/);
+        expect(typeof t.count).toBe("number");
+      }
+    }
+  });
+
+  test("the CLI table has --redact on profile", () => {
+    expect(specCli().get("profile")?.has("redact")).toBe(true);
+  });
+
+  test("documents last_approved and the draft label that names it", () => {
+    const access = fences(spec).filter((f) => f.lang === "yaml" && /^last_approved:/m.test(f.body));
+    expect(access).toHaveLength(1);
+    const a = parseYamlText(access[0]!.body) as { status: string; last_approved: { by: string; at: string } };
+    expect(a.status).toBe("draft");
+    expect(Object.keys(a.last_approved).sort()).toEqual(["at", "by"]);
+    expect(flat).toContain("moves its `approved_by` and `approved_at` into `last_approved`");
+    expect(flat).toContain("Approving again sets `status: approved` with `approved_by` and `approved_at` and removes `last_approved`");
+    expect(flat).toContain(`"${DRAFT_WITH_LAST}"`);
+    expect(read("references/access.md").replace(/\s+/g, " ")).toContain(`"${DRAFT_WITH_LAST}"`);
+  });
+
+  test("the quoted draft label and raw-values warning are the ones the code gives", () => {
+    expect(`This explains a draft. ${lastApprovedNote({ by: "<by>", at: "<at>" })}`).toBe(DRAFT_WITH_LAST);
+    const validate = readFileSync(join(SKILL_DIR, "scripts", "lib", "validate.ts"), "utf8");
+    expect(validate).toContain(".${c.name} is protected but the snapshot holds raw sample values; run sl profile --source ${source} --redact");
+  });
+
+  test("documents the sl access wording", () => {
+    expect(flat).toContain('"Items visible across N source(s) (row filters limit rows, not these counts): ..."');
+    expect(flat).toContain('"row filters: none (every row of every visible model)"');
+    expect(flat).toContain("adds the `assigned roles` clause only when `--roles` was given");
+    const command = readFileSync(join(SKILL_DIR, "scripts", "commands", "access.ts"), "utf8");
+    expect(command).toContain("(row filters limit rows, not these counts): ");
+    expect(command).toContain("row filters: none (every row of every visible model)");
+  });
+
+  test("documents row_filter_joins_without_goldens in sl status --json", () => {
+    const section = flat.slice(flat.indexOf("### sl status --json"));
+    expect(section).toContain("`row_filter_joins_without_goldens`: `[{ role, model, filtered_model, join }]`");
+    expect(section).toContain("through a to-one join of one or two hops");
+    expect(section).toContain("when no approved golden running as that role names a field of that model");
+  });
+
+  test("the protected-column rule names joins, near-unique text and carried-over profiles", () => {
+    expect(flat).toContain("a `pii`- or `sensitive`-tagged field reads it, directly or through a join reference");
+    expect(flat).toContain("a text column that is not a key and has a different value on nearly every row");
+    expect(flat).toContain("`sl profile` stores no raw values of a protected column; `sl validate` warns about any that remain");
+    expect(flat).not.toContain("A snapshot holds no raw values of a protected column");
+    for (const d of ["SKILL.md", "references/access.md", "references/interview-guide.md"]) {
+      expect(read(d).replace(/\s+/g, " ")).toContain("personal or sensitive by name or by being near-unique text");
+    }
+    expect(read("references/intake.md").replace(/\s+/g, " ")).toContain("(introspect and import keep existing ones)");
+  });
+
+  test("sl status's access entry and message match the code", () => {
+    expect(flat).toContain("`{ state, roles, restrictions, open_questions, mode, default_audience, last_approved? }`");
+    expect(flat).not.toContain("`sl access` and the `access` message of `sl status` say");
+    const status = readFileSync(join(SKILL_DIR, "scripts", "lib", "status.ts"), "utf8");
+    expect(status).toMatch(/restrictions: number;/);
+  });
+
+  test("the evaluator sentence is its own paragraph, not a plain-output bullet", () => {
+    const raw = read("references/spec.md");
+    expect(raw).toMatch(/\n\n`scripts\/lib\/access\.ts` holds the evaluator/);
+  });
+
+  test("documents goldens without measures and goldens confirmed under a draft access file", () => {
+    expect(flat).toContain("A golden may have no measures: it starts from the model of its first dimension");
+    expect(flat).toContain(
+      "A golden confirmed as a role while `access.yaml` was a draft stays valid once access is approved when its `role` and `user` are unchanged and `sl goldens check` passes",
+    );
   });
 });
 

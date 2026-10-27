@@ -1,6 +1,6 @@
 # Interview transcript
 
-Session 1 built the layer, session 2 extended it, and session 3 brought it up to date after a schema change and a new access policy.
+Session 1 built the layer, session 2 extended it, session 3 brought it up to date after a schema change and a new access policy, and session 4 finished and approved that policy.
 
 An end-to-end run of the semantic-layer skill on the synthetic Acme dataset. One agent followed `skills/semantic-layer/SKILL.md`; another played the data owner, Dana Ruiz, from `fixtures/acme/owner-brief.md`. Each agent turn starts a fresh agent that resumes from the files, as a real session would after a break. The semantic layer it produced is in `semantic/`.
 
@@ -1011,3 +1011,138 @@ Thanks, that summary matches where I think we are. What's approved, the 16 check
 On 11: please keep it as a question and don't add a link. We don't join the lake and the warehouse in queries. We line them up in reports. I don't know offhand whether customers' acquisition channels match the spend channel names, so that one is for marketing. 10 is for merchandising, and I don't know the answer.
 
 Let's stop here. I'll come back with "continue the semantic layer" once I have the answers on order items for sales and on someone in sales with no `employee_id`.
+
+# Session 4, the owner's answers
+
+Dana came back with the two answers from sales. A fresh agent resumed from the files, wrote the answers into access.yaml, read the changed role and the whole file back, and recorded her approval.
+
+## Dana (owner)
+
+Hi, Dana here. Continue the semantic layer: I have the two answers from sales that we were waiting on.
+
+## Agent
+
+Hi Dana, good to hear. Your message doesn't include the two answers themselves, so could you send them? Each question below lists the options, with today's numbers. Nothing else has changed. All 16 saved checks still pass, and the access file is still an unsigned draft.
+
+**Questions**
+1. **Sales and order lines: what did sales decide?**
+   (a) No order lines at all. The draft does this today.
+   (b) Only the lines on their own orders and their team's orders. **A correction to what I told you last time: this doesn't need engineering.** The rule can find each line's rep through the order it belongs to. Measured over all 12,343 lines: rep 101 would see 1,418, manager 201 5,348, 202 4,317, 203 2,678, and 301 all 12,343.
+   Just tell me (a) or (b).
+2. **Someone in sales with no `employee_id`: what should they see?**
+   (a) No orders and no order lines. The draft does this today.
+   (b) The same as everyone else: every order, and every order line.
+   (b) works by giving the sales rules only to people in sales who have an `employee_id`.
+   My suggestion is (a), the narrower one, unless sales said otherwise.
+
+**No action needed**
+3. A new check in the tool flags personal data written into the wording of saved checks. The analyst check of rep 101 named the rep in its question and its note, so I replaced the name with "rep 101". The figure ($34,938.49 from 251 orders) is unchanged and the check still passes. Analysts still see the name in its result.
+4. Still waiting: engineering's first-order view for new customers isn't in the warehouse yet. The launch date on products is still waiting on merchandising.
+
+**Next:** once I have both answers, I'll write them in. Then I'll send you the sales role and the whole access file in plain English in one message for your signature. If you choose (b) in item 1, that message will also include a saved check of rep 101's own 1,418 lines.
+
+Stop here or continue?
+
+## Dana (owner)
+
+Sorry, I forgot to paste them. Here they are:
+
+1. **(b).** People in sales see the lines of the orders they can see: a rep sees the lines on their own orders, a manager the lines on their team's orders. Nothing else about lines changes.
+2. **(a).** Someone in sales with no `employee_id` sees no orders at all until IT sets it, and no lines either, since lines follow orders. To be clear, they still get the everyone view of everything else. Only orders are blocked for them.
+
+Item 3 is fine. Please continue and send me the full access file when it's ready.
+
+## Agent
+
+Thanks, Dana. Both answers are now in the access file, and it has no open questions left. All 16 saved checks still pass. The five sales checks give the same figures as before, because the new line rule doesn't touch orders. Below are the sales role and the whole file for your signature.
+
+**Sign-offs (yes/no)**
+1. **Sales role (changed).**
+   - **Who:** everyone whose `department` is `sales`. Their `employee_id` is their rep id.
+   - **What they see:** what everyone sees, with every row, except:
+     - **Orders:** only the ones credited to them or to anyone below them in the hierarchy. Their own orders always count.
+     - **Order lines (new):** only the lines on those orders. A rep sees the lines on their own orders, a manager the lines on their team's orders.
+     - **Never:** personal data, refunds or net revenue.
+   - **Test accounts** stay out of their figures, as for everyone.
+   - **No `employee_id`:** they see no orders and no order lines until IT sets it. They still see everything else everyone sees.
+   - **Lines next to order details:** both follow the same rule, so nothing comes back blank.
+
+   *Measured from the data, no need to confirm (all-time lines):* 101 sees 1,418 of the 12,343 lines, on 565 orders. 201 sees 5,348, 202 sees 4,317, 203 sees 2,678, and 301 sees all 12,343. The 2025 figures are unchanged: 101 $34,938.49 / 251, 201 $130,391.03 / 957, 202 $115,211.49 / 873, 203 $55,448.30 / 409, 301 $301,050.82 / 2,239.
+   Approve?
+2. **The whole access file.** Access moves from closed (the last file you signed) to open. Once you sign, everyone at Acme sees every approved table, detail and figure, with every row, with these exceptions:
+   - **Personal data:** customer email, phone, first and last name, and sales people's full names and emails. Only analysts (`department` = `analytics`) see it.
+   - **Refunds and net revenue:** only finance and analytics see them. Revenue and AOV are unaffected.
+   - **Analysts:** everything approved, personal data included.
+   - **Finance:** the everyone view plus refunds and net revenue. No personal data.
+   - **Sales:** as in item 1.
+   - **There's no default role.** Marketing, every other department, and anyone whose login has no department get the everyone view with every row. A login carries one department, so nobody holds two of these roles.
+   - **What changes from the last signed file:**
+     - **No role:** they used to get the analyst view without personal data. They now get the everyone view, without refunds or net revenue.
+     - **Marketing:** they had totals only. They now see single orders and everything else everyone sees.
+     - **Sales:** they had their region's orders and customers, including customer names and phone numbers. They now get the everyone view (products, the lake data and the rest), limited to their own and their team's orders and lines, and no customer names or phone numbers.
+     - **Analysts:** they now see personal data.
+   - **What changed since your preview:**
+     - Sales see their own lines instead of none.
+     - The no-`employee_id` rule is now your answer instead of a placeholder.
+   - **Still hidden from everyone:** launch date on products, which isn't signed off yet.
+   - **Scope:** these rules govern what tools built on the layer show. They don't change permissions in the database itself.
+
+   Approve?
+
+**Question**
+3. **A saved check of a rep's order lines: a correction.** I said I'd include one, but I can't save it yet. A saved check needs a figure to count with, and order items has none, because you said no figures are defined on that table. Your signature on item 2 doesn't depend on this. Options:
+   (a) No check for now. The final summary names it as the one gap: nothing re-tests the line rule automatically.
+   (b) Add a figure, "number of order lines": lines on orders that count (completed or shipped, test accounts left out), dated by the order's date. Then save a check as rep 101. *Measured:* 2025 is 648 lines on her 251 orders. Everyone could see this figure, and it would come back to you for sign-off first.
+   My suggestion: (b), since it is the only way to keep re-testing what sales see in order lines. Choose (a) if you'd rather not add a figure to that table.
+
+**No action needed**
+4. **A correction about what applies now.** I told you earlier that the draft "isn't live" and that "nobody is shown anything" until you sign. More precisely, wherever the last file you signed (the closed one: analyst as the default, reps by region, marketing totals only) is deployed, it keeps applying until you sign this one. Tools that load the unsigned draft show nothing.
+5. **Still waiting:**
+   - New customers waits on engineering's first-order view.
+   - Launch date on products waits on merchandising.
+
+**Next:** if you say yes to 1 and 2, I'll sign the file, rerun every check and send you the final summary. If you choose (b) in item 3, that message will also include the new figure and its check for sign-off.
+
+Stop here or continue?
+
+## Dana (owner)
+
+1. Sales role: approved. Dana Ruiz.
+
+2. Whole access file: approved. Dana Ruiz. It matches the policy, and gift messages stay out of the layer completely, as we agreed. Item 4 is noted.
+
+3. (a), no check for now. "Number of order lines" isn't a figure I've defined, and I said no figures on order items, so I don't want to add one just to have a test. Put it in the final summary as the gap. If we define a product or line figure later, we'll add the check then.
+
+Go ahead: sign it, rerun the checks and send me the summary.
+
+## Agent
+
+Thanks, Dana. The access file is now signed in your name, dated today, and all 16 saved checks pass against it. The layer validates, with one warning we expect (item 5). Here is the handoff.
+
+**Approved**
+1. **Tables and figures.**
+   - **Warehouse:** all 9 tables (orders, order items, customers, the test-account helper, refunds, products, regions, the sales team and the sales hierarchy). Every detail is approved except launch date on products, along with all 4 figures (revenue, number of orders, discounts, refunds) and every link between tables. Gift messages stay out of the layer completely.
+   - **Lake:** sessions, web events and marketing spend, their details, both figures (sessions, spend) and their link.
+   - **Combined figures:** average order value and net revenue.
+2. **Access (signed today, open).** Everyone sees every approved table, detail and figure, with every row, except:
+   - **Personal data** (customer email, phone, first and last name, and sales people's full names and emails): analysts only.
+   - **Refunds and net revenue:** finance and analytics only.
+   - **Sales:** only their own and their team's orders, and the lines on those orders. Someone in sales with no `employee_id` sees no orders and no lines.
+   - **Launch date on products:** hidden from everyone until it's signed off.
+   - **When it takes effect:** the signed file reaches people once it's deployed. Until then, the closed file keeps applying wherever it is deployed.
+3. **Saved checks:** 16, all at zero tolerance and all passing. Every figure and combined figure is in at least one check. Every role has one: everyone, analyst, finance, and sales as 101, 201, 202, 203 and 301.
+
+**Still draft**
+4. **Launch date on products:** waiting on merchandising to confirm what it means.
+5. **New customers (123 in 2025):** waiting on engineering's first-order view. There's no new-customers figure until it arrives. That draft check is what causes the one warning, and the reason is written into the open question on customers. The warning clears when the view arrives.
+
+**Gap in the checks**
+6. Nothing re-tests the sales order-lines rule automatically. That's your choice: order items has no figure to count with, and we won't add one just to have a test. The access file notes the gap. We'll add the check if you define a product or line figure later. Every other line of the checklist is covered.
+
+**Open questions (not urgent)**
+7. **For merchandising:** 5 product names appear on more than one product, for example Canvas Candle 3 times.
+   **For marketing:** whether customers' acquisition channels line up with the channel names in marketing spend. This stays a question, with no link between the two sources. Conversion rate and blended CAC stay in your reports.
+
+**How to continue:** say "continue the semantic layer" when engineering's view or merchandising's answer arrives, or when you want more tables. I'll widen the scope with the same tool. Any change to access comes back to you for a new signature. Nothing else is queued.
+
+Stop here or continue?

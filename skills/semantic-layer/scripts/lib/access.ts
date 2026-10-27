@@ -187,6 +187,9 @@ export interface AccessSummary {
 export interface AccessVisibility {
   mode: AccessMode;
   access_file: "missing" | "draft" | "approved" | "invalid";
+  // Present while access_file is draft and access.yaml records the approval sl approve --revoke
+  // set aside: that approved version keeps applying where it is deployed.
+  last_approved?: LastApproval;
   user: { attributes: Record<string, unknown>; roles: string[]; default_audience: boolean };
   roles: HeldRole[];
   unknown_roles: string[];
@@ -198,6 +201,24 @@ export interface AccessVisibility {
   warnings: SkippedEntry[];
   sources: SourceVisibility[];
   summary: AccessSummary;
+}
+
+// Who approved the version of access.yaml that a revoke made a draft, and when (YYYY-MM-DD).
+export interface LastApproval {
+  by: string;
+  at: string;
+}
+
+// access.yaml's last_approved as written, or undefined when it is absent or cannot be read.
+export function lastApproval(access: unknown): LastApproval | undefined {
+  if (!isObj(access) || !isObj(access.last_approved)) return undefined;
+  const { by, at } = access.last_approved;
+  return typeof by === "string" && by.trim() && typeof at === "string" && at.trim() ? { by, at } : undefined;
+}
+
+// What applies while access.yaml is a draft that records the approval a revoke set aside.
+export function lastApprovedNote(last: LastApproval): string {
+  return `The version approved by ${last.by} on ${last.at} keeps applying where it is deployed; tools that load this draft serve nothing.`;
 }
 
 // The layer the evaluator reads: models, metrics, and access.yaml as parsed (null when missing).
@@ -1019,9 +1040,11 @@ export function evaluateLayer(layer: AccessLayer, user: AccessUser = {}): Access
   const allMetrics = sources.flatMap((s) => s.metrics);
   const byTag = (x: { status: string; reasons: string[] }) => x.status === "approved" && x.reasons.some((r) => r.startsWith("protected_tag:"));
   const assigned = Array.isArray(user.roles) ? user.roles.filter((r) => typeof r === "string") : [];
+  const last = a.state === "draft" ? lastApproval(layer.access) : undefined;
   return {
     mode: a.mode,
     access_file: a.state,
+    ...(last ? { last_approved: last } : {}),
     user: { attributes: attrs, roles: uniq(assigned), default_audience: !Object.keys(attrs).length && !assigned.length },
     roles: held,
     unknown_roles: unknown,

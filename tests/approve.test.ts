@@ -454,10 +454,77 @@ describe("approve --recursive and --revoke", () => {
     await approve(root, ["--target", "access", "--by", "Dana"]);
     const a = await approve(root, ["--target", "access", "--revoke", "--json"]);
     expect(a.json<Result>().changed).toEqual([{ target: "access", from: "approved", to: "draft" }]);
-    expect(text(root, "access.yaml")).toBe(ACCESS);
+    // The revoked approval is kept in last_approved, where approved_by stood.
+    expect(text(root, "access.yaml")).toBe(ACCESS.replace("status: draft\n", "status: draft\nlast_approved:\n  by: Dana\n  at: 2026-01-15\n"));
     // A draft metric that fails approval checks can still be revoked (a no-op here).
     const m = await approve(root, ["--target", "metric:vague", "--revoke", "--json"]);
     expect(m.code).toBe(0);
     expect(m.json<Result>().changed).toEqual([]);
+  });
+});
+
+describe("revoking and approving access.yaml again", () => {
+  test("--revoke moves approved_by and approved_at into last_approved and says which version keeps applying", async () => {
+    const root = await project();
+    await approve(root, ["--target", "access", "--by", "Dana", "--date", "2026-02-01"]);
+    const r = await approve(root, ["--target", "access", "--revoke"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Revoked access (approved -> draft).");
+    expect(r.out).toContain(
+      "access.yaml keeps that approval in last_approved: the version approved by Dana on 2026-02-01 keeps applying where it is deployed until the new one is approved; tell the owner so.",
+    );
+    const a = readYaml<Record<string, unknown>>(join(root, "access.yaml"));
+    expect(a.status).toBe("draft");
+    expect(a.approved_by).toBeUndefined();
+    expect(a.approved_at).toBeUndefined();
+    expect(a.last_approved).toEqual({ by: "Dana", at: "2026-02-01" });
+    // A second revoke changes nothing and keeps last_approved.
+    const again = await approve(root, ["--target", "access", "--revoke", "--json"]);
+    expect(again.json<Result>().changed).toEqual([]);
+    expect(readYaml<Record<string, unknown>>(join(root, "access.yaml")).last_approved).toEqual({ by: "Dana", at: "2026-02-01" });
+    // The access schema allows last_approved.
+    const issues = (await sl(root, ["validate", "--json"])).json<{ issues: unknown[] }>().issues;
+    expect(issues.filter((i) => JSON.stringify(i).includes("last_approved"))).toEqual([]);
+    writeFileSync(join(root, "access.yaml"), ACCESS.replace("status: draft\n", "status: draft\nlast_approved:\n  by: Dana\n  on: 2026-02-01\n"));
+    const bad = (await sl(root, ["validate", "--json"])).json<{ issues: unknown[] }>().issues;
+    expect(bad.filter((i) => JSON.stringify(i).includes("last_approved")).length).toBeGreaterThan(0);
+  });
+
+  test("--json reports last_approved on a revoke of access", async () => {
+    const root = await project();
+    await approve(root, ["--target", "access", "--by", "Dana"]);
+    const r = await approve(root, ["--target", "access", "--revoke", "--json"]);
+    expect(r.json<Result & { last_approved?: unknown }>().last_approved).toEqual({ by: "Dana", at: "2026-01-15" });
+  });
+
+  test("approving again replaces last_approved with approved_by and approved_at", async () => {
+    const root = await project();
+    await approve(root, ["--target", "access", "--by", "Dana", "--date", "2026-02-01"]);
+    await approve(root, ["--target", "access", "--revoke"]);
+    const r = await approve(root, ["--target", "access", "--by", "Lee", "--date", "2026-03-01", "--json"]);
+    expect(r.json<Result>().changed).toEqual([{ target: "access", from: "draft", to: "approved" }]);
+    const a = readYaml<Record<string, unknown>>(join(root, "access.yaml"));
+    expect(a).toMatchObject({ status: "approved", approved_by: "Lee", approved_at: "2026-03-01" });
+    expect(a.last_approved).toBeUndefined();
+    expect(text(root, "access.yaml")).toStartWith("# Who sees what.\nstatus: approved\napproved_by: Lee\napproved_at: 2026-03-01\nroles:");
+  });
+
+  test("a revoke of a model, field or metric deletes the approval without last_approved", async () => {
+    const root = await project();
+    await approve(root, ["--target", "wh.customers", "--by", "Dana"]);
+    await approve(root, ["--target", "wh.customers", "--revoke"]);
+    const m = readYaml<Record<string, unknown>>(join(root, "models/wh/customers.yaml"));
+    expect(m.status).toBe("draft");
+    expect(m.approved_by).toBeUndefined();
+    expect(m.last_approved).toBeUndefined();
+  });
+
+  test("revoking an access.yaml approved without a recorded approver writes no last_approved", async () => {
+    const root = await project();
+    writeFileSync(join(root, "access.yaml"), ACCESS.replace("status: draft", "status: approved"));
+    const r = await approve(root, ["--target", "access", "--revoke"]);
+    expect(r.code).toBe(0);
+    expect(r.out).not.toContain("last_approved");
+    expect(text(root, "access.yaml")).toBe(ACCESS);
   });
 });

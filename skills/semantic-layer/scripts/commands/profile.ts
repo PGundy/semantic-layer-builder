@@ -1,15 +1,15 @@
 import { resolve } from "node:path";
-import type { CommandSpec } from "../lib/command.ts";
+import type { CommandContext, CommandSpec } from "../lib/command.ts";
 import { bool, list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { findTable, qualifiedName } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
 import { inScope } from "../lib/patterns.ts";
 import { executePlan } from "../lib/plan.ts";
-import { applyProfile, summarizeTable } from "../lib/profile.ts";
-import { loadSource, paths, requireSnapshot, saveSnapshot } from "../lib/project.ts";
+import { applyProfile, protectedColumns, redactSnapshot, summarizeTable } from "../lib/profile.ts";
+import { listModels, loadSource, paths, requireSnapshot, saveSnapshot } from "../lib/project.ts";
 import { buildProfilePlan, MAX_TOP_COLUMNS } from "../lib/sql/profile.ts";
-import type { SnapshotTable } from "../lib/types.ts";
+import type { Snapshot, SnapshotTable, SourceConfig } from "../lib/types.ts";
 
 const DEFAULT_TOP_VALUES = 10;
 // Tables larger than this deserve profile.sample_rows.
@@ -21,14 +21,16 @@ interface Skipped {
 }
 
 const spec: CommandSpec = {
-  summary: "Profile in-scope tables (row counts, nulls, distinct counts, ranges, top values) into the snapshot.",
-  usage: "profile --source <source> [--tables t1,t2] [--refresh] [--emit-sql] [--results <file>]",
+  summary:
+    "Profile in-scope tables (row counts, nulls, distinct counts, ranges, top values) into the snapshot; protected columns keep hashed values only. --redact rewrites the snapshot's protected profiles without querying.",
+  usage: "profile --source <source> [--tables t1,t2] [--refresh] [--emit-sql] [--results <file>] [--redact]",
   options: {
     source: { type: "string" },
     tables: { type: "string", multiple: true },
     refresh: { type: "boolean" },
     "emit-sql": { type: "boolean" },
     results: { type: "string" },
+    redact: { type: "boolean" },
   },
   async run({ values }, ctx) {
     const sourceName = str(values, "source");
@@ -39,6 +41,16 @@ const spec: CommandSpec = {
     const emitSql = bool(values, "emit-sql");
     const resultsFile = str(values, "results");
     if (emitSql && resultsFile) throw new UserError("Pass --emit-sql or --results, not both.");
+    if (bool(values, "redact")) {
+      const others = [
+        list(values, "tables").length ? "--tables" : "",
+        refresh ? "--refresh" : "",
+        emitSql ? "--emit-sql" : "",
+        resultsFile ? "--results" : "",
+      ].filter(Boolean);
+      if (others.length) throw new UserError(`--redact reads no database and takes no ${others.join(", ")}.`);
+      return redactOnly(ctx, source, snapshot);
+    }
 
     const named = list(values, "tables");
     let candidates: SnapshotTable[];
@@ -108,16 +120,19 @@ const spec: CommandSpec = {
       return 0;
     }
 
+    // The model files are read before any query runs, so one that fails to parse stops the run first.
+    const models = sourceModels(ctx.root, source);
     const results = await executePlan(plan, {
       root: ctx.root,
       source,
       env: ctx.env,
       resultsFile: resultsFile ? resolve(ctx.cwd, resultsFile) : undefined,
     });
-    const updated = applyProfile(snapshot, plan, results, ctx.now().toISOString(), sampled);
+    const wanted = new Set(selected.map(qualifiedName));
+    const measured = applyProfile(snapshot, plan, results, ctx.now().toISOString(), sampled);
+    const { snapshot: updated, redacted } = redactSnapshot(measured, protectedColumns(measured.tables, models, source.dialect), wanted);
     saveSnapshot(ctx.root, updated);
 
-    const wanted = new Set(selected.map(qualifiedName));
     const profiled = updated.tables
       .filter((t) => wanted.has(qualifiedName(t)))
       .map((t) => ({
@@ -128,7 +143,7 @@ const spec: CommandSpec = {
       }));
 
     if (ctx.json) {
-      ctx.out(formatJson({ source: sourceName, profiled, skipped, warnings }));
+      ctx.out(formatJson({ source: sourceName, profiled, skipped, warnings, redacted }));
       return 0;
     }
     const lines = profiled.map(
@@ -137,12 +152,29 @@ const spec: CommandSpec = {
         `candidate keys: ${p.candidate_keys.join(", ") || "none"}; ` +
         `low-cardinality: ${p.low_cardinality.join(", ") || "none"}`,
     );
+    if (redacted.length) lines.push(`Protected columns, stored with hashed top values and no text min or max: ${redacted.join(", ")}.`);
     if (skipped.length) lines.push(`Skipped ${skipped.length} already profiled table${skipped.length === 1 ? "" : "s"}; pass --refresh to re-profile.`);
     lines.push(`Profiled ${profiled.length} table${profiled.length === 1 ? "" : "s"} into ${paths(ctx.root).snapshot(sourceName)}.`);
     ctx.out(lines.join("\n"));
     return 0;
   },
 };
+
+// The source's model files as read, for protectedColumns.
+function sourceModels(root: string, source: SourceConfig): unknown[] {
+  return listModels(root, source.source).map((l) => l.model as unknown);
+}
+
+// sl profile --redact: rewrites the snapshot's profiles of protected columns, reading no database.
+function redactOnly(ctx: CommandContext, source: SourceConfig, snapshot: Snapshot): number {
+  const { snapshot: updated, redacted } = redactSnapshot(snapshot, protectedColumns(snapshot.tables, sourceModels(ctx.root, source), source.dialect));
+  if (redacted.length) saveSnapshot(ctx.root, updated);
+  const file = paths(ctx.root).snapshot(source.source);
+  if (ctx.json) ctx.out(formatJson({ source: source.source, redacted }));
+  else if (redacted.length) ctx.out(`Redacted ${redacted.length} protected column profile${redacted.length === 1 ? "" : "s"} in ${file}: ${redacted.join(", ")}.`);
+  else ctx.out(`Nothing to redact: ${file} holds no raw values of protected columns.`);
+  return 0;
+}
 
 // A profile setting from sources/<s>.yaml: an integer of at least `min`, or undefined when unset.
 function setting(value: unknown, key: string, min: number, sourceName: string): number | undefined {

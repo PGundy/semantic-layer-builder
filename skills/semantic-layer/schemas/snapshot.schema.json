@@ -258,7 +258,7 @@
                 "boolean",
                 "null"
               ],
-              "description": "Smallest value."
+              "description": "Smallest value. Omitted for a protected text column."
             },
             "max": {
               "type": [
@@ -267,7 +267,7 @@
                 "boolean",
                 "null"
               ],
-              "description": "Largest value."
+              "description": "Largest value. Omitted for a protected text column."
             },
             "top_values": {
               "type": "array",
@@ -288,7 +288,7 @@
                       "boolean",
                       "null"
                     ],
-                    "description": "The value."
+                    "description": "The value; for a protected column (redacted), \"sha256:\" and the first 16 hex characters of the SHA-256 of its text, lowercased and trimmed."
                   },
                   "count": {
                     "type": "number",
@@ -301,6 +301,10 @@
             "sampled": {
               "type": "boolean",
               "description": "Whether the profile came from a sample."
+            },
+            "redacted": {
+              "type": "boolean",
+              "description": "True on a protected column's profile: its top values are hashed and a text column has no min or max."
             }
           }
         }

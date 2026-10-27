@@ -2,7 +2,9 @@
 # three exceptions: personal data for analytics only, refunds and net revenue for finance and analytics only, and sales
 # limited to their own and their team's orders through sales_team_closure. Marketing has no role; a user with no
 # department gets the everyone view. Replaces the closed file with analyst, sales_rep (by region) and marketing roles.
-status: draft
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-10-27
 mode: open
 user_attributes:
   - name: department
@@ -28,12 +30,14 @@ roles:
     description: >-
       Sales: everyone whose department is sales. They see what everyone sees, but only the orders credited to them or to
       someone below them in the sales hierarchy (sales_team_closure): a rep sees their own orders, a manager their
-      team's, and 301 every order. Their employee_id is their rep_id. Someone in sales with no employee_id sees no
-      orders. Kept away from order items, which the order rule does not reach. No personal data, refunds or net
-      revenue.
+      team's, and 301 every order. Their employee_id is their rep_id. They see the order lines (order_items) of the
+      orders they can see, and no others: a rep the lines on their own orders, a manager the lines on their team's
+      orders. Someone in sales with no employee_id sees no orders and no order lines until IT sets it, and still
+      sees everything else everyone sees. No personal data, refunds or net revenue.
     assign_when: user.department == 'sales'
-    # Coverage: the sales goldens read orders directly. No golden crosses a join into orders as sales, because the only
-    # models that join to orders (refunds, order_items) are hidden from sales.
+    # Coverage gap: the sales goldens read orders directly, and none crosses order_items' order join as sales.
+    # order_items has no measure to count lines with, and Dana Ruiz chose not to add one only for a test (session 4);
+    # a golden is added when a product or line figure is defined.
     row_filters:
       - model: warehouse.orders
         hierarchy:
@@ -43,23 +47,15 @@ roles:
           member: member_id
           user: user.employee_id
           include_self: true
-    deny:
-      models: [warehouse.order_items]
-    open_questions:
-      - >-
-        Sales and order items: order_items lists every order line with its order_id, product, quantity and unit price,
-        and the sales row rule limits only orders, so without a denial a rep would see all 12,343 lines (Dana Ruiz:
-        "definitely wrong"). Dana Ruiz is checking whether sales should see the lines on their own and their team's
-        orders, or no lines at all; the policy does not say. Until she answers, the file keeps sales away from order
-        items entirely. Lines on their own orders would need engineering to add the credited rep (sales_rep_id) to
-        order items, or a view that carries it, because a row rule can only read order items' own columns. Dana Ruiz
-        does not know yet whether engineering would add it. She asked that the file not be signed with this
-        defaulted: it stays open until her answer, then the whole file is read back for her signature.
-      - >-
-        Someone in sales with no employee_id: the policy does not cover it and Dana Ruiz knows of nobody in that
-        position (everyone in sales should have one). She is checking before giving a rule. Until then the file does
-        what the row rule does by itself: such a person sees no orders. She asked that the file not be signed with
-        this defaulted: it stays open until her answer, then the whole file is read back for her signature.
+      # Lines follow their order (Dana Ruiz, session 4): the same hierarchy, read through the line's order join.
+      - model: warehouse.order_items
+        hierarchy:
+          column: order.sales_rep_id
+          via: warehouse.sales_team_closure
+          manager: manager_id
+          member: member_id
+          user: user.employee_id
+          include_self: true
 restrictions:
   - name: refunds_and_net_revenue
     description: Refunds (the whole refunds table) and net revenue are for finance and analytics only.

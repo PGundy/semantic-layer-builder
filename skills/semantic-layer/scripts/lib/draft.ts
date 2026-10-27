@@ -417,6 +417,9 @@ function singleCurrency(table: SnapshotTable): string | undefined {
     if (toSpecName(c.name) !== "currency" || classifyType(c.type) !== "string") continue;
     const top = c.profile?.top_values;
     const distinct = c.profile?.distinct_count;
+    // A redacted profile holds hashes, never a currency code.
+    const first = top?.[0]?.value;
+    if (c.profile?.redacted === true || (typeof first === "string" && /^sha256:[0-9a-f]{16}$/.test(first))) continue;
     if (distinct !== undefined && distinct !== 1) continue;
     const value = top?.length === 1 && typeof top[0]!.value === "string" ? top[0]!.value.trim() : "";
     if (value) return value;

@@ -1,12 +1,24 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SQL } from "bun";
 import { duckdbSource, FIXED_NOW, initProject, PG_URL, sl, tempRoot } from "./helpers.ts";
-import { applyProfile, LOW_CARDINALITY_MAX, summarizeTable } from "../skills/semantic-layer/scripts/lib/profile.ts";
+import {
+  applyProfile,
+  hashValue,
+  holdsRawValues,
+  isHashedValue,
+  LOW_CARDINALITY_MAX,
+  protectedColumns,
+  redactProfile,
+  redactSnapshot,
+  summarizeTable,
+} from "../skills/semantic-layer/scripts/lib/profile.ts";
+import { validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { loadSnapshot, saveSnapshot } from "../skills/semantic-layer/scripts/lib/project.ts";
 import { buildProfilePlan, MAX_TOP_COLUMNS } from "../skills/semantic-layer/scripts/lib/sql/profile.ts";
-import type { Dialect, QueryPlan, Snapshot, SnapshotColumn, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
+import type { Dialect, Model, QueryPlan, Snapshot, SnapshotColumn, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 
 let cleanup: (() => void) | undefined;
@@ -596,5 +608,270 @@ describe.skipIf(!PG_URL)("profile (postgres live)", () => {
     expect(sampled.code).toBe(0);
     expect(sampled.json<ProfileJson>().profiled[0]!.row_count).toBe(4);
     expect(col(snap(t.root, "pg"), "customers", "tier").profile!.sampled).toBe(true);
+  });
+});
+
+// Profiles of protected columns ------------------------------------------------
+
+const PEOPLE_SQL = `create table people as select * from (values
+  (1, 'Dana@Example.com', 'dana_r', 'Call after 5', 'active',  date '1990-04-01', 'west'),
+  (2, 'lee@example.com',  'lee',    'Call after 5', 'active',  date '1985-01-15', 'west'),
+  (3, 'kim@example.com',  'kimk',   null,           'churned', date '2001-12-31', 'east')
+) v(id, email, handle, notes, status, birth_date, region)`;
+
+const SHOP_SQL = "create table shops as select * from (values (1, 'North'), (2, 'South')) v(shop_id, shop_name)";
+
+// A model over main.people: email and handle are read by pii-tagged dimensions; notes and
+// birth_date are protected by their names alone.
+function peopleModel(root: string, extra: Partial<Model> = {}): void {
+  const model: Model = {
+    model: "people",
+    source: "shop",
+    table: "main.people",
+    status: "draft",
+    primary_key: ["id"],
+    dimensions: [
+      { name: "email", expr: "email", type: "string", tags: ["pii"], status: "draft" },
+      { name: "handle", expr: "lower(handle)", type: "string", tags: ["pii"], status: "draft" },
+      { name: "status", expr: "status", type: "string", status: "draft" },
+    ],
+    measures: [],
+    ...extra,
+  };
+  writeYaml(join(root, "models", "shop", "people.yaml"), model);
+}
+
+const hex16 = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex").slice(0, 16)}`;
+
+interface RedactJson {
+  source: string;
+  redacted: string[];
+}
+
+describe("profiles of protected columns", () => {
+  test("hashValue lowercases and trims, and keeps 16 hex characters", () => {
+    expect(hashValue("  Dana@Example.COM ")).toBe(hex16("dana@example.com"));
+    expect(hashValue("dana@example.com")).toMatch(/^sha256:[0-9a-f]{16}$/);
+    expect(isHashedValue(hashValue("x"))).toBe(true);
+    expect(isHashedValue("sha256:xyz")).toBe(false);
+  });
+
+  test("redactProfile hashes top values, drops text bounds and keeps number, date and boolean bounds", () => {
+    const text = redactProfile({ null_fraction: 0, distinct_count: 2, min: "a", max: "b", top_values: [{ value: "Dana", count: 2 }, { value: null, count: 1 }], sampled: false }, { type: "VARCHAR" });
+    expect(text).toEqual({ null_fraction: 0, distinct_count: 2, top_values: [{ value: hashValue("Dana"), count: 2 }, { value: null, count: 1 }], sampled: false, redacted: true });
+    expect(redactProfile(text, { type: "VARCHAR" })).toEqual(text);
+    const flag = redactProfile({ min: false, max: true, top_values: [{ value: true, count: 3 }] }, { type: "BOOLEAN" });
+    expect(flag).toEqual({ min: false, max: true, top_values: [{ value: hashValue("true"), count: 3 }], redacted: true });
+    const day = redactProfile({ min: "2025-01-01", max: "2025-03-31" }, { type: "DATE" });
+    expect(day).toEqual({ min: "2025-01-01", max: "2025-03-31", redacted: true });
+    const n = redactProfile({ min: 1, max: 9, top_values: [{ value: 7, count: 1 }] }, { type: "INTEGER" });
+    expect(n.top_values).toEqual([{ value: hashValue("7"), count: 1 }]);
+    expect(holdsRawValues(n, { type: "INTEGER" })).toBe(false);
+    expect(holdsRawValues({ min: "a" }, { type: "VARCHAR" })).toBe(true);
+    expect(holdsRawValues({ min: null, max: null }, { type: "VARCHAR" })).toBe(false);
+  });
+
+  test("protectedColumns: tags on fields and models, join references, ignored columns and names", () => {
+    const people = table("main", "people", [["id", "INTEGER"], ["handle", "VARCHAR"], ["status", "VARCHAR"], ["notes_text", "VARCHAR"]]);
+    const orders = table("main", "orders", [["order_id", "INTEGER"], ["person_id", "INTEGER"], ["channel", "VARCHAR"], ["memo", "VARCHAR"], ["phone", "VARCHAR"]]);
+    const shops = table("main", "shops", [["shop_id", "INTEGER"], ["shop_name", "VARCHAR"]]);
+    const models: unknown[] = [
+      { model: "people", table: "main.people", dimensions: [{ name: "status", expr: "status" }], measures: [] },
+      {
+        model: "orders",
+        table: "orders",
+        ignored_columns: ["MEMO"],
+        dimensions: [{ name: "buyer", expr: "upper(person.handle)", tags: ["PII"] }, { name: "channel", expr: "channel" }],
+        measures: [],
+        joins: [{ name: "person", to: "people", keys: [{ from: "person_id", to: "id" }], relationship: "many_to_one" }],
+      },
+      { model: "shops", table: "shops", tags: ["sensitive"], dimensions: [], measures: [] },
+      "not a model",
+    ];
+    const prot = protectedColumns([people, orders, shops], models, "duckdb");
+    expect([...(prot.get("main.people") ?? [])].sort()).toEqual(["handle", "notes_text"]);
+    expect([...(prot.get("main.orders") ?? [])].sort()).toEqual(["memo", "phone"]);
+    expect([...(prot.get("main.shops") ?? [])].sort()).toEqual(["shop_id", "shop_name"]);
+  });
+
+  test("sl profile stores hashed values for a pii email column and a notes column (duckdb)", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    await duckdbSource(t.root, t.dir, "shop", [PEOPLE_SQL]);
+    expect((await sl(t.root, ["introspect", "--source", "shop"])).code).toBe(0);
+    peopleModel(t.root);
+
+    const r = await sl(t.root, ["profile", "--source", "shop", "--json"]);
+    expect(r.code).toBe(0);
+    const out = r.json<ProfileJson & { redacted: string[] }>();
+    expect(out.redacted).toEqual(["main.people.email", "main.people.handle", "main.people.notes", "main.people.birth_date"]);
+
+    const s = snap(t.root, "shop");
+    const email = col(s, "people", "email").profile!;
+    expect(email).toEqual({
+      null_fraction: 0,
+      distinct_count: 3,
+      top_values: [
+        { value: hashValue("Dana@Example.com"), count: 1 },
+        { value: hashValue("kim@example.com"), count: 1 },
+        { value: hashValue("lee@example.com"), count: 1 },
+      ],
+      sampled: false,
+      redacted: true,
+    });
+    expect("min" in email).toBe(false);
+    const notes = col(s, "people", "notes").profile!;
+    expect(notes.top_values).toEqual([{ value: hashValue("call after 5"), count: 2 }]);
+    expect(notes.redacted).toBe(true);
+    expect("max" in notes).toBe(false);
+    expect(col(s, "people", "handle").profile!.redacted).toBe(true);
+    // A protected date keeps its range.
+    expect(col(s, "people", "birth_date").profile).toMatchObject({ min: "1985-01-15", max: "2001-12-31", redacted: true });
+    // Unprotected columns keep their raw values.
+    expect(col(s, "people", "status").profile!.top_values).toEqual([{ value: "active", count: 2 }, { value: "churned", count: 1 }]);
+    expect(col(s, "people", "region").profile!.redacted).toBeUndefined();
+    const text = readFileSync(join(t.root, "snapshots", "shop.json"), "utf8");
+    for (const raw of ["Dana@Example.com", "lee@example.com", "Call after 5", "dana_r"]) expect(text).not.toContain(raw);
+    expect(validateProject(t.root).filter((i) => i.message.includes("raw sample values"))).toEqual([]);
+
+    const human = await sl(t.root, ["profile", "--source", "shop", "--refresh"]);
+    expect(human.out).toContain("Protected columns, stored with hashed top values and no text min or max: main.people.email, main.people.handle");
+  });
+
+  test("sl profile --redact rewrites protected profiles without a database, leaving the rest byte-identical", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    const source = await duckdbSource(t.root, t.dir, "shop", [PEOPLE_SQL, SHOP_SQL]);
+    expect((await sl(t.root, ["introspect", "--source", "shop"])).code).toBe(0);
+    // Profiled before any model tags handle or ignores region.
+    expect((await sl(t.root, ["profile", "--source", "shop"])).code).toBe(0);
+    const path = join(t.root, "snapshots", "shop.json");
+    const before = readFileSync(path, "utf8");
+    expect(JSON.stringify(col(snap(t.root, "shop"), "people", "handle").profile!.top_values)).toContain("dana_r");
+
+    peopleModel(t.root, { ignored_columns: ["region"] });
+    expect(validateProject(t.root).filter((i) => i.message.includes("raw sample values")).map((i) => i.message)).toEqual([
+      "main.people.handle is protected but the snapshot holds raw sample values; run sl profile --source shop --redact",
+      "main.people.region is protected but the snapshot holds raw sample values; run sl profile --source shop --redact",
+    ]);
+
+    // --redact reads no database.
+    rmSync(source.connection!.database!);
+    const r = await sl(t.root, ["profile", "--source", "shop", "--redact", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json<RedactJson>()).toEqual({ source: "shop", redacted: ["main.people.handle", "main.people.region"] });
+
+    const old = JSON.parse(before) as Snapshot;
+    const now = snap(t.root, "shop");
+    const redacted = new Set(["people.handle", "people.region"]);
+    for (const [ti, tbl] of old.tables.entries()) {
+      const next = now.tables[ti]!;
+      if (tbl.name !== "people") expect(JSON.stringify(next)).toBe(JSON.stringify(tbl));
+      for (const [ci, c] of tbl.columns.entries()) {
+        if (redacted.has(`${tbl.name}.${c.name}`)) continue;
+        expect(JSON.stringify(next.columns[ci])).toBe(JSON.stringify(c));
+      }
+    }
+    expect(col(now, "people", "handle").profile!.top_values!.every((v) => isHashedValue(v.value))).toBe(true);
+    expect(col(now, "people", "region").profile).toMatchObject({ top_values: [{ value: hashValue("west"), count: 2 }, { value: hashValue("east"), count: 1 }], redacted: true });
+    // Outside the two rewritten profiles, the file's text is unchanged.
+    const strip = (text: string) => {
+      const doc = JSON.parse(text) as Snapshot;
+      for (const c of doc.tables.find((x) => x.name === "people")!.columns) if (redacted.has(`people.${c.name}`)) delete c.profile;
+      return JSON.stringify(doc, null, 2);
+    };
+    expect(strip(readFileSync(path, "utf8"))).toBe(strip(before));
+    expect(validateProject(t.root).filter((i) => i.message.includes("raw sample values"))).toEqual([]);
+
+    const again = await sl(t.root, ["profile", "--source", "shop", "--redact"]);
+    expect(again.out).toContain("Nothing to redact");
+    const bad = await sl(t.root, ["profile", "--source", "shop", "--redact", "--refresh"]);
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain("--redact reads no database and takes no --refresh");
+  });
+
+  test("protectedColumns: a two-hop join reference protects the joined column, not same-named columns of the model's own table", () => {
+    const people = table("main", "people", [["id", "INTEGER"], ["handle", "VARCHAR"]]);
+    const orders = table("main", "orders", [["order_id", "INTEGER"], ["person_id", "INTEGER"]]);
+    const items = table("main", "items", [["item_id", "INTEGER"], ["order_id", "INTEGER"], ["person", "VARCHAR"], ["handle", "VARCHAR"]]);
+    const models: unknown[] = [
+      { model: "people", table: "people", dimensions: [], measures: [] },
+      { model: "orders", table: "orders", dimensions: [], measures: [], joins: [{ name: "person", to: "people", keys: [{ from: "person_id", to: "id" }] }] },
+      {
+        model: "items",
+        table: "items",
+        dimensions: [{ name: "buyer", expr: "order.person.handle", tags: ["pii"] }],
+        measures: [],
+        joins: [{ name: "order", to: "orders", keys: [{ from: "order_id", to: "order_id" }] }],
+      },
+    ];
+    const prot = protectedColumns([people, orders, items], models, "duckdb");
+    expect([...(prot.get("main.people") ?? [])]).toEqual(["handle"]);
+    // items.person and items.handle share names with the chain's parts and stay unprotected.
+    expect(prot.get("main.items")).toBeUndefined();
+  });
+
+  test("sl profile reads the model files before it queries, so a model that fails to parse stops the run first", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    await duckdbSource(t.root, t.dir, "shop", [PEOPLE_SQL]);
+    expect((await sl(t.root, ["introspect", "--source", "shop"])).code).toBe(0);
+    mkdirSync(join(t.root, "models", "shop"), { recursive: true });
+    writeFileSync(join(t.root, "models", "shop", "broken.yaml"), "model: [unclosed\n");
+    // A results file that does not exist: reading it would fail, so a model error proves no plan ran.
+    const r = await sl(t.root, ["profile", "--source", "shop", "--results", join(t.dir, "missing.json")]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("broken.yaml");
+    expect(r.err).not.toContain("missing.json");
+    expect(col(snap(t.root, "shop"), "people", "email").profile).toBeUndefined();
+  });
+
+  test("redactSnapshot leaves a snapshot with nothing to redact as it was", () => {
+    const s: Snapshot = { snapshot_version: 1, source: "x", dialect: "duckdb", captured_at: FIXED_NOW, method: "live", tables: [table("main", "t", [["status", "VARCHAR"]])] };
+    const r = redactSnapshot(s, protectedColumns(s.tables, [], "duckdb"));
+    expect(r.redacted).toEqual([]);
+    expect(r.snapshot).toBe(s);
+  });
+});
+
+describe("protected columns, refined", () => {
+  const { protectedColumns } = require("../skills/semantic-layer/scripts/lib/profile.ts") as typeof import("../skills/semantic-layer/scripts/lib/profile.ts");
+  const table = {
+    schema: "s",
+    name: "t",
+    kind: "table" as const,
+    row_count: 100,
+    columns: [
+      { name: "region_code", type: "varchar", profile: { distinct_count: 6, null_fraction: 0 } },
+      { name: "sku", type: "varchar", profile: { distinct_count: 100, null_fraction: 0 } },
+      { name: "notes", type: "varchar", profile: { distinct_count: 99, null_fraction: 0 } },
+      { name: "secret_code", type: "varchar", profile: { distinct_count: 3, null_fraction: 0 } },
+    ],
+  };
+  const main = {
+    model: "main",
+    table: "s.t",
+    dimensions: [
+      { name: "region", expr: "region_code", type: "string" },
+      { name: "sku", expr: "sku", type: "string", tags: ["public"] },
+    ],
+    measures: [],
+  };
+  const helper = { model: "helper", table: "s.t", ignored_columns: ["region_code", "secret_code"], dimensions: [], measures: [] };
+
+  test("an ignored column another model reads openly, or a column read only by public fields, is not protected", () => {
+    const got = protectedColumns([table], [main, helper]).get("s.t") ?? new Set();
+    expect(got.has("region_code")).toBe(false);
+    expect(got.has("sku")).toBe(false);
+    expect(got.has("secret_code")).toBe(true);
+    expect(got.has("notes")).toBe(true);
+  });
+
+  test("an explicit tag still protects a column another field reads openly", () => {
+    const tagged = { ...main, dimensions: [...main.dimensions, { name: "region_pii", expr: "region_code", type: "string", tags: ["pii"] }] };
+    expect((protectedColumns([table], [tagged]).get("s.t") ?? new Set()).has("region_code")).toBe(true);
   });
 });
