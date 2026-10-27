@@ -802,7 +802,7 @@ Every signed-off figure is covered by at least one check, and so is every role.
 
 # Session 3, after a schema change
 
-Engineering added columns to orders and a sales team with a reporting hierarchy (`fixtures/acme/evolve.sql`), and Acme moved to open-by-default access. A fresh agent resumed from the files. The session ends with access.yaml still a draft: two questions the owner has to take back to sales are recorded as open questions in it.
+Engineering added columns to orders and a sales team with a reporting hierarchy (`fixtures/acme/evolve.sql`), and Acme moved to open-by-default access. A fresh agent resumed from the files. The session ends with access.yaml still a draft: two questions the owner has to take back to sales are recorded as open questions in it. (The test harness kept starting turns after the owner said stop; those repeated sign-offs are left out.)
 
 ## Dana (owner)
 
@@ -973,3 +973,41 @@ Stop here or continue?
 Thanks, that's all right. The finance check and the five sales checks are saved, and the file stays a draft and isn't live.
 
 Let's stop here. I still don't have answers on order items for sales or on someone in sales with no `employee_id`. I'll come back once I've checked both, and then you can read me the whole file to sign. Please don't make either choice for me in the meantime.
+
+## Agent
+
+Thanks, Dana. We'll stop here. I haven't made either sales choice for you, and the access file stays a draft that isn't live. All 16 saved checks pass. Here is where the layer stands so either of us can pick it up later.
+
+**Approved**
+1. **Warehouse (Postgres):** all 9 tables: orders, order items, customers, the test-account helper, refunds, products, regions, the sales team and the sales hierarchy. That's 36 of 37 details, all 4 figures (revenue, number of orders, discounts and refunds) and all 8 links between tables.
+2. **Lake:** all 3 datasets (sessions, web events, marketing spend), their 8 details, both figures (sessions and spend) and their one link.
+3. **Combined figures:** average order value and net revenue.
+4. **Saved checks:** 16, all at zero tolerance. Each figure is in at least one check, and so is each role: everyone, analyst, finance and the five sales people.
+
+**Still draft**
+5. **The access file.** It holds your simpler rules: open access; personal data for analysts only; refunds and net revenue for finance and analytics only; sales limited to their own and their team's orders. It isn't signed, and two points are open, both yours to answer:
+   - Sales and order items: lines on their own and their team's orders, or no lines at all. Lines on their own orders would need engineering to add the credited rep to order items.
+   - Someone in sales with no `employee_id`: what they should see.
+   For now the draft keeps sales away from order items and shows such a person no orders. Neither is a decision. Until you sign the file, nobody is shown anything under these rules.
+6. **Launch date on products:** waiting on merchandising to confirm what it means.
+7. **New customers check (123 in 2025):** waiting on engineering's first-order view. Until it arrives, there is no new-customers figure.
+
+**Notes**
+8. **One expected warning.** The tool flags the new-customers check because it names a figure that doesn't exist yet. It clears when the view arrives. The reason is written next to the open question on customers.
+9. **One check we can't save yet.** No saved check looks at sales through a table linked to orders. The only tables linked to orders are refunds and order items, and sales can't see either. If sales get their own order lines, I'll add that check. Nothing for you to do now.
+
+**Other open questions (not urgent)**
+10. **For merchandising:** 5 product names appear on more than one product, for example Canvas Candle 3 times.
+11. **For marketing:** whether customers' acquisition channels line up with the channel names in marketing spend in the lake. This isn't set up as a link between the two sources.
+
+**How to continue:** once you have the two sales answers, say "continue the semantic layer". I'll write them in, read you the whole access file in plain English and ask for your signature. To add tables later, I widen the scope with the same tool.
+
+Stop here or continue?
+
+## Dana (owner)
+
+Thanks, that summary matches where I think we are. What's approved, the 16 checks, and the access file staying an unsigned draft with the two sales points open are all right. I can't vouch for the detail counts (36 of 37), because I don't track the layer that way. Launch date and new customers are still waiting on merchandising and engineering, as you say.
+
+On 11: please keep it as a question and don't add a link. We don't join the lake and the warehouse in queries. We line them up in reports. I don't know offhand whether customers' acquisition channels match the spend channel names, so that one is for marketing. 10 is for merchandising, and I don't know the answer.
+
+Let's stop here. I'll come back with "continue the semantic layer" once I have the answers on order items for sales and on someone in sales with no `employee_id`.
