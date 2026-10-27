@@ -174,3 +174,10 @@ Engineering changed the warehouse after our second session, and we changed our a
 - Revenue on orders credited to manager 201's team: $130,391.03 from 957 orders. Manager 202's team: $115,211.49 from 873. Manager 203's team: $55,448.30 from 409.
 - Rep 101 (Avery Patel): $34,938.49 from 251 orders.
 - Discounts on counted 2025 orders: $2,340.00 across 311 orders.
+
+## Answers I came back with (fourth session only)
+
+After our third session I checked two things with sales. Use these only once the agent asks about them again.
+
+- **Order lines for sales:** people in sales see the lines of the orders they can see, so a rep sees the lines on their own orders and a manager the lines on their team's orders. Nothing else about lines changes.
+- **Someone in sales with no `employee_id`:** they see no orders at all until IT sets it. They still get the everyone view of everything else.
