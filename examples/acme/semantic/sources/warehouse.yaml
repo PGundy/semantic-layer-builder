@@ -7,6 +7,7 @@ scope:
   include:
     - dim_*
     - fct_*
+    - acme.sales_team_closure
   exclude:
     - acme.dim_customers_archive
     - acme.fct_orders_v2_test

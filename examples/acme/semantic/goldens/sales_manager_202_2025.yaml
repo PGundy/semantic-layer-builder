@@ -1,8 +1,9 @@
-name: sales_rep_int_2025
-question: As a sales rep for International (INT), what were my revenue and number of orders in 2025?
-role: sales_rep
+name: sales_manager_202_2025
+question: As a sales manager (employee id 202), what were my revenue and number of orders in 2025?
+role: sales
 user:
-  region: INT
+  department: sales
+  employee_id: 202
 request:
   source: warehouse
   measures: [orders.revenue, orders.order_count]
@@ -10,8 +11,8 @@ request:
     - { field: orders.order_date, op: gte, value: "2025-01-01" }
     - { field: orders.order_date, op: lt, value: "2026-01-01" }
 sql: |
-  -- The sales_rep role with region INT: the orders row filter in where, the customers row filter in the customer
-  -- join's on clause, and the test-account rule through test_accounts, which no row filter touches.
+  -- The sales role: the hierarchy row filter on orders in where, own orders included (include_self), the closure read
+  -- without row filters, and the test-account rule through test_accounts, which no row filter touches.
   select sum(o.amount_cents / 100.0)
            filter (where o.status in ('completed', 'shipped')
                      and coalesce(test_account.is_test_account, false) = false
@@ -22,15 +23,15 @@ sql: |
                      and coalesce(test_account.email, '') not like '%@example-test.com') as order_count
   from acme.fct_orders o
   left join acme.dim_customers test_account on test_account.customer_id = o.customer_id
-  left join acme.dim_customers customer on customer.customer_id = o.customer_id and customer.region_code = 'INT'
-  where o.ship_region = 'INT'
+  where (o.sales_rep_id = 202
+         or o.sales_rep_id in (select member_id from acme.sales_team_closure where manager_id = 202))
     and o.created_at >= '2025-01-01' and o.created_at < '2026-01-01'
-reference: "Dana Ruiz's 2025 regional reports (UTC days, region = ship_region): INT revenue $18,016.52 from 126 orders."
+reference: "Dana Ruiz's 2025 team figure for manager 202 (UTC days): $115,211.49 from 873 orders."
 status: approved
 expected:
   tolerance: 0
   rows:
-    - revenue: 18016.52
-      order_count: 126
+    - revenue: 115211.49
+      order_count: 873
 confirmed_by: Dana Ruiz
-confirmed_at: 2026-10-26
+confirmed_at: 2026-10-27

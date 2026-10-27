@@ -13,6 +13,9 @@ grain: One row per day per channel.
 primary_key:
   - spend_date
   - channel
+ignored_columns:
+  - impressions
+  - clicks
 dimensions:
   - name: spend_date
     expr: spend_date

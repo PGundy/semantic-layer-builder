@@ -1,0 +1,49 @@
+name: finance_net_revenue_2025
+question: As finance, what was net revenue in 2025?
+role: finance
+user:
+  department: finance
+request:
+  source: warehouse
+  measures: [net_revenue]
+  dimensions: ["orders.order_date:year"]
+  filters:
+    - { field: orders.order_date, op: gte, value: "2025-01-01" }
+    - { field: orders.order_date, op: lt, value: "2026-01-01" }
+sql: |
+  -- Revenue and refunds are each totalled on their own by the order's year, then subtracted.
+  with rev as (
+    select date_trunc('year', o.created_at) as order_date_year,
+           sum(o.amount_cents / 100.0)
+             filter (where o.status in ('completed', 'shipped')
+                       and coalesce(test_account.is_test_account, false) = false
+                       and coalesce(test_account.email, '') not like '%@example-test.com') as revenue
+    from acme.fct_orders o
+    left join acme.dim_customers test_account on test_account.customer_id = o.customer_id
+    where o.created_at >= '2025-01-01' and o.created_at < '2026-01-01'
+    group by 1
+  ), ref as (
+    select date_trunc('year', o.created_at) as order_date_year,
+           sum(r.refunded_cents / 100.0)
+             filter (where o.status in ('completed', 'shipped')
+                       and coalesce(test_account.is_test_account, false) = false
+                       and coalesce(test_account.email, '') not like '%@example-test.com') as refund_amount
+    from acme.fct_refunds r
+    left join acme.fct_orders o on o.order_id = r.order_id
+    left join acme.dim_customers test_account on test_account.customer_id = o.customer_id
+    where o.created_at >= '2025-01-01' and o.created_at < '2026-01-01'
+    group by 1
+  )
+  select to_char(rev.order_date_year, 'YYYY-MM-DD') as order_date_year,
+         rev.revenue - coalesce(ref.refund_amount, 0) as net_revenue
+  from rev left join ref on ref.order_date_year = rev.order_date_year
+  order by 1
+reference: "Dana Ruiz's 2025 net revenue (Finance; revenue $301,050.82 less refunds $2,682.68, both by order date, UTC): $298,368.14. Run as finance, whom the refunds_and_net_revenue restriction allows."
+status: approved
+expected:
+  tolerance: 0
+  rows:
+    - order_date_year: 2025-01-01
+      net_revenue: 298368.14
+confirmed_by: Dana Ruiz
+confirmed_at: 2026-10-27

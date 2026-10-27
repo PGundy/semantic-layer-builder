@@ -2,7 +2,7 @@
   "snapshot_version": 1,
   "source": "lake",
   "dialect": "duckdb",
-  "captured_at": "2026-10-26T08:54:18.536Z",
+  "captured_at": "2026-10-27T05:24:14.989Z",
   "method": "live",
   "tables": [
     {

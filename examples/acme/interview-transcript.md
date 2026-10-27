@@ -1,6 +1,6 @@
 # Interview transcript
 
-Session 1 built the layer; session 2, at the end, extended it.
+Session 1 built the layer, session 2 extended it, and session 3 brought it up to date after a schema change and a new access policy.
 
 An end-to-end run of the semantic-layer skill on the synthetic Acme dataset. One agent followed `skills/semantic-layer/SKILL.md`; another played the data owner, Dana Ruiz, from `fixtures/acme/owner-brief.md`. Each agent turn starts a fresh agent that resumes from the files, as a real session would after a break. The semantic layer it produced is in `semantic/`.
 
@@ -799,3 +799,177 @@ Every signed-off figure is covered by at least one check, and so is every role.
 - **Not in the layer, by your choice:** conversion rate and blended CAC (one figure, never per channel) combine the lake and the warehouse, so they stay in your reports.
 
 **How to continue.** When engineering delivers the view, or if you want to add a table, say "continue the semantic layer". Any table we left out can be brought into scope then.
+
+# Session 3, after a schema change
+
+Engineering added columns to orders and a sales team with a reporting hierarchy (`fixtures/acme/evolve.sql`), and Acme moved to open-by-default access. A fresh agent resumed from the files. The session ends with access.yaml still a draft: two questions the owner has to take back to sales are recorded as open questions in it.
+
+## Dana (owner)
+
+Hi, it's Dana again. Two things since our last session (the earlier conversation is in examples/acme/interview-transcript.md and the layer is in examples/acme/semantic). Engineering changed the warehouse, so please check what changed and bring the layer up to date. And we'd like to simplify who sees what; I'll explain when you get there. Same as before, please keep my part focused.
+
+## Agent
+
+Hi Dana. I've checked what engineering changed: the orders table has 3 new columns and there are 2 new tables. Every column your signed-off figures read is still there and works the same way. The new-customers view hasn't arrived yet, so new customers is still waiting on it.
+
+**Sign-offs (yes/no)**
+1. **Test account (the yes/no on customers and on the helper).** The tool flagged it as possibly personal because it reads the email column. It only ever shows yes or no, never the email. I'd mark it as safe to show to anyone who can see those tables. Today that's analysts, plus reps for their own region's customers. The rule and the 20 accounts stay exactly as they are. Approve?
+2. **SKU.** It was flagged because every product has a different one. It's a product code (for example SKU-HOM-0009) and identifies a product, not a person. I'd mark it as safe to show. Approve?
+3. **The 2025 revenue check, saved again.** The saved check rounded AOV to cents. Saved checks now have to keep each figure exactly as it's calculated, so I removed the rounding. *Measured from the data, no need to confirm:* revenue is $301,050.82 from 2,239 orders, and AOV is $134.45771…, which is $134.46 rounded to cents, your Finance figure. I'd save it again at zero tolerance. Until then this one check reports a difference. The other 15 pass. Approve?
+
+**Questions**
+4. **Discounts (new `discount_cents` on orders).** 715 orders carry a discount of $2.50, $5.00, $7.50, $10.00 or $12.50. On 2025's counted orders that's $2,340.00 over 311 orders. Each order's amount still equals its line items exactly, and revenue still matches Finance's $301,050.82 without using the discount column. My guess: the amount already has the discount taken off, so revenue stays as you signed it. If revenue had to subtract discounts, 2025 would be $298,710.82. Does revenue stay as it is? And should there be a "discounts" figure? My suggestion is no, since you haven't defined one.
+5. **Gift messages (new `gift_message` on orders).** This is a free-text note on 555 orders (11%), for example "Gift note on order 100008: Enjoy the trip!". My suggestion: leave it out of the layer completely. It's free text written by customers, and no figure uses it. Leave it out?
+6. **Sales rep on each order (new `sales_rep_id`).** Every one of the 5,000 orders names a rep in the new sales team table. The rep always covers the region the order shipped to, and each region's two reps add up to your regional figures exactly (NE: Avery Patel 251 + Blake Romero 262 = 513 orders). Do people report revenue and order count by rep? My guess: yes, with the same rules as revenue, since engineering linked every order to a rep.
+7. **The new sales team table (`dim_sales_reps`).** Your `dim_` rule picks it up automatically. It has 16 people: 12 reps, two per region; 3 managers with no region of their own (Riley Chen over the NE and SE reps, Sam Okafor over WC and SW, Jamie Lindqvist over MW and INT); and Morgan Hale above the managers. My reading is one row per person. Names and work emails are marked as personal. My suggestion: drop the drafted "number of people" count, which nobody has asked for. Right?
+8. **Who sees what.** You said you'd explain the simplification, so go ahead whenever suits you. One new piece may matter: engineering also added `sales_team_closure`, which pairs each manager with everyone below them. With it, 2025 team revenue would be Riley $130,391.03 (957 orders), Sam $115,211.49 (873), Jamie $55,448.30 (409) and Morgan $301,050.82 (all 2,239). It's outside your scope rule today because its name doesn't start with `fct_` or `dim_`. Nothing about access changes until you sign the whole file again.
+9. **No action needed.** I recorded on purpose the columns you'd already left out, so they stop coming back as "new": shipping and currency on orders, clicks and impressions on spend, the customer number on sessions, and the personal columns the test-account helper deliberately doesn't show.
+
+Everything is saved. Stop here or continue?
+
+## Dana (owner)
+
+Thanks. Going through them in order:
+
+1. Test account: yes. A yes/no isn't personal data. Approved, Dana Ruiz. (Who can see those tables is changing anyway, see 8.)
+2. SKU: yes, it's a product code. Approved, Dana Ruiz.
+3. AOV check: yes. $134.46 is the Finance figure rounded to the cent, and $301,050.82 / 2,239 is right. Approved, Dana Ruiz.
+4. Discounts: revenue stays as it is. `amount_cents` is already after the discount, so don't subtract it again. I do want a "discounts" figure, though, counted by the same rules as revenue. Your $2,340.00 across 311 counted 2025 orders matches what I have.
+5. Gift messages: leave it out completely. Nobody using the chat tool may ever see it.
+6. Sales rep: yes. `sales_rep_id` is the rep credited with the order, and revenue and order count by rep follow the revenue rules. For Avery Patel (rep 101) I have $34,938.49 from 251 orders in 2025.
+7. Sales team table: yes, one row per person, and full name and email are personal. Drop the people count, nobody needs it. Morgan Hale is 301. I know the three managers by ID (201, 202, 203), not by name.
+8. Who sees what. We want it simple: everyone at Acme sees every approved figure, with these exceptions:
+   - **Personal data** (customer email, phone, first and last name, plus sales people's names and emails): analysts only, meaning people whose `department` is `analytics`.
+   - **Refunds and net revenue**: only `department` = `finance` or `analytics`.
+   - **Sales** (`department` = `sales`): they see only orders credited to them or to someone below them in the sales hierarchy. Their user attribute `employee_id` is their `rep_id`. A rep sees their own orders, a manager sees their team's, and Morgan sees every order. This replaces the old region rule, so the region-based sales rep checks go away.
+   - **Marketing**: no special restrictions any more.
+   - **No department attribute**: they get the everyone view.
+
+   So yes, bring `sales_team_closure` into scope for this. One gotcha: as I understand it, the view pairs each manager with the people *below* them. Make sure the rule also covers a person's own orders, not just their team's. Your team figures match mine for 201 ($130,391.03 / 957), 202 ($115,211.49 / 873) and 203 ($55,448.30 / 409), so that's fine if Riley, Sam and Jamie are 201, 202 and 203. Morgan at the full $301,050.82 / 2,239 is right.
+9. Fine.
+
+Please continue. Show me the access rules in plain English before I sign the file.
+
+## Agent
+
+Thanks, Dana. I've signed off the test-account yes/no, SKU and the 2025 AOV check (saved again at zero tolerance; all 8 saved checks pass). Gift messages are out of the layer completely. The access file is back to draft and now follows your simpler rules. It isn't live until you sign the whole file.
+
+**Sign-offs (yes/no)**
+1. **Discounts.** The total of `discount_cents` ÷ 100 in US dollars, counted by the same rules as revenue: completed or shipped orders only, test accounts left out, deleted customers' orders kept, dated by order date (UTC). Revenue stays as you signed it. The order amount is already after the discount, so the discount is never subtracted again. People can also call it "discounts". Everyone will be able to see it once approved. *Measured from the data, no need to confirm:* 2025 is $2,340.00 over 311 counted orders, which matches your figure. Approve?
+2. **Sales rep on orders.** Each order connects to the rep credited with it, through `sales_rep_id` = the person's id in the sales team table. All 5,000 orders find their rep, and each person appears once, so no order is counted twice. The rep's id becomes a detail on orders, which people can also call "sales rep" or "rep". Revenue and order count by rep follow the revenue rules. Rep names come from the sales team table and are personal data. *Measured:* Avery Patel (101) in 2025 is $34,938.49 from 251 orders, which matches your figure. Approve?
+3. **Sales team table.** One row per person, 16 people, each with their own id, which is also their `employee_id`. The details are: id; full name and work email (personal, so analysts only); the region a rep covers (blank for 201, 202, 203 and 301); and the manager's id (blank for 301). I dropped the people count, plus two drafted links nobody needs (person to manager row, person to region). Approve?
+4. **Sales hierarchy (`sales_team_closure`).** One row per manager and each person below them, at any depth: 27 pairs. 201, 202 and 203 are each paired with their 4 reps, and 301 with all 15 people below (the 3 managers and the 12 reps). You were right about the gotcha: nobody is paired with themselves. The sales rule adds a person's own orders separately (item 8). The table holds ids only. Approve?
+5. **Checks.** All at zero tolerance:
+   - Save: 2025 discounts of $2,340.00, and Avery Patel's 2025 figures ($34,938.49 / 251) as an analyst sees them, with her name.
+   - Removed, as you said: the 7 region-based rep checks.
+   - Remove: the marketing check. There's no marketing role any more, and the everyone-view checks of revenue and order count by region already cover the same figures.
+   - Run as an analyst: the existing refunds ($2,682.68) and net revenue ($298,368.14) checks. They now run as "anyone", and "anyone" will no longer see refunds. The figures stay the same.
+   Approve?
+6. **Analyst role.** Everyone whose `department` is `analytics`. They see what everyone sees, plus personal data (customer email, phone, first and last name, and sales people's full names and emails) and refunds and net revenue, with every row. Approve?
+7. **Refunds and net revenue.** The whole refunds table (amounts, reason, dates) and net revenue are visible only to people whose `department` is `finance` or `analytics`. Apart from that, finance sees what everyone sees: every row and no personal data. Nobody else can see refunds or net revenue or ask about them. Revenue and AOV are unaffected. *Measured:* as finance, 2025 net revenue is $298,368.14. Approve?
+
+**Questions**
+8. **Sales role.** My guesses are in brackets; please correct any line.
+   - Who: everyone whose `department` is `sales`. Their `employee_id` is their rep id.
+   - Orders: those credited to them, or to anyone below them in the hierarchy. Their own orders are always included; without that, a rep would see nothing, because nobody is below a rep. Measured for 2025, all matching your figures: 101: 251 / $34,938.49. 201: 957 / $130,391.03. 202: 873 / $115,211.49. 203: 409 / $55,448.30. 301: 2,239 / $301,050.82.
+   - Someone in sales with no `employee_id` sees no orders.
+   - Never sees: personal data, refunds or net revenue. Test accounts stay out of their figures, as for everyone.
+   - Everything else, as for everyone: [every customer's non-personal details, products, the lake].
+   - [Kept away from order items.] Order items list every order line with its order number, product and price, and the order rule doesn't reach them. Avery would see all 12,343 lines, not just the 1,418 on her own orders. My guess: keep sales away from order items. Right?
+9. **The everyone view** (marketing, anyone with no department, everyone else): every signed-off table, detail and figure, with every row, except personal data, refunds and net revenue. Three things become visible to everyone that weren't before: [the test-account helper (customer number and yes/no; you'd asked earlier that reps and marketing not list it)], [the sales team list without names or emails] and [the hierarchy pairs (ids only)]. The sales rule works whether people can see the pairs or not. My guess: all three are fine, since none of them holds anything personal. Right?
+
+Next, after your answers I'll sign off 1 to 7. Then I'll send the sales role and the whole access file together in plain English for your signature, with a saved check for each role (finance, and the five sales figures above).
+
+Everything is saved. Stop here or continue?
+
+## Dana (owner)
+
+Thanks. In order:
+
+1. Discounts: yes, that's right. Approved, Dana Ruiz.
+2. Sales rep on orders: yes. Approved, Dana Ruiz.
+3. Sales team table: yes. Approved, Dana Ruiz.
+4. Sales hierarchy: yes, manager to everyone below them at any depth, and nobody paired with themselves. Approved, Dana Ruiz.
+5. Checks: yes to all of it. Approved, Dana Ruiz.
+6. Analyst role: yes. Approved, Dana Ruiz.
+7. Refunds and net revenue: yes, finance or analytics only, and finance gets no personal data. Approved, Dana Ruiz.
+
+8. Sales role:
+   - Who, orders, never-sees and "everything else as for everyone" are all right. Your five figures match mine.
+   - Someone in sales with no `employee_id`: our policy doesn't cover that, and I don't know of anyone in that position. Everyone in sales should have one. I'd need to check before I give you a rule.
+   - Order items: a rep seeing all 12,343 lines is definitely wrong. That would show them orders that aren't theirs. I don't know whether they should get the lines on their own orders or no lines at all. The policy doesn't say, so I'd need to check.
+
+9. Everyone view: yes, that's right. All three are fine to show to everyone: the test-account yes/no, the sales team list without names or emails, and the id-only hierarchy pairs. None of them is personal, and the simpler policy replaces what I asked for last time.
+
+Go ahead with 1 to 7. Send me the full access file in plain English once you've written it up. The two open sales points will need my answer before I can sign it.
+
+## Agent
+
+Thanks, Dana. I've signed off discounts, the sales rep on orders, the sales team table and the hierarchy. The checks are done as you approved: discounts and Avery Patel's figures (as an analyst) are saved, refunds and net revenue now run as an analyst, and the marketing check is gone. All 10 saved checks pass. The access file is still a draft and isn't live.
+
+**Sign-offs (yes/no)**
+1. **Finance check.** Save "As finance, what was 2025 net revenue?" at zero tolerance. *Measured from the data, no need to confirm:* $298,368.14, your Finance figure. Approve?
+2. **Sales checks.** Save these five as zero-tolerance checks, each run as that person in the sales role. *Measured:* 101 is $34,938.49 from 251 orders; 201 is $130,391.03 from 957; 202 is $115,211.49 from 873; 203 is $55,448.30 from 409; 301 is $301,050.82 from 2,239. These match your figures, and neither open point below changes them. Approve?
+
+**The access file in plain English (preview; I'll ask you to sign it after 4 and 5)**
+3. Access is open. Everyone at Acme sees every approved table, detail and figure, every row, with these exceptions:
+   - **Personal data**: customer email, phone, first and last name, and sales people's full names and emails. Only analysts (`department` = `analytics`) see it.
+   - **Refunds and net revenue**: the whole refunds table and the net revenue figure. Only finance and analytics see them. Revenue and AOV are unaffected.
+   - **Analysts**: everything approved, every row, personal data included.
+   - **Finance**: the everyone view plus refunds and net revenue. No personal data.
+   - **Sales** (`department` = `sales`): the everyone view, but only the orders credited to them or to anyone below them in the hierarchy. Their `employee_id` is their rep id, and their own orders always count. They never see personal data, refunds or net revenue, and test accounts stay out of their figures as for everyone. Draft: they are kept away from order items (see 4), and someone with no `employee_id` sees no orders (see 5).
+   - **Everyone else** (marketing, any other department, or no department attribute): the everyone view, every row. That's 11 of 12 tables, 40 of 51 details and figures, and AOV, but not net revenue.
+   - **Changed since the old file**: the region rule for reps and the marketing role are gone. The test-account yes/no, the sales team list (without names or emails) and the id-only hierarchy pairs are now visible to everyone.
+   - These rules govern what tools built on the layer show. They don't change permissions in the database itself.
+
+**Questions**
+4. **Sales and order items.** Options, narrowest first:
+   (a) No order lines at all. This works today and is what the draft does.
+   (b) Lines on their own and their team's orders only. Avery would see her 1,418 lines. This needs engineering to add the credited rep (`sales_rep_id`) to order items, or a view that carries it, because the rule can only read order items' own columns. Until then it would be (a).
+   My suggestion: (a) for now, and switch to (b) later if the policy says so.
+5. **Someone in sales with no `employee_id`.** Options:
+   (a) They see no orders. This is the narrowest, and it's what the draft does.
+   (b) They see every order, like the everyone view.
+   My suggestion: (a), since you know of nobody it affects.
+
+   You can answer 4 and 5 after you've checked. Or, if you'd rather not wait, you can sign with both on (a) and we change them later. Either way, I'll read the whole file back for your signature once 4 and 5 are settled.
+6. **No action needed.** Names are analysts-only, so I took Morgan Hale's and Avery Patel's names out of the sales team table's description and the wording of the two sales checks. Avery's name stays only in the analyst check, which analysts see anyway. Launch date on products stays a draft, waiting on merchandising, and new customers is still waiting on engineering's view.
+
+Everything is saved. Stop here or continue?
+
+## Dana (owner)
+
+Thanks. In order:
+
+1. Finance check: yes. $298,368.14 is the Finance net revenue figure. Approved, Dana Ruiz.
+2. Sales checks: yes, all five match what I have, and Morgan at the full $301,050.82 from 2,239 is right. Approved, Dana Ruiz.
+3. The plain-English preview: the rules read right. That covers personal data for analysts only, refunds and net revenue for finance and analytics, finance getting no personal data, the sales rule including a person's own orders, everyone else getting the everyone view, and the region rule and marketing role being gone. I can't vouch for the table and detail counts (11 of 12, 40 of 51) because I don't track the layer that way, but what's in and what's out is right.
+4. Order items: I haven't been able to check yet, so I still don't know whether sales should get the lines on their own orders or no lines at all. I also don't know if engineering would add `sales_rep_id` to order items.
+5. Sales with no `employee_id`: same. I haven't checked, so I can't give you a rule yet.
+
+Please don't sign or finalise the file with 4 and 5 defaulted to (a). Keep them open as drafts and I'll come back with both answers. Then read me the whole file and I'll sign it.
+6. Fine.
+
+Go ahead with 1 and 2, then stop there until I've checked.
+
+## Agent
+
+Thanks, Dana. Both are done. The finance check and the five sales checks are saved at zero tolerance, signed off by you. All 16 saved checks pass. The access file is still a draft and isn't live. I've stopped here as you asked.
+
+**Done**
+1. **Finance check.** As finance, 2025 net revenue is $298,368.14. Saved.
+2. **Sales checks.** Each runs as that person in the sales role: 101 is $34,938.49 from 251 orders, 201 is $130,391.03 from 957, 202 is $115,211.49 from 873, 203 is $55,448.30 from 409, and 301 is $301,050.82 from 2,239. Saved. Every role in the access file now has a saved check.
+
+**Waiting on you (nothing for you to do until you've checked)**
+3. **Sales and order items.** This is still open: lines on their own and their team's orders, or no lines at all. If it's their own lines, engineering would need to add `sales_rep_id` to order items. The file is not signed with a default. The draft keeps sales away from order items for now, but that isn't a decision.
+4. **Someone in sales with no `employee_id`.** This is still open too, and not signed with a default. For now the draft shows such a person no orders.
+
+Once you have both answers, I'll write them in and read you the whole file for your signature. Launch date on products still waits on merchandising. New customers still waits on engineering's view.
+
+Stop here or continue?
+
+## Dana (owner)
+
+Thanks, that's all right. The finance check and the five sales checks are saved, and the file stays a draft and isn't live.
+
+Let's stop here. I still don't have answers on order items for sales or on someone in sales with no `employee_id`. I'll come back once I've checked both, and then you can read me the whole file to sign. Please don't make either choice for me in the meantime.

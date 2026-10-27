@@ -1,5 +1,8 @@
 name: refunds_2025
 question: What were refunds in 2025?
+role: analyst
+user:
+  department: analytics
 request:
   source: warehouse
   measures: [refunds.refund_amount]

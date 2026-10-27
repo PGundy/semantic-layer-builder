@@ -14,6 +14,8 @@ description: >-
 grain: One row per session.
 primary_key:
   - session_id
+ignored_columns:
+  - customer_id
 dimensions:
   - name: started_at
     expr: started_at

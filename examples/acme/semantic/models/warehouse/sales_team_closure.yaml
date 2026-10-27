@@ -1,0 +1,31 @@
+model: sales_team_closure
+source: warehouse
+table: acme.sales_team_closure
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-10-27
+description: >-
+  The sales hierarchy, one row per manager and person below them, at any depth: 27 pairs. 201, 202 and 203 are each
+  paired with their 4 reps, and 301 with all 15 people below them (the 3 managers and the 12 reps). A person is never
+  paired with themselves, so the sales row rule adds a person's own orders separately. Holds ids only, no names. Used by
+  the sales row rule on orders.
+grain: One row per manager and person below them.
+primary_key:
+  - manager_id
+  - member_id
+dimensions:
+  - name: manager_id
+    expr: manager_id
+    type: number
+    description: The manager's rep_id.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-27
+  - name: member_id
+    expr: member_id
+    type: number
+    description: The rep_id of someone below that manager, directly or further down.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-27
+measures: []

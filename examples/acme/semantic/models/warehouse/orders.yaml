@@ -13,6 +13,10 @@ description: >-
 grain: One row per order.
 primary_key:
   - order_id
+ignored_columns:
+  - shipping_cents
+  - currency
+  - gift_message
 dimensions:
   - name: order_date
     expr: created_at
@@ -60,6 +64,17 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+  - name: sales_rep_id
+    expr: sales_rep_id
+    type: number
+    description: >-
+      The id of the sales rep credited with the order (rep_id in sales_reps). Every order names one rep, and the rep
+      always covers the region the order shipped to. Revenue and order count by rep follow the revenue rules. Rep names
+      come from sales_reps through the sales_rep join and are personal data.
+    synonyms: [sales rep, rep]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-27
 measures:
   - name: order_count
     agg: count
@@ -89,6 +104,21 @@ measures:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+  - name: discount
+    expr: discount_cents / 100.0
+    agg: sum
+    filter: status in ('completed', 'shipped') and coalesce(test_account.is_test_account, false) = false and coalesce(test_account.email, '') not like '%@example-test.com'
+    format: currency
+    currency: USD
+    description: >-
+      Discounts given on orders, in US dollars (discount_cents / 100), counted by the same rules as revenue: completed or
+      shipped orders only, test accounts left out, orders of deleted customers kept, dated by order_date in UTC. The
+      order amount (amount_cents) is already after the discount, so revenue never subtracts it again. 2025 is $2,340.00
+      over 311 counted orders (Dana Ruiz confirmed); discounts are $2.50, $5.00, $7.50, $10.00 or $12.50 an order.
+    synonyms: [discounts]
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-27
 joins:
   - name: customer
     to: customers
@@ -165,6 +195,35 @@ joins:
       matched_rows: 4941
       match_rate: 0.9882
       right_rows: 500
+      right_key_unique: true
+      left_key_unique: false
+      max_fanout: 1
+      suggested_relationship: many_to_one
+  - name: sales_rep
+    to: sales_reps
+    keys:
+      - from: sales_rep_id
+        to: rep_id
+    relationship: many_to_one
+    type: left
+    origin: declared
+    description: >-
+      The sales rep credited with the order, through sales_rep_id = rep_id in sales_reps. All 5,000 orders find their
+      rep, and each person appears once in sales_reps, so the join never repeats an order.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-27
+    evidence:
+      checked_at: 2026-10-27T05:34:56.582Z
+      to: sales_reps
+      keys:
+        - from: sales_rep_id
+          to: rep_id
+      left_rows: 5000
+      left_null_keys: 0
+      matched_rows: 5000
+      match_rate: 1
+      right_rows: 16
       right_key_unique: true
       left_key_unique: false
       max_fanout: 1

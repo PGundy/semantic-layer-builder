@@ -1,18 +1,20 @@
-name: sales_rep_ne_2025
-question: As a sales rep for Northeast (NE), what were my revenue and number of orders in 2025?
-role: sales_rep
+name: analyst_rep_101_by_name_2025
+question: As an analyst, what were Avery Patel's (rep 101) revenue and number of orders in 2025?
+role: analyst
 user:
-  region: NE
+  department: analytics
 request:
   source: warehouse
   measures: [orders.revenue, orders.order_count]
+  dimensions: [sales_reps.full_name]
   filters:
+    - { field: orders.sales_rep_id, op: eq, value: 101 }
     - { field: orders.order_date, op: gte, value: "2025-01-01" }
     - { field: orders.order_date, op: lt, value: "2026-01-01" }
 sql: |
-  -- The sales_rep role with region NE: the orders row filter in where, the customers row filter in the customer
-  -- join's on clause, and the test-account rule through test_accounts, which no row filter touches.
-  select sum(o.amount_cents / 100.0)
+  -- The analyst role: no row filters, and personal data (the rep's full name) allowed.
+  select sales_rep.full_name as full_name,
+         sum(o.amount_cents / 100.0)
            filter (where o.status in ('completed', 'shipped')
                      and coalesce(test_account.is_test_account, false) = false
                      and coalesce(test_account.email, '') not like '%@example-test.com') as revenue,
@@ -22,15 +24,17 @@ sql: |
                      and coalesce(test_account.email, '') not like '%@example-test.com') as order_count
   from acme.fct_orders o
   left join acme.dim_customers test_account on test_account.customer_id = o.customer_id
-  left join acme.dim_customers customer on customer.customer_id = o.customer_id and customer.region_code = 'NE'
-  where o.ship_region = 'NE'
+  left join acme.dim_sales_reps sales_rep on sales_rep.rep_id = o.sales_rep_id
+  where o.sales_rep_id = 101
     and o.created_at >= '2025-01-01' and o.created_at < '2026-01-01'
-reference: "Dana Ruiz's 2025 regional reports (UTC days, region = ship_region): NE revenue $70,911.41 from 513 orders."
+  group by 1
+reference: "Dana Ruiz's 2025 figure for Avery Patel (rep 101), credited by orders.sales_rep_id, revenue rules, UTC days: $34,938.49 from 251 orders."
 status: approved
 expected:
   tolerance: 0
   rows:
-    - revenue: 70911.41
-      order_count: 513
+    - full_name: Avery Patel
+      revenue: 34938.49
+      order_count: 251
 confirmed_by: Dana Ruiz
-confirmed_at: 2026-10-26
+confirmed_at: 2026-10-27

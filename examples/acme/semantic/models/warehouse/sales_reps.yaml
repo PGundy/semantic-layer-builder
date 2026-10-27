@@ -1,0 +1,58 @@
+model: sales_reps
+source: warehouse
+table: acme.dim_sales_reps
+status: approved
+approved_by: Dana Ruiz
+approved_at: 2026-10-27
+description: >-
+  Everyone in sales, one row per person, each with their own rep_id: 16 people. 12 reps, two per region (NE, SE, WC, SW,
+  MW, INT); 3 managers with no region of their own (201 over the NE and SE reps, 202 over WC and SW, 203 over MW and
+  INT); and 301 above the managers. The 16 and the structure are measured from the data. Orders name the
+  rep credited with them (orders.sales_rep_id). A person's rep_id is their employee_id in the login system. Full name
+  and email are personal data.
+grain: One row per person.
+primary_key:
+  - rep_id
+dimensions:
+  - name: rep_id
+    expr: rep_id
+    type: number
+    description: The person's id, the same as orders.sales_rep_id and the employee_id the login system carries.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-27
+  - name: full_name
+    expr: full_name
+    type: string
+    description: The person's full name. Personal data.
+    tags:
+      - pii
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-27
+  - name: email
+    expr: email
+    type: string
+    description: The person's work email. Personal data.
+    tags:
+      - pii
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-27
+  - name: region_code
+    expr: region_code
+    type: string
+    description: >-
+      The region a rep covers (NE, SE, WC, SW, MW or INT), the same codes as orders.ship_region. Blank for the managers
+      and for 301, who have no region of their own.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-27
+  - name: manager_id
+    expr: manager_id
+    type: number
+    description: The rep_id of the person's direct manager. Blank for 301, who has no manager in the table.
+    status: approved
+    approved_by: Dana Ruiz
+    approved_at: 2026-10-27
+measures: []

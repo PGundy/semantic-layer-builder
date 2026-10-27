@@ -1,5 +1,8 @@
 name: net_revenue_2025
 question: What was net revenue in 2025?
+role: analyst
+user:
+  department: analytics
 request:
   source: warehouse
   measures: [net_revenue]

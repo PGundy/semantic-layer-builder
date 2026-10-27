@@ -27,11 +27,14 @@ open_questions:
     yet. She accepts that the view repeats the "which statuses count" rule, so it must
     change if that rule changes. If engineering cannot restrict it to dim_customers, the layer must leave deleted
     customers out itself, and the test-account rule is applied in the layer either way. Until then there is no
-    new-customers measure, and no signup-date count is offered as "new customers".
+    new-customers measure, and no signup-date count is offered as "new customers". The draft golden new_customers_2025
+    holds the 123 and names the measure customers.new_customers before it exists, so its validate warning stands until
+    the view arrives (not delivered as of 2026-10-27).
   - >-
     acquisition_channel's paid values have the same names as marketing_spend.channel in the lake, but Dana Ruiz does not
     know whether they are assigned the same way, so they may not line up. The marketing team would know. Cross-source:
-    not modeled.
+    not modeled, and no link is to be added (Dana Ruiz, 2026-10-27): Acme does not join the lake and the warehouse in
+    queries; it lines them up in reports.
 dimensions:
   - name: email
     expr: email
@@ -98,9 +101,11 @@ dimensions:
       measured, not checked against a report).
       Every order figure leaves these customers out.
     synonyms: [test account]
+    tags:
+      - public
     status: approved
     approved_by: Dana Ruiz
-    approved_at: 2026-10-26
+    approved_at: 2026-10-27
   - name: acquisition_channel
     expr: acquisition_channel
     type: string

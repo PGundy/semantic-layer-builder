@@ -1,58 +1,68 @@
-# Drafted from Dana Ruiz's answers on who sees what (three roles, analyst the default, reps limited by a `region`
-# user attribute, reps option (b) for customers, marketing totals by date, status and region). Reps got regions and
-# their customer list was limited to their own home region, with the test-account rule read through
-# warehouse.test_accounts (her choice (a)); the sales_rep role and the whole file were read back after those changes.
-mode: closed
-status: approved
-approved_by: Dana Ruiz
-approved_at: 2026-10-26
-default_role: analyst
+# Drafted from Dana Ruiz's simplification (session 3): open access, everyone at Acme sees every approved figure, with
+# three exceptions: personal data for analytics only, refunds and net revenue for finance and analytics only, and sales
+# limited to their own and their team's orders through sales_team_closure. Marketing has no role; a user with no
+# department gets the everyone view. Replaces the closed file with analyst, sales_rep (by region) and marketing roles.
+status: draft
+mode: open
 user_attributes:
-  - name: region
+  - name: department
     type: string
-    description: The sales region a rep covers, as a ship region code (NE, WC, SE, MW, SW or INT). Each rep has one.
+    description: The user's department in the login system, for example analytics, finance, sales or marketing.
+  - name: employee_id
+    type: number
+    description: The user's own employee id. For people in sales it equals their rep_id in sales_reps and orders.sales_rep_id.
 roles:
   - name: analyst
     description: >-
-      The default role, so anyone whose role does not come through gets this view. Every model in scope in the warehouse
-      and the lake, all rows, without personal details (customer email, phone, first name and last name). Customer ids
-      are internal and may be shown.
+      Analysts: everyone whose department is analytics. They see what everyone sees, plus personal data (customer email,
+      phone, first and last name, and sales people's full names and emails), and refunds and net revenue. Every row.
+    assign_when: user.department == 'analytics'
     allow:
-      models: ["warehouse.*", "lake.*"]
-    deny:
       tags: [pii]
-  - name: sales_rep
+  - name: finance
     description: >-
-      Sales reps. Orders, customers and regions (for region names; 6 rows, nothing about orders or customers) only: no
-      products, order items, refunds or lake data. Orders are limited to those shipped to the rep's own region
-      (ship_region, the sales region). Customers are limited to those whose home region (region_code) is the rep's
-      region; reps see their names and phone numbers but never their email. Orders shipped to the rep's region from a
-      customer who lives elsewhere still count, with the customer details blank. A rep's customer list holds only their
-      own region's customers (their own region's test accounts included). Test accounts from every region are still left
-      out of a rep's revenue and order count, through warehouse.test_accounts, which reps cannot see or list. Someone
-      with no region sees no orders and no customers.
-    allow:
-      models: ["warehouse.orders", "warehouse.customers", "warehouse.regions"]
-      tags: [pii]   # names and phone of their region's customers; email stays denied below
-    deny:
-      models: [warehouse.test_accounts]
-      fields: [warehouse.customers.email]
+      Finance: everyone whose department is finance. They see what everyone sees, plus refunds and net revenue. Every
+      row. No personal data.
+    assign_when: user.department == 'finance'
+  - name: sales
+    description: >-
+      Sales: everyone whose department is sales. They see what everyone sees, but only the orders credited to them or to
+      someone below them in the sales hierarchy (sales_team_closure): a rep sees their own orders, a manager their
+      team's, and 301 every order. Their employee_id is their rep_id. Someone in sales with no employee_id sees no
+      orders. Kept away from order items, which the order rule does not reach. No personal data, refunds or net
+      revenue.
+    assign_when: user.department == 'sales'
+    # Coverage: the sales goldens read orders directly. No golden crosses a join into orders as sales, because the only
+    # models that join to orders (refunds, order_items) are hidden from sales.
     row_filters:
       - model: warehouse.orders
-        expr: ship_region = {{ user.region }}
-      - model: warehouse.customers
-        expr: region_code = {{ user.region }}
-  - name: marketing
-    description: >-
-      Marketing. All of the lake (sessions, marketing spend, web events), every region, and order figures as totals
-      only: revenue, order count and AOV broken down by order date (day or coarser), status and ship region. Never single
-      orders, customers, refunds, order items, products or personal details. Region names come from regions.
-    allow:
-      models: ["lake.*", "warehouse.orders", "warehouse.regions"]
+        hierarchy:
+          column: sales_rep_id
+          via: warehouse.sales_team_closure
+          manager: manager_id
+          member: member_id
+          user: user.employee_id
+          include_self: true
     deny:
-      models: [warehouse.test_accounts]
-      tags: [pii]
+      models: [warehouse.order_items]
     open_questions:
       - >-
-        For tool builders: totals only is approximate, since there is no aggregates-only grant. A downstream tool must
-        not show marketing single orders or order times finer than a day (Dana Ruiz: the tool must enforce it).
+        Sales and order items: order_items lists every order line with its order_id, product, quantity and unit price,
+        and the sales row rule limits only orders, so without a denial a rep would see all 12,343 lines (Dana Ruiz:
+        "definitely wrong"). Dana Ruiz is checking whether sales should see the lines on their own and their team's
+        orders, or no lines at all; the policy does not say. Until she answers, the file keeps sales away from order
+        items entirely. Lines on their own orders would need engineering to add the credited rep (sales_rep_id) to
+        order items, or a view that carries it, because a row rule can only read order items' own columns. Dana Ruiz
+        does not know yet whether engineering would add it. She asked that the file not be signed with this
+        defaulted: it stays open until her answer, then the whole file is read back for her signature.
+      - >-
+        Someone in sales with no employee_id: the policy does not cover it and Dana Ruiz knows of nobody in that
+        position (everyone in sales should have one). She is checking before giving a rule. Until then the file does
+        what the row rule does by itself: such a person sees no orders. She asked that the file not be signed with
+        this defaulted: it stays open until her answer, then the whole file is read back for her signature.
+restrictions:
+  - name: refunds_and_net_revenue
+    description: Refunds (the whole refunds table) and net revenue are for finance and analytics only.
+    targets: ["warehouse.refunds", "metric:net_revenue"]
+    allow:
+      roles: [analyst, finance]

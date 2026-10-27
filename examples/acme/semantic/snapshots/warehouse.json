@@ -2,7 +2,7 @@
   "snapshot_version": 1,
   "source": "warehouse",
   "dialect": "postgres",
-  "captured_at": "2026-10-26T08:54:18.201Z",
+  "captured_at": "2026-10-27T05:24:14.590Z",
   "method": "live",
   "tables": [
     {
@@ -919,6 +919,221 @@
     },
     {
       "schema": "acme",
+      "name": "dim_sales_reps",
+      "kind": "table",
+      "row_count": 16,
+      "description": "Everyone in sales, one row per person, with their manager.",
+      "primary_key": [
+        "rep_id"
+      ],
+      "unique_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "manager_id"
+          ],
+          "references": {
+            "schema": "acme",
+            "table": "dim_sales_reps",
+            "columns": [
+              "rep_id"
+            ]
+          }
+        },
+        {
+          "columns": [
+            "region_code"
+          ],
+          "references": {
+            "schema": "acme",
+            "table": "dim_regions",
+            "columns": [
+              "region_code"
+            ]
+          }
+        }
+      ],
+      "columns": [
+        {
+          "name": "rep_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 16,
+            "min": 101,
+            "max": 301,
+            "sampled": false
+          }
+        },
+        {
+          "name": "full_name",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 16,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "Avery Patel",
+                "count": 1
+              },
+              {
+                "value": "Blake Romero",
+                "count": 1
+              },
+              {
+                "value": "Casey Nguyen",
+                "count": 1
+              },
+              {
+                "value": "Drew Kowalski",
+                "count": 1
+              },
+              {
+                "value": "Emery Brooks",
+                "count": 1
+              },
+              {
+                "value": "Finley Adams",
+                "count": 1
+              },
+              {
+                "value": "Gray Santos",
+                "count": 1
+              },
+              {
+                "value": "Harper Quinn",
+                "count": 1
+              },
+              {
+                "value": "Indy Moreau",
+                "count": 1
+              },
+              {
+                "value": "Jamie Lindqvist",
+                "count": 1
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 16,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "avery.patel@acme.example",
+                "count": 1
+              },
+              {
+                "value": "blake.romero@acme.example",
+                "count": 1
+              },
+              {
+                "value": "casey.nguyen@acme.example",
+                "count": 1
+              },
+              {
+                "value": "drew.kowalski@acme.example",
+                "count": 1
+              },
+              {
+                "value": "emery.brooks@acme.example",
+                "count": 1
+              },
+              {
+                "value": "finley.adams@acme.example",
+                "count": 1
+              },
+              {
+                "value": "gray.santos@acme.example",
+                "count": 1
+              },
+              {
+                "value": "harper.quinn@acme.example",
+                "count": 1
+              },
+              {
+                "value": "indy.moreau@acme.example",
+                "count": 1
+              },
+              {
+                "value": "jamie.lindqvist@acme.example",
+                "count": 1
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "region_code",
+          "type": "text",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0.25,
+            "distinct_count": 6,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "INT",
+                "count": 2
+              },
+              {
+                "value": "MW",
+                "count": 2
+              },
+              {
+                "value": "NE",
+                "count": 2
+              },
+              {
+                "value": "SE",
+                "count": 2
+              },
+              {
+                "value": "SW",
+                "count": 2
+              },
+              {
+                "value": "WC",
+                "count": 2
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "manager_id",
+          "type": "integer",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0.0625,
+            "distinct_count": 4,
+            "min": 201,
+            "max": 301,
+            "sampled": false
+          }
+        }
+      ],
+      "profiled_at": "2026-10-27T05:24:53.039Z"
+    },
+    {
+      "schema": "acme",
       "name": "etl_job_runs",
       "kind": "table",
       "row_count": 120,
@@ -1080,7 +1295,20 @@
         "order_id"
       ],
       "unique_keys": [],
-      "foreign_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "sales_rep_id"
+          ],
+          "references": {
+            "schema": "acme",
+            "table": "dim_sales_reps",
+            "columns": [
+              "rep_id"
+            ]
+          }
+        }
+      ],
       "columns": [
         {
           "name": "order_id",
@@ -1235,9 +1463,90 @@
             ],
             "sampled": false
           }
+        },
+        {
+          "name": "discount_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 6,
+            "min": 0,
+            "max": 1250,
+            "sampled": false
+          }
+        },
+        {
+          "name": "gift_message",
+          "type": "text",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0.889,
+            "distinct_count": 555,
+            "min": null,
+            "max": null,
+            "top_values": [
+              {
+                "value": "Gift note on order 100008: Enjoy the trip!",
+                "count": 1
+              },
+              {
+                "value": "Gift note on order 100017: Thinking of you.",
+                "count": 1
+              },
+              {
+                "value": "Gift note on order 100026: Congratulations on the new home.",
+                "count": 1
+              },
+              {
+                "value": "Gift note on order 100035: Happy birthday!",
+                "count": 1
+              },
+              {
+                "value": "Gift note on order 100044: With love.",
+                "count": 1
+              },
+              {
+                "value": "Gift note on order 100053: Enjoy the trip!",
+                "count": 1
+              },
+              {
+                "value": "Gift note on order 100062: Thinking of you.",
+                "count": 1
+              },
+              {
+                "value": "Gift note on order 100071: Congratulations on the new home.",
+                "count": 1
+              },
+              {
+                "value": "Gift note on order 100080: Happy birthday!",
+                "count": 1
+              },
+              {
+                "value": "Gift note on order 100089: With love.",
+                "count": 1
+              }
+            ],
+            "sampled": false
+          }
+        },
+        {
+          "name": "sales_rep_id",
+          "type": "integer",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 12,
+            "min": 101,
+            "max": 112,
+            "sampled": false
+          }
         }
       ],
-      "profiled_at": "2026-10-26T08:56:11.365Z"
+      "profiled_at": "2026-10-27T05:24:53.176Z"
     },
     {
       "schema": "acme",
@@ -1583,6 +1892,45 @@
           "description": null
         }
       ]
+    },
+    {
+      "schema": "acme",
+      "name": "sales_team_closure",
+      "kind": "view",
+      "row_count": 27,
+      "description": "Every manager paired with everyone below them in sales, at any depth.",
+      "primary_key": [],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        {
+          "name": "manager_id",
+          "type": "integer",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 4,
+            "min": 201,
+            "max": 301,
+            "sampled": false
+          }
+        },
+        {
+          "name": "member_id",
+          "type": "integer",
+          "nullable": true,
+          "description": null,
+          "profile": {
+            "null_fraction": 0,
+            "distinct_count": 15,
+            "min": 101,
+            "max": 203,
+            "sampled": false
+          }
+        }
+      ],
+      "profiled_at": "2026-10-27T05:31:31.728Z"
     },
     {
       "schema": "acme",
