@@ -151,6 +151,25 @@
       "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
       "description": "ISO date of confirmation. Required when approved.",
       "format": "date"
+    },
+    "confirmed_as": {
+      "type": "object",
+      "description": "The role and user the golden ran as when it was confirmed, written by sl goldens confirm; sl validate warns when role or user now differ.",
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "The golden's role at confirmation; absent when it had none."
+        },
+        "user": {
+          "type": "object",
+          "description": "The golden's user attribute values at confirmation; absent when it had none.",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*$"
+          }
+        }
+      }
     }
   },
   "allOf": [

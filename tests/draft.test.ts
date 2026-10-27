@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { centsExpr, draftModels, draftNewColumns, inferPrimaryKey, numericRule, singular } from "../skills/semantic-layer/scripts/lib/draft.ts";
+import { centsExpr, draftModels, draftNewColumns, inferPrimaryKey, newColumns, numericRule, singular } from "../skills/semantic-layer/scripts/lib/draft.ts";
 import { unreferencedColumns } from "../skills/semantic-layer/scripts/lib/snapshot-diff.ts";
 import type { ColumnProfile, Model, Snapshot, SnapshotColumn, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { parseYamlText, updateYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
@@ -1379,7 +1379,7 @@ measures:
 
   interface NewColumnsJson {
     source: string;
-    updated: { model: string; added: string[]; skipped: { column: string; reason: string }[] }[];
+    updated: { model: string; added: string[]; joins: string[]; skipped: { column: string; reason: string }[] }[];
   }
 
   test("appends only unreferenced, non-ignored columns and keeps every existing line byte-identical", async () => {
@@ -1398,6 +1398,7 @@ measures:
         {
           model: "orders",
           added: ["notes", "refund"],
+          joins: [],
           skipped: [
             { column: "coupon_code", reason: "a different value on nearly every row" },
             { column: "extra", reason: "type json drafts as neither a dimension nor a measure" },
@@ -1423,7 +1424,7 @@ open_questions:
   - New column coupon_code (varchar) appeared in analytics.orders; the draft leaves it out (a different value on nearly every row) and lists it in ignored_columns. Should it be a field? If it is added, tag it sensitive (coupon_code has a different value on nearly every row).
   - New column extra (json) appeared in analytics.orders; the draft leaves it out (type json drafts as neither a dimension nor a measure) and lists it in ignored_columns. Should it be a field?
   - "Is refund_cents stored in cents? The draft divides it by 100 (expr: refund_cents * 0.01) to report whole currency units; confirm the division."
-  - Which currency are amount_cents and refund_cents in?
+  - Which currency is refund_cents in?
 ignored_columns:
   - legacy_score   # retired in 2024
   - coupon_code
@@ -1483,7 +1484,7 @@ measures:
     expect(human.out).toBe("No new columns in wh: every column of a modeled in-scope table is read by a field or listed in ignored_columns.");
   });
 
-  test("names avoid the model's own fields, a key column says it may join, and a model without the lists gains them", async () => {
+  test("names avoid the model's own fields, a key column drafts a join, and a model without the lists gains them", async () => {
     const { root } = await evolved([col("status_code", "varchar", p(3)), col("customer_id", "integer", p(150))], [col("Revenue", "decimal(10,2)", p(150)), col("region_notes", "text", p(10))]);
     // The customers model gains a revenue measure; the orders model already has one named revenue.
     const r = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
@@ -1501,10 +1502,13 @@ measures:
       status: "draft",
     });
     expect(orders.open_questions).toContain(
-      "New column customer_id (integer) appeared in analytics.orders; the draft adds the measure customer_count. What does it hold, and should it stay? It looks like a key to analytics.customers; should orders join to it?",
+      "New column customer_id (integer) appeared in analytics.orders; the draft adds the measure customer_count and the join customer to customers (inferred from the column name). What does it hold, and should it stay? Run `sl check-join --source wh --model orders --join customer` before the join is approved.",
     );
-    // No join is drafted, and the model's own status stays approved.
-    expect(orders.joins).toBeUndefined();
+    // A draft join is added, and the model's own status stays approved.
+    expect(out.updated.find((u) => u.model === "orders")!.joins).toEqual(["customer"]);
+    expect(orders.joins).toEqual([
+      { name: "customer", to: "customers", keys: [{ from: "customer_id", to: "customer_id" }], relationship: "many_to_one", type: "left", origin: "inferred", status: "draft" },
+    ]);
     expect(orders.status).toBe("approved");
     const customers = parseYamlText(readModel(root, "customers")) as Model;
     expect(customers.status).toBe("draft");
@@ -1635,5 +1639,349 @@ measures:
     expect(r.open_questions).toEqual([
       "New column opened_on (date) appeared in accounts; the draft adds the dimension opened_on. What does it hold, and should it stay?",
     ]);
+  });
+  describe("joins, currency and models sharing a table", () => {
+    const REPS: SnapshotTable = {
+      schema: "acme",
+      name: "dim_sales_reps",
+      kind: "table",
+      row_count: 16,
+      primary_key: ["rep_id"],
+      columns: [col("rep_id", "integer", p(16)), col("team", "varchar", p(4))],
+    };
+    const REGIONS: SnapshotTable = {
+      schema: "acme",
+      name: "dim_regions",
+      kind: "table",
+      row_count: 6,
+      primary_key: ["region_code"],
+      columns: [col("region_code", "varchar", p(6)), col("region_name", "varchar", p(6))],
+    };
+    const ORDERS2: SnapshotTable = {
+      schema: "acme",
+      name: "fct_orders",
+      kind: "table",
+      row_count: 2500,
+      primary_key: ["order_id"],
+      foreign_keys: [
+        { columns: ["sales_rep_id"], references: { schema: "acme", table: "dim_sales_reps", columns: ["rep_id"] } },
+        { columns: ["region_code"], references: { schema: "acme", table: "dim_regions", columns: ["region_code"] } },
+      ],
+      columns: [
+        col("order_id", "integer", p(2500)),
+        col("amount_cents", "bigint", p(2000)),
+        col("shipping_cents", "bigint", p(30)),
+        col("sales_rep_id", "integer", p(16)),
+        col("region_code", "varchar", p(6)),
+        col("tax_cents", "bigint", p(400)),
+      ],
+    };
+    const ordersModel = (currency?: string): Model => ({
+      model: "orders",
+      source: "warehouse",
+      table: "acme.fct_orders",
+      status: "approved",
+      primary_key: ["order_id"],
+      ignored_columns: ["shipping_cents"],
+      dimensions: [],
+      measures: [
+        { name: "revenue", expr: "amount_cents * 0.01", agg: "sum", format: "currency", ...(currency ? { currency } : {}), status: "approved" },
+      ],
+    });
+    const repsModel: Model = {
+      model: "sales_reps",
+      source: "warehouse",
+      table: "acme.dim_sales_reps",
+      status: "approved",
+      primary_key: ["rep_id"],
+      dimensions: [{ name: "team", expr: "team", type: "string", status: "approved" }],
+      measures: [],
+    };
+    const opts = { source: "warehouse", stripPrefixes: ["fct_", "dim_"], knownTables: [ORDERS2, REPS, REGIONS] };
+
+    test("a new foreign-key column drafts a join, to a small modeled target or an in-scope table with no model", () => {
+      const model = ordersModel("USD");
+      const r = draftNewColumns(snapshotOf([ORDERS2, REPS, REGIONS]), ORDERS2, model, [model, repsModel], opts);
+      expect(r.columns.map((c) => c.name)).toEqual(["sales_rep_id", "region_code", "tax_cents"]);
+      expect(r.joins).toEqual([
+        { name: "sales_rep", to: "sales_reps", keys: [{ from: "sales_rep_id", to: "rep_id" }], relationship: "many_to_one", type: "left", origin: "declared", status: "draft" },
+        { name: "region", to: "regions", keys: [{ from: "region_code", to: "region_code" }], relationship: "many_to_one", type: "left", origin: "declared", status: "draft" },
+      ]);
+      // A key to a small target is joined, not skipped into ignored_columns.
+      expect(r.skipped).toEqual([]);
+      expect(r.open_questions.slice(0, 2)).toEqual([
+        "New column sales_rep_id (integer) appeared in acme.fct_orders; the draft adds the join sales_rep to sales_reps (from the declared foreign key). What does it hold, and should it stay? Run `sl check-join --source warehouse --model orders --join sales_rep` before the join is approved.",
+        "New column region_code (varchar) appeared in acme.fct_orders; the draft adds the join region to regions (from the declared foreign key; acme.dim_regions has no model yet, so draft it as regions). What does it hold, and should it stay? Run `sl check-join --source warehouse --model orders --join region` before the join is approved.",
+      ]);
+    });
+
+    test("new money measures take the model's currency, and the currency question is asked only when no measure has one", () => {
+      const withUsd = ordersModel("USD");
+      const r = draftNewColumns(snapshotOf([ORDERS2, REPS, REGIONS]), ORDERS2, withUsd, [withUsd, repsModel], opts);
+      expect(r.measures).toEqual([{ name: "tax", expr: "tax_cents * 0.01", agg: "sum", format: "currency", currency: "USD", status: "draft" }]);
+      expect(Object.keys(r.measures[0]!)).toEqual(["name", "expr", "agg", "format", "currency", "status"]);
+      expect(r.open_questions).toContain(
+        "New column tax_cents (bigint) appeared in acme.fct_orders; the draft adds the measure tax in USD, the currency of the model's other measures. What does it hold, and should it stay?",
+      );
+      expect(r.open_questions.some((q) => /currency (is|are)|holds only/.test(q))).toBe(false);
+      // No question names the ignored shipping_cents.
+      expect(r.open_questions.some((q) => q.includes("shipping_cents"))).toBe(false);
+
+      const without = ordersModel();
+      const asked = draftNewColumns(snapshotOf([ORDERS2, REPS, REGIONS]), ORDERS2, without, [without, repsModel], opts);
+      expect(asked.measures[0]!.currency).toBeUndefined();
+      expect(asked.open_questions).toContain("Which currency is tax_cents in?");
+      expect(asked.open_questions.some((q) => q.includes("shipping_cents") || q.includes("amount_cents"))).toBe(false);
+    });
+
+    test("a column is new only when no model over the table reads or ignores it, and only the main model gets it", () => {
+      const table: SnapshotTable = {
+        schema: "acme",
+        name: "dim_customers",
+        kind: "table",
+        row_count: 400,
+        primary_key: ["customer_id"],
+        columns: [
+          col("customer_id", "integer", p(400)),
+          col("region", "varchar", p(6)),
+          col("segment", "varchar", p(4)),
+          col("email", "varchar", p(400)),
+          col("legacy_flag", "boolean", p(2)),
+          col("tier", "varchar", p(3)),
+        ],
+      };
+      const main: Model = {
+        model: "customers",
+        source: "warehouse",
+        table: "acme.dim_customers",
+        status: "approved",
+        primary_key: ["customer_id"],
+        dimensions: [
+          { name: "region", expr: "region", type: "string", status: "approved" },
+          { name: "segment", expr: "segment", type: "string", status: "approved" },
+        ],
+        measures: [],
+      };
+      const helper: Model = {
+        model: "test_accounts",
+        source: "warehouse",
+        table: "acme.dim_customers",
+        status: "approved",
+        primary_key: ["customer_id"],
+        ignored_columns: ["legacy_flag"],
+        dimensions: [],
+        measures: [{ name: "test_account_count", agg: "count", filter: "email like '%@test.example'", status: "approved" }],
+      };
+      const snap = snapshotOf([table]);
+      const models = [main, helper];
+      // email is read by the helper and legacy_flag is ignored by it, so neither is new for the main model.
+      expect(newColumns(snap, table, main, models).map((c) => c.name)).toEqual(["tier"]);
+      expect(newColumns(snap, table, helper, models)).toEqual([]);
+      const r = draftNewColumns(snap, table, helper, models, { source: "warehouse", stripPrefixes: [], knownTables: [table] });
+      expect(r.columns).toEqual([]);
+      // With equal reads, the first model by name takes the new columns.
+      const twin: Model = { ...main, model: "accounts" };
+      expect(newColumns(snap, table, main, [main, twin])).toEqual([]);
+      expect(newColumns(snap, table, twin, [main, twin]).map((c) => c.name)).toEqual(["email", "legacy_flag", "tier"]);
+    });
+
+    test("the command appends the join at the end of the file and drafts a shared table's columns into its main model", async () => {
+      const root = await setup([ORDERS2, REPS, REGIONS], { include: ["acme.*"] });
+      mkdirSync(join(root, "models", "wh"), { recursive: true });
+      writeYaml(modelPath(root, "orders"), { ...ordersModel("USD"), source: "wh", ignored_columns: ["shipping_cents", "region_code", "tax_cents"] });
+      writeYaml(modelPath(root, "sales_reps"), { ...repsModel, source: "wh" });
+      writeYaml(modelPath(root, "big_orders"), {
+        model: "big_orders",
+        source: "wh",
+        table: "acme.fct_orders",
+        status: "draft",
+        dimensions: [],
+        measures: [{ name: "big_order_count", agg: "count", filter: "amount_cents > 100000", status: "draft" }],
+      });
+      updateYaml(join(root, "sources", "wh.yaml"), (doc) => doc.setIn(["draft", "strip_prefixes"], ["fct_", "dim_"]));
+      const before = readModel(root, "orders");
+      const r = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+      expect(r.code).toBe(0);
+      expect(r.json<NewColumnsJson>().updated).toEqual([{ model: "orders", added: [], joins: ["sales_rep"], skipped: [] }]);
+      const after = readModel(root, "orders");
+      // Every original line is still there, in order, and the join's question is appended.
+      const lines = after.split("\n");
+      let at = 0;
+      for (const line of before.split("\n")) {
+        at = lines.indexOf(line, at);
+        expect(at).toBeGreaterThanOrEqual(0);
+        at++;
+      }
+      expect((parseYamlText(after) as Model).open_questions).toEqual([
+        "New column sales_rep_id (integer) appeared in acme.fct_orders; the draft adds the join sales_rep to sales_reps (from the declared foreign key). What does it hold, and should it stay? Run `sl check-join --source wh --model orders --join sales_rep` before the join is approved.",
+      ]);
+      expect(after.endsWith(`joins:
+  - name: sales_rep
+    to: sales_reps
+    keys:
+      - from: sales_rep_id
+        to: rep_id
+    relationship: many_to_one
+    type: left
+    origin: declared
+    status: draft
+`)).toBe(true);
+      expect(readModel(root, "big_orders")).not.toContain("sales_rep");
+      const human = await sl(root, ["draft", "--source", "wh", "--new-columns"]);
+      expect(human.out).toContain("No new columns in wh");
+    });
+
+    test("a question is forwarded only when a new column it is about is drafted, never by a word in its text", () => {
+      // currency and shipping_cents are new; amount_cents is read by the approved revenue measure.
+      const table: SnapshotTable = {
+        ...ORDERS2,
+        foreign_keys: [],
+        columns: [
+          col("order_id", "integer", p(2500)),
+          col("amount_cents", "bigint", p(2000)),
+          col("currency", "varchar", { ...p(1), top_values: [{ value: "USD", count: 2500 }] }),
+          col("shipping_cents", "bigint", p(30)),
+        ],
+      };
+      const model: Model = { ...ordersModel("USD"), ignored_columns: [] };
+      const r = draftNewColumns(snapshotOf([table]), table, model, [model], { ...opts, knownTables: [table] });
+      expect(r.columns.map((c) => c.name)).toEqual(["currency", "shipping_cents"]);
+      expect(r.open_questions.some((q) => q.includes("amount_cents"))).toBe(false);
+      expect(r.open_questions).toContain(
+        "Is shipping_cents stored in cents? The draft divides it by 100 (expr: shipping_cents * 0.01) to report whole currency units; confirm the division.",
+      );
+      expect(r.unmodeled).toEqual([]);
+    });
+
+    test("new money measures on a model with several currencies take none and say so", () => {
+      const model: Model = {
+        ...ordersModel(),
+        ignored_columns: ["shipping_cents", "sales_rep_id", "region_code"],
+        measures: [
+          { name: "revenue", expr: "amount_cents * 0.01", agg: "sum", format: "currency", currency: "USD", status: "approved" },
+          { name: "revenue_eur", expr: "amount_cents * 0.01", agg: "sum", format: "currency", currency: "EUR", status: "approved" },
+        ],
+      };
+      const r = draftNewColumns(snapshotOf([ORDERS2, REPS, REGIONS]), ORDERS2, model, [model], opts);
+      expect(r.measures).toEqual([{ name: "tax", expr: "tax_cents * 0.01", agg: "sum", format: "currency", status: "draft" }]);
+      expect(r.open_questions).toEqual([
+        "New column tax_cents (bigint) appeared in acme.fct_orders; the draft adds the measure tax with no currency, since the model's other measures are in USD and EUR. What does it hold, and should it stay?",
+        "Is tax_cents stored in cents? The draft divides it by 100 (expr: tax_cents * 0.01) to report whole currency units; confirm the division.",
+      ]);
+    });
+
+    test("a new join to an in-scope table with no model says to draft that table first", async () => {
+      const root = await setup([ORDERS2, REPS, REGIONS], { include: ["acme.*"] });
+      mkdirSync(join(root, "models", "wh"), { recursive: true });
+      writeYaml(modelPath(root, "orders"), { ...ordersModel("USD"), source: "wh", ignored_columns: ["shipping_cents", "region_code", "tax_cents"] });
+      updateYaml(join(root, "sources", "wh.yaml"), (doc) => doc.setIn(["draft", "strip_prefixes"], ["fct_", "dim_"]));
+      const model = ordersModel("USD");
+      const lib = draftNewColumns(snapshotOf([ORDERS2, REPS, REGIONS]), ORDERS2, model, [model], opts);
+      expect(lib.unmodeled).toEqual([
+        { join: "sales_rep", to: "sales_reps", table: "acme.dim_sales_reps" },
+        { join: "region", to: "regions", table: "acme.dim_regions" },
+      ]);
+      const r = await sl(root, ["draft", "--source", "wh", "--new-columns"]);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain(
+        "Next: read each new item back to the owner, draft acme.dim_sales_reps first (`sl draft --source wh --tables acme.dim_sales_reps`), run `sl check-join` on each new join, then run `sl validate`.",
+      );
+      // The table drafts under the name the new join expects.
+      const drafted = await sl(root, ["draft", "--source", "wh", "--tables", "acme.dim_sales_reps", "--json"]);
+      expect(drafted.code).toBe(0);
+      expect(drafted.json<{ drafted: { model: string }[] }>().drafted.map((d) => d.model)).toEqual(["sales_reps"]);
+    });
+  });
+
+  describe("tables of id columns only", () => {
+    const CLOSURE: SnapshotTable = {
+      schema: "acme",
+      name: "sales_team_closure",
+      kind: "view",
+      row_count: 27,
+      columns: [col("manager_id", "integer", p(4)), col("member_id", "integer", p(15))],
+    };
+
+    test("a pair of id columns drafts two dimensions keyed by both, a question about the pair and no count_distinct", () => {
+      const { models } = draftModels(snapshotOf([CLOSURE]), [CLOSURE], [], { source: "wh", stripPrefixes: [], knownTables: [CLOSURE] });
+      expect(models[0]).toEqual({
+        model: "sales_team_closure",
+        source: "wh",
+        table: "acme.sales_team_closure",
+        status: "draft",
+        primary_key: ["manager_id", "member_id"],
+        open_questions: [
+          "What does one row of acme.sales_team_closure represent?",
+          "primary_key [manager_id, member_id] is every column of acme.sales_team_closure, which holds only id columns. Does each pair of manager_id and member_id appear only once?",
+        ],
+        dimensions: [
+          { name: "manager_id", expr: "manager_id", type: "number", status: "draft" },
+          { name: "member_id", expr: "member_id", type: "number", status: "draft" },
+        ],
+        measures: [{ name: "sales_team_closure_count", agg: "count", format: "integer", status: "draft" }],
+      });
+    });
+
+    test("a link table still joins its keys, three columns ask about each combination, and a declared key is named in the question", () => {
+      const orders: SnapshotTable = { schema: "s", name: "orders", kind: "table", row_count: 500, primary_key: ["order_id"], columns: [col("order_id", "integer", p(500))] };
+      const tags: SnapshotTable = { schema: "s", name: "tags", kind: "table", row_count: 30, primary_key: ["tag_id"], columns: [col("tag_id", "varchar", p(30))] };
+      const link: SnapshotTable = {
+        schema: "s",
+        name: "order_tags",
+        kind: "table",
+        row_count: 900,
+        columns: [col("order_id", "integer", p(500)), col("tag_id", "varchar", p(30)), col("source_id", "integer", p(3))],
+      };
+      const tables = [orders, tags, link];
+      const draft = (t: SnapshotTable) =>
+        draftModels(snapshotOf(tables.map((x) => (x.name === t.name ? t : x))), [t], [], { source: "wh", stripPrefixes: [], knownTables: tables }).models[0]!;
+      const m = draft(link);
+      expect(m.primary_key).toEqual(["order_id", "tag_id", "source_id"]);
+      expect(m.dimensions.map((d) => [d.name, d.type])).toEqual([
+        ["order_id", "number"],
+        ["tag_id", "string"],
+        ["source_id", "number"],
+      ]);
+      expect(m.measures.map((x) => x.agg)).toEqual(["count"]);
+      expect(m.joins!.map((j) => [j.name, j.to, j.relationship])).toEqual([
+        ["order", "orders", "many_to_one"],
+        ["tag", "tags", "many_to_one"],
+      ]);
+      expect(m.open_questions).toContain(
+        "primary_key [order_id, tag_id, source_id] is every column of s.order_tags, which holds only id columns. Does each combination of order_id, tag_id and source_id appear only once?",
+      );
+      expect(m.ignored_columns).toBeUndefined();
+
+      // A declared or single unique key still drafts the all-columns key and the combination question.
+      const declared = draft({ ...link, primary_key: ["order_id", "tag_id"] });
+      expect(declared.primary_key).toEqual(["order_id", "tag_id", "source_id"]);
+      expect(declared.open_questions).toContain(
+        "primary_key [order_id, tag_id, source_id] is every column of s.order_tags, which holds only id columns. Does each combination of order_id, tag_id and source_id appear only once? The table declares the primary key [order_id, tag_id].",
+      );
+      expect(declared.open_questions!.some((q) => q.includes("not a declared primary key"))).toBe(false);
+      expect(declared.dimensions.map((d) => d.name)).toEqual(["order_id", "tag_id", "source_id"]);
+      expect(declared.measures.map((x) => x.agg)).toEqual(["count"]);
+      const pairs: SnapshotTable = {
+        schema: "s",
+        name: "pairs",
+        kind: "table",
+        row_count: 40,
+        unique_keys: [["a_id"]],
+        columns: [col("a_id", "integer", p(40)), col("b_id", "integer", p(16))],
+      };
+      const unique = draftModels(snapshotOf([pairs]), [pairs], [], { source: "wh", stripPrefixes: [], knownTables: [pairs] }).models[0]!;
+      expect(unique.primary_key).toEqual(["a_id", "b_id"]);
+      expect(unique.open_questions).toEqual([
+        "What does one row of s.pairs represent?",
+        "primary_key [a_id, b_id] is every column of s.pairs, which holds only id columns. Does each pair of a_id and b_id appear only once? The table has the unique key [a_id].",
+      ]);
+      expect(unique.measures.map((x) => x.agg)).toEqual(["count"]);
+
+      // Four id columns, or one column that is not an id, draft by the usual rules.
+      const four = draft({ ...link, columns: [...link.columns, col("batch_id", "integer", p(800))] });
+      expect(four.measures.some((x) => x.agg === "count_distinct")).toBe(true);
+      const mixed = draft({ ...link, columns: [col("order_id", "integer", p(500)), col("label", "varchar", p(5))] });
+      expect(mixed.dimensions.map((d) => d.name)).toEqual(["label"]);
+    });
   });
 });

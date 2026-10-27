@@ -13,7 +13,7 @@
         "draft",
         "approved"
       ],
-      "description": "Whether the owner has signed off this access file. Tools only write draft; sl approve sets approved."
+      "description": "Whether the owner has signed off this access file. Tools only write draft; sl approve sets approved. Tools that serve users apply only an approved file; while this one is a draft, the last approved version keeps applying where it is deployed."
     },
     "approved_by": {
       "type": "string",
@@ -209,7 +209,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Questions about this role still open with the owner; sl status counts them."
+          "description": "Questions about this role still open with the owner; sl status counts them. An entry naming a model silences sl validate's warning that the model's rows are not limited by a row filter of this role on a model it joins to."
         }
       }
     },
@@ -229,7 +229,7 @@
         "expr": {
           "type": "string",
           "minLength": 1,
-          "description": "SQL predicate over the model's own columns, with no subquery or other table; {{ user.<attribute> }} binds as a parameter."
+          "description": "SQL predicate over the model's own columns and join references, <join>.<column> or <join>.<join>.<column>, through the model's many_to_one or one_to_one joins, with no subquery or other table; the joins it reads through are added without their targets' row filters; {{ user.<attribute> }} binds as a parameter."
         },
         "hierarchy": {
           "$ref": "#/$defs/hierarchy"
@@ -263,7 +263,7 @@
         "column": {
           "type": "string",
           "minLength": 1,
-          "description": "Column of the filtered model holding a person's id."
+          "description": "Column of the filtered model holding a person's id, or a join reference, <join>.<column> or <join>.<join>.<column>, through the model's many_to_one or one_to_one joins, added without their targets' row filters."
         },
         "via": {
           "type": "string",

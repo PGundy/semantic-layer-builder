@@ -7,6 +7,8 @@ import {
   evaluateAccess,
   type ModelRows,
   type ModelVisibility,
+  type RowFilterJoinRef,
+  type SourceCounts,
 } from "../lib/access.ts";
 import type { CommandSpec } from "../lib/command.ts";
 import { list, str } from "../lib/command.ts";
@@ -29,16 +31,26 @@ function parseUser(text: string, label: string): Record<string, unknown> {
 
 const show = (v: unknown) => JSON.stringify(v);
 
+// Where each join reference of a row filter reads from, e.g. "order.sales_rep_id reads wh.orders
+// through join order".
+function joinNotes(refs: RowFilterJoinRef[] | undefined): string[] {
+  return (refs ?? []).map((r) => {
+    const joins = r.hops.map((h) => h.join);
+    return `${r.text} reads ${r.hops[r.hops.length - 1]!.to} through join${joins.length > 1 ? "s" : ""} ${joins.join(", ")}, without its row filters`;
+  });
+}
+
 function describeFilter(f: AppliedRowFilter): string {
   if (f.kind === "expr") {
     const bound = Object.entries(f.params).map(([k, v]) => `user.${k} = ${show(v)}`);
     const missing = f.missing.map((k) => `user.${k} missing`);
-    const extra = [...bound, ...missing];
-    return extra.length ? `${f.expr} (${extra.join(", ")})` : f.expr;
+    const extra = [...bound, ...missing].join(", ");
+    const notes = [...(extra ? [extra] : []), ...joinNotes(f.join_refs)];
+    return notes.length ? `${f.expr} (${notes.join("; ")})` : f.expr;
   }
   const who = f.missing.length ? `user.${f.user} missing` : `user.${f.user} = ${show(f.user_value)}`;
-  const span = `${f.column} ${f.include_self ? "is the user or anyone" : "is anyone"} below them in ${f.via} (${f.manager} -> ${f.member}; ${who})`;
-  return span;
+  const notes = [`${f.manager} -> ${f.member}`, who, ...joinNotes(f.join_refs)];
+  return `${f.column} ${f.include_self ? "is the user or anyone" : "is anyone"} below them in ${f.via} (${notes.join("; ")})`;
 }
 
 function rowLines(ref: string, rows: ModelRows): string[] {
@@ -61,6 +73,7 @@ function rowLines(ref: string, rows: ModelRows): string[] {
 }
 
 const counts = (c: Counts, word: string) => `${c.visible}/${c.visible + c.hidden} ${word}`;
+const allCounts = (c: SourceCounts) => `${counts(c.models, "models")}, ${counts(c.fields, "fields")}, ${counts(c.metrics, "metrics")}`;
 
 function modelLines(m: ModelVisibility, mode: Show): string[] {
   const out: string[] = [];
@@ -80,6 +93,8 @@ function render(v: AccessVisibility, mode: Show): string {
   const lines: string[] = [];
   const file = v.access_file === "missing" ? "no access.yaml" : `access.yaml ${v.access_file}`;
   lines.push(`Access mode ${v.mode} (${file})`);
+  if (v.access_file === "draft")
+    lines.push("This explains the draft access.yaml, which is awaiting sign-off: tools serve nothing under it until it is approved.");
   const attrs = Object.entries(v.user.attributes);
   lines.push(
     v.user.default_audience
@@ -101,12 +116,13 @@ function render(v: AccessVisibility, mode: Show): string {
     lines.push("Warnings:");
     for (const w of v.warnings) lines.push(`  ${w.path}: ${w.message}`);
   }
+  const n = v.sources.length;
   lines.push(
-    `Visible: ${counts(v.summary.models, "models")}, ${counts(v.summary.fields, "fields")}, ${counts(v.summary.metrics, "metrics")}` +
+    `Visible across ${n} source${n === 1 ? "" : "s"}: ${allCounts(v.summary)}` +
       (v.summary.hidden_by_protected_tags ? `; ${v.summary.hidden_by_protected_tags} approved item(s) hidden by protected tags` : ""),
   );
   for (const s of v.sources) {
-    lines.push(`Source ${s.source}:`);
+    lines.push(`Source ${s.source}: visible ${allCounts(s.summary)}`);
     const items: string[] = [];
     for (const m of s.models) items.push(...modelLines(m, mode));
     for (const m of s.metrics) {
@@ -118,7 +134,7 @@ function render(v: AccessVisibility, mode: Show): string {
     const rows = s.models.filter((m) => m.row_filters).flatMap((m) => rowLines(m.ref, m.row_filters!));
     if (rows.length) lines.push("  row filters:", ...rows);
   }
-  if (!v.sources.length) lines.push("No models or metrics.");
+  if (!v.sources.some((s) => s.models.length || s.metrics.length)) lines.push("No models or metrics.");
   return lines.join("\n");
 }
 

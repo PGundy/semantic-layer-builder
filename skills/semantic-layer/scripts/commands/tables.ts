@@ -7,6 +7,7 @@ import { formatJson, formatTable } from "../lib/output.ts";
 import { inScope } from "../lib/patterns.ts";
 import { listModels, loadProject, loadSource, projectSettings, requireSnapshot } from "../lib/project.ts";
 import { rankTables } from "../lib/rank.ts";
+import { profileState, type ProfileState } from "../lib/status.ts";
 import { NAME_PATTERN, type Project, type SnapshotTable, type Status } from "../lib/types.ts";
 
 export interface TableRow {
@@ -16,7 +17,9 @@ export interface TableRow {
   in_scope: boolean;
   model: string | null;
   model_status: Status | null;
+  // True only when the profile is complete (profile_state yes).
   profiled: boolean;
+  profile_state: ProfileState;
   score: number;
   reasons: string[];
 }
@@ -30,8 +33,9 @@ export function sourceFlag(values: Record<string, unknown>, project: Project): s
   return s;
 }
 
+// Whether a table's profile is complete, by the rule sl status applies: profiled_at is set.
 export function isProfiled(t: SnapshotTable): boolean {
-  return Boolean(t.profiled_at) || t.columns.some((c) => c.profile !== undefined);
+  return profileState(t) === "yes";
 }
 
 // Maps each snapshot table's qualified name to the first model (by file name) built on it.
@@ -114,6 +118,7 @@ const spec: CommandSpec = {
         model: m?.model ?? null,
         model_status: m?.status ?? null,
         profiled: isProfiled(r.table),
+        profile_state: profileState(r.table),
         score: r.score,
         reasons: r.reasons,
       });
@@ -146,7 +151,7 @@ const spec: CommandSpec = {
           columns: r.columns,
           in_scope: r.in_scope ? "yes" : "no",
           model: r.model ? `${r.model} (${r.model_status})` : "",
-          profiled: r.profiled ? "yes" : "no",
+          profiled: r.profile_state,
         })),
         ["table", "rows", "columns", "in_scope", "model", "profiled"],
       ),

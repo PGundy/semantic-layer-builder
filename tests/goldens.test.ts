@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
-import { compareRows, goldenDraftFields, goldenPlan } from "../skills/semantic-layer/scripts/lib/goldens.ts";
+import { compareRows, currencyColumns, displayRows, goldenDraftFields, goldenPlan, twoDecimals } from "../skills/semantic-layer/scripts/lib/goldens.ts";
 import type { Golden, Metric, Model, QueryPlan } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { duckdbSource, initProject, sl, tempRoot } from "./helpers.ts";
@@ -554,6 +554,134 @@ describe("goldens CLI on duckdb", () => {
     const none = await sl(t.root, ["goldens", "check", "--json"]);
     expect(none.code).toBe(0);
     expect(none.json()).toEqual({ passed: 0, failed: 0, results: [] });
+  });
+});
+
+describe("currency display", () => {
+  test("twoDecimals shows figures to two decimals and leaves other values alone", () => {
+    expect(twoDecimals(55448.3)).toBe("55448.30");
+    expect(twoDecimals(134.4577)).toBe("134.46");
+    expect(twoDecimals(12n)).toBe("12.00");
+    expect(twoDecimals("150.5")).toBe("150.50");
+    expect(twoDecimals("-7")).toBe("-7.00");
+    expect(twoDecimals("98765432109876543.21")).toBe("98765432109876543.21");
+    expect(twoDecimals("1.239")).toBe("1.24");
+    expect(twoDecimals(null)).toBeNull();
+    expect(twoDecimals("east")).toBe("east");
+    expect(twoDecimals(Number.NaN)).toBeNaN();
+  });
+
+  test("twoDecimals rounds on the decimal digits, half away from zero, without a float", () => {
+    expect(twoDecimals(2.675)).toBe("2.68");
+    expect(twoDecimals("2.675")).toBe("2.68");
+    expect(twoDecimals("1.005")).toBe("1.01");
+    expect(twoDecimals(1.005)).toBe("1.01");
+    expect(twoDecimals(-0.001)).toBe("0.00");
+    expect(twoDecimals("-0.001")).toBe("0.00");
+    expect(twoDecimals(-0.005)).toBe("-0.01");
+    expect(twoDecimals("98765432109876543.219")).toBe("98765432109876543.22");
+    expect(twoDecimals("99.995")).toBe("100.00");
+    expect(twoDecimals("-9.999")).toBe("-10.00");
+    expect(twoDecimals(1e21)).toBe("1000000000000000000000.00");
+    expect(twoDecimals(1.5e-7)).toBe("0.00");
+    expect(twoDecimals(5e-3)).toBe("0.01");
+    expect(twoDecimals(" +1.5e2 ")).toBe("150.00");
+    expect(twoDecimals(".125")).toBe("0.13");
+    expect(twoDecimals("007.1")).toBe("7.10");
+    expect(twoDecimals(-0)).toBe("0.00");
+  });
+
+  test("currencyColumns names the result columns of currency measures and metrics; displayRows copies the rows", () => {
+    const model = ordersModel("approved");
+    model.measures[0]!.format = "currency";
+    const metrics: Metric[] = [
+      { name: "aov", source: "wh", type: "ratio", numerator: "orders.revenue", denominator: "orders.order_count", format: "currency", status: "draft" },
+      { name: "share", source: "wh", type: "derived", expr: "{orders.revenue}", format: "percent", status: "draft" },
+    ];
+    const g: Golden = {
+      name: "g",
+      question: "?",
+      request: { source: "wh", measures: ["orders.revenue", "orders.order_count", "aov", "share"], dimensions: ["orders.region"] },
+      sql: "select 1",
+      status: "draft",
+    };
+    const columns = ["region", "REVENUE", "order_count", "aov", "share"];
+    expect(currencyColumns(g, [model], metrics, columns)).toEqual(["REVENUE", "aov"]);
+    expect(currencyColumns({ ...g, request: { ...g.request, source: "lake" } }, [model], metrics, columns)).toEqual([]);
+    const rows = [{ region: "east", REVENUE: 150.5, order_count: 2, aov: 75.25, share: 0.5 }];
+    expect(displayRows(rows, ["REVENUE", "aov"])).toEqual([{ region: "east", REVENUE: "150.50", order_count: 2, aov: "75.25", share: 0.5 }]);
+    expect(rows[0]!.REVENUE).toBe(150.5);
+  });
+
+  test("goldens run and confirm print currency measures to two decimals; JSON and the recorded rows keep the figures", async () => {
+    const t = await setup();
+    const model = ordersModel("approved");
+    model.measures[0]!.format = "currency";
+    model.measures[0]!.currency = "USD";
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), model);
+    const run = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
+    expect(run.code).toBe(0);
+    expect(run.out).toMatch(/east\s+150\.50\s+2\n/);
+    expect(run.out).toMatch(/west\s+200\.00\s+1\n/);
+    const json = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region", "--json"]);
+    expect(json.json<{ rows: unknown[] }>().rows).toContainEqual({ region: "east", revenue: 150.5, orders: 2 });
+    const confirm = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0"]);
+    expect(confirm.code).toBe(0);
+    expect(confirm.out).toMatch(/north\s+10\.25\s+1\n/);
+    expect(confirm.out).toMatch(/east\s+150\.50\s+2\n/);
+    expect(readYaml<Golden>(t.goldenPath).expected?.rows).toContainEqual({ region: "east", revenue: 150.5, orders: 2 });
+  });
+});
+
+describe("goldens confirm: who it ran as", () => {
+  test("confirm records confirmed_as with the golden's role and user, and rewrites it on a new confirm", async () => {
+    const t = await setup(GOLDEN_YAML.replace("role: analyst\n", "role: analyst\nuser:\n  region: east\n"));
+    const r = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json<{ confirmed_as: unknown }>().confirmed_as).toEqual({ role: "analyst", user: { region: "east" } });
+    expect(readYaml<Golden>(t.goldenPath).confirmed_as).toEqual({ role: "analyst", user: { region: "east" } });
+
+    writeFileSync(t.goldenPath, readFileSync(t.goldenPath, "utf8").replace("role: analyst\nuser:\n  region: east\n", ""));
+    expect((await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana"])).code).toBe(0);
+    const saved = readYaml<Golden>(t.goldenPath);
+    expect(saved.role).toBeUndefined();
+    expect(saved.confirmed_as).toEqual({});
+    // The written fields pass the schema.
+    const validate = await sl(t.root, ["validate", "--json"]);
+    const issues = validate.json<{ issues: { file: string; path: string }[] }>().issues.filter((i) => i.file.startsWith("goldens/") && i.path.startsWith("confirmed"));
+    expect(issues).toEqual([]);
+  });
+
+  test("confirm warns when the golden's role is defined only in a draft access.yaml", async () => {
+    const t = await setup();
+    const access = { status: "draft", roles: [{ name: "analyst", allow: { models: ["wh.*"] } }] };
+    writeYaml(join(t.root, "access.yaml"), access);
+    const human = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0"]);
+    expect(human.code).toBe(0);
+    const warning =
+      'Golden "revenue_by_region" runs as role analyst, which is defined only in a draft access.yaml: its rules may still change before ' +
+      "access is approved. Confirm a golden that runs as a role after access.yaml is approved; confirmed now, rerun sl goldens check " +
+      "--name revenue_by_region and read it back to the owner after every change to role analyst.";
+    expect(human.err).toContain(warning);
+    expect(human.out).toContain("Recorded 3 expected rows");
+    const json = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0", "--json"]);
+    expect(json.json<{ warnings: string[] }>().warnings).toEqual([warning]);
+
+    // Approved access.yaml: no warning.
+    writeYaml(join(t.root, "access.yaml"), { ...access, status: "approved", approved_by: "Dana", approved_at: "2026-01-15" });
+    const approved = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0", "--json"]);
+    expect(approved.json<{ warnings: string[] }>().warnings).toEqual([]);
+
+    // A golden without a role runs as the draft file's default_role.
+    writeYaml(join(t.root, "access.yaml"), { ...access, default_role: "analyst" });
+    writeFileSync(t.goldenPath, readFileSync(t.goldenPath, "utf8").replace("role: analyst\n", ""));
+    const byDefault = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0", "--json"]);
+    expect(byDefault.json<{ warnings: string[] }>().warnings[0]).toContain("runs as role analyst (access.yaml's default_role), which is defined only in a draft access.yaml");
+
+    // No role at all, or one the draft file does not define: no warning.
+    writeYaml(join(t.root, "access.yaml"), access);
+    const none = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0", "--json"]);
+    expect(none.json<{ warnings: string[] }>().warnings).toEqual([]);
   });
 });
 

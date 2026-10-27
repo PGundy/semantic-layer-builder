@@ -356,6 +356,33 @@ describe("sl tables", () => {
     expect(last).toContain("analytics.schema_migrations");
   });
 
+  test("profiled is yes, partial or no by the rule sl status applies", async () => {
+    const { root } = await setup();
+    const path = join(root, "snapshots", "wh.json");
+    const snap = JSON.parse(readFileSync(path, "utf8")) as Snapshot;
+    // A reintrospect that added a column drops profiled_at but keeps the old columns' profiles.
+    const payments = snap.tables.find((t) => t.name === "fct_payments")!;
+    payments.columns[0]!.profile = { null_fraction: 0, distinct_count: 8000 };
+    writeJson(path, snap);
+    const j = (await sl(root, ["tables", "--source", "wh", "--json"])).json<{
+      tables: { table: string; profiled: boolean; profile_state: string }[];
+    }>();
+    const row = (name: string) => j.tables.find((t) => t.table === `analytics.${name}`);
+    expect(row("fct_orders")).toMatchObject({ profiled: true, profile_state: "yes" });
+    expect(row("fct_payments")).toMatchObject({ profiled: false, profile_state: "partial" });
+    expect(row("fct_sessions")).toMatchObject({ profiled: false, profile_state: "no" });
+    const human = await sl(root, ["tables", "--source", "wh"]);
+    const line = (name: string) => human.out.split("\n").find((l) => l.startsWith(`analytics.${name} `))!;
+    expect(line("fct_orders").trimEnd().endsWith("yes")).toBe(true);
+    expect(line("fct_payments").trimEnd().endsWith("partial")).toBe(true);
+    expect(line("fct_sessions").trimEnd().endsWith("no")).toBe(true);
+    // sl status counts the partial table as needing a profile.
+    const st = (await sl(root, ["status", "--json"])).json<{ sources: { unprofiled_tables: string[]; partially_profiled_tables: string[] }[] }>();
+    expect(st.sources[0]!.unprofiled_tables).toContain("analytics.fct_payments");
+    expect(st.sources[0]!.unprofiled_tables).not.toContain("analytics.fct_orders");
+    expect(st.sources[0]!.partially_profiled_tables).toEqual(["analytics.fct_payments"]);
+  });
+
   test("human output has the focus hint, and --groups adds the groups", async () => {
     const { root } = await setup();
     const r = await sl(root, ["tables", "--source", "wh", "--groups"]);

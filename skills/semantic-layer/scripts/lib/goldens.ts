@@ -364,3 +364,98 @@ export function goldenDraftFields(golden: Golden, models: Model[], metrics: Metr
 export function resultColumns(rows: ResultRows): string[] {
   return columnsOf(rows);
 }
+
+// The result columns that show a currency figure: a column named (ignoring case) like a measure
+// or metric of the request whose format is currency. A request measure model.measure names the
+// column measure, and a metric its own name; a column the golden's sql aliases otherwise (such as
+// total_revenue for revenue) is not matched. Malformed models and metrics are skipped.
+export function currencyColumns(golden: Golden, models: Model[], metrics: Metric[], columns: string[]): string[] {
+  const request = golden.request;
+  if (!request || typeof request !== "object" || !Array.isArray(request.measures)) return [];
+  const usableModels = (Array.isArray(models) ? models : []).filter(readableModel);
+  const usableMetrics = (Array.isArray(metrics) ? metrics : []).filter((m): m is Metric => !!m && typeof m === "object");
+  const names = new Set<string>();
+  for (const r of request.measures) {
+    if (typeof r !== "string") continue;
+    if (r.includes(".")) {
+      const parsed = parseRequestField(r);
+      const model = parsed && usableModels.find((m) => m.model === parsed.model && m.source === request.source);
+      const match = model ? findField(model, parsed.field) : undefined;
+      if (match?.kind === "measure" && (match.item as { format?: unknown }).format === "currency") names.add(parsed!.field.toLowerCase());
+      continue;
+    }
+    const metric = usableMetrics.find((m) => m.name === r && (m.source ?? request.source) === request.source);
+    if (metric?.format === "currency") names.add(r.toLowerCase());
+  }
+  return columns.filter((c) => names.has(c.toLowerCase()));
+}
+
+// A figure shown to two decimals, for display only: a number, a bigint or a string that spells a
+// number. The rounding works on the decimal digits, half away from zero, so a number shows its
+// shortest decimal form rounded (2.675 shows 2.68) and a string never loses digits to a float. A
+// figure that rounds to zero shows 0.00. Anything else is returned as it is.
+export function twoDecimals(v: unknown): unknown {
+  if (typeof v === "number") return Number.isFinite(v) ? roundDecimalString(plainDecimal(String(v))) : v;
+  if (typeof v === "bigint") return `${v}.00`;
+  if (typeof v === "string" && NUMERIC_STRING.test(v)) return roundDecimalString(plainDecimal(v));
+  return v;
+}
+
+// A numeric string (NUMERIC_STRING) as a plain decimal: optional "-", integer digits without
+// leading zeros, then "." and fraction digits when it has any. An exponent is applied by moving
+// the decimal point.
+function plainDecimal(text: string): string {
+  let t = text.trim();
+  let neg = false;
+  if (t.startsWith("-") || t.startsWith("+")) {
+    neg = t.startsWith("-");
+    t = t.slice(1);
+  }
+  const [mantissa, exp = "0"] = t.split(/[eE]/);
+  const [int = "", frac = ""] = mantissa!.split(".");
+  const digits = int + frac;
+  const point = int.length + Number(exp);
+  let whole: string;
+  let fraction: string;
+  if (point <= 0) {
+    whole = "0";
+    fraction = "0".repeat(-point) + digits;
+  } else if (point >= digits.length) {
+    whole = digits + "0".repeat(point - digits.length);
+    fraction = "";
+  } else {
+    whole = digits.slice(0, point);
+    fraction = digits.slice(point);
+  }
+  whole = whole.replace(/^0+(?=\d)/, "") || "0";
+  return `${neg ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}`;
+}
+
+// A plain decimal rounded to two places, half away from zero, by carrying through its digits.
+function roundDecimalString(plain: string): string {
+  const neg = plain.startsWith("-");
+  const [int, frac = ""] = (neg ? plain.slice(1) : plain).split(".");
+  let digits = int! + frac.padEnd(2, "0").slice(0, 2);
+  if (frac.length > 2 && frac[2]! >= "5") {
+    const out = digits.split("");
+    let i = out.length - 1;
+    while (i >= 0 && out[i] === "9") out[i--] = "0";
+    if (i >= 0) out[i] = String(Number(out[i]) + 1);
+    else out.unshift("1");
+    digits = out.join("");
+  }
+  const whole = digits.slice(0, -2).replace(/^0+(?=\d)/, "") || "0";
+  const shown = `${whole}.${digits.slice(-2)}`;
+  return neg && /[1-9]/.test(shown) ? `-${shown}` : shown;
+}
+
+// Rows for display with the given columns' figures shown to two decimals; the rows themselves are
+// not changed.
+export function displayRows(rows: ResultRows, currency: string[]): ResultRows {
+  if (!currency.length) return rows;
+  return rows.map((r) => {
+    const out: Record<string, unknown> = { ...r };
+    for (const c of currency) if (c in out) out[c] = twoDecimals(out[c]);
+    return out;
+  });
+}

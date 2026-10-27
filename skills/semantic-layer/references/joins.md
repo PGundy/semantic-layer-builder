@@ -72,11 +72,13 @@ The join's `type` also decides what a join reference through it sees. A measure 
 
 When `relationship` in the YAML differs from `suggested_relationship`, change the YAML to match the evidence, or ask the owner why the data disagrees with what they expect. Never approve a join whose YAML relationship the evidence contradicts.
 
-Only `many_to_one` and `one_to_one` joins carry join references and request fields on other models; a `one_to_many` join never does, because it repeats the left model's rows.
+Only `many_to_one` and `one_to_one` joins carry join references (in measure filters, dimensions and row filters) and request fields on other models; a `one_to_many` join never does, because it repeats the left model's rows.
+
+`sl draft --new-columns` drafts a join for a new foreign-key column whose target is in scope or modeled, with `origin: declared` when the database declares the key and `inferred` otherwise; check and read it back like any other.
 
 ## Closure models for span of control
 
-A span-of-control row filter (`access.md`) reads a closure model, one row per manager and member pair at any depth, through its `hierarchy` rule, not through a join: the filtered model needs no join to it, and the compiler reads it without its own row filters. Model it like any other table, with grain "one row per manager and member pair" and the pair as its `primary_key`, and check with the owner that a director is paired with everyone below them, not only their direct reports.
+A span-of-control row filter (`access.md`) reads a closure model, one row per manager and member pair at any depth, through its `hierarchy` rule, not through a join: the filtered model needs no join to it, and the compiler reads it without its own row filters. Model it like any other table, with grain "one row per manager and member pair" and the pair as its `primary_key`, and check with the owner that a director is paired with everyone below them, not only their direct reports. `sl draft` drafts a table of 2 or 3 columns whose names all end in `_id` this way already: every column a dimension, all of them the `primary_key`, no count measures, and an open question asking the owner to confirm that each pair appears once; check it with `sl run` (`select count(*), count(distinct (manager_id, member_id)) from <closure>`) before the readback.
 
 ## Joins only within a source
 
@@ -88,7 +90,7 @@ Read back what the join does, how well it matched, and any risk, then ask for a 
 
 > "Each order connects to the customer who placed it, using `customer_id`. 9,978 of 10,000 orders find their customer; 12 have no customer recorded and 10 point at a missing one. Each customer appears once, so joining never repeats an order. Orders without a customer are kept, with empty customer details. Approve?"
 
-A row filter on the joined model in `access.yaml` behaves the same way when a request reaches that model's fields through the join: on a left join it blanks the joined columns and keeps the left row; on an inner join it drops the row. A join that a measure filter or dimension `expr` reads through is part of that field's definition: the compiler joins it without the target's row filters and whatever the role may see, so a row filter never blanks a rule such as the test-account exclusion, and no helper model is needed for that (`access.md`, Definition joins).
+A row filter on the joined model in `access.yaml` behaves the same way when a request reaches that model's fields through the join: on a left join it blanks the joined columns and keeps the left row; on an inner join it drops the row. A join that a measure filter, a dimension `expr` or a row filter in `access.yaml` reads through is part of that field's definition: the compiler joins it without the target's row filters and whatever the role may see, so a row filter never blanks a rule such as the test-account exclusion, and no helper model is needed for that (`access.md`, Definition joins).
 
 For a `one_to_many` join, add the multiplication warning in the readback itself. After an explicit yes:
 

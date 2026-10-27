@@ -10,8 +10,9 @@ import {
   type HierarchyFilterResult,
   type MetricVisibility,
   type ModelVisibility,
+  type ExprFilterResult,
 } from "../skills/semantic-layer/scripts/lib/access.ts";
-import type { AccessFile, Metric, Model } from "../skills/semantic-layer/scripts/lib/types.ts";
+import type { AccessFile, Join, Metric, Model } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { initProject, sl, tempRoot } from "./helpers.ts";
 
@@ -496,6 +497,14 @@ describe("checkRequest", () => {
     expect(r.problems.map((p) => p.reasons)).toEqual([["unknown"], ["unknown"]]);
     expect(checkRequest(v, { source: "lake", measures: ["orders.revenue"] }).ok).toBe(false);
   });
+
+  test("refuses every request while access.yaml is a draft", async () => {
+    const root = await setup();
+    const v = { ...eva(root), access_file: "draft" as const };
+    const r = checkRequest(v, { source: "wh", measures: ["orders.revenue"] });
+    expect(r.ok).toBe(false);
+    expect(r.problems.map((p) => [p.position, p.reasons])).toEqual([["access", ["access_draft"]]]);
+  });
 });
 
 describe("defensive reading of access.yaml", () => {
@@ -769,7 +778,8 @@ describe("sl access", () => {
     expect(r.out).toContain("Access mode open (no access.yaml)");
     expect(r.out).toContain("User: the default audience (no attributes, no assigned roles)");
     expect(r.out).toContain("Roles held: none (the open baseline, no row filters)");
-    expect(r.out).toContain("Visible: 4/6 models, 11/18 fields, 2/4 metrics; 6 approved item(s) hidden by protected tags");
+    expect(r.out).toContain("Visible across 1 source: 4/6 models, 11/18 fields, 2/4 metrics; 6 approved item(s) hidden by protected tags");
+    expect(r.out).toContain("Source wh: visible 4/6 models, 11/18 fields, 2/4 metrics");
     expect(r.out).toContain("    measure wh.orders.cost: hidden (protected_tag:sensitive)");
     expect(r.out).toContain("    model wh.payroll: hidden (protected_tag:sensitive), with its 2 field(s)");
     expect(r.out).toContain("    metric margin: hidden (measure_hidden:orders.cost)");
@@ -876,7 +886,7 @@ describe("sl access", () => {
     const r2 = await sl(root2, ["access"]);
     expect(r2.out).toContain("Access mode closed (access.yaml invalid)");
     expect(r2.out).toContain("access.yaml cannot be applied, so access is closed and nothing is visible (see skipped entries)");
-    expect(r2.out).toContain("Visible: 0/6 models, 0/18 fields, 0/4 metrics");
+    expect(r2.out).toContain("Visible across 1 source: 0/6 models, 0/18 fields, 0/4 metrics");
   });
 
   test("no semantic layer is an error", async () => {
@@ -885,5 +895,256 @@ describe("sl access", () => {
     const r = await sl(t.root, ["access"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("No semantic layer");
+  });
+});
+
+describe("row filters through joins", () => {
+  const joinTo = (name: string, to: string, extra: Partial<Join> = {}): Join => ({
+    name,
+    to,
+    keys: [{ from: `${to}_id`, to: "id" }],
+    relationship: "many_to_one",
+    ...OK,
+    ...extra,
+  });
+  // order_items -> orders -> customers, and orders -> region (one_to_many, for the refusal).
+  const CHAIN: Model[] = [
+    model("customers", [dim("segment")], [], { joins: [joinTo("home", "regions")] }),
+    model("regions", [dim("name")], []),
+    model("orders", [dim("region")], [measure("revenue")], {
+      joins: [joinTo("customer", "customers", { type: "inner" }), joinTo("lines", "order_items", { relationship: "one_to_many" })],
+    }),
+    model("order_items", [dim("sku")], [measure("quantity")], { joins: [joinTo("order", "orders"), joinTo("Odd", "orders")] }),
+    model("reporting_lines", [dim("manager_id"), dim("member_id")], []),
+  ];
+  const hierarchy = { column: "order.sales_rep_id", via: "wh.reporting_lines", manager: "manager_id", member: "member_id", user: "user.employee_id" };
+
+  async function chainRoot(rf: Record<string, unknown>, models: Model[] = CHAIN): Promise<string> {
+    const t = tempRoot();
+    cleanups.push(t.cleanup);
+    await initProject(t.root);
+    writeYaml(join(t.root, "sources", "wh.yaml"), { source: "wh", dialect: "duckdb" });
+    for (const m of models) writeYaml(join(t.root, "models", "wh", `${m.model}.yaml`), m);
+    writeYaml(join(t.root, "access.yaml"), {
+      ...OK,
+      user_attributes: ATTRS,
+      roles: [{ name: "sales", row_filters: [{ model: "wh.order_items", ...rf }] }],
+    });
+    return t.root;
+  }
+  const itemRows = async (rf: Record<string, unknown>, models?: Model[]) =>
+    modelOf(eva(await chainRoot(rf, models), { roles: ["sales"], attributes: { employee_id: 7, region: "emea" } }), "order_items").row_filters!;
+
+  test("a hierarchy column read through one join carries the join path", async () => {
+    const rows = await itemRows({ hierarchy });
+    expect(rows.rows).toBe("filtered");
+    const f = rows.branches[0]!.filters[0] as HierarchyFilterResult;
+    expect(f.column).toBe("order.sales_rep_id");
+    expect(f.user_value).toBe(7);
+    expect(f.join_refs).toEqual([
+      {
+        text: "order.sales_rep_id",
+        column: "sales_rep_id",
+        hops: [{ join: "order", from: "wh.order_items", to: "wh.orders", relationship: "many_to_one", type: "left", keys: [{ from: "orders_id", to: "id" }] }],
+      },
+    ]);
+  });
+
+  test("an expr read through two joins carries both hops in order, each with its type", async () => {
+    const rows = await itemRows({ expr: "order.customer.segment = 'smb' and order.region = {{ user.region }} and sku is not null" });
+    expect(rows.rows).toBe("filtered");
+    const f = rows.branches[0]!.filters[0] as ExprFilterResult;
+    expect(f.params).toEqual({ region: "emea" });
+    expect(f.join_refs!.map((r) => [r.text, r.column, r.hops.map((h) => `${h.from}.${h.join}->${h.to}:${h.type}`)])).toEqual([
+      ["order.customer.segment", "segment", ["wh.order_items.order->wh.orders:left", "wh.orders.customer->wh.customers:inner"]],
+      ["order.region", "region", ["wh.order_items.order->wh.orders:left"]],
+    ]);
+  });
+
+  test("a filter over the model's own columns carries no join_refs; a repeated reference is listed once", async () => {
+    const own = (await itemRows({ expr: "sku = 'a'" })).branches[0]!.filters[0]!;
+    expect(own).not.toHaveProperty("join_refs");
+    // The same unquoted reference in another letter case resolves to the same path: listed once,
+    // with the text first written.
+    const twice = (await itemRows({ expr: "ORDER.region = 'x' or order.REGION is null or order.region <> 'y'" })).branches[0]!.filters[0] as ExprFilterResult;
+    expect(twice.join_refs!.map((r) => r.text)).toEqual(["ORDER.region"]);
+    // A quoted column is its own reference, and so is a different struct field of the column.
+    const distinct = (await itemRows({ expr: `order.region = 'x' or order."Region" = 'x' or order.region.a = 1` })).branches[0]!.filters[0] as ExprFilterResult;
+    expect(distinct.join_refs!.map((r) => r.text)).toEqual(["order.region", "order.Region", "order.region.a"]);
+    // An unquoted name matches the join in any case; a quoted one exactly, so "Odd" is its own join.
+    const quoted = (await itemRows({ expr: '"Odd".region = \'x\'' })).branches[0]!.filters[0] as ExprFilterResult;
+    expect(quoted.join_refs![0]!.hops[0]!.join).toBe("Odd");
+    // A placeholder or a string is never read as a reference.
+    const lit = (await itemRows({ expr: "sku = 'order.region' and sku <> {{ user.region }}" })).branches[0]!.filters[0]!;
+    expect(lit).not.toHaveProperty("join_refs");
+  });
+
+  test("a reference that cannot be followed means no rows", async () => {
+    const broken = CHAIN.map((m) =>
+      m.model === "order_items"
+        ? { ...m, joins: [joinTo("order", "orders"), joinTo("ghost", "nowhere"), joinTo("nokeys", "orders", { keys: [] }), joinTo("weird", "orders", { type: "outer" as never })] }
+        : m,
+    );
+    for (const [rf, problem, models] of [
+      [{ expr: "order.lines.sku = 'a'" }, "roles[0].row_filters[0].expr reads order.lines.sku through join lines of model orders, which is one_to_many; a row filter reads only through many_to_one or one_to_one joins; treated as no rows"],
+      [{ expr: "order.customer.home.name = 'a'" }, "roles[0].row_filters[0].expr reads order.customer.home.name through more than two joins; a join reference is <join>.<column> or <join>.<join>.<column>; treated as no rows"],
+      [{ hierarchy: { ...hierarchy, column: "order.lines.rep" } }, "roles[0].row_filters[0].hierarchy.column reads order.lines.rep through join lines of model orders, which is one_to_many"],
+      [{ expr: "sku in (select sku from wh.order_items)" }, "roles[0].row_filters[0].expr has a subquery; treated as no rows"],
+      [{ expr: "ghost.x = 1" }, "reads ghost.x through join ghost of model order_items, which reaches no model; treated as no rows", broken],
+      [{ expr: "nokeys.x = 1" }, "reads nokeys.x through join nokeys of model order_items, whose keys cannot be read; treated as no rows", broken],
+      [{ expr: "weird.x = 1" }, "reads weird.x through join weird of model order_items, whose type is not left or inner; treated as no rows", broken],
+    ] as [Record<string, unknown>, string, Model[] | undefined][]) {
+      const rows = await itemRows(rf, models);
+      expect(rows.rows).toBe("none");
+      expect(rows.branches[0]!.problems).toHaveLength(1);
+      expect(rows.branches[0]!.problems[0]).toContain(problem);
+      expect(rows.branches[0]!.filters).toEqual([]);
+    }
+  });
+
+  test("a hierarchy column that is not one name, or not a whole join reference, means no rows", async () => {
+    const neither = "roles[0].row_filters[0].hierarchy.column is neither a column nor a join reference; treated as no rows";
+    for (const column of ["true or x", "order.x or 1=1", "order.x is not null or order.x", "sales_rep_id = 1", "order.sales_rep_id.part", "attrs.rep", `order."unclosed`, "order..x", "`order`.x"]) {
+      const rows = await itemRows({ hierarchy: { ...hierarchy, column } });
+      expect(rows.rows).toBe("none");
+      expect(rows.branches[0]!.problems).toEqual([neither]);
+      expect(rows.branches[0]!.filters).toEqual([]);
+    }
+    // One bare or quoted column, or a whole join reference, is read; whitespace around it is trimmed.
+    for (const [column, refs] of [
+      ["sales_rep_id", undefined],
+      [`"Sales Rep"`, undefined],
+      [" order.sales_rep_id ", ["sales_rep_id"]],
+      [`order."Rep ""Id"""`, [`Rep "Id"`]],
+      ["order.customer.segment", ["segment"]],
+    ] as [string, string[] | undefined][]) {
+      const rows = await itemRows({ hierarchy: { ...hierarchy, column } });
+      expect(rows.rows).toBe("filtered");
+      const f = rows.branches[0]!.filters[0] as HierarchyFilterResult;
+      expect(f.join_refs?.map((r) => r.column)).toEqual(refs);
+    }
+  });
+
+  test("a hierarchy column is read in the source's dialect: backticks on BigQuery", async () => {
+    const root = await chainRoot({ hierarchy: { ...hierarchy, column: "`order`.sales_rep_id" } });
+    writeYaml(join(root, "sources", "wh.yaml"), { source: "wh", dialect: "bigquery" });
+    const user = { roles: ["sales"], attributes: { employee_id: 7 } };
+    const rows = modelOf(eva(root, user), "order_items").row_filters!;
+    expect(rows.rows).toBe("filtered");
+    expect((rows.branches[0]!.filters[0] as HierarchyFilterResult).join_refs![0]!.hops[0]!.join).toBe("order");
+    // On BigQuery "order" is a string, not a name.
+    writeYaml(join(root, "access.yaml"), {
+      ...OK,
+      user_attributes: ATTRS,
+      roles: [{ name: "sales", row_filters: [{ model: "wh.order_items", hierarchy: { ...hierarchy, column: `"order".sales_rep_id` } }] }],
+    });
+    expect(modelOf(eva(root, user), "order_items").row_filters!.rows).toBe("none");
+  });
+
+  test("a model whose joins cannot all be read fails closed for a dotted name that matches no readable join", async () => {
+    const withJoins = (joins: unknown) => CHAIN.map((m) => (m.model === "order_items" ? ({ ...m, joins } as unknown as Model) : m));
+    const cannot = "but model order_items's joins cannot be read; treated as no rows";
+    for (const [joins, expr] of [
+      [{ order: joinTo("order", "orders") }, "order.x = 1"],
+      [[{ to: "orders", keys: [{ from: "orders_id", to: "id" }], relationship: "many_to_one" }], "order.x = 1"],
+      [[joinTo("order", "orders"), "garbage"], "ordr.x = 1"],
+    ] as [unknown, string][]) {
+      const rows = await itemRows({ expr }, withJoins(joins));
+      expect(rows.rows).toBe("none");
+      expect(rows.branches[0]!.problems).toHaveLength(1);
+      expect(rows.branches[0]!.problems[0]).toContain(cannot);
+    }
+    // A readable join is still followed, and a filter with no dotted name is unaffected.
+    const ok = await itemRows({ expr: "order.region = 'x'" }, withJoins([joinTo("order", "orders"), "garbage"]));
+    expect(ok.rows).toBe("filtered");
+    const own = await itemRows({ expr: "sku = 'a'" }, withJoins({ order: 1 }));
+    expect(own.rows).toBe("filtered");
+    // The second hop's model is read the same way.
+    const deep = CHAIN.map((m) => (m.model === "orders" ? ({ ...m, joins: [joinTo("customer", "customers"), 7] } as unknown as Model) : m));
+    const rows = await itemRows({ expr: "order.custmer.segment = 'a'" }, deep);
+    expect(rows.rows).toBe("none");
+    expect(rows.branches[0]!.problems[0]).toContain("but model orders's joins cannot be read");
+  });
+
+  test("a join type of null, or a join name two joins share, means no rows; an absent type is left", async () => {
+    const withJoins = (joins: Join[]) => CHAIN.map((m) => (m.model === "order_items" ? { ...m, joins } : m));
+    const nul = await itemRows({ expr: "order.region = 'x'" }, withJoins([joinTo("order", "orders", { type: null as never })]));
+    expect(nul.rows).toBe("none");
+    expect(nul.branches[0]!.problems[0]).toContain("through join order of model order_items, whose type is not left or inner; treated as no rows");
+    const absent = await itemRows({ expr: "order.region = 'x'" }, withJoins([joinTo("order", "orders")]));
+    expect((absent.branches[0]!.filters[0] as ExprFilterResult).join_refs![0]!.hops[0]!.type).toBe("left");
+    const dup = await itemRows({ expr: "order.region = 'x'" }, withJoins([joinTo("order", "orders"), joinTo("order", "order_items", { relationship: "one_to_many" })]));
+    expect(dup.rows).toBe("none");
+    expect(dup.branches[0]!.problems).toEqual([
+      "roles[0].row_filters[0].expr reads order.region, but model order_items has more than one join named order; treated as no rows",
+    ]);
+    const dupHier = await itemRows({ hierarchy }, withJoins([joinTo("order", "orders"), joinTo("order", "orders")]));
+    expect(dupHier.rows).toBe("none");
+  });
+
+  test("a dotted name whose first part is no join is left as a struct field of the model's own column", async () => {
+    const f = (await itemRows({ expr: "attrs.kind = 'a'" })).branches[0]!.filters[0]!;
+    expect(f).not.toHaveProperty("join_refs");
+  });
+
+  test("sl access shows where a row filter reads through joins", async () => {
+    const root = await chainRoot({ hierarchy });
+    const r = await sl(root, ["access", "--user", '{"employee_id":7}', "--roles", "sales"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(
+      "      sales: order.sales_rep_id is the user or anyone below them in wh.reporting_lines (manager_id -> member_id; user.employee_id = 7; order.sales_rep_id reads wh.orders through join order, without its row filters)",
+    );
+    const root2 = await chainRoot({ expr: "order.customer.segment = {{ user.region }}" });
+    const r2 = await sl(root2, ["access", "--user", '{"region":"emea"}', "--roles", "sales"]);
+    expect(r2.out).toContain(
+      '      sales: order.customer.segment = {{ user.region }} (user.region = "emea"; order.customer.segment reads wh.customers through joins order, customer, without its row filters)',
+    );
+    const j = (await sl(root, ["access", "--user", '{"employee_id":7}', "--roles", "sales", "--json"])).json<AccessVisibility>();
+    const f = modelOf(j, "order_items").row_filters!.branches[0]!.filters[0] as HierarchyFilterResult;
+    expect(f.join_refs![0]!.hops[0]!.to).toBe("wh.orders");
+  });
+});
+
+describe("sl access per-source counts and draft label", () => {
+  test("each source line carries its own visible counts and the total names the number of sources", async () => {
+    const root = await setup();
+    writeYaml(join(root, "sources", "lake.yaml"), { source: "lake", dialect: "duckdb" });
+    writeYaml(join(root, "models", "lake", "events.yaml"), { ...model("events", [dim("kind"), dim("email", { tags: ["pii"] })], [measure("event_count")]), source: "lake" });
+    const r = await sl(root, ["access"]);
+    expect(r.out).toContain("Visible across 2 sources: 5/7 models, 13/21 fields, 2/4 metrics; 7 approved item(s) hidden by protected tags");
+    expect(r.out).toContain("Source lake: visible 1/1 models, 2/3 fields, 0/0 metrics");
+    expect(r.out).toContain("Source wh: visible 4/6 models, 11/18 fields, 2/4 metrics");
+    const j = (await sl(root, ["access", "--json"])).json<AccessVisibility>();
+    expect(j.sources.map((s) => [s.source, s.summary])).toEqual([
+      ["lake", { models: { visible: 1, hidden: 0 }, fields: { visible: 2, hidden: 1 }, metrics: { visible: 0, hidden: 0 } }],
+      ["wh", { models: { visible: 4, hidden: 2 }, fields: { visible: 11, hidden: 7 }, metrics: { visible: 2, hidden: 2 } }],
+    ]);
+  });
+
+  test("a configured source with no models is counted and listed", async () => {
+    const root = await setup();
+    writeYaml(join(root, "sources", "lake.yaml"), { source: "lake", dialect: "duckdb" });
+    const r = await sl(root, ["access"]);
+    expect(r.out).toContain("Visible across 2 sources: 4/6 models, 11/18 fields, 2/4 metrics");
+    expect(r.out).toContain("Source lake: visible 0/0 models, 0/0 fields, 0/0 metrics");
+    expect(r.out).not.toContain("No models or metrics.");
+    const j = (await sl(root, ["access", "--json"])).json<AccessVisibility>();
+    expect(j.sources.map((s) => s.source)).toEqual(["lake", "wh"]);
+    const empty = tempRoot();
+    cleanups.push(empty.cleanup);
+    await initProject(empty.root);
+    writeYaml(join(empty.root, "sources", "wh.yaml"), { source: "wh", dialect: "duckdb" });
+    const e = await sl(empty.root, ["access"]);
+    expect(e.out).toContain("Visible across 1 source: 0/0 models");
+    expect(e.out).toContain("No models or metrics.");
+  });
+
+  test("a draft access.yaml is explained, labelled as awaiting sign-off", async () => {
+    const root = await setup({ ...DRAFT, roles: [{ name: "a" }] });
+    const r = await sl(root, ["access"]);
+    expect(r.out).toContain("Access mode open (access.yaml draft)");
+    expect(r.out).toContain("This explains the draft access.yaml, which is awaiting sign-off: tools serve nothing under it until it is approved.");
+    const ok = await sl(await setup({ roles: [{ name: "a" }] }), ["access"]);
+    expect(ok.out).not.toContain("awaiting sign-off");
   });
 });

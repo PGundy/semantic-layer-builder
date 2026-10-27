@@ -249,6 +249,9 @@ export type AccessMode = "open" | "closed";
 
 // A row filter is either a SQL predicate over the model's own columns, or a span-of-control rule
 // over a hierarchy (closure) model: rows whose column is the user's id or the id of anyone below them.
+// An expr and a hierarchy column may also read join references, <join>.<column> or
+// <join>.<join>.<column>, through the filtered model's to-one joins; those joins are definition
+// joins, added without their targets' row filters.
 export interface ExprRowFilter {
   model: string;
   expr: string;
@@ -257,7 +260,7 @@ export interface ExprRowFilter {
 export interface HierarchyRowFilter {
   model: string;
   hierarchy: {
-    column: string; // column of the filtered model holding a person's id
+    column: string; // column of the filtered model holding a person's id, or a join reference to one
     via: string; // source.model of the closure table: one row per (manager, member) pair at any depth
     manager: string; // closure column holding the manager's id
     member: string; // closure column holding the id of someone at any depth below that manager
@@ -278,6 +281,8 @@ export interface Role {
   // fields names dimensions and measures as source.model.field; a join is hidden with its target model.
   deny?: { models?: string[]; fields?: string[]; tags?: string[] };
   row_filters?: RowFilter[];
+  // An entry naming a model silences sl validate's warning that the model's rows are not limited by
+  // this role's row filter on a model it joins to.
   open_questions?: string[];
 }
 
@@ -290,6 +295,7 @@ export interface Restriction {
   allow: { roles?: string[]; when?: string };
 }
 
+// Tools that serve users apply only an approved access file; a draft one is served by nothing.
 export interface AccessFile extends Approval {
   mode?: AccessMode; // default open
   default_role?: string;
@@ -331,6 +337,13 @@ export interface Golden {
   status: Status;
   confirmed_by?: string;
   confirmed_at?: string;
+  // The role and user the golden ran as when sl goldens confirm recorded its rows.
+  confirmed_as?: GoldenRunAs;
+}
+
+export interface GoldenRunAs {
+  role?: string;
+  user?: Record<string, unknown>;
 }
 
 // Query plans (spec: Query-plan protocol)

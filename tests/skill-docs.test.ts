@@ -3,8 +3,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMANDS } from "../skills/semantic-layer/scripts/commands/index.ts";
 import { conditionAttributes, parseCondition } from "../skills/semantic-layer/scripts/lib/conditions.ts";
+import { computeStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
 import { schemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
-import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
+import { parseYamlText, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
+import { FIXED_NOW, tempRoot } from "./helpers.ts";
 
 // The skill's procedure docs: every `sl` command they show must exist with the flags it uses,
 // and the procedure rules the skill depends on must stay written down.
@@ -454,8 +456,8 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["interview-guide.md", "removing a drafted field", "Removing a drafted field is a hand edit of the model file"],
   ["SKILL.md", "resume news goes in the numbered items", "news from a resumed session (warnings fixed, rules added) goes into the numbered items"],
   ["interview-guide.md", "resume news goes in the numbered items", "goes into the numbered items, not the status"],
-  ["SKILL.md", "every round ends with stop or continue", "End every round trip, the last one and the handoff included, with one line"],
-  ["interview-guide.md", "every round ends with stop or continue", "End every round trip, the last one and the handoff included"],
+  ["SKILL.md", "every round but the acknowledgement ends with stop or continue", 'End every round trip except such an acknowledgement, the last one and the handoff included, with exactly this line: "Stop here or continue?"'],
+  ["interview-guide.md", "every round but the acknowledgement ends with stop or continue", 'End every round trip except such an acknowledgement, the last one and the handoff included, with exactly this line: "Stop here or continue?"'],
   // Standing warnings, cast divisors, coverage by role, rounded ratios.
   ["SKILL.md", "a warning stands only with a recorded reason", "A warning stands only when its reason is written in the file it points at (Phase 10); fix every other one"],
   ["SKILL.md", "fixing a warning on an approved item rechecks goldens", "After fixing a warning on an approved measure or golden (a `round()` removed), run `sl goldens check`; when the rows changed, show the new figure and confirm again only on the owner's yes"],
@@ -475,9 +477,12 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["verification.md", "every role needs a golden", "Every role in `access.yaml`, restricted or not, has at least one approved golden that runs as it"],
   ["SKILL.md", "a cross-source side with no model", "when that model does not exist yet, on the existing measure's model and among the handoff's cross-source questions"],
   ["interview-guide.md", "a cross-source side with no model", "when that model does not exist yet, on the existing measure's model and in the handoff"],
-  ["SKILL.md", "rounded ratios use tolerance", "For a ratio compared with a report figure rounded to cents (AOV $134.46), show the unrounded value and agree the match; an agreed difference goes in `tolerance`"],
-  ["verification.md", "rounded ratios use tolerance", "record the agreed difference in `tolerance`"],
-  ["verification.md", "tolerance covers every column", "put the ratio in a golden of its own"],
+  ["SKILL.md", "rounded ratios are agreed and written in reference", "show the unrounded value next to the report figure, agree with the owner that they match, and write the rounding in `reference`"],
+  ["SKILL.md", "tolerance guards drift, not rounding", "`tolerance` guards drift between runs, not rounding"],
+  ["verification.md", "rounded ratios are agreed and written in reference", "show the unrounded value next to the report figure, agree with the owner that they match, and write the rounding in `reference`"],
+  ["verification.md", "tolerance guards drift, not rounding", "the tolerance guards drift between runs, not rounding"],
+  ["verification.md", "tolerance covers every column", "The tolerance covers every column of the golden"],
+  ["verification.md", "currency shows two decimals, display only", "shows measures with `format: currency` to two decimals; the recorded rows keep the full value"],
   ["verification.md", "fixing a warning on an approved item rechecks goldens", "After fixing a `sl validate` warning on an approved measure or golden"],
   // Open access: exceptions first, protected tags, roles by attribute, restrictions, span of control.
   ["access.md", "access is open by default", "Access is open by default"],
@@ -552,6 +557,89 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["SKILL.md", "a retype is recorded as an open question", "changed from <from> to <to> on <date>; read back <fields>"],
   ["interview-guide.md", "a retype is recorded as an open question", "changed from <from> to <to> on <date>; read back <fields>"],
   ["interview-guide.md", "status does not list retypes", "Only the rerun's output shows a retype"],
+  // Stopping.
+  ["SKILL.md", "a stop is acknowledged in one line", "your next message only acknowledges it in one line, with no question, and runs no commands"],
+  ["interview-guide.md", "a stop is acknowledged in one line", "your next message only acknowledges it in one line, with no question, and runs no commands"],
+  ["SKILL.md", "a sign-off turn runs nothing", "**A turn that only signs off.**"],
+  ["SKILL.md", "resume checks wait for continue", "The resume checks below (`sl status`, `sl validate`) run on the first turn in which the owner asks to continue"],
+  ["interview-guide.md", "resume checks wait for continue", "The resume checks (`sl status`, `sl validate`) run on the first turn in which the owner asks to continue"],
+  ["interview-guide.md", "later closing messages get no checks", "no checks, no summary, no stop-or-continue line"],
+  // Counts and plain language.
+  ["SKILL.md", "status counts come from json", "Every count in a status line comes from `--json` output"],
+  ["interview-guide.md", "status counts come from json", "never from arithmetic over earlier counts"],
+  ["SKILL.md", "name what is hidden, not counts", "naming what is hidden from them, not by counts of tables and fields"],
+  ["access.md", "name what is hidden, not counts", "by naming what is hidden from it, not by counts of tables and fields"],
+  ["SKILL.md", "status counts are the tool's", "its counts are the tool's, so tell the owner what is hidden rather than repeating them"],
+  ["access.md", "sl access counts per source", "per source on each `Source <s>:` line"],
+  // Draft and approved access.
+  ["access.md", "draft and approved access section", "## Draft and approved access"],
+  ["access.md", "tools serve only approved access", "Tools serve only an approved `access.yaml`"],
+  ["access.md", "a draft serves nothing", "A tool that loads an `access.yaml` in draft serves nothing and says access is awaiting sign-off"],
+  ["access.md", "changes are edited in version control", "edited in version control (a branch or the working copy) while the approved version that is deployed keeps applying"],
+  ["access.md", "sl access explains a draft", "`sl access` still explains a draft file, labelled as a draft"],
+  ["access.md", "a revoke says what applies", "The last approved version keeps applying where it is deployed until you approve the new one"],
+  ["SKILL.md", "tools serve only approved access", "Tools serve only an approved `access.yaml`"],
+  ["SKILL.md", "a revoke says what applies", "the last approved version keeps applying where it is deployed until the new one is approved"],
+  ["access.md", "mode changes name who gains or loses", "say the old and new mode and who gains or loses visibility, naming the users who hold no role"],
+  ["SKILL.md", "mode changes name who gains or loses", "state the old and new mode and who gains or loses visibility, naming the users who hold no role"],
+  ["access.md", "open questions block a draft's next step", "`blocked_on: open_questions`, command `sl access`, `after_owner_yes: false`"],
+  ["SKILL.md", "open questions block a draft's next step", "`{ phase: access, blocked_on: open_questions, command: sl access, after_owner_yes: false }`"],
+  ["interview-guide.md", "table readbacks during an access rewrite", "While `access.yaml` is being rewritten"],
+  ["SKILL.md", "table readbacks during an access rewrite", "While `access.yaml` is being rewritten, the readback says who will see the table under the draft file"],
+  // Row filters through joins and child tables.
+  ["access.md", "row filters read through to-one joins", "through one or two `many_to_one` or `one_to_one` joins of the filtered model itself"],
+  ["access.md", "row-filter joins are definition joins", "the compiler adds them without their targets' row filters"],
+  ["access.md", "a child row filter through its join", "expr: order.ship_region = {{ user.region }}"],
+  ["access.md", "a hierarchy column through a join", "`order.sales_rep_id`"],
+  ["SKILL.md", "row filters read through to-one joins", "A row filter's `expr` and a hierarchy's `column` may read join references"],
+  ["interview-guide.md", "row filters take join references", "a row filter in `access.yaml`"],
+  ["joins.md", "row filters take join references", "a row filter in `access.yaml` reads through"],
+  ["access.md", "child tables section", "### Child tables"],
+  ["access.md", "child tables in the interview", "list every model with a to-one join into it"],
+  ["access.md", "child tables are settled one by one", "list every model with a `many_to_one` or `one_to_one` join into it, one or two hops away, and settle each one"],
+  ["access.md", "an open question naming the model silences it", "A role's `open_questions` entry naming the model silences it"],
+  ["SKILL.md", "child tables in the interview", "For each row-filtered model, list every model with a to-one join into it"],
+  // Restrictions, personal values.
+  ["access.md", "a restriction-only role is an empty role", "A role whose only job is to be named in a restriction's `allow.roles` is such a role"],
+  ["access.md", "prefer allow.when", "Prefer `allow.when` when an attribute says who may see it"],
+  ["SKILL.md", "prefer allow.when", "preferring a restriction's `allow.when` to a role made only to be named in `allow.roles`"],
+  ["verification.md", "an allow.when golden needs no role", "a golden whose `user` holds the attribute"],
+  ["SKILL.md", "no personal values in text", "never write a value of a `pii` or `sensitive` column (a person's name, an email) into a description, synonym, golden question or golden reference"],
+  ["access.md", "no personal values in text", "Never write a value of a `pii` or `sensitive` column (a person's name, an email) into a description, a synonym, a golden question or a golden reference"],
+  ["interview-guide.md", "no personal values in text", "never write a value of a `pii` or `sensitive` column (a person's name, an email) into a description, synonym, golden question or golden reference"],
+  // Goldens and access.
+  ["verification.md", "role goldens after access approval", "Confirm a golden that runs as a role after `access.yaml` is approved"],
+  ["verification.md", "a draft-access role golden is rechecked", "read back to the owner after every change to that role"],
+  ["verification.md", "confirm records confirmed_as", "`confirmed_as: { role, user }`"],
+  ["verification.md", "goldens without confirmed_as are confirmed again", "A golden approved before `confirmed_as` was recorded has none"],
+  ["verification.md", "a gap to the report is not a tolerance", "is settled with the owner and written in `reference`; it is not a tolerance"],
+  ["verification.md", "tolerance guards drift between runs", "agree the tolerance, which guards drift between later runs and the recorded rows"],
+  ["SKILL.md", "a gap to the report is not a tolerance", "agree any difference and write it in `reference`, then agree a tolerance for drift between runs"],
+  ["verification.md", "a span-of-control golden names the id", "the golden's question naming the id, not the person"],
+  ["SKILL.md", "the handoff says what applies to a draft access.yaml", "a draft `access.yaml`, saying what applies until it is approved"],
+  ["verification.md", "validate checks goldens against access", "`sl validate` checks every golden's request against access as the user it runs as"],
+  ["verification.md", "a changed role or user is confirmed again", "Changing `role` or `user` on an approved golden changes what it pins"],
+  ["SKILL.md", "role goldens after access approval", "Confirm a golden that runs as a role after `access.yaml` is approved, or recheck it and read it back after every change to that role"],
+  ["SKILL.md", "a changed role or user is confirmed again", "changing `role` or `user` on an approved golden means confirming again on the owner's yes"],
+  ["verification.md", "the row-filtered join line can be N/A", "The line is N/A, and named as such in the handoff with the reason, when no join the role may use reaches its row-filtered model"],
+  ["SKILL.md", "N/A coverage lines in the handoff", "each line that does not apply, named N/A with the reason"],
+  // Warnings that never stand.
+  ["SKILL.md", "round and literal division never stand", "Two warnings never stand, whatever the file says: `round()` in a golden's SQL and a duckdb measure dividing by a numeric literal"],
+  ["interview-guide.md", "round and literal division never stand", "Two warnings never stand, whatever the file says"],
+  ["verification.md", "round and literal division never stand", "Neither warning ever stands"],
+  ["verification.md", "rounded rows fail until confirmed again", "Rows recorded rounded fail until the owner says yes to the unrounded figure"],
+  // Scope, profiles, new columns, pair tables.
+  ["scoping.md", "one named table is confirmed in one line", "a name-based scope does not pick up new tables"],
+  ["scoping.md", "patterns still pick up new tables", "a new table that no pattern matches will need adding the same way"],
+  ["intake.md", "introspect's next hint", "`sl profile --source <s>` only while some in-scope table is not profiled"],
+  ["intake.md", "profile state", "`profile_state` in `--json`"],
+  ["SKILL.md", "profile state", "`yes`, `partial` (some columns profiled, but new or retyped ones not) or `no`"],
+  ["interview-guide.md", "new columns across models over one table", "A column is new when no model over the same table reads it"],
+  ["interview-guide.md", "new foreign keys draft joins", "A new foreign-key column whose target is in scope or modeled gets a draft join"],
+  ["interview-guide.md", "currency asked once", "The currency question is asked only when no existing measure of the model has a `currency`"],
+  ["SKILL.md", "new columns across models over one table", "A column is new only when no model over the same table reads it or lists it in `ignored_columns`"],
+  ["interview-guide.md", "pair tables draft as keys", "for a table of 2 or 3 columns whose names all end in `_id`"],
+  ["joins.md", "pair tables draft as keys", "a table of 2 or 3 columns whose names all end in `_id`"],
 ];
 
 describe("readbacks and examples", () => {
@@ -580,6 +668,120 @@ describe("readbacks and examples", () => {
 
   test("example joins are named after their target's role, not a column", () => {
     for (const d of DOCS) expect(read(d)).not.toContain("`orders.region`");
+  });
+
+  test('every round trip ends with exactly "Stop here or continue?"', () => {
+    for (const d of DOCS) {
+      const text = read(d);
+      expect(text).not.toContain("Everything is saved. Stop here or continue?");
+      for (const m of text.matchAll(/"([^"\n]*Stop here or continue\?[^"\n]*)"/g)) expect(m[1]).toBe("Stop here or continue?");
+    }
+  });
+
+  test("no doc puts the rounding of a ratio in tolerance", () => {
+    for (const d of DOCS) expect(read(d).replace(/\s+/g, " ")).not.toMatch(/agreed difference (goes )?in `tolerance`|put the ratio in a golden of its own/);
+  });
+
+  test("no doc treats a gap to the owner's figure as a tolerance", () => {
+    for (const d of DOCS) {
+      const text = read(d).replace(/\s+/g, " ");
+      expect(text).not.toContain("Small differences can be expected (rounding");
+      expect(text).not.toContain("Compare the answer with a figure the owner trusts and agree a tolerance");
+    }
+  });
+
+  test("the stop-or-continue rule follows the acknowledgement it excepts", () => {
+    for (const d of ["SKILL.md", "references/interview-guide.md"]) {
+      const text = read(d).replace(/\s+/g, " ");
+      expect(text).not.toContain("every other round trip");
+      expect(text.indexOf("only acknowledges it in one line")).toBeLessThan(text.indexOf("End every round trip except such an acknowledgement"));
+    }
+  });
+
+  test("goldens do not name a person in the examples", () => {
+    for (const d of DOCS) expect(read(d)).not.toMatch(/"Priya's team/);
+  });
+
+  test("access.md keeps the status rule out of the revoke bullet", () => {
+    const text = read("references/access.md");
+    const revoke = text.split("\n").find((l) => l.startsWith("- A revoke to edit an approved file"))!;
+    expect(revoke).not.toContain("sl status");
+    expect(text).not.toContain(": Draft and approved access)");
+    const intro = text.split("\n").find((l) => l.startsWith("Run the access phase after the important models are approved"))!;
+    expect(intro).toContain("`sl status` holds `next_step` at `access` until `access.yaml` exists and is approved");
+  });
+
+  test("no doc limits a row filter to its model's own columns", () => {
+    for (const d of DOCS) expect(read(d).replace(/\s+/g, " ")).not.toMatch(/A row filter names only its model's own columns|row filter (is a SQL predicate )?over (one|its) model's own columns(?! and)/);
+  });
+
+  test("every role in the example access.yaml grants, denies or filters something", () => {
+    const block = fences(read("references/access.md")).find((f) => f.lang === "yaml" && /^status: draft$/m.test(f.body))!;
+    const a = parseYamlText(block.body) as { roles?: { name: string; allow?: object; deny?: object; row_filters?: unknown[] }[] };
+    for (const r of a.roles ?? []) expect(Boolean(r.allow || r.deny || r.row_filters?.length)).toBe(true);
+  });
+
+  test("the child-table warning the docs quote is the one validate gives", () => {
+    const validate = readFileSync(join(SKILL_DIR, "scripts", "lib", "validate.ts"), "utf8");
+    for (const part of ["that belong to ", " are not limited by ", "'s row filter for role ", "or record why in the role's open_questions"]) expect(validate).toContain(part);
+    expect(read("references/access.md")).toContain(
+      "rows of <N> that belong to <M> are not limited by <M>'s row filter for role <R>; add a row filter on <N> (it may read <join>.<column>), deny <N> to <R>, or record why in the role's open_questions",
+    );
+  });
+
+  test("the next_step the docs quote for open access questions is the one status gives", () => {
+    const t = tempRoot();
+    try {
+      const ok = { status: "approved", approved_by: "Dana", approved_at: "2026-01-15" };
+      writeYaml(join(t.root, "semantic.yaml"), { version: 1, name: "acme", settings: { focus_threshold: 12, batch_size: 3 } });
+      writeYaml(join(t.root, "sources", "wh.yaml"), { source: "wh", dialect: "duckdb", connection: { database: "wh.duckdb" } });
+      writeJson(join(t.root, "snapshots", "wh.json"), {
+        snapshot_version: 1,
+        source: "wh",
+        dialect: "duckdb",
+        captured_at: FIXED_NOW,
+        method: "live",
+        tables: [
+          {
+            schema: "main",
+            name: "orders",
+            kind: "table",
+            row_count: 10,
+            primary_key: ["id"],
+            profiled_at: FIXED_NOW,
+            columns: [
+              { name: "id", type: "integer" },
+              { name: "amount", type: "integer" },
+            ],
+          },
+        ],
+      });
+      writeYaml(join(t.root, "models", "wh", "orders.yaml"), {
+        model: "orders",
+        source: "wh",
+        table: "main.orders",
+        ...ok,
+        description: "Orders.",
+        grain: "One row per order.",
+        primary_key: ["id"],
+        dimensions: [{ name: "order_id", expr: "id", type: "number", description: "Id.", ...ok }],
+        measures: [{ name: "total", expr: "amount", agg: "sum", description: "Total.", ...ok }],
+      });
+      writeYaml(join(t.root, "metrics.yaml"), {
+        metrics: [{ name: "avg_total", source: "wh", type: "ratio", numerator: "orders.total", denominator: "orders.total", description: "Avg.", ...ok }],
+      });
+      writeYaml(join(t.root, "access.yaml"), { status: "draft", mode: "open", open_questions: ["Who may see refunds?"], roles: [] });
+      const step = computeStatus(t.root).next_step;
+      const quoted = /`(\{ phase: access, blocked_on: open_questions[^`]*\})`/.exec(read("SKILL.md").replace(/\s+/g, " "));
+      expect(quoted).not.toBeNull();
+      expect(step).toMatchObject(parseYamlText(quoted![1]!) as object);
+      expect(step).toMatchObject({ phase: "access", blocked_on: "open_questions", command: "sl access", after_owner_yes: false });
+      expect(step.message).toContain('the first: "Who may see refunds?"');
+      expect(step.message).toContain("waits on the owner's answers");
+      expect(read("references/access.md").replace(/\s+/g, " ")).toContain("`blocked_on: open_questions`, command `sl access`, `after_owner_yes: false`");
+    } finally {
+      t.cleanup();
+    }
   });
 
   test("examples do not use the fixture's test-account email rule", () => {

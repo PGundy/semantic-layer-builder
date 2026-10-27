@@ -22,7 +22,7 @@ import {
   type LoadedModel,
 } from "./project.ts";
 import { rankTables } from "./rank.ts";
-import { incomingKeyColumns, missingColumns, unreferencedColumns } from "./snapshot-diff.ts";
+import { incomingKeyColumns, missingColumns, referencedColumns, unreferencedColumns } from "./snapshot-diff.ts";
 import type { AccessMode, Approval, Dialect, Metric, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
 
 // Golden count below which the verify phase stays open.
@@ -46,8 +46,18 @@ export interface SnapshotSummary {
   captured_at: string;
   tables: number;
   in_scope: number;
-  // In-scope tables that carry a profile.
+  // In-scope tables whose profile is complete (profiled_at is set).
   profiled: number;
+}
+
+// How far a table is profiled: yes when profiled_at is set; partial when some columns carry a
+// profile but profiled_at is missing (a reintrospect added or retyped columns); otherwise no.
+// Only yes counts as profiled; sl profile profiles partial and unprofiled tables alike.
+export type ProfileState = "yes" | "partial" | "no";
+
+export function profileState(t: Pick<SnapshotTable, "profiled_at" | "columns">): ProfileState {
+  if (t.profiled_at) return "yes";
+  return Array.isArray(t.columns) && t.columns.some((c) => c?.profile !== undefined && c?.profile !== null) ? "partial" : "no";
 }
 
 export interface SourceStatus {
@@ -66,7 +76,10 @@ export interface SourceStatus {
   open_questions: number;
   tables_without_model: number;
   unmodeled_tables: string[];
+  // In-scope tables whose profile is not complete, partial ones included.
   unprofiled_tables: string[];
+  // The unprofiled_tables whose profile is partial: some columns carry a profile, but new or retyped columns do not.
+  partially_profiled_tables: string[];
   // Draft models on in-scope tables; only these hold the interview phase open.
   draft_models: string[];
   // Approved models on in-scope tables that still hold draft dimensions, measures or joins.
@@ -76,8 +89,9 @@ export interface SourceStatus {
   draft_fields: string[];
   // Models whose table is out of scope or missing from the snapshot; the interview and check-join phases skip them.
   out_of_scope_models: string[];
-  // Columns of the tables under in-scope models that no field, join key or primary key reads and
-  // that ignored_columns does not list; sl draft --new-columns drafts them.
+  // Columns of the tables under in-scope models that no model over the same table reads (fields,
+  // join keys, primary key) or lists in ignored_columns; sl draft --new-columns drafts them. Each
+  // column is listed once, under the in-scope model over its table that reads the most columns.
   new_columns: NewColumn[];
   // Columns that fields read (an expr that is one bare or quoted column) and that the snapshot no
   // longer has, for every model whose table is in the snapshot, in scope or not. A table with no
@@ -127,6 +141,9 @@ export interface NextStep {
   // True when the command records the owner's approval (sl approve, sl goldens confirm):
   // it runs only after the owner says yes to its readback.
   after_owner_yes: boolean;
+  // Set when the step waits on the owner rather than on a command: open_questions while access.yaml
+  // holds open questions. command then only explains the current file.
+  blocked_on?: "open_questions";
 }
 
 // Visible counts for the default audience, and the approved models, fields and metrics hidden from it
@@ -176,21 +193,26 @@ export interface ProjectStatus {
   next_step: NextStep;
 }
 
-// The number of strings in a value read from YAML that should be a string list.
-function stringCount(v: unknown): number {
-  return Array.isArray(v) ? v.filter((q) => typeof q === "string" && q.trim() !== "").length : 0;
+// The non-empty strings of a value read from YAML that should be a string list.
+function strings(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((q): q is string => typeof q === "string" && q.trim() !== "") : [];
 }
 
-// Open questions in access.yaml, at the top level and per role. The file is read
-// defensively: anything that is not a list of strings counts as none.
-function accessOpenQuestions(access: unknown): number {
-  if (!access || typeof access !== "object") return 0;
+// Open questions in access.yaml, the top-level ones first, then each role's, prefixed "role <name>: ".
+// The file is read defensively: anything that is not a list of strings counts as none.
+function accessQuestionList(access: unknown): string[] {
+  if (!access || typeof access !== "object") return [];
   const a = access as { open_questions?: unknown; roles?: unknown };
   const roles = Array.isArray(a.roles) ? a.roles : [];
-  return (
-    stringCount(a.open_questions) +
-    roles.reduce<number>((n, r) => n + (r && typeof r === "object" ? stringCount((r as { open_questions?: unknown }).open_questions) : 0), 0)
-  );
+  return [
+    ...strings(a.open_questions),
+    ...roles.flatMap((r) => {
+      if (!r || typeof r !== "object") return [];
+      const { name, open_questions } = r as { name?: unknown; open_questions?: unknown };
+      const prefix = typeof name === "string" && name !== "" ? `role ${name}: ` : "";
+      return strings(open_questions).map((q) => `${prefix}${q}`);
+    }),
+  ];
 }
 
 // The role names of access.yaml, read defensively: entries without a string name are skipped.
@@ -291,6 +313,45 @@ function fieldMissingColumns(m: LoadedModel["model"], table: SnapshotTable, dial
   return missingColumns(m, table).filter((x) => fields.some((f) => f?.name === x.field && checkedColumnRef(f.expr, x.column, dialect)));
 }
 
+// The new columns of the tables under in-scope models: a column is new when no model over the same
+// table, in scope or not, reads it or lists it in ignored_columns, so a helper model over an
+// already modeled table raises nothing its table's other models read. Each column is listed once,
+// under the in-scope model over its table that reads the most of the table's columns (the first
+// such model on a tie), in that model's order and the table's column order.
+function tableNewColumns(
+  active: LoadedModel["model"][],
+  resolved: Map<LoadedModel["model"], SnapshotTable>,
+  scopedModels: Map<LoadedModel["model"], SnapshotTable>,
+  models: LoadedModel["model"][],
+  dialect: Dialect,
+): NewColumn[] {
+  const byTable = new Map<SnapshotTable, LoadedModel["model"][]>();
+  for (const [m, t] of resolved) byTable.set(t, [...(byTable.get(t) ?? []), m]);
+  const readCount = (m: LoadedModel["model"], t: SnapshotTable) => referencedColumns(m, t, dialect, incomingKeyColumns(m, models)).length;
+  const owner = new Map<SnapshotTable, LoadedModel["model"]>();
+  for (const m of active) {
+    const t = scopedModels.get(m)!;
+    const current = owner.get(t);
+    if (!current || readCount(m, t) > readCount(current, t)) owner.set(t, m);
+  }
+  const out: NewColumn[] = [];
+  for (const m of active) {
+    const t = scopedModels.get(m)!;
+    if (owner.get(t) !== m) continue;
+    const others = (byTable.get(t) ?? []).filter((o) => o !== m);
+    const usedElsewhere = new Set(
+      others.flatMap((o) => {
+        const unread = new Set(unreferencedColumns(o, t, dialect, incomingKeyColumns(o, models)).map((c) => c.name));
+        return t.columns.filter((c) => !unread.has(c.name)).map((c) => c.name);
+      }),
+    );
+    for (const c of unreferencedColumns(m, t, dialect, incomingKeyColumns(m, models))) {
+      if (!usedElsewhere.has(c.name)) out.push({ model: m.model, column: c.name, type: c.type });
+    }
+  }
+  return out;
+}
+
 function sourceStatus(root: string, name: string, settings: ProjectStatus["settings"]): SourceReport {
   const config = loadSource(root, name);
   const snapshot = loadSnapshot(root, name);
@@ -318,13 +379,7 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
     }
   }
   const active = models.filter((m) => scopedModels.has(m));
-  const newColumns: NewColumn[] = [];
-  for (const m of active) {
-    const t = scopedModels.get(m)!;
-    for (const c of unreferencedColumns(m, t, config.dialect, incomingKeyColumns(m, models))) {
-      newColumns.push({ model: m.model, column: c.name, type: c.type });
-    }
-  }
+  const newColumns = tableNewColumns(active, resolved, scopedModels, models, config.dialect);
   // A model out of scope is still served, so a column it reads is checked wherever its table is.
   const missing: MissingColumn[] = [];
   const drift: Drift = { columns: [], tables: [] };
@@ -349,7 +404,8 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
   }
 
   const unmodeled = scoped.filter((t) => !byTable.has(qualifiedName(t).toLowerCase())).map(qualifiedName);
-  const unprofiled = scoped.filter((t) => !t.profiled_at).map(qualifiedName);
+  const unprofiled = scoped.filter((t) => profileState(t) !== "yes").map(qualifiedName);
+  const partial = scoped.filter((t) => profileState(t) === "partial").map(qualifiedName);
   const unchecked = active.flatMap((m) => (m.joins ?? []).filter((j) => !j.evidence).map((j) => `${m.model}.${j.name}`));
   const modelCount = count(models);
 
@@ -377,6 +433,7 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
     tables_without_model: unmodeled.length,
     unmodeled_tables: unmodeled,
     unprofiled_tables: unprofiled,
+    partially_profiled_tables: partial,
     draft_models: active.filter((m) => m.status !== "approved").map((m) => m.model),
     models_with_draft_fields: active.filter((m) => m.status === "approved" && draftFields(m).length > 0).map((m) => m.model),
     draft_fields: active.flatMap(draftFields),
@@ -387,6 +444,33 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
     next_batch: nextBatch,
   };
   return { status, drift };
+}
+
+// The profile step's message: the in-scope tables with no profile, and apart from them those whose
+// profile is partial because a reintrospect added or retyped columns.
+function profileMessage(s: SourceStatus): string {
+  const partial = new Set(s.partially_profiled_tables);
+  const none = s.unprofiled_tables.filter((t) => !partial.has(t));
+  const parts: string[] = [];
+  if (none.length) parts.push(`${none.length} in-scope table(s) in "${s.source}" have no profile: ${preview(none)}.`);
+  if (partial.size) {
+    parts.push(
+      `${partial.size} in-scope table(s) in "${s.source}" need a profile for new or retyped columns: ${preview(s.partially_profiled_tables)}.`,
+    );
+  }
+  return parts.join(" ");
+}
+
+// Longest open question quoted in a next step; sl access and access.yaml hold the full text.
+const QUESTION_WIDTH = 200;
+
+// A question cut at a word boundary to QUESTION_WIDTH characters, ending in … when cut.
+function shortQuestion(q: string): string {
+  const t = q.replace(/\s+/g, " ").trim();
+  if (t.length <= QUESTION_WIDTH) return t;
+  const cut = t.slice(0, QUESTION_WIDTH);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > QUESTION_WIDTH / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:.]+$/, "")}…`;
 }
 
 // The first `max` names, and how many more there are.
@@ -401,6 +485,8 @@ interface StepContext {
   drift: Map<string, Drift>;
   accessReadable: boolean;
   accessProblem: string | null;
+  // access.yaml's open questions, top level first, then per role.
+  accessQuestions: string[];
 }
 
 const OPEN_BASELINE = "everyone sees every approved model, field and metric except those tagged pii or sensitive";
@@ -511,7 +597,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     return {
       phase: "profile",
       source: s,
-      message: `${unprofiled.unprofiled_tables.length} in-scope table(s) in "${s}" have no profile: ${preview(unprofiled.unprofiled_tables)}.`,
+      message: profileMessage(unprofiled),
       command: `sl profile --source ${s}`,
     };
   }
@@ -621,13 +707,34 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         command: "sl validate",
       };
     }
+    // Open questions wait on the owner's answers: nothing is approved until they are answered.
+    if (questions) {
+      const state = access.state === "approved" ? "approved" : "a draft";
+      const first = ctx.accessQuestions[0];
+      const extra =
+        ctx.accessProblem !== null
+          ? ` Also, ${ctx.accessProblem} sl validate names what to fix.`
+          : closedEmpty
+            ? " It is closed and has no roles yet, so nobody sees anything."
+            : "";
+      return {
+        phase: "access",
+        blocked_on: "open_questions",
+        message:
+          `access.yaml is ${state} with ${questions} open question(s), so this step waits on the owner's answers` +
+          (first ? `; the first: "${shortQuestion(first)}"` : "") +
+          `.${extra} Raise the questions with the owner and record their answers; do not push the approval. ` +
+          "The owner may approve with remaining questions (notes for tool builders, or ones waiting on someone) named in the whole-file readback. " +
+          "sl access explains what the draft file gives each role meanwhile.",
+        command: "sl access",
+      };
+    }
     if (ctx.accessProblem !== null) {
       return {
         phase: "access",
         message:
           `${approved}${ctx.accessProblem} Ask the owner what they meant, fix access.yaml until sl validate reports no access issue, ` +
-          "then read the mode, every role and every restriction back to them and approve it once they confirm." +
-          (questions ? ` Settle its ${questions} open question(s) too.` : ""),
+          "then read the mode, every role and every restriction back to them and approve it once they confirm.",
         command: "sl validate",
       };
     }
@@ -636,8 +743,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         phase: "access",
         message:
           `${access.state === "approved" ? "access.yaml is approved, but it" : "access.yaml"} is closed and has no roles yet, so nobody sees anything. Ask the owner who may see what: roles with allow.models, ` +
-          "row filters and denied fields or tags. Write them as a draft." +
-          (questions ? ` Settle its ${questions} open question(s) with them.` : ""),
+          "row filters and denied fields or tags. Write them as a draft.",
         command: "sl validate",
       };
     }
@@ -646,17 +752,15 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         phase: "access",
         message:
           `access.yaml is open and has no roles yet: ${OPEN_BASELINE}. Ask the owner the exceptions question: ${EXCEPTIONS_QUESTION} ` +
-          "Write the roles, restrictions and tags they name as a draft; when there are none, read the open baseline back and approve access.yaml once they confirm." +
-          (questions ? ` Settle its ${questions} open question(s) with them.` : ""),
-        command: ctx.accessReadable && !questions ? `sl approve --target access --by "<owner>"` : "sl validate",
+          "Write the roles, restrictions and tags they name as a draft; when there are none, read the open baseline back and approve access.yaml once they confirm.",
+        command: `sl approve --target access --by "<owner>"`,
       };
     }
     return {
       phase: "access",
       message:
         `access.yaml is a draft in ${access.mode} mode with ${access.roles} role(s) and ${access.restrictions} restriction(s). ` +
-        "Read the mode, every role and every restriction back to the owner and approve it once they confirm." +
-        (questions ? ` Settle its ${questions} open question(s) first.` : ""),
+        "Read the mode, every role and every restriction back to the owner and approve it once they confirm.",
       command: `sl approve --target access --by "<owner>"`,
     };
   }
@@ -759,7 +863,8 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
   const audience = evaluateAccess(root);
   const loadedGoldens = listGoldens(root);
   const goldens = loadedGoldens.map((g) => g.golden);
-  const accessQuestions = accessOpenQuestions(access);
+  const accessQuestionTexts = accessQuestionList(access);
+  const accessQuestions = accessQuestionTexts.length;
   const defaultRole = access && typeof access.default_role === "string" ? access.default_role : undefined;
   const goldenRoles = new Set(
     goldens
@@ -791,6 +896,7 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
     drift,
     accessReadable: accessState === "missing" || (!!access && typeof access === "object" && !Array.isArray(access)),
     accessProblem: accessProblem(audience),
+    accessQuestions: accessQuestionTexts,
   });
   const step: NextStep = { ...found, after_owner_yes: needsOwnerYes(found.command) };
   const batchSource = sources.find((s) => s.source === step.source && s.next_batch.length) ?? sources.find((s) => s.next_batch.length);

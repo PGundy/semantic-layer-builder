@@ -33,6 +33,11 @@ function isPattern(ref: string): boolean {
   return ref.startsWith("re:") || /[*?]/.test(ref);
 }
 
+function listPhrase(items: string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
@@ -74,8 +79,13 @@ function resolveTableRefs(snapshot: Snapshot, refs: string[], sourceName: string
 
 interface UpdatedEntry {
   model: string;
+  // The new dimensions and measures.
   added: string[];
+  // The new joins.
+  joins: string[];
   skipped: { column: string; reason: string }[];
+  // New joins whose target table has no model yet.
+  unmodeled: { join: string; to: string; table: string }[];
 }
 
 const keyName = (k: unknown) => String((k as { value?: unknown } | null)?.value ?? k);
@@ -112,7 +122,8 @@ function appendItems(doc: Document, key: string, items: unknown[], before: strin
   doc.set(key, doc.createNode(items));
 }
 
-// sl draft --new-columns: drafts the columns each existing model on an in-scope table does not read.
+// sl draft --new-columns: drafts the columns no existing model on an in-scope table reads, into the
+// table's model that reads the most of its columns.
 function draftNewColumnsCommand(
   ctx: CommandContext,
   snapshot: Snapshot,
@@ -143,18 +154,21 @@ function draftNewColumnsCommand(
       appendItems(doc, "ignored_columns", r.skipped.map((x) => x.column), ["dimensions", "measures", "joins"]);
       appendItems(doc, "dimensions", r.dimensions, ["measures", "joins"]);
       appendItems(doc, "measures", r.measures, ["joins"]);
+      appendItems(doc, "joins", r.joins, []);
     });
     updated.push({
       model: model.model,
       added: [...r.dimensions, ...r.measures].map((f) => f.name),
+      joins: r.joins.map((j) => j.name),
       skipped: r.skipped,
+      unmodeled: r.unmodeled,
       table: qualifiedName(table),
       path,
     });
   }
 
   if (ctx.json) {
-    ctx.out(formatJson({ source: sourceName, updated: updated.map(({ model, added, skipped }) => ({ model, added, skipped })) }));
+    ctx.out(formatJson({ source: sourceName, updated: updated.map(({ model, added, joins, skipped }) => ({ model, added, joins, skipped })) }));
     return 0;
   }
   if (!updated.length) {
@@ -165,13 +179,18 @@ function draftNewColumnsCommand(
   for (const u of updated) {
     const parts: string[] = [];
     if (u.added.length) parts.push(`added ${u.added.join(", ")}`);
+    if (u.joins.length) parts.push(`added ${u.joins.length === 1 ? "the join" : "the joins"} ${u.joins.join(", ")}`);
     if (u.skipped.length) parts.push(`left out ${u.skipped.map((x) => `${x.column} (${x.reason})`).join(", ")}, now in ignored_columns`);
     lines.push(`  ${u.model} (${u.table}, ${relative(ctx.cwd, u.path) || u.path}): ${parts.join("; ")}`);
   }
+  // A join to a table with no model fails sl validate and sl check-join until that table is drafted.
+  const draftFirst = [...new Set(updated.flatMap((u) => u.unmodeled.map((x) => x.table)))];
   lines.push(
     "",
     "Each new field is a draft with an open question, and the model's own status is unchanged. " +
-      "Next: read each new item back to the owner, then run `sl validate`.",
+      `Next: read each new item back to the owner, ${
+        draftFirst.length ? `draft ${listPhrase(draftFirst)} first (\`sl draft --source ${sourceName} --tables ${draftFirst.join(",")}\`), ` : ""
+      }${updated.some((u) => u.joins.length) ? "run `sl check-join` on each new join, " : ""}then run \`sl validate\`.`,
   );
   ctx.out(lines.join("\n"));
   return 0;

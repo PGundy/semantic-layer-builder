@@ -30,6 +30,7 @@ function sourceLines(s: SourceStatus): string[] {
   const snap = s.snapshot;
   lines.push(
     `  snapshot: ${snap.method}, ${snap.captured_at}; ${snap.tables} tables, ${snap.in_scope} in scope, ${snap.profiled} profiled` +
+      (s.partially_profiled_tables.length ? `, ${s.partially_profiled_tables.length} partly profiled` : "") +
       (s.needs_focus ? " (needs focus)" : ""),
   );
   lines.push(
@@ -78,9 +79,11 @@ function render(st: ProjectStatus): string {
   }
   lines.push(`Next step (${st.next_step.phase}): ${st.next_step.message}`);
   lines.push(
-    st.next_step.after_owner_yes
-      ? `  Only after the owner says yes to its readback: ${st.next_step.command}`
-      : `  ${st.next_step.command}`,
+    st.next_step.blocked_on === "open_questions"
+      ? `  Waiting on the owner's answers to the open questions; meanwhile: ${st.next_step.command}`
+      : st.next_step.after_owner_yes
+        ? `  Only after the owner says yes to its readback: ${st.next_step.command}`
+        : `  ${st.next_step.command}`,
   );
   return lines.join("\n");
 }

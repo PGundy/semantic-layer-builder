@@ -5,11 +5,11 @@ import { canRun } from "../lib/adapters/index.ts";
 import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.ts";
 import { bool, str, today } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
-import { compareRows, goldenDraftFields, goldenPlan, goldenQueryId, resultColumns } from "../lib/goldens.ts";
+import { compareRows, currencyColumns, displayRows, goldenDraftFields, goldenPlan, goldenQueryId, resultColumns } from "../lib/goldens.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
 import { executePlan } from "../lib/plan.ts";
-import { listGoldens, loadMetrics, loadSource, paths, stem, type LoadedGolden } from "../lib/project.ts";
-import type { Golden, Model, ResultRows, SourceConfig } from "../lib/types.ts";
+import { listGoldens, loadAccess, loadMetrics, loadSource, paths, stem, type LoadedGolden } from "../lib/project.ts";
+import type { Golden, GoldenRunAs, Metric, Model, ResultRows, SourceConfig } from "../lib/types.ts";
 import { NAME_PATTERN } from "../lib/types.ts";
 import { readJson, readYaml, updateYaml } from "../lib/yaml.ts";
 
@@ -99,10 +99,14 @@ function parseTolerance(values: OptionValues, g: Golden): { tolerance: number; f
   return { tolerance: t, from: "flag" };
 }
 
-// Draft fields and metrics the golden's request uses, read from the source's models and
-// metrics.yaml. The list is advisory: a file that cannot be read is skipped with a notice
-// on stderr pointing to sl validate, and confirm goes on.
-function draftFieldsOf(ctx: CommandContext, g: Golden, source: SourceConfig): string[] {
+interface Layer {
+  models: Model[];
+  metrics: Metric[];
+}
+
+// The source's models and metrics.yaml, read for advisory use: a file that cannot be read is
+// skipped, with a notice on stderr pointing to sl validate when `purpose` names what it was read for.
+function readLayer(ctx: CommandContext, source: SourceConfig, purpose?: string): Layer {
   const unread: string[] = [];
   let firstError = "";
   const attempt = <T>(path: string, read: () => T): T | undefined => {
@@ -123,10 +127,51 @@ function draftFieldsOf(ctx: CommandContext, g: Golden, source: SourceConfig): st
   });
   const metricsFile = attempt(paths(ctx.root).metrics, () => loadMetrics(ctx.root));
   const metrics = metricsFile && Array.isArray(metricsFile.metrics) ? metricsFile.metrics : [];
-  if (unread.length) {
-    ctx.err(`Could not read ${unread.join(", ")} to list draft fields (${firstError}); run sl validate.`);
+  if (unread.length && purpose) {
+    ctx.err(`Could not read ${unread.join(", ")} to ${purpose} (${firstError}); run sl validate.`);
   }
-  return goldenDraftFields(g, models, metrics);
+  return { models, metrics };
+}
+
+// Rows as printed: the result columns named like the request's currency measures and metrics
+// (see currencyColumns) shown to two decimals; a column the sql aliases otherwise shows as
+// returned. The recorded and JSON rows are not changed.
+function shownRows(g: Golden, layer: Layer, rows: ResultRows, columns: string[]): ResultRows {
+  return displayRows(rows, currencyColumns(g, layer.models, layer.metrics, columns));
+}
+
+// The role and user a golden's file writes, which confirm records as confirmed_as and sl validate
+// compares with the file's role and user. A golden without a role records no role: confirmed_as
+// tracks the golden's own fields, not access.yaml's default_role.
+function runAs(g: Golden): GoldenRunAs {
+  const out: GoldenRunAs = {};
+  if (typeof g.role === "string") out.role = g.role;
+  if (g.user && typeof g.user === "object" && !Array.isArray(g.user)) out.user = g.user;
+  return out;
+}
+
+// A warning when the role a golden runs as (its role, else access.yaml's default_role) is defined
+// only in a draft access.yaml, whose rules may still change before access is approved. An
+// access.yaml that cannot be read is left to sl validate.
+function draftRoleWarning(ctx: CommandContext, g: Golden): string | undefined {
+  let access: ReturnType<typeof loadAccess>;
+  try {
+    access = loadAccess(ctx.root);
+  } catch (e) {
+    if (!(e instanceof UserError)) throw e;
+    return undefined;
+  }
+  if (!access || typeof access !== "object" || access.status === "approved") return undefined;
+  const own = typeof g.role === "string" ? g.role : undefined;
+  const role = own ?? (typeof access.default_role === "string" ? access.default_role : undefined);
+  if (!role) return undefined;
+  const defined = Array.isArray(access.roles) && access.roles.some((r) => r && typeof r === "object" && r.name === role);
+  if (!defined) return undefined;
+  return (
+    `Golden "${g.name}" runs as role ${role}${own ? "" : " (access.yaml's default_role)"}, which is defined only in a draft access.yaml: ` +
+    "its rules may still change before access is approved. Confirm a golden that runs as a role after access.yaml is approved; " +
+    `confirmed now, rerun sl goldens check --name ${g.name} and read it back to the owner after every change to role ${role}.`
+  );
 }
 
 // What to do with the rows goldens run printed: an approved golden is rechecked with
@@ -154,7 +199,7 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
   if (ctx.json) ctx.out(formatJson({ name: golden.name, columns, rows }));
   else {
     ctx.out(`${golden.name}: ${golden.question}`);
-    ctx.out(formatTable(rows, columns));
+    ctx.out(formatTable(shownRows(golden, readLayer(ctx, source), rows, columns), columns));
     ctx.out(`(${rows.length} row${rows.length === 1 ? "" : "s"})`);
     ctx.out(runHint(golden));
   }
@@ -171,7 +216,8 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
     ctx.out(formatJson(goldenPlan(golden, source)));
     return 0;
   }
-  const draftFields = draftFieldsOf(ctx, golden, source);
+  const layer = readLayer(ctx, source, "list draft fields");
+  const draftFields = goldenDraftFields(golden, layer.models, layer.metrics);
   if (draftFields.length && !ctx.json) {
     ctx.out(
       `This golden's request uses draft field(s): ${draftFields.join(", ")}. A golden is confirmed after its measures are ` +
@@ -197,18 +243,24 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
         unknown.map((i) => `  ${i.path}: ${i.message}`).join("\n"),
     );
   }
+  const warnings = [draftRoleWarning(ctx, golden)].filter((w): w is string => w !== undefined);
+  if (!ctx.json) for (const w of warnings) ctx.err(w);
   const confirmedAt = today(ctx);
+  const confirmedAs = runAs(golden);
   updateYaml(path, (doc) => {
     doc.set("expected", doc.createNode({ tolerance, rows }));
     doc.set("status", "approved");
     doc.set("confirmed_by", by);
     doc.set("confirmed_at", confirmedAt);
+    doc.set("confirmed_as", doc.createNode(confirmedAs));
   });
-  if (ctx.json) ctx.out(formatJson({ name: golden.name, rows, written: true, tolerance, draft_fields: draftFields }));
-  else {
+  if (ctx.json) {
+    ctx.out(formatJson({ name: golden.name, rows, written: true, tolerance, draft_fields: draftFields, confirmed_as: confirmedAs, warnings }));
+  } else {
     const toleranceNote =
       toleranceFrom === "flag" ? "" : toleranceFrom === "file" ? ", kept from the file" : ", the default; agree one with the owner and pass --tolerance";
-    ctx.out(formatTable(rows, resultColumns(rows)));
+    const columns = resultColumns(rows);
+    ctx.out(formatTable(shownRows(golden, layer, rows, columns), columns));
     ctx.out(
       `Recorded ${rows.length} expected row${rows.length === 1 ? "" : "s"} in ${relative(ctx.root, path)} (tolerance ${tolerance}${toleranceNote}), ` +
         `confirmed by ${by} on ${confirmedAt}.`,

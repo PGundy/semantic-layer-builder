@@ -19,6 +19,14 @@
 // access.yaml is read defensively: an entry that cannot be read is listed in `skipped`, and an entry
 // that could limit access fails closed rather than being dropped:
 //   - an unreadable mode means closed; an unreadable row filter expression means no rows.
+//   - a row filter's expr or hierarchy column may read through one or two many_to_one or one_to_one
+//     joins of the filtered model (<join>.<column>, <join>.<join>.<column>); the result carries each
+//     such reference with its hops (join_refs), which the compiler adds as definition joins, without
+//     their targets' row filters. A reference through a join that cannot be followed (another
+//     relationship, unreadable keys or type, an unknown target, more than two hops, a join name two
+//     joins share), a dotted name on a model whose joins cannot all be read, or a subquery, means no
+//     rows. A hierarchy column is one name, a column or a whole join reference; any other text
+//     means no rows.
 //   - a restriction that cannot be read (not a mapping, or a target that cannot be read) has unknown
 //     targets, so nothing in access.yaml applies and access is closed (access_file "invalid").
 //   - a role whose deny, row_filters or assign_when cannot be read is broken: a user holding it sees
@@ -30,10 +38,11 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type Condition, evaluateCondition, parseCondition } from "./conditions.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
-import { listSourceNames, paths } from "./project.ts";
+import { listSourceNames, loadSource, paths } from "./project.ts";
 import { parseRequestField } from "./refs.ts";
-import type { AccessMode, Metric, Model, QueryRequest } from "./types.ts";
-import { PROTECTED_TAGS } from "./types.ts";
+import type { AccessMode, Dialect, JoinKey, Metric, Model, QueryRequest } from "./types.ts";
+import { DIALECTS, PROTECTED_TAGS, TO_ONE_RELATIONSHIPS } from "./types.ts";
+import { sqlNames } from "./validate.ts";
 import { readYaml } from "./yaml.ts";
 
 // Who is asking: user attribute values and the role names the identity system assigns.
@@ -66,17 +75,38 @@ export interface FieldVisibility {
   reasons: string[];
 }
 
+// One hop of a join reference a row filter reads through: a many_to_one or one_to_one join of
+// `from`. The compiler adds it as a definition join, without the row filters of the model it reaches.
+export interface RowFilterJoinHop {
+  join: string;
+  from: string; // source.model
+  to: string; // source.model
+  relationship: "many_to_one" | "one_to_one";
+  type: "left" | "inner";
+  keys: JoinKey[];
+}
+
+// A join reference in a row filter's expr or hierarchy column: <join>.<column> or
+// <join>.<join>.<column>, starting from a join of the filtered model.
+export interface RowFilterJoinRef {
+  text: string; // as written, e.g. order.sales_rep_id
+  column: string; // the column of the last hop's model's table it reads
+  hops: RowFilterJoinHop[];
+}
+
 // The values a row filter binds, shown to the person; a compiler binds them as query parameters.
+// join_refs is present when the filter reads through joins.
 export interface ExprFilterResult {
   kind: "expr";
   expr: string;
   params: Record<string, unknown>;
   missing: string[];
+  join_refs?: RowFilterJoinRef[];
 }
 
 export interface HierarchyFilterResult {
   kind: "hierarchy";
-  column: string;
+  column: string; // as written: a column of the filtered model, or a join reference (see join_refs)
   via: string;
   manager: string;
   member: string;
@@ -84,6 +114,7 @@ export interface HierarchyFilterResult {
   include_self: boolean;
   user_value: unknown;
   missing: string[];
+  join_refs?: RowFilterJoinRef[];
 }
 
 export type AppliedRowFilter = ExprFilterResult | HierarchyFilterResult;
@@ -126,15 +157,23 @@ export interface MetricVisibility {
   reasons: string[];
 }
 
+export interface Counts {
+  visible: number;
+  hidden: number;
+}
+
+export interface SourceCounts {
+  models: Counts;
+  fields: Counts;
+  metrics: Counts;
+}
+
 export interface SourceVisibility {
   source: string;
   models: ModelVisibility[];
   metrics: MetricVisibility[];
-}
-
-export interface Counts {
-  visible: number;
-  hidden: number;
+  // The visible and hidden models, fields and metrics of this source.
+  summary: SourceCounts;
 }
 
 export interface AccessSummary {
@@ -169,6 +208,10 @@ export interface AccessLayer {
   access_present: boolean;
   // Files that could not be read, reported with the result.
   skipped?: SkippedEntry[];
+  // Each source's dialect, used to read row filter SQL; a source without one is read generically.
+  dialects?: Record<string, Dialect>;
+  // The sources the project lists; each is reported, even with no models or metrics.
+  sources?: string[];
 }
 
 // --- normalizing access.yaml -------------------------------------------------------------
@@ -443,7 +486,15 @@ export function loadAccessLayer(root: string): AccessLayer {
   const p = paths(root);
   const skipped: SkippedEntry[] = [];
   const models: Model[] = [];
-  for (const source of listSourceNames(root)) {
+  const dialects: Record<string, Dialect> = {};
+  const sources = listSourceNames(root);
+  for (const source of sources) {
+    try {
+      const d = loadSource(root, source).dialect;
+      if ((DIALECTS as readonly string[]).includes(d)) dialects[source] = d;
+    } catch {
+      // A source file that cannot be read leaves its row filter SQL read generically.
+    }
     let dir: string;
     try {
       dir = p.modelsDir(source);
@@ -480,7 +531,7 @@ export function loadAccessLayer(root: string): AccessLayer {
       access = undefined;
     }
   }
-  return { models, metrics, access, access_present: accessPresent, skipped };
+  return { models, metrics, access, access_present: accessPresent, skipped, dialects, sources };
 }
 
 // --- evaluation ----------------------------------------------------------------------------
@@ -544,8 +595,186 @@ function brokenRoles(a: NAccess, held: HeldRole[], user: AccessUser, attrs: Reco
   return uniq(out);
 }
 
-function rowFilterResult(rf: NRowFilter, attrs: Record<string, unknown>, modelRefs: Set<string>): { filter?: AppliedRowFilter; problem?: string } {
+// The join a name refers to: an unquoted name matches in any case, as SQL resolves an unquoted
+// alias; a quoted one exactly. A problem when the name is ambiguous (two joins match), or when no
+// join matches but the model's joins cannot all be read, so the name might be one of them.
+function findJoin(model: Model, name: string, quoted: boolean): { join?: Record<string, unknown>; problem?: string } {
+  const raw: unknown = model.joins;
+  if (!given(raw)) return {};
+  const entries = Array.isArray(raw) ? raw : [];
+  const readable = entries.filter((j): j is Record<string, unknown> => isObj(j) && typeof j.name === "string");
+  const unreadable = !Array.isArray(raw) || readable.length < entries.length;
+  const hits = readable.filter((j) => (quoted ? j.name === name : j.name === name.toLowerCase()));
+  if (hits.length > 1) return { problem: `model ${model.model} has more than one join named ${String(hits[0]!.name)}` };
+  if (hits.length) return { join: hits[0] };
+  return unreadable ? { problem: `model ${model.model}'s joins cannot be read` } : {};
+}
+
+interface NameChain {
+  parts: string[];
+  quoted: boolean[];
+  text: string;
+}
+
+// Follows one dotted name from the filtered model's joins. No ref and no problem means its first
+// part is no join of the model, so it reads a struct field of the model's own column.
+function resolveJoinRef(chain: NameChain, what: string, model: Model, models: Map<string, Model>): { ref?: RowFilterJoinRef; problem?: string } {
+  const { parts, quoted, text } = chain;
+  const first = findJoin(model, parts[0]!, quoted[0]!);
+  if (first.problem) return { problem: `${what} reads ${text}, but ${first.problem}; treated as no rows` };
+  if (!first.join) return {};
+  let join: Record<string, unknown> = first.join;
+  let from = model;
+  const hops: RowFilterJoinHop[] = [];
+  for (let k = 1; k < parts.length; k++) {
+    const label = `join ${String(join.name)} of model ${from.model}`;
+    const relationship = join.relationship;
+    if (!(TO_ONE_RELATIONSHIPS as readonly unknown[]).includes(relationship))
+      return {
+        problem: `${what} reads ${text} through ${label}, which is ${typeof relationship === "string" ? relationship : "not readable"}; a row filter reads only through many_to_one or one_to_one joins; treated as no rows`,
+      };
+    // An absent type is left; any other value that is not left or inner cannot be read.
+    const type = join.type === undefined ? "left" : join.type;
+    if (type !== "left" && type !== "inner") return { problem: `${what} reads ${text} through ${label}, whose type is not left or inner; treated as no rows` };
+    const keys = Array.isArray(join.keys) ? join.keys : [];
+    if (!keys.length || !keys.every((x) => isObj(x) && typeof x.from === "string" && typeof x.to === "string"))
+      return { problem: `${what} reads ${text} through ${label}, whose keys cannot be read; treated as no rows` };
+    const target: Model | undefined = typeof join.to === "string" ? models.get(`${from.source}.${join.to}`) : undefined;
+    if (!target) return { problem: `${what} reads ${text} through ${label}, which reaches no model; treated as no rows` };
+    hops.push({
+      join: String(join.name),
+      from: `${from.source}.${from.model}`,
+      to: `${target.source}.${target.model}`,
+      relationship: relationship as RowFilterJoinHop["relationship"],
+      type,
+      keys: (keys as Record<string, string>[]).map((x) => ({ from: x.from!, to: x.to! })),
+    });
+    if (k < parts.length - 1) {
+      const next = findJoin(target, parts[k]!, quoted[k]!);
+      if (next.problem) return { problem: `${what} reads ${text}, but ${next.problem}; treated as no rows` };
+      if (next.join) {
+        if (hops.length >= 2)
+          return { problem: `${what} reads ${text} through more than two joins; a join reference is <join>.<column> or <join>.<join>.<column>; treated as no rows` };
+        from = target;
+        join = next.join;
+        continue;
+      }
+    }
+    // Names after the column read struct fields of it.
+    return { ref: { text, column: parts[k]!, hops } };
+  }
+  return {};
+}
+
+// The same reference written twice (ORDER.region and order.region) resolves to one path: its hops
+// and its column, an unquoted column compared in lowercase.
+const refKey = (r: RowFilterJoinRef, chain: NameChain) =>
+  JSON.stringify([r.hops.map((h) => `${h.from}.${h.join}`), chain.quoted[r.hops.length] ? r.column : r.column.toLowerCase(), chain.parts.slice(r.hops.length + 1)]);
+
+// Reads the join references of a row filter's expr: every dotted name whose first part is a join of
+// the filtered model, through one or two many_to_one or one_to_one joins, each listed once. A dotted
+// name whose first part is no join is left to the SQL, as a struct field of the model's own column.
+// Anything that cannot be read is a problem, so the filter means no rows.
+function rowFilterJoinRefs(
+  sql: string,
+  what: string,
+  model: Model | undefined,
+  models: Map<string, Model>,
+  dialect: Dialect | undefined,
+): { refs: RowFilterJoinRef[]; problem?: string } {
+  const names = sqlNames(sql, dialect);
+  if (names.subquery) return { refs: [], problem: `${what} has a subquery; treated as no rows` };
+  const refs: RowFilterJoinRef[] = [];
+  const seen = new Set<string>();
+  if (!model) return { refs };
+  for (const chain of names.chains) {
+    const { ref, problem } = resolveJoinRef(chain, what, model, models);
+    if (problem) return { refs, problem };
+    if (!ref) continue;
+    const key = refKey(ref, chain);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push(ref);
+  }
+  return { refs };
+}
+
+// Reads a hierarchy column as one name: a bare identifier or one quoted in the dialect (double
+// quotes, or backticks on BigQuery and Databricks; either when the dialect is unknown), optionally
+// dotted. Null when the text is anything else, such as an expression.
+function nameChain(text: string, dialect: Dialect | undefined): NameChain | null {
+  const quotes = dialect === "bigquery" || dialect === "databricks" ? ["`"] : dialect ? ['"'] : ['"', "`"];
+  const parts: string[] = [];
+  const quoted: boolean[] = [];
+  let i = 0;
+  for (;;) {
+    const c = text[i];
+    if (c !== undefined && quotes.includes(c)) {
+      let v = "";
+      let closed = false;
+      for (i++; i < text.length; i++) {
+        if (text[i] === c) {
+          if (text[i + 1] !== c) {
+            closed = true;
+            break;
+          }
+          i++;
+        }
+        v += text[i];
+      }
+      if (!closed) return null;
+      i++;
+      // A backtick name may hold a whole dotted path, as the SQL reader splits it.
+      const split = c === "`" ? v.split(".") : [v];
+      if (split.some((x) => !x)) return null;
+      for (const x of split) {
+        parts.push(x);
+        quoted.push(true);
+      }
+    } else {
+      const word = text.slice(i).match(/^[A-Za-z_][A-Za-z0-9_$]*/)?.[0];
+      if (!word) return null;
+      parts.push(word);
+      quoted.push(false);
+      i += word.length;
+    }
+    if (i === text.length) return { parts, quoted, text: parts.join(".") };
+    if (text[i] !== ".") return null;
+    i++;
+  }
+}
+
+// A hierarchy column: a column of the filtered model, or a join reference that is the whole text and
+// ends at a column of the last hop's table. Anything else could change which rows the filter keeps
+// once it is spliced into SQL, so it is a problem.
+function hierarchyColumn(
+  column: string,
+  what: string,
+  model: Model | undefined,
+  models: Map<string, Model>,
+  dialect: Dialect | undefined,
+): { refs: RowFilterJoinRef[]; problem?: string } {
+  const neither = `${what} is neither a column nor a join reference; treated as no rows`;
+  const chain = nameChain(column.trim(), dialect);
+  if (!chain) return { refs: [], problem: neither };
+  if (chain.parts.length === 1) return { refs: [] };
+  if (!model) return { refs: [], problem: neither };
+  const { ref, problem } = resolveJoinRef(chain, what, model, models);
+  if (problem) return { refs: [], problem };
+  if (!ref || chain.parts.length !== ref.hops.length + 1) return { refs: [], problem: neither };
+  return { refs: [ref] };
+}
+
+function rowFilterResult(
+  rf: NRowFilter,
+  attrs: Record<string, unknown>,
+  modelRefs: Set<string>,
+  models: Map<string, Model>,
+  dialects: Record<string, Dialect>,
+): { filter?: AppliedRowFilter; problem?: string } {
   const raw = rf.raw;
+  const model = models.get(rf.model);
+  const dialect = model ? dialects[model.source] : undefined;
   const hasHierarchy = given(raw.hierarchy);
   const hasExpr = given(raw.expr);
   if (hasHierarchy && hasExpr) return { problem: `${rf.path} has both expr and hierarchy; treated as no rows` };
@@ -564,6 +793,8 @@ function rowFilterResult(rf: NRowFilter, attrs: Record<string, unknown>, modelRe
     const value = attrs[userAttr];
     if (present(value) && typeof value === "object")
       return { problem: `user.${userAttr} is ${Array.isArray(value) ? "a list" : "not a single value"}; a hierarchy filter needs one id; treated as no rows` };
+    const read = hierarchyColumn(h.column as string, `${rf.path}.hierarchy.column`, model, models, dialect);
+    if (read.problem) return { problem: read.problem };
     return {
       filter: {
         kind: "hierarchy",
@@ -575,10 +806,13 @@ function rowFilterResult(rf: NRowFilter, attrs: Record<string, unknown>, modelRe
         include_self: h.include_self !== false,
         user_value: present(value) ? value : null,
         missing: present(value) ? [] : [userAttr],
+        ...(read.refs.length ? { join_refs: read.refs } : {}),
       },
     };
   }
   if (typeof raw.expr !== "string") return { problem: `${rf.path}.expr is not text; treated as no rows` };
+  const read = rowFilterJoinRefs(raw.expr, `${rf.path}.expr`, model, models, dialect);
+  if (read.problem) return { problem: read.problem };
   const params: Record<string, unknown> = {};
   const missing: string[] = [];
   for (const m of raw.expr.matchAll(USER_PLACEHOLDER)) {
@@ -586,7 +820,7 @@ function rowFilterResult(rf: NRowFilter, attrs: Record<string, unknown>, modelRe
     if (present(attrs[name])) params[name] = attrs[name];
     else if (!missing.includes(name)) missing.push(name);
   }
-  return { filter: { kind: "expr", expr: raw.expr, params, missing } };
+  return { filter: { kind: "expr", expr: raw.expr, params, missing, ...(read.refs.length ? { join_refs: read.refs } : {}) } };
 }
 
 // Evaluates what one user sees, from an already loaded layer.
@@ -608,6 +842,9 @@ export function evaluateLayer(layer: AccessLayer, user: AccessUser = {}): Access
   if (invalidFile) skipped.push({ path: "access.yaml", message: "cannot be read; nothing in it applies and access is treated as closed" });
 
   const modelRefs = new Set(layer.models.map((m) => `${m.source}.${m.model}`));
+  const modelsByRef = new Map<string, Model>();
+  for (const m of layer.models) if (!modelsByRef.has(`${m.source}.${m.model}`)) modelsByRef.set(`${m.source}.${m.model}`, m);
+  const dialects = layer.dialects ?? {};
   // A row filter on a model that does not exist was meant to limit something unknown.
   for (const r of a.roles)
     for (const rf of r.rowFilters)
@@ -662,12 +899,14 @@ export function evaluateLayer(layer: AccessLayer, user: AccessUser = {}): Access
     return each.some((x) => !x.length) ? [] : uniq(each.flat());
   };
 
+  const zero = (): Counts => ({ visible: 0, hidden: 0 });
   const bySource = new Map<string, SourceVisibility>();
   const sourceOf = (s: string) => {
     let v = bySource.get(s);
-    if (!v) bySource.set(s, (v = { source: s, models: [], metrics: [] }));
+    if (!v) bySource.set(s, (v = { source: s, models: [], metrics: [], summary: { models: zero(), fields: zero(), metrics: zero() } }));
     return v;
   };
+  for (const s of layer.sources ?? []) sourceOf(s);
 
   for (const m of layer.models) {
     const ref = `${m.source}.${m.model}`;
@@ -719,7 +958,7 @@ export function evaluateLayer(layer: AccessLayer, user: AccessUser = {}): Access
       if (!mine.length) return { rows: "all", branches: [] };
       const branch: RowFilterBranch = { role: r.name, filters: [], no_rows: false, problems: [] };
       for (const rf of mine) {
-        const { filter, problem } = rowFilterResult(rf, attrs, modelRefs);
+        const { filter, problem } = rowFilterResult(rf, attrs, modelRefs, modelsByRef, dialects);
         if (filter) {
           branch.filters.push(filter);
           if (filter.missing.length) branch.no_rows = true;
@@ -768,12 +1007,13 @@ export function evaluateLayer(layer: AccessLayer, user: AccessUser = {}): Access
       warnings.push({ path: t.path, message: `"${t.metric ? "metric:" : ""}${t.pattern}" matches ${what}, so it hides nothing${hint}` });
     }
 
+  const count = <T extends { visible: boolean }>(xs: T[]): Counts => ({ visible: xs.filter((x) => x.visible).length, hidden: xs.filter((x) => !x.visible).length });
   const sources = [...bySource.values()].sort((x, y) => x.source.localeCompare(y.source));
   for (const s of sources) {
     s.models.sort((x, y) => x.model.localeCompare(y.model));
     s.metrics.sort((x, y) => x.name.localeCompare(y.name));
+    s.summary = { models: count(s.models), fields: count(s.models.flatMap((m) => m.fields)), metrics: count(s.metrics) };
   }
-  const count = <T extends { visible: boolean }>(xs: T[]): Counts => ({ visible: xs.filter((x) => x.visible).length, hidden: xs.filter((x) => !x.visible).length });
   const allModels = sources.flatMap((s) => s.models);
   const allFields = allModels.flatMap((m) => m.fields);
   const allMetrics = sources.flatMap((s) => s.metrics);
@@ -807,7 +1047,7 @@ export function evaluateAccess(root: string, user: AccessUser = {}): AccessVisib
 
 // --- requests ------------------------------------------------------------------------------
 
-export type RequestPosition = "measures" | "dimensions" | "filters" | "order_by";
+export type RequestPosition = "measures" | "dimensions" | "filters" | "order_by" | "access";
 
 export interface RequestProblem {
   position: RequestPosition;
@@ -837,6 +1077,13 @@ export function lookup(visibility: AccessVisibility, source: string, ref: string
 // name one: measures (selected), dimensions (grouped), filters and order_by. A reference that
 // resolves to nothing is refused too.
 export function checkRequest(visibility: AccessVisibility, request: QueryRequest): RequestCheck {
+  // Tools serve nothing under an access.yaml awaiting sign-off (spec: Draft and approved access files).
+  if (visibility.access_file === "draft") {
+    return {
+      ok: false,
+      problems: [{ position: "access", index: 0, ref: "access.yaml", reasons: ["access_draft"], message: "access.yaml is a draft awaiting sign-off; nothing is served until it is approved" }],
+    };
+  }
   const problems: RequestProblem[] = [];
   const source = typeof request?.source === "string" ? request.source : "";
   const check = (position: RequestPosition, index: number, ref: unknown) => {

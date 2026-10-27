@@ -8,7 +8,8 @@ import { formatJson } from "../lib/output.ts";
 import { filterInScope } from "../lib/patterns.ts";
 import { executePlan } from "../lib/plan.ts";
 import { listModels, loadProject, loadSnapshot, loadSource, paths, projectSettings, saveSnapshot } from "../lib/project.ts";
-import { changeLines, diffSnapshots, modeledTables } from "../lib/snapshot-diff.ts";
+import { changeLines, diffSnapshots, modeledTables, type SnapshotDiff } from "../lib/snapshot-diff.ts";
+import { profileState } from "../lib/status.ts";
 import { introspectionPlan, schemaMatcher } from "../lib/sql/introspection.ts";
 import type { Scope, Snapshot, SnapshotTable, SourceConfig, TableKind } from "../lib/types.ts";
 
@@ -80,6 +81,32 @@ export function rowCountNote(snapshot: Snapshot, scope?: Scope): { count: number
   return { count: missing.length, note: sentences.join(" ") };
 }
 
+// Whether a diff touches a table one of `models` is built on: a modeled table that gained, lost or
+// retyped columns, or one the new snapshot no longer has. Model files that do not parse count as
+// touched, so the hint sends the agent to sl validate, which names them.
+function touchesModeledTables(diff: SnapshotDiff | null, previous: Snapshot | null | undefined, next: Snapshot, models: () => unknown[]): boolean {
+  if (!diff || (!diff.columns.length && !diff.tables_removed.length)) return false;
+  let list: unknown[];
+  try {
+    list = models();
+  } catch {
+    return true;
+  }
+  const before = previous ? modeledTables(previous, list) : new Set<string>();
+  const after = modeledTables(next, list) ?? new Set<string>();
+  const modeled = new Set([...(before ?? []), ...after]);
+  return diff.columns.some((c) => modeled.has(c.table)) || diff.tables_removed.some((t) => modeled.has(t));
+}
+
+// The hint introspect ends with once the snapshot holds tables and the scope is focused: sl profile
+// while an in-scope table's profile is not complete (profiled_at unset, partial ones included), else
+// sl validate when a modeled table changed, else sl status.
+function nextHint(snapshot: Snapshot, scope: Scope | undefined, modeledChanged: boolean): string {
+  const unprofiled = filterInScope(scope, snapshot.tables).filter((t) => profileState(t) !== "yes");
+  if (unprofiled.length) return `Next: sl profile --source ${snapshot.source}`;
+  return modeledChanged ? "Next: sl validate" : "Next: sl status";
+}
+
 const spec: CommandSpec = {
   summary: "Capture tables, columns, keys and row estimates into the source's snapshot.",
   usage: "introspect --source <source> [--schemas a,b] [--emit-sql] [--results <file>]",
@@ -135,7 +162,11 @@ const spec: CommandSpec = {
         ? `No tables found. Check that the connection can read the catalog${schemas.length ? ` and that ${schemas.join(", ")} exist` : ""}.`
         : inScope > focus_threshold
           ? `${inScope} tables are in scope, more than the focus threshold of ${focus_threshold}. Run \`sl tables --source ${source.source} --groups\` to pick a focus.`
-          : `Next: sl profile --source ${source.source}`;
+          : nextHint(
+              snapshot,
+              source.scope,
+              touchesModeledTables(changes, previous, snapshot, () => listModels(ctx.root, source.source).map((l) => l.model)),
+            );
 
     if (ctx.json) {
       ctx.out(

@@ -329,6 +329,40 @@ describe("introspect: duckdb", () => {
     expect(j.json<{ row_count_note?: string }>().row_count_note).toBeUndefined();
   });
 
+  test("hints at sl profile only while an in-scope table is not profiled, else sl validate or sl status", async () => {
+    const t = await setup();
+    await duckdbSource(t.root, t.dir, "wh", ["create table t (id integer, s varchar)", "create table u (id integer)", "insert into t values (1, 'a')"]);
+    const next = async () => (await sl(t.root, ["introspect", "--source", "wh", "--json"])).json<{ next: string }>().next;
+    expect(await next()).toBe("Next: sl profile --source wh");
+    expect((await sl(t.root, ["profile", "--source", "wh"])).code).toBe(0);
+    // Nothing changed and every in-scope table is profiled.
+    expect(await next()).toBe("Next: sl status");
+    const human = await sl(t.root, ["introspect", "--source", "wh"]);
+    expect(human.out).toContain("No tables or columns changed since the previous snapshot.");
+    expect(human.out).toContain("Next: sl status");
+    expect(human.out).not.toContain("sl profile");
+    // A modeled table lost a column: its profile stands, and sl validate names the fields that read it.
+    writeYaml(join(t.root, "models", "wh", "t.yaml"), {
+      model: "t",
+      source: "wh",
+      table: "main.t",
+      status: "draft",
+      dimensions: [{ name: "s", expr: "s", type: "string", status: "draft" }],
+      measures: [],
+    });
+    await duckdbSource(t.root, t.dir, "wh", ["alter table t drop column s"]);
+    expect(await next()).toBe("Next: sl validate");
+    // An unmodeled table gained a column, so its profile is partial.
+    await duckdbSource(t.root, t.dir, "wh", ["alter table u add column x integer"]);
+    expect(await next()).toBe("Next: sl profile --source wh");
+    // Out of scope, it needs no profile.
+    writeYaml(join(t.root, "sources", "wh.yaml"), {
+      ...readYaml<SourceConfig>(join(t.root, "sources", "wh.yaml")),
+      scope: { exclude: ["u"] },
+    });
+    expect(await next()).toBe("Next: sl status");
+  });
+
   test("names the tables without a row count by kind", () => {
     const mk = (name: string, kind: SnapshotTable["kind"], row_count?: number | null): SnapshotTable => ({ schema: "s", name, kind, row_count, columns: [] });
     const snap = (tables: SnapshotTable[]): Snapshot => ({ snapshot_version: 1, source: "wh", dialect: "postgres", captured_at: FIXED_NOW, method: "live", tables });

@@ -4,7 +4,7 @@ import { join, relative } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
 import { parseDocument } from "yaml";
-import { type AccessLayer, type AccessVisibility, evaluateLayer } from "./access.ts";
+import { type AccessLayer, type AccessVisibility, checkRequest, evaluateLayer } from "./access.ts";
 import { type Condition, conditionAttributes, type Literal, parseCondition } from "./conditions.ts";
 import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
 import { quoteIdent } from "./dialect.ts";
@@ -20,6 +20,7 @@ import type {
   Dimension,
   ExprRowFilter,
   Golden,
+  GoldenRunAs,
   HierarchyRowFilter,
   Join,
   JoinKey,
@@ -391,7 +392,9 @@ const OUTSIDE_HINT: Record<SqlRole, string> = {
     "name only this model's columns and <join>.<column> or <join>.<join>.<column> join references through many_to_one or one_to_one joins; " +
     "for a rule that needs anything else, add a join to the model or ask the owner for a view that holds it",
   "measure expr": "name only this model's columns; put a joined column in the measure's filter or in a dimension, or ask the owner for a view",
-  "row filter": "name only its model's columns; write a row filter on the joined model, or ask the owner for a view",
+  "row filter":
+    "name only its model's columns and <join>.<column> or <join>.<join>.<column> join references through many_to_one or one_to_one joins; " +
+    "for a rule that needs anything else, add a join to the model or ask the owner for a view that holds it",
 };
 
 // ---------------------------------------------------------------------------
@@ -410,6 +413,8 @@ const SQL_LITERALS = new Set(["true", "false", "null", "current_date", "current_
 const USER_PLACEHOLDER = /\{\{\s*user\.([A-Za-z0-9_]+)\s*\}\}/g;
 const ANY_PLACEHOLDER = /\{\{[^{}]*\}\}/g;
 const METRIC_PLACEHOLDER = /\{([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)\}/g;
+// A join reference written alone, as a hierarchy filter's column: <join>.<column> or <join>.<join>.<column>.
+const JOIN_REF_TEXT = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){1,2}$/;
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -739,10 +744,10 @@ class Validator {
   }
 
   // Checks the tables and join references an expr, filter or row filter names, and returns the join
-  // references it resolved. A dimension expr and a measure filter may use <join>.<column> through one
-  // of the model's own to-one joins, or <join>.<join>.<column> through a to-one join of the joined
-  // model; a measure expr and a row filter use the model's own columns only. A subquery or another
-  // table is an error everywhere.
+  // references it resolved. A dimension expr, a measure filter and a row filter may use
+  // <join>.<column> through one of the model's own to-one joins, or <join>.<join>.<column> through a
+  // to-one join of the joined model; a measure expr uses the model's own columns only. A subquery or
+  // another table is an error everywhere.
   checkSqlRefs(file: string, path: string, sql: unknown, model: Model, role: SqlRole): JoinRef[] {
     const refs: JoinRef[] = [];
     if (typeof sql !== "string") return refs;
@@ -778,10 +783,6 @@ class Validator {
       if (join) {
         if (role === "measure expr") {
           report("error", `${text} is a join reference; a measure expr is over the model's own columns, so put the condition in the measure's filter or the field in a dimension`);
-          continue;
-        }
-        if (role === "row filter") {
-          report("error", `${text} is a join reference; a row filter is over its model's own columns, so write a row filter on the joined model instead`);
           continue;
         }
         const ref = this.resolveJoinRef(model, join, chain, rules, report, names.chains);
@@ -954,7 +955,7 @@ class Validator {
         this.checkColumnRef(f, `${p}.expr`, x.expr, table, rules);
         this.checkSqlRefs(f, `${p}.expr`, x.expr, m, "measure expr");
         if (rules.dialect === "duckdb" && typeof x.expr === "string" && dividesByLiteral(x.expr, rules.dialect))
-          this.warn(f, `${p}.expr`, 'divides by a numeric literal; on duckdb "/ 100.0" gives a DOUBLE, so write <col> * 0.01 for an exact amount');
+          this.warn(f, `${p}.expr`, 'divides by a numeric literal; on duckdb "/ 100.0" gives a DOUBLE, so write <col> * 0.01 for an exact amount; this warning never stands');
         this.checkSqlRefs(f, `${p}.filter`, x.filter, m, "measure filter");
         if (x.status === "approved" && !x.description) this.error(f, `${p}.description`, "is required on an approved measure");
         this.checkCurrency(f, p, x.format, x.currency, x.status);
@@ -1160,6 +1161,7 @@ class Validator {
           this.error(f, `${rp}.expr`, "has an unclosed {{ or a stray }}; write {{ user.<attribute> }}");
       });
       this.checkDefinitionJoinVisibility(r, p, mode);
+      this.checkChildTables(r, p, mode);
     });
     this.checkRestrictions(f, arr<Restriction>(a.restrictions), roleNames, attrs);
   }
@@ -1228,7 +1230,12 @@ class Validator {
     const hp = `${rp}.hierarchy`;
     const [source, name] = rf.model.split(".") as [string, string];
     const model = this.model(source, name);
-    if (model && typeof model.table === "string") this.checkColumnName(f, `${hp}.column`, h.column, this.snapshotTable(source, model.table).table);
+    if (model && typeof h.column === "string" && h.column.includes(".")) {
+      // A join reference to the column that holds the person's id, through the model's to-one joins.
+      if (!JOIN_REF_TEXT.test(h.column.trim()))
+        this.error(f, `${hp}.column`, `"${h.column}" is neither a column nor a join reference; write a column of ${rf.model}, or <join>.<column> or <join>.<join>.<column>`);
+      else this.checkSqlRefs(f, `${hp}.column`, h.column, model, "row filter");
+    } else if (model && typeof model.table === "string") this.checkColumnName(f, `${hp}.column`, h.column, this.snapshotTable(source, model.table).table);
     const [viaSource, viaName] = h.via.split(".") as [string, string];
     if (viaSource !== source) {
       this.error(f, `${hp}.via`, `"${h.via}" is in source ${viaSource}, but ${rf.model} is in ${source}; the closure model must be a model of the same source`);
@@ -1302,28 +1309,8 @@ class Validator {
   // filter only narrows what is counted, so it is not checked.
   checkDefinitionJoinVisibility(r: Role, p: string, mode: AccessMode): void {
     const f = this.access!.file;
-    const patterns = (v: unknown) => strings(v).filter((pat) => !validatePattern(pat));
-    const allow = patterns(r.allow?.models);
-    const denyModels = patterns(r.deny?.models);
+    const { hidden, tagged, protectedTag } = this.roleSight(r, mode);
     const denyFields = new Set(strings(r.deny?.fields));
-    const denyTags = new Set(strings(r.deny?.tags));
-    const granted = new Set(strings(r.allow?.tags).map((t) => t.toLowerCase()));
-    const tagged = (tags: unknown) => strings(tags).some((t) => denyTags.has(t));
-    const protectedTag = (tags: unknown) =>
-      strings(tags)
-        .map((t) => t.toLowerCase())
-        .find((t) => (PROTECTED_TAGS as readonly string[]).includes(t) && !granted.has(t));
-    // Why the role cannot see a model, or null when it can.
-    const hidden = (source: string, model: string): string | null => {
-      const ref = `${source}.${model}`;
-      if (mode === "closed" && !allow.some((pat) => matchesDotted(pat, ref))) return "is not allowed";
-      if (denyModels.some((pat) => matchesDotted(pat, ref))) return "denies";
-      const tags = this.model(source, model)?.tags;
-      if (tagged(tags)) return "denies by tag";
-      const tag = protectedTag(tags);
-      if (tag) return `does not see, since it carries the protected tag ${tag}`;
-      return null;
-    };
     for (const [key, refs] of this.dimensionRefs) {
       const [source, model, field] = key.split(".") as [string, string, string];
       if (hidden(source, model) || denyFields.has(key)) continue;
@@ -1351,11 +1338,110 @@ class Validator {
     }
   }
 
+  // What one role sees of models, by its own rules alone: hidden(source, model) says why the role
+  // cannot see a model (in closed mode, not allowed; in either mode, denied, denied by tag, or
+  // carrying a protected tag the role does not grant), or null when it can.
+  roleSight(r: Role, mode: AccessMode) {
+    const patterns = (v: unknown) => strings(v).filter((pat) => !validatePattern(pat));
+    const allow = patterns(r.allow?.models);
+    const denyModels = patterns(r.deny?.models);
+    const denyTags = new Set(strings(r.deny?.tags));
+    const granted = new Set(strings(r.allow?.tags).map((t) => t.toLowerCase()));
+    const tagged = (tags: unknown) => strings(tags).some((t) => denyTags.has(t));
+    const protectedTag = (tags: unknown) =>
+      strings(tags)
+        .map((t) => t.toLowerCase())
+        .find((t) => (PROTECTED_TAGS as readonly string[]).includes(t) && !granted.has(t));
+    const hidden = (source: string, model: string): string | null => {
+      const ref = `${source}.${model}`;
+      if (mode === "closed" && !allow.some((pat) => matchesDotted(pat, ref))) return "is not allowed";
+      if (denyModels.some((pat) => matchesDotted(pat, ref))) return "denies";
+      const tags = this.model(source, model)?.tags;
+      if (tagged(tags)) return "denies by tag";
+      const tag = protectedTag(tags);
+      if (tag) return `does not see, since it carries the protected tag ${tag}`;
+      return null;
+    };
+    return { hidden, tagged, protectedTag };
+  }
+
+  // Warns when a role has a row filter on model M and may see a model N of the same source that
+  // reaches M through one or two to-one joins but has no row filter of its own for that role: N's
+  // rows that belong to M are not limited by M's filter. The role may not see N when its own rules
+  // hide N, or a restriction targets N whose allow.roles leaves the role out and that has no
+  // allow.when. A role open_questions entry naming N records why and silences the warning.
+  checkChildTables(r: Role, p: string, mode: AccessMode): void {
+    const f = this.access!.file;
+    const sight = this.roleSight(r, mode);
+    const restrictions = arr<Restriction>(this.access!.data.restrictions).filter((x) => isObject(x));
+    const restricted = (ref: string) =>
+      restrictions.some(
+        (x) =>
+          x.allow?.when === undefined &&
+          !strings(x.allow?.roles).includes(r.name) &&
+          strings(x.targets).some((t) => !t.startsWith("metric:") && !validatePattern(t) && matchesDotted(t, ref)),
+      );
+    const hidden = (source: string, model: string) => sight.hidden(source, model) ?? (restricted(`${source}.${model}`) ? "restricted" : null);
+    const filters = arr<RowFilter>(r.row_filters).filter((rf): rf is RowFilter => isObject(rf) && typeof rf.model === "string");
+    const filtered = new Set(filters.map((rf) => rf.model));
+    const questions = strings(r.open_questions);
+    const names = (model: string) => {
+      const word = new RegExp(`(^|[^A-Za-z0-9_])${model.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^A-Za-z0-9_]|$)`, "i");
+      return questions.some((q) => word.test(q));
+    };
+    const seen = new Set<string>();
+    filters.forEach((rf, ri) => {
+      const [source, target] = rf.model.split(".") as [string, string];
+      const filteredModel = this.model(source, target);
+      if (!filteredModel) return;
+      for (const [name] of this.models.get(source) ?? []) {
+        const child = `${source}.${name}`;
+        if (name === target || filtered.has(child) || seen.has(`${child}>${rf.model}`) || hidden(source, name) || names(name)) continue;
+        const paths = this.joinPaths(source, name, target);
+        if (!paths.length) continue;
+        seen.add(`${child}>${rf.model}`);
+        const shortest = paths.reduce((a, b) => (b.length < a.length ? b : a));
+        const chain = shortest.map((step) => step.slice(step.indexOf(".") + 1)).join(".");
+        // The hint names the reference N may read only when it stays within two hops.
+        const ref = this.rowFilterReference(rf, filteredModel);
+        const read = ref && shortest.length + ref.split(".").length - 1 <= 2 ? ` (it may read ${chain}.${ref})` : "";
+        this.warn(
+          f,
+          `${p}.row_filters[${ri}]`,
+          `rows of ${child} that belong to ${rf.model} are not limited by ${rf.model}'s row filter for role ${r.name}; ` +
+            `add a row filter on ${child}${read}, deny ${child} to ${r.name}, or record why in the role's open_questions`,
+        );
+      }
+    });
+  }
+
+  // The reference a row filter limits its model by: a hierarchy filter's column, or for an expr the
+  // first of the model's own columns, else the first join reference through one of its joins, in
+  // the first and/or-separated clause that binds a user attribute (the whole expr when none does).
+  // A join reference comes back as written, as sales_rep.rep_id.
+  rowFilterReference(rf: RowFilter, model: Model): string | undefined {
+    if ("hierarchy" in rf && isObject(rf.hierarchy)) return typeof rf.hierarchy.column === "string" ? rf.hierarchy.column.trim() : undefined;
+    const expr = (rf as ExprRowFilter).expr;
+    if (typeof expr !== "string") return undefined;
+    const rules = this.identRules(model.source);
+    const table = typeof model.table === "string" ? this.snapshotTable(model.source, model.table).table : undefined;
+    const joins = new Set(named<Join>(model.joins).map((j) => j.name.toLowerCase()));
+    const clauses = expr.split(/\b(?:and|or)\b/i);
+    const clause = clauses.find((c) => /\{\{\s*user\./.test(c)) ?? expr;
+    const bare = bareNames(clause, rules.dialect).filter((b) => !SQL_LITERALS.has(b.v.toLowerCase()));
+    const own = table?.columns.length ? bare.find((b) => resolveColumn(b.v, b.quoted, table.columns, rules) !== false)?.v : bare[0]?.v;
+    if (own) return own;
+    const chain = sqlNames(clause, rules.dialect).chains.find((c) => c.parts.length <= 3 && joins.has(c.parts[0]!.toLowerCase()));
+    return chain?.text;
+  }
+
   // Warns on every approved dimension or measure the default audience (a user with no attributes and
   // no assigned roles) sees whose columns or name look personal or sensitive and that carries no
   // pii, sensitive or public tag, itself or through its model. A count or count_distinct measure
   // shows no values, so only a measure that aggregates values is checked.
-  checkSensitivity(): void {
+  // The layer as the access evaluator reads it, with every model under the source and name its path
+  // gives, and the loaded model file by source.model.
+  accessLayer(): { layer: AccessLayer; loaded: Map<string, Loaded<Model>> } {
     const loaded = new Map<string, Loaded<Model>>();
     const models: Model[] = [];
     for (const l of this.modelList) {
@@ -1370,6 +1456,11 @@ class Validator {
       access: this.accessPresent ? this.access?.data : null,
       access_present: this.accessPresent,
     };
+    return { layer, loaded };
+  }
+
+  checkSensitivity(): void {
+    const { layer, loaded } = this.accessLayer();
     const vis = evaluateLayer(layer, {});
     this.checkDefaultAudienceJoins(vis, loaded);
     const marked = new Set<string>([...PROTECTED_TAGS, PUBLIC_TAG]);
@@ -1472,7 +1563,7 @@ class Validator {
       for (const name of referencedColumns(one, table, rules.dialect)) {
         const col = table.columns.find((c) => c.name === name);
         const hit = sensitivityOf(name, col, table.row_count, { key: keys.has(name.toLowerCase()) });
-        if (hit) return hit;
+        if (hit) return readsColumn(hit, name, item.name);
       }
     }
     if (!measure) {
@@ -1483,7 +1574,7 @@ class Validator {
         const t = this.snapshotTable(source, target.table).table;
         const col = t?.columns.find((c) => c.name.toLowerCase() === column.toLowerCase());
         const hit = sensitivityOf(column, col, t?.row_count, { key: strings(target.primary_key).some((k) => k.toLowerCase() === column.toLowerCase()) });
-        if (hit) return hit;
+        if (hit) return readsColumn(hit, ref.text, item.name);
       }
     }
     return sensitivityOf(item.name);
@@ -1648,7 +1739,13 @@ class Validator {
       }
       if (g.status === "approved" && !g.expected?.rows.length) this.error(f, "expected.rows", "an approved golden needs at least one expected row");
       if (typeof g.sql === "string" && callsRound(g.sql, this.identRules(g.request.source).dialect))
-        this.warn(f, "sql", "calls round(); a golden's SQL applies the measure exactly as written; round() hides float noise, so remove it");
+        this.warn(
+          f,
+          "sql",
+          "calls round(); a golden's SQL applies the measure exactly as written; round() hides float noise, so remove it. " +
+            "This warning never stands, whatever the golden's reference says; once round() is removed, " +
+            `sl goldens check --name ${g.name} fails on rows recorded rounded until the owner says yes to the unrounded figure and it is confirmed again`,
+        );
 
       const req = g.request;
       if (!this.sources.has(req.source)) {
@@ -1703,6 +1800,165 @@ class Validator {
             `an approved golden uses draft ${label}; approve it after its readback, then run sl goldens check --name ${g.name}; ` +
               "if it passes the recorded rows stand, and only changed rows need a new confirm",
           );
+      this.checkGoldenAccess(l, roles);
+      this.checkConfirmedAs(l);
+    }
+  }
+
+  // The layer the golden access check reads: every model, field and metric taken as approved, so
+  // the check reports what access.yaml hides and the draft-field checks report draft items.
+  goldenLayerCache?: AccessLayer;
+  goldenLayer(): AccessLayer {
+    if (this.goldenLayerCache) return this.goldenLayerCache;
+    const { layer } = this.accessLayer();
+    const approve = <T>(items: unknown): T[] => arr<unknown>(items).map((x) => (isObject(x) ? ({ ...x, status: "approved" } as T) : (x as T)));
+    this.goldenLayerCache = {
+      ...layer,
+      models: layer.models.map((m) => ({
+        ...m,
+        status: "approved",
+        dimensions: approve<Dimension>(m.dimensions),
+        measures: approve<Measure>(m.measures),
+      })),
+      metrics: approve<Metric>(layer.metrics),
+      access: isObject(layer.access) ? { ...layer.access, status: "approved" } : layer.access,
+    };
+    return this.goldenLayerCache;
+  }
+
+  // Checks a golden's request against access as the user it runs as: its role and user, or with no
+  // role, whoever the evaluator makes of its user (the roles its attributes meet a condition of, else
+  // the default role, else the default audience). Each place the request names a field or metric that
+  // user may not see is an error in an approved golden and a warning in a draft one. A golden whose role cannot be resolved is reported elsewhere and not checked here,
+  // and no golden is checked against an access.yaml that has errors until they are fixed.
+  checkGoldenAccess(l: Loaded<Golden>, roles: Set<string>): void {
+    const g = l.data;
+    if (this.accessPresent && (!this.access?.valid || this.issues.some((i) => i.level === "error" && i.file === this.access!.file))) return;
+    if (g.role !== undefined && (!this.accessPresent || !roles.has(g.role))) return;
+    const attributes = isObject(g.user) ? g.user : {};
+    const vis = evaluateLayer(this.goldenLayer(), { roles: g.role !== undefined ? [g.role] : [], attributes });
+    if (vis.broken_roles.length || vis.access_file === "invalid") return;
+    const check = checkRequest(vis, g.request);
+    const who = runsAs(g, vis);
+    for (const problem of check.problems) {
+      const reasons = problem.reasons.filter((r) => r !== "unknown" && r !== "unreadable" && r !== "draft" && !r.startsWith("unknown_measure:"));
+      if (!reasons.length) continue;
+      const path = `request.${problem.position}[${problem.index}]${problem.position === "filters" || problem.position === "order_by" ? ".field" : ""}`;
+      const message =
+        `names ${problem.ref}, which ${who.who} may not see (${reasons.join(", ")})${who.why}; ` +
+        "give the golden a role and user who may see every field it names, or change access.yaml after the owner's yes";
+      if (g.status === "approved") this.error(l.file, path, message);
+      else this.warn(l.file, path, message);
+    }
+  }
+
+  // Warns when the role or user an approved or draft golden runs as differ from the ones recorded in
+  // confirmed_as when it was confirmed: what the golden pins has changed.
+  checkConfirmedAs(l: Loaded<Golden>): void {
+    const g = l.data;
+    if (!isObject(g.confirmed_as)) return;
+    const was = runAsKey(g.confirmed_as);
+    const now = runAsKey({ role: g.role, user: g.user });
+    if (was === now) return;
+    this.warn(
+      l.file,
+      "confirmed_as",
+      `the golden was confirmed as ${describeRunAs(g.confirmed_as)} but now runs as ${describeRunAs({ role: g.role, user: g.user })}; ` +
+        `run sl goldens check --name ${g.name}, read the change back and confirm again on the owner's yes`,
+    );
+  }
+
+  // Warns when a description, a synonym, a golden question or a golden reference quotes a value of a
+  // column that a pii- or sensitive-tagged field reads: one of the column's top values in the
+  // snapshot profile, of at least 3 characters, matched as a whole word in any case. A field tagged
+  // only through its model counts only the columns it reads that look personal or sensitive
+  // themselves, so a status or region column of a pii-tagged model is not one.
+  checkPersonalValues(): void {
+    interface Hit {
+      value: string;
+      column: string;
+      table: string;
+      field: string;
+      tag: string;
+    }
+    const values = new Map<string, Hit>();
+    const add = (source: string, tableName: string, column: string, field: string, tag: string, inherited: boolean, keys: unknown) => {
+      const table = this.snapshotTable(source, tableName).table;
+      const col = table?.columns.find((c) => c.name.toLowerCase() === column.toLowerCase());
+      if (inherited && !sensitivityOf(column, col, table?.row_count, { key: strings(keys).some((k) => k.toLowerCase() === column.toLowerCase()) })) return;
+      for (const tv of arr<{ value: unknown }>(col?.profile?.top_values)) {
+        const v = isObject(tv) ? tv.value : undefined;
+        if (typeof v !== "string" && typeof v !== "number") continue;
+        const text = String(v).trim();
+        if (text.length < 3 || values.has(text.toLowerCase())) continue;
+        values.set(text.toLowerCase(), { value: text, column: col!.name, table: qualified(table!), field, tag });
+      }
+    };
+    const protectedTag = (tags: unknown) => strings(tags).map((t) => t.toLowerCase()).find((t) => (PROTECTED_TAGS as readonly string[]).includes(t));
+    for (const l of this.modelList) {
+      const m = l.data;
+      const source = l.file.split("/")[1]!;
+      if (typeof m.table !== "string") continue;
+      const table = this.snapshotTable(source, m.table).table;
+      const rules = this.identRules(source);
+      const modelTag = protectedTag(m.tags);
+      const joinsOnly = named<Join>(m.joins).map((j) => ({ ...j, keys: [] }));
+      const fields: [Dimension | Measure, "dimension" | "measure"][] = [
+        ...named<Dimension>(m.dimensions).map((d) => [d, "dimension"] as [Dimension, "dimension"]),
+        ...named<Measure>(m.measures).map((x) => [x, "measure"] as [Measure, "measure"]),
+      ];
+      for (const [item, kind] of fields) {
+        const own = protectedTag(item.tags);
+        const tag = own ?? modelTag;
+        const inherited = !own;
+        if (!tag || typeof item.expr !== "string") continue;
+        const ref = `${source}.${l.stem}.${item.name}`;
+        if (table?.columns.length) {
+          const one: Model = { ...m, primary_key: undefined, joins: joinsOnly, dimensions: [], measures: [] };
+          if (kind === "measure") one.measures = [{ ...(item as Measure), filter: undefined }];
+          else one.dimensions = [item as Dimension];
+          for (const column of referencedColumns(one, table, rules.dialect)) add(source, m.table, column, ref, tag, inherited, m.primary_key);
+        }
+        if (kind === "dimension")
+          for (const jr of this.dimensionRefs.get(ref) ?? []) {
+            const column = jr.text.split(".")[jr.joins.length];
+            const target = this.model(source, jr.to);
+            if (column && target && typeof target.table === "string") add(source, target.table, column, ref, tag, inherited, target.primary_key);
+          }
+      }
+    }
+    if (!values.size) return;
+    const patterns = [...values.values()].map((hit) => ({
+      hit,
+      re: new RegExp(`(^|[^A-Za-z0-9_])${hit.value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^A-Za-z0-9_])`, "i"),
+    }));
+    const scan = (file: string, path: string, text: unknown) => {
+      if (typeof text !== "string") return;
+      for (const { hit, re } of patterns)
+        if (re.test(text))
+          this.warn(
+            file,
+            path,
+            `quotes "${hit.value}", a value of column ${hit.column} of ${hit.table}, which ${hit.field} reads and tags ${hit.tag}; ` +
+              "this text is shown to people the tag hides that column from, so write an id or a count instead",
+          );
+    };
+    const scanItem = (file: string, path: string, item: unknown) => {
+      if (!isObject(item)) return;
+      scan(file, `${path}${path ? "." : ""}description`, item.description);
+      strings(item.synonyms).forEach((syn, k) => scan(file, `${path}${path ? "." : ""}synonyms[${k}]`, syn));
+    };
+    for (const l of this.modelList) {
+      scanItem(l.file, "", l.data);
+      for (const key of ["dimensions", "measures", "joins"] as const) arr<unknown>(l.data[key]).forEach((x, i) => scanItem(l.file, `${key}[${i}]`, x));
+    }
+    if (this.metrics) arr<unknown>(this.metrics.data.metrics).forEach((x, i) => scanItem(this.metrics!.file, `metrics[${i}]`, x));
+    if (this.access)
+      for (const key of ["user_attributes", "roles", "restrictions"] as const)
+        arr<unknown>(this.access.data[key]).forEach((x, i) => scanItem(this.access!.file, `${key}[${i}]`, x));
+    for (const l of this.goldens) {
+      scan(l.file, "question", l.data.question);
+      scan(l.file, "reference", l.data.reference);
     }
   }
 
@@ -1714,6 +1970,7 @@ class Validator {
     this.checkMetrics();
     this.checkAccess();
     this.checkSensitivity();
+    this.checkPersonalValues();
     this.checkGoldens();
     return this.issues;
   }
@@ -1746,6 +2003,47 @@ function isBareColumn(expr: string, column: string): boolean {
   const m = expr.trim().match(/^(?:"((?:[^"]|"")+)"|`((?:[^`]|``)+)`|([A-Za-z_][A-Za-z0-9_$]*))$/);
   const name = m?.[1] ?? m?.[2] ?? m?.[3];
   return name !== undefined && name.toLowerCase() === column.toLowerCase();
+}
+
+// A sensitivity found on a column the field reads, worded so it names the column, not the field.
+function readsColumn(hit: Sensitivity, column: string, field: string): Sensitivity {
+  return column.toLowerCase() === field.toLowerCase() ? hit : { ...hit, reason: `it reads column ${column}; ${hit.reason}` };
+}
+
+// Who a golden runs as, for messages: its role (and user), the default role it falls to, or the
+// default audience, with why when it has no role.
+function runsAs(g: Golden, vis: AccessVisibility): { who: string; why: string } {
+  const user = isObject(g.user) && Object.keys(g.user).length ? ` with user ${JSON.stringify(g.user)}` : "";
+  if (g.role !== undefined) return { who: `role ${g.role}${user}`, why: "" };
+  const held = vis.roles.filter((r) => r.how === "condition").map((r) => r.name);
+  if (held.length) return { who: `a user${user}, who holds ${held.length > 1 ? "roles" : "role"} ${held.join(", ")} by condition`, why: "; a golden with no role runs as the roles its user holds" };
+  const fallback = vis.roles.find((r) => r.how === "default");
+  if (fallback) return { who: `the default role ${fallback.name}${user}`, why: "; a golden with no role runs as the default role" };
+  if (user) return { who: `a user${user} holding no assigned role`, why: "" };
+  return { who: "the default audience (a user with no attributes and no assigned roles)", why: "; a golden with no role and no default role runs as the default audience" };
+}
+
+// A golden's role and user as one comparable string; no user and an empty user are the same.
+function runAsKey(a: GoldenRunAs): string {
+  const user = isObject(a.user) && Object.keys(a.user).length ? a.user : {};
+  return canonical({ role: typeof a.role === "string" ? a.role : null, user });
+}
+
+function describeRunAs(a: GoldenRunAs): string {
+  const role = typeof a.role === "string" ? `role ${a.role}` : "no role";
+  const user = isObject(a.user) && Object.keys(a.user).length ? ` with user ${JSON.stringify(a.user)}` : "";
+  return `${role}${user}`;
+}
+
+// A value as canonical JSON, with object keys sorted, for comparing a golden's role and user.
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (isObject(v))
+    return `{${Object.keys(v)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`)
+      .join(",")}}`;
+  return JSON.stringify(v) ?? "null";
 }
 
 // Key pairs as an order-free, case-free string, for comparing a join's keys with its evidence's.

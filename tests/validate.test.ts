@@ -506,23 +506,30 @@ const CASES: Case[] = [
     edit: (d) => (d.measures[0].expr = "dim_customers.is_test_account::int"),
     expect: ["error", ORDERS, "measures[0].expr", "a measure expr may name only this model's columns; put a joined column in the measure's filter or in a dimension, or ask the owner for a view"],
   },
+  { name: "join reference in a row filter", file: ACCESS, edit: (d) => (d.roles[1].row_filters[0].expr = "customer.region = {{ user.region }}"), expect: [] },
   {
-    name: "join reference in a row filter",
+    name: "a row filter's join reference through an unknown join",
     file: ACCESS,
-    edit: (d) => (d.roles[1].row_filters[0].expr = "customer.region = {{ user.region }}"),
-    expect: ["error", ACCESS, "roles[1].row_filters[0].expr", "a row filter is over its model's own columns"],
+    edit: (d) => (d.roles[1].row_filters[0].expr = "buyer.region = {{ user.region }}"),
+    expect: ["error", ACCESS, "roles[1].row_filters[0].expr", 'buyer.region: "buyer" is neither a column nor a join of model orders'],
+  },
+  {
+    name: "a row filter's join reference to a column the target lacks",
+    file: ACCESS,
+    edit: (d) => (d.roles[1].row_filters[0].expr = "customer.territory = {{ user.region }}"),
+    expect: ["error", ACCESS, "roles[1].row_filters[0].expr", '"territory" is not a column of public.dim_customers'],
   },
   {
     name: "subquery in a row filter",
     file: ACCESS,
     edit: (d) => (d.roles[1].row_filters[0].expr = "customer_id in (select customer_id from public.dim_customers where region = {{ user.region }})"),
-    expect: ["error", ACCESS, "roles[1].row_filters[0].expr", "has a subquery; a row filter may name only its model's columns; write a row filter on the joined model, or ask the owner for a view"],
+    expect: ["error", ACCESS, "roles[1].row_filters[0].expr", "has a subquery; a row filter may name only its model's columns and <join>.<column> or <join>.<join>.<column> join references through many_to_one or one_to_one joins; for a rule that needs anything else, add a join to the model or ask the owner for a view that holds it"],
   },
   {
     name: "table name in a row filter gets the row filter hint",
     file: ACCESS,
     edit: (d) => (d.roles[1].row_filters[0].expr = "dim_customers.region = {{ user.region }}"),
-    expect: ["error", ACCESS, "roles[1].row_filters[0].expr", "dim_customers.region names a table or schema directly; a row filter may name only its model's columns; write a row filter on the joined model, or ask the owner for a view"],
+    expect: ["error", ACCESS, "roles[1].row_filters[0].expr", "dim_customers.region names a table or schema directly; a row filter may name only its model's columns and <join>.<column> or <join>.<join>.<column> join references through many_to_one or one_to_one joins; for a rule that needs anything else, add a join to the model or ask the owner for a view that holds it"],
   },
   { name: "row filter on a joined model's own columns", file: ACCESS, edit: (d) => d.roles[1].row_filters.push({ model: "warehouse.customers", expr: "region = {{ user.region }}" }), expect: [] },
 
@@ -811,7 +818,7 @@ const CASES: Case[] = [
     name: "a duckdb measure expr that divides by a numeric literal",
     file: "models/lake/web_events.yaml",
     edit: (d) => d.measures.push({ name: "amount", expr: "event_id / 100.0", agg: "sum", status: "draft" }),
-    expect: ["warning", "models/lake/web_events.yaml", "measures[2].expr", 'divides by a numeric literal; on duckdb "/ 100.0" gives a DOUBLE, so write <col> * 0.01 for an exact amount'],
+    expect: ["warning", "models/lake/web_events.yaml", "measures[2].expr", 'divides by a numeric literal; on duckdb "/ 100.0" gives a DOUBLE, so write <col> * 0.01 for an exact amount; this warning never stands'],
   },
   {
     name: "a duckdb measure expr that divides by an integer literal",
@@ -850,7 +857,13 @@ const CASES: Case[] = [
     name: "a golden's sql that calls round()",
     file: GOLDEN,
     edit: (d) => (d.sql = "select round(sum(o.amount_cents / 100.0), 2) as revenue from public.fct_orders o"),
-    expect: ["warning", GOLDEN, "sql", "calls round(); a golden's SQL applies the measure exactly as written; round() hides float noise"],
+    expect: [
+      "warning",
+      GOLDEN,
+      "sql",
+      "calls round(); a golden's SQL applies the measure exactly as written; round() hides float noise, so remove it. This warning never stands, whatever the golden's reference says; " +
+        "once round() is removed, sl goldens check --name revenue_by_month_2025 fails on rows recorded rounded until the owner says yes to the unrounded figure and it is confirmed again",
+    ],
   },
   { name: "round in a golden's string literal or comment", file: GOLDEN, edit: (d) => (d.sql = "select 'round(x)' as label -- round(y)\nfrom public.fct_orders"), expect: [] },
   {
@@ -900,6 +913,7 @@ const CASES: Case[] = [
       ["warning", ACCESS, "roles[0]", "to model warehouse.customers, which the role denies by tag;"],
       // pii is protected: sales_rep, which does not grant it, does not see customers either.
       ["warning", ACCESS, "roles[1]", "which the role does not see, since it carries the protected tag pii; the dimension would show the values of warehouse.customers to this role, so grant pii in the role's allow.tags"],
+      ["warning", GOLDEN3, "request.dimensions[0]", "names customers.region, which the default role analyst may not see (denied:analyst, protected_tag:pii, model_hidden); a golden with no role runs as the default role"],
     ],
   },
   { name: "a role that denies the dimension itself", file: ACCESS, edit: (d) => d.roles.push({ name: "marketing", allow: { models: ["warehouse.orders"] }, deny: { fields: ["warehouse.orders.customer_region"] } }), expect: [] },
@@ -1064,6 +1078,9 @@ function approvedDimension(root: string, dim: Doc): void {
 }
 
 const OPEN_NO_EFFECT = "has no effect in open mode";
+// The draft golden revenue_by_customer_region, with no role, names customers.region; once customers is
+// hidden from whoever it runs as, the golden access check warns.
+const GOLDEN3_REGION_HIDDEN: Expected = ["warning", GOLDEN3, "request.dimensions[0]", "names customers.region, which"];
 const LOOKS_SENSITIVE = "is visible to everyone and looks sensitive";
 
 const ACCESS_CASES: Case[] = [
@@ -1096,7 +1113,7 @@ const ACCESS_CASES: Case[] = [
   {
     name: "closed mode without roles sees nothing",
     file: "",
-    setup: (r) => (noGoldenRoles(r), writeYaml(join(r, ACCESS), { status: "draft", mode: "closed" })),
+    setup: (r) => (rmSync(join(r, "goldens"), { recursive: true }), writeYaml(join(r, ACCESS), { status: "draft", mode: "closed" })),
     expect: ["warning", ACCESS, "mode", "is closed but there are no roles, so no one sees anything"],
   },
   { name: "unknown mode", file: ACCESS, edit: (d) => (d.mode = "strict"), expect: ["error", ACCESS, "mode", "must be one of: open, closed"] },
@@ -1198,13 +1215,14 @@ const ACCESS_CASES: Case[] = [
     name: "a restriction on a field and a model glob",
     file: ACCESS,
     edit: (d) => d.restrictions.push({ name: "revenue_detail", targets: ["warehouse.orders.revenue", "warehouse.cust*"], allow: { roles: ["analyst"] } }),
-    expect: [],
+    // The draft golden aov_by_region runs as sales_rep, whom the restriction keeps from revenue.
+    expect: ["warning", GOLDEN2, "request.measures[0]", "names average_order_value, which role sales_rep with user {\"region\":\"west\"} may not see (measure_hidden:orders.revenue)"],
   },
   {
     name: "a restriction allowed by a condition alone",
     file: ACCESS,
     edit: (d) => d.restrictions.push({ name: "finance_only", targets: ["metric:*"], allow: { when: "user.department == 'finance'" } }),
-    expect: [],
+    expect: ["warning", GOLDEN2, "request.measures[0]", "names average_order_value, which role sales_rep with user {\"region\":\"west\"} may not see (restricted:finance_only)"],
   },
   {
     name: "a restriction target that matches nothing",
@@ -1321,7 +1339,10 @@ const ACCESS_CASES: Case[] = [
     name: "a role that grants the joined model's protected tag",
     file: "",
     setup: (r) => (mutate(r, CUSTOMERS, (d) => (d.tags = ["sensitive"])), mutate(r, ACCESS, (d) => (d.roles[1].allow.tags = ["sensitive"]))),
-    expect: ["warning", ACCESS, "roles[0]", "which the role does not see, since it carries the protected tag sensitive; the dimension would show the values of warehouse.customers to this role, so grant sensitive in the role's allow.tags"],
+    expect: [
+      ["warning", ACCESS, "roles[0]", "which the role does not see, since it carries the protected tag sensitive; the dimension would show the values of warehouse.customers to this role, so grant sensitive in the role's allow.tags"],
+      GOLDEN3_REGION_HIDDEN,
+    ],
   },
 
   // Definition joins seen by the default audience
@@ -1335,10 +1356,18 @@ const ACCESS_CASES: Case[] = [
       mutate(r, ORDERS, (d) => Object.assign(d.dimensions[3], APPROVED))
     ),
     expect: [
-      "warning",
-      ORDERS,
-      "dimensions[3]",
-      "warehouse.orders.customer_region is visible to the default audience (a user with no attributes and no assigned roles), and its expr reads customer.region through join customer to model warehouse.customers, which that audience does not see (it carries the protected tag sensitive); the dimension would show the values of warehouse.customers to that audience, so tag warehouse.orders.customer_region sensitive, or confirm with the owner that everyone may see them",
+      [
+        "warning",
+        ORDERS,
+        "dimensions[3]",
+        "warehouse.orders.customer_region is visible to the default audience (a user with no attributes and no assigned roles), and its expr reads customer.region through join customer to model warehouse.customers, which that audience does not see (it carries the protected tag sensitive); the dimension would show the values of warehouse.customers to that audience, so tag warehouse.orders.customer_region sensitive, or confirm with the owner that everyone may see them",
+      ],
+      [
+        "warning",
+        GOLDEN3,
+        "request.dimensions[0]",
+        "names customers.region, which the default audience (a user with no attributes and no assigned roles) may not see (protected_tag:sensitive, model_hidden); a golden with no role and no default role runs as the default audience",
+      ],
     ],
   },
   {
@@ -1355,7 +1384,10 @@ const ACCESS_CASES: Case[] = [
       mutate(r, CUSTOMERS, (d) => (d.tags = ["pii"])),
       mutate(r, ORDERS, (d) => Object.assign(d.dimensions[3], APPROVED))
     ),
-    expect: ["warning", ORDERS, "dimensions[3]", "which that audience does not see (it carries the protected tag pii); the dimension would show the values of warehouse.customers to that audience, so tag warehouse.orders.customer_region pii"],
+    expect: [
+      ["warning", ORDERS, "dimensions[3]", "which that audience does not see (it carries the protected tag pii); the dimension would show the values of warehouse.customers to that audience, so tag warehouse.orders.customer_region pii"],
+      GOLDEN3_REGION_HIDDEN,
+    ],
   },
   {
     name: "open mode with a role no one is assigned: the default audience and the role are both warned about",
@@ -1374,6 +1406,7 @@ const ACCESS_CASES: Case[] = [
     expect: [
       ["warning", ORDERS, "dimensions[3]", "which that audience does not see (it carries the protected tag sensitive)"],
       ["warning", ACCESS, "roles[0]", "which the role does not see, since it carries the protected tag sensitive"],
+      GOLDEN3_REGION_HIDDEN,
     ],
   },
   {
@@ -1383,6 +1416,7 @@ const ACCESS_CASES: Case[] = [
     expect: [
       ["warning", ACCESS, "roles[0]", "which the role does not see, since it carries the protected tag sensitive"],
       ["warning", ACCESS, "roles[1]", "which the role does not see, since it carries the protected tag sensitive"],
+      GOLDEN3_REGION_HIDDEN,
     ],
   },
   {
@@ -1393,10 +1427,13 @@ const ACCESS_CASES: Case[] = [
       mutate(r, ORDERS, (d) => Object.assign(d.dimensions[3], APPROVED))
     ),
     expect: [
-      "warning",
-      ORDERS,
-      "dimensions[3]",
-      "which that audience does not see (restriction customer_detail hides it); the dimension would show the values of warehouse.customers to that audience, so add warehouse.orders.customer_region to the targets of restriction customer_detail",
+      [
+        "warning",
+        ORDERS,
+        "dimensions[3]",
+        "which that audience does not see (restriction customer_detail hides it); the dimension would show the values of warehouse.customers to that audience, so add warehouse.orders.customer_region to the targets of restriction customer_detail",
+      ],
+      ["warning", GOLDEN3, "request.dimensions[0]", "names customers.region, which the default role analyst may not see (model_hidden)"],
     ],
   },
   {
@@ -1406,13 +1443,13 @@ const ACCESS_CASES: Case[] = [
       mutate(r, ACCESS, (d) => d.restrictions.push({ name: "customer_detail", targets: ["warehouse.customers", "warehouse.orders.customer_region"], allow: { roles: ["sales_rep"] } })),
       mutate(r, ORDERS, (d) => Object.assign(d.dimensions[3], APPROVED))
     ),
-    expect: [],
+    expect: [GOLDEN3_REGION_HIDDEN],
   },
   {
     name: "a draft dimension that reads a protected model is not exposed",
     file: "",
     setup: (r) => (rmSync(join(r, ACCESS)), noGoldenRoles(r), mutate(r, CUSTOMERS, (d) => (d.tags = ["sensitive"]))),
-    expect: [],
+    expect: [GOLDEN3_REGION_HIDDEN],
   },
 
   // ignored_columns
@@ -1459,13 +1496,13 @@ const ACCESS_CASES: Case[] = [
     name: "an approved dimension everyone sees reads a free-text column",
     file: "",
     setup: (r) => (addOrdersColumn(r, { name: "internal_notes", type: "text" }), approvedDimension(r, { name: "notes", expr: "internal_notes" })),
-    expect: ["warning", ORDERS, "dimensions[4]", "warehouse.orders.notes is visible to everyone and looks sensitive (the name internal_notes looks like a credential or free text); tag it pii or sensitive, or tag it public if everyone may see it"],
+    expect: ["warning", ORDERS, "dimensions[4]", "warehouse.orders.notes is visible to everyone and looks sensitive (it reads column internal_notes; the name internal_notes looks like a credential or free text); tag it pii or sensitive, or tag it public if everyone may see it"],
   },
   {
     name: "an approved dimension reads personal data through a join",
     file: "",
     setup: (r) => approvedDimension(r, { name: "buyer_contact", expr: "lower(customer.email)" }),
-    expect: ["warning", ORDERS, "dimensions[4]", "warehouse.orders.buyer_contact is visible to everyone and looks sensitive (the name email looks like personal data)"],
+    expect: ["warning", ORDERS, "dimensions[4]", "warehouse.orders.buyer_contact is visible to everyone and looks sensitive (it reads column customer.email; the name email looks like personal data)"],
   },
   {
     name: "an approved dimension over a near-unique string",
@@ -1474,7 +1511,7 @@ const ACCESS_CASES: Case[] = [
       addOrdersColumn(r, { name: "tracking_code", type: "text", profile: { null_fraction: 0, distinct_count: 9990 } }),
       approvedDimension(r, { name: "tracking", expr: "tracking_code" })
     ),
-    expect: ["warning", ORDERS, "dimensions[4]", "(tracking_code has a different value on nearly every row)"],
+    expect: ["warning", ORDERS, "dimensions[4]", "(it reads column tracking_code; tracking_code has a different value on nearly every row)"],
   },
   {
     name: "an approved dimension whose name alone looks personal",
@@ -1489,7 +1526,7 @@ const ACCESS_CASES: Case[] = [
       addOrdersColumn(r, { name: "bonus_cents", type: "bigint" }),
       mutate(r, ORDERS, (d) => d.measures.push({ name: "payouts", expr: "bonus_cents / 100.0", agg: "sum", description: "x", ...APPROVED }))
     ),
-    expect: ["warning", ORDERS, "measures[2]", "warehouse.orders.payouts is visible to everyone and looks sensitive (the name bonus_cents looks like pay, banking or health data)"],
+    expect: ["warning", ORDERS, "measures[2]", "warehouse.orders.payouts is visible to everyone and looks sensitive (it reads column bonus_cents; the name bonus_cents looks like pay, banking or health data)"],
   },
   {
     name: "a count of a sensitive column shows no values",
@@ -1551,7 +1588,11 @@ const ACCESS_CASES: Case[] = [
       approvedDimension(r, { name: "notes", expr: "internal_notes" }),
       mutate(r, ACCESS, (d) => delete d.default_role)
     ),
-    expect: [],
+    // The draft golden with no role runs as the default audience, which sees nothing in closed mode.
+    expect: [
+      ["warning", GOLDEN3, "request.measures[0]", "names orders.revenue, which the default audience (a user with no attributes and no assigned roles) may not see (not_allowed, model_hidden)"],
+      ["warning", GOLDEN3, "request.dimensions[0]", "names customers.region, which the default audience"],
+    ],
   },
   {
     name: "open mode with no access.yaml: everyone sees every approved field",
@@ -1588,6 +1629,293 @@ describe("access modes, conditions, restrictions, hierarchy filters, ignored col
     const body = r.json<{ ok: boolean; warnings: number; issues: Issue[] }>();
     expect(body).toMatchObject({ ok: true, errors: 0, warnings: 1 });
     expect(body.issues[0]!.message).toContain(LOOKS_SENSITIVE);
+  });
+});
+
+// Lets sales_rep see shipments, a model with a to-one join into the row-filtered orders.
+function repSeesShipments(root: string): void {
+  addShipments(root);
+  mutate(root, ACCESS, (d) => d.roles[1].allow.models.push("warehouse.shipments"));
+}
+
+// Adds parcels, joined to shipments, so orders is two hops from parcels.
+function addParcels(root: string): void {
+  addModel(root, "parcels", "fct_parcels", ["parcel_id", "shipment_id"], {
+    joins: [{ name: "shipment", to: "shipments", keys: [{ from: "shipment_id", to: "shipment_id" }], relationship: "many_to_one", status: "draft" }],
+  });
+}
+
+const SHIPMENTS_UNLIMITED =
+  "rows of warehouse.shipments that belong to warehouse.orders are not limited by warehouse.orders's row filter for role sales_rep; " +
+  "add a row filter on warehouse.shipments (it may read order.ship_region), deny warehouse.shipments to sales_rep, or record why in the role's open_questions";
+
+// Gives dim_customers.email (read by the pii-tagged customers.email) a profiled top value.
+function emailTopValue(root: string, value = "dana@example.com"): void {
+  mutate(root, SNAP_WH, (d) => {
+    const email = d.tables.find((t: Doc) => t.name === "dim_customers").columns.find((c: Doc) => c.name === "email");
+    email.profile = { null_fraction: 0, distinct_count: 2000, top_values: [{ value, count: 1 }, { value: "ab", count: 1 }] };
+  });
+}
+
+const QUOTES_EMAIL =
+  'quotes "dana@example.com", a value of column email of public.dim_customers, which warehouse.customers.email reads and tags pii; ' +
+  "this text is shown to people the tag hides that column from, so write an id or a count instead";
+
+const JOIN_ACCESS_CASES: Case[] = [
+  // Row filters through joins
+  { name: "a row filter's expr reads two hops through joins", file: "", setup: (r) => (addRegions(r), mutate(r, ACCESS, (d) => (d.roles[1].row_filters[0].expr = "customer.home_region.region_name = {{ user.region }}"))), expect: [] },
+  {
+    name: "a row filter's join reference through a one_to_many join",
+    file: "",
+    setup: (r) => (
+      addShipments(r),
+      mutate(r, ORDERS, (d) => d.joins.push({ name: "shipment", to: "shipments", keys: [{ from: "order_id", to: "order_id" }], relationship: "one_to_many", status: "draft" })),
+      mutate(r, ACCESS, (d) => (d.roles[1].row_filters[0].expr = "shipment.shipment_id = {{ user.region }}"))
+    ),
+    expect: [
+      ["warning", ORDERS, "joins[1].relationship", "one_to_many fans out"],
+      ["error", ACCESS, "roles[1].row_filters[0].expr", "goes through join shipment, which is one_to_many"],
+    ],
+  },
+  { name: "a hierarchy column through a join", file: "", setup: (r) => managerRole(r, { ...HIERARCHY, column: "customer.customer_id" }), expect: [] },
+  {
+    name: "a hierarchy column through an unknown join",
+    file: "",
+    setup: (r) => managerRole(r, { ...HIERARCHY, column: "buyer.customer_id" }),
+    expect: ["error", ACCESS, "roles[2].row_filters[0].hierarchy.column", 'buyer.customer_id: "buyer" is neither a column nor a join of model orders'],
+  },
+  {
+    name: "a hierarchy column that is an expression",
+    file: "",
+    setup: (r) => managerRole(r, { ...HIERARCHY, column: "customer.customer_id + 1" }),
+    expect: ["error", ACCESS, "roles[2].row_filters[0].hierarchy.column", '"customer.customer_id + 1" is neither a column nor a join reference'],
+  },
+
+  // Child tables of a row-filtered model
+  { name: "a role sees a model that joins into its row-filtered model", file: "", setup: repSeesShipments, expect: ["warning", ACCESS, "roles[1].row_filters[0]", SHIPMENTS_UNLIMITED] },
+  {
+    name: "two hops into the row-filtered model",
+    file: "",
+    setup: (r) => (repSeesShipments(r), addParcels(r), mutate(r, ACCESS, (d) => d.roles[1].allow.models.push("warehouse.parcels"))),
+    expect: [
+      ["warning", ACCESS, "roles[1].row_filters[0]", SHIPMENTS_UNLIMITED],
+      ["warning", ACCESS, "roles[1].row_filters[0]", "rows of warehouse.parcels that belong to warehouse.orders are not limited by warehouse.orders's row filter for role sales_rep; add a row filter on warehouse.parcels (it may read shipment.order.ship_region)"],
+    ],
+  },
+  {
+    name: "the child model has its own row filter, through a join",
+    file: "",
+    setup: (r) => (repSeesShipments(r), mutate(r, ACCESS, (d) => d.roles[1].row_filters.push({ model: "warehouse.shipments", expr: "order.ship_region = {{ user.region }}" }))),
+    expect: [],
+  },
+  { name: "the child model is denied to the role", file: "", setup: (r) => (repSeesShipments(r), mutate(r, ACCESS, (d) => (d.roles[1].deny.models = ["warehouse.shipments"]))), expect: [] },
+  {
+    name: "a restriction keeps the child model from the role",
+    file: "",
+    setup: (r) => (repSeesShipments(r), mutate(r, ACCESS, (d) => d.restrictions.push({ name: "shipping", targets: ["warehouse.ship*"], allow: { roles: ["analyst"] } }))),
+    expect: [],
+  },
+  {
+    name: "a restriction with allow.when may still let the role's users see the child model",
+    file: "",
+    setup: (r) => (repSeesShipments(r), mutate(r, ACCESS, (d) => d.restrictions.push({ name: "shipping", targets: ["warehouse.shipments"], allow: { roles: ["analyst"], when: "user.department == 'ops'" } }))),
+    expect: ["warning", ACCESS, "roles[1].row_filters[0]", SHIPMENTS_UNLIMITED],
+  },
+  { name: "a role's open question names the child model", file: "", setup: (r) => (repSeesShipments(r), mutate(r, ACCESS, (d) => (d.roles[1].open_questions = ["Reps see all shipments; Dana is checking whether that is meant."]))), expect: [] },
+  { name: "an open question that only contains the name in a longer word", file: "", setup: (r) => (repSeesShipments(r), mutate(r, ACCESS, (d) => (d.roles[1].open_questions = ["Ask about shipments_archive."]))), expect: ["warning", ACCESS, "roles[1].row_filters[0]", SHIPMENTS_UNLIMITED] },
+  {
+    name: "a hierarchy filter names its column in the hint",
+    file: "",
+    setup: (r) => (managerRole(r), addShipments(r)),
+    expect: ["warning", ACCESS, "roles[2].row_filters[0]", "rows of warehouse.shipments that belong to warehouse.orders are not limited by warehouse.orders's row filter for role manager; add a row filter on warehouse.shipments (it may read order.customer_id)"],
+  },
+
+  {
+    name: "the hint reads the filtered model's join reference through the child's join",
+    file: "",
+    setup: (r) => (repSeesShipments(r), mutate(r, ACCESS, (d) => (d.roles[1].row_filters[0].expr = "customer.region = {{ user.region }}"))),
+    expect: ["warning", ACCESS, "roles[1].row_filters[0]", "add a row filter on warehouse.shipments (it may read order.customer.region), deny warehouse.shipments to sales_rep"],
+  },
+  {
+    name: "the hint leaves out a reference past two hops",
+    file: "",
+    setup: (r) => (
+      repSeesShipments(r),
+      addParcels(r),
+      mutate(r, ACCESS, (d) => (d.roles[1].allow.models.push("warehouse.parcels"), (d.roles[1].row_filters[0].expr = "customer.region = {{ user.region }}")))
+    ),
+    expect: [
+      ["warning", ACCESS, "roles[1].row_filters[0]", "add a row filter on warehouse.shipments (it may read order.customer.region), deny"],
+      ["warning", ACCESS, "roles[1].row_filters[0]", "add a row filter on warehouse.parcels, deny warehouse.parcels to sales_rep, or record why"],
+    ],
+  },
+  {
+    name: "the hint names the column the user attribute limits",
+    file: "",
+    setup: (r) => (repSeesShipments(r), mutate(r, ACCESS, (d) => (d.roles[1].row_filters[0].expr = "status <> 'cancelled' and ship_region = {{ user.region }}"))),
+    expect: ["warning", ACCESS, "roles[1].row_filters[0]", SHIPMENTS_UNLIMITED],
+  },
+
+  // Goldens checked against access
+  {
+    name: "an approved golden names a field its role may not see",
+    file: ACCESS,
+    edit: (d) => d.restrictions.push({ name: "revenue_detail", targets: ["warehouse.orders.revenue"], allow: { roles: ["sales_rep"] } }),
+    expect: [
+      ["error", GOLDEN, "request.measures[0]", "names orders.revenue, which role analyst may not see (restricted:revenue_detail); give the golden a role and user who may see every field it names, or change access.yaml after the owner's yes"],
+      ["warning", GOLDEN3, "request.measures[0]", "names orders.revenue, which the default role analyst may not see (restricted:revenue_detail); a golden with no role runs as the default role"],
+    ],
+  },
+  {
+    name: "a draft golden filters on a field its role may not see",
+    file: ACCESS,
+    edit: (d) => d.restrictions.push({ name: "status_detail", targets: ["warehouse.orders.status"], allow: { roles: ["analyst"] } }),
+    expect: ["warning", GOLDEN2, "request.filters[0].field", 'names orders.status, which role sales_rep with user {"region":"west"} may not see (restricted:status_detail)'],
+  },
+  {
+    name: "a golden's user satisfies a restriction's allow.when",
+    file: "",
+    setup: (r) => (
+      mutate(r, ACCESS, (d) => d.restrictions.push({ name: "west_only", targets: ["metric:average_order_value"], allow: { when: "user.region == 'west'" } }))
+    ),
+    expect: [],
+  },
+  {
+    name: "no access.yaml: a golden runs as the default audience, which a protected tag hides from",
+    file: "",
+    setup: (r) => (rmSync(join(r, ACCESS)), noGoldenRoles(r), mutate(r, ORDERS, (d) => (d.dimensions[0].tags = ["pii"]))),
+    expect: [
+      ["error", GOLDEN, "request.dimensions[0]", "names orders.order_date:month, which the default audience (a user with no attributes and no assigned roles) may not see (protected_tag:pii)"],
+      ["error", GOLDEN, "request.filters[0].field", "names orders.order_date, which the default audience"],
+      ["error", GOLDEN, "request.filters[1].field", "names orders.order_date, which the default audience"],
+      ["error", GOLDEN, "request.order_by[0].field", "names orders.order_date:month, which the default audience"],
+    ],
+  },
+  {
+    name: "a golden is not checked against an access.yaml with errors",
+    file: ACCESS,
+    edit: (d) => ((d.restrictions[0].allow.roles = ["nobody"]), d.restrictions.push({ name: "all", targets: ["warehouse.*"], allow: { roles: ["nobody"] } })),
+    expect: [
+      ["error", ACCESS, "restrictions[0].allow.roles[0]", 'names unknown role "nobody"'],
+      ["error", ACCESS, "restrictions[1].allow.roles[0]", 'names unknown role "nobody"'],
+    ],
+  },
+
+  // confirmed_as
+  { name: "confirmed_as matches the golden's role and user", file: GOLDEN, edit: (d) => (d.confirmed_as = { role: "analyst" }), expect: [] },
+  {
+    name: "the golden's role changed after it was confirmed",
+    file: GOLDEN,
+    edit: (d) => (d.confirmed_as = { role: "sales_rep", user: { region: "west" } }),
+    expect: [
+      "warning",
+      GOLDEN,
+      "confirmed_as",
+      'the golden was confirmed as role sales_rep with user {"region":"west"} but now runs as role analyst; run sl goldens check --name revenue_by_month_2025, read the change back and confirm again on the owner\'s yes',
+    ],
+  },
+  { name: "the golden's user changed after it was confirmed", file: GOLDEN, edit: (d) => ((d.user = { region: "east" }), (d.confirmed_as = { role: "analyst", user: {} })), expect: ["warning", GOLDEN, "confirmed_as", 'but now runs as role analyst with user {"region":"east"}'] },
+  { name: "confirmed_as with an unknown key", file: GOLDEN, edit: (d) => (d.confirmed_as = { role: "analyst", roles: ["analyst"] }), expect: ["error", GOLDEN, "confirmed_as.roles", "is not a known property"] },
+
+  {
+    name: "a hidden field filtered on and sorted by is reported at each place",
+    file: GOLDEN,
+    edit: (d) => (d.request.filters.push({ field: "customers.email", op: "eq", value: "x" }), d.request.order_by.push({ field: "customers.email" })),
+    expect: [
+      ["error", GOLDEN, "request.filters[2].field", "names customers.email, which role analyst may not see"],
+      ["error", GOLDEN, "request.order_by[1].field", "names customers.email, which role analyst may not see"],
+      ["warning", GOLDEN, "request.filters[2].field", "an approved golden uses draft dimension customers.email"],
+    ],
+  },
+  {
+    name: "a golden with no role runs as the roles its user holds by condition",
+    file: GOLDEN3,
+    edit: (d) => ((d.user = { department: "sales", region: "west" }), (d.request.dimensions = ["customers.email"])),
+    expect: ["warning", GOLDEN3, "request.dimensions[0]", 'names customers.email, which a user with user {"department":"sales","region":"west"}, who holds role sales_rep by condition may not see'],
+  },
+
+  // Personal values in text
+  {
+    name: "descriptions, synonyms and golden text quote a value of a pii column",
+    file: "",
+    setup: (r) => (
+      emailTopValue(r),
+      mutate(r, ORDERS, (d) => ((d.measures[0].synonyms = ["sales", "Dana@Example.com sales"]), (d.joins[0].description = "The customer, as dana@example.com."))),
+      mutate(r, CUSTOMERS, (d) => (d.description = "One row per customer, such as dana@example.com.")),
+      mutate(r, ACCESS, (d) => (d.roles[0].description = "Analysts like dana@example.com.")),
+      mutate(r, "metrics.yaml", (d) => (d.metrics[0].description = "Revenue per order (dana@example.com checks it).")),
+      mutate(r, GOLDEN3, (d) => ((d.question = "What did dana@example.com buy?"), (d.reference = "Asked by dana@example.com")))
+    ),
+    expect: [
+      ["warning", ORDERS, "measures[0].synonyms[1]", QUOTES_EMAIL],
+      ["warning", ORDERS, "joins[0].description", QUOTES_EMAIL],
+      ["warning", CUSTOMERS, "description", QUOTES_EMAIL],
+      ["warning", ACCESS, "roles[0].description", QUOTES_EMAIL],
+      ["warning", "metrics.yaml", "metrics[0].description", QUOTES_EMAIL],
+      ["warning", GOLDEN3, "question", QUOTES_EMAIL],
+      ["warning", GOLDEN3, "reference", QUOTES_EMAIL],
+    ],
+  },
+  {
+    name: "a short value, or one inside a longer word, is not flagged",
+    file: "",
+    setup: (r) => (emailTopValue(r, "west"), mutate(r, CUSTOMERS, (d) => (d.description = "One row per customer; ab is short, and midwest or westerly are other words."))),
+    expect: [],
+  },
+  {
+    name: "a dimension that reads a pii column through a join flags its values",
+    file: "",
+    setup: (r) => (
+      emailTopValue(r),
+      mutate(r, CUSTOMERS, (d) => delete d.dimensions[0].tags),
+      mutate(r, ORDERS, (d) => (d.dimensions.push({ name: "buyer_email", expr: "customer.email", type: "string", tags: ["pii"], status: "draft" }), (d.description = "Orders, such as those of dana@example.com.")))
+    ),
+    expect: ["warning", ORDERS, "description", 'quotes "dana@example.com", a value of column email of public.dim_customers, which warehouse.orders.buyer_email reads and tags pii'],
+  },
+  {
+    name: "a model's tag flags values only of the columns that look personal",
+    file: "",
+    setup: (r) => (
+      emailTopValue(r),
+      mutate(r, SNAP_WH, (d) => {
+        const region = d.tables.find((t: Doc) => t.name === "dim_customers").columns.find((c: Doc) => c.name === "region");
+        region.profile = { null_fraction: 0, distinct_count: 4, top_values: [{ value: "Northwind", count: 900 }] };
+      }),
+      mutate(r, CUSTOMERS, (d) => ((d.tags = ["pii"]), delete d.dimensions[0].tags, (d.description = "Customers in Northwind, such as dana@example.com.")))
+    ),
+    expect: [
+      ["warning", CUSTOMERS, "description", QUOTES_EMAIL],
+      ["warning", ACCESS, "roles[0]", "may see dimension warehouse.orders.customer_region"],
+      ["warning", ACCESS, "roles[1]", "may see dimension warehouse.orders.customer_region"],
+      GOLDEN3_REGION_HIDDEN,
+    ],
+  },
+  {
+    name: "values of an untagged column are not flagged",
+    file: "",
+    setup: (r) => (emailTopValue(r), mutate(r, CUSTOMERS, (d) => (delete d.dimensions[0].tags, (d.description = "Customers, such as dana@example.com.")))),
+    expect: ["warning", ACCESS, "roles[0].deny.tags[0]", 'tag "pii" is not used'],
+  },
+];
+
+describe("row filters through joins, child tables, goldens against access and personal values in text", () => {
+  for (const c of JOIN_ACCESS_CASES) {
+    test(c.name, () => {
+      const root = copyFixture();
+      if (c.setup) c.setup(root);
+      if (c.edit) mutate(root, c.file, c.edit);
+      const issues = validateProject(root);
+      const expected = c.expect.length && Array.isArray(c.expect[0]) ? (c.expect as Expected[]) : c.expect.length ? [c.expect as Expected] : [];
+      expectExactly(issues, expected);
+    });
+  }
+
+  test("sl validate exits 1 when an approved golden names a field its role may not see", async () => {
+    const root = copyFixture();
+    mutate(root, ACCESS, (d) => d.restrictions.push({ name: "revenue_detail", targets: ["warehouse.orders.revenue"], allow: { roles: ["sales_rep"] } }));
+    const r = await sl(root, ["validate"]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("request.measures[0]: names orders.revenue, which role analyst may not see (restricted:revenue_detail)");
   });
 });
 

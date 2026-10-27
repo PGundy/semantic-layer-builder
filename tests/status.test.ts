@@ -398,9 +398,18 @@ describe("status next_step", () => {
     const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.access).toMatchObject({ state: "draft", roles: 3, open_questions: 2 });
     expect(s.open_questions).toBe(4);
-    expect(s.next_step.message).toContain("Settle its 2 open question(s) first.");
+    // The step waits on the owner's answers: no approval is suggested, and the first question is named.
+    expect(s.next_step).toMatchObject({ phase: "access", blocked_on: "open_questions", command: "sl access", after_owner_yes: false });
+    expect(s.next_step.message).toContain("2 open question(s), so this step waits on the owner's answers");
+    expect(s.next_step.message).toContain('the first: "Does a joined row filter blank the columns?"');
+    expect(s.next_step.message).not.toContain("sl approve");
+    expect(s.next_step.message).toContain("do not push the approval");
+    expect(s.next_step.message).toContain("The owner may approve with remaining questions");
+    expect(s.next_step.message).not.toContain("nothing to approve");
     const human = await sl(t.root, ["status"]);
     expect(human.out).toContain("access draft (3 role(s), 2 open question(s))");
+    expect(human.out).toContain("  Waiting on the owner's answers to the open questions; meanwhile: sl access");
+    expect(human.out).not.toContain("Only after the owner says yes");
   });
 
   test("an access.yaml holding only comments is a draft with no roles", async () => {
@@ -422,9 +431,52 @@ describe("status next_step", () => {
     writeYaml(join(t.root, "access.yaml"), { status: "draft", open_questions: ["Is the default role the most limited?"], roles: [] });
     const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.access).toMatchObject({ state: "draft", roles: 0, open_questions: 1 });
-    expect(s.next_step).toMatchObject({ phase: "access", command: "sl validate" });
-    expect(s.next_step.message).toContain("no roles yet");
-    expect(s.next_step.message).toContain("Settle its 1 open question(s) with them.");
+    expect(s.next_step).toMatchObject({ phase: "access", blocked_on: "open_questions", command: "sl access", after_owner_yes: false });
+    expect(s.next_step.message).toContain('the first: "Is the default role the most limited?"');
+  });
+
+  test("a role's open question is named with its role when access.yaml has no top-level one", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, { access: "missing" });
+    writeYaml(join(t.root, "access.yaml"), {
+      status: "draft",
+      mode: "closed",
+      roles: [{ name: "sales", allow: { models: ["wh.orders"] }, open_questions: ["Own orders only, or the team's?"] }],
+    });
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.next_step).toMatchObject({ phase: "access", blocked_on: "open_questions", command: "sl access" });
+    expect(s.next_step.message).toContain(`the first: "role sales: Own orders only, or the team's?"`);
+  });
+
+  test("a closed access.yaml with no roles and an open question waits on the owner and says nobody sees anything", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, { access: "missing" });
+    writeYaml(join(t.root, "access.yaml"), { status: "draft", mode: "closed", open_questions: ["Who are the analysts?"] });
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.next_step).toMatchObject({ phase: "access", blocked_on: "open_questions", command: "sl access", after_owner_yes: false });
+    expect(s.next_step.message).toContain("closed and has no roles yet, so nobody sees anything");
+  });
+
+  test("a long first open question is cut at a word boundary in the step", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, { access: "missing" });
+    const long = `Should sales see order lines? ${"The rule limits only orders and not their lines, ".repeat(8)}End.`;
+    writeYaml(join(t.root, "access.yaml"), { status: "draft", open_questions: [long], roles: [{ name: "sales", allow: { models: ["wh.*"] } }] });
+    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const quoted = s.next_step.message.match(/the first: "([^"]*)"/)![1]!;
+    expect(quoted.startsWith("Should sales see order lines? The rule limits")).toBe(true);
+    expect(quoted.endsWith("…")).toBe(true);
+    expect(quoted.length).toBeLessThanOrEqual(201);
+    expect(quoted).not.toContain("End.");
+  });
+
+  test("an access.yaml without open questions has no blocked_on", async () => {
+    const s = await status({ access: "draft" });
+    expect(s.next_step.blocked_on).toBeUndefined();
+    expect(s.next_step.command).toBe('sl approve --target access --by "<owner>"');
   });
 
   test("fewer than 5 approved goldens -> verify, otherwise done", async () => {
@@ -1072,6 +1124,71 @@ describe("status schema evolution", () => {
     expect(st.sources[0]!.new_columns).toEqual([]);
     expect(st.sources[0]!.draft_fields).toContain("orders.discount_total");
     expect(st.next_step.phase).toBe("done");
+  });
+
+  test("a helper model over a modeled table raises only columns no model over the table reads or ignores", async () => {
+    const { st } = await built({}, (root) => {
+      editSnapshot(root, (snap) => {
+        const c = tableOf(snap, "dim_customers");
+        c.columns.push({ name: "is_test", type: "boolean" }, { name: "email", type: "varchar" }, { name: "tier", type: "varchar" });
+      });
+      editModel(root, "customers", (m) => {
+        m.dimensions.push({ name: "email", expr: "email", type: "string", status: "draft" });
+        m.ignored_columns = ["tier"];
+      });
+      // A helper model over the same table reads only id and is_test.
+      writeYaml(join(root, "models", "wh", "test_accounts.yaml"), {
+        model: "test_accounts",
+        source: "wh",
+        table: "main.dim_customers",
+        status: "draft",
+        primary_key: ["id"],
+        dimensions: [{ name: "is_test", expr: "is_test", type: "boolean", status: "draft" }],
+        measures: [],
+      });
+    });
+    // amount, email and tier are read or ignored by customers, is_test by test_accounts: nothing is new.
+    expect(st.sources[0]!.new_columns).toEqual([]);
+  });
+
+  test("a column no model over its table reads is listed once, under the model that reads the most columns", async () => {
+    const { st } = await built({}, (root) => {
+      editSnapshot(root, (snap) => {
+        tableOf(snap, "dim_customers").columns.push({ name: "segment", type: "varchar" });
+      });
+      writeYaml(join(root, "models", "wh", "a_helper.yaml"), {
+        model: "a_helper",
+        source: "wh",
+        table: "main.dim_customers",
+        status: "draft",
+        dimensions: [],
+        measures: [{ name: "n", agg: "count", status: "draft" }],
+      });
+    });
+    expect(st.sources[0]!.new_columns).toEqual([{ model: "customers", column: "segment", type: "varchar" }]);
+    expect(st.next_step.command).toBe("sl draft --source wh --new-columns");
+  });
+
+  test("a partly profiled table is not profiled: status names it as needing a profile for new or retyped columns", async () => {
+    const { st, root } = await built({}, (r) =>
+      editSnapshot(r, (snap) => {
+        const orders = tableOf(snap, "fct_orders");
+        orders.profiled_at = null;
+        orders.columns[0]!.profile = { null_fraction: 0, distinct_count: 10000 };
+        tableOf(snap, "web_events").profiled_at = null;
+      }),
+    );
+    const w = st.sources[0]!;
+    expect(w.snapshot!.profiled).toBe(3);
+    expect(w.unprofiled_tables).toEqual(["main.fct_orders", "main.web_events"]);
+    expect(w.partially_profiled_tables).toEqual(["main.fct_orders"]);
+    expect(st.next_step).toMatchObject({ phase: "profile", command: "sl profile --source wh" });
+    expect(st.next_step.message).toBe(
+      '1 in-scope table(s) in "wh" have no profile: main.web_events. ' +
+        '1 in-scope table(s) in "wh" need a profile for new or retyped columns: main.fct_orders.',
+    );
+    const human = await sl(root, ["status"]);
+    expect(human.out).toContain("5 tables, 5 in scope, 3 profiled, 1 partly profiled");
   });
 
   test("an approved field reading a removed column -> drift, before scope and profile", async () => {
