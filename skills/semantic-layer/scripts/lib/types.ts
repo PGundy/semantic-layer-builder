@@ -193,6 +193,8 @@ export interface Model extends Approval {
   primary_key?: string[];
   tags?: string[];
   open_questions?: string[];
+  // Columns of the table the owner or sl draft left out on purpose; sl draft --new-columns skips them.
+  ignored_columns?: string[];
   dimensions: Dimension[];
   measures: Measure[];
   joins?: Join[];
@@ -237,25 +239,63 @@ export interface UserAttribute {
   description?: string;
 }
 
-export interface RowFilter {
+// Tags that hide a field or model from every user unless one of the user's roles grants the tag
+// in allow.tags, in either access mode.
+export const PROTECTED_TAGS = ["pii", "sensitive"] as const;
+// The tag an owner puts on a field to record that everyone may see it although it looks sensitive.
+export const PUBLIC_TAG = "public";
+
+export type AccessMode = "open" | "closed";
+
+// A row filter is either a SQL predicate over the model's own columns, or a span-of-control rule
+// over a hierarchy (closure) model: rows whose column is the user's id or the id of anyone below them.
+export interface ExprRowFilter {
   model: string;
   expr: string;
 }
 
+export interface HierarchyRowFilter {
+  model: string;
+  hierarchy: {
+    column: string; // column of the filtered model holding a person's id
+    via: string; // source.model of the closure table: one row per (manager, member) pair at any depth
+    manager: string; // closure column holding the manager's id
+    member: string; // closure column holding the id of someone at any depth below that manager
+    user: string; // the user attribute holding the user's own id, e.g. user.employee_id
+    include_self?: boolean; // default true: the user's own rows are included
+  };
+}
+
+export type RowFilter = ExprRowFilter | HierarchyRowFilter;
+
 export interface Role {
   name: string;
   description?: string;
-  allow: { models: string[] };
+  // A condition over user attributes (lib/conditions.ts); the role is held when it is true.
+  assign_when?: string;
+  // models is required in closed mode and has no effect in open mode; tags grants protected tags.
+  allow?: { models?: string[]; tags?: string[] };
   // fields names dimensions and measures as source.model.field; a join is hidden with its target model.
   deny?: { models?: string[]; fields?: string[]; tags?: string[] };
   row_filters?: RowFilter[];
   open_questions?: string[];
 }
 
+// Limits targets to users who hold one of roles or satisfy when.
+export interface Restriction {
+  name: string;
+  description?: string;
+  // metric:<name>, source.model or source.model.field, with scope-pattern globs.
+  targets: string[];
+  allow: { roles?: string[]; when?: string };
+}
+
 export interface AccessFile extends Approval {
+  mode?: AccessMode; // default open
   default_role?: string;
   user_attributes?: UserAttribute[];
-  roles: Role[];
+  roles?: Role[];
+  restrictions?: Restriction[];
   open_questions?: string[];
 }
 

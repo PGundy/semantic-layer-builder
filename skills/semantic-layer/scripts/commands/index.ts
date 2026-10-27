@@ -16,4 +16,5 @@ export const COMMANDS: Record<string, () => Promise<{ default: CommandSpec }>> =
   status: () => import("./status.ts"),
   run: () => import("./run.ts"),
   goldens: () => import("./goldens.ts"),
+  access: () => import("./access.ts"),
 };
