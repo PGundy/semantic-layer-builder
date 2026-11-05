@@ -22,7 +22,7 @@ interface Skipped {
 
 const spec: CommandSpec = {
   summary:
-    "Profile in-scope tables (row counts, nulls, distinct counts, ranges, top values) into the snapshot; protected columns keep hashed values only. --redact rewrites the snapshot's protected profiles without querying.",
+    "Profile in-scope tables (row counts, nulls, distinct counts, ranges, top values) into the snapshot; protected columns keep counts (and min and max for numbers and dates) and no top values. --redact rewrites the snapshot's protected profiles, and removes hashed values, without querying.",
   usage: "profile --source <source> [--tables t1,t2] [--refresh] [--emit-sql] [--results <file>] [--redact]",
   options: {
     source: { type: "string" },
@@ -91,7 +91,19 @@ const spec: CommandSpec = {
       sample_rows: setting(source.profile?.sample_rows, "sample_rows", 1, sourceName),
       top_values: setting(source.profile?.top_values, "top_values", 0, sourceName) ?? DEFAULT_TOP_VALUES,
     };
+    // The model files are read before any query runs, so one that fails to parse stops the run
+    // first. Columns protected before profiling (by tag, ignored_columns, name or an earlier
+    // profile) get no top-values query; ones flagged only by this profile are redacted after it.
+    const models = sourceModels(ctx.root, source);
+    const protect = protectedColumns(snapshot.tables, models, source.dialect);
     const warnings: string[] = [];
+    if (source.dialect === "bigquery" && selected.length) {
+      warnings.push(
+        `BigQuery bills the bytes each query reads, and this profile reads ${selected.length} table${selected.length === 1 ? "" : "s"}. ` +
+          "Emit the plan with --emit-sql and dry-run each query (bq query --dry_run) to see what it would bill before running it" +
+          (settings.sample_rows ? "." : `; set profile.sample_rows in sources/${sourceName}.yaml to read large tables through TABLESAMPLE.`),
+      );
+    }
     if (!settings.sample_rows) {
       for (const t of selected) {
         if ((t.row_count ?? 0) > LARGE_TABLE_ROWS) {
@@ -102,7 +114,14 @@ const spec: CommandSpec = {
         }
       }
     }
-    const { plan, sampled, capped } = buildProfilePlan(source, selected, settings);
+    const details = buildProfilePlan(source, selected, { ...settings, protect });
+    const { plan, capped } = details;
+    for (const q of details.sorted_samples) {
+      warnings.push(
+        `${q} is a view, an external table or has no row estimate (as a partitioned Postgres parent may not), so TABLESAMPLE cannot read it: ` +
+          "its sample sorts every row, which reads the whole table.",
+      );
+    }
     for (const c of capped) {
       warnings.push(`${c.table}: top values cover the first ${MAX_TOP_COLUMNS} text and boolean columns; ${c.columns.length} more have none.`);
     }
@@ -120,8 +139,6 @@ const spec: CommandSpec = {
       return 0;
     }
 
-    // The model files are read before any query runs, so one that fails to parse stops the run first.
-    const models = sourceModels(ctx.root, source);
     const results = await executePlan(plan, {
       root: ctx.root,
       source,
@@ -129,7 +146,17 @@ const spec: CommandSpec = {
       resultsFile: resultsFile ? resolve(ctx.cwd, resultsFile) : undefined,
     });
     const wanted = new Set(selected.map(qualifiedName));
-    const measured = applyProfile(snapshot, plan, results, ctx.now().toISOString(), sampled);
+    const { snapshot: measured, empty_samples } = applyProfile(snapshot, details, results, ctx.now().toISOString());
+    for (const e of empty_samples) {
+      wanted.delete(e.table);
+      skipped.push({ table: e.table, reason: "its sample read no rows" });
+      const w =
+        `The sample of ${e.table} read no rows of its ${e.row_count.toLocaleString("en-US")}: TABLESAMPLE picks whole storage blocks and reached none. ` +
+        "Its earlier profile, if any, is kept. To profile it, raise profile.sample_rows (or remove it) in " +
+        `sources/${sourceName}.yaml and run sl profile --source ${sourceName} --tables ${e.table} --refresh.`;
+      warnings.push(w);
+      ctx.err(`warning: ${w}`);
+    }
     const { snapshot: updated, redacted } = redactSnapshot(measured, protectedColumns(measured.tables, models, source.dialect), wanted);
     saveSnapshot(ctx.root, updated);
 
@@ -152,9 +179,17 @@ const spec: CommandSpec = {
         `candidate keys: ${p.candidate_keys.join(", ") || "none"}; ` +
         `low-cardinality: ${p.low_cardinality.join(", ") || "none"}`,
     );
-    if (redacted.length) lines.push(`Protected columns, stored with hashed top values and no text min or max: ${redacted.join(", ")}.`);
-    if (skipped.length) lines.push(`Skipped ${skipped.length} already profiled table${skipped.length === 1 ? "" : "s"}; pass --refresh to re-profile.`);
+    if (redacted.length) {
+      lines.push(`Protected columns, stored with counts only (no top values, and min and max only for numbers and dates): ${redacted.join(", ")}.`);
+    }
+    const already = skipped.filter((x) => x.reason === "already profiled").length;
+    if (already) lines.push(`Skipped ${already} already profiled table${already === 1 ? "" : "s"}; pass --refresh to re-profile.`);
     lines.push(`Profiled ${profiled.length} table${profiled.length === 1 ? "" : "s"} into ${paths(ctx.root).snapshot(sourceName)}.`);
+    lines.push(
+      "Which columns are protected is a heuristic of names, tags and profiles: review the snapshot's top values before committing it, " +
+        "and tag any personal column it missed, then run sl profile --redact. A protected number or date column keeps its min and max, " +
+        "which are real values (the oldest birth date, the lowest number).",
+    );
     ctx.out(lines.join("\n"));
     return 0;
   },
@@ -165,14 +200,15 @@ function sourceModels(root: string, source: SourceConfig): unknown[] {
   return listModels(root, source.source).map((l) => l.model as unknown);
 }
 
-// sl profile --redact: rewrites the snapshot's profiles of protected columns, reading no database.
+// sl profile --redact: rewrites the snapshot's profiles of protected columns, and of any column
+// holding hashed values, to counts only, reading no database.
 function redactOnly(ctx: CommandContext, source: SourceConfig, snapshot: Snapshot): number {
   const { snapshot: updated, redacted } = redactSnapshot(snapshot, protectedColumns(snapshot.tables, sourceModels(ctx.root, source), source.dialect));
   if (redacted.length) saveSnapshot(ctx.root, updated);
   const file = paths(ctx.root).snapshot(source.source);
   if (ctx.json) ctx.out(formatJson({ source: source.source, redacted }));
-  else if (redacted.length) ctx.out(`Redacted ${redacted.length} protected column profile${redacted.length === 1 ? "" : "s"} in ${file}: ${redacted.join(", ")}.`);
-  else ctx.out(`Nothing to redact: ${file} holds no raw values of protected columns.`);
+  else if (redacted.length) ctx.out(`Redacted ${redacted.length} column profile${redacted.length === 1 ? "" : "s"} in ${file}: ${redacted.join(", ")}.`);
+  else ctx.out(`Nothing to redact: ${file} holds no raw values of protected columns and no hashed values.`);
   return 0;
 }
 

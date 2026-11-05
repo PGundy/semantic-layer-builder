@@ -5,6 +5,17 @@
 // unique indexes are read from the statements directly, so table order and
 // unsupported constraint options never cause a statement to fail. A statement
 // that still fails is reported as skipped.
+//
+// A DDL file is untrusted input. The DuckDB it runs in has external access,
+// extension autoinstall and autoload off, no temp or secret directory, one
+// thread and a memory limit, and its configuration locked, so no statement
+// reads a file, reaches the network or loads an extension. Every statement is
+// prepared alone, re-serialized from tokens, so one statement never carries
+// another. No statement runs a query: CREATE TABLE ... AS is bound as a view
+// under the table's name, which gives its columns and types and reads no rows.
+// A query whose columns depend on data (a dynamic PIVOT), an ENUM built from a
+// query, and a statement nested deeper than MAX_NESTING are skipped. DuckDB
+// runs in this process, so a crash inside DuckDB ends the command.
 import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
 import { classifyType } from "../column-types.ts";
 import type { Dialect, ForeignKey, SnapshotColumn, SnapshotTable, TableKind } from "../types.ts";
@@ -219,6 +230,21 @@ function folder(dialect: Dialect): (s: string) => string {
 
 // ---------- Types ----------
 
+// Re-serializes a column type's tokens for DuckDB: identifiers quoted where they were quoted, strings re-escaped.
+function typeSql(toks: Tok[]): string {
+  const noSpaceBefore = new Set(["(", ")", "[", "]", "<", ">", ",", ".", "::", ":"]);
+  const noSpaceAfter = new Set(["(", "[", "<", ".", "::"]);
+  let out = "";
+  let prev: Tok | undefined;
+  for (const t of toks) {
+    const glue = !prev || (t.k === "punct" && noSpaceBefore.has(t.v)) || (prev.k === "punct" && noSpaceAfter.has(prev.v));
+    if (!glue) out += " ";
+    out += t.k === "qident" ? quote(t.v) : t.k === "string" ? literal(t.v) : t.v;
+    prev = t;
+  }
+  return out;
+}
+
 const TYPE_CONTINUATIONS = new Set(["VARYING", "PRECISION", "UNSIGNED", "SIGNED", "ZEROFILL", "ZONE", "LOCAL"]);
 
 // Reads a column type starting at toks[i]; returns the index after it.
@@ -285,6 +311,7 @@ function safeType(declared: string): string {
 interface ColumnDef {
   name: string;
   type: string | null; // declared text, null when absent
+  duck: string | null; // the declared type re-serialized from its tokens, for DuckDB
   notNull: boolean;
   primaryKey: boolean;
   unique: boolean;
@@ -301,6 +328,8 @@ interface PendingFk {
 interface ObjectInfo {
   declared: QName;
   kind: TableKind;
+  // What the object is in the importer's DuckDB: a CREATE TABLE ... AS is a view there.
+  duckKind: "table" | "view";
   description: string | null;
   columns: Map<string, { type: string | null; description: string | null }>;
 }
@@ -312,6 +341,78 @@ const CREATE_MODIFIERS = new Set([
 ]);
 
 const VIEW_BODY_START = new Set(["SELECT", "WITH", "FROM", "VALUES", "TABLE"]);
+
+// The importer's DuckDB reads nothing outside the DDL: no files, no network, no extensions, and no setting can change that.
+// temp_directory is set first: DuckDB refuses to change it once external access is off, and while it is set its
+// directory (<cwd>/.tmp/ by default) stays readable. secret_directory is a placeholder, so no setting a query can
+// read names a path in the home directory.
+export const IMPORTER_CONFIG: Record<string, string> = {
+  temp_directory: "",
+  enable_external_access: "false",
+  autoinstall_known_extensions: "false",
+  autoload_known_extensions: "false",
+  allow_community_extensions: "false",
+  secret_directory: "/nonexistent",
+  memory_limit: "512MB",
+  threads: "1",
+  lock_configuration: "true",
+};
+
+// The deepest nesting of brackets a statement, or a string inside it, may have. DuckDB recurses on nested types and
+// structure strings (json_transform) and crashes the process far below the depth its parser allows.
+const MAX_NESTING = 256;
+
+function nestingDepth(text: string): number {
+  let depth = 0;
+  let max = 0;
+  for (const ch of text) {
+    if (ch === "(" || ch === "[" || ch === "{") max = Math.max(max, ++depth);
+    else if (ch === ")" || ch === "]" || ch === "}") depth = Math.max(0, depth - 1);
+  }
+  return max;
+}
+
+function tooDeep(toks: Tok[]): boolean {
+  let depth = 0;
+  for (const t of toks) {
+    if (t.k === "string" && nestingDepth(t.v) > MAX_NESTING) return true;
+    if (t.k !== "punct") continue;
+    if (t.v === "(" || t.v === "[") {
+      if (++depth > MAX_NESTING) return true;
+    } else if (t.v === ")" || t.v === "]") depth--;
+  }
+  return false;
+}
+
+// A query without the view and CTAS options that end it and DuckDB does not read: WITH [NO] DATA [AND [NO]
+// STATISTICS] and WITH [CASCADED | LOCAL] CHECK OPTION. Only the last tokens are options; a WITH elsewhere (a CTE
+// named data, say) is part of the query.
+function withoutTailOptions(body: Tok[]): Tok[] {
+  let end = body.length;
+  const word = (k: number, ...w: string[]) => k >= 0 && k < end && isWordTok(body[k], ...w);
+  for (;;) {
+    let k = end;
+    if (word(k - 1, "STATISTICS")) {
+      const and = word(k - 2, "NO") ? k - 3 : k - 2;
+      if (word(and, "AND")) k = and;
+    }
+    if (word(k - 1, "DATA")) {
+      const w = word(k - 2, "NO") ? k - 3 : k - 2;
+      if (word(w, "WITH")) {
+        end = w;
+        continue;
+      }
+    }
+    if (word(end - 1, "OPTION") && word(end - 2, "CHECK")) {
+      const w = word(end - 3, "CASCADED", "LOCAL") ? end - 4 : end - 3;
+      if (word(w, "WITH")) {
+        end = w;
+        continue;
+      }
+    }
+    return body.slice(0, end);
+  }
+}
 
 // True when the DDL is MySQL-flavored: a backtick-quoted identifier, `ENGINE =` or AUTO_INCREMENT outside strings and comments.
 function looksLikeMysql(src: string, dialect: Dialect): boolean {
@@ -414,12 +515,12 @@ class DdlImporter {
     const c = catalog ?? "memory";
     const s = schema ?? "main";
     if (!this.attached.has(c.toLowerCase())) {
-      await this.conn.run(`ATTACH ':memory:' AS ${quote(c)}`);
+      await this.exec(`ATTACH ':memory:' AS ${quote(c)}`);
       this.attached.add(c.toLowerCase());
     }
     const sk = `${c}\u0000${s}`.toLowerCase();
     if (!this.schemas.has(sk)) {
-      await this.conn.run(`CREATE SCHEMA IF NOT EXISTS ${quote(c)}.${quote(s)}`);
+      await this.exec(`CREATE SCHEMA IF NOT EXISTS ${quote(c)}.${quote(s)}`);
       this.schemas.add(sk);
     }
   }
@@ -431,7 +532,7 @@ class DdlImporter {
     const s = this.schema ?? "main";
     const k = `${c}\u0000${s}`.toLowerCase();
     if (k === this.lastUse) return;
-    await this.conn.run(`USE ${quote(c)}.${quote(s)}`);
+    await this.exec(`USE ${quote(c)}.${quote(s)}`);
     this.lastUse = k;
   }
 
@@ -461,11 +562,25 @@ class DdlImporter {
 
   private skip(what: string, e: unknown): void {
     const msg = (e instanceof Error ? e.message : String(e)).split("\n")[0]!.trim();
+    if (/^Permission Error/i.test(msg)) return void this.skipped.push(`${what}: it reads a file, a URL or an extension, which the importer does not open.`);
+    if (/extracted from the data/i.test(msg)) return void this.skipped.push(`${what}: a PIVOT that reads data to name its columns, which the importer does not run.`);
     this.skipped.push(`${what}: ${msg}`);
   }
 
+  // Drops an object this file created earlier under the same name when OR REPLACE would replace it with another kind.
+  private async replacing(key: string, q: QName, duckKind: "table" | "view"): Promise<void> {
+    const prior = this.objects.get(key);
+    if (prior && prior.duckKind !== duckKind) await this.exec(`DROP ${prior.duckKind === "view" ? "VIEW" : "TABLE"} IF EXISTS ${this.qualified(q)}`);
+  }
+
+  // Runs one statement. Preparing it refuses text that holds more than one.
+  private async exec(sql: string): Promise<void> {
+    const prepared = await this.conn.prepare(sql);
+    await prepared.run();
+  }
+
   async run(): Promise<void> {
-    const instance = await DuckDBInstance.create(":memory:");
+    const instance = await DuckDBInstance.create(":memory:", IMPORTER_CONFIG);
     this.conn = await instance.connect();
     try {
       for (const stmt of splitStatements(tokenize(this.src, this.opts))) await this.statement(stmt);
@@ -478,6 +593,10 @@ class DdlImporter {
 
   private async statement(toks: Tok[]): Promise<void> {
     const first = toks[0];
+    if (tooDeep(toks)) {
+      const start = toks.slice(0, 3).map((t) => this.src.slice(t.start, t.end)).join(" ");
+      return void this.skipped.push(`a statement starting "${start}": nested deeper than ${MAX_NESTING} levels, which the importer does not read.`);
+    }
     if (isWordTok(first, "CREATE")) {
       let i = 1;
       let orReplace = false;
@@ -564,10 +683,17 @@ class DdlImporter {
     if (!parts.length) return void this.skipped.push(`CREATE TYPE: ${unreadableName(this.src, rest)}`);
     if (!isWordTok(rest[next], "AS")) return this.ignore(all);
     if (!isWordTok(rest[next + 1], "ENUM")) return this.ignore(all);
+    // Only a list of string literals: DuckDB would run a query given in its place.
+    const values = rest.slice(next + 2);
+    const literalList =
+      isPunct(values[0], "(") &&
+      skipGroup(values, 0) === values.length &&
+      values.slice(1, -1).every((t, k) => (k % 2 === 0 ? t.k === "string" : isPunct(t, ",")));
+    if (!literalList) return void this.skipped.push(`CREATE TYPE ${this.label(this.resolve(parts))}: an ENUM that is not a list of string literals.`);
     const q = this.resolve(parts);
     try {
       await this.ensure(q.catalog, q.schema);
-      await this.conn.run(`CREATE TYPE ${this.qualified(q)} AS ${this.emit(rest.slice(next + 1))}`);
+      await this.exec(`CREATE TYPE ${this.qualified(q)} AS ${this.emit(rest.slice(next + 1))}`);
     } catch (e) {
       this.skip(`CREATE TYPE ${this.label(q)}`, e);
     }
@@ -579,7 +705,8 @@ class DdlImporter {
     const name = this.ident(el[0]!);
     const typeEnd = readType(el, 1);
     const type = typeEnd > 1 ? this.src.slice(el[1]!.start, el[typeEnd - 1]!.end) : null;
-    const def: ColumnDef = { name, type: type ? declaredType(type) : null, notNull: false, primaryKey: false, unique: false, description: null };
+    const duck = typeEnd > 1 ? declaredType(typeSql(el.slice(1, typeEnd))) : null;
+    const def: ColumnDef = { name, type: type ? declaredType(type) : null, duck, notNull: false, primaryKey: false, unique: false, description: null };
     let i = typeEnd;
     while (i < el.length) {
       const t = el[i]!;
@@ -753,10 +880,11 @@ class DdlImporter {
       try {
         await this.syncUse();
         await this.ensure(q.catalog, q.schema);
+        if (orReplace) await this.replacing(key, q, "table");
         try {
-          await this.conn.run(build((c) => (c.type ? duckType(c.type) : "VARCHAR")));
+          await this.exec(build((c) => (c.duck ? duckType(c.duck) : "VARCHAR")));
         } catch {
-          await this.conn.run(build((c) => (c.type ? safeType(c.type) : "VARCHAR")));
+          await this.exec(build((c) => (c.type ? safeType(c.type) : "VARCHAR")));
         }
       } catch (e) {
         return this.skip(label, e);
@@ -764,6 +892,7 @@ class DdlImporter {
       this.objects.set(key, {
         declared: q,
         kind,
+        duckKind: "table",
         description,
         columns: new Map(cols.map((c) => [c.name.toLowerCase(), { type: c.type, description: c.description }])),
       });
@@ -780,14 +909,18 @@ class DdlImporter {
     // CREATE TABLE ... AS <query>
     const as = rest.findIndex((t, k) => k >= next && isWordTok(t, "AS") && (isWordTok(rest[k + 1], ...VIEW_BODY_START) || isPunct(rest[k + 1], "(")));
     if (as < 0) return void this.skipped.push(`${label}: no column list (LIKE, CLONE and similar forms are not read).`);
+    const query = this.emit(withoutTailOptions(rest.slice(as + 1)));
     try {
       await this.syncUse();
       await this.ensure(q.catalog, q.schema);
-      await this.conn.run(`${head} AS ${this.emit(rest.slice(as + 1))}`);
+      if (orReplace) await this.replacing(key, q, "view");
+      // A view binds the query for its columns and types and runs nothing; DuckDB refuses one whose columns
+      // depend on data (a dynamic PIVOT).
+      await this.exec(`CREATE ${orReplace ? "OR REPLACE " : ""}VIEW ${ifNotExists ? "IF NOT EXISTS " : ""}${this.qualified(q)} AS ${query}`);
     } catch (e) {
       return this.skip(label, e);
     }
-    this.objects.set(key, { declared: q, kind, description: null, columns: new Map() });
+    this.objects.set(key, { declared: q, kind, duckKind: "view", description: null, columns: new Map() });
   }
 
   private async createView(all: Tok[], rest: Tok[], mods: string[], orReplace: boolean): Promise<void> {
@@ -839,23 +972,17 @@ class DdlImporter {
       }
     }
     if (bodyStart < 0) return void this.skipped.push(`${label}: no AS <query> found.`);
-    let body = rest.slice(bodyStart);
-    // Trailing options DuckDB does not read.
-    const tailOption = body.findIndex(
-      (t, k) =>
-        isWordTok(t, "WITH") &&
-        (isWordTok(body[k + 1], "CHECK", "DATA", "CASCADED", "LOCAL") || (isWordTok(body[k + 1], "NO") && isWordTok(body[k + 2], "DATA"))),
-    );
-    if (tailOption >= 0) body = body.slice(0, tailOption);
+    const body = withoutTailOptions(rest.slice(bodyStart));
     const cols = columnNames.length ? ` (${columnNames.map(quote).join(", ")})` : "";
     try {
       await this.syncUse();
       await this.ensure(q.catalog, q.schema);
-      await this.conn.run(`CREATE ${orReplace ? "OR REPLACE " : ""}VIEW ${ifNotExists ? "IF NOT EXISTS " : ""}${this.qualified(q)}${cols} AS ${this.emit(body)}`);
+      if (orReplace) await this.replacing(key, q, "view");
+      await this.exec(`CREATE ${orReplace ? "OR REPLACE " : ""}VIEW ${ifNotExists ? "IF NOT EXISTS " : ""}${this.qualified(q)}${cols} AS ${this.emit(body)}`);
     } catch (e) {
       return this.skip(label, e);
     }
-    this.objects.set(key, { declared: q, kind: "view", description, columns });
+    this.objects.set(key, { declared: q, kind: "view", duckKind: "view", description, columns });
   }
 
   private async comment(toks: Tok[]): Promise<void> {
@@ -875,9 +1002,9 @@ class DdlImporter {
     if (!info) return void this.skipped.push(`COMMENT ON ${words.join(" ")} ${parts.join(".")}: no such table or view in this file.`);
     if (text === null) return;
     const q = info.declared;
-    const target = column === null ? `${info.kind === "view" ? "VIEW" : "TABLE"} ${this.qualified(q)}` : `COLUMN ${this.qualified(q)}.${quote(column)}`;
+    const target = column === null ? `${info.duckKind === "view" ? "VIEW" : "TABLE"} ${this.qualified(q)}` : `COLUMN ${this.qualified(q)}.${quote(column)}`;
     try {
-      await this.conn.run(`COMMENT ON ${target} IS ${literal(text)}`);
+      await this.exec(`COMMENT ON ${target} IS ${literal(text)}`);
     } catch {
       this.fallbackComments.push({ table: q, column, text });
     }
@@ -930,7 +1057,7 @@ class DdlImporter {
   readonly warnings: string[] = [];
 
   private async rows(sql: string): Promise<Record<string, unknown>[]> {
-    const r = await this.conn.runAndReadAll(sql);
+    const r = await (await this.conn.prepare(sql)).runAndReadAll();
     return r.getRowObjectsJson() as Record<string, unknown>[];
   }
 

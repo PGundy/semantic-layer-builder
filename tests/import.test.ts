@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { importDbt, parseRefExpr, splitRelationName } from "../skills/semantic-layer/scripts/lib/importers/dbt.ts";
 import { parseCsv, parseCsvRecords } from "../skills/semantic-layer/scripts/lib/importers/csv.ts";
-import { importDdl } from "../skills/semantic-layer/scripts/lib/importers/ddl.ts";
+import { DuckDBInstance } from "@duckdb/node-api";
+import { IMPORTER_CONFIG, importDdl } from "../skills/semantic-layer/scripts/lib/importers/ddl.ts";
 import { importInformationSchema } from "../skills/semantic-layer/scripts/lib/importers/information-schema.ts";
 import { detectFormat } from "../skills/semantic-layer/scripts/lib/importers/index.ts";
 import type { Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
@@ -696,6 +698,287 @@ describe("ddl importer", () => {
     expect(tables.map((t) => `${t.schema}.${t.name}`)).toEqual(["public.t"]);
     const none = await importDdl("create table t (a int);", "bigquery");
     expect(none.tables[0]!.schema).toBeNull();
+  });
+});
+
+describe("ddl importer: untrusted input", () => {
+  // A local HTTP server that counts every request, standing in for an attacker's beacon.
+  function beacon(): { url: string; hits: () => number; stop: () => void } {
+    let hits = 0;
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () => {
+        hits++;
+        return new Response("a,b\n1,2\n");
+      },
+    });
+    return { url: `http://127.0.0.1:${server.port}/beacon.csv`, hits: () => hits, stop: () => server.stop(true) };
+  }
+
+  test("evil.sql: a CTAS over read_text and a view over an HTTP CSV import neither the file nor any network access", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    const b = beacon();
+    try {
+      const secretPath = join(t.dir, "secret.txt");
+      writeFileSync(secretPath, "TOP-SECRET-CONTENT\n");
+      const localCsv = join(t.dir, "local.csv");
+      writeFileSync(localCsv, "private_col\nPRIVATE-VALUE\n");
+      const evil = join(t.dir, "evil.sql");
+      writeFileSync(
+        evil,
+        [
+          `CREATE TABLE leak AS SELECT * FROM read_text('${secretPath}');`,
+          `CREATE VIEW beacon AS SELECT * FROM read_csv('${b.url}');`,
+          `CREATE VIEW local_file AS SELECT * FROM read_csv('${localCsv}');`,
+          `INSTALL httpfs; LOAD httpfs; SET enable_external_access = true; ATTACH '${join(t.dir, "x.duckdb")}' AS x;`,
+          `CREATE TABLE leak2 AS SELECT * FROM read_text('${secretPath}');`,
+          "CREATE TABLE ok (id integer primary key, label text);",
+        ].join("\n"),
+      );
+      await initProject(t.root);
+      source(t.root, "s", "duckdb");
+      const r = await sl(t.root, ["import", "--source", "s", "--format", "ddl", "--file", evil]);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("Imported 1 table");
+      expect(r.out).toContain("Skipped CREATE TABLE main.leak: it reads a file, a URL or an extension, which the importer does not open.");
+      expect(r.out).toContain("Skipped CREATE VIEW main.beacon: it reads a file, a URL or an extension");
+      expect(r.out).toContain("Skipped CREATE VIEW main.local_file: it reads a file, a URL or an extension");
+      expect(r.out).toContain("Skipped CREATE TABLE main.leak2:");
+      expect(r.out + r.err).not.toContain("Autoloading");
+      const snapText = readFileSync(join(t.root, "snapshots", "s.json"), "utf8");
+      const snap = JSON.parse(snapText) as Snapshot;
+      expect(snap.tables.map((x) => x.name)).toEqual(["ok"]);
+      for (const leaked of ["TOP-SECRET", "PRIVATE-VALUE", "private_col", "filename", "content"]) {
+        expect(snapText).not.toContain(leaked);
+        expect(r.out).not.toContain(leaked);
+      }
+      expect(b.hits()).toBe(0);
+      expect(existsSync(join(t.dir, "x.duckdb"))).toBe(false);
+    } finally {
+      b.stop();
+    }
+  });
+
+  test("the importer's DuckDB has external access and extension loading off, no readable directory, and its configuration locked", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    const instance = await DuckDBInstance.create(":memory:", IMPORTER_CONFIG);
+    const c = await instance.connect();
+    try {
+      const rows = (await c.runAndReadAll(
+        `select name, value from duckdb_settings() where name in ('enable_external_access', 'autoinstall_known_extensions', 'autoload_known_extensions',
+          'allow_community_extensions', 'allowed_directories', 'temp_directory', 'secret_directory', 'threads', 'lock_configuration') order by name`,
+      )).getRowObjectsJson();
+      expect(rows).toEqual([
+        { name: "allow_community_extensions", value: "false" },
+        { name: "allowed_directories", value: "[]" },
+        { name: "autoinstall_known_extensions", value: "false" },
+        { name: "autoload_known_extensions", value: "false" },
+        { name: "enable_external_access", value: "false" },
+        { name: "lock_configuration", value: "true" },
+        { name: "secret_directory", value: "/nonexistent" },
+        { name: "temp_directory", value: "" },
+        { name: "threads", value: "1" },
+      ]);
+      await expect(c.run("SET enable_external_access = true")).rejects.toThrow(/locked/);
+      await expect(c.run("SET temp_directory = '/tmp'")).rejects.toThrow();
+      // Sent to DuckDB directly, not through the importer's statement filter.
+      await expect(c.run("LOAD httpfs")).rejects.toThrow(/Permission Error/);
+      await expect(c.run("INSTALL httpfs")).rejects.toThrow(/Permission Error/);
+      await expect(c.run(`ATTACH '${join(t.dir, "x.duckdb")}' AS x`)).rejects.toThrow(/Permission Error/);
+      await expect(c.run(`COPY (SELECT 1) TO '${join(t.dir, "out.csv")}'`)).rejects.toThrow(/Permission Error/);
+      await c.run("ATTACH ':memory:' AS scratch");
+      expect(existsSync(join(t.dir, "x.duckdb"))).toBe(false);
+      expect(existsSync(join(t.dir, "out.csv"))).toBe(false);
+    } finally {
+      c.closeSync();
+      instance.closeSync();
+    }
+  });
+
+  test("files under the working directory's .tmp/ stay unreadable: a CSV header or JSON key never becomes a column name", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    const work = join(t.dir, "work");
+    mkdirSync(join(work, ".tmp"), { recursive: true });
+    writeFileSync(join(work, ".tmp", "creds.txt"), "host=db.internal\nPGPASSWORD=hunter2-SECRET\n");
+    writeFileSync(join(work, ".tmp", "y.json"), '{"JSON-KEY-SECRET": 1}\n');
+    writeFileSync(join(work, ".tmp", "x.csv"), "CSV-HEADER-SECRET\n1\n");
+    const evil = join(work, "evil.sql");
+    writeFileSync(
+      evil,
+      [
+        "create view leak as select * from read_csv('.tmp/creds.txt', header=true, skip=1, delim='|');",
+        "create view leak_json as select * from read_json_auto('.tmp/y.json');",
+        "create view leak_csv as select * from '.tmp/x.csv';",
+        "create table leak_ctas as select * from read_csv('.tmp/creds.txt', header=true, skip=1, delim='|');",
+        "create table ok (id integer);",
+      ].join("\n"),
+    );
+    await initProject(t.root);
+    source(t.root, "s", "duckdb");
+    const before = process.cwd();
+    process.chdir(work);
+    let r: Awaited<ReturnType<typeof sl>>;
+    try {
+      r = await sl(t.root, ["import", "--source", "s", "--format", "ddl", "--file", evil]);
+    } finally {
+      process.chdir(before);
+    }
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Imported 1 table");
+    expect(r.out).toContain("Skipped CREATE VIEW main.leak: it reads a file, a URL or an extension");
+    expect(r.out).toContain("Skipped CREATE VIEW main.leak_json: it reads a file, a URL or an extension");
+    expect(r.out).toContain("Skipped CREATE VIEW main.leak_csv:");
+    expect(r.out).toContain("Skipped CREATE TABLE main.leak_ctas: it reads a file, a URL or an extension");
+    const snapText = readFileSync(join(t.root, "snapshots", "s.json"), "utf8");
+    for (const leaked of ["hunter2", "PGPASSWORD", "db.internal", "JSON-KEY-SECRET", "CSV-HEADER-SECRET"]) {
+      expect(snapText).not.toContain(leaked);
+      expect(r.out + r.err).not.toContain(leaked);
+    }
+  });
+
+  test("no setting names a home-directory path through a column type", async () => {
+    const { tables } = await importDdl(
+      `create view v4 as select json_transform('{}', '{"' || current_setting('secret_directory') || '":"INT"}') as x;`,
+      "duckdb",
+    );
+    const text = JSON.stringify(tables);
+    expect(text).not.toContain("stored_secrets");
+    expect(text).not.toContain(homedir());
+  });
+
+  test("a statement nested deeper than the importer reads is skipped instead of crashing DuckDB", async () => {
+    const deep = "[".repeat(20_000) + '"INT"' + "]".repeat(20_000);
+    const parens = "(".repeat(300) + "1" + ")".repeat(300);
+    const { tables, warnings } = await importDdl(
+      [
+        `create view deep as select json_transform('[]', '${deep}') as x;`,
+        `create table deep2 as select ${parens} as y;`,
+        `create view shallow as select json_transform('[]', '${"[".repeat(20)}"INT"${"]".repeat(20)}') as x;`,
+      ].join("\n"),
+      "duckdb",
+    );
+    expect(tables.map((x) => x.name)).toEqual(["shallow"]);
+    expect(warnings).toContain('Skipped a statement starting "create view deep": nested deeper than 256 levels, which the importer does not read.');
+    expect(warnings).toContain('Skipped a statement starting "create table deep2": nested deeper than 256 levels, which the importer does not read.');
+  });
+
+  test("a CTAS or view whose query has a CTE named data imports; trailing WITH [NO] DATA and CHECK OPTION are dropped", async () => {
+    const { tables, warnings } = await importDdl(
+      [
+        "create table t as with data as (select 1 as a) select * from data;",
+        "create view v as with data as (select 1 as a, 'x' as b) select * from data;",
+        "create table t2 as with data as (select 2 as c) select * from data with no data;",
+        "create table t3 as select 3 as d with data and no statistics;",
+        "create view v2 as with local as (select 4 as e) select * from local with cascaded check option;",
+        "create view v3 as select 5 as f with check option;",
+      ].join("\n"),
+      "postgres",
+    );
+    expect(warnings).toEqual([]);
+    expect(table(tables, "public.t").columns.map((c) => [c.name, c.type])).toEqual([["a", "INTEGER"]]);
+    expect(table(tables, "public.t").kind).toBe("table");
+    expect(table(tables, "public.v").columns.map((c) => c.name)).toEqual(["a", "b"]);
+    expect(table(tables, "public.t2").columns.map((c) => c.name)).toEqual(["c"]);
+    expect(table(tables, "public.t3").columns.map((c) => c.name)).toEqual(["d"]);
+    expect(table(tables, "public.v2").columns.map((c) => c.name)).toEqual(["e"]);
+    expect(table(tables, "public.v3").columns.map((c) => c.name)).toEqual(["f"]);
+  });
+
+  test("a CTAS keeps its comments and can be replaced by a table with a column list", async () => {
+    const { tables, warnings } = await importDdl(
+      [
+        "create table a as select 1 as x;",
+        "comment on table a is 'from a query';",
+        "comment on column a.x is 'the x';",
+        "create or replace table b as select 1 as y;",
+        "create or replace table b (z int not null);",
+        "create or replace view c as select 1 as p;",
+        "create or replace table c as select 2 as q;",
+      ].join("\n"),
+      "postgres",
+    );
+    expect(warnings).toEqual([]);
+    const a = table(tables, "public.a");
+    expect(a.description).toBe("from a query");
+    expect(a.columns[0]!.description).toBe("the x");
+    expect(table(tables, "public.b").columns.map((c) => [c.name, c.nullable])).toEqual([["z", false]]);
+    expect(table(tables, "public.c").columns.map((c) => c.name)).toEqual(["q"]);
+    expect(table(tables, "public.c").kind).toBe("table");
+  });
+
+  test("CREATE TABLE ... AS reads its columns without running the query", async () => {
+    const started = Date.now();
+    const { tables, warnings } = await importDdl(
+      [
+        "create table huge as select range as n, 'x' as label, range::double as amount from range(1000000000000);",
+        "create table wide as select repeat('x', 1500000000) as a;",
+        "create table wrapped as (select 1 as a, 'b'::varchar as b);",
+        "create table nodata as select 2 as c with no data;",
+        "create table limited as select * from huge order by n limit 5;",
+      ].join("\n"),
+      "duckdb",
+    );
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(warnings).toEqual([]);
+    expect(table(tables, "main.wide").columns.map((c) => [c.name, c.type])).toEqual([["a", "VARCHAR"]]);
+    expect(table(tables, "main.huge").columns.map((c) => [c.name, c.type])).toEqual([
+      ["n", "BIGINT"],
+      ["label", "VARCHAR"],
+      ["amount", "DOUBLE"],
+    ]);
+    expect(table(tables, "main.wrapped").columns.map((c) => c.name)).toEqual(["a", "b"]);
+    expect(table(tables, "main.nodata").columns.map((c) => c.name)).toEqual(["c"]);
+    expect(table(tables, "main.limited").columns.map((c) => c.name)).toEqual(["n", "label", "amount"]);
+  });
+
+  test("a CTAS whose columns come from data (a dynamic PIVOT) is skipped, so no setting value becomes a column name", async () => {
+    const { tables, warnings } = await importDdl(
+      [
+        "create table p as pivot (select name, value from duckdb_settings() where name = 'secret_directory') on value using count(*);",
+        "create table p2 as select * from (pivot (select name, value from duckdb_settings() where name = 'home_directory') on name using first(value)) s;",
+        "create table fixed as select * from (values ('a', 1), ('b', 2)) v(k, n) pivot (sum(n) for k in ('a', 'b'));",
+      ].join("\n"),
+      "duckdb",
+    );
+    expect(tables.map((t) => t.name)).toEqual(["fixed"]);
+    expect(table(tables, "main.fixed").columns.map((c) => c.name)).toEqual(["a", "b"]);
+    expect(warnings.some((w) => w.startsWith("Skipped CREATE TABLE main.p:"))).toBe(true);
+    expect(warnings).toContain("Skipped CREATE TABLE main.p2: a PIVOT that reads data to name its columns, which the importer does not run.");
+    expect(JSON.stringify(tables)).not.toContain("stored_secrets");
+  });
+
+  test("an ENUM built from a query is skipped; a list of literals is created", async () => {
+    const { tables, warnings } = await importDdl(
+      [
+        "create type leak as enum (select value from duckdb_settings() where name = 'secret_directory');",
+        "create type mood as enum ('happy', 'sad');",
+        "create table t (id int, m mood);",
+      ].join("\n"),
+      "duckdb",
+    );
+    expect(warnings).toContain("Skipped CREATE TYPE main.leak: an ENUM that is not a list of string literals.");
+    expect(table(tables, "main.t").columns.map((c) => [c.name, c.type])).toEqual([
+      ["id", "int"],
+      ["m", "mood"],
+    ]);
+  });
+
+  test("each statement runs alone: a MySQL-escaped quote in a column type cannot smuggle a second statement", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    const out = join(t.dir, "smuggled.csv");
+    // MySQL reads \' as a quote inside the string, so the COPY is part of the enum value. Read as DuckDB SQL, the
+    // string ends at \', the column list closes, and a COPY and a comment follow.
+    const ddl = `CREATE TABLE \`t\` (\`id\` int(11) NOT NULL, \`s\` enum('x\\')); COPY (SELECT 42) TO $$${out}$$; SELECT 1 --') DEFAULT NULL) ENGINE=InnoDB;`;
+    const { tables } = await importDdl(ddl, "duckdb");
+    expect(existsSync(out)).toBe(false);
+    const cols = table(tables, "main.t").columns;
+    expect(cols.map((c) => c.name)).toEqual(["id", "s"]);
+    expect(cols[1]!.type).toStartWith("enum(");
   });
 });
 

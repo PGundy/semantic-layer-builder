@@ -258,7 +258,7 @@
                 "boolean",
                 "null"
               ],
-              "description": "Smallest value. Omitted for a protected text column."
+              "description": "Smallest value. Omitted for a protected column unless it is a number or a date."
             },
             "max": {
               "type": [
@@ -267,11 +267,11 @@
                 "boolean",
                 "null"
               ],
-              "description": "Largest value. Omitted for a protected text column."
+              "description": "Largest value. Omitted for a protected column unless it is a number or a date."
             },
             "top_values": {
               "type": "array",
-              "description": "Most frequent values with counts.",
+              "description": "Most frequent values with counts. Omitted for a protected column: its values are not stored, raw or hashed.",
               "items": {
                 "type": "object",
                 "description": "A frequent value.",
@@ -288,7 +288,7 @@
                       "boolean",
                       "null"
                     ],
-                    "description": "The value; for a protected column (redacted), \"sha256:\" and the first 16 hex characters of the SHA-256 of its text, lowercased and trimmed."
+                    "description": "The value."
                   },
                   "count": {
                     "type": "number",
@@ -304,7 +304,7 @@
             },
             "redacted": {
               "type": "boolean",
-              "description": "True on a protected column's profile: its top values are hashed and a text column has no min or max."
+              "description": "True on a protected column's profile: it keeps counts only (null fraction, distinct count), and min and max only for a number or a date."
             }
           }
         }

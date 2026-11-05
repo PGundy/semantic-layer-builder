@@ -1,14 +1,16 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import type { LastApproval } from "../lib/access.ts";
+import { accessEntry, type ApprovalEntry, carriesHash, holdsHashes, integrity, itemHash, metricEntries, modelEntries } from "../lib/approval-hash.ts";
 import type { CommandSpec } from "../lib/command.ts";
 import { bool, str, today } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadAccess, loadMetrics, loadModel, loadProject, paths } from "../lib/project.ts";
-import { findField, parseTarget } from "../lib/refs.ts";
-import { NAME_PATTERN, type Approval, type Metric, type Model, type Status } from "../lib/types.ts";
-import { readYaml, updateYaml } from "../lib/yaml.ts";
+import { findField, parseTarget, type Target } from "../lib/refs.ts";
+import { DIALECTS, NAME_PATTERN, TO_ONE_RELATIONSHIPS, type Approval, type Dialect, type Join, type JoinKey, type Metric, type Model, type SourceConfig, type Status } from "../lib/types.ts";
+import { readYaml, readYamlIfExists, updateYaml } from "../lib/yaml.ts";
 
 interface Change {
   target: string;
@@ -17,12 +19,17 @@ interface Change {
 }
 
 // One item to flip, located by its path inside one YAML file. keepLast marks access.yaml, whose
-// revoke keeps the approval it sets aside in last_approved.
+// revoke keeps the approval it sets aside in last_approved. hash is the item's content hash, which
+// an approval records. changed marks an approved item whose content no longer matches its hash,
+// and missing one with no hash while other items of the project record one.
 interface Edit {
   target: string;
   path: (string | number)[];
   from: Status;
+  hash: string;
   keepLast?: boolean;
+  changed?: boolean;
+  missing?: boolean;
 }
 
 type Mode = { revoke: false; by: string; at: string } | { revoke: true };
@@ -31,10 +38,45 @@ function statusOf(item: Approval): Status {
   return item.status === "approved" ? "approved" : "draft";
 }
 
-// Whether the item already holds the state this run would give it.
-function settled(item: Approval, mode: Mode): boolean {
-  if (mode.revoke) return item.status !== "approved" && item.approved_by === undefined && item.approved_at === undefined;
-  return item.status === "approved" && !!item.approved_by && !!item.approved_at;
+// Whether the item already holds the state this run would give it. An approved item whose content
+// no longer matches its recorded hash is approved again, and so is one without a hash while other
+// items of the project record one (its hash may have been removed); one approved before any hash
+// was recorded stands (sl approve --stamp-hashes records its hash).
+function settled(item: Approval, mode: Mode, hash: string, projectHashed: boolean): boolean {
+  if (mode.revoke)
+    return item.status !== "approved" && item.approved_by === undefined && item.approved_at === undefined && item.approved_hash === undefined;
+  const recorded = typeof item.approved_hash === "string" && item.approved_hash.trim() ? item.approved_hash.trim() : undefined;
+  const hashOk = recorded === undefined ? !projectHashed : recorded === hash;
+  return item.status === "approved" && !!item.approved_by && !!item.approved_at && hashOk;
+}
+
+// The dialect a source file names, for reading join references the way the source writes SQL.
+function sourceDialect(root: string, source: string): Dialect | undefined {
+  let config: SourceConfig | null = null;
+  try {
+    config = readYamlIfExists<SourceConfig>(paths(root).source(source));
+  } catch {
+    return undefined;
+  }
+  const d = config?.dialect;
+  return typeof d === "string" && (DIALECTS as readonly string[]).includes(d) ? d : undefined;
+}
+
+// Finds the other models of a source by name, for the second hop of a join reference.
+function modelLookup(root: string, source: string): (name: string) => Model | undefined {
+  const cache = new Map<string, Model | undefined>();
+  return (name: string) => {
+    if (!cache.has(name)) {
+      let m: Model | undefined;
+      try {
+        m = NAME_PATTERN.test(name) ? (readYamlIfExists<Model>(paths(root).model(source, name)) ?? undefined) : undefined;
+      } catch {
+        m = undefined;
+      }
+      cache.set(name, m);
+    }
+    return cache.get(name);
+  };
 }
 
 function keyIndex(map: YAMLMap, key: string): number {
@@ -102,11 +144,13 @@ function applyEdit(doc: Document, edit: Edit, mode: Mode): LastApproval | undefi
     if (last) setLastApproved(doc, node, last);
     node.delete("approved_by");
     node.delete("approved_at");
+    node.delete("approved_hash");
     return last;
   }
   setScalar(doc, node, "status", "approved", STATUS_ANCHORS);
   setScalar(doc, node, "approved_by", mode.by, ["status"]);
   setScalar(doc, node, "approved_at", mode.at, ["approved_by", "status"]);
+  setScalar(doc, node, "approved_hash", edit.hash, ["approved_at", "approved_by", "status"]);
   // A new approval replaces the one a revoke set aside.
   if (edit.keepLast) node.delete("last_approved");
   return undefined;
@@ -125,6 +169,38 @@ function describedProblem(ref: string, kind: string, item: { description?: strin
 
 function joinWarning(source: string, model: string, join: string): string {
   return `Join ${source}.${model}.${join} has no evidence. Run sl check-join --source ${source} --model ${model} --join ${join} before relying on it.`;
+}
+
+function keySignature(keys: JoinKey[]): string {
+  return keys
+    .map((k) => `${String(k.from).toLowerCase()}=${String(k.to).toLowerCase()}`)
+    .sort()
+    .join(",");
+}
+
+// A warning for a join whose current evidence sl validate errors on once it is approved: evidence
+// of many_to_many, which needs a bridge table, or fan-out under a to-one relationship that records
+// no fanout_override. Evidence measured for another target or other keys is stale and says nothing.
+function fanoutWarning(ref: string, j: Join): string | null {
+  const ev = j.evidence;
+  if (!ev) return null;
+  if ((ev.to !== undefined && ev.to !== j.to) || (Array.isArray(ev.keys) && Array.isArray(j.keys) && keySignature(ev.keys) !== keySignature(j.keys))) return null;
+  if (ev.suggested_relationship === "many_to_many") {
+    return (
+      `Join ${ref}'s evidence shows many_to_many: neither key is unique, so sl validate errors on it once approved, whatever ` +
+      "fanout_override says; the join needs a bridge table or a pre-aggregated model."
+    );
+  }
+  if (!TO_ONE_RELATIONSHIPS.includes(j.relationship) || (typeof j.fanout_override === "string" && j.fanout_override.trim())) return null;
+  const why = [
+    ev.right_key_unique === false ? `the key of ${j.to} is not unique` : "",
+    typeof ev.max_fanout === "number" && ev.max_fanout > 1 ? `a row matches up to ${ev.max_fanout} rows of ${j.to}` : "",
+  ].filter(Boolean);
+  if (!why.length) return null;
+  return (
+    `Join ${ref} is ${j.relationship}, but its evidence shows fan-out (${why.join(", and ")}); sl validate errors on it ` +
+    'until the keys or the relationship are fixed, or fanout_override: "<reason>" records why the owner accepts it.'
+  );
 }
 
 // Whether a reference is exactly model.measure, the form sl validate accepts.
@@ -165,20 +241,152 @@ function validDate(s: string): boolean {
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
 }
 
+// The model files of a semantic root as [source, model name] pairs, from models/<source>/<model>.yaml.
+function modelFiles(root: string): [string, string][] {
+  const dir = join(root, "models");
+  if (!existsSync(dir)) return [];
+  const out: [string, string][] = [];
+  for (const source of readdirSync(dir).sort()) {
+    const sub = join(dir, source);
+    if (!NAME_PATTERN.test(source) || !statSync(sub).isDirectory()) continue;
+    for (const f of readdirSync(sub).sort()) {
+      const m = f.match(/^([a-z][a-z0-9_]*)\.yaml$/);
+      if (m) out.push([source, m[1]!]);
+    }
+  }
+  return out;
+}
+
+// A target as the user wrote it.
+function targetText(t: Target): string {
+  switch (t.kind) {
+    case "model":
+      return `${t.source}.${t.model}`;
+    case "field":
+      return `${t.source}.${t.model}.${t.field}`;
+    case "metric":
+      return `metric:${t.name}`;
+    case "access":
+      return "access";
+    case "golden":
+      return `golden:${t.name}`;
+  }
+}
+
+// Whether an entry falls under a --stamp-hashes target: a model takes itself and its fields.
+function underTarget(e: ApprovalEntry, target: Target | undefined): boolean {
+  if (!target) return true;
+  switch (target.kind) {
+    case "model": {
+      const base = `${target.source}.${target.model}`;
+      return e.ref === base || e.ref.startsWith(`${base}.`);
+    }
+    case "field":
+      return e.ref === `${target.source}.${target.model}.${target.field}`;
+    case "metric":
+      return e.ref === `metric:${target.name}`;
+    case "access":
+      return e.ref === "access";
+    case "golden":
+      return false;
+  }
+}
+
+// The approval entries of every model file, metrics.yaml and access.yaml, by file.
+function projectEntries(root: string): { file: string; entries: ApprovalEntry[] }[] {
+  const files: { file: string; entries: ApprovalEntry[] }[] = [];
+  for (const [source, name] of modelFiles(root)) {
+    const file = paths(root).model(source, name);
+    const model = readYaml<Model>(file);
+    if (!model || typeof model !== "object") continue;
+    files.push({ file, entries: modelEntries(source, { ...model, model: name }, modelLookup(root, source), sourceDialect(root, source)) });
+  }
+  const metricsFile = paths(root).metrics;
+  if (existsSync(metricsFile)) files.push({ file: metricsFile, entries: metricEntries(loadMetrics(root)?.metrics) });
+  const access = accessEntry(loadAccess(root));
+  if (access) files.push({ file: paths(root).access, entries: [access] });
+  return files;
+}
+
+// Whether any approved model, field, join, metric or access.yaml of the project records approved_hash.
+function projectHashed(root: string): boolean {
+  return holdsHashes(projectEntries(root).flatMap((f) => f.entries));
+}
+
+// Records approved_hash on every approved item that has none, keeping approved_by and approved_at.
+// While other items of the project record a hash, an item without one may have had its hash
+// removed after an edit; it is refused unless confirmUnchanged says version control shows it
+// unchanged since its approved_at.
+function stampHashes(root: string, target: Target | undefined, confirmUnchanged: boolean): { file: string; refs: string[] }[] {
+  const files = projectEntries(root);
+  const all = files.flatMap((f) => f.entries);
+  if (target && !all.some((e) => underTarget(e, target))) {
+    throw new UserError(`--target ${targetText(target)} names no model, field, metric or access file of this project.`);
+  }
+  const hashed = holdsHashes(all);
+  const suspect = all.filter((e) => underTarget(e, target) && integrity(e, hashed) === "missing");
+  if (suspect.length && !confirmUnchanged) {
+    throw new UserError(
+      `Cannot stamp hashes: other approved items already carry approved_hash, so these may have had theirs removed after an edit: ` +
+        `${suspect.map((e) => e.ref).join(", ")}. Read each back to the owner and approve it again (sl approve --target <ref> --by "<owner>"). ` +
+        "Only when version control shows each unchanged since its approved_at, run sl approve --stamp-hashes --confirm-unchanged.",
+    );
+  }
+  const out: { file: string; refs: string[] }[] = [];
+  for (const { file, entries } of files) {
+    const todo = entries.filter((e) => underTarget(e, target) && e.item.status === "approved" && !carriesHash(e.item));
+    if (!todo.length) continue;
+    updateYaml(file, (doc) => {
+      for (const e of todo) {
+        const node = e.path.length ? doc.getIn(e.path, true) : doc.contents;
+        if (isMap(node)) setScalar(doc, node, "approved_hash", e.hash, ["approved_at", "approved_by", "status"]);
+      }
+    });
+    out.push({ file, refs: todo.map((e) => e.ref) });
+  }
+  return out;
+}
+
 const spec: CommandSpec = {
   summary: "Mark a model, field, metric or the access file approved, or revoke an approval.",
   usage:
     "approve --target <source.model | source.model.field | metric:<name> | access> " +
-    "--by <name> [--recursive] [--revoke] [--date YYYY-MM-DD]",
+    "--by <name> [--recursive] [--revoke] [--date YYYY-MM-DD]\n" +
+    "       approve --stamp-hashes [--target <ref>] [--confirm-unchanged]",
   options: {
     target: { type: "string" },
     by: { type: "string" },
     recursive: { type: "boolean" },
     revoke: { type: "boolean" },
     date: { type: "string" },
+    "stamp-hashes": { type: "boolean" },
+    "confirm-unchanged": { type: "boolean" },
   },
   async run({ values }, ctx) {
     loadProject(ctx.root);
+    if (bool(values, "stamp-hashes")) {
+      for (const flag of ["by", "date"] as const)
+        if (str(values, flag) !== undefined) throw new UserError(`--stamp-hashes keeps each item's approved_by and approved_at, so it takes no --${flag}.`);
+      for (const flag of ["revoke", "recursive"] as const)
+        if (bool(values, flag)) throw new UserError(`--stamp-hashes takes no --${flag}; it only records hashes of items already approved.`);
+      const targetRef = str(values, "target");
+      const target = targetRef ? parseTarget(targetRef) : undefined;
+      if (target?.kind === "golden") throw new UserError("Goldens are confirmed with sl goldens confirm and carry no approved_hash.");
+      const stamped = stampHashes(ctx.root, target, bool(values, "confirm-unchanged"));
+      const refs = stamped.flatMap((s) => s.refs);
+      if (ctx.json) {
+        ctx.out(formatJson({ stamped: refs }));
+        return 0;
+      }
+      ctx.out(
+        refs.length
+          ? `Recorded approved_hash on ${refs.length} approved item(s), keeping who approved them and when: ${refs.join(", ")}. ` +
+              "From now on sl validate errors when one of them changes."
+          : "Every approved item already has approved_hash; nothing changed.",
+      );
+      return 0;
+    }
+    if (bool(values, "confirm-unchanged")) throw new UserError("--confirm-unchanged applies only to sl approve --stamp-hashes.");
     const ref = str(values, "target");
     if (!ref) {
       throw new UserError(
@@ -201,14 +409,28 @@ const spec: CommandSpec = {
     const warnings: string[] = [];
     // Items already in the requested state, reported when nothing changes.
     let skipped = 0;
-    const consider = (targetRef: string, path: (string | number)[], item: Approval, keepLast = false): boolean => {
-      if (settled(item, mode)) {
+    const hashed = !revoke && projectHashed(ctx.root);
+    const isSettled = (item: Approval, hash: string) => settled(item, mode, hash, hashed);
+    const consider = (targetRef: string, path: (string | number)[], item: Approval, hash: string, keepLast = false): boolean => {
+      if (isSettled(item, hash)) {
         skipped++;
         return false;
       }
-      edits.push({ target: targetRef, path, from: statusOf(item), ...(keepLast ? { keepLast } : {}) });
+      const approved = !mode.revoke && item.status === "approved";
+      const changed = approved && typeof item.approved_hash === "string" && item.approved_hash.trim() !== "" && item.approved_hash.trim() !== hash;
+      const missing = approved && !carriesHash(item as unknown as Record<string, unknown>);
+      edits.push({
+        target: targetRef,
+        path,
+        from: statusOf(item),
+        hash,
+        ...(keepLast ? { keepLast } : {}),
+        ...(changed ? { changed } : {}),
+        ...(missing ? { missing } : {}),
+      });
       return true;
     };
+    const obj = (x: unknown) => x as Record<string, unknown>;
 
     switch (target.kind) {
       case "golden":
@@ -227,7 +449,7 @@ const spec: CommandSpec = {
               : `No access.yaml at ${file}. Write the roles first, then approve them.`,
           );
         }
-        consider("access", [], access, true);
+        consider("access", [], access, itemHash("access", obj(access)), true);
         break;
       }
 
@@ -241,7 +463,8 @@ const spec: CommandSpec = {
           const known = metrics.map((m) => m.name);
           throw new UserError(`No metric "${target.name}" in metrics.yaml. Known metrics: ${known.length ? known.join(", ") : "none"}.`);
         }
-        if (!revoke && !settled(metric, mode)) {
+        const metricHash = itemHash("metric", obj(metric));
+        if (!revoke && !isSettled(metric, metricHash)) {
           const problems: string[] = [];
           const missing = describedProblem(`metric:${metric.name}`, "Metric", metric);
           if (missing) problems.push(missing);
@@ -259,7 +482,7 @@ const spec: CommandSpec = {
           if (draft.length) problems.push(`it references draft measures: ${[...new Set(draft)].join(", ")}. Approve them first.`);
           if (problems.length) refuse(`approve metric:${metric.name}`, problems);
         }
-        consider(`metric:${metric.name}`, ["metrics", index], metric);
+        consider(`metric:${metric.name}`, ["metrics", index], metric, metricHash);
         break;
       }
 
@@ -267,20 +490,27 @@ const spec: CommandSpec = {
         const { path, model } = loadModel(ctx.root, target.source, target.model);
         file = path;
         const base = `${target.source}.${target.model}`;
+        const lookup = modelLookup(ctx.root, target.source);
+        const dialect = sourceDialect(ctx.root, target.source);
+        const scope = { source: target.source, model: obj(model), lookup, dialect };
+        const hash = (kind: "dimension" | "measure" | "join", item: unknown) => itemHash(kind, obj(item), scope);
         const problems: string[] = [];
-        if (!revoke && !settled(model, mode)) problems.push(...modelProblems(base, model));
-        consider(base, [], model);
+        const modelHash = itemHash("model", obj(model), { source: target.source });
+        if (!revoke && !isSettled(model, modelHash)) problems.push(...modelProblems(base, model));
+        consider(base, [], model, modelHash);
         if (recursive) {
-          for (const [i, d] of (model.dimensions ?? []).entries()) consider(`${base}.${d.name}`, ["dimensions", i], d);
+          for (const [i, d] of (model.dimensions ?? []).entries()) consider(`${base}.${d.name}`, ["dimensions", i], d, hash("dimension", d));
           for (const [i, m] of (model.measures ?? []).entries()) {
-            if (consider(`${base}.${m.name}`, ["measures", i], m) && !revoke) {
+            if (consider(`${base}.${m.name}`, ["measures", i], m, hash("measure", m)) && !revoke) {
               const p = describedProblem(`${base}.${m.name}`, "Measure", m);
               if (p) problems.push(p);
             }
           }
           for (const [i, j] of (model.joins ?? []).entries()) {
-            if (consider(`${base}.${j.name}`, ["joins", i], j) && !revoke && !j.evidence) {
-              warnings.push(joinWarning(target.source, target.model, j.name));
+            if (consider(`${base}.${j.name}`, ["joins", i], j, hash("join", j)) && !revoke) {
+              if (!j.evidence) warnings.push(joinWarning(target.source, target.model, j.name));
+              const w = fanoutWarning(`${base}.${j.name}`, j);
+              if (w) warnings.push(w);
             }
           }
         }
@@ -305,13 +535,23 @@ const spec: CommandSpec = {
           );
         }
         const section = match.kind === "dimension" ? "dimensions" : match.kind === "measure" ? "measures" : "joins";
-        const changing = consider(full, [section, match.index], match.item);
+        const hash = itemHash(match.kind, obj(match.item), {
+          source: target.source,
+          model: obj(model),
+          lookup: modelLookup(ctx.root, target.source),
+          dialect: sourceDialect(ctx.root, target.source),
+        });
+        const changing = consider(full, [section, match.index], match.item, hash);
         if (changing && !revoke) {
           if (match.kind === "measure") {
             const p = describedProblem(full, "Measure", match.item);
             if (p) refuse(`approve ${full}`, [p]);
           }
-          if (match.kind === "join" && !match.item.evidence) warnings.push(joinWarning(target.source, target.model, target.field));
+          if (match.kind === "join") {
+            if (!match.item.evidence) warnings.push(joinWarning(target.source, target.model, target.field));
+            const w = fanoutWarning(full, match.item);
+            if (w) warnings.push(w);
+          }
         }
         break;
       }
@@ -333,8 +573,13 @@ const spec: CommandSpec = {
     }
     const lines: string[] = [];
     if (!changed.length) lines.push(`${ref} is already ${revoke ? "a draft" : "approved"}; nothing changed.`);
+    const reapproved = new Set(edits.filter((e) => e.changed).map((e) => e.target));
+    const rehashed = new Set(edits.filter((e) => e.missing).map((e) => e.target));
     for (const c of changed) {
-      lines.push(revoke ? `Revoked ${c.target} (${c.from} -> draft).` : `Approved ${c.target} (${c.from} -> approved) by ${by} on ${date}.`);
+      if (revoke) lines.push(`Revoked ${c.target} (${c.from} -> draft).`);
+      else if (reapproved.has(c.target)) lines.push(`Approved ${c.target} again (it changed since its last approval) by ${by} on ${date}.`);
+      else if (rehashed.has(c.target)) lines.push(`Approved ${c.target} again (its approved_hash was missing) by ${by} on ${date}.`);
+      else lines.push(`Approved ${c.target} (${c.from} -> approved) by ${by} on ${date}.`);
     }
     if (changed.length && skipped) lines.push(`${skipped} item(s) were already ${revoke ? "drafts" : "approved"}.`);
     if (keptApproval) {

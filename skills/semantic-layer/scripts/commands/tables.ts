@@ -174,7 +174,7 @@ const spec: CommandSpec = {
       }
       if (suggested && (suggested.include.length || suggested.exclude.length)) {
         lines.push("");
-        lines.push("Suggested scope (the include-suggested groups, less the noise tables they would select):");
+        lines.push("Suggested scope (the include-suggested groups, less the noise and staging tables they would select):");
         lines.push(`  ${scopeCommand(sourceName, suggested)}`);
         lines.push("Preview it, agree it with the owner, then add --write to save it.");
       }

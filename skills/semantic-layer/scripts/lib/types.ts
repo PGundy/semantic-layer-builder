@@ -12,6 +12,9 @@ export interface Approval {
   status: Status;
   approved_by?: string;
   approved_at?: string;
+  // "sha256:" and 64 hex characters: the hash of the item's semantic content when it was approved
+  // (lib/approval-hash.ts). sl validate errors when the item no longer matches it.
+  approved_hash?: string;
 }
 
 export interface ProjectSettings {
@@ -73,10 +76,10 @@ export interface ColumnProfile {
   distinct_count?: number | null;
   min?: Scalar;
   max?: Scalar;
-  // For a protected column, each value is "sha256:" and 16 hex characters (lib/profile.ts hashValue).
+  // Absent for a protected column: its values are not stored, raw or hashed.
   top_values?: TopValue[];
   sampled?: boolean;
-  // True on a protected column's profile: top values hashed, no text min or max.
+  // True on a protected column's profile: counts only, with min and max only for a number or date.
   redacted?: boolean;
 }
 
@@ -136,6 +139,8 @@ export interface Dimension extends Approval {
   expr: string;
   type: DimensionType;
   time_grains?: TimeGrain[];
+  // The IANA zone a time dimension's naive timestamps are stored in, such as America/New_York.
+  time_zone?: string;
   description?: string;
   synonyms?: string[];
   tags?: string[];
@@ -185,6 +190,8 @@ export interface Join extends Approval {
   origin?: JoinOrigin;
   description?: string;
   evidence?: JoinEvidence;
+  // Why an approved to-one join stands although its evidence shows fan-out (a known-dirty key).
+  fanout_override?: string;
 }
 
 export interface Model extends Approval {

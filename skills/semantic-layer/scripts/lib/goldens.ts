@@ -1,4 +1,5 @@
 import { UserError } from "./errors.ts";
+import { PROTECTED_VALUE } from "./output.ts";
 import { findField, parseRequestField } from "./refs.ts";
 import { assertReadOnly } from "./sql-guard.ts";
 import type { Golden, Metric, Model, QueryPlan, ResultRows, SourceConfig } from "./types.ts";
@@ -9,6 +10,8 @@ export const MAX_DIFFS = 10;
 export interface CompareOptions {
   ordered: boolean;
   tolerance: number;
+  // Columns (lowercase) whose values the differences show as [protected].
+  protectedColumns?: string[];
 }
 
 export interface CompareResult {
@@ -169,17 +172,25 @@ function rowEquals(a: Row, b: Row, columns: string[], tolerance: number): boolea
   return columns.every((c) => valuesEqual(a[c], b[c], tolerance));
 }
 
-function describeRow(row: Row): string {
+// How a difference shows a cell: a protected column's non-null value as [protected].
+type Shower = (column: string, v: unknown) => string;
+
+function shower(protectedCols: string[] | undefined): Shower {
+  const hidden = new Set((protectedCols ?? []).map((c) => c.toLowerCase()));
+  return (column, v) => (hidden.has(column.toLowerCase()) && !isNull(v) ? PROTECTED_VALUE : show(v));
+}
+
+function describeRow(row: Row, see: Shower): string {
   return `{${Object.keys(row)
-    .map((c) => `${c}: ${show(row[c])}`)
+    .map((c) => `${c}: ${see(c, row[c])}`)
     .join(", ")}}`;
 }
 
-function cellDiffs(label: string, expected: Row, actual: Row, columns: string[], tolerance: number): string[] {
+function cellDiffs(label: string, expected: Row, actual: Row, columns: string[], tolerance: number, see: Shower): string[] {
   const out: string[] = [];
   for (const c of columns) {
     if (!valuesEqual(expected[c], actual[c], tolerance)) {
-      out.push(`${label}, column ${c}: expected ${show(expected[c])}, got ${show(actual[c])}.`);
+      out.push(`${label}, column ${c}: expected ${see(c, expected[c])}, got ${see(c, actual[c])}.`);
     }
   }
   return out;
@@ -189,15 +200,15 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-function compareOrdered(expected: Row[], actual: Row[], columns: string[], tolerance: number): string[] {
+function compareOrdered(expected: Row[], actual: Row[], columns: string[], tolerance: number, see: Shower): string[] {
   const diffs: string[] = [];
   const n = Math.max(expected.length, actual.length);
   for (let i = 0; i < n; i++) {
     const e = expected[i];
     const a = actual[i];
-    if (e && a) diffs.push(...cellDiffs(`Row ${i + 1}`, e, a, columns, tolerance));
-    else if (e) diffs.push(`Row ${i + 1}: expected ${describeRow(e)}, but the results end before it.`);
-    else if (a) diffs.push(`Row ${i + 1}: got ${describeRow(a)}, which is not expected.`);
+    if (e && a) diffs.push(...cellDiffs(`Row ${i + 1}`, e, a, columns, tolerance, see));
+    else if (e) diffs.push(`Row ${i + 1}: expected ${describeRow(e, see)}, but the results end before it.`);
+    else if (a) diffs.push(`Row ${i + 1}: got ${describeRow(a, see)}, which is not expected.`);
   }
   return diffs;
 }
@@ -206,7 +217,7 @@ function compareOrdered(expected: Row[], actual: Row[], columns: string[], toler
 // full, then pairs the rest so a changed figure reads as one cell diff: by the label
 // columns when there are any, otherwise with the result row that shares the most cells
 // (at least half of them). Row numbers are positions in expected.rows and in the results.
-function compareUnordered(expected: Row[], actual: Row[], columns: string[], tolerance: number): string[] {
+function compareUnordered(expected: Row[], actual: Row[], columns: string[], tolerance: number, see: Shower): string[] {
   const { labels, order } = keyOrder(columns, [...expected, ...actual]);
   const expOrder = sortedIndexes(expected, order);
   const actOrder = sortedIndexes(actual, order);
@@ -245,20 +256,22 @@ function compareUnordered(expected: Row[], actual: Row[], columns: string[], tol
     }
     if (j >= 0) {
       used.add(j);
-      const label = key.map((c) => `${c}=${show(e[c])}`).join(", ");
-      diffs.push(...cellDiffs(`Row ${i + 1} (${label})`, e, actual[j]!, columns, tolerance));
+      const label = key.map((c) => `${c}=${see(c, e[c])}`).join(", ");
+      diffs.push(...cellDiffs(`Row ${i + 1} (${label})`, e, actual[j]!, columns, tolerance, see));
     } else unmatched.push(i);
   }
-  for (const i of unmatched) diffs.push(`Row ${i + 1}: expected ${describeRow(expected[i]!)}, but no result row matches it.`);
+  for (const i of unmatched) diffs.push(`Row ${i + 1}: expected ${describeRow(expected[i]!, see)}, but no result row matches it.`);
   for (const k of actOrder) {
-    if (!used.has(k)) diffs.push(`Result row ${k + 1}: got ${describeRow(actual[k]!)}, which is not expected.`);
+    if (!used.has(k)) diffs.push(`Result row ${k + 1}: got ${describeRow(actual[k]!, see)}, which is not expected.`);
   }
   return diffs;
 }
 
-// Compares a golden's expected rows with the rows a query returned.
+// Compares a golden's expected rows with the rows a query returned. The differences show the
+// values of opts.protectedColumns as [protected].
 export function compareRows(expected: Row[], actual: Row[], opts: CompareOptions): CompareResult {
   const tolerance = Math.max(0, opts.tolerance);
+  const see = shower(opts.protectedColumns);
   const expectedColumns = columnsOf(expected);
   const actualColumns = columnsOf(actual);
   const diffs: string[] = [];
@@ -272,8 +285,8 @@ export function compareRows(expected: Row[], actual: Row[], opts: CompareOptions
   const common = expectedColumns.filter((c) => actualColumns.includes(c));
   diffs.push(
     ...(opts.ordered
-      ? compareOrdered(expected, actual, common, tolerance)
-      : compareUnordered(expected, actual, common, tolerance)),
+      ? compareOrdered(expected, actual, common, tolerance, see)
+      : compareUnordered(expected, actual, common, tolerance, see)),
   );
   if (diffs.length <= MAX_DIFFS) return { ok: diffs.length === 0, diffs };
   const shown = diffs.slice(0, MAX_DIFFS - 1);

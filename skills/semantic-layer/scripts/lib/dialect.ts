@@ -39,20 +39,3 @@ export function castText(dialect: Dialect, expr: string): string {
   }
 }
 
-// A FROM clause reading at most about `rows` rows, or the whole table when rows is undefined.
-export function sampledFrom(dialect: Dialect, quotedTable: string, rows: number | undefined): string {
-  if (!rows) return quotedTable;
-  const n = Math.max(1, Math.floor(rows));
-  switch (dialect) {
-    case "duckdb":
-      return `(select * from ${quotedTable} using sample reservoir(${n} rows) repeatable (42))`;
-    case "postgres":
-      return `(select * from ${quotedTable} order by random() limit ${n})`;
-    case "snowflake":
-      return `(select * from ${quotedTable} sample (${n} rows))`;
-    case "bigquery":
-      return `(select * from ${quotedTable} order by rand() limit ${n})`;
-    case "databricks":
-      return `(select * from ${quotedTable} tablesample (${n} rows))`;
-  }
-}

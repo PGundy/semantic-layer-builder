@@ -12,7 +12,7 @@ sl baseline --source warehouse --out notes/baseline-warehouse.md
 
 - Plain output is markdown suited to paste to the owner; `--json` carries the same structure for you to read.
 - `--out` writes the markdown to a path resolved from the semantic root, never outside it. Keep it as a working note: nothing in the layer reads it, and a rerun replaces it.
-- With no `--tables` it covers the in-scope tables (every table while no scope is set). When more than `focus_threshold` are in scope, it covers the top `focus_threshold` by the ranking `sl status` and `sl tables` use and says how many it left out, pointing at `sl scope`: that note is the scoping question (Phase 2).
+- With no `--tables` it covers the in-scope tables (every table while no scope is set). When more than `focus_threshold` are in scope, it covers the top `focus_threshold` by the ranking `sl status` and `sl tables` use, skipping the tables it classifies as noise, and says so in words such as "covers 12 of the 22 in-scope tables", pointing at `sl scope`: that note is the scoping question (Phase 2). Its noise and staging judgement is the same one `sl tables --groups` uses for `suggested_scope`, so the two agree on which tables look like noise.
 - The brief names sensitive columns but never quotes their values (`SKILL.md`, Principle 8).
 
 ## When to run it
@@ -79,7 +79,7 @@ The source-level section lists the likely facts and the dimensions each joins. U
 | In the brief | Becomes |
 |---|---|
 | Row count (`order_count`) | a `count` measure; ask which rows count (status values, test rows) |
-| Sum of a money column, with its unit (`amount_cents`, cents) | a `sum` measure with the exact cents expression per dialect and `format: currency`; ask the currency and what the amount includes |
+| Sum of a money column, with its unit (`amount_cents`, cents) | a `sum` measure with the exact cents expression per dialect and `format: currency`; ask the currency and what the amount includes; when a column or table comment names a currency code (`EUR`), or the column name ends in one (`_eur`, `_usd`), ask it as a confirmation ("the comment says EUR; is that right?") |
 | Sum of a quantity (`quantity`) | a `sum` measure with `format: integer` |
 | Distinct count of a foreign key (`customer_id`) | a `count_distinct` measure, named after its join (`customer_count`); say what it counts ("customers who ordered") |
 | Share of a boolean flag (`is_gift`) | a `ratio` metric in `metrics.yaml`: a `count` measure filtered on the flag over the row count |
@@ -91,7 +91,7 @@ The source-level section lists the likely facts and the dimensions each joins. U
 
 | In the brief | Becomes |
 |---|---|
-| A time column with grains (`created_at`: day, week, month, quarter, year) | a `time` dimension renamed to the date's business name (`order_date`); ask which date is "the" date and which time zone a day is in |
+| A time column with grains (`created_at`: day, week, month, quarter, year), including one inside a composite primary key (`snapshot_date` in `(account_id, snapshot_date)`) | a `time` dimension renamed to the date's business name (`order_date`); ask which date is "the" date and which time zone a day is in, and, for a timestamp without a time zone, which zone its values are recorded in (`time_zone`) |
 | A low-cardinality categorical column (`status`, `channel`, `region`) | a `string` dimension; ask whether the values need friendlier labels, and whether a value is a split or a rule (`status` is often both: a filter on revenue and a split for order counts) |
 | An attribute of a to-one joined dimension, with its path (`customer.acquisition_channel`) | a dimension of the joined model, which a request reaches through the join; on the fact itself only as a join-reference dimension (`expr: customer.acquisition_channel`) when a metric across models needs the same name in each |
 
@@ -107,7 +107,7 @@ The brief orders them by importance: what a row is, which status values count, w
 
 ### Without profiles
 
-The brief says which facts `sl profile` would measure (key uniqueness, the values of category columns, empty rates, near-unique strings), and lists the columns it cannot place by name as unclear until profiled. Tell the owner which guesses would firm up. On the shared-context path, where nothing can be profiled yet, ask for example values where a question needs them, and note in each model's open questions what stays unmeasured.
+The brief says which facts `sl profile` would measure (key uniqueness, the values of category columns, empty rates, near-unique strings), and lists the columns it cannot place by name as unclear until profiled. Tell the owner which guesses would firm up. After an import, `sl profile` needs a connection the snapshot did not come with (a live source, or `--emit-sql` and `--results` through your own tool); the brief says so, and so should you. On the shared-context path, where nothing can be profiled yet, ask for example values where a question needs them, and note in each model's open questions what stays unmeasured.
 
 ## From the baseline to the layer
 

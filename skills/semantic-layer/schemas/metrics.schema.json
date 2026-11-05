@@ -112,6 +112,11 @@
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "description": "ISO date of approval, YYYY-MM-DD. Required when status is approved.",
           "format": "date"
+        },
+        "approved_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "sha256: and 64 hex characters, written by sl approve: the hash of the item's semantic content when it was approved. sl validate errors when the item no longer matches it, and warns when an approved item has none (sl approve --stamp-hashes records it)."
         }
       },
       "allOf": [

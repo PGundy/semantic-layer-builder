@@ -38,16 +38,41 @@ describe("adapters normalize values the same way", () => {
     }
   });
 
+  test("duckdb file database: a view over a table reads, writes and setting changes are refused", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    const source = await duckdbSource(t.root, t.dir, "wh", ["create table orders (id integer)", "insert into orders values (1), (2)"]);
+    const a = await openAdapter(t.root, { ...source, connection: { ...source.connection, setup: ["SET threads=2"], views: { o: "main.orders" } } }, {});
+    try {
+      expect((await a.query("select count(*) as n from o")).rows).toEqual([{ n: 2 }]);
+      expect((await a.query("select current_setting('threads') as n")).rows).toEqual([{ n: 2 }]);
+      await expect(a.query("insert into orders values (3)")).rejects.toThrow("INSERT");
+      await expect(a.query("set threads = 4")).rejects.toThrow();
+      await expect(a.query("select 1; select 2")).rejects.toThrow("Run one statement at a time.");
+    } finally {
+      await a.close();
+    }
+  });
+
   test("non-runnable dialects explain the emit-sql path", async () => {
     await expect(openAdapter("/tmp", { source: "x", dialect: "snowflake" }, {})).rejects.toThrow("--emit-sql");
   });
 });
 
 describe("read-only guard", () => {
-  test.each(["select 1", "with a as (select 1) select * from a", "describe orders", "select 'drop table x' as s"])("allows %s", (q) => {
+  test.each(["select 1", "with a as (select 1) select * from a", "describe orders", "select 'drop table x' as s", "select id as comment, x as load from t"])("allows %s", (q) => {
     expect(() => assertReadOnly(q)).not.toThrow();
   });
-  test.each(["drop table x", "select 1; select 2", "insert into t values (1)", "with a as (delete from t returning *) select 1", "attach 'x.db'"])(
+  test.each([
+    "drop table x",
+    "select 1; select 2",
+    "insert into t values (1)",
+    "with a as (delete from t returning *) select 1",
+    "attach 'x.db'",
+    "explain analyze select 1",
+    "explain delete from t",
+  ])(
     "refuses %s",
     (q) => {
       expect(() => assertReadOnly(q)).toThrow();
@@ -82,7 +107,10 @@ describe("database errors are user errors", () => {
     writeYaml(join(t.root, "sources", "pg.yaml"), { source: "pg", dialect: "postgres", connection: { env: "PG_URL" } });
     const r = await sl(t.root, ["run", "--source", "pg", "--sql", "select to_char(now(), 'YYYY') month from"], { PG_URL });
     expect(r.code).toBe(1);
-    expect(r.err).toStartWith("sl run: Query failed: ");
+    // The test server's role is a superuser, so the connection warning comes first.
+    const [warning, error] = r.err.split("\n");
+    expect(warning).toBe('Warning: source "pg" connects as a superuser. Queries run read-only, but connect with a SELECT-only role.');
+    expect(error).toStartWith("sl run: Query failed: ");
     expect(r.err).toContain("syntax error");
     expect(r.err).not.toContain("unexpected error");
     expect(r.err).not.toContain(PG_URL!);

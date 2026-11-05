@@ -57,3 +57,37 @@ export async function duckdbSource(root: string, dir: string, name: string, stat
 
 // The Postgres URL for live tests, or undefined to skip them. Start one with scripts/pg-local.sh.
 export const PG_URL = process.env.PG_URL;
+
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+// Whether a Postgres URL reaches a server on this machine: host localhost, 127.0.0.1 or ::1, or a
+// unix socket (a host, or a host= query parameter, that is a path starting with "/").
+export function isLocalPg(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  const queryHost = parsed.searchParams.get("host");
+  if (queryHost !== null) return queryHost.startsWith("/") || LOCAL_HOSTS.has(queryHost);
+  const host = decodeURIComponent(parsed.hostname);
+  return host === "" || host.startsWith("/") || LOCAL_HOSTS.has(host);
+}
+
+// Throws unless `url` reaches a local Postgres or SL_TEST_ALLOW_REMOTE=1 is set. Every live test
+// calls it before it creates or drops a schema, so the suite never drops schemas in a remote
+// database that PG_URL happens to name.
+export function assertLocalPg(url: string | undefined, env: Record<string, string | undefined> = process.env): void {
+  if (!url) throw new Error("PG_URL is not set.");
+  if (env.SL_TEST_ALLOW_REMOTE === "1" || isLocalPg(url)) return;
+  throw new Error(
+    "PG_URL does not point at localhost, 127.0.0.1, ::1 or a unix socket; live tests create and drop schemas there. " +
+      "Point it at a scratch server (scripts/pg-local.sh), or set SL_TEST_ALLOW_REMOTE=1 to run them against it anyway.",
+  );
+}
+
+// A schema name no other live test uses: the prefix, the process id and a random suffix.
+export function uniqueSchema(prefix: string): string {
+  return `${prefix}_${process.pid}_${Math.random().toString(36).slice(2, 8)}`;
+}

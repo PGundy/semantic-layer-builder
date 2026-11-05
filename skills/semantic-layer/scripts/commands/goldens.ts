@@ -6,7 +6,7 @@ import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.t
 import { bool, str, today } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { compareRows, currencyColumns, displayRows, goldenDraftFields, goldenPlan, goldenQueryId, resultColumns } from "../lib/goldens.ts";
-import { formatJson, formatTable } from "../lib/output.ts";
+import { formatJson, formatTable, maskRows, plainText, protectedNames, protectedNote, protectedResultColumns } from "../lib/output.ts";
 import { executePlan } from "../lib/plan.ts";
 import { listGoldens, loadAccess, loadMetrics, loadSource, paths, stem, type LoadedGolden } from "../lib/project.ts";
 import type { Golden, GoldenRunAs, Metric, Model, ResultRows, SourceConfig } from "../lib/types.ts";
@@ -79,8 +79,15 @@ function resultsPath(ctx: CommandContext, values: OptionValues): string | undefi
 // Runs one golden's query, live or from a results file.
 async function runGolden(ctx: CommandContext, g: Golden, source: SourceConfig, resultsFile: string | undefined): Promise<ResultRows> {
   const plan = goldenPlan(g, source);
-  const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, resultsFile });
+  const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, resultsFile, warn: ctx.err });
   return results[goldenQueryId(g.name)] ?? [];
+}
+
+// The result columns whose values goldens prints as [protected] (see protectedResultColumns),
+// none with --show-protected.
+function maskedColumns(ctx: CommandContext, values: OptionValues, source: SourceConfig, columns: string[]): string[] {
+  if (bool(values, "show-protected")) return [];
+  return protectedResultColumns(columns, protectedNames(ctx.root, source));
 }
 
 function lowerKeys(rows: Record<string, unknown>[]): Record<string, unknown>[] {
@@ -196,11 +203,13 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
   }
   const rows = await runGolden(ctx, golden, source, resultsPath(ctx, values));
   const columns = resultColumns(rows);
-  if (ctx.json) ctx.out(formatJson({ name: golden.name, columns, rows }));
+  const masked = maskedColumns(ctx, values, source, columns);
+  if (ctx.json) ctx.out(formatJson({ name: golden.name, columns, rows: maskRows(rows, masked), protected_columns: masked }));
   else {
-    ctx.out(`${golden.name}: ${golden.question}`);
-    ctx.out(formatTable(shownRows(golden, readLayer(ctx, source), rows, columns), columns));
+    ctx.out(plainText(`${golden.name}: ${golden.question}`));
+    ctx.out(formatTable(maskRows(shownRows(golden, readLayer(ctx, source), rows, columns), masked), columns));
     ctx.out(`(${rows.length} row${rows.length === 1 ? "" : "s"})`);
+    if (masked.length) ctx.out(protectedNote(masked));
     ctx.out(runHint(golden));
   }
   return 0;
@@ -254,13 +263,26 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
     doc.set("confirmed_at", confirmedAt);
     doc.set("confirmed_as", doc.createNode(confirmedAs));
   });
+  const columns = resultColumns(rows);
+  const masked = maskedColumns(ctx, values, source, columns);
   if (ctx.json) {
-    ctx.out(formatJson({ name: golden.name, rows, written: true, tolerance, draft_fields: draftFields, confirmed_as: confirmedAs, warnings }));
+    ctx.out(
+      formatJson({
+        name: golden.name,
+        rows: maskRows(rows, masked),
+        protected_columns: masked,
+        written: true,
+        tolerance,
+        draft_fields: draftFields,
+        confirmed_as: confirmedAs,
+        warnings,
+      }),
+    );
   } else {
     const toleranceNote =
       toleranceFrom === "flag" ? "" : toleranceFrom === "file" ? ", kept from the file" : ", the default; agree one with the owner and pass --tolerance";
-    const columns = resultColumns(rows);
-    ctx.out(formatTable(shownRows(golden, layer, rows, columns), columns));
+    ctx.out(formatTable(maskRows(shownRows(golden, layer, rows, columns), masked), columns));
+    if (masked.length) ctx.out(protectedNote(masked));
     ctx.out(
       `Recorded ${rows.length} expected row${rows.length === 1 ? "" : "s"} in ${relative(ctx.root, path)} (tolerance ${tolerance}${toleranceNote}), ` +
         `confirmed by ${by} on ${confirmedAt}.`,
@@ -355,9 +377,11 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
         checks.push({ name: g.name, ok: false, diffs: [`The query did not run: ${e.message.split("\n")[0]!.replace(/^Query failed: /, "")}`] });
         continue;
       }
-      const { ok, diffs } = compareRows(lowerKeys(g.expected?.rows ?? []), actual, {
+      const expected = lowerKeys(g.expected?.rows ?? []);
+      const { ok, diffs } = compareRows(expected, actual, {
         ordered: (g.request?.order_by ?? []).length > 0,
         tolerance: g.expected?.tolerance ?? DEFAULT_TOLERANCE,
+        protectedColumns: maskedColumns(ctx, values, source, [...new Set([...resultColumns(expected), ...resultColumns(actual)])]),
       });
       checks.push({ name: g.name, ok, diffs });
     }
@@ -372,7 +396,7 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
     const lines: string[] = [];
     for (const c of checks) {
       lines.push(`${c.ok ? "pass" : "FAIL"}  ${c.name}`);
-      for (const d of c.diffs) lines.push(`      ${d}`);
+      for (const d of c.diffs) lines.push(`      ${plainText(d)}`);
     }
     lines.push(`${passed} passed, ${failed} failed.`);
     ctx.out(lines.join("\n"));
@@ -384,7 +408,8 @@ const spec: CommandSpec = {
   summary: "Run a golden's SQL, record the owner-confirmed rows, or recheck approved goldens.",
   usage:
     "goldens run --name <g> | goldens confirm --name <g> --by <name> [--tolerance <t>] [--force] | " +
-    "goldens check [--name <g>] [--source <s>]   (each takes --emit-sql and --results <file>)",
+    "goldens check [--name <g>] [--source <s>]   (each takes --emit-sql, --results <file> and --show-protected; values of protected " +
+    "columns show as [protected] unless --show-protected)",
   options: {
     name: { type: "string" },
     by: { type: "string" },
@@ -393,6 +418,7 @@ const spec: CommandSpec = {
     source: { type: "string" },
     "emit-sql": { type: "boolean" },
     results: { type: "string" },
+    "show-protected": { type: "boolean" },
   },
   positionals: true,
   async run({ values, positionals }, ctx) {

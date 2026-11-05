@@ -49,11 +49,11 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "DuckDB only: statements run on every connection, in order."
+          "description": "DuckDB only: statements run on every connection, in order. Each is one of an allowlist that sl validate checks and the DuckDB adapter enforces: LOAD or INSTALL of a named core extension, SET of a known safe setting, or CREATE SECRET from a provider chain or the environment, never literal keys."
         },
         "views": {
           "type": "object",
-          "description": "DuckDB only: view name to relation, such as read_parquet('../data/x/*.parquet'). Relative paths resolve from the semantic root.",
+          "description": "DuckDB only: view name to relation, such as read_parquet('../data/x/*.parquet'). Each relation is a single table expression, a table function or a table name, with no subquery. Relative paths resolve from the semantic root.",
           "propertyNames": {
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },

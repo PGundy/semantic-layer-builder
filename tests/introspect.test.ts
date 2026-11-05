@@ -246,7 +246,10 @@ describe("introspect: duckdb", () => {
       "create table orders (id integer primary key, amount integer)",
       "create table keep (k integer primary key)",
     ]);
-    writeYaml(join(t.root, "sources", "wh.yaml"), { ...src, connection: { ...src.connection, views: { Orders: "(select 'v' as shadow, 1 as zz)" } } });
+    // Source views hold one table expression, so the shadowing view reads a CSV written here.
+    const csv = join(t.dir, "orders_view.csv");
+    writeFileSync(csv, "shadow,zz\nv,1\n");
+    writeYaml(join(t.root, "sources", "wh.yaml"), { ...src, connection: { ...src.connection, views: { Orders: `read_csv('${csv}')` } } });
     const r = await sl(t.root, ["introspect", "--source", "wh"]);
     expect(r.err).toBe("");
     const s = snapshotOf(t.root, "wh");
@@ -278,7 +281,7 @@ describe("introspect: duckdb", () => {
       "--view",
       "events=read_parquet('../data/events.parquet')",
       "--view",
-      "event_counts=(select event_type, count(*) as n from read_parquet('../data/events.parquet') group by 1)",
+      "event_copies=read_parquet('../data/events.parquet')",
     ]);
     expect(add.err).toBe("");
     expect(add.code).toBe(0);
@@ -297,7 +300,7 @@ describe("introspect: duckdb", () => {
       ["event_type", "VARCHAR"],
       ["ts", "TIMESTAMP"],
     ]);
-    expect(table(s, "main", "event_counts").columns.map((col) => col.name)).toEqual(["event_type", "n"]);
+    expect(table(s, "main", "event_copies").columns.map((col) => col.name)).toEqual(["event_id", "event_type", "ts"]);
   });
 
   test("--schemas restricts the plan and keeps other schemas' tables from the previous snapshot", async () => {

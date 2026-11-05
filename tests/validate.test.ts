@@ -1,19 +1,19 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { SQL } from "bun";
+import { createHash } from "node:crypto";
 import { cpSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   callsRound,
+  carriesZone,
   dividesByLiteral,
   type Issue,
   type SchemaKind,
   schemaIssues,
   sqlNames,
   validateProject,
-  wordRuns,
 } from "../skills/semantic-layer/scripts/lib/validate.ts";
-import { hashValue } from "../skills/semantic-layer/scripts/lib/profile.ts";
 import { conditionAttributes, parseCondition } from "../skills/semantic-layer/scripts/lib/conditions.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { sl } from "./helpers.ts";
@@ -66,6 +66,16 @@ function parseYamlText(text: string): unknown {
 }
 
 const errors = (issues: Issue[]) => issues.filter((i) => i.level === "error");
+
+// The issues without those about approval hashes: the case tables edit approved items and write
+// approved items by hand, and the approval-hash tests cover those issues on their own.
+const withoutApprovalHashes = (issues: Issue[]) =>
+  issues.filter(
+    (i) =>
+      !i.message.includes("changed since it was approved") &&
+      !i.message.includes("approved before content hashes") &&
+      !i.message.includes("approved_hash is missing while other approved items carry one"),
+  );
 
 describe("valid fixture", () => {
   test("validates with no errors and no warnings", () => {
@@ -123,6 +133,8 @@ const CUSTOMERS = "models/warehouse/customers.yaml";
 const GOLDEN = "goldens/revenue_by_month_2025.yaml";
 const GOLDEN2 = "goldens/aov_by_region.yaml";
 const GOLDEN3 = "goldens/revenue_by_customer_region.yaml";
+// The fixture's goldens, each of whose SQL applies orders.revenue's rule.
+const GOLDEN_FILES_ORDERED = [GOLDEN, GOLDEN2, GOLDEN3];
 const UNREACHABLE = "model customers is not reachable from orders";
 const ACCESS = "access.yaml";
 const SHIPMENTS = "models/warehouse/shipments.yaml";
@@ -342,6 +354,8 @@ const CASES: Case[] = [
     expect: [
       ["error", "metrics.yaml", "metrics[0].denominator", "only approved measures"],
       ["error", GOLDEN2, "request.dimensions[0]", 'customers has no dimension "ship_region"'],
+      // The metric now spans orders and customers, so it and orders.order_count no longer share one model.
+      ["error", GOLDEN2, "request.measures[1]", "a request's measures must share one model, or be one metric"],
     ],
   },
   { name: "approved metric without description", file: "metrics.yaml", edit: (d) => delete d.metrics[0].description, expect: ["error", "metrics.yaml", "metrics[0].description", "approved metric"] },
@@ -782,7 +796,8 @@ const CASES: Case[] = [
       mutate(r, CUSTOMERS, (d) => (d.dimensions[2].expr = "is_test_account or email like '%@example-test.com'"));
       mutate(r, ORDERS, (d) => (d.measures[0].filter = "status <> 'cancelled' and not coalesce(customer.is_test_account or customer.email like '%@example-test.com', false)"));
     },
-    expect: [],
+    // revenue's filter now reads customer.email, which no golden's hand-written SQL names.
+    expect: GOLDEN_FILES_ORDERED.map((g): Expected => ["warning", g, "sql", "this SQL may not apply orders.revenue's rule: it never names email"]),
   },
   {
     name: "a field that writes only part of a redefining dimension's rule out keeps the warning",
@@ -791,7 +806,10 @@ const CASES: Case[] = [
       mutate(r, CUSTOMERS, (d) => (d.dimensions[2].expr = "is_test_account or email like '%@example-test.com' or region = 'internal'"));
       mutate(r, ORDERS, (d) => (d.measures[0].filter = "not coalesce(customer.is_test_account or customer.email like '%@example-test.com', false)"));
     },
-    expect: ["warning", ORDERS, "measures[0].filter", "customer.is_test_account reads the column is_test_account of public.dim_customers, not dimension is_test_account"],
+    expect: [
+      ["warning", ORDERS, "measures[0].filter", "customer.is_test_account reads the column is_test_account of public.dim_customers, not dimension is_test_account"],
+      ...GOLDEN_FILES_ORDERED.map((g): Expected => ["warning", g, "sql", "this SQL may not apply orders.revenue's rule: it never names email"]),
+    ],
   },
   {
     name: "a redefining dimension's rule written out through two hops; the one-hop field that reads only the column keeps the warning",
@@ -812,7 +830,10 @@ const CASES: Case[] = [
       mutate(r, ORDERS, (d) => (d.measures[0].filter = "not coalesce(customer.is_test_account or customer.email like '%@example-test.com', false)"));
       mutate(r, SHIPMENTS, (d) => (d.measures[0].filter = "not coalesce(order.customer.is_test_account, false) and order.status <> 'x'"));
     },
-    expect: ["warning", SHIPMENTS, "measures[0].filter", "order.customer.is_test_account reads the column is_test_account"],
+    expect: [
+      ["warning", SHIPMENTS, "measures[0].filter", "order.customer.is_test_account reads the column is_test_account"],
+      ...GOLDEN_FILES_ORDERED.map((g): Expected => ["warning", g, "sql", "this SQL may not apply orders.revenue's rule: it never names email"]),
+    ],
   },
 
   // Exact amounts on duckdb and goldens that apply a measure exactly
@@ -858,7 +879,7 @@ const CASES: Case[] = [
   {
     name: "a golden's sql that calls round()",
     file: GOLDEN,
-    edit: (d) => (d.sql = "select round(sum(o.amount_cents / 100.0), 2) as revenue from public.fct_orders o"),
+    edit: (d) => (d.sql = "select round(sum(o.amount_cents / 100.0) filter (where o.status <> 'cancelled' and not c.is_test_account), 2) as revenue from public.fct_orders o"),
     expect: [
       "warning",
       GOLDEN,
@@ -867,7 +888,12 @@ const CASES: Case[] = [
         "once round() is removed, sl goldens check --name revenue_by_month_2025 fails on rows recorded rounded until the owner says yes to the unrounded figure and it is confirmed again",
     ],
   },
-  { name: "round in a golden's string literal or comment", file: GOLDEN, edit: (d) => (d.sql = "select 'round(x)' as label -- round(y)\nfrom public.fct_orders"), expect: [] },
+  {
+    name: "round in a golden's string literal or comment",
+    file: GOLDEN,
+    edit: (d) => (d.sql = "select 'round(x)' as label, sum(amount_cents) filter (where status <> 'x' and not is_test_account) -- round(y)\nfrom public.fct_orders"),
+    expect: [],
+  },
   {
     name: "an approved golden using a draft field says how to keep its rows",
     file: "",
@@ -971,7 +997,6 @@ const CASES: Case[] = [
   // Credentials in a source file
   ...(
     [
-      ["setup", (d: Doc) => (d.connection.setup = ["SET threads=2", "SET s3_secret_access_key='wJalrXUtnFEMI'"]), "connection.setup[1]", "secret provider"],
       ["views", (d: Doc) => (d.connection.views.web_events = "read_parquet('https://a.blob.core.windows.net/c/x.parquet?sv=1&sig=abcSECRET')"), "connection.views.web_events", "secret provider"],
       ["database", (d: Doc) => (d.connection.database = "md:analytics?motherduck_token=eyJsecret"), "connection.database", "MOTHERDUCK_TOKEN"],
       ["database url", (d: Doc) => (d.connection.database = "postgres://admin:hunter2@db/prod"), "connection.database", "environment variable"],
@@ -986,12 +1011,24 @@ const CASES: Case[] = [
     }),
   ),
   {
+    name: "credential in a duckdb source's setup",
+    file: "sources/lake.yaml",
+    edit: (d) => (d.connection.setup = ["SET threads=2", "SET s3_secret_access_key='wJalrXUtnFEMI'"]),
+    expect: [
+      ["error", "sources/lake.yaml", "connection.setup[1]", "contains a credential; credentials never go in source files, so"],
+      // The statement is also outside the setup allowlist (lib/source-safety.ts).
+      ["error", "sources/lake.yaml", "connection.setup[1]", "is not an allowed setup statement: "],
+    ],
+  },
+  {
     name: "credential in a source file that fails its schema",
     file: "sources/lake.yaml",
     edit: (d) => ((d.connection.setup = ["CREATE SECRET (TYPE s3, KEY_ID 'AKIA123', SECRET 'abcSECRET')"]), (d.owner = "x")),
     expect: [
       ["error", "sources/lake.yaml", "owner", "not a known property"],
       ["error", "sources/lake.yaml", "connection.setup[0]", "contains a credential"],
+      // The statement is also outside the setup allowlist (lib/source-safety.ts).
+      ["error", "sources/lake.yaml", "connection.setup[0]", "is not an allowed setup statement: "],
     ],
   },
   {
@@ -1001,6 +1038,8 @@ const CASES: Case[] = [
     expect: [
       ["error", "sources/lake.yaml", "connection.setup", "must be array"],
       ["error", "sources/lake.yaml", "connection.setup", "contains a credential; credentials never go in source files, so"],
+      // The statement is also outside the setup allowlist (lib/source-safety.ts).
+      ["error", "sources/lake.yaml", "connection.setup", "is not an allowed setup statement: "],
     ],
   },
   { name: "secret provider settings in a duckdb source", file: "sources/lake.yaml", edit: (d) => (d.connection.setup = ["SET secret_directory='/tmp/s'", "CREATE SECRET (TYPE s3, PROVIDER credential_chain)"]), expect: [] },
@@ -1511,10 +1550,10 @@ const ACCESS_CASES: Case[] = [
     name: "an approved dimension over a near-unique string",
     file: "",
     setup: (r) => (
-      addOrdersColumn(r, { name: "tracking_code", type: "text", profile: { null_fraction: 0, distinct_count: 9990 } }),
-      approvedDimension(r, { name: "tracking", expr: "tracking_code" })
+      addOrdersColumn(r, { name: "shipping_label", type: "text", profile: { null_fraction: 0, distinct_count: 9990 } }),
+      approvedDimension(r, { name: "label", expr: "shipping_label" })
     ),
-    expect: ["warning", ORDERS, "dimensions[4]", "(it reads column tracking_code; tracking_code has a different value on nearly every row)"],
+    expect: ["warning", ORDERS, "dimensions[4]", "(it reads column shipping_label; shipping_label has a different value on nearly every row)"],
   },
   {
     name: "an approved dimension whose name alone looks personal",
@@ -1616,7 +1655,7 @@ describe("access modes, conditions, restrictions, hierarchy filters, ignored col
       const root = copyFixture();
       if (c.setup) c.setup(root);
       if (c.edit) mutate(root, c.file, c.edit);
-      const issues = validateProject(root);
+      const issues = withoutApprovalHashes(validateProject(root));
       const expected = c.expect.length && Array.isArray(c.expect[0]) ? (c.expect as Expected[]) : c.expect.length ? [c.expect as Expected] : [];
       expectExactly(issues, expected);
       if (c.hint) for (const i of issues) expect(i.message).toContain(c.hint);
@@ -1627,6 +1666,9 @@ describe("access modes, conditions, restrictions, hierarchy filters, ignored col
     const root = copyFixture();
     addOrdersColumn(root, { name: "internal_notes", type: "text" });
     approvedDimension(root, { name: "notes", expr: "internal_notes" });
+    // The fixture's other items carry hashes, so the hand-approved dimension is stamped only on
+    // --confirm-unchanged.
+    expect((await sl(root, ["approve", "--stamp-hashes", "--confirm-unchanged"])).code).toBe(0);
     const r = await sl(root, ["validate", "--json"]);
     expect(r.code).toBe(0);
     const body = r.json<{ ok: boolean; warnings: number; issues: Issue[] }>();
@@ -1668,13 +1710,21 @@ function emailProfile(root: string, profile: Doc): void {
 }
 
 // Gives dim_customers.email a redacted profile whose top values are the hashes of `values`.
+// A value as earlier versions of sl profile stored a protected column's top values: "sha256:" and
+// the first 16 hex characters of the SHA-256 of its text, lowercased and trimmed.
+const oldHash = (v: string) => `sha256:${createHash("sha256").update(v.toLowerCase().trim()).digest("hex").slice(0, 16)}`;
+
 function emailHashedValues(root: string, values: string[]): void {
-  emailProfile(root, { null_fraction: 0, distinct_count: 2000, top_values: values.map((v) => ({ value: hashValue(v), count: 1 })), sampled: false, redacted: true });
+  emailProfile(root, { null_fraction: 0, distinct_count: 2000, top_values: values.map((v) => ({ value: oldHash(v), count: 1 })), sampled: false, redacted: true });
 }
 
-const quotesHashed = (quoted: string) =>
-  `quotes "${quoted}", a value of column email of public.dim_customers, which warehouse.customers.email reads and tags pii; ` +
-  "this text is shown to people the tag hides that column from, so write an id or a count instead";
+// The snapshot holds dim_customers.email's hashed top values, which emailHashedValues writes.
+const HASHED_EMAIL: Expected = [
+  "warning",
+  SNAP_WH,
+  "tables[0].columns[1].profile",
+  "public.dim_customers.email is protected but the snapshot holds hashed top values, which a list of likely values reverses; run sl profile --source warehouse --redact to remove them",
+];
 
 // The snapshot holds dim_customers.email's raw top values, which emailTopValue writes.
 const RAW_EMAIL: Expected = [
@@ -1929,30 +1979,22 @@ const JOIN_ACCESS_CASES: Case[] = [
     expect: [["warning", ACCESS, "roles[0].deny.tags[0]", 'tag "pii" is not used'], RAW_EMAIL],
   },
   {
-    name: "a hashed top value matches a run of one to four words in any case",
+    // Hashes of personal values are reversible by a list of likely values, so text is no longer
+    // matched against them; the snapshot is asked to drop them instead.
+    name: "hashed top values are not matched in text, and the snapshot is asked to remove them",
     file: "",
     setup: (r) => (
-      emailHashedValues(r, ["Dana Ruiz", "dana@example.com", "ab"]),
-      mutate(r, CUSTOMERS, (d) => (d.description = "Customers such as DANA RUIZ; Dana alone, Ruiz alone and ab are not values.")),
+      emailHashedValues(r, ["Dana Ruiz", "dana@example.com"]),
+      mutate(r, CUSTOMERS, (d) => (d.description = "Customers such as DANA RUIZ.")),
       mutate(r, GOLDEN3, (d) => ((d.question = 'What did "Dana Ruiz" buy?'), (d.reference = "Checked with dana@example.com.")))
     ),
-    expect: [
-      ["warning", CUSTOMERS, "description", quotesHashed("DANA RUIZ")],
-      ["warning", GOLDEN3, "question", quotesHashed("Dana Ruiz")],
-      ["warning", GOLDEN3, "reference", quotesHashed("dana@example.com")],
-    ],
+    expect: HASHED_EMAIL,
   },
   {
-    name: "a hashed value of more than four words is not matched",
+    name: "a protected text column whose min and max an earlier sl profile hashed holds hashed values, not raw ones",
     file: "",
-    setup: (r) => (emailHashedValues(r, ["Mary Ann de la Cruz"]), mutate(r, CUSTOMERS, (d) => (d.description = "Ask Mary Ann de la Cruz, or Mary Ann de la Cruz again."))),
-    expect: [],
-  },
-  {
-    name: "a four-word value is matched, once per text",
-    file: "",
-    setup: (r) => (emailHashedValues(r, ["Mary Ann de Cruz"]), mutate(r, CUSTOMERS, (d) => (d.description = "Ask Mary Ann de Cruz, or (Mary Ann de Cruz) again."))),
-    expect: ["warning", CUSTOMERS, "description", quotesHashed("Mary Ann de Cruz")],
+    setup: (r) => emailProfile(r, { null_fraction: 0, distinct_count: 2000, min: oldHash("a@example.com"), max: oldHash("z@example.com"), sampled: false, redacted: true }),
+    expect: HASHED_EMAIL,
   },
   {
     name: "a protected text column with a text min and max holds raw values",
@@ -1961,10 +2003,10 @@ const JOIN_ACCESS_CASES: Case[] = [
     expect: RAW_EMAIL,
   },
   {
-    name: "a redacted profile, and a protected number column's min and max, hold no raw values",
+    name: "a profile of counts only, and a protected number column's min and max, hold no sample values",
     file: "",
     setup: (r) => (
-      emailHashedValues(r, ["dana@example.com"]),
+      emailProfile(r, { null_fraction: 0, distinct_count: 2000, sampled: false, redacted: true }),
       mutate(r, SNAP_WH, (d) => {
         // The pii tag on the customers model protects customer_id, which keeps its min and max.
         d.tables.find((t: Doc) => t.name === "dim_customers").columns.find((c: Doc) => c.name === "customer_id").profile = {
@@ -1972,7 +2014,6 @@ const JOIN_ACCESS_CASES: Case[] = [
           distinct_count: 2000,
           min: 1,
           max: 2000,
-          top_values: [{ value: hashValue("7"), count: 1 }],
           redacted: true,
         };
       }),
@@ -1992,9 +2033,6 @@ const JOIN_ACCESS_CASES: Case[] = [
         d.tables.find((t: Doc) => t.name === "dim_customers").columns.find((c: Doc) => c.name === "is_test_account").profile = {
           null_fraction: 0,
           distinct_count: 2,
-          min: false,
-          max: true,
-          top_values: [{ value: hashValue("false"), count: 1990 }, { value: hashValue("true"), count: 10 }],
           sampled: false,
           redacted: true,
         };
@@ -2007,17 +2045,25 @@ const JOIN_ACCESS_CASES: Case[] = [
     expect: [],
   },
   {
-    name: "a hashed value glued to other text by punctuation, or with a possessive, is matched",
+    name: "a protected boolean column keeps no min or max",
     file: "",
     setup: (r) => (
-      emailHashedValues(r, ["Dana Ruiz", "dana@example.com"]),
-      mutate(r, CUSTOMERS, (d) => (d.description = "Write to contact:dana@example.com.")),
-      mutate(r, GOLDEN3, (d) => ((d.question = "What did Dana Ruiz's region buy?"), (d.reference = "Checked with email=dana@example.com.")))
+      mutate(r, SNAP_WH, (d) => {
+        d.tables.find((t: Doc) => t.name === "dim_customers").columns.find((c: Doc) => c.name === "is_test_account").profile = {
+          null_fraction: 0,
+          distinct_count: 2,
+          min: false,
+          max: true,
+          redacted: true,
+        };
+      }),
+      mutate(r, CUSTOMERS, (d) => (d.dimensions[2].tags = ["sensitive"]))
     ),
     expect: [
-      ["warning", CUSTOMERS, "description", quotesHashed("dana@example.com")],
-      ["warning", GOLDEN3, "question", quotesHashed("Dana Ruiz")],
-      ["warning", GOLDEN3, "reference", quotesHashed("dana@example.com")],
+      "warning",
+      SNAP_WH,
+      "tables[0].columns[3].profile",
+      "public.dim_customers.is_test_account is protected but the snapshot holds raw sample values; run sl profile --source warehouse --redact",
     ],
   },
   {
@@ -2037,7 +2083,7 @@ describe("row filters through joins, child tables, goldens against access and pe
       const root = copyFixture();
       if (c.setup) c.setup(root);
       if (c.edit) mutate(root, c.file, c.edit);
-      const issues = validateProject(root);
+      const issues = withoutApprovalHashes(validateProject(root));
       const expected = c.expect.length && Array.isArray(c.expect[0]) ? (c.expect as Expected[]) : c.expect.length ? [c.expect as Expected] : [];
       expectExactly(issues, expected);
     });
@@ -2058,7 +2104,7 @@ describe("mutations of the valid fixture", () => {
       const root = copyFixture();
       if (c.setup) c.setup(root);
       if (c.edit) mutate(root, c.file, c.edit);
-      const issues = validateProject(root);
+      const issues = withoutApprovalHashes(validateProject(root));
       const expected = c.expect.length && Array.isArray(c.expect[0]) ? (c.expect as Expected[]) : c.expect.length ? [c.expect as Expected] : [];
       expectExactly(issues, expected);
       if (c.hint) for (const i of issues) expect(i.message).toContain(c.hint);
@@ -2116,27 +2162,6 @@ describe("mutations of the valid fixture", () => {
     const r = await sl(join(tmpdir(), "sl-validate-does-not-exist"), ["validate"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("No semantic layer");
-  });
-});
-
-describe("wordRuns", () => {
-  test("reads runs of one to four words, with and without the punctuation around them", () => {
-    const runs = wordRuns('Ask "Dana Ruiz", then ab.');
-    expect(runs).toContain("Dana Ruiz");
-    expect(runs).toContain('"Dana Ruiz",');
-    expect(runs).toContain("Ask Dana Ruiz then");
-    expect(runs).toContain("Dana");
-    expect(runs).not.toContain("ab");
-    expect(runs.some((r) => r.split(" ").length > 4)).toBe(false);
-  });
-
-  test("also splits on : = / ; , ( ) and drops a possessive 's", () => {
-    const runs = wordRuns("contact:dana@example.com, email=lee@example.com (Dana Ruiz's) Kim\u2019s");
-    expect(runs).toContain("dana@example.com");
-    expect(runs).toContain("lee@example.com");
-    expect(runs).toContain("Dana Ruiz");
-    expect(runs).toContain("Kim");
-    expect(runs).toContain("contact:dana@example.com,");
   });
 });
 
@@ -2296,4 +2321,418 @@ describe("spec examples", () => {
       expect(schemaIssues(b.kind, data, `spec.md:${b.line}`)).toEqual([]);
     });
   }
+});
+
+const CHANGED = "changed since it was approved";
+const UNHASHED = "approved before content hashes; run sl approve --stamp-hashes to record them";
+const MISSING = "approved_hash is missing while other approved items carry one; it may have been removed";
+const atIssues = (issues: Issue[], text: string) => issues.filter((i) => i.message.includes(text)).map((i) => [i.level, i.file, i.path]);
+
+describe("approval hashes", () => {
+  test("the analytics review's edit of the approved revenue measure is an error, and sl validate exits 1", async () => {
+    // The reviewer summed cancelled orders times 1000 while revenue stayed approved by Dana Ruiz;
+    // validate used to pass it and every golden still passed.
+    const root = copyFixture();
+    mutate(root, ORDERS, (d) => {
+      d.measures[0].expr = "amount_cents * 1000";
+      d.measures[0].filter = "status = 'cancelled' and coalesce(customer.is_test_account, false) = false";
+    });
+    const issues = validateProject(root);
+    expect(atIssues(issues, CHANGED)).toEqual([["error", ORDERS, "measures[0]"]]);
+    expect(issues.find((i) => i.message.includes(CHANGED))!.message).toBe(
+      "warehouse.orders.revenue changed since it was approved by Dana Ruiz on 2026-01-15: its definition, or a join it reads through, no longer matches approved_hash. " +
+        'Read it back to the owner as it now stands and approve it again only after they confirm (sl approve --target warehouse.orders.revenue --by "<owner>"), ' +
+        "or restore the approved definition",
+    );
+    const r = await sl(root, ["validate"]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("measures[0]: warehouse.orders.revenue changed since it was approved");
+  });
+
+  test("a changed join is an error on the join and on every approved field that reads through it", () => {
+    const root = copyFixture();
+    mutate(root, ORDERS, (d) => (d.joins[0].type = "inner"));
+    expect(atIssues(validateProject(root), CHANGED)).toEqual([
+      ["error", ORDERS, "measures[0]"],
+      ["error", ORDERS, "joins[0]"],
+    ]);
+  });
+
+  test("model, metric and access changes are errors; descriptions, open questions and formatting are not", () => {
+    const root = copyFixture();
+    mutate(root, ORDERS, (d) => (d.grain = "One row per order line."));
+    mutate(root, "metrics.yaml", (d) => (d.metrics[0].denominator = "orders.revenue"));
+    expect(atIssues(validateProject(root), CHANGED)).toEqual([
+      ["error", ORDERS, ""],
+      ["error", "metrics.yaml", "metrics[0]"],
+    ]);
+
+    const quiet = copyFixture();
+    mutate(quiet, ORDERS, (d) => {
+      d.description = "Orders, reworded.";
+      d.measures[0].description = "Reworded.";
+      d.measures[0].synonyms = [" sales "];
+      d.measures[0].filter = `  ${d.measures[0].filter}\n`;
+      d.open_questions = ["A new question."];
+      d.joins[0].type = "left";
+    });
+    expect(atIssues(validateProject(quiet), CHANGED)).toEqual([]);
+  });
+
+  test("the approved access file: a role change is an error, an open question is not", async () => {
+    const root = copyFixture();
+    const t = join(root, ACCESS);
+    writeFileSync(t, readFileSync(t, "utf8").replace(/^status: draft$/m, "status: approved\napproved_by: Dana Ruiz\napproved_at: 2026-01-15"));
+    // The fixture's models and metrics carry hashes, so an approved access file without one may have
+    // had it removed: a warning of its own, and --stamp-hashes needs --confirm-unchanged.
+    expect(atIssues(validateProject(root), MISSING)).toEqual([["warning", ACCESS, ""]]);
+    expect(atIssues(validateProject(root), UNHASHED)).toEqual([]);
+    expect((await sl(root, ["approve", "--stamp-hashes", "--target", "access"])).code).toBe(1);
+    expect((await sl(root, ["approve", "--stamp-hashes", "--target", "access", "--confirm-unchanged"])).code).toBe(0);
+    expect(atIssues(validateProject(root), MISSING)).toEqual([]);
+    mutate(root, ACCESS, (d) => {
+      d.open_questions = ["Does finance need its own role?"];
+      d.roles[0].open_questions = ["Who else is an analyst?"];
+    });
+    expect(atIssues(validateProject(root), CHANGED)).toEqual([]);
+    mutate(root, ACCESS, (d) => (d.roles[1].row_filters = []));
+    expect(atIssues(validateProject(root), CHANGED)).toEqual([["error", ACCESS, ""]]);
+  });
+
+  test("approved items without a hash get one warning per file, and --stamp-hashes clears it without changing who approved them", async () => {
+    const root = copyFixture();
+    mutate(root, ORDERS, (d) => {
+      for (const x of [d, ...d.dimensions, ...d.measures, ...d.joins]) delete x.approved_hash;
+    });
+    mutate(root, "metrics.yaml", (d) => delete d.metrics[0].approved_hash);
+    const before = validateProject(root);
+    expect(before.filter((i) => i.message.includes(UNHASHED)).map((i) => [i.level, i.file, i.path, i.message])).toEqual([
+      ["warning", ORDERS, "", `5 approved items were ${UNHASHED}, after checking in version control that none changed since approved_at`],
+      ["warning", "metrics.yaml", "", `1 approved item was ${UNHASHED}, after checking in version control that none changed since approved_at`],
+    ]);
+    expect(atIssues(before, MISSING)).toEqual([]);
+    const r = await sl(root, ["approve", "--stamp-hashes", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json<{ stamped: string[] }>().stamped).toEqual([
+      "warehouse.orders",
+      "warehouse.orders.order_date",
+      "warehouse.orders.revenue",
+      "warehouse.orders.order_count",
+      "warehouse.orders.customer",
+      "metric:average_order_value",
+    ]);
+    expect(validateProject(root)).toEqual([]);
+    const m = readYaml<Doc>(join(root, ORDERS));
+    expect(m).toMatchObject({ approved_by: "Dana Ruiz", approved_at: "2026-01-15" });
+    expect(m.measures[0].approved_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    // Once stamped, the same edit the review made is caught.
+    mutate(root, ORDERS, (d) => (d.measures[0].expr = "amount_cents * 1000"));
+    expect(atIssues(validateProject(root), CHANGED)).toEqual([["error", ORDERS, "measures[0]"]]);
+  });
+
+  test("swapping the names of two approved measures is an error on both", () => {
+    // revenue would read order_count's definition and order_count revenue's, while every hash of
+    // their content alone still matched.
+    const root = copyFixture();
+    mutate(root, ORDERS, (d) => {
+      d.measures[0].name = "order_count";
+      d.measures[1].name = "revenue";
+    });
+    const changed = atIssues(validateProject(root), CHANGED);
+    expect(changed).toContainEqual(["error", ORDERS, "measures[0]"]);
+    expect(changed).toContainEqual(["error", ORDERS, "measures[1]"]);
+  });
+
+  test("pointing a model at another table is an error on the model and every approved field under it", async () => {
+    const root = copyFixture();
+    // Revoking only the model, then editing table, leaves the approved fields to catch it.
+    expect((await sl(root, ["approve", "--target", "warehouse.orders", "--revoke"])).code).toBe(0);
+    mutate(root, ORDERS, (d) => (d.table = "public.fct_orders_lookalike"));
+    expect(atIssues(validateProject(root), CHANGED)).toEqual([
+      ["error", ORDERS, "dimensions[0]"],
+      ["error", ORDERS, "measures[0]"],
+      ["error", ORDERS, "measures[1]"],
+      ["error", ORDERS, "joins[0]"],
+    ]);
+  });
+
+  test("an approved measure copied with its hash into another model is an error there", () => {
+    const root = copyFixture();
+    const revenue = readYaml<Doc>(join(root, ORDERS)).measures[0];
+    mutate(root, CUSTOMERS, (d) => (d.measures = [...(d.measures ?? []), revenue]));
+    const changed = atIssues(validateProject(root), CHANGED);
+    expect(changed.filter(([, file]) => file === CUSTOMERS)).toHaveLength(1);
+  });
+
+  test("a removed approved_hash is warned about on its own, kept from --stamp-hashes, and listed by status", async () => {
+    // The pre-publication review: the edited revenue errors; deleting its approved_hash line turned
+    // the error into the "approved before content hashes" warning, and --stamp-hashes then recorded
+    // the edit as approved by Dana Ruiz.
+    const root = copyFixture();
+    mutate(root, ORDERS, (d) => {
+      d.measures[0].expr = "amount_cents * 1000";
+      d.measures[0].filter = "status = 'cancelled'";
+      delete d.measures[0].approved_hash;
+    });
+    const issues = validateProject(root);
+    expect(atIssues(issues, MISSING)).toEqual([["warning", ORDERS, "measures[0]"]]);
+    expect(atIssues(issues, UNHASHED)).toEqual([]);
+    expect(issues.find((i) => i.message.includes(MISSING))!.message).toBe(
+      "warehouse.orders.revenue is approved, but approved_hash is missing while other approved items carry one; it may have been removed. " +
+        'Read it back to the owner as it now stands and approve it again only after they confirm (sl approve --target warehouse.orders.revenue --by "<owner>")',
+    );
+    const stamp = await sl(root, ["approve", "--stamp-hashes"]);
+    expect(stamp.code).toBe(1);
+    expect(stamp.err).toContain("may have had theirs removed after an edit: warehouse.orders.revenue");
+    expect(readYaml<Doc>(join(root, ORDERS)).measures[0].approved_hash).toBeUndefined();
+    const st = (await sl(root, ["status", "--json"])).json<{ hash_missing: string[]; next_step: { phase: string; command: string } }>();
+    expect(st.hash_missing).toEqual(["warehouse.orders.revenue"]);
+    expect(st.next_step).toMatchObject({ phase: "reapprove", command: 'sl approve --target warehouse.orders.revenue --by "<owner>"' });
+    // Approving it again on the owner's yes records the hash; it is not "already approved".
+    const again = await sl(root, ["approve", "--target", "warehouse.orders.revenue", "--by", "Dana Ruiz", "--date", "2026-02-01"]);
+    expect(again.code).toBe(0);
+    expect(again.out).toContain("Approved warehouse.orders.revenue again (its approved_hash was missing) by Dana Ruiz on 2026-02-01.");
+    expect(atIssues(validateProject(root), MISSING)).toEqual([]);
+  });
+
+  test("--stamp-hashes --target that names nothing is refused", async () => {
+    const root = copyFixture();
+    const r = await sl(root, ["approve", "--stamp-hashes", "--target", "warehouse.orders.revnue"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("--target warehouse.orders.revnue names no model, field, metric or access file of this project.");
+    expect((await sl(root, ["approve", "--stamp-hashes", "--target", "warehouse.orders.revenue"])).out).toContain("nothing changed");
+  });
+
+  test("--confirm-unchanged is only for --stamp-hashes", async () => {
+    const r = await sl(copyFixture(), ["approve", "--target", "warehouse.orders", "--by", "Dana", "--confirm-unchanged"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("--confirm-unchanged applies only to sl approve --stamp-hashes.");
+  });
+
+  test("a malformed approved_hash is a schema error", () => {
+    const root = copyFixture();
+    mutate(root, ORDERS, (d) => (d.measures[0].approved_hash = "md5:abc"));
+    expectIssue(validateProject(root), "error", ORDERS, "measures[0].approved_hash", "must match");
+  });
+});
+
+describe("joins whose evidence shows fan-out", () => {
+  const fanOut = (root: string, extra: Doc = {}) =>
+    mutate(root, ORDERS, (d) => Object.assign(d.joins[0], { ...extra, evidence: { ...d.joins[0].evidence, right_key_unique: false, max_fanout: 5, suggested_relationship: "many_to_many" === extra.rel ? "many_to_many" : "one_to_many" } }));
+
+  test("an approved to-one join with fan-out evidence is an error", () => {
+    // The review approved orders.line as many_to_one while check-join measured a fan-out of 5.
+    const root = copyFixture();
+    fanOut(root);
+    const issues = withoutApprovalHashes(validateProject(root));
+    expectExactly(issues, [
+      ["warning", ORDERS, "joins[0].relationship", "is many_to_one but the evidence suggests one_to_many"],
+      [
+        "error",
+        ORDERS,
+        "joins[0].evidence",
+        "is approved as many_to_one, but its evidence contradicts that: the key of customers is not unique, and a row of orders matches up to 5 rows of customers, " +
+          'so the join fans out and multiplies the measures of orders; fix the keys or the relationship and run sl check-join again, or record why the owner accepts the data in fanout_override: "<reason>"',
+      ],
+    ]);
+  });
+
+  test("max_fanout alone is enough", () => {
+    const root = copyFixture();
+    mutate(root, ORDERS, (d) => (d.joins[0].evidence.max_fanout = 2));
+    expectIssue(validateProject(root), "error", ORDERS, "joins[0].evidence", "a row of orders matches up to 2 rows of customers");
+  });
+
+  test("fanout_override records why it stands; a draft join and stale evidence only warn", () => {
+    const withOverride = copyFixture();
+    fanOut(withOverride, { fanout_override: "Duplicate customer rows from the 2019 migration; the owner accepts them." });
+    expect(errors(withoutApprovalHashes(validateProject(withOverride)))).toEqual([]);
+
+    const draft = copyFixture();
+    fanOut(draft, { status: "draft", approved_by: undefined, approved_at: undefined, approved_hash: undefined });
+    expect(errors(validateProject(draft))).toEqual([]);
+
+    const stale = copyFixture();
+    mutate(stale, ORDERS, (d) => Object.assign(d.joins[0], { evidence: { ...d.joins[0].evidence, to: "regions", max_fanout: 5 } }));
+    expect(errors(withoutApprovalHashes(validateProject(stale)))).toEqual([]);
+  });
+
+  test("sl approve warns that validate will error on such a join", async () => {
+    const root = copyFixture();
+    fanOut(root, { status: "draft", approved_by: undefined, approved_at: undefined, approved_hash: undefined });
+    const r = await sl(root, ["approve", "--target", "warehouse.orders.customer", "--by", "Dana Ruiz", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json<{ warnings: string[] }>().warnings).toEqual([
+      'Join warehouse.orders.customer is many_to_one, but its evidence shows fan-out (the key of customers is not unique, and a row matches up to 5 rows of customers); sl validate errors on it until the keys or the relationship are fixed, or fanout_override: "<reason>" records why the owner accepts it.',
+    ]);
+  });
+
+  test("sl approve words the fan-out from the evidence it has, names many_to_many's bridge table and skips stale evidence", async () => {
+    const draft = { status: "draft", approved_by: undefined, approved_at: undefined, approved_hash: undefined };
+    const approveWarnings = async (root: string) => {
+      const r = await sl(root, ["approve", "--target", "warehouse.orders.customer", "--by", "Dana Ruiz", "--json"]);
+      expect(r.code).toBe(0);
+      return r.json<{ warnings: string[] }>().warnings;
+    };
+
+    const keyOnly = copyFixture();
+    mutate(keyOnly, ORDERS, (d) => Object.assign(d.joins[0], draft, { evidence: { ...d.joins[0].evidence, right_key_unique: false, max_fanout: undefined } }));
+    const w = await approveWarnings(keyOnly);
+    expect(w).toEqual([
+      'Join warehouse.orders.customer is many_to_one, but its evidence shows fan-out (the key of customers is not unique); sl validate errors on it until the keys or the relationship are fixed, or fanout_override: "<reason>" records why the owner accepts it.',
+    ]);
+    expect(w[0]).not.toContain("undefined");
+
+    const m2m = copyFixture();
+    fanOut(m2m, { ...draft, fanout_override: "The owner accepts it." });
+    mutate(m2m, ORDERS, (d) => (d.joins[0].evidence.suggested_relationship = "many_to_many"));
+    expect(await approveWarnings(m2m)).toEqual([
+      "Join warehouse.orders.customer's evidence shows many_to_many: neither key is unique, so sl validate errors on it once approved, whatever fanout_override says; the join needs a bridge table or a pre-aggregated model.",
+    ]);
+
+    const stale = copyFixture();
+    mutate(stale, ORDERS, (d) => Object.assign(d.joins[0], draft, { evidence: { ...d.joins[0].evidence, to: "regions", max_fanout: 5 } }));
+    expect(await approveWarnings(stale)).toEqual([]);
+  });
+});
+
+describe("golden requests and their hand-written SQL", () => {
+  const MUST_SHARE = "a request's measures must share one model, or be one metric";
+
+  test("measures from two models that are not one metric are an error, in a draft golden too", () => {
+    // The review's t6: refunds and orders measures side by side validated cleanly.
+    const root = copyFixture();
+    mutate(root, GOLDEN3, (d) => (d.request.measures = ["orders.revenue", "customers.customer_count"]));
+    expectIssue(validateProject(root), "error", GOLDEN3, "request.measures[1]", `customers.customer_count aggregates over customers, and orders.revenue over orders; ${MUST_SHARE}`);
+  });
+
+  test("one metric over two models, and several measures of one model, are fine", () => {
+    const root = copyFixture();
+    mutate(root, "metrics.yaml", (d) => d.metrics.push({ name: "orders_per_customer", source: "warehouse", type: "ratio", numerator: "orders.order_count", denominator: "customers.customer_count", status: "draft" }));
+    mutate(root, GOLDEN3, (d) => (d.request.measures = ["orders_per_customer"]));
+    mutate(root, GOLDEN, (d) => (d.request.measures = ["orders.revenue", "orders.order_count"]));
+    expect(validateProject(root).filter((i) => i.message.includes(MUST_SHARE))).toEqual([]);
+    // A spanning metric next to another measure is more than one model again.
+    mutate(root, GOLDEN3, (d) => (d.request.measures = ["orders_per_customer", "orders.revenue"]));
+    expectIssue(validateProject(root), "error", GOLDEN3, "request.measures[1]", MUST_SHARE);
+  });
+
+  test("SQL that leaves out a requested measure's filter gets a warning", () => {
+    // The analyst's goldens/wrong.yaml: revenue is approved with a status filter, and the golden's
+    // SQL summed every sale. It validated, confirmed and passed.
+    const root = copyFixture();
+    mutate(root, GOLDEN, (d) => (d.sql = "select date_trunc('month', created_at) as m, sum(amount_cents / 100.0) as revenue\nfrom public.fct_orders group by 1"));
+    expectExactly(validateProject(root), [
+      [
+        "warning",
+        GOLDEN,
+        "sql",
+        "goldens pin hand-written SQL; this SQL may not apply orders.revenue's rule: it never names status, is_test_account, which the measure's expr or filter reads. " +
+          "Write the measure's expr and filter into the SQL as the model defines them, then run sl goldens check --name revenue_by_month_2025 and read any change back to the owner",
+      ],
+    ]);
+  });
+
+  test("without the model's table in the snapshot, SQL words such as extract, year and to are not taken for columns", () => {
+    const root = copyFixture();
+    mutate(root, SNAP_WH, (d) => (d.tables = d.tables.filter((t: Doc) => t.name !== "fct_orders")));
+    mutate(root, ORDERS, (d) => {
+      d.measures[0].filter = "extract(year from created_at) >= 2020 and status not similar to 'cancel%' and coalesce(customer.is_test_account, false) = false";
+    });
+    mutate(root, GOLDEN, (d) => (d.sql = "select date_trunc('month', created_at) as m, sum(amount_cents / 100.0) as revenue\nfrom public.fct_orders group by 1"));
+    const warned = validateProject(root).filter((i) => i.file === GOLDEN && i.path === "sql").map((i) => i.message);
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("it never names status, is_test_account, which");
+  });
+
+  test("a metric's measures are checked, names in comments and strings do not count, and a count of rows needs nothing", () => {
+    const root = copyFixture();
+    mutate(root, GOLDEN2, (d) => (d.sql = "select ship_region, sum(amount_cents) / count(*) -- status, is_test_account\nfrom public.fct_orders where 'status' <> '' group by 1"));
+    const warned = validateProject(root).filter((i) => i.file === GOLDEN2 && i.path === "sql").map((i) => i.message);
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("this SQL may not apply orders.revenue's rule: it never names status, is_test_account");
+  });
+});
+
+describe("time zones on time dimensions", () => {
+  test("a known IANA zone on a timestamp without a time zone is fine", () => {
+    const root = copyFixture();
+    mutate(root, ORDERS, (d) => (d.dimensions[0].time_zone = "America/New_York"));
+    mutate(root, CUSTOMERS, (d) => (d.dimensions[3].time_zone = "UTC"));
+    expect(withoutApprovalHashes(validateProject(root))).toEqual([]);
+  });
+
+  test("an unknown zone, an offset and a zone on another type are errors", () => {
+    const root = copyFixture();
+    mutate(root, ORDERS, (d) => {
+      d.dimensions[0].time_zone = "Mars/Olympus";
+      d.dimensions[1].time_zone = "UTC";
+    });
+    // An offset fails the schema, so the customers file gets no other checks.
+    mutate(root, CUSTOMERS, (d) => (d.dimensions[3].time_zone = "+02:00"));
+    const issues = withoutApprovalHashes(validateProject(root));
+    expectExactly(issues, [
+      ["error", ORDERS, "dimensions[0].time_zone", '"Mars/Olympus" is not an IANA time zone, such as UTC or America/New_York'],
+      ["error", ORDERS, "dimensions[1].time_zone", "is only allowed on time dimensions, not string"],
+      ["error", CUSTOMERS, "dimensions[3].time_zone", "must match"],
+    ]);
+  });
+
+  test("a zone on a column that carries its own is a warning; TIMESTAMP carries one on BigQuery", () => {
+    const root = copyFixture();
+    mutate(root, SNAP_WH, (d) => (d.tables.find((t: Doc) => t.name === "fct_orders").columns.find((c: Doc) => c.name === "created_at").type = "timestamp with time zone"));
+    mutate(root, ORDERS, (d) => (d.dimensions[0].time_zone = "America/New_York"));
+    expectExactly(withoutApprovalHashes(validateProject(root)), [
+      [
+        "warning",
+        ORDERS,
+        "dimensions[0].time_zone",
+        "names the zone timestamps without a time zone are stored in, but column created_at is timestamp with time zone, which carries its own; remove time_zone, and convert in expr to bucket days in another zone",
+      ],
+    ]);
+  });
+});
+
+describe("time zones by type and dialect", () => {
+  test("carriesZone", () => {
+    expect(carriesZone("timestamptz", "postgres")).toBe(true);
+    expect(carriesZone("timestamp", "postgres")).toBe(false);
+    expect(carriesZone("TIMESTAMP_NTZ", "snowflake")).toBe(false);
+    expect(carriesZone("timestamp_ltz", "snowflake")).toBe(true);
+    expect(carriesZone("TIMESTAMP", "bigquery")).toBe(true);
+    expect(carriesZone("DATETIME", "bigquery")).toBe(false);
+    expect(carriesZone("timestamp", "databricks")).toBe(true);
+    expect(carriesZone("timestamp_ntz", "databricks")).toBe(false);
+    expect(carriesZone("TIMESTAMP WITH TIME ZONE", "duckdb")).toBe(true);
+    expect(carriesZone("date", "duckdb")).toBeUndefined();
+  });
+});
+
+describe("DuckDB source setup and views", () => {
+  test("setup outside the allowlist and a view that is not one table expression are errors", async () => {
+    const root = copyFixture();
+    mutate(root, "sources/lake.yaml", (d) => {
+      d.connection.setup = ["INSTALL httpfs", "ATTACH 'other.duckdb'", "SET enable_external_access = true"];
+      d.connection.views.events = "(select * from read_csv('/etc/passwd'))";
+    });
+    const issues = validateProject(root).filter((i) => i.file === "sources/lake.yaml");
+    expect(issues.map((i) => [i.level, i.path])).toEqual([
+      ["error", "connection.setup[1]"],
+      ["error", "connection.setup[2]"],
+      ["error", "connection.views.events"],
+    ]);
+    expect(issues[0]!.message).toStartWith("is not an allowed setup statement: ");
+    expect(issues[2]!.message).toStartWith("is not one table expression: ");
+    const r = await sl(root, ["validate"]);
+    expect(r.code).toBe(1);
+  });
+
+  test("the allowed forms validate", () => {
+    const root = copyFixture();
+    mutate(root, "sources/lake.yaml", (d) => {
+      d.connection.setup = ["INSTALL httpfs", "LOAD httpfs", "SET threads = 2", "CREATE SECRET (TYPE s3, PROVIDER credential_chain)"];
+      d.connection.views.sessions = "read_parquet('../data/lake/sessions.parquet')";
+    });
+    expect(validateProject(root)).toEqual([]);
+  });
 });

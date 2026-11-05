@@ -2,18 +2,35 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { centsExpr, draftModels, draftNewColumns, inferPrimaryKey, newColumns, numericRule, singular } from "../skills/semantic-layer/scripts/lib/draft.ts";
+import {
+  centsExpr,
+  columnCurrency,
+  draftModels,
+  draftNewColumns,
+  inferPrimaryKey,
+  newColumns,
+  numericRule,
+  singular,
+  timestampHasZone,
+} from "../skills/semantic-layer/scripts/lib/draft.ts";
 import { unreferencedColumns } from "../skills/semantic-layer/scripts/lib/snapshot-diff.ts";
 import type { ColumnProfile, Model, Snapshot, SnapshotColumn, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { parseYamlText, updateYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { SQL } from "bun";
-import { initProject, PG_URL, sl, tempRoot } from "./helpers.ts";
+import { assertLocalPg, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
   cleanup?.();
   cleanup = undefined;
 });
+
+// A live test creates and drops only a schema of its own, and only on a local server unless
+// SL_TEST_ALLOW_REMOTE=1 allows another (assertLocalPg).
+function liveSchema(prefix: string): string {
+  assertLocalPg(PG_URL);
+  return uniqueSchema(prefix);
+}
 
 function col(name: string, type: string, profile?: ColumnProfile, description?: string): SnapshotColumn {
   const c: SnapshotColumn = { name, type };
@@ -169,6 +186,7 @@ open_questions:
   - tracking_code has a different value on nearly every row and was left out as a dimension. Should it be one?
   - "Is amount_cents stored in cents? The draft divides it by 100 (expr: amount_cents * 0.01) to report whole currency units; confirm the division."
   - The name weight_kg does not say how it adds up, so the draft averages it (avg_weight_kg). Do people total weight_kg or average it?
+  - ordered_at is a timestamp without a time zone. In which time zone is its value stored? The answer is recorded as time_zone (an IANA zone such as UTC or America/New_York) on its time dimension.
   - Which currency are amount_cents and discount in?
   - shipping_zip looks like personal data and is tagged pii. Who may see it?
 ignored_columns:
@@ -294,7 +312,7 @@ describe("draft command", () => {
       dimensions: 6,
       measures: 8,
       joins: 2,
-      open_questions: 7,
+      open_questions: 8,
     });
     expect(readModel(root, "orders")).toBe(ORDERS_YAML);
     const v = await sl(root, ["validate", "--json"]);
@@ -510,7 +528,7 @@ describe("draft command", () => {
     const r = await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "fct_orders"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Drafted 1 model in wh:");
-    expect(r.out).toMatch(/orders\s+analytics\.fct_orders\s+6\s+8\s+2\s+7/);
+    expect(r.out).toMatch(/orders\s+analytics\.fct_orders\s+6\s+8\s+2\s+8/);
     expect(r.out).toContain("left out payload (type json)");
   });
 });
@@ -805,18 +823,19 @@ describe("draftModels", () => {
   });
 
   test.skipIf(!PG_URL)("drafted expressions read keyword-named columns on Postgres", async () => {
+    const schema = liveSchema("t_draft");
     const sql = new SQL(PG_URL!);
     try {
-      await sql.unsafe(`drop schema if exists t_draft cascade; create schema t_draft`);
-      await sql.unsafe(`create table t_draft.kw (${KEYWORD_COLUMNS.map((k) => `"${k}" integer`).join(", ")})`);
-      await sql.unsafe(`insert into t_draft.kw values (${KEYWORD_COLUMNS.map((_, i) => i + 1).join(", ")})`);
-      const m = draftOneTable("postgres", keywordTable("t_draft")).models[0]!;
+      await sql.unsafe(`create schema ${schema}`);
+      await sql.unsafe(`create table ${schema}.kw (${KEYWORD_COLUMNS.map((k) => `"${k}" integer`).join(", ")})`);
+      await sql.unsafe(`insert into ${schema}.kw values (${KEYWORD_COLUMNS.map((_, i) => i + 1).join(", ")})`);
+      const m = draftOneTable("postgres", keywordTable(schema)).models[0]!;
       for (const [name, expr] of columnExprs(m)) {
-        const rows = (await sql.unsafe(`select ${expr} as v from t_draft.kw`)) as { v: unknown }[];
+        const rows = (await sql.unsafe(`select ${expr} as v from ${schema}.kw`)) as { v: unknown }[];
         expect([name, Number(rows[0]!.v)]).toEqual([name, KEYWORD_COLUMNS.indexOf(name) + 1]);
       }
     } finally {
-      await sql.unsafe(`drop schema if exists t_draft cascade`);
+      await sql.unsafe(`drop schema if exists ${schema} cascade`);
       await sql.close();
     }
   });
@@ -1202,16 +1221,17 @@ describe("draft heuristics on Acme-like tables", () => {
   });
 
   test.skipIf(!PG_URL)("the drafted line total runs on Postgres without integer overflow", async () => {
+    const schema = liveSchema("t_draft_line");
     const sql = new SQL(PG_URL!);
     try {
-      await sql.unsafe(`drop schema if exists t_draft_line cascade; create schema t_draft_line`);
-      await sql.unsafe(`create table t_draft_line.items (quantity integer, unit_price_cents integer)`);
-      await sql.unsafe(`insert into t_draft_line.items values (2, 1999), (1, 500), (100, 25000000)`);
+      await sql.unsafe(`create schema ${schema}`);
+      await sql.unsafe(`create table ${schema}.items (quantity integer, unit_price_cents integer)`);
+      await sql.unsafe(`insert into ${schema}.items values (2, 1999), (1, 500), (100, 25000000)`);
       const line = draftAcme().model("order_items").measures.find((m) => m.name === "line_total")!;
-      const rows = (await sql.unsafe(`select sum(${line.expr}) as line from t_draft_line.items`)) as { line: unknown }[];
+      const rows = (await sql.unsafe(`select sum(${line.expr}) as line from ${schema}.items`)) as { line: unknown }[];
       expect(Number(rows[0]!.line)).toBeCloseTo(25000044.98, 4);
     } finally {
-      await sql.unsafe(`drop schema if exists t_draft_line cascade`);
+      await sql.unsafe(`drop schema if exists ${schema} cascade`);
       await sql.close();
     }
   });
@@ -1432,7 +1452,7 @@ open_questions:
   - Is amount in cents? # answered: yes
   - New column notes (varchar) appeared in analytics.orders; the draft adds the dimension notes, tagged sensitive (the name notes looks like a credential or free text). What does it hold, and should it stay?
   - New column refund_cents (bigint) appeared in analytics.orders; the draft adds the measure refund. What does it hold, and should it stay?
-  - New column coupon_code (varchar) appeared in analytics.orders; the draft leaves it out (a different value on nearly every row) and lists it in ignored_columns. Should it be a field? If it is added, tag it sensitive (coupon_code has a different value on nearly every row).
+  - New column coupon_code (varchar) appeared in analytics.orders; the draft leaves it out (a different value on nearly every row) and lists it in ignored_columns. Should it be a field?
   - New column extra (json) appeared in analytics.orders; the draft leaves it out (type json drafts as neither a dimension nor a measure) and lists it in ignored_columns. Should it be a field?
   - "Is refund_cents stored in cents? The draft divides it by 100 (expr: refund_cents * 0.01) to report whole currency units; confirm the division."
   - Which currency is refund_cents in?
@@ -1994,5 +2014,398 @@ measures:
       const mixed = draft({ ...link, columns: [col("order_id", "integer", p(500)), col("label", "varchar", p(5))] });
       expect(mixed.dimensions.map((d) => d.name)).toEqual(["label"]);
     });
+  });
+});
+
+describe("composite keys, text keys, currencies and time zones", () => {
+  function draftShop(tables: SnapshotTable[], dialect: Snapshot["dialect"] = "postgres", drafting = tables) {
+    const snap: Snapshot = { ...snapshotOf(tables), source: "shop", dialect };
+    const { models, notes } = draftModels(snap, drafting, [], { source: "shop", stripPrefixes: [], knownTables: tables });
+    return { model: (name: string) => models.find((m) => m.model === name)!, models, notes };
+  }
+
+  // ops.sales_targets(store_id int, month date, target_eur numeric(12,2), primary key (store_id, month)).
+  const SALES_TARGETS: SnapshotTable = {
+    schema: "ops",
+    name: "sales_targets",
+    kind: "table",
+    row_count: 240,
+    primary_key: ["store_id", "month"],
+    columns: [col("store_id", "integer", p(20)), col("month", "date", p(12)), col("target_eur", "numeric(12,2)", p(12))],
+  };
+
+  test("a date inside a composite primary key is a time dimension, and target_eur is money in EUR", () => {
+    const m = draftShop([SALES_TARGETS]).model("sales_targets");
+    expect(m.primary_key).toEqual(["store_id", "month"]);
+    expect(m.dimensions).toEqual([{ name: "month", expr: "month", type: "time", time_grains: ["day", "week", "month", "quarter", "year"], status: "draft" }]);
+    expect(m.measures).toEqual([
+      { name: "sales_target_count", agg: "count", format: "integer", status: "draft" },
+      { name: "store_count", expr: "store_id", agg: "count_distinct", format: "integer", status: "draft" },
+      { name: "target_eur", expr: "target_eur", agg: "sum", format: "currency", currency: "EUR", status: "draft" },
+    ]);
+    expect(m.ignored_columns).toBeUndefined();
+    expect(m.open_questions).toContain("target_eur is drafted with currency EUR, from its name. Is it in EUR?");
+    expect(m.open_questions!.some((q) => q.startsWith("Which currency"))).toBe(false);
+    // A date has no time zone to ask about.
+    expect(m.open_questions!.some((q) => q.includes("time zone"))).toBe(false);
+  });
+
+  test("a timestamp in a composite key is a time dimension; an id column in one is not", () => {
+    const snapshots: SnapshotTable = {
+      schema: "ops",
+      name: "balances",
+      kind: "table",
+      row_count: 100,
+      primary_key: ["account_id", "as_of"],
+      columns: [col("account_id", "integer", p(10)), col("as_of", "timestamptz", p(10)), col("balance", "numeric(14,2)", p(90))],
+    };
+    const m = draftShop([snapshots]).model("balances");
+    expect(m.dimensions.map((d) => [d.name, d.type])).toEqual([["as_of", "time"]]);
+    expect(m.dimensions[0]!.time_grains).toEqual(["hour", "day", "week", "month", "quarter", "year"]);
+    // A date that is the whole key (a daily aggregate) is a time dimension too, and stays the key.
+    const days: SnapshotTable = { schema: "ops", name: "days", kind: "table", row_count: 10, primary_key: ["day"], columns: [col("day", "date", p(10)), col("note_count", "integer", p(4))] };
+    const daily = draftShop([days]).model("days");
+    expect(daily.primary_key).toEqual(["day"]);
+    expect(daily.dimensions.map((d) => [d.name, d.type])).toEqual([["day", "time"]]);
+    // ops.daily_revenue(day date primary key, revenue): the reviewer's daily aggregate table.
+    const revenue: SnapshotTable = {
+      schema: "ops",
+      name: "daily_revenue",
+      kind: "table",
+      primary_key: ["day"],
+      columns: [col("day", "date"), col("revenue", "numeric(12,2)")],
+    };
+    expect(draftShop([revenue]).model("daily_revenue").dimensions.map((d) => d.name)).toEqual(["day"]);
+  });
+
+  test("currency-code suffixes name money: summed with the code as currency", () => {
+    const rule = (n: string) => {
+      const r = numericRule(n);
+      return r ? `${r.agg}:${r.format}` : null;
+    };
+    expect(rule("target_eur")).toBe("sum:currency");
+    expect(rule("revenue_usd")).toBe("sum:currency");
+    expect(rule("budget_gbp")).toBe("sum:currency");
+    expect(rule("fee_jpy_cents")).toBe("sum:currency");
+    expect(rule("price_eur")).toBe("avg:currency");
+    // A count stays a count, and a word that is not a code names nothing.
+    expect(rule("orders_usd_count")).toBe("sum:integer");
+    expect(rule("score_try")).toBeNull();
+    expect(rule("europe")).toBeNull();
+    expect(rule("mrr_usd")).toBe("sum:currency");
+  });
+
+  test("a currency suffix after a code, a statistic or a word that names no amount is not money", () => {
+    // The reviewer's probe: these were null before currency suffixes and must stay null.
+    for (const n of [
+      "eur_usd",
+      "usd_eur",
+      "fx_eur_usd",
+      "fx_eur",
+      "median_basket_usd",
+      "min_bid_eur",
+      "rank_usd",
+      "score_eur",
+      "percentile_usd",
+      "share_eur",
+      "weight_php",
+      "latitude_aud",
+    ]) {
+      expect([n, numericRule(n)]).toEqual([n, null]);
+    }
+    // ops.balances.eur_usd numeric(18,6) in a table commented "amounts in cents": no money, no division.
+    const balances: SnapshotTable = {
+      schema: "ops",
+      name: "balances",
+      kind: "table",
+      row_count: 100,
+      primary_key: ["balance_id"],
+      description: "Daily balances; amounts in cents.",
+      columns: [col("balance_id", "integer", p(100)), col("eur_usd", "numeric(18,6)", p(100)), col("amount", "numeric(18,6)", p(90))],
+    };
+    const m = draftShop([balances], "postgres").model("balances");
+    const fx = m.measures.find((x) => x.expr?.includes("eur_usd"));
+    expect(fx).toEqual({ name: "avg_eur_usd", expr: "eur_usd", agg: "avg", format: "number", status: "draft" });
+    // A numeric with decimal places is not divided by a table comment that says cents.
+    expect(m.measures.find((x) => x.name === "amount")).toEqual({ name: "amount", expr: "amount", agg: "sum", format: "currency", status: "draft" });
+    expect(m.open_questions!.some((q) => q.startsWith("Is amount stored in cents"))).toBe(false);
+    // An integer amount is still divided by it.
+    const ints = draftShop([{ ...balances, columns: [balances.columns[0]!, col("amount", "bigint", p(90))] }], "postgres").model("balances");
+    expect(ints.measures.find((x) => x.expr === "amount / 100.0")?.name).toBe("amount");
+  });
+
+  test("a comment naming a currency by word or symbol confirms it; dollars and $ do not", () => {
+    const table: SnapshotTable = { schema: "s", name: "t", kind: "table", columns: [col("price", "numeric(10,2)")] };
+    const with_ = (description: string) => columnCurrency(table, { ...table.columns[0]!, description });
+    expect(with_("Price per unit in euros")?.currency).toBe("EUR");
+    expect(with_("price in eur")?.currency).toBe("EUR");
+    expect(with_("Unit price (€)")?.currency).toBe("EUR");
+    expect(with_("Price in pounds sterling")?.currency).toBe("GBP");
+    expect(with_("Price in £")?.currency).toBe("GBP");
+    expect(with_("Price in yen")?.currency).toBe("JPY");
+    expect(with_("¥ per unit")?.currency).toBe("JPY");
+    expect(with_("Price in dollars")).toBeUndefined();
+    expect(with_("Price in $")).toBeUndefined();
+    expect(with_("Price in pounds")).toBeUndefined();
+    expect(with_("euros or USD")).toBeUndefined();
+    // The reviewer's case: 'Price per unit in euros' turns the open currency question into a confirmation.
+    const m = draftShop([{ ...SALES, columns: SALES.columns.map((c) => (c.name === "unit_price" ? { ...c, description: "Price per unit in euros" } : c)) }]).model("sales");
+    expect(m.open_questions).toContain("unit_price is drafted with currency EUR, from its comment. Is it in EUR? Which currency is discount in?");
+  });
+
+  const SALES: SnapshotTable = {
+    schema: "shop",
+    name: "sales",
+    kind: "table",
+    row_count: 3000,
+    primary_key: ["sale_id"],
+    description: "One row per sale line. Discounts are stored in cents.",
+    columns: [
+      col("sale_id", "integer", p(3000)),
+      col("sku", "text", p(42)),
+      col("store_id", "integer", p(20)),
+      col("sold_at", "timestamp without time zone", p(2900)),
+      col("quantity", "integer", p(10)),
+      col("unit_price", "numeric(10,2)", p(300), "Price per unit in EUR, before discount"),
+      col("discount", "numeric(10,2)", p(40)),
+    ],
+  };
+  const PRODUCTS: SnapshotTable = {
+    schema: "shop",
+    name: "products",
+    kind: "table",
+    row_count: 42,
+    primary_key: ["sku"],
+    columns: [col("sku", "text", p(42)), col("category", "text", p(6)), col("cost", "numeric(10,2)", p(40))],
+  };
+  const STORES: SnapshotTable = {
+    schema: "shop",
+    name: "stores",
+    kind: "table",
+    row_count: 20,
+    primary_key: ["store_id"],
+    columns: [col("store_id", "integer", p(20)), col("city", "text", p(20))],
+  };
+
+  test("a column named like another table's text primary key joins to it: sales.sku -> products.sku", () => {
+    const sales = draftShop([SALES, PRODUCTS, STORES], "postgres", [SALES]).model("sales");
+    expect(sales.joins).toEqual([
+      { name: "store", to: "stores", keys: [{ from: "store_id", to: "store_id" }], relationship: "many_to_one", type: "left", origin: "inferred", status: "draft" },
+      { name: "product", to: "products", keys: [{ from: "sku", to: "sku" }], relationship: "many_to_one", type: "left", origin: "inferred", status: "draft" },
+    ]);
+    // A column joined by its name keeps its own dimension: the join adds the product's fields.
+    expect(sales.dimensions.find((d) => d.name === "sku")).toEqual({ name: "sku", expr: "sku", type: "string", status: "draft" });
+    expect(sales.measures.some((m) => m.expr === "sku")).toBe(false);
+  });
+
+  test("a name-matched key needs a compatible type, a single-column key and a known target", () => {
+    const intKeyed: SnapshotTable = { ...PRODUCTS, columns: [col("sku", "integer", p(42)), col("category", "text", p(6))] };
+    expect(draftShop([SALES, intKeyed], "postgres", [SALES]).model("sales").joins).toBeUndefined();
+    const composite: SnapshotTable = { ...PRODUCTS, primary_key: ["sku", "category"] };
+    expect(draftShop([SALES, composite], "postgres", [SALES]).model("sales").joins).toBeUndefined();
+    // A table out of scope and unmodeled is no target.
+    const snap: Snapshot = { ...snapshotOf([SALES, PRODUCTS]), dialect: "postgres" };
+    const out = draftModels(snap, [SALES], [], { source: "shop", stripPrefixes: [], knownTables: [SALES] });
+    expect(out.models[0]!.joins).toBeUndefined();
+    // A date named like a date table's key keeps its time dimension and joins nowhere.
+    const days: SnapshotTable = { schema: "shop", name: "calendar", kind: "table", row_count: 365, primary_key: ["sale_date"], columns: [col("sale_date", "date", p(365)), col("is_holiday", "boolean", p(2))] };
+    const dated: SnapshotTable = { ...SALES, columns: [...SALES.columns, col("sale_date", "date", p(365))] };
+    const withDate = draftShop([dated, days], "postgres", [dated]).model("sales");
+    expect(withDate.joins).toBeUndefined();
+    expect(withDate.dimensions.map((d) => d.name)).toContain("sale_date");
+    // A table's own sole key is never a reference: products.sku joins nowhere, even with a copy keyed by sku.
+    const copy: SnapshotTable = { ...PRODUCTS, name: "products_v2" };
+    expect(draftShop([PRODUCTS, copy], "postgres", [PRODUCTS]).model("products").joins).toBeUndefined();
+  });
+
+  test("two tables keyed by the same name: the draft joins one and asks which; noise is never a target", () => {
+    const bak: SnapshotTable = { ...PRODUCTS, name: "products_bak" };
+    const catalog: SnapshotTable = { ...PRODUCTS, schema: "catalog", name: "items" };
+    const sales = draftShop([SALES, bak, PRODUCTS, catalog], "postgres", [SALES]).model("sales");
+    expect(sales.joins!.find((j) => j.keys[0]!.from === "sku")!.to).toBe("products");
+    expect(sales.open_questions).toContain(
+      "sku is joined to shop.products because its name matches that table's key; it could also mean catalog.items. Which is it?",
+    );
+    // A noise table that is the only match is no target.
+    const onlyBak = draftShop([SALES, bak, STORES], "postgres", [SALES]).model("sales");
+    expect(onlyBak.joins!.map((j) => j.keys[0]!.from)).toEqual(["store_id"]);
+    expect(onlyBak.open_questions!.join(" ")).not.toContain("products_bak");
+  });
+
+  test("a raw or staging table is a name-match target only when no other table matches", () => {
+    const raw: SnapshotTable = { ...PRODUCTS, name: "raw_products" };
+    const both = draftShop([SALES, raw, PRODUCTS], "postgres", [SALES]).model("sales");
+    expect(both.joins!.find((j) => j.keys[0]!.from === "sku")!.to).toBe("products");
+    expect(both.open_questions!.join(" ")).not.toContain("raw_products");
+    const alone = draftShop([SALES, raw], "postgres", [SALES]).model("sales");
+    expect(alone.joins!.find((j) => j.keys[0]!.from === "sku")!.to).toBe("raw_products");
+  });
+
+  test("generic attribute names never join by name: products(name, code, version) next to tables keyed by them", () => {
+    // The reviewer's probe: feature_flags keyed by name, currencies by code, Rails' schema_migrations by version.
+    const products: SnapshotTable = {
+      schema: "shop",
+      name: "products",
+      kind: "table",
+      primary_key: ["product_id"],
+      columns: [col("product_id", "integer"), col("name", "text"), col("code", "text"), col("version", "text")],
+    };
+    const flags: SnapshotTable = { schema: "shop", name: "feature_flags", kind: "table", primary_key: ["name"], columns: [col("name", "text"), col("enabled", "boolean")] };
+    const currencies: SnapshotTable = { schema: "shop", name: "currencies", kind: "table", primary_key: ["code"], columns: [col("code", "text")] };
+    const migrations: SnapshotTable = { schema: "public", name: "schema_migrations", kind: "table", primary_key: ["version"], columns: [col("version", "varchar")] };
+    const m = draftShop([products, flags, currencies, migrations], "postgres", [products]).model("products");
+    expect(m.joins).toBeUndefined();
+    expect(m.dimensions.map((d) => [d.name, d.type])).toEqual([
+      ["name", "string"],
+      ["code", "string"],
+      ["version", "string"],
+    ]);
+    expect(m.measures.map((x) => x.name)).toEqual(["product_count"]);
+    // schema_migrations is noise: even a column name that is not generic never joins to it.
+    const rails: SnapshotTable = { ...migrations, primary_key: ["release"], columns: [col("release", "varchar")] };
+    const deploys: SnapshotTable = { schema: "ops", name: "deploys", kind: "table", primary_key: ["deploy_id"], columns: [col("deploy_id", "integer"), col("release", "varchar")] };
+    const d = draftShop([deploys, rails], "postgres", [deploys]).model("deploys");
+    expect(d.joins).toBeUndefined();
+    expect(d.dimensions.map((x) => x.name)).toEqual(["release"]);
+  });
+
+  test("a status column joined to a status table keeps its dimension; an email is never joined by name", () => {
+    // The reviewer's probe: orders.status next to statuses(status), orders.email next to mkt.newsletter_signups(email).
+    const orders: SnapshotTable = {
+      schema: "shop",
+      name: "orders",
+      kind: "table",
+      primary_key: ["order_id"],
+      columns: [col("order_id", "integer"), col("status", "text"), col("email", "text"), col("amount", "numeric(12,2)")],
+    };
+    const statuses: SnapshotTable = { schema: "shop", name: "statuses", kind: "table", primary_key: ["status"], columns: [col("status", "text"), col("label", "text")] };
+    const signups: SnapshotTable = {
+      schema: "mkt",
+      name: "newsletter_signups",
+      kind: "table",
+      primary_key: ["email"],
+      columns: [col("email", "text"), col("signed_up_at", "timestamptz")],
+    };
+    const m = draftShop([orders, statuses, signups], "postgres", [orders]).model("orders");
+    expect(m.dimensions.map((d) => d.name)).toEqual(["status", "email"]);
+    expect(m.measures.map((x) => x.name)).toEqual(["order_count", "amount"]);
+    expect(m.joins).toEqual([
+      { name: "statuses", to: "statuses", keys: [{ from: "status", to: "status" }], relationship: "many_to_one", type: "left", origin: "inferred", status: "draft" },
+    ]);
+  });
+
+  test("a number joined by its name is a dimension, never a measure", () => {
+    const visits: SnapshotTable = {
+      schema: "shop",
+      name: "visits",
+      kind: "table",
+      row_count: 1000,
+      primary_key: ["visit_id"],
+      columns: [col("visit_id", "integer", p(1000)), col("store_number", "integer", p(400))],
+    };
+    const branches: SnapshotTable = { schema: "shop", name: "branches", kind: "table", row_count: 400, primary_key: ["store_number"], columns: [col("store_number", "integer", p(400))] };
+    const m = draftShop([visits, branches], "postgres", [visits]).model("visits");
+    expect(m.joins!.map((j) => j.to)).toEqual(["branches"]);
+    expect(m.dimensions).toEqual([{ name: "store_number", expr: "store_number", type: "number", status: "draft" }]);
+    expect(m.measures.map((x) => x.name)).toEqual(["visit_count"]);
+  });
+
+  test("a currency code in a column comment makes the currency question a confirmation", () => {
+    const sales = draftShop([SALES, PRODUCTS, STORES], "postgres", [SALES]).model("sales");
+    const price = sales.measures.find((m) => m.name === "avg_unit_price")!;
+    expect(price).toMatchObject({ expr: "unit_price", agg: "avg", format: "currency", currency: "EUR", description: "Price per unit in EUR, before discount" });
+    // numeric(10,2) is whole currency units, whatever the table comment says about cents.
+    const discount = sales.measures.find((m) => m.name === "discount")!;
+    expect(discount).toEqual({ name: "discount", expr: "discount", agg: "sum", format: "currency", status: "draft" });
+    expect(sales.measures.find((m) => m.name === "line_total")!.currency).toBe("EUR");
+    expect(sales.open_questions).toContain("unit_price is drafted with currency EUR, from its comment. Is it in EUR? Which currency is discount in?");
+    expect(sales.open_questions!.some((q) => q.startsWith("Is discount stored in cents"))).toBe(false);
+  });
+
+  test("a currency code in the table comment confirms every money column; several codes confirm none", () => {
+    const ledger: SnapshotTable = {
+      schema: "fin",
+      name: "ledger",
+      kind: "table",
+      row_count: 100,
+      primary_key: ["entry_id"],
+      description: "Ledger entries, amounts in GBP.",
+      columns: [col("entry_id", "integer", p(100)), col("amount", "numeric(12,2)", p(90)), col("fee", "numeric(12,2)", p(30))],
+    };
+    const m = draftShop([ledger]).model("ledger");
+    expect(m.measures.filter((x) => x.format === "currency").map((x) => x.currency)).toEqual(["GBP", "GBP"]);
+    expect(m.open_questions).toContain("amount and fee are drafted with currency GBP, from the table comment of fin.ledger. Is each in GBP?");
+    const mixed = draftShop([{ ...ledger, description: "Converted from GBP to USD nightly." }]).model("ledger");
+    expect(mixed.measures.some((x) => x.currency !== undefined)).toBe(false);
+    expect(mixed.open_questions).toContain("Which currency are amount and fee in?");
+    // A lowercase word is not a code.
+    expect(columnCurrency({ ...ledger, description: "eur stuff" }, ledger.columns[1]!)).toBeUndefined();
+  });
+
+  test("timestamps without a time zone get a question naming time_zone, per dialect", () => {
+    expect(timestampHasZone("postgres", "timestamp without time zone")).toBe(false);
+    expect(timestampHasZone("postgres", "timestamp(6) without time zone")).toBe(false);
+    expect(timestampHasZone("postgres", "timestamp")).toBe(false);
+    expect(timestampHasZone("postgres", "timestamp with time zone")).toBe(true);
+    expect(timestampHasZone("postgres", "timestamptz")).toBe(true);
+    expect(timestampHasZone("duckdb", "TIMESTAMP")).toBe(false);
+    expect(timestampHasZone("duckdb", "TIMESTAMP WITH TIME ZONE")).toBe(true);
+    expect(timestampHasZone("snowflake", "TIMESTAMP_NTZ(9)")).toBe(false);
+    expect(timestampHasZone("snowflake", "TIMESTAMP_LTZ(9)")).toBe(true);
+    expect(timestampHasZone("snowflake", "TIMESTAMP_TZ")).toBe(true);
+    expect(timestampHasZone("snowflake", "TIMESTAMPLTZ")).toBe(true);
+    expect(timestampHasZone("snowflake", "TIMESTAMPTZ")).toBe(true);
+    expect(timestampHasZone("snowflake", "TIMESTAMPNTZ")).toBe(false);
+    expect(timestampHasZone("bigquery", "TIMESTAMP")).toBe(true);
+    expect(timestampHasZone("bigquery", "DATETIME")).toBe(false);
+    expect(timestampHasZone("databricks", "timestamp")).toBe(true);
+    expect(timestampHasZone("databricks", "timestamp_ntz")).toBe(false);
+    expect(timestampHasZone("postgres", "date")).toBeNull();
+
+    const sales = draftShop([SALES, PRODUCTS, STORES], "postgres", [SALES]).model("sales");
+    expect(sales.open_questions).toContain(
+      "sold_at is a timestamp without a time zone. In which time zone is its value stored? The answer is recorded as time_zone (an IANA zone such as UTC or America/New_York) on its time dimension.",
+    );
+    const aware = draftShop([{ ...SALES, columns: SALES.columns.map((c) => (c.name === "sold_at" ? { ...c, type: "timestamptz" } : c)) }], "postgres").model("sales");
+    expect(aware.open_questions!.some((q) => q.includes("without a time zone"))).toBe(false);
+    const bq = draftShop([{ ...SALES, columns: SALES.columns.map((c) => (c.name === "sold_at" ? { ...c, type: "TIMESTAMP" } : c)) }], "bigquery").model("sales");
+    expect(bq.open_questions!.some((q) => q.includes("without a time zone"))).toBe(false);
+  });
+
+  test("--new-columns asks the time-zone and currency questions about the new columns only", () => {
+    const existing: Model = {
+      model: "sales",
+      source: "shop",
+      table: "shop.sales",
+      status: "approved",
+      primary_key: ["sale_id"],
+      open_questions: [],
+      dimensions: [{ name: "sold_at", expr: "sold_at", type: "time", time_grains: ["day"], status: "approved" }],
+      measures: [{ name: "sale_count", agg: "count", status: "approved" }],
+    };
+    const table: SnapshotTable = {
+      ...SALES,
+      description: null,
+      columns: [...SALES.columns.filter((c) => ["sale_id", "sold_at"].includes(c.name)), col("refunded_at", "timestamp", p(40)), col("refund_chf", "numeric(10,2)", p(40))],
+    };
+    const snap: Snapshot = { ...snapshotOf([table]), source: "shop", dialect: "postgres" };
+    const r = draftNewColumns(snap, table, existing, [existing], { source: "shop", stripPrefixes: [], knownTables: [table] });
+    expect(r.dimensions.map((d) => d.name)).toEqual(["refunded_at"]);
+    expect(r.measures).toEqual([{ name: "refund_chf", expr: "refund_chf", agg: "sum", format: "currency", currency: "CHF", status: "draft" }]);
+    expect(r.open_questions).toContain(
+      "refunded_at is a timestamp without a time zone. In which time zone is its value stored? The answer is recorded as time_zone (an IANA zone such as UTC or America/New_York) on its time dimension.",
+    );
+    expect(r.open_questions).toContain("refund_chf is drafted with currency CHF, from its name. Is it in CHF?");
+    expect(r.open_questions.join(" ")).not.toContain("sold_at");
+    // With a currency on the model's measures, a new column's own code is still confirmed; one without a code takes the model's.
+    const priced: Model = { ...existing, measures: [...existing.measures, { name: "revenue", expr: "revenue", agg: "sum", format: "currency", currency: "USD", status: "approved" }] };
+    const t2: SnapshotTable = { ...table, columns: [...table.columns, col("revenue", "numeric(10,2)", p(90)), col("fee", "numeric(10,2)", p(30))] };
+    const r2 = draftNewColumns({ ...snap, tables: [t2] }, t2, priced, [priced], { source: "shop", stripPrefixes: [], knownTables: [t2] });
+    expect(r2.measures.map((m) => [m.name, m.currency])).toEqual([
+      ["refund_chf", "CHF"],
+      ["fee", "USD"],
+    ]);
+    expect(r2.open_questions).toContain("refund_chf is drafted with currency CHF, from its name. Is it in CHF?");
+    expect(r2.open_questions.join(" ")).not.toContain("Which currency");
   });
 });

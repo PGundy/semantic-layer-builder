@@ -1,13 +1,12 @@
 // Turns profile query results into snapshot column profiles, reads the facts
-// the skill uses from a profiled table, and keeps raw values of protected
-// columns out of the snapshot.
-import { createHash } from "node:crypto";
+// the skill uses from a profiled table, and keeps the values of protected
+// columns out of the snapshot: their profiles hold counts only.
 import { classifyType, isNumeric, isTemporal } from "./column-types.ts";
 import { UserError } from "./errors.ts";
 import { findTable, qualifiedName } from "./naming.ts";
 import { sensitivityOf } from "./sensitivity.ts";
 import { referencedColumns } from "./snapshot-diff.ts";
-import { approximateDistinct, hasMinMax, hasTopValues, statsQueryId, topQueryId } from "./sql/profile.ts";
+import { approximateDistinct, hasMinMax, type ProfilePlanDetails, statsQueryId, topQueryId } from "./sql/profile.ts";
 import type {
   ColumnProfile,
   Dialect,
@@ -16,7 +15,6 @@ import type {
   Measure,
   Model,
   PlanResults,
-  QueryPlan,
   Scalar,
   Snapshot,
   SnapshotColumn,
@@ -72,27 +70,48 @@ function topValue(v: unknown, column: SnapshotColumn): Scalar {
   return text;
 }
 
+// A table's profile from the plan's results, or null when its sample read no rows of a table
+// that has some (TABLESAMPLE picks whole storage blocks and can reach none), which would describe
+// nothing.
 function profileTable(
   table: SnapshotTable,
-  plan: Set<string>,
+  queried: Set<number>,
   results: PlanResults,
   profiledAt: string,
   usedSample: boolean,
-): SnapshotTable {
+): SnapshotTable | null {
   const statsId = statsQueryId(table);
   const rows = results[statsId];
   if (!rows || rows.length !== 1) throw new UserError(`Results for "${statsId}" must hold exactly one row, got ${rows?.length ?? 0}.`);
   const row = rows[0]!;
-  const rowCount = toCount(row.row_count);
+  let rowCount = toCount(row.row_count);
   if (rowCount === null) throw new UserError(`Results for "${statsId}" have no numeric row_count.`);
   let measured = rowCount;
   if (usedSample) {
     const sampleCount = toCount(row.sample_count);
     if (sampleCount === null) throw new UserError(`Results for "${statsId}" have no numeric sample_count; the query reads a sample.`);
     measured = sampleCount;
+    if (measured === 0 && rowCount > 0) return null;
+    // A row count taken from an estimate can be below the rows the sample read.
+    rowCount = Math.max(rowCount, measured);
   }
   const sampled = usedSample && measured < rowCount;
   const boolean = (col: SnapshotColumn): boolean => classifyType(col.type) === "boolean";
+
+  // The top-values query's rows by column index, in the order the query returned them. A column
+  // the query covers but no row names has no non-null values: an empty list.
+  const topId = topQueryId(table);
+  const tops = new Map<number, TopValue[]>();
+  for (const r of queried.size ? (results[topId] ?? []) : []) {
+    const index = toCount(r.column_index);
+    const c = index === null ? undefined : table.columns[index];
+    if (index === null || !c || !queried.has(index)) {
+      throw new UserError(`Results for "${topId}" hold a row whose column_index ${JSON.stringify(r.column_index)} names no column the query covers in ${qualifiedName(table)}.`);
+    }
+    const list = tops.get(index) ?? [];
+    list.push({ value: topValue(r.value, c), count: toCount(r.n) ?? 0 });
+    tops.set(index, list);
+  }
 
   const columns = table.columns.map((col, i): SnapshotColumn => {
     const nulls = toCount(row[`c${i}_nulls`]);
@@ -113,12 +132,7 @@ function profileTable(
       min: hasMinMax(col) ? bound(row[`c${i}_min`], col) : null,
       max: hasMinMax(col) ? bound(row[`c${i}_max`], col) : null,
     };
-    const topId = topQueryId(table, col.name);
-    if (hasTopValues(col) && plan.has(topId)) {
-      profile.top_values = (results[topId] ?? []).map(
-        (r): TopValue => ({ value: topValue(r.value, col), count: toCount(r.n) ?? 0 }),
-      );
-    }
+    if (queried.has(i)) profile.top_values = tops.get(i) ?? [];
     profile.sampled = sampled;
     return { ...col, profile };
   });
@@ -126,23 +140,31 @@ function profileTable(
   return { ...table, row_count: rowCount, profiled_at: profiledAt, columns };
 }
 
-// Writes the results of a profile plan into the snapshot's tables. `sampled`
-// names the tables whose statistics query read a sample.
-export function applyProfile(
-  snapshot: Snapshot,
-  plan: QueryPlan,
-  results: PlanResults,
-  profiledAt: string,
-  sampled: Iterable<string>,
-): Snapshot {
-  const ids = new Set(plan.queries.map((q) => q.id));
-  const sampledSet = new Set(sampled);
-  return {
-    ...snapshot,
-    tables: snapshot.tables.map((t) =>
-      ids.has(statsQueryId(t)) ? profileTable(t, ids, results, profiledAt, sampledSet.has(qualifiedName(t))) : t,
-    ),
-  };
+export interface AppliedProfile {
+  snapshot: Snapshot;
+  // Tables whose sample read no rows of the row_count they report: they keep their earlier
+  // profile, if any.
+  empty_samples: { table: string; row_count: number }[];
+}
+
+// Writes the results of a profile plan into the snapshot's tables: each table with a statistics
+// query in the plan is profiled, and a column gets top values when the table's top-values query
+// covers it (an empty list when it has no non-null values). A table whose sample read no rows is
+// left as it was and listed in empty_samples.
+export function applyProfile(snapshot: Snapshot, details: ProfilePlanDetails, results: PlanResults, profiledAt: string): AppliedProfile {
+  const ids = new Set(details.plan.queries.map((q) => q.id));
+  const sampledSet = new Set(details.sampled);
+  const empty: AppliedProfile["empty_samples"] = [];
+  const tables = snapshot.tables.map((t) => {
+    if (!ids.has(statsQueryId(t))) return t;
+    const q = qualifiedName(t);
+    const queried = new Set(ids.has(topQueryId(t)) ? (details.top_columns.get(q) ?? []) : []);
+    const profiled = profileTable(t, queried, results, profiledAt, sampledSet.has(q));
+    if (profiled) return profiled;
+    empty.push({ table: q, row_count: toCount(results[statsQueryId(t)]?.[0]?.row_count) ?? 0 });
+    return t;
+  });
+  return { snapshot: { ...snapshot, tables }, empty_samples: empty };
 }
 
 export interface TableSummary {
@@ -177,12 +199,9 @@ export function summarizeTable(table: SnapshotTable, dialect?: Dialect): TableSu
 
 // Protected columns ------------------------------------------------------------
 
-// The stored form of a value of a protected column: "sha256:" and the first 16 hex characters of
-// the SHA-256 of its text, lowercased and trimmed.
-export function hashValue(text: string): string {
-  return `sha256:${createHash("sha256").update(text.toLowerCase().trim()).digest("hex").slice(0, 16)}`;
-}
-
+// A hashed value: "sha256:" and 16 hex characters, the form an earlier version of sl profile stored
+// for the top values of protected columns. Profiles no longer hold any: `sl profile --redact`
+// removes them.
 const HASHED_VALUE = /^sha256:[0-9a-f]{16}$/;
 
 export function isHashedValue(v: unknown): v is string {
@@ -315,33 +334,27 @@ export function protectedColumns(tables: SnapshotTable[], models: unknown[], dia
   return out;
 }
 
-// Whether a column's min and max may be stored for a protected column: numbers, dates and booleans.
+// Whether a protected column's min and max may be stored: numbers and dates.
 function keepsBounds(column: Pick<SnapshotColumn, "type">): boolean {
   const c = classifyType(column.type);
-  return isNumeric(c) || isTemporal(c) || c === "boolean";
+  return isNumeric(c) || isTemporal(c);
 }
 
-// Whether a protected column's profile still holds raw values: a top value that is not hashed, or
-// a text min or max.
+// Whether a protected column's profile still holds values: any top_values entry, raw or hashed
+// (an empty list holds none), or a min or max of a column that is not a number or a date.
 export function holdsRawValues(profile: ColumnProfile | undefined, column: Pick<SnapshotColumn, "type">): boolean {
   if (!isRecord(profile)) return false;
-  const raw = (Array.isArray(profile.top_values) ? profile.top_values : []).some(
-    (tv) => isRecord(tv) && tv.value !== null && tv.value !== undefined && !isHashedValue(tv.value),
-  );
-  if (raw) return true;
+  if (Array.isArray(profile.top_values) && profile.top_values.length > 0) return true;
   if (keepsBounds(column)) return false;
   return (profile.min !== null && profile.min !== undefined) || (profile.max !== null && profile.max !== undefined);
 }
 
-// A protected column's profile as stored: each top value hashed with its count kept, no min and
-// max for a text column, and redacted: true.
+// A protected column's profile as stored: counts only. It keeps null_fraction, distinct_count and
+// sampled, keeps min and max only for a number or date column, holds no top_values at all, and
+// carries redacted: true.
 export function redactProfile(profile: ColumnProfile, column: Pick<SnapshotColumn, "type">): ColumnProfile {
   const out: ColumnProfile = { ...profile };
-  if (Array.isArray(profile.top_values)) {
-    out.top_values = profile.top_values.map(
-      (tv): TopValue => ({ ...tv, value: tv.value === null || isHashedValue(tv.value) ? tv.value : hashValue(String(tv.value)) }),
-    );
-  }
+  delete out.top_values;
   if (!keepsBounds(column)) {
     delete out.min;
     delete out.max;
@@ -350,9 +363,19 @@ export function redactProfile(profile: ColumnProfile, column: Pick<SnapshotColum
   return out;
 }
 
+// Whether a profile holds a hashed value (an earlier form of protected profiles) in its top values,
+// min or max.
+function holdsHashedValues(profile: ColumnProfile | undefined): boolean {
+  if (!isRecord(profile)) return false;
+  if (Array.isArray(profile.top_values) && profile.top_values.some((v) => isRecord(v) && isHashedValue(v.value))) return true;
+  return isHashedValue(profile.min) || isHashedValue(profile.max);
+}
+
 // Redacts the profiles of the protected columns of the snapshot's tables, or of the tables named in
-// `only` (qualified names). Other profiles and tables are returned as they were. `redacted` lists
-// the columns whose profile changed, as table.column.
+// `only` (qualified names), and of any column whose profile holds hashed values, protected now or
+// not: its profile keeps counts only until a --refresh measures it again. Other profiles and
+// tables are returned as they were. `redacted` lists the columns whose profile changed, as
+// table.column.
 export function redactSnapshot(
   snapshot: Snapshot,
   protectedCols: Map<string, Set<string>>,
@@ -361,15 +384,21 @@ export function redactSnapshot(
   const redacted: string[] = [];
   const tables = snapshot.tables.map((t) => {
     const q = qualifiedName(t);
+    if (only && !only.has(q)) return t;
     const cols = protectedCols.get(q);
-    if (!cols || (only && !only.has(q))) return t;
     let changed = false;
     const columns = t.columns.map((c) => {
-      if (!cols.has(c.name) || !c.profile) return c;
-      if (c.profile.redacted === true && !holdsRawValues(c.profile, c)) return c;
+      if (!c.profile) return c;
+      const hashed = holdsHashedValues(c.profile);
+      if (!hashed && !cols?.has(c.name)) return c;
+      if (!hashed && c.profile.redacted === true && !holdsRawValues(c.profile, c)) return c;
       changed = true;
       redacted.push(`${q}.${c.name}`);
-      return { ...c, profile: redactProfile(c.profile, c) };
+      const profile = redactProfile(c.profile, c);
+      // A hashed bound is not a number or date; it goes even where bounds stay.
+      if (isHashedValue(profile.min)) delete profile.min;
+      if (isHashedValue(profile.max)) delete profile.max;
+      return { ...c, profile };
     });
     return changed ? { ...t, columns } : t;
   });

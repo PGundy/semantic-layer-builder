@@ -99,6 +99,7 @@ const spec: CommandSpec = {
       tables: list(values, "tables"),
       stripPrefixes: source?.draft?.strip_prefixes ?? [],
       models,
+      ...(source?.connection ? { connection: source.connection } : {}),
     });
     const markdown = renderBaseline(report);
     if (target) {

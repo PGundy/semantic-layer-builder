@@ -2,15 +2,29 @@
 // the role, the grain, the keys, the relationships, candidate measures and splits, the columns that
 // should not be splits and the questions to ask, and for the source a star-schema sketch. It reads the
 // snapshot alone; profiles and existing models sharpen it when present. Column classification (money,
-// counts, time, sensitivity, keys) comes from lib/draft.ts and lib/sensitivity.ts, so the brief and
-// sl draft read a column the same way. Every statement is a guess for the owner to confirm.
+// counts, time, currency, time zones, sensitivity, keys) comes from lib/draft.ts and lib/sensitivity.ts,
+// so the brief and sl draft read a column the same way, and noise and staging from classifyTable in
+// lib/rank.ts, as sl tables --groups reads a table. Every statement is a guess for the owner to confirm.
 import { classifyType, isNumeric } from "./column-types.ts";
-import { centsExpr, columnExpr, draftModels, inferPrimaryKey, numericRule, singular, stripTablePrefix } from "./draft.ts";
+import {
+  centsExpr,
+  columnCurrency,
+  columnExpr,
+  draftModels,
+  inferPrimaryKey,
+  nameMatchKeyEligible,
+  numericRule,
+  singular,
+  stripTablePrefix,
+  timestampHasZone,
+  twoDecimalType,
+  type ColumnCurrency,
+} from "./draft.ts";
 import { UserError } from "./errors.ts";
 import { findTable, qualifiedName, toSpecName } from "./naming.ts";
 import { inScope, matchesPattern, validatePattern } from "./patterns.ts";
 import { LOW_CARDINALITY_MAX, isHashedValue, summarizeTable } from "./profile.ts";
-import { noiseReason, rankTables } from "./rank.ts";
+import { classifyTable, rankTables } from "./rank.ts";
 import { nearUnique, sensitivityOf } from "./sensitivity.ts";
 import { profileState, type ProfileState } from "./status.ts";
 import type {
@@ -26,6 +40,7 @@ import type {
   SnapshotColumn,
   SnapshotMethod,
   SnapshotTable,
+  SourceConnection,
   Status,
   TableKind,
   TimeGrain,
@@ -48,6 +63,9 @@ export interface BaselineOptions {
   stripPrefixes?: string[];
   // Existing models of the source; their grain, keys and joins take precedence over guesses.
   models?: Model[];
+  // The source's connection, when sources/<source>.yaml has one: an imported snapshot's note says
+  // whether sl profile still needs one.
+  connection?: SourceConnection;
 }
 
 export interface BaselineKey {
@@ -91,6 +109,10 @@ export interface CandidateMeasure {
   numerator?: string;
   denominator?: string;
   unit_note?: string;
+  // Where the currency comes from: the column's comment or name, the table comment, or its currency column.
+  currency_basis?: ColumnCurrency["basis"];
+  // True when the column's type (numeric(12,2)) or comment says it is in whole currency units.
+  whole_units?: boolean;
   description: string;
 }
 
@@ -170,8 +192,13 @@ export interface BaselineReport {
   focus_threshold: number;
   // all: every in-scope table; focus: the top focus_threshold of them; tables: the --tables names.
   selection: "all" | "focus" | "tables";
+  // In-scope tables the brief does not cover, noise included.
   left_out: string[];
+  // The left-out tables skipped because they look like noise (classifyTable).
+  left_out_noise: string[];
   profiled: boolean;
+  // True when sources/<source>.yaml names a connection (env, database or views).
+  connection_configured: boolean;
   notes: string[];
   tables: TableBaseline[];
   star: {
@@ -191,10 +218,6 @@ const DEFAULT_NAME_PREFIXES = ["fct_", "fact_", "dim_"];
 // Prefixes dropped when reading an entity out of a table name.
 const ENTITY_PREFIXES = ["fct_", "fact_", "dim_", "stg_", "staging_", "raw_", "src_", "int_"];
 
-const STAGING_NAME = /^(raw|src|stg|staging|int|landing)_/i;
-const STAGING_SCHEMA = /^(raw|src|stg|staging|landing|ingest|import)$/i;
-const STAGING_TEXT = /\b(raw|staging|not cleaned|uncleaned|landing)\b/i;
-const PIPELINE_TOKENS = ["etl", "airflow", "fivetran", "airbyte", "stitch", "dbt"];
 const EVENT_TOKENS = ["event", "events", "log", "logs", "clicks", "pageviews", "sessions", "activity", "activities", "audit", "tracks", "impressions", "visits", "telemetry"];
 const EVENT_COLUMN = /^(event|event_name|event_type|action|activity|verb)$/;
 const BRIDGE_SUFFIX = /_(map|mapping|link|links|xref|bridge|closure|assignments?)$/;
@@ -352,7 +375,11 @@ function neighbourhood(focus: SnapshotTable[], eligible: SnapshotTable[], stripP
       if (target) out.push(target);
     }
     for (const c of t.columns) {
-      const m = toSpecName(c.name).match(/^(.+)_id$/);
+      const norm = toSpecName(c.name);
+      // A column named like another table's single-column key (sku -> products keyed by sku), by the
+      // rule sl draft joins by name: no generic or personal-data name, no noise table as the target.
+      if (nameMatchKeyEligible(c.name)) out.push(...(byKeyColumn.get(norm) ?? []).filter((n) => intrinsicRole(n)?.role !== "noise"));
+      const m = norm.match(/^(.+)_id$/);
       if (!m) continue;
       const x = m[1]!;
       const forms = new Set([x, singular(x), `${x}s`, `${x}es`, x.replace(/([^aeiou])y$/, "$1ies")]);
@@ -367,7 +394,11 @@ function neighbourhood(focus: SnapshotTable[], eligible: SnapshotTable[], stripP
   const incoming = (t: SnapshotTable): SnapshotTable[] => {
     const forms = new Set([entityName(t, stripPrefixes), singular(toSpecName(t.name))]);
     for (const pk of t.primary_key ?? []) forms.add(toSpecName(pk).replace(/_id$/, ""));
-    const columns = [...forms].map((f) => `${f}_id`).filter((c) => byColumn.has(c));
+    const keyNames = [...forms].map((f) => `${f}_id`);
+    // A single-column key that is not id-named (sku) is carried under its own name.
+    const pk = t.primary_key?.length === 1 ? toSpecName(t.primary_key[0]!) : undefined;
+    if (pk && nameMatchKeyEligible(pk)) keyNames.push(pk);
+    const columns = [...new Set(keyNames)].filter((c) => byColumn.has(c));
     const candidates = new Set<SnapshotTable>(fkInbound.get(keyOf(t)) ?? []);
     for (const c of columns) for (const n of byColumn.get(c)!) candidates.add(n);
     candidates.delete(t);
@@ -509,6 +540,39 @@ function keyPhrase(pk: BaselineKey): string {
   }
 }
 
+// What a money measure's columns say about its unit and currency: whole units by a two-decimal
+// type (numeric(12,2)) or a comment, and where its currency comes from (columnCurrency in lib/draft.ts).
+function moneyFacts(
+  table: SnapshotTable,
+  columns: string[],
+  m: Measure,
+  divided: boolean,
+): Pick<CandidateMeasure, "currency_basis" | "whole_units" | "unit_note"> & { currency_note?: string } {
+  const cols = columns.map((c) => table.columns.find((x) => x.name === c)).filter((c): c is SnapshotColumn => !!c);
+  // A line total reads a quantity and a per-unit price: the price's currency is the total's.
+  const priced = cols.find((c) => numericRule(toSpecName(c.name))?.perUnit) ?? cols[0];
+  const cur = priced && m.currency ? columnCurrency(table, priced) : undefined;
+  const currencyNote = cur
+    ? cur.basis === "currency_column"
+      ? `the currency column holds only ${cur.currency}`
+      : `in ${cur.currency}, by its ${cur.basis === "name" ? "name" : cur.basis === "column_comment" ? "comment" : "table's comment"}`
+    : undefined;
+  const typed = !divided && !!priced && twoDecimalType(priced.type);
+  const stated = !divided && !!priced?.description && /\b(whole (currency )?units|major units|dollars|euros|pounds|yen)\b/i.test(priced.description);
+  const whole = typed || stated;
+  const by = cols.length > 1 && priced ? `${priced.name}'s` : "its";
+  const unitText = whole
+    ? `money, probably in whole currency units by ${by} ${typed ? `type, ${priced!.type}` : "comment"}`
+    : "money; the snapshot does not say the unit (whole units or cents)";
+  const unit_note = `${unitText}${currencyNote ? `; ${currencyNote}` : whole ? "; the currency is not stated" : " or the currency"}`;
+  return {
+    ...(cur ? { currency_basis: cur.basis } : {}),
+    ...(whole ? { whole_units: true } : {}),
+    unit_note,
+    ...(currencyNote ? { currency_note: currencyNote } : {}),
+  };
+}
+
 function measuresOf(r: Omit<Reading, "measures" | "measureColumns" | "own" | "role" | "roleReasons">, dialect: Dialect): {
   measures: CandidateMeasure[];
   measureColumns: Map<string, string>;
@@ -538,11 +602,20 @@ function measuresOf(r: Omit<Reading, "measures" | "measureColumns" | "own" | "ro
       const col = columns[0];
       const perUnit = col ? numericRule(toSpecName(col))?.perUnit === true : false;
       for (const c of columns) measureCols.set(c, "a number to average, not a split");
+      const facts = m.format === "currency" ? moneyFacts(r.table, columns, m, divided) : undefined;
+      // An average's unit is noted when it is stored in cents, or when its type, comment or name settles the unit or currency.
+      const known = !!facts && (facts.whole_units === true || facts.currency_basis !== undefined);
       out.push({
         ...base,
         kind: "average",
         ...(m.currency ? { currency: m.currency } : {}),
-        ...(divided ? { unit_note: "probably stored in cents; divided by 100 to report whole currency units" } : {}),
+        ...(facts?.currency_basis ? { currency_basis: facts.currency_basis } : {}),
+        ...(facts?.whole_units ? { whole_units: true } : {}),
+        ...(divided
+          ? { unit_note: `probably stored in cents; divided by 100 to report whole currency units${facts?.currency_note ? `; ${facts.currency_note}` : ""}` }
+          : known && facts?.unit_note
+            ? { unit_note: facts.unit_note }
+            : {}),
         description: perUnit
           ? `the average of ${col}, a per-unit figure: averaged rather than summed`
           : col && TIME_LIKE_NUMBER.test(toSpecName(col))
@@ -554,12 +627,15 @@ function measuresOf(r: Omit<Reading, "measures" | "measureColumns" | "own" | "ro
     // Sums: money, counts of units, durations and other additive numbers.
     for (const c of columns) if (!measureCols.has(c)) measureCols.set(c, "a number to add up, not a split");
     let unit: string | undefined;
+    let money: Pick<CandidateMeasure, "currency_basis" | "whole_units"> = {};
     if (m.format === "currency") {
       const fromName = columns.some((c) => /(cents|pennies)/.test(toSpecName(c)));
+      const facts = moneyFacts(r.table, columns, m, divided);
+      money = { ...(facts.currency_basis ? { currency_basis: facts.currency_basis } : {}), ...(facts.whole_units ? { whole_units: true } : {}) };
       unit = divided
         ? `probably stored in cents, by its ${fromName ? "name" : /cents|pennies/.test(description) ? "table's comment" : "comment"}; divided by 100 to report whole currency units`
-        : "money; the snapshot does not say the unit (whole units or cents) or the currency";
-      if (m.currency) unit += `; the currency column holds only ${m.currency}`;
+        : (facts.unit_note ?? "money; the snapshot does not say the unit (whole units or cents) or the currency");
+      if (divided && facts.currency_note) unit += `; ${facts.currency_note}`;
     } else if (m.format === "integer") {
       unit = "a count of units or things";
     } else {
@@ -573,6 +649,7 @@ function measuresOf(r: Omit<Reading, "measures" | "measureColumns" | "own" | "ro
       ...base,
       kind: "sum",
       ...(m.currency ? { currency: m.currency } : {}),
+      ...money,
       ...(unit ? { unit_note: unit } : {}),
       description: columns.length > 1 ? `the total of ${what}, a line total` : `the total of ${what}`,
     };
@@ -626,7 +703,8 @@ function ownSplits(r: Pick<Reading, "table" | "q" | "draft" | "keyColumns">, dia
   const { table } = r;
   for (const d of r.draft.dimensions) {
     const col = table.columns.find((c) => columnExpr(dialect, c.name) === d.expr);
-    if (!col || r.keyColumns.has(col.name)) continue;
+    // A key column splits only by time: the date inside a composite key (store_id, month).
+    if (!col || (r.keyColumns.has(col.name) && d.type !== "time")) continue;
     const norm = toSpecName(col.name);
     if (sensitivityOf(col.name, col, table.row_count, { key: false })) continue;
     const distinct = col.profile?.distinct_count;
@@ -663,22 +741,10 @@ function ownSplits(r: Pick<Reading, "table" | "q" | "draft" | "keyColumns">, dia
   return out;
 }
 
-// noise or staging by the table's own name, schema and comment, or null.
+// noise or staging by the table's own name, schema and comment (classifyTable, the judgement
+// sl tables --groups suggests a scope by), or null.
 function intrinsicRole(table: SnapshotTable): { role: "noise" | "staging"; reasons: string[] } | null {
-  const lower = table.name.toLowerCase();
-  const tokens = lower.split(/[_\-.]+/);
-  const noise = noiseReason(table.name);
-  if (noise) return { role: "noise", reasons: [`${noise}`] };
-  const pipeline = tokens.find((t) => PIPELINE_TOKENS.includes(t));
-  if (pipeline || lower.startsWith("_")) {
-    return { role: "noise", reasons: [pipeline ? `name contains "${pipeline}": pipeline bookkeeping` : "name starts with an underscore: tool bookkeeping"] };
-  }
-  const staging: string[] = [];
-  if (STAGING_NAME.test(table.name)) staging.push("raw or staging naming");
-  if (table.schema && STAGING_SCHEMA.test(table.schema)) staging.push(`in the ${table.schema} schema`);
-  if (table.description && STAGING_TEXT.test(table.description)) staging.push("the table comment says it is raw or uncleaned");
-  if (staging.length) return { role: "staging", reasons: staging };
-  return null;
+  return classifyTable(table);
 }
 
 // The reason a table counts as referenced: the tables read here, and those that carry its key
@@ -765,6 +831,7 @@ export function buildBaseline(snapshot: Snapshot, opts: BaselineOptions): Baseli
   let selected: SnapshotTable[];
   let selection: BaselineReport["selection"];
   let leftOut: string[] = [];
+  let leftOutNoise: string[] = [];
   if (opts.tables?.length) {
     const picked = new Set(resolveTables(snapshot, opts.tables).map(keyOf));
     selected = ranked.map((r) => r.table).filter((t) => picked.has(keyOf(t)));
@@ -774,12 +841,24 @@ export function buildBaseline(snapshot: Snapshot, opts: BaselineOptions): Baseli
   } else {
     const inScopeRanked = ranked.map((r) => r.table).filter((t) => inScope(opts.scope, t));
     if (inScopeRanked.length > opts.focusThreshold) {
-      selected = inScopeRanked.slice(0, opts.focusThreshold);
-      leftOut = inScopeRanked.slice(opts.focusThreshold).map(qualifiedName);
+      // The top tables by rank, skipping those that look like noise, with raw and staging tables
+      // only where room is left: the judgement sl tables --groups suggests a scope by.
+      const role = (t: SnapshotTable) => intrinsicRole(t)?.role;
+      const noise = inScopeRanked.filter((t) => role(t) === "noise");
+      const candidates = [...inScopeRanked.filter((t) => !role(t)), ...inScopeRanked.filter((t) => role(t) === "staging")];
+      const picked = new Set(candidates.slice(0, opts.focusThreshold));
+      selected = inScopeRanked.filter((t) => picked.has(t));
+      leftOut = inScopeRanked.filter((t) => !picked.has(t)).map(qualifiedName);
+      leftOutNoise = noise.map(qualifiedName);
       selection = "focus";
+      const others = leftOut.length - leftOutNoise.length;
+      const skipped = [
+        ...(leftOutNoise.length ? [`${plural(leftOutNoise.length, "table")} that look${leftOutNoise.length === 1 ? "s" : ""} like noise`] : []),
+        ...(others ? [`${others} more by rank`] : []),
+      ];
       notes.push(
-        `${inScopeRanked.length} tables are in scope, more than the focus threshold of ${opts.focusThreshold}: this brief covers the top ${opts.focusThreshold} ` +
-          `by size, references and naming and leaves out ${plural(leftOut.length, "table")}. ` +
+        `${inScopeRanked.length} tables are in scope, more than the focus threshold of ${opts.focusThreshold}: this brief covers ${selected.length} of the ${inScopeRanked.length} in-scope tables, ` +
+          `the top by size, references and naming, and leaves out ${plural(leftOut.length, "table")} (${listPhrase(skipped)}). ` +
           `Narrow the scope with \`sl scope --source ${opts.source} --include <pattern> --write\` (\`sl tables --source ${opts.source} --groups\` suggests patterns), ` +
           `or name tables with --tables.`,
       );
@@ -824,7 +903,9 @@ export function buildBaseline(snapshot: Snapshot, opts: BaselineOptions): Baseli
     const keyColumns = new Set<string>();
     for (const c of pk?.columns ?? []) keyColumns.add(c);
     for (const fk of table.foreign_keys ?? []) for (const c of fk.columns) keyColumns.add(c);
-    for (const j of draft.joins ?? []) for (const key of j.keys) keyColumns.add(key.from);
+    // A column joined by its name alone (sku, status) keeps its dimension and split; id-named and
+    // declared join columns are keys.
+    for (const j of draft.joins ?? []) for (const key of j.keys) if (j.origin === "declared" || isIdName(key.from)) keyColumns.add(key.from);
     for (const c of table.columns) if (isIdName(c.name)) keyColumns.add(c.name);
     // Time columns that date a row; deletion and history columns are filters, not dates.
     const timeColumns = draft.dimensions
@@ -986,7 +1067,7 @@ export function buildBaseline(snapshot: Snapshot, opts: BaselineOptions): Baseli
   for (const t of selected) {
     const r = readings.get(keyOf(t));
     if (!r) continue;
-    tables.push(tableBaseline(r, joinedSplits(r), readings, opts, unread.get(keyOf(t))));
+    tables.push(tableBaseline(r, joinedSplits(r), readings, opts, unread.get(keyOf(t)), dialect));
   }
   const roleRank = (role: TableRole) => TABLE_ROLES.indexOf(role);
   tables.sort((a, b) => roleRank(a.role) - roleRank(b.role) || (rankIndex.get(a.table.toLowerCase()) ?? 0) - (rankIndex.get(b.table.toLowerCase()) ?? 0));
@@ -1017,11 +1098,31 @@ export function buildBaseline(snapshot: Snapshot, opts: BaselineOptions): Baseli
     notes.push("No table in this brief has a profile, so key uniqueness, value counts and which columns are near-unique are guesses from names.");
   }
   const profileCommand = unprofiled.length ? `sl profile --source ${opts.source} --tables ${unprofiled.join(",")}` : null;
+  // An imported snapshot (DDL, dbt manifest, catalog export) was read without a connection, and sl
+  // profile needs one: one to configure when the source has none, or one that reaches the database.
+  const imported = snapshot.method !== "live";
+  const conn = opts.connection;
+  const connected = !!(conn?.env || conn?.database || (conn?.views && Object.keys(conn.views).length));
+  const how = article(snapshot.method.replace(/_/g, " "));
+  if (imported && profileCommand) {
+    notes.push(
+      connected
+        ? `This snapshot came from ${how} import, so nothing has read the data yet: \`sl profile\` reads it through the connection in sources/${opts.source}.yaml; run it where the database is reachable.`
+        : `This snapshot came from ${how} import, so \`sl profile\` needs a connection to the database first: ` +
+            `set connection.env, or connection.database for DuckDB, in sources/${opts.source}.yaml.`,
+    );
+  }
   // With more tables than the focus threshold, the owner picks a focus before anything is profiled or drafted.
   const next = selection === "focus"
     ? `Read this brief to the owner and agree which tables to focus on first (\`sl tables --source ${opts.source} --groups\`, then \`sl scope --source ${opts.source} --include <pattern> --write\`); profile and draft only the scoped tables.`
     : profileCommand
-    ? `Read this brief to the owner and note their answers; \`${profileCommand}\` measures what it guesses, then \`sl draft --source ${opts.source}\` writes the draft models.`
+    ? `Read this brief to the owner and note their answers; ${
+        imported
+          ? connected
+            ? "where the database is reachable (this snapshot came from an import, read without a connection), "
+            : `once sources/${opts.source}.yaml has a connection (this snapshot came from an import, read without one), `
+          : ""
+      }\`${profileCommand}\` measures what it guesses, then \`sl draft --source ${opts.source}\` writes the draft models.`
     : `Read this brief to the owner and note their answers, then \`sl draft --source ${opts.source}\` writes the draft models.`;
 
   return {
@@ -1034,7 +1135,9 @@ export function buildBaseline(snapshot: Snapshot, opts: BaselineOptions): Baseli
     focus_threshold: opts.focusThreshold,
     selection,
     left_out: leftOut,
+    left_out_noise: leftOutNoise,
     profiled: profiledAny,
+    connection_configured: connected,
     notes,
     tables,
     star: {
@@ -1106,6 +1209,7 @@ function tableBaseline(
   readings: Map<string, Reading>,
   opts: BaselineOptions,
   unread: { count: number; columns: string[] } | undefined,
+  dialect: Dialect,
 ): TableBaseline {
   const { table, q } = r;
   const grain = grainOf(r, readings);
@@ -1180,7 +1284,7 @@ function tableBaseline(
     }
   }
 
-  const questions = questionsOf(r, grain, sensitiveCols);
+  const questions = questionsOf(r, grain, sensitiveCols, dialect);
   const state = profileState(table);
   const wouldMeasure: string[] = [];
   if (state !== "yes" && r.role !== "noise") {
@@ -1221,6 +1325,7 @@ function questionsOf(
   r: Reading,
   grain: { guess: string; basis: string },
   sensitiveCols: { column: string; reason: string; tag: string }[],
+  dialect: Dialect,
 ): OwnerQuestion[] {
   const { table, q } = r;
   const out: OwnerQuestion[] = [];
@@ -1253,34 +1358,95 @@ function questionsOf(
     });
   }
 
-  // 3. Which date is "the" date.
+  // 3. Which date is "the" date, and its time zone: for a timestamp without one, also the zone its
+  // values are recorded in (the time dimension's time_zone); a date has no time zone to ask about.
+  const zoneOf = (c: string) => timestampHasZone(dialect, table.columns.find((x) => x.name === c)?.type ?? "");
+  const naive = r.timeColumns.filter((c) => zoneOf(c) === false);
+  const aware = r.timeColumns.some((c) => zoneOf(c) === true);
+  const naiveNote = naive.length
+    ? ` ${listPhrase(naive)} ${naive.length === 1 ? "has" : "have"} no time zone: in which zone ${naive.length === 1 ? "is it" : "are they"} recorded (the time dimension's time_zone), and in which time zone should days be counted?`
+    : "";
   if (r.timeColumns.length >= 2) {
     const guess = r.timeColumns.find((c) => PRIMARY_DATE.test(toSpecName(c))) ?? r.timeColumns[0]!;
     out.push({
       topic: "date",
-      question: `Which date is "the" date of ${article(noun)}: ${listPhrase(r.timeColumns, "or")}? Our guess is ${guess}. In which time zone should days be counted?`,
+      question: `Which date is "the" date of ${article(noun)}: ${listPhrase(r.timeColumns, "or")}? Our guess is ${guess}.${
+        naiveNote || (aware ? " In which time zone should days be counted?" : "")
+      }`,
       columns: [...r.timeColumns],
     });
   } else if (r.timeColumns.length === 1 && (r.role === "fact" || r.role === "event" || r.role === "snapshot")) {
     const only = r.timeColumns[0]!;
-    out.push({ topic: "date", question: `Is ${only} the date to report ${pluralNoun(noun)} by, and in which time zone should days be counted?`, columns: [only] });
+    const report = `${only} the date to report ${pluralNoun(noun)} by`;
+    out.push({
+      topic: "date",
+      question: naive.length
+        ? `Is ${report}?${naiveNote.replace(`${only} has`, "It has")}`
+        : aware
+          ? `Is ${report}, and in which time zone should days be counted?`
+          : `Is ${report}?`,
+      columns: [only],
+    });
+  }
+  // Timestamps without a time zone that the date question above does not name (a dimension table's
+  // one timestamp, a deletion time): the zone their values are stored in, as sl draft asks. With a
+  // date question, it asks this too; without one, this is the date question.
+  const dateQuestion = out.find((x) => x.topic === "date");
+  const unasked = r.draft.dimensions
+    .filter((d) => d.type === "time")
+    .map((d) => table.columns.find((c) => columnExpr(dialect, c.name) === d.expr)?.name)
+    .filter((c): c is string => !!c && zoneOf(c) === false && !dateQuestion?.columns.includes(c));
+  if (unasked.length) {
+    const one = unasked.length === 1;
+    if (dateQuestion) {
+      dateQuestion.question += ` ${listPhrase(unasked)} ${one ? "has" : "have"} no time zone either: in which zone ${one ? "is it" : "are they"} recorded?`;
+      dateQuestion.columns.push(...unasked);
+    } else {
+      out.push({
+        topic: "date",
+        question: `${listPhrase(unasked)} ${one ? "is a timestamp" : "are timestamps"} without a time zone: in which zone ${
+          one ? "is its value" : "are their values"
+        } recorded (the time dimension's time_zone, an IANA zone such as UTC or America/New_York)?`,
+        columns: unasked,
+      });
+    }
   }
 
-  // 4. Units and currency.
+  // 4. Units and currency. A unit its type or comment states is not asked; a currency its comment,
+  // its name or the table's currency column names is asked as a confirmation.
   const money = r.measures.filter((m) => (m.kind === "sum" || m.kind === "average") && m.format === "currency" && m.columns.length === 1);
   if (money.length) {
     const cents = money.filter((m) => m.unit_note?.startsWith("probably stored in cents")).flatMap((m) => m.columns);
-    const other = money.filter((m) => !m.unit_note?.startsWith("probably stored in cents")).flatMap((m) => m.columns);
+    const other = money.filter((m) => !m.unit_note?.startsWith("probably stored in cents") && !m.whole_units).flatMap((m) => m.columns);
     const currencyCols = table.columns.filter((c) => /(^|_)currency(_code)?$/.test(toSpecName(c.name))).map((c) => c.name);
     const parts: string[] = [];
     if (cents.length) parts.push(`${listPhrase(cents)} look${cents.length === 1 ? "s" : ""} like money stored in cents, so the brief divides ${cents.length === 1 ? "it" : "them"} by 100: is that right?`);
     if (other.length) parts.push(`${other.length === 1 ? "Is" : "Are"} ${listPhrase(other)} in whole currency units or in cents?`);
-    const currencies = [...new Set(money.map((m) => m.currency).filter((c): c is string => !!c))];
-    if (currencies.length) parts.push(`The currency column holds only ${listPhrase(currencies)}: is every row in ${currencies.length === 1 ? currencies[0] : "one of these"}?`);
-    const they = money.flatMap((m) => m.columns).length === 1 ? "is it" : "are they";
-    if (!currencies.length && currencyCols.length) parts.push(`Which currency ${they} in? The table has ${listPhrase(currencyCols)}: do rows mix currencies, and should amounts be converted?`);
-    else if (!currencies.length) parts.push(`Which currency ${they} in?`);
-    out.push({ topic: "units", question: parts.join(" "), columns: [...cents, ...other, ...currencyCols] });
+    const fromColumn = [...new Set(money.filter((m) => m.currency && m.currency_basis === "currency_column").map((m) => m.currency!))];
+    if (fromColumn.length) parts.push(`The currency column holds only ${listPhrase(fromColumn)}: is every row in ${fromColumn.length === 1 ? fromColumn[0] : "one of these"}?`);
+    // Currencies named by a column's comment or name, or by the table comment: confirmations.
+    const named = new Map<string, string[]>();
+    for (const m of money) {
+      if (!m.currency || !m.currency_basis || m.currency_basis === "currency_column") continue;
+      const how = m.currency_basis === "name" ? "name" : m.currency_basis === "column_comment" ? "comment" : "table comment";
+      const key = `${m.currency}\u0000${how}`;
+      named.set(key, [...(named.get(key) ?? []), ...m.columns]);
+    }
+    for (const [key, cols] of named) {
+      const [code, how] = key.split("\u0000") as [string, string];
+      const one = cols.length === 1;
+      const by = how === "table comment" ? "the table comment" : `${one ? "its" : "their"} ${how}${one ? "" : "s"}`;
+      parts.push(`${listPhrase(cols)} ${one ? "is" : "are"} in ${code} by ${by}: is that right?`);
+    }
+    const unknown = money.filter((m) => !m.currency).flatMap((m) => m.columns);
+    if (unknown.length) {
+      // A pronoun when the sentence before names exactly these columns.
+      const pronoun = parts.length === 1 && other.length === unknown.length && unknown.every((c) => other.includes(c));
+      const they = pronoun ? (unknown.length === 1 ? "is it" : "are they") : `${unknown.length === 1 ? "is" : "are"} ${listPhrase(unknown)}`;
+      if (currencyCols.length) parts.push(`Which currency ${they} in? The table has ${listPhrase(currencyCols)}: do rows mix currencies, and should amounts be converted?`);
+      else parts.push(`Which currency ${they} in?`);
+    }
+    if (parts.length) out.push({ topic: "units", question: parts.join(" "), columns: [...new Set([...cents, ...other, ...money.flatMap((m) => m.columns), ...currencyCols])] });
   }
   for (const m of r.measures) {
     if (m.kind === "sum" && m.unit_note === "a duration; the unit is not stated") {
@@ -1390,12 +1556,19 @@ export function renderBaseline(report: BaselineReport): string {
   const L: string[] = [];
   const date = report.captured_at.slice(0, 10);
   L.push(`# Baseline brief: ${report.source}`, "");
+  const covered = report.tables.length;
+  let counts: string;
+  if (report.selection === "tables") counts = `it covers the ${plural(covered, "table")} --tables names (${report.in_scope} in scope, ${report.snapshot_tables} in the snapshot)`;
+  else if (report.in_scope === 0) counts = "no table is in scope";
+  else if (covered === report.in_scope) counts = covered === 1 ? "it covers the 1 in-scope table" : `it covers all ${covered} in-scope tables`;
+  else counts = `it covers ${covered} of the ${report.in_scope} in-scope tables`;
+  if (report.selection !== "tables" && report.snapshot_tables !== report.in_scope) counts += ` (${report.snapshot_tables} in the snapshot)`;
   L.push(
     `A first reading of the ${report.source} schema (${report.dialect}, from ${
       report.method === "live" ? "a live introspection" : `${article(report.method.replace(/_/g, " "))} import`
-    } captured ${date}): ${plural(report.tables.length, "table")} of ${report.in_scope} in scope${
-      report.snapshot_tables !== report.in_scope ? ` (${report.snapshot_tables} in the snapshot)` : ""
-    }. Everything below is a guess from names${report.profiled ? ", keys and profiles" : " and keys"}, for the owner to confirm or correct; nothing here is settled.`,
+    } captured ${date}): ${counts}. Everything below is a guess from names${
+      report.profiled ? ", keys and profiles" : " and keys"
+    }, for the owner to confirm or correct; nothing here is settled.`,
   );
   for (const n of report.notes) L.push("", `> ${n}`);
 
@@ -1472,14 +1645,27 @@ export function renderBaseline(report: BaselineReport): string {
     L.push("", "## What a profile would measure", "");
     L.push(
       report.profile_command
-        ? `\`${report.profile_command}\` reads the data (counts, distinct values, top values; protected columns are hashed) and would replace these guesses with measurements:`
+        ? `\`${report.profile_command}\` reads the data (counts, distinct values, top values; protected columns keep counts only) and would replace these guesses with measurements${
+            report.method === "live"
+              ? ""
+              : report.connection_configured
+                ? `. It reads the data through the source's connection, so run it where the database is reachable; this snapshot came from ${article(report.method.replace(/_/g, " "))} import`
+                : `. It needs a connection to the database, since this snapshot came from ${article(report.method.replace(/_/g, " "))} import`
+          }:`
         : "A profile would replace these guesses with measurements:",
     );
     for (const t of unprofiled) L.push(`- ${t.table}: ${t.profile_would_measure.join("; ")}`);
   }
   if (report.left_out.length) {
-    const shown = report.left_out.slice(0, 20);
-    L.push("", `## Left out (${report.left_out.length})`, "", `${shown.join(", ")}${report.left_out.length > shown.length ? `, and ${report.left_out.length - shown.length} more` : ""}`);
+    const noise = new Set(report.left_out_noise);
+    const ranked = report.left_out.filter((t) => !noise.has(t));
+    const line = (list: string[]) => {
+      const shown = list.slice(0, 20);
+      return `${shown.join(", ")}${list.length > shown.length ? `, and ${list.length - shown.length} more` : ""}`;
+    };
+    L.push("", `## Left out (${report.left_out.length})`, "");
+    if (ranked.length) L.push(`${noise.size ? "Below the top by rank: " : ""}${line(ranked)}`);
+    if (noise.size) L.push(`${ranked.length ? "\n" : ""}Look like noise: ${line(report.left_out_noise)}`);
   }
   return `${L.join("\n")}\n`;
 }

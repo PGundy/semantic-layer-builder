@@ -7,7 +7,7 @@ A join says how two tables in the same source connect, for example each order to
 `sl draft` writes joins with an `origin`:
 
 - `declared`: the database has a foreign key between the columns. Usually right, still checked.
-- `inferred`: guessed by a tool or by you, from names (`orders.customer_id` and `customers.customer_id`) or from matching values (every `orders.ship_region` value is a `regions.region_code`). Often right, sometimes not (`created_by_id` is not a customer). A join you find yourself and add to the model's `joins` list gets `origin: inferred` and `status: draft`.
+- `inferred`: guessed by a tool or by you, from names (`orders.customer_id` and `customers.customer_id`) or from matching values (every `orders.ship_region` value is a `regions.region_code`). Often right, sometimes not (`created_by_id` is not a customer). `sl draft` also infers a join when a column's name equals another in-scope table's single-column primary key of a compatible type, text keys included (`order_lines.sku` to `products.sku`). A join you find yourself and add to the model's `joins` list gets `origin: inferred` and `status: draft`.
 - `owner`: the owner told you, for example "`shipments.order_ref` is the order number". Write it yourself in the model's `joins` list with `origin: owner` and `status: draft`.
 
 Name a join after the role its target plays for this model (`customer`, `ship_to_region`, `home_region`), never after a column or a dimension of the model (`ship_region`, `region`): joins share one namespace with the model's dimensions and measures, and a role name says which region a reader gets.
@@ -67,10 +67,14 @@ The join's `type` also decides what a join reference through it sees. A measure 
 - `one_to_many`: one row on the left, many on the right (customer to orders). **It multiplies totals on the left.** If a customer has 5 orders, joining customers to orders repeats that customer 5 times, so a sum of `lifetime_credit` from customers comes out 5 times too large. Flag every such join to the owner: "If someone asks for customer credit broken down by order, the credit would be counted once per order. Tools that read this layer total the order side first and then join, so their numbers stay right, but anyone writing SQL by hand must do the same." Often the better model is the reverse join, declared on the many side (`orders.customer`, `many_to_one`).
 - `many_to_many`: neither side is unique (orders to promotions, where an order can have several promotions and a promotion several orders). It cannot be modeled directly and must not be approved. Options to offer:
   1. A bridge table that holds one row per pair (`order_promotions`). Add it to scope, model it, and join each side to it with `many_to_one` joins.
-  2. A pre-aggregated model, for example a view with one row per order and the promotion count: on DuckDB a view in `connection.views`, elsewhere a view or table the owner's engineers create.
+  2. A pre-aggregated model, for example a view with one row per order and the promotion count, which the owner's engineers create on every dialect: on DuckDB a view in the `.duckdb` database file or a Parquet file they write, read as one table expression (`connection.views` takes no aggregate).
   3. Leave it out and record an open question.
 
-When `relationship` in the YAML differs from `suggested_relationship`, change the YAML to match the evidence, or ask the owner why the data disagrees with what they expect. Never approve a join whose YAML relationship the evidence contradicts.
+When `relationship` in the YAML differs from `suggested_relationship`, change the YAML to match the evidence, or ask the owner why the data disagrees with what they expect. Never approve a join whose YAML relationship the evidence contradicts. `sl validate` reports an error on an approved `many_to_one` or `one_to_one` join whose evidence shows repeats (`right_key_unique: false`, or `max_fanout` above 1), because every measure reading through it would count some rows more than once. When the owner explains why the measured repeats do not matter (a duplicate row being removed upstream, a key unique for every row the layer counts), and you have read that back, record the reason in their words on the join, and recheck after the data changes:
+
+```yaml
+    fanout_override: "Duplicate rows for 3 discontinued products; finance excludes them upstream. Dana Ruiz, 2026-10-26."
+```
 
 Only `many_to_one` and `one_to_one` joins carry join references (in measure filters, dimensions and row filters) and request fields on other models; a `one_to_many` join never does, because it repeats the left model's rows.
 

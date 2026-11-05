@@ -17,6 +17,21 @@ const U = { ordered: false, tolerance: 0 };
 const O = { ordered: true, tolerance: 0 };
 
 describe("compareRows", () => {
+  test("protected columns' values show as [protected] in every kind of difference", () => {
+    const P = { tolerance: 0, protectedColumns: ["email"] };
+    const e = [{ email: "a@x.com", n: 1 }];
+    const ordered = compareRows(e, [{ email: "b@x.com", n: 2 }, { email: "c@x.com", n: 3 }], { ...P, ordered: true });
+    expect(ordered.diffs).toEqual([
+      "Expected 1 row, got 2 rows.",
+      "Row 1, column email: expected [protected], got [protected].",
+      "Row 1, column n: expected 1, got 2.",
+      "Row 2: got {email: [protected], n: 3}, which is not expected.",
+    ]);
+    const unordered = compareRows(e, [{ email: "a@x.com", n: 2 }], { ...P, ordered: false });
+    expect(unordered.diffs).toEqual(["Row 1 (email=[protected]), column n: expected 1, got 2."]);
+    expect(compareRows([{ email: null, n: 1 }], [{ email: null, n: 2 }], { ...P, ordered: true }).diffs).toEqual(["Row 1, column n: expected 1, got 2."]);
+  });
+
   test("identical rows pass", () => {
     expect(compareRows([{ a: 1, b: "x" }], [{ a: 1, b: "x" }], O)).toEqual({ ok: true, diffs: [] });
   });

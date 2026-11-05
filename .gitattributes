@@ -1,0 +1,14 @@
+# Text files are stored and checked out with LF line endings on every platform,
+# so fixtures, snapshots and expected bytes match on Windows too.
+* text=auto eol=lf
+
+# Binary data files are never converted.
+*.parquet binary
+*.duckdb binary
+*.png binary
+*.jpg binary
+*.gz binary
+
+# This export fixture keeps the CRLF records a Windows export writes, so the import is tested
+# on them; it is stored byte for byte.
+tests/fixtures/imports/info_schema_postgres.csv -text

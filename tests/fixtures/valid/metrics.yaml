@@ -10,6 +10,7 @@ metrics:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-01-15
+    approved_hash: sha256:e392d67c14964d6182a88c10a39001d7607d886c09538bbd6806c64dcb97a238
   - name: revenue_per_customer
     source: warehouse
     type: derived

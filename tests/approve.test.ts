@@ -218,12 +218,12 @@ measures:
     expect((await approve(root, ["--target", "wh.customers", "--by", "Dana"])).code).toBe(0);
     expect((await approve(root, ["--target", "wh.customers.customer_count", "--by", "Dana"])).code).toBe(0);
     const raw = text(root, "models/wh/customers.yaml");
-    expect(raw).toStartWith("# Customers.\nmodel: customers\nsource: wh\ntable: main.dim_customers\nstatus: approved\napproved_by: Dana\napproved_at: 2026-01-15\ngrain:");
-    expect(raw).toContain("  - name: customer_count\n    status: approved\n    approved_by: Dana\n    approved_at: 2026-01-15\n    agg: count\n");
+    expect(raw).toMatch(/^# Customers\.\nmodel: customers\nsource: wh\ntable: main\.dim_customers\nstatus: approved\napproved_by: Dana\napproved_at: 2026-01-15\napproved_hash: sha256:[0-9a-f]{64}\ngrain:/);
+    expect(raw).toMatch(/ {2}- name: customer_count\n {4}status: approved\n {4}approved_by: Dana\n {4}approved_at: 2026-01-15\n {4}approved_hash: sha256:[0-9a-f]{64}\n {4}agg: count\n/);
 
     writeFileSync(join(root, "access.yaml"), "# Who sees what.\nroles:\n  - name: analyst\n    allow:\n      models: [wh.*]\n");
     expect((await approve(root, ["--target", "access", "--by", "Dana"])).code).toBe(0);
-    expect(text(root, "access.yaml")).toStartWith("# Who sees what.\nstatus: approved\napproved_by: Dana\napproved_at: 2026-01-15\nroles:");
+    expect(text(root, "access.yaml")).toMatch(/^# Who sees what\.\nstatus: approved\napproved_by: Dana\napproved_at: 2026-01-15\napproved_hash: sha256:[0-9a-f]{64}\nroles:/);
   });
 
   test("the --target error names every target kind, golden included", async () => {
@@ -506,7 +506,7 @@ describe("revoking and approving access.yaml again", () => {
     const a = readYaml<Record<string, unknown>>(join(root, "access.yaml"));
     expect(a).toMatchObject({ status: "approved", approved_by: "Lee", approved_at: "2026-03-01" });
     expect(a.last_approved).toBeUndefined();
-    expect(text(root, "access.yaml")).toStartWith("# Who sees what.\nstatus: approved\napproved_by: Lee\napproved_at: 2026-03-01\nroles:");
+    expect(text(root, "access.yaml")).toMatch(/^# Who sees what\.\nstatus: approved\napproved_by: Lee\napproved_at: 2026-03-01\napproved_hash: sha256:[0-9a-f]{64}\nroles:/);
   });
 
   test("a revoke of a model, field or metric deletes the approval without last_approved", async () => {
@@ -526,5 +526,80 @@ describe("revoking and approving access.yaml again", () => {
     expect(r.code).toBe(0);
     expect(r.out).not.toContain("last_approved");
     expect(text(root, "access.yaml")).toBe(ACCESS);
+  });
+});
+
+describe("approval hashes", () => {
+  const HASH = /^sha256:[0-9a-f]{64}$/;
+
+  test("approve records approved_hash on every item it approves, and revoke removes it", async () => {
+    const root = await project();
+    expect((await approve(root, ["--target", "wh.orders", "--by", "Dana", "--recursive"])).code).toBe(0);
+    const o = orders(root);
+    for (const x of [o, ...o.dimensions, ...o.measures, ...o.joins!]) expect(x.approved_hash).toMatch(HASH);
+    expect((await approve(root, ["--target", "metric:aov", "--by", "Dana"])).code).toBe(0);
+    expect(readYaml<MetricsFile>(join(root, "metrics.yaml")).metrics[0]!.approved_hash).toMatch(HASH);
+    expect((await approve(root, ["--target", "wh.orders.revenue", "--revoke"])).code).toBe(0);
+    expect(orders(root).measures[0]!.approved_hash).toBeUndefined();
+    expect(orders(root).measures[1]!.approved_hash).toMatch(HASH);
+  });
+
+  test("an approved item edited after its approval is approved again, not skipped", async () => {
+    const root = await project();
+    await approve(root, ["--target", "wh.orders.revenue", "--by", "Dana", "--date", "2026-01-10"]);
+    const before = orders(root).measures[0]!.approved_hash;
+    writeFileSync(join(root, "models/wh/orders.yaml"), text(root, "models/wh/orders.yaml").replace("expr: amount\n", "expr: amount * 1000\n"));
+    const r = await approve(root, ["--target", "wh.orders.revenue", "--by", "Lee"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe("Approved wh.orders.revenue again (it changed since its last approval) by Lee on 2026-01-15.");
+    const m = orders(root).measures[0]!;
+    expect(m).toMatchObject({ approved_by: "Lee", approved_at: "2026-01-15" });
+    expect(m.approved_hash).toMatch(HASH);
+    expect(m.approved_hash).not.toBe(before);
+    // Approving it once more changes nothing.
+    expect((await approve(root, ["--target", "wh.orders.revenue", "--by", "Lee"])).out).toContain("already approved");
+  });
+
+  test("a description edit leaves the approval standing", async () => {
+    const root = await project();
+    await approve(root, ["--target", "wh.orders.revenue", "--by", "Dana"]);
+    writeFileSync(join(root, "models/wh/orders.yaml"), text(root, "models/wh/orders.yaml").replace("description: Order value.", "description: Order value, gross."));
+    expect((await approve(root, ["--target", "wh.orders.revenue", "--by", "Lee"])).out).toContain("already approved");
+  });
+
+  test("a measure's hash covers the joins its filter reads through", async () => {
+    const root = await project();
+    writeFileSync(join(root, "models/wh/orders.yaml"), ORDERS.replace("    agg: sum\n", "    agg: sum\n    filter: not customer.is_test\n"));
+    await approve(root, ["--target", "wh.orders.revenue", "--by", "Dana"]);
+    writeFileSync(join(root, "models/wh/orders.yaml"), text(root, "models/wh/orders.yaml").replace("relationship: many_to_one", "relationship: one_to_one"));
+    expect((await approve(root, ["--target", "wh.orders.revenue", "--by", "Dana"])).out).toContain("again (it changed since its last approval)");
+  });
+
+  test("--stamp-hashes records missing hashes and keeps approved_by and approved_at", async () => {
+    const root = await project();
+    const approvedBy = (src: string) => src.replace("status: draft # waiting on Dana", "status: approved # waiting on Dana\napproved_by: Dana\napproved_at: 2026-01-02");
+    writeFileSync(join(root, "models/wh/orders.yaml"), approvedBy(ORDERS));
+    writeFileSync(join(root, "access.yaml"), ACCESS.replace("status: draft", "status: approved\napproved_by: Dana\napproved_at: 2026-01-03"));
+    const r = await approve(root, ["--stamp-hashes", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json<{ stamped: string[] }>().stamped).toEqual(["wh.orders", "access"]);
+    expect(orders(root)).toMatchObject({ approved_by: "Dana", approved_at: "2026-01-02" });
+    expect(orders(root).approved_hash).toMatch(HASH);
+    expect(text(root, "models/wh/orders.yaml")).toContain("# Orders, owned by finance.\n");
+    expect(readYaml<AccessFile>(join(root, "access.yaml"))).toMatchObject({ approved_by: "Dana", approved_at: "2026-01-03" });
+    const again = await approve(root, ["--stamp-hashes"]);
+    expect(again.out).toBe("Every approved item already has approved_hash; nothing changed.");
+  });
+
+  test("--stamp-hashes narrows to --target and refuses flags that would change an approval", async () => {
+    const root = await project();
+    writeFileSync(join(root, "access.yaml"), ACCESS.replace("status: draft", "status: approved\napproved_by: Dana\napproved_at: 2026-01-03"));
+    expect((await approve(root, ["--stamp-hashes", "--target", "wh.orders"])).out).toContain("nothing changed");
+    for (const extra of [["--by", "Lee"], ["--date", "2026-01-01"], ["--revoke"], ["--recursive"]]) {
+      const bad = await approve(root, ["--stamp-hashes", ...extra]);
+      expect(bad.code).toBe(1);
+      expect(bad.err).toContain("--stamp-hashes");
+    }
+    expect(readYaml<AccessFile>(join(root, "access.yaml")).approved_hash).toBeUndefined();
   });
 });

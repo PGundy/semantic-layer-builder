@@ -241,6 +241,59 @@ describe("groupTables edge cases", () => {
     expect(suggestScope([table("p", "orders", 1)], [])).toEqual({ include: [], exclude: [] });
   });
 
+  test("the suggested scope keeps tables whose comments or names use raw, landing, int_ or stitch as business words", () => {
+    // The reviewer's probe: at HEAD the suggested scope excluded none of these.
+    const mfg = (name: string, description?: string): SnapshotTable => ({ ...table("mfg", name, 1000), ...(description ? { description } : {}) });
+    const tabs = [
+      mfg("materials", "Inventory of raw materials, one row per lot"),
+      mfg("work_orders"),
+      mfg("landing_pages", "One row per marketing landing page"),
+      mfg("int_shipments", "International shipments"),
+      mfg("stitch_counts"),
+      mfg("orders", "Orders as loaded; totals are raw sums before discounts"),
+      mfg("customers"),
+    ];
+    const suggested = suggestScope(tabs, groupTables(tabs));
+    expect(suggested).toEqual({ include: [], exclude: [] });
+    expect(groupTables(tabs).find((g) => g.kind === "noise")).toBeUndefined();
+  });
+
+  test("the noise group's reason names every rule its pattern selects by", () => {
+    const noise = groupTables([table("s", "orders_tmp", 1), table("s", "_x", 1)]).find((g) => g.kind === "noise")!;
+    expect(noise.reason).toContain("pipeline-tool tables");
+    expect(noise.reason).toContain("underscore");
+  });
+
+  test("the suggested scope excludes the tables sl baseline calls noise or staging", () => {
+    const tabs = [
+      table("shop", "sales", 3000),
+      table("shop", "products", 42),
+      table("shop", "stg_sales", 3000),
+      table("shop", "sales_bak", 3000),
+      table("shop", "tmp_load", 5),
+      table("ops", "_migrations", 10),
+      table("ops", "etl_job_runs", 100),
+      table("ops", "sales_targets", 240),
+    ];
+    const suggested = suggestScope(tabs, groupTables(tabs));
+    expect(suggested.include).toEqual([]);
+    for (const t of ["ops._migrations", "ops.etl_job_runs", "shop.stg_sales", "shop.sales_bak", "shop.tmp_load"]) {
+      expect(suggested.exclude.some((p) => matchesPattern(p, { schema: t.split(".")[0]!, name: t.split(".")[1]! }))).toBe(true);
+    }
+    const selected = tabs.filter((t) => !suggested.exclude.some((p) => matchesPattern(p, t))).map(qualifiedName).sort();
+    expect(selected).toEqual(["ops.sales_targets", "shop.products", "shop.sales"]);
+    // Staging by schema or by the table comment counts too, and an include that selects it excludes it.
+    const raw: SnapshotTable[] = [
+      table("analytics", "fct_orders", 10),
+      table("analytics", "fct_payments", 10),
+      table("landing", "fct_orders_feed", 10),
+      { ...table("analytics", "fct_imports", 10), description: "Raw export from the shop. Not cleaned." },
+    ];
+    const s2 = suggestScope(raw, groupTables(raw));
+    expect(s2.include).toEqual(["fct_*"]);
+    expect(s2.exclude).toEqual(["analytics.fct_imports", "landing.fct_orders_feed"]);
+  });
+
   test("the suggested scope excludes an exclude-suggested schema whose tables an include selects", () => {
     const tabs = [
       table("analytics", "fct_orders", 10),
@@ -282,6 +335,7 @@ describe("groupTables edge cases", () => {
       "events_2024", "events_202401", "events_2024_01", "events_20240101", "events_2024_01_01", "events_1999",
       "schema_migrations", "_prisma_migrations", "FLYWAY_SCHEMA_HISTORY", "knex_migrations",
       "orders", "fct_orders", "tmpfile", "attempts", "oldest_users", "events_2024x", "events_123", "my_schema_migrations",
+      "etl_job_runs", "dbt_runs", "airflow-dags", "fivetran.audit", "stitch_log", "_migrations", "_x", "etlx", "dbtx_models", "airbyte",
     ];
     for (const name of names) {
       expect([name, matchesPattern(NOISE_PATTERN, { schema: "s", name })]).toEqual([name, noiseReason(name) !== null]);
@@ -392,7 +446,7 @@ describe("sl tables", () => {
     expect(r.out).toContain("sl tables --source wh --groups");
     expect(r.out).toContain("orders (draft)");
     expect(r.out).toContain("raw_stripe_*");
-    expect(r.out).toContain("Suggested scope");
+    expect(r.out).toContain("Suggested scope (the include-suggested groups, less the noise and staging tables they would select):");
     expect(r.out).toContain("  sl scope --source wh --include 'dim_*' --include 'fct_*'\n");
     expect(r.out).toContain("add --write to save it");
     const j = (await sl(root, ["tables", "--source", "wh", "--groups", "--json"])).json<{

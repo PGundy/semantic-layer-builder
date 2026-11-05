@@ -1334,7 +1334,7 @@ describe("status schema evolution", () => {
     const r = await sl(t.root, ["status"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("  missing columns: orders.total reads amount");
-    expect(r.out).toContain("  new columns without a field: orders.discount (integer)");
+    expect(r.out).toContain("  columns without a field: orders.discount (integer)");
     expect(r.out).toContain("Next step (drift)");
     editSnapshot(t.root, (snap) => {
       snap.tables = snap.tables.filter((x) => x.name !== "web_events");
@@ -1521,5 +1521,95 @@ describe("status row_filter_joins_without_goldens", () => {
     expect(s.next_step.message).toContain(
       "models that reach a row-filtered model through joins with no approved golden as the role: wh.web_events -> wh.customers through order.customer (role rep)",
     );
+  });
+});
+
+describe("status reapprove phase", () => {
+  test("a complete layer whose approved items predate hashes does not reapprove", async () => {
+    const { st } = await built({});
+    expect(st.changed_since_approval).toEqual([]);
+    expect(st.next_step.phase).toBe("done");
+  });
+
+  test("an approved measure, metric and access file edited after approval open reapprove, ahead of the interview", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, { models: "draft" });
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().next_step.phase).toBe("interview");
+    // Stamped first: once an item records a hash, --stamp-hashes refuses the approved items without one.
+    expect((await sl(t.root, ["approve", "--stamp-hashes"])).code).toBe(0);
+    expect((await sl(t.root, ["approve", "--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
+    // The analytics review's experiment: the approved measure now sums a thousand times the amount.
+    editModel(t.root, "orders", (m) => (m.measures[0]!.expr = "amount * 1000"));
+    const path = join(t.root, "access.yaml");
+    writeYaml(path, { ...readYaml<Record<string, unknown>>(path), roles: [{ name: "analyst", allow: { models: ["wh.orders"] } }] });
+    const st = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(st.changed_since_approval).toEqual(["wh.orders.total", "access"]);
+    expect(st.next_step).toEqual({
+      phase: "reapprove",
+      message:
+        "2 approved item(s) changed since they were approved: wh.orders.total, access. Read each back to the owner as it now stands and approve it again " +
+        "only after they confirm, or restore the approved definition; sl validate names each one.",
+      command: 'sl approve --target wh.orders.total --by "<owner>"',
+      after_owner_yes: true,
+    });
+    expect(st.hash_missing).toEqual([]);
+    const human = await sl(t.root, ["status"]);
+    expect(human.out).toContain("changed since approval: wh.orders.total, access");
+    expect(human.out).toContain("Next step (reapprove)");
+    // Approving the measure again after the readback clears it from the list.
+    expect((await sl(t.root, ["approve", "--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().changed_since_approval).toEqual(["access"]);
+  });
+
+  test("an approved item whose approved_hash was removed opens reapprove, listed apart from the changed ones", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, {});
+    expect((await sl(t.root, ["approve", "--stamp-hashes"])).code).toBe(0);
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().next_step.phase).toBe("done");
+    editModel(t.root, "orders", (m) => {
+      m.measures[0]!.expr = "amount * 1000";
+      delete m.measures[0]!.approved_hash;
+    });
+    const st = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(st.changed_since_approval).toEqual([]);
+    expect(st.hash_missing).toEqual(["wh.orders.total"]);
+    expect(st.next_step).toEqual({
+      phase: "reapprove",
+      message:
+        "1 approved item(s) have no approved_hash while other approved items carry one, so it may have been removed: wh.orders.total. " +
+        "Read each back to the owner as it now stands and approve it again only after they confirm, or restore the approved definition; sl validate names each one.",
+      command: 'sl approve --target wh.orders.total --by "<owner>"',
+      after_owner_yes: true,
+    });
+    expect((await sl(t.root, ["status"])).out).toContain("approved without approved_hash while others carry one: wh.orders.total");
+    expect((await sl(t.root, ["approve", "--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().hash_missing).toEqual([]);
+  });
+
+  test("a changed approved metric is listed, and drift still comes first", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    build(t.root, {});
+    expect((await sl(t.root, ["approve", "--stamp-hashes"])).code).toBe(0);
+    const path = join(t.root, "metrics.yaml");
+    const file = readYaml<{ metrics: Record<string, unknown>[] }>(path);
+    file.metrics[0]!.denominator = "orders.total";
+    writeYaml(path, file);
+    const st = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(st.changed_since_approval).toEqual(["metric:avg_total"]);
+    expect(st.next_step.phase).toBe("reapprove");
+    editSnapshot(t.root, (snap) => {
+      const orders = tableOf(snap, "fct_orders");
+      orders.columns = orders.columns.filter((c) => c.name !== "amount");
+    });
+    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().next_step.phase).toBe("drift");
+  });
+
+  test("the new-columns step says a column left out on purpose goes in ignored_columns", async () => {
+    const { st } = await built({}, (root) => editSnapshot(root, (snap) => tableOf(snap, "fct_orders").columns.push({ name: "discount", type: "integer" })));
+    expect(st.next_step.phase).toBe("draft");
+    expect(st.next_step.message).toContain("A column the owner left out on purpose goes in the model's ignored_columns instead.");
   });
 });

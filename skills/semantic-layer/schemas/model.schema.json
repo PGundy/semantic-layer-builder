@@ -46,6 +46,11 @@
       "description": "ISO date of approval, YYYY-MM-DD. Required when status is approved.",
       "format": "date"
     },
+    "approved_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "sha256: and 64 hex characters, written by sl approve: the hash of the item's semantic content when it was approved. sl validate errors when the item no longer matches it, and warns when an approved item has none (sl approve --stamp-hashes records it)."
+    },
     "description": {
       "type": "string",
       "description": "What one row is and anything a reader must know."
@@ -177,6 +182,12 @@
           },
           "description": "Grains a time dimension can be truncated to. Only on type time."
         },
+        "time_zone": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_+\\-]*(/[A-Za-z0-9_+\\-]+)*$",
+          "description": "Only on type time: the IANA zone (America/New_York, UTC) the dimension's values are stored in, for a timestamp without a time zone. A timestamp with a time zone carries its own. sl validate errors on a zone it does not know."
+        },
         "description": {
           "type": "string",
           "description": "What the dimension means."
@@ -215,6 +226,11 @@
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "description": "ISO date of approval, YYYY-MM-DD. Required when status is approved.",
           "format": "date"
+        },
+        "approved_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "sha256: and 64 hex characters, written by sl approve: the hash of the item's semantic content when it was approved. sl validate errors when the item no longer matches it, and warns when an approved item has none (sl approve --stamp-hashes records it)."
         }
       },
       "allOf": [
@@ -326,6 +342,11 @@
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "description": "ISO date of approval, YYYY-MM-DD. Required when status is approved.",
           "format": "date"
+        },
+        "approved_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "sha256: and 64 hex characters, written by sl approve: the hash of the item's semantic content when it was approved. sl validate errors when the item no longer matches it, and warns when an approved item has none (sl approve --stamp-hashes records it)."
         }
       },
       "allOf": [
@@ -461,6 +482,11 @@
           "description": "ISO date of approval, YYYY-MM-DD. Required when status is approved.",
           "format": "date"
         },
+        "approved_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "sha256: and 64 hex characters, written by sl approve: the hash of the item's semantic content when it was approved. sl validate errors when the item no longer matches it, and warns when an approved item has none (sl approve --stamp-hashes records it)."
+        },
         "evidence": {
           "type": "object",
           "description": "Measurements written by sl check-join.",
@@ -563,6 +589,11 @@
               "description": "Relationship the data supports. many_to_many needs a bridge table."
             }
           }
+        },
+        "fanout_override": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why an approved many_to_one or one_to_one join stands although its evidence shows fan-out (the target key is not unique or a row matches more than one target row), such as a known-dirty key the owner accepts. Without it sl validate errors on such a join."
         }
       },
       "allOf": [

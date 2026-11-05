@@ -1,5 +1,5 @@
 import { UserError } from "./errors.ts";
-import { canRun, openAdapter, type Adapter } from "./adapters/index.ts";
+import { canRun, openAdapter, type Adapter, type AdapterOptions } from "./adapters/index.ts";
 import type { PlanResults, QueryPlan, ResultRows, SourceConfig } from "./types.ts";
 import { readJson } from "./yaml.ts";
 
@@ -45,12 +45,32 @@ export function errorMessage(e: unknown, sql?: string): string {
 // values with the offset of the process's local time zone; queries run with the session
 // time zone UTC, so the offset is set to zero and values render in UTC ("+00"), as they do
 // on postgres, whatever TZ the CLI runs under.
-export async function openQueryAdapter(root: string, source: SourceConfig, env: Record<string, string | undefined>): Promise<Adapter> {
+export async function openQueryAdapter(
+  root: string,
+  source: SourceConfig,
+  env: Record<string, string | undefined>,
+  opts: AdapterOptions = {},
+): Promise<Adapter> {
   if (source.dialect === "duckdb") {
     const { DuckDBTimestampTZValue } = await import("@duckdb/node-api");
     DuckDBTimestampTZValue.timezoneOffsetInMinutes = 0;
   }
-  return openAdapter(root, source, env);
+  return openAdapter(root, source, env, opts);
+}
+
+// Refuses a result with two columns of the same name, which would share one key in each row and
+// lose a value: with `ignoreCase`, names that differ only in case count as the same.
+export function assertDistinctColumns(columns: string[], ignoreCase = false): void {
+  const seen = new Set<string>();
+  const dupes = new Set<string>();
+  for (const c of columns) {
+    const k = ignoreCase ? c.toLowerCase() : c;
+    if (seen.has(k)) dupes.add(c);
+    seen.add(k);
+  }
+  if (!dupes.size) return;
+  const names = [...dupes].map((d) => `"${d}"`).join(", ");
+  throw new UserError(`The result has more than one column named ${names}; alias them so each column has its own name.`);
 }
 
 // Loads a results file written by the agent after it ran an emitted plan itself.
@@ -78,9 +98,13 @@ export interface ExecuteOptions {
   resultsFile?: string;
   // Called after each query; lets a long run report progress.
   onQuery?: (id: string, index: number, total: number) => void;
+  // Where a warning about the connection goes; stderr by default.
+  warn?: (message: string) => void;
 }
 
-// Runs a plan against a duckdb or postgres source, or reads its results from a file.
+// Runs a plan against a duckdb or postgres source, or reads its results from a file. A result
+// with two columns whose names differ at most in case is refused, since rows are keyed by the
+// lowercased name.
 export async function executePlan(plan: QueryPlan, opts: ExecuteOptions): Promise<PlanResults> {
   if (opts.resultsFile) return loadResults(opts.resultsFile, plan);
   if (!canRun(opts.source)) {
@@ -89,12 +113,14 @@ export async function executePlan(plan: QueryPlan, opts: ExecuteOptions): Promis
         "tool, save {\"<query id>\": [rows...]} to a JSON file and rerun with --results <file>.",
     );
   }
-  const adapter = await openQueryAdapter(opts.root, opts.source, opts.env);
+  const adapter = await openQueryAdapter(opts.root, opts.source, opts.env, { warn: opts.warn });
   const out: PlanResults = {};
   try {
     for (const [i, q] of plan.queries.entries()) {
       try {
-        out[q.id] = lowerKeys((await adapter.query(q.sql)).rows);
+        const result = await adapter.query(q.sql);
+        assertDistinctColumns(result.columns, true);
+        out[q.id] = lowerKeys(result.rows);
       } catch (e) {
         throw new UserError(`Query failed: ${errorMessage(e, q.sql)}\nQuery "${q.id}" (${q.purpose}):\n${q.sql}`);
       }

@@ -4,20 +4,35 @@ import { join, relative } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
 import { parseDocument } from "yaml";
-import { type AccessLayer, type AccessVisibility, checkRequest, evaluateLayer } from "./access.ts";
-import { classifyType } from "./column-types.ts";
+import { type AccessLayer, type AccessVisibility, checkRequest, evaluateLayer, metricMeasureRefs } from "./access.ts";
+import {
+  type ApprovalEntry,
+  accessEntry,
+  changedMessage,
+  holdsHashes,
+  integrity,
+  metricEntries,
+  missingMessage,
+  modelEntries,
+  pathText,
+  UNHASHED_MESSAGE,
+} from "./approval-hash.ts";
+import { classifyType, isNumeric, isTemporal } from "./column-types.ts";
 import { type Condition, conditionAttributes, type Literal, parseCondition } from "./conditions.ts";
 import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
 import { quoteIdent } from "./dialect.ts";
 import { findTable } from "./naming.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
-import { hashValue, holdsRawValues, isHashedValue, protectedColumns } from "./profile.ts";
+import { isHashedValue, protectedColumns } from "./profile.ts";
 import { parseRequestField } from "./refs.ts";
 import { type Sensitivity, sensitivityOf } from "./sensitivity.ts";
 import { incomingKeyColumns, referencedColumns } from "./snapshot-diff.ts";
+import { sourceSafetyIssues } from "./source-safety.ts";
+import { bareNames, callsRound, dividesByLiteral, type SqlNames, sqlNames, tokenizeSql } from "./sql-names.ts";
 import type {
   AccessFile,
   AccessMode,
+  ColumnProfile,
   Dialect,
   Dimension,
   ExprRowFilter,
@@ -25,6 +40,7 @@ import type {
   GoldenRunAs,
   HierarchyRowFilter,
   Join,
+  JoinEvidence,
   JoinKey,
   Measure,
   Metric,
@@ -154,220 +170,7 @@ export function schemaIssues(kind: SchemaKind, data: unknown, file: string): Iss
   return out;
 }
 
-
-// ---------------------------------------------------------------------------
-// Names an SQL expression refers to, read outside string literals, comments and {{ }} placeholders.
-
-type SqlToken =
-  | { t: "id"; v: string; quoted: boolean }
-  | { t: "." }
-  | { t: "(" }
-  | { t: ")" }
-  | { t: "," }
-  | { t: ":" }
-  | { t: "->" }
-  | { t: "/" }
-  | { t: "num" }
-  | { t: "sign" }
-  | { t: "x" };
-
-// Where a string literal starting at sql[i] (its opening quote) ends, just past the closing quote.
-// A doubled quote stays inside it; with backslash escapes, so does a backslash-escaped character.
-function stringEnd(sql: string, i: number, backslash: boolean): number {
-  const q = sql[i]!;
-  for (i++; i < sql.length; i++) {
-    if (backslash && sql[i] === "\\") {
-      i++;
-      continue;
-    }
-    if (sql[i] !== q) continue;
-    if (sql[i + 1] === q) i++;
-    else break;
-  }
-  return i + 1;
-}
-
-function tokenizeSql(sql: string, dialect?: Dialect): SqlToken[] {
-  // Snowflake, BigQuery and Databricks read backslash escapes in every string literal; BigQuery and
-  // Databricks also read "..." as a string, and quote identifiers with backticks.
-  const backslash = dialect === "snowflake" || dialect === "bigquery" || dialect === "databricks";
-  const doubleIsString = dialect === "bigquery" || dialect === "databricks";
-  const out: SqlToken[] = [];
-  let i = 0;
-  while (i < sql.length) {
-    const c = sql[i]!;
-    const next = sql[i + 1] ?? "";
-    if (/\s/.test(c)) {
-      i++;
-    } else if (c === "'" || (c === '"' && doubleIsString)) {
-      i = stringEnd(sql, i, backslash);
-      out.push({ t: "x" });
-    } else if ((c === "E" || c === "e") && next === "'" && !/[A-Za-z0-9_$]/.test(sql[i - 1] ?? "")) {
-      // An escape string, E'it\'s': a backslash escapes the next character.
-      i = stringEnd(sql, i + 1, true);
-      out.push({ t: "x" });
-    } else if (c === "-" && next === "-") {
-      const nl = sql.indexOf("\n", i);
-      i = nl < 0 ? sql.length : nl + 1;
-    } else if (c === "-" && next === ">") {
-      i += 2;
-      out.push({ t: "->" });
-    } else if (c === "/" && next === "*") {
-      const end = sql.indexOf("*/", i + 2);
-      i = end < 0 ? sql.length : end + 2;
-    } else if (c === "{" && next === "{") {
-      const end = sql.indexOf("}}", i + 2);
-      i = end < 0 ? sql.length : end + 2;
-      out.push({ t: "x" });
-    } else if (c === "$" && /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.test(sql.slice(i))) {
-      const tag = sql.slice(i).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/)![0];
-      const end = sql.indexOf(tag, i + tag.length);
-      i = end < 0 ? sql.length : end + tag.length;
-      out.push({ t: "x" });
-    } else if (c === '"' || c === "`") {
-      let v = "";
-      for (i++; i < sql.length; i++) {
-        if (sql[i] === c) {
-          if (sql[i + 1] !== c) break;
-          i++;
-        }
-        v += sql[i];
-      }
-      i++;
-      // A backtick name may hold a whole dotted path, such as `project.dataset.table`.
-      const parts = c === "`" ? v.split(".") : [v];
-      parts.forEach((part, pi) => {
-        if (pi) out.push({ t: "." });
-        out.push({ t: "id", v: part, quoted: true });
-      });
-    } else if (/\d/.test(c) || (c === "." && /\d/.test(next))) {
-      i += sql.slice(i).match(/^(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?/i)![0].length;
-      out.push({ t: "num" });
-    } else if (/[A-Za-z_]/.test(c)) {
-      const word = sql.slice(i).match(/^[A-Za-z_][A-Za-z0-9_$]*/)![0];
-      i += word.length;
-      out.push({ t: "id", v: word, quoted: false });
-    } else if (c === ":" && next === ":") {
-      // A cast: the type name that follows is not a column.
-      i += 2;
-      out.push({ t: ":" });
-    } else if (c === "." || c === "(" || c === ")" || c === "," || c === ":" || c === "/") {
-      i++;
-      out.push({ t: c });
-    } else if (c === "+" || c === "-") {
-      i++;
-      out.push({ t: "sign" });
-    } else {
-      i++;
-      out.push({ t: "x" });
-    }
-  }
-  return out;
-}
-
-interface SqlNames {
-  subquery: boolean;
-  // Dotted names that read as column references: not function calls, cast types, semi-structured
-  // paths or fields of a lambda parameter. quoted[k] says whether parts[k] was a quoted identifier.
-  chains: { parts: string[]; quoted: boolean[]; text: string }[];
-}
-
-// Names a lambda binds: x in `x -> ...`, a and b in `(a, b) -> ...` and x in DuckDB's `lambda x: ...`.
-// A lambda is a function argument, so a lone x binds only after ( or a comma; Postgres's JSON
-// operator, as in `customer.payload -> 'k'`, binds nothing.
-function lambdaParams(tokens: SqlToken[]): Set<string> {
-  const bound = new Set<string>();
-  const add = (tok: SqlToken | undefined) => {
-    if (tok?.t === "id") bound.add(tok.v.toLowerCase());
-  };
-  tokens.forEach((tok, i) => {
-    if (tok.t === "->") {
-      const prev = tokens[i - 1];
-      const before = tokens[i - 2]?.t;
-      if (prev?.t === "id" && (before === "(" || before === ",")) add(prev);
-      else if (prev?.t === ")") {
-        for (let j = i - 2; j >= 0 && tokens[j]!.t !== "("; j--) add(tokens[j]);
-      }
-    } else if (tok.t === "id" && !tok.quoted && tok.v.toLowerCase() === "lambda") {
-      for (let j = i + 1; j < tokens.length && tokens[j]!.t !== ":"; j++) {
-        const t = tokens[j]!;
-        if (t.t === "id") add(t);
-        else if (t.t !== ",") break;
-      }
-    }
-  });
-  return bound;
-}
-
-export function sqlNames(sql: string, dialect?: Dialect): SqlNames {
-  const tokens = tokenizeSql(sql, dialect);
-  const bound = lambdaParams(tokens);
-  const names: SqlNames = { subquery: false, chains: [] };
-  for (let i = 0; i < tokens.length; i++) {
-    const tok = tokens[i]!;
-    if (tok.t !== "id") continue;
-    const prev = tokens[i - 1];
-    const parts = [tok.v];
-    const quoted = [tok.quoted];
-    let j = i;
-    while (tokens[j + 1]?.t === "." && tokens[j + 2]?.t === "id") {
-      const part = tokens[j + 2] as { v: string; quoted: boolean };
-      parts.push(part.v);
-      quoted.push(part.quoted);
-      j += 2;
-    }
-    const call = tokens[j + 1]?.t === "(";
-    i = j;
-    if (parts.length === 1) {
-      if (tok.quoted) continue;
-      const word = tok.v.toLowerCase();
-      // select, or a FROM-first (DuckDB) or TABLE (Postgres) query opening a parenthesis. trim(from x) is a call.
-      const opensQuery = prev?.t === "(" && !(word === "from" && (tokens[i - 2] as { v?: string } | undefined)?.v?.toLowerCase() === "trim");
-      if (word === "select" || (opensQuery && (word === "from" || word === "table"))) names.subquery = true;
-      continue;
-    }
-    if (call || prev?.t === ":" || prev?.t === ".") continue;
-    if (!quoted[0] && bound.has(parts[0]!.toLowerCase())) continue;
-    names.chains.push({ parts, quoted, text: parts.join(".") });
-  }
-  return names;
-}
-
-// Single names that read as columns: not part of a dotted name, not function calls, cast types or
-// lambda parameters. SQL keywords come back too; a caller keeps the ones that are columns.
-function bareNames(sql: string, dialect?: Dialect): { v: string; quoted: boolean }[] {
-  const tokens = tokenizeSql(sql, dialect);
-  const bound = lambdaParams(tokens);
-  const out: { v: string; quoted: boolean }[] = [];
-  tokens.forEach((tok, i) => {
-    if (tok.t !== "id") return;
-    const prev = tokens[i - 1]?.t;
-    const next = tokens[i + 1]?.t;
-    if (prev === "." || prev === ":" || next === "." || next === "(") return;
-    if (!tok.quoted && bound.has(tok.v.toLowerCase())) return;
-    out.push({ v: tok.v, quoted: tok.quoted });
-  });
-  return out;
-}
-
-// Whether the SQL divides by a numeric literal, as in amount_cents / 100.0, / (100), / -100 or
-// / 100::decimal(18, 2): on DuckDB each gives a DOUBLE. Integer division (//) does not count.
-export function dividesByLiteral(sql: string, dialect?: Dialect): boolean {
-  const tokens = tokenizeSql(sql, dialect);
-  return tokens.some((tok, i) => {
-    if (tok.t !== "/" || tokens[i - 1]?.t === "/" || tokens[i + 1]?.t === "/") return false;
-    let j = i + 1;
-    while (tokens[j]?.t === "(" || tokens[j]?.t === "sign") j++;
-    return tokens[j]?.t === "num";
-  });
-}
-
-// Whether the SQL calls round(), plain or qualified (pg_catalog.round(, x.round( in DuckDB),
-// outside string literals and comments.
-export function callsRound(sql: string, dialect?: Dialect): boolean {
-  const tokens = tokenizeSql(sql, dialect);
-  return tokens.some((tok, i) => tok.t === "id" && !tok.quoted && tok.v.toLowerCase() === "round" && tokens[i + 1]?.t === "(");
-}
+export { callsRound, dividesByLiteral, sqlNames } from "./sql-names.ts";
 
 type SqlRole = "dimension expr" | "measure expr" | "measure filter" | "row filter";
 
@@ -677,6 +480,9 @@ class Validator {
   checkSources(): void {
     for (const [stem, l] of this.sources) {
       this.checkSourceCredentials(l);
+      // A DuckDB source's setup and views run on every connection, so each must be one the adapter
+      // accepts (lib/source-safety.ts). Like credentials, this holds for a file that fails its schema.
+      for (const problem of sourceSafetyIssues(l.data)) this.error(l.file, problem.path, problem.message);
       if (!l.valid) continue;
       const s = l.data;
       if (s.source !== stem) this.error(l.file, "source", `is "${s.source}" but the file is named ${stem}.yaml`);
@@ -949,6 +755,7 @@ class Validator {
         const refs = this.checkSqlRefs(f, `${p}.expr`, d.expr, m, "dimension expr");
         if (refs.length) this.dimensionRefs.set(`${m.source}.${m.model}.${d.name}`, refs);
         if (d.time_grains && d.type !== "time") this.error(f, `${p}.time_grains`, `is only allowed on time dimensions, not ${d.type}`);
+        if (d.time_zone !== undefined) this.checkTimeZone(f, `${p}.time_zone`, d, table, rules);
       });
 
       m.measures.forEach((x, i) => {
@@ -974,7 +781,7 @@ class Validator {
           this.checkColumnName(f, `${p}.keys[${ki}].to`, k.to, targetTable);
         });
         if (j.relationship === "one_to_many")
-          this.warn(f, `${p}.relationship`, `one_to_many fans out and multiplies ${m.model}'s measures; aggregate ${j.to} before joining and confirm with the owner`);
+          this.warn(f, `${p}.relationship`, `one_to_many fans out and multiplies the measures of ${m.model}; aggregate ${j.to} before joining and confirm with the owner`);
         const ev = j.evidence;
         if (ev?.suggested_relationship === "many_to_many") {
           const msg = "evidence shows many_to_many: neither key is unique, so the join needs a bridge table or a pre-aggregated model";
@@ -986,16 +793,103 @@ class Validator {
         if (j.status === "approved" && !ev) this.warn(f, p, "is approved without evidence; run `sl check-join`");
         // Evidence measured for another target or other keys no longer describes the join; evidence
         // without them predates their recording and is taken as current.
-        if (ev?.to !== undefined && ev.to !== j.to)
-          this.warn(f, `${p}.evidence.to`, `the evidence was measured for a join to ${ev.to}, but the join now goes to ${j.to}; run \`sl check-join\` again`);
-        if (Array.isArray(ev?.keys) && keySignature(ev.keys) !== keySignature(j.keys))
+        const staleTo = ev?.to !== undefined && ev.to !== j.to;
+        const staleKeys = Array.isArray(ev?.keys) && keySignature(ev.keys) !== keySignature(j.keys);
+        if (staleTo)
+          this.warn(f, `${p}.evidence.to`, `the evidence was measured for a join to ${ev!.to}, but the join now goes to ${j.to}; run \`sl check-join\` again`);
+        if (staleKeys)
           this.warn(
             f,
             `${p}.evidence.keys`,
-            `the evidence was measured on keys ${describeKeys(ev.keys)}, but the join's keys are now ${describeKeys(j.keys)}; run \`sl check-join\` again`,
+            `the evidence was measured on keys ${describeKeys(ev!.keys!)}, but the join's keys are now ${describeKeys(j.keys)}; run \`sl check-join\` again`,
           );
+        // An approved to-one join whose current evidence shows fan-out multiplies every measure a
+        // request reaches through it, unless the owner recorded why the data may be trusted.
+        const override = typeof j.fanout_override === "string" && j.fanout_override.trim() !== "";
+        if (
+          j.status === "approved" &&
+          ev &&
+          !staleTo &&
+          !staleKeys &&
+          !override &&
+          TO_ONE_RELATIONSHIPS.includes(j.relationship) &&
+          ev.suggested_relationship !== "many_to_many" &&
+          evidenceFansOut(ev)
+        ) {
+          const why = [
+            ev.right_key_unique === false ? `the key of ${j.to} is not unique` : "",
+            typeof ev.max_fanout === "number" && ev.max_fanout > 1 ? `a row of ${m.model} matches up to ${ev.max_fanout} rows of ${j.to}` : "",
+          ].filter(Boolean);
+          this.error(
+            f,
+            `${p}.evidence`,
+            `is approved as ${j.relationship}, but its evidence contradicts that: ${why.join(", and ")}, so the join fans out and multiplies ` +
+              `the measures of ${m.model}; fix the keys or the relationship and run sl check-join again, or record why the owner accepts the data ` +
+              'in fanout_override: "<reason>"',
+          );
+        }
       });
+      const source = m.source;
+      this.checkApprovals(f, modelEntries(source, m, (name) => this.model(source, name), this.sourceDialect(source)));
     }
+  }
+
+  // The dialect a source file names, as sl approve reads it when it records an approval's hash.
+  sourceDialect(source: string): Dialect | undefined {
+    const d = this.sources.get(source)?.data.dialect;
+    return isDialect(d) ? d : undefined;
+  }
+
+  // Whether any model, field, join, metric or access file of the project records an approved_hash.
+  projectHashedCache?: boolean;
+  projectHashed(): boolean {
+    if (this.projectHashedCache !== undefined) return this.projectHashedCache;
+    const entries: ApprovalEntry[] = [];
+    for (const l of this.modelList) if (isObject(l.data)) entries.push(...modelEntries(String(l.data.source), l.data, () => undefined));
+    if (isObject(this.metrics?.data)) entries.push(...metricEntries(this.metrics.data.metrics));
+    const access = accessEntry(this.access?.data);
+    if (access) entries.push(access);
+    this.projectHashedCache = holdsHashes(entries);
+    return this.projectHashedCache;
+  }
+
+  // Errors on an approved item whose content no longer matches its approved_hash. Warns once per file
+  // when approved items carry no hash and no item of the project records one (approved before
+  // content hashes), and on each approved item without a hash once other items record one, since
+  // its hash may have been removed.
+  checkApprovals(file: string, entries: ApprovalEntry[]): void {
+    let unhashed = 0;
+    const hashed = this.projectHashed();
+    for (const e of entries) {
+      const state = integrity(e, hashed);
+      if (state === "changed") this.error(file, pathText(e.path), changedMessage(e));
+      else if (state === "missing") this.warn(file, pathText(e.path), missingMessage(e));
+      else if (state === "unhashed") unhashed++;
+    }
+    if (unhashed)
+      this.warn(file, "", `${unhashed} approved item${unhashed === 1 ? " was" : "s were"} ${UNHASHED_MESSAGE}`);
+  }
+
+  // A time dimension's time_zone: an IANA zone, and only for values stored without a zone. When the
+  // expr is one column whose snapshot type carries a zone, the key has nothing to say.
+  checkTimeZone(f: string, path: string, d: Dimension, table: SnapshotTable | undefined, rules: IdentRules): void {
+    const zone = d.time_zone;
+    if (d.type !== "time") {
+      this.error(f, path, `is only allowed on time dimensions, not ${d.type}`);
+      return;
+    }
+    if (typeof zone !== "string" || !knownTimeZone(zone)) {
+      this.error(f, path, `${JSON.stringify(zone)} is not an IANA time zone, such as UTC or America/New_York`);
+      return;
+    }
+    const col = typeof d.expr === "string" ? table?.columns.find((c) => isBareColumn(d.expr, c.name)) : undefined;
+    if (col && carriesZone(col.type, rules.dialect) === true)
+      this.warn(
+        f,
+        path,
+        `names the zone timestamps without a time zone are stored in, but column ${col.name} is ${col.type}, which carries its own; ` +
+          "remove time_zone, and convert in expr to bucket days in another zone",
+      );
   }
 
   // Warns when ignored_columns names a column the table lacks (when the snapshot has the table), or
@@ -1066,6 +960,7 @@ class Validator {
         }
       }
     });
+    this.checkApprovals(f, metricEntries(l.data.metrics));
   }
 
   // Resolves source.model.field to a dimension or measure.
@@ -1166,6 +1061,8 @@ class Validator {
       this.checkChildTables(r, p, mode);
     });
     this.checkRestrictions(f, arr<Restriction>(a.restrictions), roleNames, attrs);
+    const entry = accessEntry(a);
+    if (entry) this.checkApprovals(f, [entry]);
   }
 
   // Errors when a condition does not parse or reads an undeclared attribute; warns on a test whose
@@ -1794,6 +1691,8 @@ class Validator {
       const all = { metric: true, measure: true, dimension: true };
       arr<{ field: string }>(req.filters).forEach((x, i) => check(`request.filters[${i}].field`, x.field, all, "filter"));
       arr<{ field: string }>(req.order_by).forEach((x, i) => check(`request.order_by[${i}].field`, x.field, all, "order_by"));
+      this.checkMeasureModels(f, req);
+      this.checkGoldenSqlRules(l);
       if (g.status === "approved")
         for (const [path, label] of this.draftFieldsUsed(req.source, req))
           this.warn(
@@ -1805,6 +1704,115 @@ class Validator {
       this.checkGoldenAccess(l, roles);
       this.checkConfirmedAs(l);
     }
+  }
+
+  // Errors when a request's measures come from more than one model and are not one metric: each
+  // measure aggregates at its own model's grain, and nothing defines how such results combine.
+  checkMeasureModels(f: string, req: Golden["request"]): void {
+    const measures = strings(req.measures);
+    if (measures.length < 2) return;
+    const seen = new Set<string>();
+    let first: { ref: string; models: string[] } | undefined;
+    for (const [i, ref] of measures.entries()) {
+      const models = this.measureModels(req.source, ref);
+      if (!models.length) continue;
+      for (const x of models) seen.add(x);
+      if (!first) {
+        first = { ref, models };
+        continue;
+      }
+      if (seen.size < 2) continue;
+      this.error(
+        f,
+        `request.measures[${i}]`,
+        `${ref} aggregates over ${models.join(", ")}, and ${first.ref} over ${first.models.join(", ")}; ` +
+          "a request's measures must share one model, or be one metric: write a metric that combines them in metrics.yaml, or split the golden",
+      );
+      return;
+    }
+  }
+
+  // The models a request's measure entry aggregates over: a model.measure's model, or the models of
+  // a metric's measures. Empty when the entry names nothing that exists.
+  measureModels(source: string, ref: string): string[] {
+    if (/^[a-z][a-z0-9_]*$/.test(ref)) {
+      const metric = this.metric(ref);
+      return metric && metric.source === source ? this.metricModels(metric).filter((x) => this.model(source, x)) : [];
+    }
+    const parsed = parseRequestField(ref);
+    return parsed && this.measure(source, parsed.model, parsed.field) ? [parsed.model] : [];
+  }
+
+  // Warns when a golden's SQL never names a column that a requested measure's expr or filter reads
+  // (for a metric, each of its measures'): goldens pin hand-written SQL, and nothing yet compiles the
+  // request, so SQL that leaves out a measure's rule records a figure the layer would not give.
+  checkGoldenSqlRules(l: Loaded<Golden>): void {
+    const g = l.data;
+    const req = g.request;
+    if (typeof g.sql !== "string") return;
+    const dialect = this.identRules(req.source).dialect;
+    const named = new Set<string>();
+    for (const tok of tokenizeSql(g.sql, dialect)) if (tok.t === "id") named.add(tok.v.toLowerCase());
+    const measures: [string, string][] = [];
+    for (const ref of strings(req.measures)) {
+      if (/^[a-z][a-z0-9_]*$/.test(ref)) {
+        const metric = this.metric(ref);
+        if (metric && metric.source === req.source)
+          for (const r of metricMeasureRefs(metric)) measures.push(r.split(".") as [string, string]);
+        continue;
+      }
+      const parsed = parseRequestField(ref);
+      if (parsed) measures.push([parsed.model, parsed.field]);
+    }
+    const done = new Set<string>();
+    for (const [modelName, measureName] of measures) {
+      const key = `${modelName}.${measureName}`;
+      if (done.has(key)) continue;
+      done.add(key);
+      const measure = this.measure(req.source, modelName, measureName);
+      const model = this.model(req.source, modelName);
+      if (!measure || !model) continue;
+      const missing = this.ruleColumns(model, measure).filter((c) => !named.has(c.toLowerCase()));
+      if (!missing.length) continue;
+      this.warn(
+        l.file,
+        "sql",
+        `goldens pin hand-written SQL; this SQL may not apply ${key}'s rule: it never names ${missing.join(", ")}, which the measure's ` +
+          `${measure.filter ? "expr or filter" : "expr"} reads. Write the measure's expr and filter into the SQL as the model defines them, ` +
+          `then run sl goldens check --name ${g.name} and read any change back to the owner`,
+      );
+    }
+  }
+
+  // The columns a measure's expr and filter read: its own table's (the snapshot's columns when it
+  // has the table, else every name that is not a SQL word), and the column each join reference reads.
+  ruleColumns(model: Model, measure: Measure): string[] {
+    const rules = this.identRules(model.source);
+    const table = typeof model.table === "string" ? this.snapshotTable(model.source, model.table).table : undefined;
+    const cols = table?.columns.length ? table.columns : undefined;
+    const joins = named<Join>(model.joins);
+    const out = new Map<string, string>();
+    const add = (name: string) => {
+      if (!out.has(name.toLowerCase())) out.set(name.toLowerCase(), name);
+    };
+    for (const sql of [measure.expr, measure.filter]) {
+      if (typeof sql !== "string") continue;
+      for (const b of bareNames(sql, rules.dialect)) {
+        if (cols ? resolveColumn(b.v, b.quoted, cols, rules) !== false : b.quoted || !SQL_WORDS.has(b.v.toLowerCase())) add(b.v);
+      }
+      for (const chain of sqlNames(sql, rules.dialect).chains) {
+        const join = findJoin(joins, chain.parts[0]!, chain.quoted[0]!);
+        if (!join) {
+          if (!cols || resolveColumn(chain.parts[0]!, chain.quoted[0]!, cols, rules) !== false) add(chain.parts[0]!);
+          continue;
+        }
+        const target = this.model(model.source, join.to);
+        const second = chain.parts.length >= 3 && target ? findJoin(named<Join>(target.joins), chain.parts[1]!, chain.quoted[1]!) : undefined;
+        const column = chain.parts[second ? 2 : 1];
+        if (column) add(column);
+      }
+    }
+    return [...out.values()];
   }
 
   // The layer the golden access check reads: every model, field and metric taken as approved, so
@@ -1870,8 +1878,9 @@ class Validator {
     );
   }
 
-  // Warns when a snapshot holds raw top values, or a text min or max, of a protected column (see
-  // protectedColumns in lib/profile.ts).
+  // Warns when a snapshot holds sample values of a protected column (see protectedColumns in
+  // lib/profile.ts): raw top values or a min or max of a column that is not a number or a date, or
+  // top values hashed by an earlier sl profile, which a list of likely values reverses.
   checkProtectedProfiles(): void {
     for (const [source, l] of this.snapshots) {
       const raw = arr<unknown>(l.data.tables);
@@ -1886,11 +1895,15 @@ class Validator {
         if (!cols) return;
         arr<unknown>(rt.columns).forEach((c, j) => {
           if (!isObject(c) || typeof c.name !== "string" || typeof c.type !== "string" || !cols.has(c.name)) return;
-          if (!holdsRawValues(c.profile as SnapshotTable["columns"][number]["profile"], { type: c.type })) return;
+          const held = heldValues(c.profile, c.type);
+          if (!held) return;
           this.warn(
             l.file,
             `tables[${i}].columns[${j}].profile`,
-            `${qualified(t)}.${c.name} is protected but the snapshot holds raw sample values; run sl profile --source ${source} --redact`,
+            held === "raw"
+              ? `${qualified(t)}.${c.name} is protected but the snapshot holds raw sample values; run sl profile --source ${source} --redact`
+              : `${qualified(t)}.${c.name} is protected but the snapshot holds hashed top values, which a list of likely values reverses; ` +
+                  `run sl profile --source ${source} --redact to remove them`,
           );
         });
       });
@@ -1898,12 +1911,12 @@ class Validator {
   }
 
   // Warns when a description, a synonym, a golden question or a golden reference quotes a value of a
-  // column that a pii- or sensitive-tagged field reads: one of the column's top values in the
-  // snapshot profile, of at least 3 characters, matched as a whole word in any case. A hashed top
-  // value (a redacted profile) matches when the hash of a run of 1 to 4 consecutive words of the
-  // text, of at least 3 characters, equals it (see wordRuns). Boolean columns are skipped. A field tagged only through its model counts only
-  // the columns it reads that look personal or sensitive themselves, so a status or region column
-  // of a pii-tagged model is not one.
+  // column that a pii- or sensitive-tagged field reads: one of the raw top values a snapshot profile
+  // still holds for the column, of at least 3 characters, matched as a whole word in any case. A
+  // protected column's profile keeps no top values, and hashed ones an older snapshot holds are not
+  // matched (checkProtectedProfiles asks for them to be removed). Boolean columns are skipped. A
+  // field tagged only through its model counts only the columns it reads that look personal or
+  // sensitive themselves, so a status or region column of a pii-tagged model is not one.
   checkPersonalValues(): void {
     interface Hit {
       value: string;
@@ -1913,20 +1926,15 @@ class Validator {
       tag: string;
     }
     const values = new Map<string, Hit>();
-    const hashed = new Map<string, Hit>();
     const add = (source: string, tableName: string, column: string, field: string, tag: string, inherited: boolean, keys: unknown) => {
       const table = this.snapshotTable(source, tableName).table;
       const col = table?.columns.find((c) => c.name.toLowerCase() === column.toLowerCase());
       if (inherited && !sensitivityOf(column, col, table?.row_count, { key: strings(keys).some((k) => k.toLowerCase() === column.toLowerCase()) })) return;
-      // A boolean's values, raw or hashed, are the words true and false, which quote nobody.
+      // A boolean's values are the words true and false, which quote nobody.
       if (col && classifyType(col.type) === "boolean") return;
       for (const tv of arr<{ value: unknown }>(col?.profile?.top_values)) {
         const v = isObject(tv) ? tv.value : undefined;
-        if (isHashedValue(v)) {
-          if (!hashed.has(v)) hashed.set(v, { value: v, column: col!.name, table: qualified(table!), field, tag });
-          continue;
-        }
-        if (typeof v !== "string" && typeof v !== "number") continue;
+        if (isHashedValue(v) || (typeof v !== "string" && typeof v !== "number")) continue;
         const text = String(v).trim();
         if (text.length < 3 || values.has(text.toLowerCase())) continue;
         values.set(text.toLowerCase(), { value: text, column: col!.name, table: qualified(table!), field, tag });
@@ -1965,7 +1973,7 @@ class Validator {
           }
       }
     }
-    if (!values.size && !hashed.size) return;
+    if (!values.size) return;
     const patterns = [...values.values()].map((hit) => ({
       hit,
       re: new RegExp(`(^|[^A-Za-z0-9_])${hit.value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^A-Za-z0-9_])`, "i"),
@@ -1980,15 +1988,6 @@ class Validator {
     const scan = (file: string, path: string, text: unknown) => {
       if (typeof text !== "string") return;
       for (const { hit, re } of patterns) if (re.test(text)) quotes(file, path, hit.value, hit);
-      if (!hashed.size) return;
-      const seen = new Set<string>();
-      for (const run of wordRuns(text)) {
-        const hit = hashed.get(hashValue(run));
-        const key = `${hit?.table}.${hit?.column}:${run.toLowerCase()}`;
-        if (!hit || seen.has(key)) continue;
-        seen.add(key);
-        quotes(file, path, run, hit);
-      }
     };
     const scanItem = (file: string, path: string, item: unknown) => {
       if (!isObject(item)) return;
@@ -2024,6 +2023,48 @@ class Validator {
   }
 }
 
+// Words an expr or filter may hold that are SQL, not columns, for when the snapshot lacks the table.
+const SQL_WORDS = new Set(
+  [
+    "and", "or", "not", "in", "is", "null", "true", "false", "like", "ilike", "similar", "between", "case", "when", "then",
+    "else", "end", "distinct", "as", "interval", "date", "timestamp", "time", "with", "without", "zone", "at", "any", "all",
+    "some", "exists", "escape", "collate", "current_date", "current_timestamp", "current_time", "now", "localtimestamp",
+    "localtime", "unknown", "asc", "desc", "nulls", "first", "last", "over", "partition", "by", "order", "filter", "where",
+    "from", "lambda", "struct", "array", "map", "int", "integer", "bigint", "numeric", "decimal", "double", "precision",
+    "real", "float", "varchar", "text", "boolean", "char", "character", "varying", "to", "extract", "epoch", "year",
+    "quarter", "month", "week", "day", "hour", "minute", "second", "dow", "doy", "isodow", "cast", "try_cast",
+  ],
+);
+
+// Whether a zone is an IANA name the runtime knows, such as UTC or America/New_York. An offset such
+// as +02:00 is not one: it would not follow daylight saving time.
+function knownTimeZone(zone: string): boolean {
+  if (!/^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+)*$/.test(zone)) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Whether a column type carries its zone (an instant), is stored without one (a wall-clock time), or
+// neither (undefined, as for a date). TIMESTAMP is an instant on BigQuery and Databricks and a
+// wall-clock time on Postgres, DuckDB and, by default, Snowflake.
+export function carriesZone(type: string, dialect?: Dialect): boolean | undefined {
+  const t = type.trim().toLowerCase();
+  if (/with time zone|^timestamptz|^timestamp_tz|^timestamp_ltz/.test(t)) return true;
+  if (/without time zone|^timestamp_ntz|^datetime/.test(t)) return false;
+  if (/^timestamp\b/.test(t)) return dialect === "bigquery" || dialect === "databricks";
+  return undefined;
+}
+
+// Whether a join's evidence contradicts a to-one relationship: the target key is not unique, or a
+// row matches more than one target row.
+function evidenceFansOut(ev: JoinEvidence): boolean {
+  return ev.right_key_unique === false || (typeof ev.max_fanout === "number" && ev.max_fanout > 1);
+}
+
 // Whether a column name, as written, resolves to one of the columns the way the source's dialect
 // resolves it: true, false, or a hint naming the column it misses only by case.
 function resolveColumn(name: string, quoted: boolean, columns: SnapshotTable["columns"], rules: IdentRules): true | false | string {
@@ -2053,38 +2094,20 @@ function isBareColumn(expr: string, column: string): boolean {
   return name !== undefined && name.toLowerCase() === column.toLowerCase();
 }
 
-// Leading and trailing characters that are not letters or digits: quotes, brackets, punctuation.
-const EDGE_PUNCTUATION = /^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu;
-
-// Characters that also end a word when a value is glued to other text: "contact:dana@example.com",
-// "email=dana@example.com", "(Dana Ruiz)".
-const WORD_JOINERS = /[\s:=/;,()]+/;
-// A possessive ending: "Dana Ruiz's" names Dana Ruiz.
-const POSSESSIVE = /['\u2019]s$/i;
-
-// The runs of 1 to 4 consecutive words of a text that a hashed value can match, of at least 3
-// characters. Words are split on whitespace, and again on whitespace and the characters of
-// WORD_JOINERS. Each run is taken as written, with the punctuation around the run stripped, with the
-// punctuation around each word stripped ('"Jane Doe",' gives "Jane Doe"), and with a possessive 's
-// dropped from its last word.
-export function wordRuns(text: string): string[] {
-  const out = new Set<string>();
-  const add = (candidate: string) => {
-    if (candidate.trim().length >= 3) out.add(candidate);
-  };
-  const splits = [text.split(/\s+/).filter(Boolean), text.split(WORD_JOINERS).filter(Boolean)];
-  for (const words of splits) {
-    const stripped = words.map((w) => w.replace(EDGE_PUNCTUATION, ""));
-    for (let i = 0; i < words.length; i++) {
-      for (let n = 1; n <= 4 && i + n <= words.length; n++) {
-        const run = words.slice(i, i + n).join(" ");
-        const clean = stripped.slice(i, i + n).filter(Boolean).join(" ");
-        for (const candidate of [run, run.replace(EDGE_PUNCTUATION, ""), clean]) add(candidate);
-        if (POSSESSIVE.test(clean)) add(clean.replace(POSSESSIVE, ""));
-      }
-    }
-  }
-  return [...out];
+// What sample values a protected column's profile still holds: raw (a top value that is not hashed,
+// or a min or max of a column that is not a number or a date), hashed (only values an earlier sl
+// profile stored hashed), or nothing (null). A profile keeps counts only, with min and max for
+// numbers and dates.
+function heldValues(profile: unknown, type: string): "raw" | "hashed" | null {
+  if (!isObject(profile)) return null;
+  const held = (v: unknown) => v !== null && v !== undefined;
+  const c = classifyType(type);
+  const values = arr<unknown>((profile as ColumnProfile).top_values)
+    .map((tv) => (isObject(tv) ? tv.value : undefined))
+    .filter(held);
+  if (!(isNumeric(c) || isTemporal(c))) values.push(...[profile.min, profile.max].filter(held));
+  if (values.some((v) => !isHashedValue(v))) return "raw";
+  return values.length ? "hashed" : null;
 }
 
 // A sensitivity found on a column the field reads, worded so it names the column, not the field.

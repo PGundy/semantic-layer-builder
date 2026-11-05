@@ -6,7 +6,6 @@ import { SQL } from "bun";
 import { duckdbSource, FIXED_NOW, initProject, PG_URL, sl, tempRoot } from "./helpers.ts";
 import {
   applyProfile,
-  hashValue,
   holdsRawValues,
   isHashedValue,
   LOW_CARDINALITY_MAX,
@@ -175,10 +174,15 @@ describe("profile (duckdb)", () => {
     expect(plan.code).toBe(0);
     const queries = plan.json<QueryPlan>().queries;
     const stats = queries.find((q) => q.id === "stats:main.events")!;
-    expect(stats.sql).toContain("using sample reservoir(1000 rows)");
+    expect(stats.sql).toContain("using sample reservoir(1000 rows) repeatable (42)");
     expect(stats.sql).toContain('(select count(*) from "main"."events") as row_count');
     expect(queries.find((q) => q.id === "stats:main.small")!.sql).not.toContain("sample");
-    expect(queries.find((q) => q.id === "top:main.events:label")!.sql).toContain("limit 3");
+    // One top-values query per table, reading one sample for all its columns.
+    expect(queries.map((q) => q.id)).toEqual(["stats:main.events", "top:main.events", "stats:main.small"]);
+    const top = queries.find((q) => q.id === "top:main.events")!.sql;
+    expect(top).toContain("rank_in_column <= 3");
+    expect(top).toContain('group by grouping sets (("label"))');
+    expect(top.match(/using sample/g)).toHaveLength(1);
 
     const r = await sl(t.root, ["profile", "--source", "lake", "--json"]);
     expect(r.code).toBe(0);
@@ -354,8 +358,13 @@ describe("profile plan", () => {
     const cols: [string, string][] = Array.from({ length: 45 }, (_, i) => [`s${i}`, "varchar"]);
     cols.push(['we"ird', "integer"]);
     const source: SourceConfig = { source: "sf", dialect: "snowflake" };
-    const { plan, capped, sampled } = buildProfilePlan(source, [table("PUBLIC", "WIDE", cols, 10)], { top_values: 5 });
-    expect(plan.queries.filter((q) => q.id.startsWith("top:"))).toHaveLength(MAX_TOP_COLUMNS);
+    const { plan, capped, sampled, top_columns } = buildProfilePlan(source, [table("PUBLIC", "WIDE", cols, 10)], { top_values: 5 });
+    expect(plan.queries.map((q) => q.id)).toEqual(["stats:PUBLIC.WIDE", "top:PUBLIC.WIDE"]);
+    expect(top_columns.get("PUBLIC.WIDE")).toEqual(Array.from({ length: MAX_TOP_COLUMNS }, (_, i) => i));
+    const top = plan.queries[1]!.sql;
+    expect(top.match(/when grouping\(/g)).toHaveLength(2 * MAX_TOP_COLUMNS);
+    expect(top).toContain('when grouping("s39") = 0 then 39');
+    expect(top).not.toContain('"s40"');
     expect(capped).toEqual([{ table: "PUBLIC.WIDE", columns: ["s40", "s41", "s42", "s43", "s44"] }]);
     expect(sampled).toEqual([]);
     const stats = plan.queries[0]!;
@@ -368,16 +377,81 @@ describe("profile plan", () => {
       top_values: 3,
     });
     expect(bq.sampled).toEqual(["ds.t"]);
-    expect(bq.plan.queries[1]!.sql).toContain("cast(`x` as string) as value");
+    expect(bq.plan.queries[1]!.sql).toContain("then cast(`x` as string) end as value");
+    // No row estimate: TABLESAMPLE cannot size the sample, so it sorts every row.
+    expect(bq.plan.queries[1]!.sql).toContain("order by rand() limit 100");
+    expect(bq.sorted_samples).toEqual(["ds.t"]);
+  });
+
+  test("postgres and bigquery samples use TABLESAMPLE SYSTEM sized for at least 1000 rows, and postgres takes the row count from the estimate", () => {
+    const big = table("s", "events", [["id", "integer"], ["kind", "text"]], 1_000_000);
+    const pg = buildProfilePlan({ source: "pg", dialect: "postgres" }, [big], { sample_rows: 50_000, top_values: 3 });
+    for (const q of pg.plan.queries) {
+      expect(q.sql).toContain('(select * from "s"."events" tablesample system (5) repeatable (42)) as s');
+      expect(q.sql).not.toContain("bernoulli");
+    }
+    // No full count(*) of a Postgres table: the row count is its estimate.
+    expect(pg.plan.queries[0]!.sql).toContain("1000000 as row_count");
+    expect(pg.plan.queries[0]!.sql).not.toContain("(select count(*)");
+    expect(pg.plan.queries[0]!.purpose).toContain("the row count is the table's estimate");
+    // A sample of fewer than 1000 rows reads the blocks of 1000 and keeps the first rows of them.
+    const small = buildProfilePlan({ source: "pg", dialect: "postgres" }, [big], { sample_rows: 50, top_values: 3 });
+    expect(small.plan.queries[0]!.sql).toContain('(select * from "s"."events" tablesample system (0.1) repeatable (42) limit 50) as s');
+    const bq = buildProfilePlan({ source: "bq", dialect: "bigquery" }, [table("ds", "events", [["kind", "STRING"]], 1_000_000)], { sample_rows: 50, top_values: 3 });
+    expect(bq.plan.queries[0]!.sql).toContain("(select * from `ds`.`events` tablesample system (0.1 percent) limit 50) as s");
+    // BigQuery answers count(*) from metadata, so its row count is exact.
+    expect(bq.plan.queries[0]!.sql).toContain("(select count(*) from `ds`.`events`) as row_count");
+    // A table smaller than the floor reads all of it.
+    const tiny = buildProfilePlan({ source: "pg", dialect: "postgres" }, [table("s", "t", [["x", "text"]], 400)], { sample_rows: 100, top_values: 3 });
+    expect(tiny.plan.queries[0]!.sql).toContain("tablesample system (100) repeatable (42) limit 100");
+  });
+
+  test("a row estimate below the rows a sample read gives way to the sample's count", () => {
+    const t = table("s", "events", [["kind", "text"]], 1_000_000);
+    const snapshot: Snapshot = { snapshot_version: 1, source: "pg", dialect: "postgres", captured_at: FIXED_NOW, method: "live", tables: [t] };
+    const details = buildProfilePlan({ source: "pg", dialect: "postgres" }, [t], { sample_rows: 5000, top_values: 0 });
+    const out = applyProfile(snapshot, details, { "stats:s.events": [{ row_count: 1000, sample_count: 1200, c0_nulls: 0, c0_distinct: 3 }] }, FIXED_NOW);
+    expect(out.snapshot.tables[0]!.row_count).toBe(1200);
+    expect(out.snapshot.tables[0]!.columns[0]!.profile!.sampled).toBe(false);
+  });
+
+  test("reviewer reproduction: a sample that read no rows skips its table, keeps its earlier profile and saves the others", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    writeYaml(join(t.root, "sources", "pg.yaml"), { source: "pg", dialect: "postgres", connection: { env: "PGTEST_URL" }, profile: { sample_rows: 100 } });
+    const a = table("s", "a", [["kind", "text"]], 1_000_000);
+    a.profiled_at = "2025-01-01T00:00:00.000Z";
+    a.columns[0]!.profile = { null_fraction: 0, distinct_count: 2, top_values: [{ value: "x", count: 5 }], sampled: true };
+    const b = table("s", "b", [["kind", "text"]], 1_000_000);
+    writeSnapshot(t.root, "pg", "postgres", [a, b]);
+    const results = {
+      "stats:s.a": [{ row_count: 1_000_000, sample_count: 0, c0_nulls: 0, c0_distinct: 0 }],
+      "top:s.a": [],
+      "stats:s.b": [{ row_count: 1_000_000, sample_count: 100, c0_nulls: 0, c0_distinct: 2 }],
+      "top:s.b": [{ column_index: 0, value: "y", n: 60 }, { column_index: 0, value: "z", n: 40 }],
+    };
+    const file = join(t.dir, "results.json");
+    writeFileSync(file, JSON.stringify(results));
+    const r = await sl(t.root, ["profile", "--source", "pg", "--refresh", "--results", file, "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.err).toContain("The sample of s.a read no rows of its 1,000,000");
+    expect(r.err).toContain("--tables s.a --refresh");
+    const out = r.json<ProfileJson>();
+    expect(out.profiled.map((p) => p.table)).toEqual(["s.b"]);
+    expect(out.skipped).toEqual([{ table: "s.a", reason: "its sample read no rows" }]);
+    const s = snap(t.root, "pg");
+    expect(s.tables[0]).toEqual(a);
+    expect(col(s, "b", "kind").profile!.top_values).toEqual([{ value: "y", count: 60 }, { value: "z", count: 40 }]);
   });
 
   test("a few nulls in a large table keep null_fraction above zero", () => {
     const source: SourceConfig = { source: "sf", dialect: "snowflake" };
     const t = table("PUBLIC", "BIG", [["ORDER_ID", "NUMBER(38,0)"]], 25_000_000);
     const snapshot: Snapshot = { snapshot_version: 1, source: "sf", dialect: "snowflake", captured_at: FIXED_NOW, method: "live", tables: [t] };
-    const { plan } = buildProfilePlan(source, [t], { top_values: 10 });
+    const details = buildProfilePlan(source, [t], { top_values: 10 });
     const results = { "stats:PUBLIC.BIG": [{ row_count: 25_000_000, c0_nulls: 2, c0_distinct: 24_990_000 }] };
-    const out = applyProfile(snapshot, plan, results, FIXED_NOW, []).tables[0]!;
+    const out = applyProfile(snapshot, details, results, FIXED_NOW).snapshot.tables[0]!;
     expect(out.columns[0]!.profile!.null_fraction).toBeGreaterThan(0);
     expect(out.columns[0]!.profile!.null_fraction).toBe(8e-8);
     expect(summarizeTable(out, "snowflake").candidate_keys).toEqual([]);
@@ -387,13 +461,13 @@ describe("profile plan", () => {
     const source: SourceConfig = { source: "sf", dialect: "snowflake" };
     const t = table("PUBLIC", "BIG", [["ORDER_ID", "NUMBER(38,0)"]], 25_000_000);
     const snapshot: Snapshot = { snapshot_version: 1, source: "sf", dialect: "snowflake", captured_at: FIXED_NOW, method: "live", tables: [t] };
-    const { plan, sampled } = buildProfilePlan(source, [t], { sample_rows: 1000, top_values: 10 });
-    expect(sampled).toEqual(["PUBLIC.BIG"]);
+    const details = buildProfilePlan(source, [t], { sample_rows: 1000, top_values: 10 });
+    expect(details.sampled).toEqual(["PUBLIC.BIG"]);
     const results = { "stats:PUBLIC.BIG": [{ row_count: 25_000_000, c0_nulls: 500 }] };
-    expect(() => applyProfile(snapshot, plan, results, FIXED_NOW, sampled)).toThrow(/sample_count/);
+    expect(() => applyProfile(snapshot, details, results, FIXED_NOW)).toThrow(/sample_count/);
   });
 
-  test("top_values 0 emits no top-values queries", () => {
+  test("top_values 0 emits no top-values query", () => {
     const t = table("m", "t", [["s", "varchar"], ["b", "boolean"]], 10);
     const { plan } = buildProfilePlan({ source: "m", dialect: "duckdb" }, [t], { top_values: 0 });
     expect(plan.queries.map((q) => q.id)).toEqual(["stats:m.t"]);
@@ -431,11 +505,8 @@ describe("profile (snowflake via results file)", () => {
     expect(emitted.err).toContain("sample_rows");
     const plan = emitted.json<QueryPlan>();
     expect(plan.dialect).toBe("snowflake");
-    expect(plan.queries.map((q) => q.id)).toEqual([
-      "stats:ANALYTICS.FCT_ORDERS",
-      "top:ANALYTICS.FCT_ORDERS:STATUS",
-      "top:ANALYTICS.FCT_ORDERS:IS_TEST",
-    ]);
+    expect(plan.queries.map((q) => q.id)).toEqual(["stats:ANALYTICS.FCT_ORDERS", "top:ANALYTICS.FCT_ORDERS"]);
+    expect(plan.queries[1]!.sql).toContain('group by grouping sets (("STATUS"), ("IS_TEST"))');
 
     const live = await sl(t.root, ["profile", "--source", "sf"]);
     expect(live.code).toBe(1);
@@ -463,13 +534,11 @@ describe("profile (snowflake via results file)", () => {
           C4_DISTINCT: 2,
         },
       ],
-      "top:ANALYTICS.FCT_ORDERS:STATUS": [
-        { VALUE: "completed", N: 22000000 },
-        { VALUE: "cancelled", N: "2750000" },
-      ],
-      "top:ANALYTICS.FCT_ORDERS:IS_TEST": [
-        { VALUE: "false", N: 24999000 },
-        { VALUE: "true", N: 1000 },
+      "top:ANALYTICS.FCT_ORDERS": [
+        { COLUMN_INDEX: 1, VALUE: "completed", N: 22000000 },
+        { COLUMN_INDEX: "1", VALUE: "cancelled", N: "2750000" },
+        { COLUMN_INDEX: 4, VALUE: "false", N: 24999000 },
+        { COLUMN_INDEX: 4, VALUE: "true", N: 1000 },
       ],
     };
     const file = join(t.dir, "results.json");
@@ -507,15 +576,45 @@ describe("profile (snowflake via results file)", () => {
     writeFileSync(missing, JSON.stringify({ "stats:ANALYTICS.FCT_ORDERS": results["stats:ANALYTICS.FCT_ORDERS"] }));
     const bad = await sl(t.root, ["profile", "--source", "sf", "--refresh", "--results", missing]);
     expect(bad.code).toBe(1);
-    expect(bad.err).toContain("top:ANALYTICS.FCT_ORDERS:STATUS");
+    expect(bad.err).toContain("top:ANALYTICS.FCT_ORDERS");
+
+    // A row naming a column the query does not cover is refused.
+    const stray = join(t.dir, "stray.json");
+    writeFileSync(stray, JSON.stringify({ ...results, "top:ANALYTICS.FCT_ORDERS": [{ COLUMN_INDEX: 2, VALUE: "9.99", N: 1 }] }));
+    const strayRun = await sl(t.root, ["profile", "--source", "sf", "--refresh", "--results", stray]);
+    expect(strayRun.code).toBe(1);
+    expect(strayRun.err).toContain("column_index 2 names no column the query covers");
+  });
+});
+
+// Whether PG_URL names a server on this machine (localhost, 127.0.0.1, ::1 or a socket path), or
+// SL_TEST_ALLOW_REMOTE=1 allows another: the live tests drop the schemas they create.
+function localPgUrl(url: string): boolean {
+  if (process.env.SL_TEST_ALLOW_REMOTE === "1") return true;
+  const u = new URL(url);
+  const host = u.searchParams.get("host") ?? decodeURIComponent(u.hostname);
+  return host === "" || host.startsWith("/") || ["localhost", "127.0.0.1", "::1", "[::1]"].includes(host);
+}
+
+describe("localPgUrl", () => {
+  test("allows local hosts and socket paths only", () => {
+    expect(localPgUrl("postgres://postgres@localhost:54329/postgres?host=/tmp/sl-pg")).toBe(true);
+    expect(localPgUrl("postgres://u@127.0.0.1/db")).toBe(true);
+    expect(localPgUrl("postgres://u@[::1]:5432/db")).toBe(true);
+    if (process.env.SL_TEST_ALLOW_REMOTE !== "1") {
+      expect(localPgUrl("postgres://u@db.example.com/prod")).toBe(false);
+      expect(localPgUrl("postgres://u@localhost/db?host=db.example.com")).toBe(false);
+    }
   });
 });
 
 describe.skipIf(!PG_URL)("profile (postgres live)", () => {
-  const schema = "t_profile";
+  // A schema of this run's own in the PG_URL database.
+  const schema = `t_profile_${process.pid}_${Date.now().toString(36)}`;
   let db: SQL;
 
   beforeAll(async () => {
+    if (!localPgUrl(PG_URL!)) throw new Error("PG_URL is not on this machine; the live tests drop schemas, so set SL_TEST_ALLOW_REMOTE=1 to run them there.");
     db = new SQL(PG_URL!);
     await db.unsafe(`drop schema if exists ${schema} cascade`);
     await db.unsafe(`create schema ${schema}`);
@@ -536,6 +635,10 @@ describe.skipIf(!PG_URL)("profile (postgres live)", () => {
       (2, 'b@x.test', 'gold',   20.00, '2024-02-01', '2024-02-01 10:00:00+00', true,  '{}', '(1,2)', null),
       (3, 'c@x.test', 'silver', 30.00, '2024-03-01', '2024-03-01 10:00:00+00', false, null, null, null),
       (4, null,       'bronze', null,  '2024-04-30', '2024-04-30 23:00:00+00', true,  null, '(3,4)', null)`);
+    await db.unsafe(`create table ${schema}.events as
+      select g as event_id, 'k' || (g % 7) as kind, (g % 2 = 0) as flag from generate_series(1, 100000) g`);
+    await db.unsafe(`create view ${schema}.events_v as select * from ${schema}.events`);
+    await db.unsafe(`analyze ${schema}.events`);
   });
 
   afterAll(async () => {
@@ -609,6 +712,72 @@ describe.skipIf(!PG_URL)("profile (postgres live)", () => {
     expect(sampled.json<ProfileJson>().profiled[0]!.row_count).toBe(4);
     expect(col(snap(t.root, "pg"), "customers", "tier").profile!.sampled).toBe(true);
   });
+
+  test("samples a large table with TABLESAMPLE SYSTEM and reads all its top values from one sample", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    writeYaml(join(t.root, "sources", "pg.yaml"), {
+      source: "pg",
+      dialect: "postgres",
+      connection: { env: "PGTEST_URL" },
+      profile: { sample_rows: 10000, top_values: 3 },
+    });
+    const columns: [string, string][] = [["event_id", "integer"], ["kind", "text"], ["flag", "boolean"]];
+    writeSnapshot(t.root, "pg", "postgres", [table(schema, "events", columns, 100000), { ...table(schema, "events_v", columns, null), kind: "view" }]);
+
+    const emitted = await sl(t.root, ["profile", "--source", "pg", "--emit-sql"], { PGTEST_URL: PG_URL });
+    expect(emitted.code).toBe(0);
+    const queries = emitted.json<QueryPlan>().queries;
+    expect(queries.map((q) => q.id)).toEqual([`stats:${schema}.events`, `top:${schema}.events`, `stats:${schema}.events_v`, `top:${schema}.events_v`]);
+    for (const q of queries.slice(0, 2)) {
+      expect(q.sql).toContain(`(select * from "${schema}"."events" tablesample system (10) repeatable (42)) as s`);
+      expect(q.sql).not.toContain("random()");
+    }
+    expect(queries[1]!.sql).toContain('group by grouping sets (("kind"), ("flag"))');
+    // A view cannot be read through TABLESAMPLE: its sample sorts every row, and the run says so.
+    expect(queries[2]!.sql).toContain("order by random() limit 10000");
+    expect(emitted.err).toContain(`${schema}.events_v is a view, an external table or has no row estimate`);
+
+    const r = await sl(t.root, ["profile", "--source", "pg", "--json"], { PGTEST_URL: PG_URL });
+    expect(r.code).toBe(0);
+    const s = snap(t.root, "pg");
+    const events = s.tables.find((x) => x.name === "events")!;
+    expect(events.row_count).toBe(100000);
+    const kind = col(s, "events", "kind").profile!;
+    expect(kind.sampled).toBe(true);
+    expect(kind.distinct_count).toBe(7);
+    expect(kind.top_values).toHaveLength(3);
+    const flag = col(s, "events", "flag").profile!;
+    const total = flag.top_values!.reduce((a, v) => a + v.count, 0);
+    // Both columns' counts come from the same sample of a few thousand rows.
+    expect(total).toBeGreaterThan(2000);
+    expect(total).toBeLessThan(30000);
+    expect(col(s, "events", "event_id").profile!.distinct_count).toBe(100000);
+  });
+
+  test("a sample of fewer than 1000 rows reads TABLESAMPLE SYSTEM blocks and keeps the rows asked for", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    writeYaml(join(t.root, "sources", "pg.yaml"), {
+      source: "pg",
+      dialect: "postgres",
+      connection: { env: "PGTEST_URL" },
+      profile: { sample_rows: 50, top_values: 10 },
+    });
+    writeSnapshot(t.root, "pg", "postgres", [table(schema, "events", [["event_id", "integer"], ["kind", "text"]], 100000)]);
+    const emitted = await sl(t.root, ["profile", "--source", "pg", "--emit-sql"], { PGTEST_URL: PG_URL });
+    expect(emitted.json<QueryPlan>().queries[0]!.sql).toContain("tablesample system (1) repeatable (42) limit 50");
+    const r = await sl(t.root, ["profile", "--source", "pg", "--json"], { PGTEST_URL: PG_URL });
+    expect(r.code).toBe(0);
+    expect(r.json<ProfileJson>().profiled[0]!.row_count).toBe(100000);
+    const kind = col(snap(t.root, "pg"), "events", "kind").profile!;
+    expect(kind.sampled).toBe(true);
+    // All seven kinds are listed, so their counts add up to the 50 rows read.
+    expect(kind.top_values).toHaveLength(7);
+    expect(kind.top_values!.reduce((a, v) => a + v.count, 0)).toBe(50);
+  });
 });
 
 // Profiles of protected columns ------------------------------------------------
@@ -642,6 +811,8 @@ function peopleModel(root: string, extra: Partial<Model> = {}): void {
 }
 
 const hex16 = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex").slice(0, 16)}`;
+// The hashed form an earlier version of sl profile stored for protected top values.
+const hashValue = (text: string) => hex16(text.toLowerCase().trim());
 
 interface RedactJson {
   source: string;
@@ -649,25 +820,32 @@ interface RedactJson {
 }
 
 describe("profiles of protected columns", () => {
-  test("hashValue lowercases and trims, and keeps 16 hex characters", () => {
+  test("isHashedValue recognizes the hashed form earlier snapshots stored", () => {
     expect(hashValue("  Dana@Example.COM ")).toBe(hex16("dana@example.com"));
-    expect(hashValue("dana@example.com")).toMatch(/^sha256:[0-9a-f]{16}$/);
     expect(isHashedValue(hashValue("x"))).toBe(true);
     expect(isHashedValue("sha256:xyz")).toBe(false);
+    expect(isHashedValue(7)).toBe(false);
   });
 
-  test("redactProfile hashes top values, drops text bounds and keeps number, date and boolean bounds", () => {
+  test("redactProfile keeps counts only: no top values, and min and max only for numbers and dates", () => {
     const text = redactProfile({ null_fraction: 0, distinct_count: 2, min: "a", max: "b", top_values: [{ value: "Dana", count: 2 }, { value: null, count: 1 }], sampled: false }, { type: "VARCHAR" });
-    expect(text).toEqual({ null_fraction: 0, distinct_count: 2, top_values: [{ value: hashValue("Dana"), count: 2 }, { value: null, count: 1 }], sampled: false, redacted: true });
+    expect(text).toEqual({ null_fraction: 0, distinct_count: 2, sampled: false, redacted: true });
     expect(redactProfile(text, { type: "VARCHAR" })).toEqual(text);
     const flag = redactProfile({ min: false, max: true, top_values: [{ value: true, count: 3 }] }, { type: "BOOLEAN" });
-    expect(flag).toEqual({ min: false, max: true, top_values: [{ value: hashValue("true"), count: 3 }], redacted: true });
+    expect(flag).toEqual({ redacted: true });
     const day = redactProfile({ min: "2025-01-01", max: "2025-03-31" }, { type: "DATE" });
     expect(day).toEqual({ min: "2025-01-01", max: "2025-03-31", redacted: true });
     const n = redactProfile({ min: 1, max: 9, top_values: [{ value: 7, count: 1 }] }, { type: "INTEGER" });
-    expect(n.top_values).toEqual([{ value: hashValue("7"), count: 1 }]);
+    expect(n).toEqual({ min: 1, max: 9, redacted: true });
+    // Hashed top values are values too: a dictionary of names or phone numbers reverses them.
+    const hashed = redactProfile({ distinct_count: 1, top_values: [{ value: hashValue("avery patel"), count: 4 }] }, { type: "VARCHAR" });
+    expect(hashed).toEqual({ distinct_count: 1, redacted: true });
     expect(holdsRawValues(n, { type: "INTEGER" })).toBe(false);
+    expect(holdsRawValues({ top_values: [{ value: hashValue("x"), count: 1 }], redacted: true }, { type: "VARCHAR" })).toBe(true);
+    expect(holdsRawValues({ top_values: [{ value: 7, count: 1 }] }, { type: "INTEGER" })).toBe(true);
+    expect(holdsRawValues({ top_values: [] }, { type: "VARCHAR" })).toBe(false);
     expect(holdsRawValues({ min: "a" }, { type: "VARCHAR" })).toBe(true);
+    expect(holdsRawValues({ min: false }, { type: "BOOLEAN" })).toBe(true);
     expect(holdsRawValues({ min: null, max: null }, { type: "VARCHAR" })).toBe(false);
   });
 
@@ -694,7 +872,7 @@ describe("profiles of protected columns", () => {
     expect([...(prot.get("main.shops") ?? [])].sort()).toEqual(["shop_id", "shop_name"]);
   });
 
-  test("sl profile stores hashed values for a pii email column and a notes column (duckdb)", async () => {
+  test("sl profile stores counts only for protected columns, and never selects the top values of ones known before it runs (duckdb)", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     await initProject(t.root);
@@ -702,41 +880,93 @@ describe("profiles of protected columns", () => {
     expect((await sl(t.root, ["introspect", "--source", "shop"])).code).toBe(0);
     peopleModel(t.root);
 
+    // email and handle are tagged pii, notes and birth_date are protected by name: the plan's one
+    // top-values query covers only status and region.
+    const emitted = await sl(t.root, ["profile", "--source", "shop", "--emit-sql"]);
+    expect(emitted.code).toBe(0);
+    const queries = emitted.json<QueryPlan>().queries;
+    expect(queries.map((q) => q.id)).toEqual(["stats:main.people", "top:main.people"]);
+    const top = queries[1]!.sql;
+    expect(top).toContain('group by grouping sets (("status"), ("region"))');
+    for (const name of ["email", "handle", "notes"]) expect(top).not.toContain(`"${name}"`);
+    // The statistics query reads no text min or max of any column.
+    expect(queries[0]!.sql).not.toMatch(/min\("(email|handle|notes)"\)/);
+
     const r = await sl(t.root, ["profile", "--source", "shop", "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<ProfileJson & { redacted: string[] }>();
     expect(out.redacted).toEqual(["main.people.email", "main.people.handle", "main.people.notes", "main.people.birth_date"]);
 
     const s = snap(t.root, "shop");
-    const email = col(s, "people", "email").profile!;
-    expect(email).toEqual({
-      null_fraction: 0,
-      distinct_count: 3,
-      top_values: [
-        { value: hashValue("Dana@Example.com"), count: 1 },
-        { value: hashValue("kim@example.com"), count: 1 },
-        { value: hashValue("lee@example.com"), count: 1 },
-      ],
-      sampled: false,
-      redacted: true,
-    });
-    expect("min" in email).toBe(false);
-    const notes = col(s, "people", "notes").profile!;
-    expect(notes.top_values).toEqual([{ value: hashValue("call after 5"), count: 2 }]);
-    expect(notes.redacted).toBe(true);
-    expect("max" in notes).toBe(false);
-    expect(col(s, "people", "handle").profile!.redacted).toBe(true);
+    expect(col(s, "people", "email").profile).toEqual({ null_fraction: 0, distinct_count: 3, sampled: false, redacted: true });
+    expect(col(s, "people", "notes").profile).toEqual({ null_fraction: 0.333333, distinct_count: 1, sampled: false, redacted: true });
+    expect(col(s, "people", "handle").profile).toEqual({ null_fraction: 0, distinct_count: 3, sampled: false, redacted: true });
     // A protected date keeps its range.
     expect(col(s, "people", "birth_date").profile).toMatchObject({ min: "1985-01-15", max: "2001-12-31", redacted: true });
+    expect(col(s, "people", "birth_date").profile!.top_values).toBeUndefined();
     // Unprotected columns keep their raw values.
     expect(col(s, "people", "status").profile!.top_values).toEqual([{ value: "active", count: 2 }, { value: "churned", count: 1 }]);
     expect(col(s, "people", "region").profile!.redacted).toBeUndefined();
     const text = readFileSync(join(t.root, "snapshots", "shop.json"), "utf8");
-    for (const raw of ["Dana@Example.com", "lee@example.com", "Call after 5", "dana_r"]) expect(text).not.toContain(raw);
+    for (const raw of ["Dana@Example.com", "lee@example.com", "Call after 5", "dana_r", "sha256:"]) expect(text).not.toContain(raw);
     expect(validateProject(t.root).filter((i) => i.message.includes("raw sample values"))).toEqual([]);
 
     const human = await sl(t.root, ["profile", "--source", "shop", "--refresh"]);
-    expect(human.out).toContain("Protected columns, stored with hashed top values and no text min or max: main.people.email, main.people.handle");
+    expect(human.out).toContain(
+      "Protected columns, stored with counts only (no top values, and min and max only for numbers and dates): main.people.email, main.people.handle",
+    );
+    expect(human.out).toContain("Which columns are protected is a heuristic");
+  });
+
+  test("a column flagged only by the profile it is in has its top values stripped after the run (duckdb)", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    // visitor_handle has a different value on every one of 60 rows: protected only once profiled.
+    await duckdbSource(t.root, t.dir, "web", [
+      "create table visits as select range as visit_id, 'visitor-' || range::varchar as visitor_handle, case when range % 2 = 0 then 'web' else 'app' end as channel from range(60)",
+    ]);
+    expect((await sl(t.root, ["introspect", "--source", "web"])).code).toBe(0);
+    const emitted = await sl(t.root, ["profile", "--source", "web", "--emit-sql"]);
+    expect(emitted.json<QueryPlan>().queries[1]!.sql).toContain('"visitor_handle"');
+    const r = await sl(t.root, ["profile", "--source", "web", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json<{ redacted: string[] }>().redacted).toEqual(["main.visits.visitor_handle"]);
+    const s = snap(t.root, "web");
+    expect(col(s, "visits", "visitor_handle").profile).toEqual({ null_fraction: 0, distinct_count: 60, sampled: false, redacted: true });
+    expect(col(s, "visits", "channel").profile!.top_values).toEqual([{ value: "app", count: 30 }, { value: "web", count: 30 }]);
+    expect(readFileSync(join(t.root, "snapshots", "web.json"), "utf8")).not.toContain("visitor-");
+  });
+
+  test("reviewer reproduction: customer_name, username and ip with repeated values keep no values in the snapshot (duckdb)", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    // 100 rows with repeating values, so none is near-unique; city is not personal.
+    await duckdbSource(t.root, t.dir, "crm", [
+      "create schema sales",
+      "create table sales.people as select range as person_id, " +
+        "['Alice Johnson', 'Bob Smith', 'Carol White'][1 + range % 3] as customer_name, " +
+        "'user' || (range % 5)::varchar as username, ['Lyon', 'Oslo'][1 + range % 2] as city, " +
+        "'10.0.0.' || (range % 4)::varchar as ip, 'Mozilla/5.0 (X' || (range % 3)::varchar || ')' as user_agent, " +
+        "'SKU-' || range::varchar as sku from range(100)",
+    ]);
+    expect((await sl(t.root, ["introspect", "--source", "crm"])).code).toBe(0);
+    const r = await sl(t.root, ["profile", "--source", "crm", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json<{ redacted: string[] }>().redacted).toEqual([
+      "sales.people.customer_name",
+      "sales.people.username",
+      "sales.people.ip",
+      "sales.people.user_agent",
+    ]);
+    const text = readFileSync(join(t.root, "snapshots", "crm.json"), "utf8");
+    for (const raw of ["Alice Johnson", "Bob Smith", "user1", "10.0.0.0", "Mozilla"]) expect(text).not.toContain(raw);
+    const s = snap(t.root, "crm");
+    expect(col(s, "people", "city").profile!.top_values).toEqual([{ value: "Lyon", count: 50 }, { value: "Oslo", count: 50 }]);
+    // A near-unique sku is a business code, not personal: it keeps its values.
+    expect(col(s, "people", "sku").profile!.redacted).toBeUndefined();
+    expect(col(s, "people", "sku").profile!.top_values!.length).toBe(10);
   });
 
   test("sl profile --redact rewrites protected profiles without a database, leaving the rest byte-identical", async () => {
@@ -774,8 +1004,8 @@ describe("profiles of protected columns", () => {
         expect(JSON.stringify(next.columns[ci])).toBe(JSON.stringify(c));
       }
     }
-    expect(col(now, "people", "handle").profile!.top_values!.every((v) => isHashedValue(v.value))).toBe(true);
-    expect(col(now, "people", "region").profile).toMatchObject({ top_values: [{ value: hashValue("west"), count: 2 }, { value: hashValue("east"), count: 1 }], redacted: true });
+    expect(col(now, "people", "handle").profile).toEqual({ null_fraction: 0, distinct_count: 3, sampled: false, redacted: true });
+    expect(col(now, "people", "region").profile).toEqual({ null_fraction: 0, distinct_count: 2, sampled: false, redacted: true });
     // Outside the two rewritten profiles, the file's text is unchanged.
     const strip = (text: string) => {
       const doc = JSON.parse(text) as Snapshot;
@@ -790,6 +1020,84 @@ describe("profiles of protected columns", () => {
     const bad = await sl(t.root, ["profile", "--source", "shop", "--redact", "--refresh"]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain("--redact reads no database and takes no --refresh");
+  });
+
+  test("sl profile --redact removes hashed top values a snapshot already holds", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    await duckdbSource(t.root, t.dir, "shop", [PEOPLE_SQL]);
+    const people = table("main", "people", [["id", "INTEGER"], ["email", "VARCHAR"], ["status", "VARCHAR"]], 3);
+    people.columns[1]!.profile = {
+      null_fraction: 0,
+      distinct_count: 3,
+      top_values: [{ value: hashValue("dana@example.com"), count: 1 }],
+      sampled: false,
+      redacted: true,
+    };
+    people.columns[2]!.profile = { null_fraction: 0, distinct_count: 2, top_values: [{ value: "active", count: 2 }], sampled: false };
+    writeSnapshot(t.root, "shop", "duckdb", [people]);
+    const r = await sl(t.root, ["profile", "--source", "shop", "--redact", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json<RedactJson>()).toEqual({ source: "shop", redacted: ["main.people.email"] });
+    const s = snap(t.root, "shop");
+    expect(col(s, "people", "email").profile).toEqual({ null_fraction: 0, distinct_count: 3, sampled: false, redacted: true });
+    expect(col(s, "people", "status").profile!.top_values).toEqual([{ value: "active", count: 2 }]);
+    expect(readFileSync(join(t.root, "snapshots", "shop.json"), "utf8")).not.toContain("sha256:");
+  });
+
+  test("reviewer reproduction: --redact removes legacy hashes from a column no longer protected, and reports it", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    await duckdbSource(t.root, t.dir, "shop", [PEOPLE_SQL]);
+    const products = table("a", "products", [["sku", "VARCHAR"], ["nickname", "VARCHAR"], ["placed_on", "DATE"], ["status", "VARCHAR"]], 100);
+    const hashed = [hashValue("SKU-1"), hashValue("SKU-2"), hashValue("SKU-3")].map((value) => ({ value, count: 1 }));
+    products.columns[0]!.profile = { null_fraction: 0, distinct_count: 100, top_values: hashed, sampled: false, redacted: true };
+    products.columns[1]!.profile = { null_fraction: 0, distinct_count: 100, top_values: hashed, sampled: false, redacted: true };
+    // A hashed bound on a date column goes too, though a date keeps real bounds.
+    products.columns[2]!.profile = { null_fraction: 0, distinct_count: 9, min: hashValue("2020-01-01"), max: "2024-12-31", sampled: false };
+    products.columns[3]!.profile = { null_fraction: 0, distinct_count: 2, top_values: [{ value: "active", count: 60 }], sampled: false };
+    writeSnapshot(t.root, "shop", "duckdb", [products]);
+    // No models: sku is code-like and no longer protected, but its hashes still go.
+    expect(protectedColumns(snap(t.root, "shop").tables, [], "duckdb").get("a.products")).toEqual(new Set(["nickname"]));
+    const r = await sl(t.root, ["profile", "--source", "shop", "--redact", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json<RedactJson>()).toEqual({ source: "shop", redacted: ["a.products.sku", "a.products.nickname", "a.products.placed_on"] });
+    const s = snap(t.root, "shop");
+    expect(col(s, "products", "sku").profile).toEqual({ null_fraction: 0, distinct_count: 100, sampled: false, redacted: true });
+    expect(col(s, "products", "placed_on").profile).toEqual({ null_fraction: 0, distinct_count: 9, max: "2024-12-31", sampled: false, redacted: true });
+    expect(col(s, "products", "status").profile!.top_values).toEqual([{ value: "active", count: 60 }]);
+    expect(readFileSync(join(t.root, "snapshots", "shop.json"), "utf8")).not.toContain("sha256:");
+    const again = await sl(t.root, ["profile", "--source", "shop", "--redact"]);
+    expect(again.out).toContain("Nothing to redact");
+  });
+
+  test("reviewer reproduction: repeated firstname, FIRSTNAME-style and CUSTOMERNAME columns keep no values in the snapshot (duckdb)", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    await duckdbSource(t.root, t.dir, "crm", [
+      "create table events as select range as event_id, 'Alice ' || (range % 20)::varchar as firstname, " +
+        "'Smith' || (range % 7)::varchar as LASTNAME, 'Acme Buyer ' || (range % 5)::varchar as CUSTOMERNAME, " +
+        "'Mozilla ' || (range % 3)::varchar as useragent, 'dev-' || (range % 9)::varchar as deviceid, " +
+        "['web', 'app'][1 + range % 2] as channel from range(200)",
+    ]);
+    expect((await sl(t.root, ["introspect", "--source", "crm"])).code).toBe(0);
+    const emitted = await sl(t.root, ["profile", "--source", "crm", "--emit-sql"]);
+    expect(emitted.json<QueryPlan>().queries[1]!.sql).toContain('group by grouping sets (("channel"))');
+    const r = await sl(t.root, ["profile", "--source", "crm", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json<{ redacted: string[] }>().redacted).toEqual([
+      "main.events.firstname",
+      "main.events.LASTNAME",
+      "main.events.CUSTOMERNAME",
+      "main.events.useragent",
+      "main.events.deviceid",
+    ]);
+    const text = readFileSync(join(t.root, "snapshots", "crm.json"), "utf8");
+    for (const raw of ["Alice", "Smith", "Acme Buyer", "Mozilla", "dev-"]) expect(text).not.toContain(raw);
+    expect(col(snap(t.root, "crm"), "events", "channel").profile!.top_values).toEqual([{ value: "app", count: 100 }, { value: "web", count: 100 }]);
   });
 
   test("protectedColumns: a two-hop join reference protects the joined column, not same-named columns of the model's own table", () => {

@@ -5,6 +5,7 @@ import { classifyType, isNumeric } from "./column-types.ts";
 import { quoteIdent } from "./dialect.ts";
 import { findTable, qualifiedName, toSpecName } from "./naming.ts";
 import { summarizeTable } from "./profile.ts";
+import { classifyTable } from "./rank.ts";
 import { nearUnique, PII_NAME, sensitivityOf } from "./sensitivity.ts";
 import { incomingKeyColumns, referencedColumns, sqlIdentifiers, unreferencedColumns } from "./snapshot-diff.ts";
 import type {
@@ -52,6 +53,33 @@ const CENTS_TEXT = /\b(cents|pennies)\b/i;
 const NOT_CENTS_TEXT = /\bnot (in )?(cents|pennies)\b/i;
 // A description naming whole currency units says the column is not in cents.
 const WHOLE_UNITS_TEXT = /\b(dollars|euros|pounds|yen|whole (currency )?units|major units)\b/i;
+// ISO 4217 codes a money column's name may end in (target_eur, revenue_usd_cents) or a comment may
+// name (EUR, in capitals). Codes that are also common words or abbreviations (all, cop, pen, try) are left out.
+const CURRENCY_CODES = [
+  "usd", "eur", "gbp", "jpy", "chf", "cad", "aud", "nzd", "cny", "hkd", "sgd", "sek", "nok", "dkk", "isk", "pln", "czk", "huf",
+  "ron", "bgn", "inr", "brl", "mxn", "zar", "krw", "twd", "thb", "myr", "php", "idr", "vnd", "ils", "aed", "sar", "qar", "kwd",
+  "egp", "ngn", "kes", "ars", "clp", "uah",
+];
+const CURRENCY_SUFFIX = new RegExp(`_(${CURRENCY_CODES.join("|")})(_cents|_pennies)?$`);
+// A stem that is or ends in a currency code: eur_usd, fx_eur_usd name an exchange rate, not money.
+const CURRENCY_STEM = new RegExp(`(^|_)(${CURRENCY_CODES.join("|")})$`);
+// Statistic, rate and score words: median_basket_usd, min_bid_eur, rank_usd, fx_eur are not amounts to add up.
+const NOT_MONEY_AMOUNT = /(^|_)(median|min|max|avg|average|mean|p\d+|percentile|rank|score|share|fx|ratio|index|rate|pct|percent)(_|$)/;
+// Money stems that SUM_NAME does not name but that add up across rows when a currency code follows: target_eur, mrr_usd.
+const CURRENCY_STEM_MONEY = /(^|_)(target|targets|budget|mrr|arr|gmv|sales|earnings|payout|payouts|proceeds|bookings)$/;
+const CURRENCY_TEXT = new RegExp(`\\b(${CURRENCY_CODES.map((c) => c.toUpperCase()).join("|")})\\b`, "g");
+// A currency code in lower case after "in": "amounts in eur".
+const CURRENCY_TEXT_IN = new RegExp(`\\bin (${CURRENCY_CODES.join("|")})\\b`, "gi");
+// Words and symbols that name one currency. Dollars, pounds alone and $ name several, so they are not read.
+const CURRENCY_WORDS: [RegExp, string][] = [
+  [/\beuros?\b|€/i, "EUR"],
+  [/\bpounds? sterling\b|\bsterling\b|£/i, "GBP"],
+  [/\byen\b|¥/i, "JPY"],
+];
+// A decimal type with two decimal places, numeric(12,2): money in whole currency units with cents as decimals.
+const TWO_DECIMALS = /^(numeric|decimal|number)\s*\(\s*\d+\s*,\s*2\s*\)/i;
+// A decimal type's scale: numeric(18,6) -> 6.
+const DECIMAL_SCALE = /^(numeric|decimal|number)\s*\(\s*\d+\s*,\s*(\d+)\s*\)/i;
 // A name that ends or starts with a count word counts things even when it also names money:
 // payment_count, total_qty, units_refunded, count_of_refunds. A singular unit is not a count word: price_per_unit.
 const COUNT_SUFFIX = /(^|_)(qty|quantity|quantities|units|count)s?$/;
@@ -226,6 +254,8 @@ interface Context {
   modeled: Set<string>;
   // Qualified tables (lowercase) drafted in this run.
   drafting: Set<string>;
+  // Spec name of a single-column primary key -> the known tables keyed by it; built on first use.
+  keyIndex?: Map<string, { table: SnapshotTable; keyColumn: SnapshotColumn }[]>;
 }
 
 function primaryKeyOf(ctx: Context, table: SnapshotTable): string[] {
@@ -370,6 +400,60 @@ function joinCandidates(ctx: Context, self: SnapshotTable, x: string): Candidate
   );
 }
 
+// True when a column of type `a` can hold the keys of a column of type `b`: the same kind, or both numbers.
+function compatibleKeyTypes(a: string, b: string): boolean {
+  const x = classifyType(a);
+  const y = classifyType(b);
+  if (x === "other" || y === "other") return false;
+  return x === y || (isNumeric(x) && isNumeric(y));
+}
+
+// Generic attribute names that many unrelated tables use as their key (feature_flags keyed by name,
+// currencies by code, schema_migrations by version): a column with one of them is never joined by name.
+const GENERIC_KEY_NAMES = new Set([
+  "name", "title", "label", "description", "email", "value", "key", "version", "code", "type", "kind", "url", "hash", "token",
+]);
+
+// True when a column may join to another table by its name matching that table's key: not id-named
+// (the <x>_id rule covers those), not a generic attribute name and not named like personal data.
+export function nameMatchKeyEligible(name: string): boolean {
+  const norm = toSpecName(name);
+  return norm !== "id" && !/_id$/.test(norm) && !GENERIC_KEY_NAMES.has(norm) && !PII_NAME.test(norm);
+}
+
+// Known tables (other than `self`) whose single-column primary key has the column's name and a
+// compatible type: sales.sku -> products keyed by sku. Only text and number columns whose names
+// nameMatchKeyEligible accepts are matched, so a date keeps its time dimension. Tables that look like
+// noise are never targets, and raw or staging tables only when no other table matches.
+function keyNameCandidates(ctx: Context, self: SnapshotTable, col: SnapshotColumn): { table: SnapshotTable; keyColumn: string }[] {
+  const kind = classifyType(col.type);
+  if ((kind !== "string" && !isNumeric(kind)) || !nameMatchKeyEligible(col.name)) return [];
+  if (!ctx.keyIndex) {
+    const index = new Map<string, { table: SnapshotTable; keyColumn: SnapshotColumn }[]>();
+    for (const t of ctx.snapshot.tables) {
+      if (!ctx.known.has(tableKey(t))) continue;
+      const pk = primaryKeyOf(ctx, t);
+      if (pk.length !== 1) continue;
+      const keyColumn = t.columns.find((c) => c.name.toLowerCase() === pk[0]!.toLowerCase());
+      if (!keyColumn) continue;
+      const k = toSpecName(keyColumn.name);
+      index.set(k, [...(index.get(k) ?? []), { table: t, keyColumn }]);
+    }
+    ctx.keyIndex = index;
+  }
+  const matched = (ctx.keyIndex.get(toSpecName(col.name)) ?? []).filter(
+    (c) => tableKey(c.table) !== tableKey(self) && compatibleKeyTypes(col.type, c.keyColumn.type) && classifyTable(c.table)?.role !== "noise",
+  );
+  const clean = matched.filter((c) => !classifyTable(c.table));
+  return (clean.length ? clean : matched)
+    .sort(
+      (a, b) =>
+        Number(b.table.schema === self.schema) - Number(a.table.schema === self.schema) ||
+        qualifiedName(a.table).localeCompare(qualifiedName(b.table)),
+    )
+    .map((c) => ({ table: c.table, keyColumn: c.keyColumn.name }));
+}
+
 // How a numeric column that is neither a key nor personal data drafts as a measure.
 interface NumericRule {
   agg: "sum" | "avg";
@@ -378,9 +462,21 @@ interface NumericRule {
   perUnit: boolean;
 }
 
+// True when a name ends in a currency code and names an amount in it: revenue_eur, target_usd_cents.
+// A code pair (eur_usd) is an exchange rate, and a statistic, rate or score word (median_basket_usd,
+// rank_usd) names no amount.
+function currencyNamedMoney(norm: string): boolean {
+  if (!CURRENCY_SUFFIX.test(norm)) return false;
+  const stem = norm.replace(CURRENCY_SUFFIX, "");
+  return stem !== "" && !CURRENCY_STEM.test(stem) && !NOT_MONEY_AMOUNT.test(stem);
+}
+
 // The measure rule a numeric column's name selects, or null when its name selects none.
 // Per-unit prices and names ending _rate are averaged; other rates select no rule. Money names are
 // tested before count names, except that a name ending or starting with a count word is a count.
+// A currency code at the end of a name (revenue_eur) makes a summed name money; it selects a sum by
+// itself only after a money stem SUM_NAME does not cover (target_eur, mrr_usd), never after a
+// statistic, rate or another currency code (median_basket_usd, eur_usd).
 // A name ending with an additive count noun (impressions, clicks, sessions, ...), or starting with
 // one and naming no money or duration, is a count summed as an integer unless it names a ratio or
 // statistic.
@@ -398,12 +494,14 @@ export function numericRule(norm: string): NumericRule | null {
   if (perUnitPrice && !isCount) {
     return { agg: "avg", format: "currency", perUnit: true };
   }
-  if (!SUM_NAME.test(norm) && !isAdditiveCount) return null;
+  const currencyNamed = currencyNamedMoney(norm);
+  const currencyStemMoney = currencyNamed && CURRENCY_STEM_MONEY.test(norm.replace(CURRENCY_SUFFIX, ""));
+  if (!SUM_NAME.test(norm) && !isAdditiveCount && !currencyStemMoney) return null;
   const format: Format = isCount
     ? "integer"
     : DURATION_NAME.test(norm)
       ? "number"
-      : MONEY_NAME.test(norm)
+      : MONEY_NAME.test(norm) || currencyNamed
         ? "currency"
         : COUNT_NAME.test(norm)
           ? "integer"
@@ -425,6 +523,67 @@ function singleCurrency(table: SnapshotTable): string | undefined {
     if (value) return value;
   }
   return undefined;
+}
+
+// Where a money column's currency comes from: its own comment, its name, the table comment, or the
+// table's currency column holding a single value.
+export type CurrencyBasis = "column_comment" | "name" | "table_comment" | "currency_column";
+
+export interface ColumnCurrency {
+  currency: string;
+  basis: CurrencyBasis;
+}
+
+// The one currency a comment names, or undefined when it names none or several: a code in capitals
+// (EUR), a code in lower case after "in" (in eur), or a word or symbol naming one currency (euros, €,
+// pounds sterling, £, yen, ¥). Dollars and $ name several currencies and are not read.
+export function currencyInText(text: string | null | undefined): string | undefined {
+  if (!text) return undefined;
+  const found = new Set(text.match(CURRENCY_TEXT) ?? []);
+  for (const m of text.matchAll(CURRENCY_TEXT_IN)) found.add(m[1]!.toUpperCase());
+  for (const [re, code] of CURRENCY_WORDS) if (re.test(text)) found.add(code);
+  return found.size === 1 ? [...found][0] : undefined;
+}
+
+// The currency of a money column, with where it comes from, in this order: a code its comment names,
+// a code its name ends in, a code the table comment names, the single value of the table's currency column.
+export function columnCurrency(table: SnapshotTable, col: SnapshotColumn): ColumnCurrency | undefined {
+  const fromComment = currencyInText(col.description);
+  if (fromComment) return { currency: fromComment, basis: "column_comment" };
+  // A code pair at the end (eur_usd) names an exchange rate, not the column's currency.
+  const norm = toSpecName(col.name);
+  const fromName = CURRENCY_STEM.test(norm.replace(CURRENCY_SUFFIX, "")) ? undefined : norm.match(CURRENCY_SUFFIX)?.[1];
+  if (fromName) return { currency: fromName.toUpperCase(), basis: "name" };
+  const fromTable = currencyInText(table.description);
+  if (fromTable) return { currency: fromTable, basis: "table_comment" };
+  const single = singleCurrency(table);
+  return single ? { currency: single, basis: "currency_column" } : undefined;
+}
+
+// True for a decimal type with two decimal places, numeric(12,2): whole currency units, not cents.
+export function twoDecimalType(type: string): boolean {
+  return TWO_DECIMALS.test(type.trim());
+}
+
+// The scale of a decimal type (numeric(18,6) -> 6), or undefined for a type that declares none.
+export function decimalScale(type: string): number | undefined {
+  const m = type.trim().match(DECIMAL_SCALE);
+  return m ? Number(m[2]) : undefined;
+}
+
+// Whether a timestamp type holds an instant (true: with a time zone) or a wall-clock time with no
+// zone (false), by dialect; null for a type that is not a timestamp. Postgres timestamp and
+// DuckDB TIMESTAMP have no zone, nor do Snowflake TIMESTAMP_NTZ (and a plain TIMESTAMP, which maps
+// to it by default), BigQuery DATETIME and Databricks TIMESTAMP_NTZ; BigQuery and Databricks
+// TIMESTAMP, timestamptz and Snowflake TIMESTAMP_LTZ or _TZ (also spelled TIMESTAMPLTZ, TIMESTAMPTZ)
+// are instants.
+export function timestampHasZone(dialect: Dialect, type: string): boolean | null {
+  if (classifyType(type) !== "timestamp") return null;
+  const t = type.trim().toLowerCase().replace(/\(\s*\d+\s*\)/g, "").replace(/\s+/g, " ");
+  if (/without time zone/.test(t) || /^timestamp_?ntz\b/.test(t)) return false;
+  if (/with (local )?time zone/.test(t) || /^(timestamptz|timestamp_?tz|timestamp_?ltz)\b/.test(t)) return true;
+  if (/^datetime\b/.test(t)) return false;
+  return dialect === "bigquery" || dialect === "databricks";
 }
 
 // What a description says about cents: true when it says cents, false when it says not cents or
@@ -450,6 +609,8 @@ interface PendingJoin {
   origin: "declared" | "inferred";
   columns: string[];
   relationship: Relationship;
+  // True for a join inferred from a column named like the target's key (sku): the column keeps its own field.
+  byName?: boolean;
 }
 
 // Settings for drafting a table that already has a model, so only its new columns are kept.
@@ -470,18 +631,48 @@ interface DraftedTable {
   joinTargets: Map<string, string>;
   // Open question -> the columns it is about.
   questionColumns: Map<string, string[]>;
-  // Money columns drafted as measures, the table's single currency and the question about them.
+  // Money columns drafted as measures, the currency each was drafted with and the question about them.
   money: string[];
-  currency?: string;
+  currencies: Map<string, ColumnCurrency>;
   currencyQuestion?: string;
+  // Timestamp columns without a time zone drafted as time dimensions, and the question about them.
+  naiveTimestamps: string[];
+  timeZoneQuestion?: string;
 }
 
-// The question asking which currency money columns are in, or confirming the table's single currency.
-function currencyQuestion(q: string, money: string[], currency: string | undefined): string {
-  const one = money.length === 1;
-  return currency
-    ? `The currency column of ${q} holds only ${currency}, so ${listPhrase(money)} ${one ? "is" : "are"} drafted with currency ${currency}. Is every row in ${currency}?`
-    : `Which currency ${one ? "is" : "are"} ${listPhrase(money)} in?`;
+// The question asking which currency money columns are in, or confirming the currency each was
+// drafted with, grouped by currency and where it comes from, in the order of the columns.
+function currencyQuestion(q: string, money: string[], currencies: Map<string, ColumnCurrency>): string {
+  const groups: { cur?: ColumnCurrency; cols: string[] }[] = [];
+  for (const c of money) {
+    const cur = currencies.get(c);
+    const group = groups.find((g) => g.cur?.currency === cur?.currency && g.cur?.basis === cur?.basis);
+    if (group) group.cols.push(c);
+    else groups.push({ ...(cur ? { cur } : {}), cols: [c] });
+  }
+  return groups
+    .map(({ cur, cols }) => {
+      const one = cols.length === 1;
+      const is = one ? "is" : "are";
+      if (!cur) return `Which currency ${is} ${listPhrase(cols)} in?`;
+      const c = cur.currency;
+      if (cur.basis === "currency_column") {
+        return `The currency column of ${q} holds only ${c}, so ${listPhrase(cols)} ${is} drafted with currency ${c}. Is every row in ${c}?`;
+      }
+      const from =
+        cur.basis === "name" ? (one ? "its name" : "their names") : cur.basis === "column_comment" ? (one ? "its comment" : "their comments") : `the table comment of ${q}`;
+      return `${listPhrase(cols)} ${is} drafted with currency ${c}, from ${from}. Is ${one ? "it" : "each"} in ${c}?`;
+    })
+    .join(" ");
+}
+
+// The question asking in which time zone timestamps without one are stored.
+function timeZoneQuestion(columns: string[]): string {
+  const one = columns.length === 1;
+  return (
+    `${listPhrase(columns)} ${one ? "is a timestamp" : "are timestamps"} without a time zone. In which time zone ${one ? "is its value" : "are their values"} stored? ` +
+    `The answer is recorded as time_zone (an IANA zone such as UTC or America/New_York) on ${one ? "its time dimension" : "each of their time dimensions"}.`
+  );
 }
 
 // True when every column of the table is an id column and there are two or three of them: a link
@@ -596,7 +787,37 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
       relationship: solePk ? "one_to_one" : "many_to_one",
     });
   }
-  const joinColumns = new Set(pending.flatMap((j) => j.columns.map((c) => c.toLowerCase())));
+  // A column named like another known table's single-column primary key, of a compatible type,
+  // joins to it (sales.sku -> products.sku); id-named columns follow the rule above.
+  for (const col of table.columns) {
+    const lower = col.name.toLowerCase();
+    const norm = toSpecName(col.name);
+    if (norm === "id" || /_id$/.test(norm) || fkColumns.has(lower) || isSolePk([col.name])) continue;
+    if (pending.some((j) => j.columns.some((c) => c.toLowerCase() === lower))) continue;
+    const found = keyNameCandidates(ctx, table, col);
+    const best = found[0];
+    if (!best) continue;
+    joinTargets.set(col.name, qualifiedName(best.table));
+    const others = found.slice(1).map((c) => qualifiedName(c.table));
+    if (others.length) {
+      ask(
+        `${col.name} is joined to ${qualifiedName(best.table)} because its name matches that table's key; it could also mean ${listPhrase(others)}. Which is it?`,
+        [col.name],
+      );
+    }
+    pending.push({
+      target: best.table,
+      keys: [{ from: col.name, to: best.keyColumn }],
+      origin: "inferred",
+      columns: [col.name],
+      relationship: "many_to_one",
+      byName: true,
+    });
+  }
+  // Columns read by an id-named or declared join: keys, drafted as counts or left out. A column joined
+  // by its name alone (sku, status) keeps the dimension its type drafts; the join adds the target's fields.
+  const joinColumns = new Set(pending.filter((j) => !j.byName).flatMap((j) => j.columns.map((c) => c.toLowerCase())));
+  const nameJoinColumns = new Set(pending.filter((j) => j.byName).flatMap((j) => j.columns.map((c) => c.toLowerCase())));
 
   // Dimensions and column measures, in column order.
   const dimensions: Dimension[] = [];
@@ -614,9 +835,20 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
   // Columns averaged because no name rule says how they add up, with their measure names once claimed.
   const fallbackAvg: { column: string; name?: string }[] = [];
   const money: string[] = [];
+  // Money column -> the currency it is drafted with.
+  const currencies = new Map<string, ColumnCurrency>();
+  // Timestamp columns without a time zone drafted as time dimensions.
+  const naiveTimestamps: string[] = [];
   const rows = table.row_count ?? null;
-  const currency = singleCurrency(table);
-  const currencyField = (format: Format) => (format === "currency" && currency ? { currency } : {});
+  const currencyOf = (col: SnapshotColumn) => {
+    const cur = columnCurrency(table, col);
+    if (cur) currencies.set(col.name, cur);
+    return cur;
+  };
+  const currencyField = (format: Format, col: SnapshotColumn) => {
+    const cur = format === "currency" ? currencyOf(col) : undefined;
+    return cur ? { currency: cur.currency } : {};
+  };
   // Join -> its name, filled in once the joins are named.
   const joinNames = new Map<PendingJoin, string>();
 
@@ -634,14 +866,16 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
   // The numeric rule of a column that drafts as a measure by its name, or null.
   const ruleOf = (col: SnapshotColumn): NumericRule | null => {
     const norm = toSpecName(col.name);
-    if (!isNumeric(classifyType(col.type)) || isKeyColumn(col) || PII_NAME.test(norm)) return null;
+    if (!isNumeric(classifyType(col.type)) || isKeyColumn(col) || nameJoinColumns.has(col.name.toLowerCase()) || PII_NAME.test(norm)) return null;
     return numericRule(norm);
   };
   // A money column stored in hundredths: by its name, or by its own description, or, when that
-  // says nothing about units, by its table's description.
+  // says nothing about units and its type declares no decimal places (integer, numeric(12,0) or no
+  // scale), by its table's description.
   const isDivided = (col: SnapshotColumn, rule: NumericRule) =>
     rule.format === "currency" &&
-    (CENTS_NAME.test(toSpecName(col.name)) || (centsText(col.description) ?? centsText(table.description) ?? false));
+    (CENTS_NAME.test(toSpecName(col.name)) ||
+      (centsText(col.description) ?? ((decimalScale(col.type) ?? 0) > 0 ? false : centsText(table.description)) ?? false));
   const valueExprOf = (col: SnapshotColumn, rule: NumericRule) => {
     const expr = columnExpr(dialect, col.name);
     return isDivided(col, rule) ? centsExpr(dialect, expr) : expr;
@@ -661,6 +895,17 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
   for (const col of table.columns) {
     const lower = col.name.toLowerCase();
     const norm = toSpecName(col.name);
+    const category = classifyType(col.type);
+    // A date or time inside a composite primary key (store_id, month) is a time dimension too, and so
+    // is a date or time that is the whole key (daily_revenue keyed by day).
+    const timeKey =
+      pkCols.length >= 1 &&
+      pkSet.has(lower) &&
+      (category === "date" || category === "timestamp") &&
+      !joinColumns.has(lower) &&
+      !fkColumns.has(lower) &&
+      !/_id$/.test(norm) &&
+      norm !== "id";
     const sens = sensitivityOf(col.name, col, rows, { key: isKeyColumn(col) });
     const isPii = sens?.tag === "pii";
     const tags = sens ? [sens.tag] : undefined;
@@ -677,7 +922,7 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
       dimensions.push({ name: ns.claim(norm), expr, type: isNumeric(classifyType(col.type)) ? "number" : "string", ...extras(col, tags), status: "draft" });
       continue;
     }
-    if (isKeyColumn(col)) {
+    if (isKeyColumn(col) && !timeKey) {
       const single = !isSolePk([col.name]) && (joinColumns.has(lower) || fkColumns.has(lower) || /_id$/.test(norm));
       const composite = (table.foreign_keys ?? []).some((fk) => fk.columns.length > 1 && fk.columns.some((c) => c.toLowerCase() === lower));
       if (single && !composite) {
@@ -703,9 +948,9 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
       }
       continue;
     }
-    const category = classifyType(col.type);
     if (category === "date" || category === "timestamp") {
       emitted();
+      if (timestampHasZone(dialect, col.type) === false) naiveTimestamps.push(col.name);
       dimensions.push({
         name: ns.claim(norm),
         expr,
@@ -734,9 +979,10 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
     }
     if (isNumeric(category)) {
       const distinct = col.profile?.distinct_count;
-      if (isPii) {
+      // A number joined by its name (store_number) is a key to its target: a dimension, never a measure.
+      if (isPii || nameJoinColumns.has(lower)) {
         emitted();
-        dimensions.push({ name: ns.claim(norm), expr, type: "number", ...extras(col, ["pii"]), status: "draft" });
+        dimensions.push({ name: ns.claim(norm), expr, type: "number", ...extras(col, isPii ? ["pii"] : tags), status: "draft" });
         continue;
       }
       const rule = numericRule(norm);
@@ -750,7 +996,7 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
         if (format === "currency") money.push(col.name);
         columnMeasures.push({
           names: () => (agg === "avg" ? [`avg_${unit}`, `average_${unit}`] : [unit, norm, `total_${unit}`]),
-          build: (name) => ({ name, expr: valueExpr, agg, format, ...currencyField(format), ...extras(col, tags), status: "draft" }),
+          build: (name) => ({ name, expr: valueExpr, agg, format, ...currencyField(format, col), ...extras(col, tags), status: "draft" }),
         });
         if (col === lineTotalColumn && quantity) {
           // A divided price is parenthesized so the product is taken in numeric, not integer, arithmetic.
@@ -759,7 +1005,7 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
             names: () => ["line_total", `line_total_${unit}`],
             build: (name) => {
               lineTotal = { name, expr: totalExpr };
-              return { name, expr: totalExpr, agg: "sum", format: "currency", ...currencyField("currency"), status: "draft" };
+              return { name, expr: totalExpr, agg: "sum", format: "currency", ...currencyField("currency", col), status: "draft" };
             },
           });
         }
@@ -789,7 +1035,14 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
   const joins: Join[] = pending.map((p) => {
     const to = tableKey(p.target) === tableKey(table) ? modelName : ctx.names.get(tableKey(p.target))!;
     const fromName = p.columns.map((c) => toSpecName(c).replace(/_id$/, "")).join("_");
-    const name = tableKey(p.target) === tableKey(table) ? ns.claim(fromName, `parent_${singular(to)}`) : ns.claim(singular(to), fromName);
+    // A join by name shares its column's name (status -> statuses) with the column's dimension, so it
+    // takes the target's model name next.
+    const name =
+      tableKey(p.target) === tableKey(table)
+        ? ns.claim(fromName, `parent_${singular(to)}`)
+        : p.byName
+          ? ns.claim(singular(to), to, `${fromName}_${singular(to)}`)
+          : ns.claim(singular(to), fromName);
     joinNames.set(p, name);
     const targetKey = tableKey(p.target);
     if (targetKey !== tableKey(table) && !ctx.modeled.has(targetKey) && !ctx.drafting.has(targetKey)) {
@@ -859,7 +1112,9 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
       withTotal && quantity ? [...group, quantity.name] : group,
     );
   }
-  const moneyQuestion = money.length ? currencyQuestion(q, money, currency) : undefined;
+  const zoneQuestion = naiveTimestamps.length ? timeZoneQuestion(naiveTimestamps) : undefined;
+  if (zoneQuestion) ask(zoneQuestion, naiveTimestamps);
+  const moneyQuestion = money.length ? currencyQuestion(q, money, currencies) : undefined;
   if (moneyQuestion) ask(moneyQuestion, money);
   if (pii.length) {
     ask(`${listPhrase(pii)} look${pii.length === 1 ? "s" : ""} like personal data and ${pii.length === 1 ? "is" : "are"} tagged pii. Who may see ${pii.length === 1 ? "it" : "them"}?`, pii);
@@ -894,8 +1149,10 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
     joinTargets,
     questionColumns,
     money,
-    ...(currency ? { currency } : {}),
+    currencies,
     ...(moneyQuestion ? { currencyQuestion: moneyQuestion } : {}),
+    naiveTimestamps,
+    ...(zoneQuestion ? { timeZoneQuestion: zoneQuestion } : {}),
   };
 }
 
@@ -1009,7 +1266,9 @@ export function newColumns(snapshot: Snapshot, table: SnapshotTable, model: Mode
 // Drafts dimensions, measures and joins for the new columns of `table` (newColumns) by the rules a
 // new model is drafted with, under names the model does not use. A new key column whose target is
 // in scope or modeled gets a draft join. New money measures take the currency of the model's
-// measures when they all share one, and the currency question is asked only when none has a currency.
+// measures when they all share one and the column names none itself, and the currency question is
+// asked only when none has a currency, or else as a confirmation of a currency a new column's own
+// name or comment names.
 // The draft's other questions are kept when they are about a new column that a drafted item reads.
 export function draftNewColumns(
   snapshot: Snapshot,
@@ -1116,8 +1375,8 @@ export function draftNewColumns(
     );
   }
   // The draft's own questions about a new column that a drafted item reads (cents, per-unit figures,
-  // other join targets), matched by the columns each question is about. The currency question names
-  // only the new money columns.
+  // other join targets), matched by the columns each question is about. The currency and time-zone
+  // questions name only the new money and timestamp columns.
   const existingQuestions = new Set(Array.isArray(model.open_questions) ? model.open_questions : []);
   const coveredLower = new Set([...covered].map((c) => c.toLowerCase()));
   for (const question of drafted.model.open_questions?.slice(1) ?? []) {
@@ -1125,7 +1384,16 @@ export function draftNewColumns(
     if (/^primary_key \[|^Which column or columns identify/.test(question)) continue;
     if (question === drafted.currencyQuestion) {
       const newMoney = drafted.money.filter((c) => covered.has(c));
-      const asked = newMoney.length && !modelCurrencies.length ? currencyQuestion(q, newMoney, drafted.currency) : undefined;
+      // With currencies on the model's measures, only a currency a new column's own name or comment names is confirmed.
+      const own = (c: string) => ["name", "column_comment"].includes(drafted.currencies.get(c)?.basis ?? "");
+      const ask = modelCurrencies.length ? newMoney.filter(own) : newMoney;
+      const asked = ask.length ? currencyQuestion(q, ask, drafted.currencies) : undefined;
+      if (asked && !existingQuestions.has(asked)) result.open_questions.push(asked);
+      continue;
+    }
+    if (question === drafted.timeZoneQuestion) {
+      const newNaive = drafted.naiveTimestamps.filter((c) => covered.has(c));
+      const asked = newNaive.length ? timeZoneQuestion(newNaive) : undefined;
       if (asked && !existingQuestions.has(asked)) result.open_questions.push(asked);
       continue;
     }

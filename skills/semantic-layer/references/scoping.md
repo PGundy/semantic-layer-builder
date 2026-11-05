@@ -54,7 +54,7 @@ Suggested scope (the include-suggested groups, less the noise tables they would 
 Preview it, agree it with the owner, then add --write to save it.
 ```
 
-`--json` carries the same as `suggested_scope: { include, exclude }`. It already removes the noise tables that the include patterns would also catch (`fct_*` catches `fct_orders_v2_test`), by exact qualified name, so start the preview from it rather than combining the group rows yourself. It is a starting point for the owner's choice, not their answer.
+`--json` carries the same as `suggested_scope: { include, exclude }`. It already removes the noise tables that the include patterns would also catch (`fct_*` catches `fct_orders_v2_test`), by exact qualified name, so start the preview from it rather than combining the group rows yourself. Its noise and staging guesses come from the same classifier `sl baseline` uses, so the brief and the groups name the same tables. It is a starting point for the owner's choice, not their answer.
 
 Do not paste the output raw to a non-technical owner. Summarise in a few lines with real names and plain words, then propose a default:
 

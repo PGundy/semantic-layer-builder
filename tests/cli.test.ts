@@ -65,6 +65,26 @@ describe("cli", () => {
     }
     const help = await sl(t.root, ["run", "--help"]);
     expect(help.out).toContain("--limit defaults to 100; all rows are counted, at most n are shown");
+    expect(help.out).toContain("[--show-protected]");
+    expect(help.out).toContain("values of protected columns show as [protected] unless --show-protected");
+  });
+
+  test("run masks a column named like personal data, refuses duplicate names and strips escapes", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    await duckdbSource(t.root, t.dir, "wh", ["create table people as select 1 as id, 'ana@example.com' as email, 'Lisbon' as city"]);
+    const r = await sl(t.root, ["run", "--source", "wh", "--sql", "select id, email, city from people"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe("id  email        city\n--  -----------  ------\n1   [protected]  Lisbon\n(1 row)\nProtected column shown as [protected]: email.");
+    const shown = await sl(t.root, ["run", "--source", "wh", "--sql", "select email from people", "--show-protected"]);
+    expect(shown.out).toContain("ana@example.com");
+    expect(shown.out).not.toContain("Protected column");
+    const dupes = await sl(t.root, ["run", "--source", "wh", "--sql", "select id, city as id from people"]);
+    expect(dupes.code).toBe(1);
+    expect(dupes.err).toBe('sl run: The result has more than one column named "id"; alias them so each column has its own name.');
+    const ansi = await sl(t.root, ["run", "--source", "wh", "--sql", "select chr(27) || ']0;owned' || chr(7) || chr(27) || '[2Jok' as s"]);
+    expect(ansi.out).toBe("s\n--\nok\n(1 row)");
   });
 
   test("every command's --help names the global flags", async () => {

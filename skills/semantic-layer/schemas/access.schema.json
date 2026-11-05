@@ -26,6 +26,11 @@
       "description": "ISO date of approval, YYYY-MM-DD. Required when status is approved.",
       "format": "date"
     },
+    "approved_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "sha256: and 64 hex characters, written by sl approve: the hash of the whole file, but its approval and open_questions, when it was approved. sl validate errors when the file no longer matches it, and warns when an approved file has none (sl approve --stamp-hashes records it)."
+    },
     "last_approved": {
       "type": "object",
       "additionalProperties": false,

@@ -14,6 +14,7 @@ import {
   metricMeasureRefs,
 } from "./access.ts";
 import { canRun } from "./adapters/index.ts";
+import { accessEntry, type ApprovalEntry, holdsHashes, integrity, metricEntries, modelEntries } from "./approval-hash.ts";
 import { findTable, qualifiedName } from "./naming.ts";
 import { inScope } from "./patterns.ts";
 import { parseRequestField } from "./refs.ts";
@@ -34,7 +35,7 @@ import {
 } from "./project.ts";
 import { rankTables } from "./rank.ts";
 import { incomingKeyColumns, missingColumns, referencedColumns, unreferencedColumns } from "./snapshot-diff.ts";
-import { TO_ONE_RELATIONSHIPS } from "./types.ts";
+import { DIALECTS, TO_ONE_RELATIONSHIPS } from "./types.ts";
 import type { AccessMode, Approval, Dialect, Golden, Metric, Model, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
 
 // Golden count below which the verify phase stays open.
@@ -135,6 +136,7 @@ export type Phase =
   | "add-source"
   | "introspect"
   | "drift"
+  | "reapprove"
   | "scope"
   | "profile"
   | "draft"
@@ -198,6 +200,12 @@ export interface ProjectStatus {
   };
   // Open questions across the reported sources' models and access.yaml.
   open_questions: number;
+  // Approved items whose content no longer matches the approved_hash sl approve recorded, as approve
+  // targets (source.model, source.model.field, metric:<name>, access).
+  changed_since_approval: string[];
+  // Approved items without an approved_hash while other items record one: the hash may have been
+  // removed, so each is read back and approved again. Empty while no item records a hash.
+  hash_missing: string[];
   goldens: ApprovalCount;
   // Names of the goldens that are not approved; a golden without a string name goes by its file name.
   draft_goldens: string[];
@@ -311,10 +319,24 @@ interface Drift {
   tables: MissingTable[];
 }
 
-// A source's status, and its drift.
+// A source's status, its drift, and the approval entries of its models, fields and joins.
 interface SourceReport {
   status: SourceStatus;
   drift: Drift;
+  approvals: ApprovalEntry[];
+}
+
+// The approve targets of the entries in the given integrity state.
+function refsIn(entries: ApprovalEntry[], state: "changed" | "missing", projectHashed: boolean): string[] {
+  return entries.filter((e) => integrity(e, projectHashed) === state).map((e) => e.ref);
+}
+
+// The approval entries of a source's models, fields and joins. A model that cannot be read as a
+// mapping is skipped; sl validate reports it.
+function modelApprovals(source: string, config: SourceConfig, models: LoadedModel["model"][]): ApprovalEntry[] {
+  const byName = new Map(models.filter((m) => isRecord(m) && typeof m.model === "string").map((m) => [m.model, m]));
+  const dialect = typeof config.dialect === "string" && (DIALECTS as readonly string[]).includes(config.dialect) ? config.dialect : undefined;
+  return [...byName.values()].flatMap((m) => modelEntries(source, m, (name) => byName.get(name), dialect));
 }
 
 // The rule sl validate applies to an expr that is one column: a bare identifier that is not a SQL
@@ -472,7 +494,7 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
     missing_tables: missingTables,
     next_batch: nextBatch,
   };
-  return { status, drift };
+  return { status, drift, approvals: modelApprovals(name, config, models) };
 }
 
 // The profile step's message: the in-scope tables with no profile, and apart from them those whose
@@ -598,6 +620,26 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     };
   }
 
+  // An approved item edited after its sign-off changes a figure nobody confirmed, so it is read back
+  // before anything else moves.
+  if (status.changed_since_approval.length || status.hash_missing.length) {
+    const changed = status.changed_since_approval;
+    const missing = status.hash_missing;
+    const parts = [
+      changed.length ? `${changed.length} approved item(s) changed since they were approved: ${preview(changed)}.` : "",
+      missing.length
+        ? `${missing.length} approved item(s) have no approved_hash while other approved items carry one, so it may have been removed: ${preview(missing)}.`
+        : "",
+    ].filter(Boolean);
+    return {
+      phase: "reapprove",
+      message:
+        `${parts.join(" ")} Read each back to the owner as it now stands and approve it again only after they confirm, or restore ` +
+        "the approved definition; sl validate names each one.",
+      command: `sl approve --target ${changed[0] ?? missing[0]} --by "<owner>"`,
+    };
+  }
+
   const unscoped = sources.find((s) => s.snapshot!.in_scope === 0);
   if (unscoped) {
     const s = unscoped.source;
@@ -656,7 +698,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       source: s,
       message:
         `${cols.length} column(s) of modeled tables in "${s}" have no field and are not in ignored_columns: ${preview(cols)}. ` +
-        "Draft them as new fields; approved items stay as they are.",
+        "Draft them as new fields; approved items stay as they are. A column the owner left out on purpose goes in the model's ignored_columns instead.",
       command: `sl draft --source ${s} --new-columns`,
     };
   }
@@ -1008,10 +1050,21 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
   const reports = (only ? [only] : names).map((s) => sourceStatus(root, s, settings));
   const sources = reports.map((r) => r.status);
   const drift = new Map(reports.map((r) => [r.status.source, r.drift]));
+  const reported = new Set(sources.map((s) => s.source));
 
   const metricsFile = loadMetrics(root);
   const metrics: Metric[] = Array.isArray(metricsFile?.metrics) ? metricsFile.metrics : [];
   const access = loadAccess(root);
+  // The approvals of the reported sources' models, fields and joins, their metrics and access.yaml.
+  const allMetricEntries = metricEntries(metrics);
+  const accessEntries = [accessEntry(access)].filter((e): e is ApprovalEntry => !!e);
+  const approvals = [
+    ...reports.flatMap((r) => r.approvals),
+    ...allMetricEntries.filter((e) => typeof e.item.source === "string" && reported.has(e.item.source)),
+    ...accessEntries,
+  ];
+  // Whether any of them, or any metric, records an approved_hash.
+  const projectHashed = holdsHashes([...reports.flatMap((r) => r.approvals), ...allMetricEntries, ...accessEntries]);
   // A file that holds only comments parses to null but still exists: a draft with no roles.
   const accessState: ProjectStatus["access"]["state"] = access
     ? access.status === "approved"
@@ -1047,6 +1100,8 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
       ...(lastApproved ? { last_approved: lastApproved } : {}),
     },
     open_questions: sources.reduce((n, s) => n + s.open_questions, accessQuestions),
+    changed_since_approval: refsIn(approvals, "changed", projectHashed),
+    hash_missing: refsIn(approvals, "missing", projectHashed),
     goldens: count(goldens),
     draft_goldens: draftGoldenNames(loadedGoldens),
     roles_without_goldens: roleNames(access).filter((r) => !goldenRoles.has(r)),

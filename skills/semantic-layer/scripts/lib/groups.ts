@@ -3,7 +3,7 @@
 // tables one by one. Each group carries a ready scope pattern and a suggestion.
 import { qualifiedName } from "./naming.ts";
 import { inScope, matchesPattern } from "./patterns.ts";
-import { NOISE_WORDS, noiseReason } from "./rank.ts";
+import { MIGRATION_TABLES, NOISE_WORDS, PIPELINE_WORDS, classifyTable, noiseReason } from "./rank.ts";
 import type { Scope, SnapshotTable } from "./types.ts";
 
 export type GroupKind = "schema" | "prefix" | "suffix" | "noise";
@@ -30,23 +30,14 @@ const DATE_SUFFIX = /_((19|20)\d{2}(_?\d{2}){0,2}|\d{8})$/i;
 export const DATE_PATTERN = "re:.*_((19|20)\\d{2}(_?\\d{2}){0,2}|\\d{8})";
 export const DATE_KEY = "_<date>";
 
-// The migration bookkeeping tables noiseReason() recognizes.
-const MIGRATION_TABLES = [
-  "schema_migrations",
-  "_prisma_migrations",
-  "flyway_schema_history",
-  "ar_internal_metadata",
-  "django_migrations",
-  "knex_migrations",
-];
-
-// One regex that selects the same names as noiseReason(): a noise word as a
-// token between separators, a date at the end, or a migration table. It names
+// One regex that selects the same names as noiseReason(): a noise or pipeline word as a token
+// between separators, a date at the end, a migration table or a leading underscore. It names
 // rules, not tables, so it stays short and also catches tables added later.
 export const NOISE_PATTERN =
-  `re:(.*[_.-])?(${NOISE_WORDS.join("|")})([_.-].*)?` +
+  `re:(.*[_.-])?(${[...NOISE_WORDS, ...PIPELINE_WORDS].join("|")})([_.-].*)?` +
   `|.*_((19|20)\\d{2}(_?\\d{2}){0,2}|\\d{8})` +
-  `|${MIGRATION_TABLES.join("|")}`;
+  `|${MIGRATION_TABLES.join("|")}` +
+  `|_.*`;
 
 const RAW_WORDS = new Set(["raw", "src", "source"]);
 const STAGING_WORDS = new Set(["stg", "staging", "int", "intermediate"]);
@@ -197,7 +188,8 @@ export function groupTables(tables: SnapshotTable[], scope?: Scope): TableGroup[
   if (noisy.length) {
     const rated: Rated = {
       suggestion: "exclude",
-      reason: "Tables that look like noise: temporary, backup, dated or migration bookkeeping tables.",
+      reason:
+        "Tables that look like noise: temporary, backup or dated copies, migration bookkeeping, pipeline-tool tables (etl, airflow, fivetran, airbyte, dbt) and names starting with an underscore.",
     };
     groups.push(build("noise", "noise", NOISE_PATTERN, noisy, rated, scope));
   }
@@ -214,12 +206,13 @@ export interface SuggestedScope {
 
 // One scope built from the groups: the patterns of the include-suggested groups
 // (less one whose tables another included group already holds), and excludes for
-// the excludable tables those includes select. A table is excludable when its name
-// looks like noise or its schema group is exclude-suggested (raw.*, tmp.*, staging.*).
-// An exclude-suggested group's pattern is used when every table it adds to the
-// excludes is excludable; the noise tables no such group covers are named exactly.
-// With no include group, the scope selects every table, so the excludes cover every
-// noise table and every exclude-suggested schema.
+// the excludable tables those includes select. A table is excludable when classifyTable
+// (lib/rank.ts, the judgement sl baseline uses) calls it excludable: noise, or staging by a raw or
+// staging name prefix, schema or comment phrase, not by an int_ prefix alone. A table is also excludable when its
+// schema group is exclude-suggested (raw.*, tmp.*, staging.*). An exclude-suggested group's
+// pattern is used when every table it adds to the excludes is excludable; the excludable tables
+// no such group covers are named exactly. With no include group, the scope selects every table, so
+// the excludes cover every excludable table and every exclude-suggested schema.
 export function suggestScope(tables: SnapshotTable[], groups: TableGroup[]): SuggestedScope {
   const includeGroups = groups.filter((g) => g.suggestion === "include" && g.kind !== "noise");
   const kept = includeGroups.filter(
@@ -234,7 +227,7 @@ export function suggestScope(tables: SnapshotTable[], groups: TableGroup[]): Sug
   );
   const include = kept.map((g) => g.pattern);
   const selected = tables.filter((t) => !include.length || include.some((p) => matchesPattern(p, t)));
-  const caughtNoise = new Set(selected.filter((t) => noiseReason(t.name) !== null).map(qualifiedName));
+  const caughtNoise = new Set(selected.filter((t) => classifyTable(t)?.excludable === true).map(qualifiedName));
   const selectedNames = new Set(selected.map(qualifiedName));
   const excludable = new Set(caughtNoise);
   for (const g of groups) {

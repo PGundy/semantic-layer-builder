@@ -50,7 +50,7 @@ function sourceLines(s: SourceStatus): string[] {
   }
   if (s.new_columns.length) {
     const items = s.new_columns.map((c) => `${c.model}.${c.column} (${c.type})`);
-    lines.push(`  new columns without a field: ${preview(items, 8)}`);
+    lines.push(`  columns without a field: ${preview(items, 8)}`);
   }
   if (s.missing_tables.length) {
     const items = s.missing_tables.map((m) => `${m.model} (${m.table})`);
@@ -70,6 +70,8 @@ function render(st: ProjectStatus): string {
     `metrics ${ratio(st.metrics)}; access ${st.access.state}${st.access.state === "missing" ? "" : ` (${st.access.roles} role(s)${accessQuestions}${lastApproved})`}; goldens ${ratio(st.goldens)}`,
   );
   lines.push(audienceLine(st));
+  if (st.changed_since_approval.length) lines.push(`changed since approval: ${preview(st.changed_since_approval, 8)}`);
+  if (st.hash_missing.length) lines.push(`approved without approved_hash while others carry one: ${preview(st.hash_missing, 8)}`);
   if (st.draft_metrics.length) lines.push(`draft metrics: ${st.draft_metrics.join(", ")}`);
   if (st.draft_goldens.length) lines.push(`draft goldens: ${st.draft_goldens.join(", ")}`);
   if (st.roles_without_goldens.length) lines.push(`roles without an approved golden: ${st.roles_without_goldens.join(", ")}`);

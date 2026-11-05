@@ -4,9 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildBaseline, INCOMING_READ_MAX, QUESTION_TOPICS, renderBaseline, type BaselineReport, type TableBaseline } from "../skills/semantic-layer/scripts/lib/baseline.ts";
 import { draftModels } from "../skills/semantic-layer/scripts/lib/draft.ts";
+import { groupTables, suggestScope } from "../skills/semantic-layer/scripts/lib/groups.ts";
+import { classifyTable } from "../skills/semantic-layer/scripts/lib/rank.ts";
 import type { ColumnProfile, Model, Snapshot, SnapshotColumn, SnapshotTable } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { updateYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { initProject, PG_URL, sl, tempRoot } from "./helpers.ts";
+import { SQL } from "bun";
+import { loadPostgres } from "../fixtures/acme/load-postgres.ts";
+import { assertLocalPg, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -753,36 +757,294 @@ describe("sl baseline", () => {
   });
 });
 
-// The synthetic Acme warehouse, introspected live: the database is the PG_URL server's acme database.
-const ACME_URL = process.env.ACME_URL ?? (PG_URL ? PG_URL.replace(/\/postgres(\?|$)/, "/acme$1") : undefined);
+describe("baseline on composite keys, text keys, currencies, time zones and noise", () => {
+  const c = (name: string, type: string, description?: string): SnapshotColumn => (description ? { name, type, description } : { name, type });
+  // The shop of an owner with targets keyed by (store_id, month), a sku join and a price comment in EUR.
+  const SHOP: SnapshotTable[] = [
+    {
+      schema: "ops",
+      name: "sales_targets",
+      kind: "table",
+      row_count: 240,
+      primary_key: ["store_id", "month"],
+      foreign_keys: [{ columns: ["store_id"], references: { schema: "shop", table: "stores", columns: ["store_id"] } }],
+      columns: [c("store_id", "integer"), c("month", "date"), c("target_eur", "numeric(12,2)")],
+    },
+    {
+      schema: "shop",
+      name: "sales",
+      kind: "table",
+      row_count: 3000,
+      primary_key: ["sale_id"],
+      columns: [
+        c("sale_id", "integer"),
+        c("sku", "text"),
+        c("store_id", "integer"),
+        c("sold_at", "timestamp without time zone"),
+        c("quantity", "integer"),
+        c("unit_price", "numeric(10,2)", "Price per unit in EUR, before discount"),
+        c("discount", "numeric(10,2)"),
+      ],
+    },
+    { schema: "shop", name: "products", kind: "table", row_count: 42, primary_key: ["sku"], columns: [c("sku", "text"), c("category", "text"), c("cost", "numeric(10,2)")] },
+    { schema: "shop", name: "stores", kind: "table", row_count: 20, primary_key: ["store_id"], columns: [c("store_id", "integer"), c("city", "text"), c("opened_at", "timestamptz")] },
+    { schema: "shop", name: "stg_sales", kind: "table", row_count: 3000, columns: [c("sale_id", "integer"), c("sku", "text"), c("amount", "numeric(10,2)")] },
+    { schema: "ops", name: "_migrations", kind: "table", row_count: 10, columns: [c("version", "text"), c("applied_at", "timestamptz")] },
+    { schema: "shop", name: "sales_bak", kind: "table", row_count: 3000, columns: [c("sale_id", "integer"), c("sku", "text")] },
+    { schema: "shop", name: "tmp_load", kind: "table", row_count: 5, columns: [c("line", "text")] },
+  ];
+  const shopSnapshot = (method: Snapshot["method"] = "information_schema"): Snapshot => ({ ...snapshot(SHOP), method });
+  const report = buildBaseline(shopSnapshot(), OPTS);
+  const get = (name: string) => report.tables.find((t) => t.table === name)!;
 
-describe("sl baseline on the live Acme warehouse", () => {
-  test.skipIf(!ACME_URL)("reads sensibly from an introspected snapshot", async () => {
-    const t = tempRoot();
-    cleanup = t.cleanup;
-    await initProject(t.root, "acme");
-    const env = { ACME_URL };
-    expect((await sl(t.root, ["add-source", "--name", "wh", "--dialect", "postgres", "--env", "ACME_URL"], env)).code).toBe(0);
-    const intro = await sl(t.root, ["introspect", "--source", "wh", "--schemas", "acme"], env);
-    expect(intro.code).toBe(0);
-    const r = await sl(t.root, ["baseline", "--source", "wh", "--tables", "fct_*,dim_*,audit_log,sales_team_closure", "--json"], env);
-    expect(r.code).toBe(0);
-    const j = r.json<BaselineReport>();
-    const get = (name: string) => j.tables.find((x) => x.table === `acme.${name}`)!;
-    expect(get("fct_orders").role).toBe("fact");
-    expect(get("fct_orders").grain.guess).toBe("one row per order");
-    expect(get("fct_orders_v2_test").role).toBe("noise");
-    expect(get("dim_customers_archive").role).toBe("noise");
-    expect(get("sales_team_closure").role).toBe("bridge");
-    expect(get("audit_log").role).toBe("event");
-    expect(get("dim_customers").role).toBe("dimension");
-    expect(get("fct_order_items").relationships.find((x) => x.table === "acme.fct_orders")!.fan_out).toContain("many side of acme.fct_orders");
-    expect(get("fct_refunds").relationships.find((x) => x.table === "acme.fct_orders")!.fan_out).toBeDefined();
-    expect(get("fct_orders").splits.map((s) => s.field)).toContain("customer.acquisition_channel");
-    expect(get("fct_orders").measures.find((m) => m.kind === "ratio")!.description).toContain("average order value");
-    expect(get("fct_orders").not_splits.find((n) => n.column === "gift_message")!.reason).toBe("sensitive");
-    expect(get("dim_customers").questions.map((q) => q.topic)).toContain("exclusions");
-    const md = await sl(t.root, ["baseline", "--source", "wh", "--tables", "fct_*,dim_*"], env);
-    expect(md.out).toContain("- **acme.fct_orders** (fact, one row per order) joins");
+  test("a date in a composite key is a time split, and the table is a fact with money to add up", () => {
+    const targets = get("ops.sales_targets");
+    expect(targets.role).toBe("fact");
+    expect(targets.splits).toContainEqual({ field: "month", column: "month", table: "ops.sales_targets", kind: "time", time_grains: ["day", "week", "month", "quarter", "year"], basis: "its type, date" });
+    expect(targets.measures.find((m) => m.name === "target_eur")).toMatchObject({ kind: "sum", format: "currency", currency: "EUR", currency_basis: "name", whole_units: true });
+    const units = targets.questions.find((q) => q.topic === "units")!;
+    expect(units.question).toBe("target_eur is in EUR by its name: is that right?");
+    // A date has no time zone to ask about.
+    expect(targets.questions.find((q) => q.topic === "date")!.question).toBe("Is month the date to report sales targets by?");
   });
+
+  test("sales.sku joins products by its key's name, so products is attached and sku stays a split", () => {
+    const sales = get("shop.sales");
+    expect(sales.relationships.find((r) => r.columns[0] === "sku")).toMatchObject({ direction: "outgoing", table: "shop.products", table_columns: ["sku"], relationship: "many_to_one", origin: "inferred", join: "product" });
+    // A column joined by its name alone is no key: like sl draft's dimension, it may split, which a profile settles.
+    expect(sales.not_splits.find((n) => n.column === "sku")).toBeUndefined();
+    expect(sales.unclear.map((u) => u.column)).toContain("sku");
+    expect(sales.splits.map((x) => x.field)).toContain("product.category");
+    expect(report.star.unattached_dimensions).not.toContain("shop.products");
+    expect(get("shop.products").relationships.find((r) => r.direction === "incoming")!.table).toBe("shop.sales");
+  });
+
+  test("a currency code in a comment is confirmed, and a two-decimal type is not asked about cents", () => {
+    const units = get("shop.sales").questions.find((q) => q.topic === "units")!;
+    expect(units.question).toBe("unit_price is in EUR by its comment: is that right? Which currency is discount in?");
+    expect(units.question).not.toContain("whole currency units or in cents");
+    expect(get("shop.sales").measures.find((m) => m.name === "avg_unit_price")).toMatchObject({ currency: "EUR", currency_basis: "column_comment", whole_units: true });
+    expect(get("shop.products").questions.find((q) => q.topic === "units")!.question).toBe("Which currency is cost in?");
+  });
+
+  test("a timestamp without a time zone asks the zone its values are recorded in; one with a zone asks only how days count", () => {
+    expect(get("shop.sales").questions.find((q) => q.topic === "date")!.question).toBe(
+      "Is sold_at the date to report sales by? It has no time zone: in which zone is it recorded (the time dimension's time_zone), and in which time zone should days be counted?",
+    );
+    const aware = buildBaseline({ ...shopSnapshot(), tables: SHOP.map((t) => (t.name === "sales" ? { ...t, columns: t.columns.map((x) => (x.name === "sold_at" ? { ...x, type: "timestamptz" } : x)) } : t)) }, OPTS);
+    expect(aware.tables.find((t) => t.table === "shop.sales")!.questions.find((q) => q.topic === "date")!.question).toBe(
+      "Is sold_at the date to report sales by, and in which time zone should days be counted?",
+    );
+    const two: SnapshotTable = { schema: "app", name: "events", kind: "table", row_count: 10, primary_key: ["event_id"], columns: [c("event_id", "integer"), c("created_at", "timestamp"), c("seen_at", "timestamp with time zone"), c("clicks", "integer")] };
+    const q = buildBaseline({ ...snapshot([two]) }, OPTS).tables[0]!.questions.find((x) => x.topic === "date")!.question;
+    expect(q).toBe(
+      'Which date is "the" date of an event: created_at or seen_at? Our guess is created_at. created_at has no time zone: in which zone is it recorded (the time dimension\'s time_zone), and in which time zone should days be counted?',
+    );
+  });
+
+  test("noise and staging come from the classifier sl tables --groups uses", () => {
+    expect(get("ops._migrations").role).toBe("noise");
+    expect(get("shop.sales_bak").role).toBe("noise");
+    expect(get("shop.tmp_load").role).toBe("noise");
+    expect(get("shop.stg_sales").role).toBe("staging");
+    const suggested = suggestScope(SHOP, groupTables(SHOP));
+    for (const t of ["ops._migrations", "shop.sales_bak", "shop.tmp_load", "shop.stg_sales"]) expect(suggested.exclude).toContain(t);
+    for (const t of report.tables) expect([t.table, classifyTable(SHOP.find((x) => `${x.schema}.${x.name}` === t.table)!)?.role ?? "other"]).toEqual([t.table, ["noise", "staging"].includes(t.role) ? t.role : "other"]);
+  });
+
+  test("the top-N skips noise, takes staging only where room is left, and the header names the coverage", () => {
+    const focus = buildBaseline(shopSnapshot(), { ...OPTS, focusThreshold: 3 });
+    expect(focus.selection).toBe("focus");
+    expect(focus.tables.map((t) => t.table).sort()).toEqual(["ops.sales_targets", "shop.sales", "shop.stores"]);
+    expect([...focus.left_out_noise].sort()).toEqual(["ops._migrations", "shop.sales_bak", "shop.tmp_load"]);
+    expect([...focus.left_out].sort()).toEqual(["ops._migrations", "shop.products", "shop.sales_bak", "shop.stg_sales", "shop.tmp_load"]);
+    expect(focus.notes[0]).toContain("this brief covers 3 of the 8 in-scope tables");
+    expect(focus.notes[0]).toContain("leaves out 5 tables (3 tables that look like noise and 2 more by rank)");
+    const md = renderBaseline(focus);
+    expect(md).toContain("): it covers 3 of the 8 in-scope tables.");
+    expect(md).toContain("Below the top by rank: shop.stg_sales, shop.products");
+    expect(md).toContain("Look like noise: ");
+    // With room for every table but the noise, the noise is still left out.
+    const roomy = buildBaseline(shopSnapshot(), { ...OPTS, focusThreshold: 7 });
+    expect(roomy.tables).toHaveLength(5);
+    expect([...roomy.left_out].sort()).toEqual([...roomy.left_out_noise].sort());
+    expect(renderBaseline(report)).toContain("): it covers all 8 in-scope tables.");
+    const scoped = buildBaseline(shopSnapshot(), { ...OPTS, scope: { include: ["shop.*"] } });
+    expect(renderBaseline(scoped)).toContain("): it covers all 6 in-scope tables (8 in the snapshot).");
+    const named = buildBaseline(shopSnapshot(), { ...OPTS, tables: ["shop.sales"] });
+    expect(renderBaseline(named)).toContain("): it covers the 1 table --tables names (8 in scope, 8 in the snapshot).");
+  });
+
+  test("an imported snapshot says sl profile needs a connection; a live one does not", () => {
+    expect(report.notes).toContain(
+      "This snapshot came from an information schema import, so `sl profile` needs a connection to the database first: set connection.env, or connection.database for DuckDB, in sources/shop.yaml.",
+    );
+    expect(report.next).toContain("once sources/shop.yaml has a connection (this snapshot came from an import, read without one), `sl profile --source shop");
+    expect(renderBaseline(report)).toContain("It needs a connection to the database, since this snapshot came from an information schema import:");
+    const live = buildBaseline(shopSnapshot("live"), OPTS);
+    expect(live.notes.join(" ")).not.toContain("needs a connection");
+    expect(live.next).not.toContain("connection");
+    expect(renderBaseline(live)).not.toContain("needs a connection");
+    // On the export-sql plus import path the source has a connection the agent could not reach.
+    const exported = buildBaseline(shopSnapshot(), { ...OPTS, connection: { env: "SHOP_PG_URL" } });
+    expect(exported.connection_configured).toBe(true);
+    expect(exported.notes).toContain(
+      "This snapshot came from an information schema import, so nothing has read the data yet: `sl profile` reads it through the connection in sources/shop.yaml; run it where the database is reachable.",
+    );
+    expect(exported.notes.join(" ")).not.toContain("set connection.env");
+    expect(exported.next).toContain("where the database is reachable (this snapshot came from an import, read without a connection), `sl profile --source shop");
+    expect(renderBaseline(exported)).toContain("It reads the data through the source's connection, so run it where the database is reachable");
+    expect(renderBaseline(exported)).not.toContain("needs a connection");
+    expect(report.connection_configured).toBe(false);
+  });
+
+  test("a dimension table's one timestamp without a time zone still gets the time-zone question", () => {
+    // The reviewer's probe: shop.customers(customer_id, signed_up_at timestamp, segment) asked nothing about the zone.
+    const customers: SnapshotTable = {
+      schema: "shop",
+      name: "customers",
+      kind: "table",
+      row_count: 500,
+      primary_key: ["customer_id"],
+      columns: [c("customer_id", "integer"), c("signed_up_at", "timestamp"), c("segment", "text")],
+    };
+    const orders: SnapshotTable = {
+      schema: "shop",
+      name: "orders",
+      kind: "table",
+      row_count: 5000,
+      primary_key: ["order_id"],
+      columns: [c("order_id", "integer"), c("customer_id", "integer"), c("ordered_at", "timestamptz"), c("amount", "numeric(12,2)")],
+    };
+    const r = buildBaseline({ ...snapshot([customers, orders]), method: "live" }, OPTS);
+    const t = r.tables.find((x) => x.table === "shop.customers")!;
+    expect(t.role).toBe("dimension");
+    expect(t.questions.find((q) => q.topic === "date")).toEqual({
+      topic: "date",
+      question:
+        "signed_up_at is a timestamp without a time zone: in which zone is its value recorded (the time dimension's time_zone, an IANA zone such as UTC or America/New_York)?",
+      columns: ["signed_up_at"],
+    });
+    // The fact's timestamp has a zone: no zone question there.
+    expect(r.tables.find((x) => x.table === "shop.orders")!.questions.find((q) => q.topic === "date")!.question).toBe(
+      "Is ordered_at the date to report orders by, and in which time zone should days be counted?",
+    );
+    // A second naive timestamp the date question does not name is asked about in it.
+    const deleted: SnapshotTable = { ...orders, columns: [...orders.columns, c("deleted_at", "timestamp")] };
+    const d = buildBaseline({ ...snapshot([customers, deleted]), method: "live" }, OPTS).tables.find((x) => x.table === "shop.orders")!;
+    const date = d.questions.filter((q) => q.topic === "date");
+    expect(date).toHaveLength(1);
+    expect(date[0]!.question).toBe(
+      "Is ordered_at the date to report orders by, and in which time zone should days be counted? deleted_at has no time zone either: in which zone is it recorded?",
+    );
+    expect(date[0]!.columns).toEqual(["ordered_at", "deleted_at"]);
+  });
+
+  test("a column joined by its name keeps its split and its exclusions question; generic names and noise join nothing", () => {
+    // The reviewer's probe: orders.status next to statuses(status), name next to feature_flags(name), code next to
+    // currencies(code), version next to Rails' schema_migrations(version).
+    const tables: SnapshotTable[] = [
+      {
+        schema: "shop",
+        name: "orders",
+        kind: "table",
+        row_count: 5000,
+        primary_key: ["order_id"],
+        columns: [c("order_id", "integer"), c("ordered_at", "timestamptz"), c("amount", "numeric(12,2)"), c("status", "text"), c("code", "text"), c("version", "text")],
+      },
+      { schema: "shop", name: "statuses", kind: "table", row_count: 5, primary_key: ["status"], columns: [c("status", "text"), c("label", "text")] },
+      { schema: "shop", name: "feature_flags", kind: "table", row_count: 5, primary_key: ["name"], columns: [c("name", "text"), c("enabled", "boolean")] },
+      { schema: "shop", name: "currencies", kind: "table", row_count: 5, primary_key: ["code"], columns: [c("code", "text")] },
+      { schema: "public", name: "schema_migrations", kind: "table", row_count: 50, primary_key: ["version"], columns: [c("version", "varchar")] },
+    ];
+    const r = buildBaseline({ ...snapshot(tables), method: "live" }, OPTS);
+    const orders = r.tables.find((x) => x.table === "shop.orders")!;
+    expect(orders.splits.map((x) => x.field)).toContain("status");
+    expect(orders.not_splits.map((x) => x.column)).not.toContain("status");
+    expect(orders.questions.find((q) => q.topic === "status_values")!.question).toContain("Which values of status count as a real order");
+    // The status table is still reached as a lookup.
+    expect(orders.relationships.filter((x) => x.direction === "outgoing").map((x) => [x.columns[0], x.table])).toEqual([["status", "shop.statuses"]]);
+    expect(renderBaseline(r)).not.toContain("probably a key to shop.statuses");
+    expect(renderBaseline(r)).not.toContain("probably a key to shop.currencies");
+    expect(renderBaseline(r)).not.toContain("schema_migrations via");
+  });
+
+  test("a noise table that shares a column's name is not pulled into the brief's reach", () => {
+    const deploys: SnapshotTable = { schema: "ops", name: "deploys", kind: "table", row_count: 100, primary_key: ["deploy_id"], columns: [c("deploy_id", "integer"), c("release", "text")] };
+    const migrations: SnapshotTable = { schema: "ops", name: "releases_bak", kind: "table", row_count: 10, primary_key: ["release"], columns: [c("release", "text")] };
+    const snap = { ...snapshot([deploys, migrations]), method: "live" as const };
+    const r = buildBaseline(snap, { ...OPTS, tables: ["ops.deploys"] });
+    expect(r.tables.map((t) => t.table)).toEqual(["ops.deploys"]);
+    expect(r.tables[0]!.relationships).toEqual([]);
+  });
+});
+
+// A live test creates and drops only a schema of its own, and only on a local server unless
+// SL_TEST_ALLOW_REMOTE=1 allows another (assertLocalPg).
+function liveSchema(prefix: string): string {
+  assertLocalPg(PG_URL);
+  return uniqueSchema(prefix);
+}
+
+const ACME_DIR = join(import.meta.dir, "..", "fixtures", "acme");
+
+// The synthetic Acme warehouse with its later schema change (evolve.sql), loaded into a schema of
+// the PG_URL database that this test creates and drops, then introspected live.
+describe("sl baseline on the live Acme warehouse", () => {
+  test.skipIf(!PG_URL)(
+    "reads sensibly from an introspected snapshot",
+    async () => {
+      const schema = liveSchema("t_baseline");
+      // One connection: evolve.sql runs its own begin and commit.
+      const sql = new SQL({ url: PG_URL!, max: 1 });
+      const t = tempRoot();
+      cleanup = t.cleanup;
+      try {
+        await loadPostgres(PG_URL!, join(ACME_DIR, "data"), schema);
+        // evolve.sql names the schema acme; the e-mail domain acme.example stays as it is.
+        await sql.unsafe(readFileSync(join(ACME_DIR, "evolve.sql"), "utf8").replace(/(?<!@)\bacme\./g, `${schema}.`));
+        await initProject(t.root, "acme");
+        const env = { BASELINE_PG_URL: PG_URL };
+        expect((await sl(t.root, ["add-source", "--name", "wh", "--dialect", "postgres", "--env", "BASELINE_PG_URL"], env)).code).toBe(0);
+        const intro = await sl(t.root, ["introspect", "--source", "wh", "--schemas", schema], env);
+        expect(intro.code).toBe(0);
+        const r = await sl(t.root, ["baseline", "--source", "wh", "--tables", "fct_*,dim_*,audit_log,sales_team_closure", "--json"], env);
+        expect(r.code).toBe(0);
+        const j = r.json<BaselineReport>();
+        const get = (name: string) => j.tables.find((x) => x.table === `${schema}.${name}`)!;
+        expect(get("fct_orders").role).toBe("fact");
+        expect(get("fct_orders").grain.guess).toBe("one row per order");
+        expect(get("fct_orders_v2_test").role).toBe("noise");
+        expect(get("dim_customers_archive").role).toBe("noise");
+        expect(get("sales_team_closure").role).toBe("bridge");
+        expect(get("audit_log").role).toBe("event");
+        expect(get("dim_customers").role).toBe("dimension");
+        expect(get("fct_order_items").relationships.find((x) => x.table === `${schema}.fct_orders`)!.fan_out).toContain(`many side of ${schema}.fct_orders`);
+        expect(get("fct_refunds").relationships.find((x) => x.table === `${schema}.fct_orders`)!.fan_out).toBeDefined();
+        expect(get("fct_orders").splits.map((s) => s.field)).toContain("customer.acquisition_channel");
+        expect(get("fct_orders").measures.find((m) => m.kind === "ratio")!.description).toContain("average order value");
+        expect(get("fct_orders").not_splits.find((n) => n.column === "gift_message")!.reason).toBe("sensitive");
+        expect(get("dim_customers").questions.map((q) => q.topic)).toContain("exclusions");
+        const md = await sl(t.root, ["baseline", "--source", "wh", "--tables", "fct_*,dim_*"], env);
+        expect(md.out).toContain(`- **${schema}.fct_orders** (fact, one row per order) joins`);
+
+        // Without --tables, the top 12 skip the noise tables and leave room for the closure view.
+        const top = (await sl(t.root, ["baseline", "--source", "wh", "--json"], env)).json<BaselineReport>();
+        expect(top.selection).toBe("focus");
+        expect(top.tables).toHaveLength(12);
+        const names = top.tables.map((x) => x.table.slice(schema.length + 1));
+        expect(names).toContain("sales_team_closure");
+        for (const noise of ["etl_job_runs", "schema_migrations", "fct_orders_v2_test", "orders_backup_2024", "customers_tmp", "tmp_import_errors"]) {
+          expect(names).not.toContain(noise);
+          expect(top.left_out_noise).toContain(`${schema}.${noise}`);
+        }
+        const brief = await sl(t.root, ["baseline", "--source", "wh"], env);
+        expect(brief.out).toContain(`it covers 12 of the ${top.in_scope} in-scope tables`);
+      } finally {
+        await sql.unsafe(`drop schema if exists ${schema} cascade`);
+        await sql.close();
+      }
+    },
+    120_000,
+  );
 });
