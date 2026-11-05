@@ -43,11 +43,16 @@ function carryOver(next: Snapshot, prev: Snapshot | null): { kept: number; dropp
 }
 
 const spec: CommandSpec = {
-  summary: "Build the snapshot from an information_schema export, a dbt manifest or DDL.",
+  summary: "Build the snapshot from a schema export, a dbt manifest or DDL.",
   usage:
-    "import --source <source> --format information_schema|dbt_manifest|ddl --file <path> [--catalog <catalog.json>]\n\n" +
+    "import --source <source> --file <path> [--format information_schema|dbt_manifest|ddl] [--catalog <catalog.json>]\n\n" +
+    "  --format is read from the file when left out: a .sql file is ddl, a JSON object with nodes is dbt_manifest,\n" +
+    "  a CSV or JSON array is information_schema.\n\n" +
     "  information_schema  CSV or JSON rows of information_schema.columns: table_schema, table_name, column_name,\n" +
-    "                      data_type, is_nullable, ordinal_position; optional table_type, description, row_count\n" +
+    "                      data_type, is_nullable, ordinal_position; optional table_type, table_comment, row_count,\n" +
+    "                      column_comment, and keys: is_primary_key, pk_ordinal, fk_name, fk_ordinal,\n" +
+    "                      references_schema, references_table, references_column. `sl export-sql --dialect <d>`\n" +
+    "                      prints a query that returns exactly these columns.\n" +
     "  dbt_manifest        target/manifest.json; add --catalog target/catalog.json for column types and row counts\n" +
     "  ddl                 a .sql file of CREATE TABLE / CREATE VIEW / COMMENT ON statements (pg_dump, get_ddl, SHOW CREATE TABLE)",
   options: {
@@ -60,8 +65,8 @@ const spec: CommandSpec = {
     const sourceName = str(values, "source");
     if (!sourceName) throw new UserError("--source is required.");
     const format = str(values, "format");
-    if (!format || !(IMPORT_FORMATS as readonly string[]).includes(format)) {
-      throw new UserError(`--format is required: one of ${IMPORT_FORMATS.join(", ")}.`);
+    if (format !== undefined && !(IMPORT_FORMATS as readonly string[]).includes(format)) {
+      throw new UserError(`--format must be one of ${IMPORT_FORMATS.join(", ")}, or left out to read it from the file.`);
     }
     const fileArg = str(values, "file");
     if (!fileArg) throw new UserError("--file is required.");
@@ -73,7 +78,7 @@ const spec: CommandSpec = {
     const catalog = catalogArg ? resolve(ctx.cwd, catalogArg) : undefined;
     if (catalog && !existsSync(catalog)) throw new UserError(`No such file: ${catalog}`);
 
-    const { snapshot, warnings } = await importSnapshot(source, format as ImportFormat, { file, catalog }, ctx.now().toISOString());
+    const { snapshot, warnings, format: used, detected } = await importSnapshot(source, format as ImportFormat | undefined, { file, catalog }, ctx.now().toISOString());
     if (!snapshot.tables.length) {
       throw new UserError(`No tables found in ${file}.${warnings.length ? ` ${warnings.join(" ")}` : ""}`);
     }
@@ -105,6 +110,8 @@ const spec: CommandSpec = {
         formatJson({
           source: source.source,
           method: snapshot.method,
+          format: used,
+          format_detected: detected,
           tables: snapshot.tables.length,
           columns,
           primary_keys: primaryKeys,
@@ -118,7 +125,7 @@ const spec: CommandSpec = {
     }
     const lines = [
       `Imported ${snapshot.tables.length} table${snapshot.tables.length === 1 ? "" : "s"} and ${columns} column${columns === 1 ? "" : "s"} ` +
-        `(${primaryKeys} with a primary key, ${foreignKeys} foreign key${foreignKeys === 1 ? "" : "s"}) from ${format} into snapshots/${source.source}.json.`,
+        `(${primaryKeys} with a primary key, ${foreignKeys} foreign key${foreignKeys === 1 ? "" : "s"}) from ${used}${detected ? " (read from the file)" : ""} into snapshots/${source.source}.json.`,
     ];
     if (warnings.length) lines.push("Warnings:", ...warnings.map((w) => `  - ${w}`));
     const modeled = changes ? modeledTables(snapshot, () => listModels(ctx.root, source.source).map((l) => l.model), source.scope) : undefined;

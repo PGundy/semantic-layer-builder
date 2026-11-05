@@ -1,0 +1,4 @@
+source: warehouse
+dialect: postgres
+connection:
+  env: WAREHOUSE_URL

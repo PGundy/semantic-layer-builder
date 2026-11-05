@@ -1,0 +1,13 @@
+table_schema,table_name,table_type,table_comment,row_count,column_name,ordinal_position,data_type,is_nullable,column_comment,is_primary_key,pk_ordinal,fk_name,fk_ordinal,references_schema,references_table,references_column
+analytics,dim_customer,BASE TABLE,One row per customer,125000,customer_key,1,bigint,NO,,true,1,,,,,
+analytics,dim_customer,BASE TABLE,One row per customer,125000,customer_name,2,character varying(256),YES,,false,,,,,,
+analytics,dim_date,BASE TABLE,,3653,date_key,1,integer,NO,,true,1,,,,,
+analytics,dim_date,BASE TABLE,,3653,calendar_date,2,date,NO,,false,,,,,,
+analytics,fct_sales,BASE TABLE,"Sales lines, one per invoice line",88000000,invoice_id,1,bigint,NO,,true,1,,,,,
+analytics,fct_sales,BASE TABLE,"Sales lines, one per invoice line",88000000,line_number,2,smallint,NO,,true,2,,,,,
+analytics,fct_sales,BASE TABLE,"Sales lines, one per invoice line",88000000,customer_key,3,bigint,YES,,false,,fct_sales_customer_key_fkey,1,analytics,dim_customer,customer_key
+analytics,fct_sales,BASE TABLE,"Sales lines, one per invoice line",88000000,date_key,4,integer,NO,,false,,fct_sales_date_key_fkey,1,analytics,dim_date,date_key
+analytics,fct_sales,BASE TABLE,"Sales lines, one per invoice line",88000000,net_amount,5,"numeric(18,2)",YES,Net of discounts in USD,false,,,,,,
+analytics,fct_sales,BASE TABLE,"Sales lines, one per invoice line",88000000,sold_at,6,timestamp without time zone,YES,,false,,,,,,
+analytics,v_sales_daily,VIEW,,,sale_date,1,date,YES,,false,,,,,,
+analytics,v_sales_daily,VIEW,,,net_amount,2,"numeric(38,2)",YES,,false,,,,,,

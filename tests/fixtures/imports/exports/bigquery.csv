@@ -1,0 +1,10 @@
+table_schema,table_name,table_type,table_comment,row_count,column_name,ordinal_position,data_type,is_nullable,column_comment,is_primary_key,pk_ordinal,fk_name,fk_ordinal,references_schema,references_table,references_column
+analytics,customers,BASE TABLE,One row per customer,52000,customer_id,1,STRING,NO,,true,1,,,,,
+analytics,customers,BASE TABLE,One row per customer,52000,address,2,"STRUCT<city STRING, country STRING>",YES,"Billing address, as entered",false,,,,,,
+analytics,orders,BASE TABLE,,880000,order_id,1,STRING,NO,,true,1,,,,,
+analytics,orders,BASE TABLE,,880000,customer_id,2,STRING,YES,,false,,fk_orders_customers,1,analytics,customers,customer_id
+analytics,orders,BASE TABLE,,880000,amount,3,"NUMERIC(12, 2)",YES,,false,,,,,,
+analytics,orders,BASE TABLE,,880000,items,4,ARRAY<STRING>,NO,,false,,,,,,
+analytics,orders,BASE TABLE,,880000,created_at,5,TIMESTAMP,YES,,false,,,,,,
+analytics,orders_daily,VIEW,,,day,1,DATE,YES,,false,,,,,,
+raw,clicks,EXTERNAL,,,payload,1,JSON,YES,,false,,,,,,

@@ -1,12 +1,13 @@
 # Intake: getting a source's tables into a snapshot
 
-Every later phase reads `snapshots/<source>.json`. There are three ways to fill it, plus a manual fallback. Pick per source; a project can mix them.
+Every later phase reads `snapshots/<source>.json`. There are four ways to fill it, plus a manual fallback. Pick per source; a project can mix them. Whichever path filled it, run `sl baseline --source <s>` next and open the conversation with it (`baseline.md`).
 
 | Path | When | Commands |
 |---|---|---|
 | Live | duckdb or postgres, and the CLI can reach it | `sl introspect`, `sl profile`, `sl check-join` run their queries |
 | Agent's own SQL tool | snowflake, bigquery, databricks, or any source the CLI cannot reach but you can query | same commands with `--emit-sql`, then `--results <file>` |
-| Shared context | no query access yet; the owner can share an export, a dbt project or DDL | `sl import` |
+| Schema export | no query access yet, but the owner can run one read-only query, on any of eight databases | `sl export-sql`, then `sl import` |
+| Other shared context | the owner can share a dbt project, DDL or an older export | `sl import` |
 | Manual | none of the above fits | you write the snapshot JSON by hand |
 
 Ask the owner which tool you can use to reach each source before choosing. Prefer a path with query access: profiles and join checks need it, and imports carry structure only.
@@ -140,71 +141,43 @@ The CLI runs every query with the session time zone UTC, so a time grain over a 
 
 When the owner can share files but not access, build the snapshot from them. Import gives structure (tables, columns, types, sometimes keys and descriptions) but no profile. Profiling and join checks still need the live or query-plan path later; until then, ask the owner for example values when the interview needs them.
 
-### information_schema export
+### Schema export
 
-The owner runs one query and shares the result file:
+The quickest start when the owner can run one query but cannot give you access, or offers to share their schema. `references/exports/<dialect>.sql` holds a read-only catalog query for each database the owner may have. It reads only the catalog, never table data, leaves out the system schemas, and returns one row per column with the table's type, comment and row estimate, the column's type, nullability and comment, and its primary-key and foreign-key membership (the column contract is in `spec.md`, Schema exports). Print the query for the owner's database, limited to the schemas that matter when they have many:
 
 ```
-sl import --source wh --format information_schema --file columns.csv
+sl export-sql --dialect postgres --schemas sales,marts
 ```
 
-The file is a CSV with a header row, or a JSON array of row objects; header names are case-insensitive. Ask for one row per column with at least these columns: `table_schema`, `table_name`, `table_type`, `column_name`, `ordinal_position`, `data_type`, `is_nullable`, and a description column where the dialect has one. Add `table_catalog` when the export spans several databases or catalogs, and a `row_count` column where the dialect has one. If the import reports a missing column, adjust the query's aliases.
+It prints the query, with its schema filter line (marked `sl:schema-filter`) applied when `--schemas` is given (without it, every schema but the system ones), and on stderr one line saying how to run it and import the result; `--json` gives `{ dialect, sql, run_hint }`. It needs no project and reads no database. Send the owner the query (or point them at the file) and the run line for their database; the header comment of each file says the same:
 
-Postgres:
+| Database | `--dialect` | Run it and save CSV |
+|---|---|---|
+| PostgreSQL 12 or later | `postgres` | `psql -X "$DATABASE_URL" --csv -f postgres.sql > schema.csv` |
+| Amazon Redshift | `redshift` | `psql -X "host=<cluster> port=5439 dbname=<db> user=<user>" --csv -f redshift.sql > schema.csv` |
+| MySQL 5.7 or later, MariaDB | `mysql` | `mysql --batch --raw -h <host> -u <user> -p <database> < mysql.sql > schema.tsv`, a tab-separated file `sl import` reads as it is |
+| SQL Server 2012 or later, Azure SQL | `sqlserver` | `sqlcmd -S <server> -d <database> -i sqlserver.sql -f 65001 -s, -W > schema.csv`; `sl import` skips the dashed line under the header |
+| Snowflake | `snowflake` | `snowsql -a <account> -u <user> -d <database> -f snowflake.sql -o output_format=csv -o header=true -o timing=false -o friendly=false > schema.csv`, or run it in Snowsight and download the results as CSV |
+| BigQuery | `bigquery` | `bq --quiet query --use_legacy_sql=false --format=csv --max_rows=1000000 < bigquery.sql > schema.csv` |
+| Databricks | `databricks` | in the catalog to export (`USE CATALOG <catalog>`), run it in the Databricks SQL editor and download the results as CSV |
+| DuckDB 1.1 or later | `duckdb` | `duckdb warehouse.duckdb -csv < duckdb.sql > schema.csv` |
 
-```sql
-select c.table_schema, c.table_name, t.table_type, c.column_name, c.ordinal_position,
-       c.data_type, c.udt_name, c.is_nullable, pd.description
-from information_schema.columns c
-join information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name
-left join pg_catalog.pg_attribute a
-  on a.attrelid = format('%I.%I', c.table_schema, c.table_name)::regclass and a.attname = c.column_name
-left join pg_catalog.pg_description pd on pd.objoid = a.attrelid and pd.objsubid = a.attnum
-where c.table_schema not in ('pg_catalog', 'information_schema')
-order by 1, 2, 5;
+To limit a hand-run copy to some schemas, uncomment the line marked `sl:schema-filter` in the file and list them, or print the query again with `--schemas`. BigQuery reads metadata one dataset at a time: its file reads `my_dataset` in each block between `sl:per-dataset` and `sl:end-per-dataset`, so replace that name, or pass the datasets with `--schemas ds1,ds2` (all in one location), which repeats each block per dataset. Snowflake and Databricks exports read the current database or catalog. A query that fails on a dialect detail (an older server version, a permission on one catalog view) is fixed in that detail only, keeping its output columns, and you tell the owner what you changed. Then register the source and import the file; the format is detected from it:
+
+```
+sl add-source --name warehouse --dialect postgres --env WAREHOUSE_URL
+sl import --source warehouse --file schema.csv
+sl baseline --source warehouse
 ```
 
-Export with `psql "$WAREHOUSE_URL" -c "\copy (<query>) to 'columns.csv' with csv header"`.
+`sl add-source` takes the dialects the CLI writes SQL for: duckdb, postgres, snowflake, bigquery and databricks. A Redshift, MySQL or SQL Server database has no dialect of its own in the CLI: register it as `postgres` and say so in the source's `description`. Redshift speaks the Postgres protocol, so the layer's SQL mostly runs there; check `--emit-sql` queries for a Postgres feature Redshift lacks. For MySQL and SQL Server `postgres` is only a stand-in, and the supported scope is the export and the baseline conversation: the import and `sl baseline` work as for any export. Everything the layer then writes (drafted measure expressions, filters, time grains, compiled SQL, golden SQL) is Postgres SQL (`date_trunc`, double-quoted identifiers, `filter (where ...)`): it must be checked by hand, and no tool, chat or BI tool may run it as is against that database. Tell the owner so before drafting, write it in the source's `description` and as an open question in each model of that source, and list it in the handoff under Cross-source metrics and engineering asks. Profiles, join checks and goldens there run only through `--emit-sql`, each query adapted to their database by hand (The query-plan protocol). A schema export carries structure only (tables, columns, types, comments, keys, row estimates), so the baseline's guesses come from names and declared keys until something is profiled.
 
-Snowflake (per database):
-
-```sql
-select c.table_schema, c.table_name, t.table_type, c.column_name, c.ordinal_position,
-       c.data_type, c.is_nullable, c.comment as description, t.row_count
-from <db>.information_schema.columns c
-join <db>.information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name
-where c.table_schema <> 'INFORMATION_SCHEMA'
-order by 1, 2, 5;
-```
-
-BigQuery (per dataset, or per region with `` `region-us`.INFORMATION_SCHEMA.COLUMNS ``):
-
-```sql
-select c.table_schema, c.table_name, t.table_type, c.column_name, c.ordinal_position,
-       c.data_type, c.is_nullable, p.description
-from `<project>.<dataset>.INFORMATION_SCHEMA.COLUMNS` c
-join `<project>.<dataset>.INFORMATION_SCHEMA.TABLES` t using (table_schema, table_name)
-left join `<project>.<dataset>.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS` p
-  on p.table_name = c.table_name and p.column_name = c.column_name and p.field_path = c.column_name
-order by 1, 2, 5;
-```
-
-Databricks (per catalog):
-
-```sql
-select c.table_schema, c.table_name, t.table_type, c.column_name, c.ordinal_position,
-       c.full_data_type as data_type, c.is_nullable, c.comment as description
-from <catalog>.information_schema.columns c
-join <catalog>.information_schema.tables t
-  on t.table_schema = c.table_schema and t.table_name = c.table_name
-where c.table_schema <> 'information_schema'
-order by 1, 2, 5;
-```
+An older export of `information_schema.columns` still imports: a CSV with a header row or a JSON array of row objects, header names case-insensitive, with at least `table_schema`, `table_name`, `table_type`, `column_name`, `ordinal_position`, `data_type`, `is_nullable`, and a description column where the dialect has one; add `table_catalog` when it spans several databases or catalogs, and `row_count` where the dialect has one. Without the key columns of the contract it imports with no primary or foreign keys. If the import reports a missing column, adjust the query's aliases.
 
 ### dbt manifest
 
 ```
-sl import --source wh --format dbt_manifest --file target/manifest.json --catalog target/catalog.json
+sl import --source wh --file target/manifest.json --catalog target/catalog.json
 ```
 
 The manifest carries models, sources, descriptions, column docs and tests (a `unique` plus `not_null` test suggests a key; a `relationships` test suggests a join). Column types and row counts live in `catalog.json`, which `dbt docs generate` writes; ask the owner to run it and share both files, and pass the catalog with `--catalog`. Without it the import still works but has no types or row counts. dbt descriptions are a head start for the interview, not approvals: still read each one back.
@@ -212,8 +185,10 @@ The manifest carries models, sources, descriptions, column docs and tests (a `un
 ### DDL
 
 ```
-sl import --source wh --format ddl --file schema.sql
+sl import --source wh --file schema.sql
 ```
+
+`sl import` detects the format from the file: a `.sql` file is DDL, a JSON object with `nodes` is a dbt manifest, and a CSV or a JSON array is an information_schema export. Pass `--format information_schema|dbt_manifest|ddl` to override it, for example for a column export saved under a `.sql` name (always read as DDL) or as a JSON object holding several arrays (DDL under another extension is still detected from its opening `CREATE`, `ALTER`, `COMMENT ON` or `SET`); a file that fits none is refused with the formats named.
 
 Ways to get DDL: `pg_dump --schema-only --no-owner "$WAREHOUSE_URL" > schema.sql` for Postgres; `select get_ddl('database', '<db>')` for Snowflake; `select ddl from <dataset>.INFORMATION_SCHEMA.TABLES` for BigQuery; `show create table <name>` per table for Databricks. DDL gives declared keys and comments but usually no row counts.
 

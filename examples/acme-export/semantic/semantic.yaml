@@ -1,0 +1,5 @@
+version: 1
+name: acme_export
+settings:
+  focus_threshold: 12
+  batch_size: 5

@@ -154,7 +154,7 @@ join pg_namespace rn on rn.oid = rc.relnamespace
 cross join lateral unnest(con.conkey, con.confkey) with ordinality as k(attnum, ref_attnum, ord)
 join pg_attribute a on a.attrelid = c.oid and a.attnum = k.attnum
 join pg_attribute ra on ra.attrelid = rc.oid and ra.attnum = k.ref_attnum
-where con.contype = 'f' and not c.relispartition
+where con.contype = 'f' and not c.relispartition and con.conparentid = 0
   and ${where("n")}
 order by 2, 3, 1, 8`,
     ),

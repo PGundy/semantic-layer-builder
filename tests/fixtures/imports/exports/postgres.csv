@@ -1,0 +1,23 @@
+table_schema,table_name,table_type,table_comment,row_count,column_name,ordinal_position,data_type,is_nullable,column_comment,is_primary_key,pk_ordinal,fk_name,fk_ordinal,references_schema,references_table,references_column
+public,customers,BASE TABLE,"Customer accounts, one row per customer.",2000,customer_id,1,integer,NO,Surrogate key,true,1,,,,,
+public,customers,BASE TABLE,"Customer accounts, one row per customer.",2000,email,2,character varying(255),YES,"Login email; may be ""unknown""",false,,,,,,
+public,customers,BASE TABLE,"Customer accounts, one row per customer.",2000,region_code,4,text,YES,,false,,customers_region_code_fkey,1,ref,regions,region_code
+public,events,BASE TABLE,,,event_id,1,bigint,NO,,true,1,,,,,
+public,events,BASE TABLE,,,payload,2,jsonb,YES,,false,,,,,,
+public,order_lines,BASE TABLE,,48211,order_id,1,integer,NO,,true,2,order_lines_order_id_fkey,1,public,orders,order_id
+public,order_lines,BASE TABLE,,48211,line_no,2,integer,NO,,true,1,,,,,
+public,order_lines,BASE TABLE,,48211,quantity,3,"numeric(10,2)",NO,"Units ordered.
+Never negative.",false,,,,,,
+public,orders,BASE TABLE,Orders from the storefront. Amounts in integer cents.,10000,order_id,1,integer,NO,,true,1,,,,,
+public,orders,BASE TABLE,Orders from the storefront. Amounts in integer cents.,10000,customer_id,2,integer,YES,,false,,orders_customer_id_fkey,1,public,customers,customer_id
+public,orders,BASE TABLE,Orders from the storefront. Amounts in integer cents.,10000,status,3,order_status,NO,,false,,,,,,
+public,orders,BASE TABLE,Orders from the storefront. Amounts in integer cents.,10000,amount_cents,4,bigint,NO,,false,,,,,,
+public,orders,BASE TABLE,Orders from the storefront. Amounts in integer cents.,10000,tags,5,text[],YES,,false,,,,,,
+public,shipments,BASE TABLE,,9500,shipment_id,1,integer,NO,,true,1,,,,,
+public,shipments,BASE TABLE,,9500,order_id,2,integer,NO,,false,,shipments_order_id_fkey,1,public,orders,order_id
+public,shipments,BASE TABLE,,9500,order_id,2,integer,NO,,false,,shipments_order_line_fkey,1,public,order_lines,order_id
+public,shipments,BASE TABLE,,9500,line_no,3,integer,NO,,false,,shipments_order_line_fkey,2,public,order_lines,line_no
+public,shipments,BASE TABLE,,9500,shipped_at,4,timestamp with time zone,YES,,false,,,,,,
+reporting,daily_revenue,MATERIALIZED VIEW,,365,day,1,date,YES,,false,,,,,,
+reporting,daily_revenue,MATERIALIZED VIEW,,365,revenue_cents,2,bigint,YES,,false,,,,,,
+reporting,v_open_orders,VIEW,Orders not yet shipped.,,order_id,1,integer,YES,,false,,,,,,

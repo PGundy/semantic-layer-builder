@@ -1,0 +1,10 @@
+table_schema,table_name,table_type,table_comment,row_count,column_name,ordinal_position,data_type,is_nullable,column_comment,is_primary_key,pk_ordinal,fk_name,fk_ordinal,references_schema,references_table,references_column
+gold,dim_store,MANAGED,Stores and their region,,store_id,0,int,NO,,true,1,,,,,
+gold,dim_store,MANAGED,Stores and their region,,region,1,string,YES,,false,,,,,,
+gold,fct_sales,MANAGED,,,sale_id,0,bigint,NO,,true,1,,,,,
+gold,fct_sales,MANAGED,,,store_id,1,int,YES,,false,,fct_sales_store_fk,1,gold,dim_store,store_id
+gold,fct_sales,MANAGED,,,amount,2,"decimal(10,2)",YES,"Sale amount, local currency",false,,,,,,
+gold,fct_sales,MANAGED,,,tags,3,array<string>,YES,,false,,,,,,
+gold,fct_sales,MANAGED,,,sold_at,4,timestamp,YES,,false,,,,,,
+gold,v_sales_by_day,VIEW,,,day,0,date,YES,,false,,,,,,
+bronze,raw_events,EXTERNAL,,,body,0,string,YES,,false,,,,,,

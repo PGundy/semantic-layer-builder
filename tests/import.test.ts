@@ -5,6 +5,7 @@ import { importDbt, parseRefExpr, splitRelationName } from "../skills/semantic-l
 import { parseCsv, parseCsvRecords } from "../skills/semantic-layer/scripts/lib/importers/csv.ts";
 import { importDdl } from "../skills/semantic-layer/scripts/lib/importers/ddl.ts";
 import { importInformationSchema } from "../skills/semantic-layer/scripts/lib/importers/information-schema.ts";
+import { detectFormat } from "../skills/semantic-layer/scripts/lib/importers/index.ts";
 import type { Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { runCli } from "../skills/semantic-layer/scripts/lib/cli.ts";
 import { writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
@@ -33,6 +34,8 @@ function source(root: string, name: string, dialect: SourceConfig["dialect"], ex
 interface ImportJson {
   source: string;
   method: string;
+  format: string;
+  format_detected: boolean;
   tables: number;
   columns: number;
   primary_keys: number;
@@ -132,6 +135,209 @@ describe("information_schema importer", () => {
 
   test("names the missing required columns", () => {
     expect(() => importInformationSchema("schema,tbl,col\npublic,t,c\n")).toThrow(/missing required columns table_name, column_name, data_type/);
+  });
+});
+
+describe("information_schema importer: canonical exports", () => {
+  const exported = (name: string) => importInformationSchema(read(`exports/${name}`), name);
+  const fk = (columns: string[], schema: string | null, tableName: string, refColumns: string[]) => ({ columns, references: { schema, table: tableName, columns: refColumns } });
+
+  test("postgres (psql --csv): keys in key order, a column in two foreign keys, comments, row counts", () => {
+    const { tables, warnings } = exported("postgres.csv");
+    expect(warnings).toEqual([]);
+    expect(tables.map((t) => `${t.schema}.${t.name}`)).toEqual([
+      "public.customers", "public.events", "public.order_lines", "public.orders", "public.shipments", "reporting.daily_revenue", "reporting.v_open_orders",
+    ]);
+    const customers = table(tables, "public.customers");
+    expect(customers).toMatchObject({ kind: "table", row_count: 2000, description: "Customer accounts, one row per customer.", primary_key: ["customer_id"] });
+    expect(customers.columns.map((c) => c.name)).toEqual(["customer_id", "email", "region_code"]);
+    expect(customers.columns[1]).toEqual({ name: "email", type: "character varying(255)", nullable: true, description: 'Login email; may be "unknown"' });
+    expect(customers.foreign_keys).toEqual([fk(["region_code"], "ref", "regions", ["region_code"])]);
+    expect(table(tables, "public.events")).toMatchObject({ row_count: null, primary_key: ["event_id"], foreign_keys: [] });
+    const lines = table(tables, "public.order_lines");
+    expect(lines.primary_key).toEqual(["line_no", "order_id"]);
+    expect(lines.columns.find((c) => c.name === "quantity")).toEqual({ name: "quantity", type: "numeric(10,2)", nullable: false, description: "Units ordered.\nNever negative." });
+    const orders = table(tables, "public.orders");
+    expect(orders.columns.map((c) => c.type)).toEqual(["integer", "integer", "order_status", "bigint", "text[]"]);
+    expect(orders.foreign_keys).toEqual([fk(["customer_id"], "public", "customers", ["customer_id"])]);
+    const shipments = table(tables, "public.shipments");
+    expect(shipments.columns.map((c) => c.name)).toEqual(["shipment_id", "order_id", "line_no", "shipped_at"]);
+    expect(shipments.foreign_keys).toEqual([
+      fk(["order_id"], "public", "orders", ["order_id"]),
+      fk(["order_id", "line_no"], "public", "order_lines", ["order_id", "line_no"]),
+    ]);
+    expect(table(tables, "reporting.daily_revenue")).toMatchObject({ kind: "view", row_count: 365, primary_key: [] });
+    expect(table(tables, "reporting.v_open_orders")).toMatchObject({ kind: "view", row_count: null, description: "Orders not yet shipped." });
+  });
+
+  test("redshift (psql --csv): composite primary key and foreign keys to dimensions", () => {
+    const { tables, warnings } = exported("redshift.csv");
+    expect(warnings).toEqual([]);
+    const sales = table(tables, "analytics.fct_sales");
+    expect(sales).toMatchObject({ row_count: 88000000, description: "Sales lines, one per invoice line", primary_key: ["invoice_id", "line_number"] });
+    expect(sales.foreign_keys).toEqual([
+      fk(["customer_key"], "analytics", "dim_customer", ["customer_key"]),
+      fk(["date_key"], "analytics", "dim_date", ["date_key"]),
+    ]);
+    expect(sales.columns.find((c) => c.name === "net_amount")).toMatchObject({ type: "numeric(18,2)", description: "Net of discounts in USD" });
+    expect(table(tables, "analytics.v_sales_daily")).toMatchObject({ kind: "view", row_count: null, primary_key: [], foreign_keys: [] });
+  });
+
+  test("mysql (--batch --raw): tab-delimited, NULL markers, quoted text with quotes, tabs and line breaks", () => {
+    const { tables, warnings } = exported("mysql.tsv");
+    expect(warnings).toEqual([]);
+    const customers = table(tables, "shop.customers");
+    expect(customers).toMatchObject({ row_count: 1980, description: "Customers, one per account", primary_key: ["id"], foreign_keys: [] });
+    expect(customers.columns).toEqual([
+      { name: "id", type: "int unsigned", nullable: false, description: null },
+      { name: "email", type: "varchar(255)", nullable: false, description: '"Primary" contact, lowercased' },
+      { name: "tier", type: "enum('free','pro','enterprise')", nullable: true, description: null },
+    ]);
+    const items = table(tables, "shop.order_items");
+    expect(items.description).toBeNull();
+    expect(items.primary_key).toEqual(["order_id", "product_id"]);
+    expect(items.foreign_keys).toEqual([fk(["order_id"], "shop", "orders", ["id"]), fk(["product_id"], "shop", "products", ["id"])]);
+    expect(items.columns[2]).toMatchObject({ type: "decimal(12,2)", description: "Price per unit\tat order time" });
+    const orders = table(tables, "shop.orders");
+    expect(orders.description).toBe("Orders.\nAmounts in cents.");
+    expect(orders.foreign_keys).toEqual([fk(["customer_id"], "shop", "customers", ["id"])]);
+    expect(table(tables, "shop.v_revenue")).toMatchObject({ kind: "view", row_count: null });
+  });
+
+  test("sqlserver (sqlcmd -s, -W): skips the dashed rule, reads NULL as empty, quoted names, orders a composite foreign key", () => {
+    const { tables, warnings } = exported("sqlserver.csv");
+    expect(warnings).toEqual([]);
+    expect(tables.map((t) => t.name)).toEqual(["Customer", "SalesOrderDetail", "SalesOrderHeader", "vSalesPerson"]);
+    const customer = table(tables, "Sales.Customer");
+    expect(customer).toMatchObject({ row_count: 19820, description: "Customers, including resellers", primary_key: ["CustomerID"] });
+    expect(customer.columns[1]).toEqual({ name: "AccountNumber", type: "varchar(10)", nullable: false, description: "Unique number, as printed" });
+    expect(customer.columns[0]!.description).toBeNull();
+    const detail = table(tables, "Sales.SalesOrderDetail");
+    expect(detail.description).toBeNull();
+    expect(detail.primary_key).toEqual(["SalesOrderID", "SalesOrderDetailID"]);
+    expect(detail.foreign_keys).toEqual([
+      fk(["SalesOrderID"], "Sales", "SalesOrderHeader", ["SalesOrderID"]),
+      fk(["SpecialOfferID", "ProductID"], "Sales", "SpecialOfferProduct", ["SpecialOfferID", "ProductID"]),
+    ]);
+    expect(detail.columns.find((c) => c.name === "LineTotal")!.type).toBe("numeric(38,6)");
+    const person = table(tables, "Sales.vSalesPerson");
+    expect(person).toMatchObject({ kind: "view", row_count: null });
+    expect(person.columns.map((c) => c.name)).toEqual(["BusinessEntityID", "SalesYTD", "Territory, Group"]);
+  });
+
+  test("snowflake (snowsql csv): uppercase names, NUMBER precision, external tables", () => {
+    const { tables, warnings } = exported("snowflake.csv");
+    expect(warnings).toEqual([]);
+    const orders = table(tables, "MARTS.FCT_ORDERS");
+    expect(orders).toMatchObject({ row_count: 1250000, primary_key: ["ORDER_ID"] });
+    expect(orders.foreign_keys).toEqual([fk(["CUSTOMER_ID"], "MARTS", "DIM_CUSTOMERS", ["CUSTOMER_ID"])]);
+    expect(orders.columns.map((c) => c.type)).toEqual(["NUMBER(38,0)", "NUMBER(38,0)", "TIMESTAMP_NTZ", "NUMBER(12,2)"]);
+    expect(orders.columns[3]!.description).toBe("Gross, in USD");
+    expect(table(tables, "MARTS.DIM_CUSTOMERS").description).toBe("One row per customer, current state");
+    expect(table(tables, "MARTS.V_ORDERS_DAILY")).toMatchObject({ kind: "view", row_count: null });
+    expect(table(tables, "RAW.EVENTS_EXT").kind).toBe("external");
+  });
+
+  test("bigquery (bq --format=csv): STRUCT and ARRAY types whole, external tables", () => {
+    const { tables, warnings } = exported("bigquery.csv");
+    expect(warnings).toEqual([]);
+    const customers = table(tables, "analytics.customers");
+    expect(customers.columns[1]).toEqual({ name: "address", type: "STRUCT<city STRING, country STRING>", nullable: true, description: "Billing address, as entered" });
+    const orders = table(tables, "analytics.orders");
+    expect(orders).toMatchObject({ row_count: 880000, primary_key: ["order_id"] });
+    expect(orders.foreign_keys).toEqual([fk(["customer_id"], "analytics", "customers", ["customer_id"])]);
+    expect(orders.columns.map((c) => c.type)).toEqual(["STRING", "STRING", "NUMERIC(12, 2)", "ARRAY<STRING>", "TIMESTAMP"]);
+    expect(table(tables, "analytics.orders_daily").kind).toBe("view");
+    expect(table(tables, "raw.clicks").kind).toBe("external");
+  });
+
+  test("databricks (SQL editor download): zero-based ordinals, full types, no row counts", () => {
+    const { tables, warnings } = exported("databricks.csv");
+    expect(warnings).toEqual([]);
+    const sales = table(tables, "gold.fct_sales");
+    expect(sales).toMatchObject({ kind: "table", row_count: null, primary_key: ["sale_id"] });
+    expect(sales.columns.map((c) => [c.name, c.type])).toEqual([
+      ["sale_id", "bigint"], ["store_id", "int"], ["amount", "decimal(10,2)"], ["tags", "array<string>"], ["sold_at", "timestamp"],
+    ]);
+    expect(sales.foreign_keys).toEqual([fk(["store_id"], "gold", "dim_store", ["store_id"])]);
+    expect(table(tables, "gold.dim_store").description).toBe("Stores and their region");
+    expect(table(tables, "gold.v_sales_by_day").kind).toBe("view");
+    expect(table(tables, "bronze.raw_events").kind).toBe("external");
+  });
+
+  test("foreign keys without fk_name group by referenced table, split where fk_ordinal restarts or a referenced column repeats", () => {
+    const header = "table_schema,table_name,column_name,data_type,ordinal_position,references_table,references_column,fk_ordinal";
+    const ordered = [
+      header,
+      "s,shipments,order_id,int,1,order_lines,order_id,1",
+      "s,shipments,line_no,int,2,order_lines,line_no,2",
+      "s,shipments,return_order_id,int,3,order_lines,order_id,1",
+      "s,shipments,return_line_no,int,4,order_lines,line_no,2",
+    ].join("\n");
+    expect(table(importInformationSchema(ordered).tables, "s.shipments").foreign_keys).toEqual([
+      fk(["order_id", "line_no"], "s", "order_lines", ["order_id", "line_no"]),
+      fk(["return_order_id", "return_line_no"], "s", "order_lines", ["order_id", "line_no"]),
+    ]);
+    const unordered = [
+      "table_schema,table_name,column_name,data_type,references_schema,references_table,references_column",
+      "s,orders,bill_to,int,s,addresses,address_id",
+      "s,orders,ship_to,int,s,addresses,address_id",
+      "s,orders,customer_id,int,crm,customers,id",
+    ].join("\n");
+    const orders = table(importInformationSchema(unordered).tables, "s.orders");
+    expect(orders.foreign_keys).toEqual([
+      fk(["bill_to"], "s", "addresses", ["address_id"]),
+      fk(["ship_to"], "s", "addresses", ["address_id"]),
+      fk(["customer_id"], "crm", "customers", ["id"]),
+    ]);
+    expect(orders.primary_key).toBeUndefined();
+  });
+
+  test("primary key falls back to column order without pk_ordinal; t/f and yes/no flags read as booleans", () => {
+    const csv = ["table_name,column_name,data_type,ordinal_position,is_primary_key", "t,b,int,2,t", "t,a,int,1,YES", "t,c,int,3,f"].join("\n");
+    const t = importInformationSchema(csv).tables[0]!;
+    expect(t.primary_key).toEqual(["a", "b"]);
+    expect(t.foreign_keys).toBeUndefined();
+  });
+
+  test("a repeated column row with no foreign key is still reported", () => {
+    const csv = ["table_name,column_name,data_type,references_table,references_column", "t,a,int,u,id", "t,a,int,v,id", "t,b,int,,", "t,b,int,,"].join("\n");
+    const { tables, warnings } = importInformationSchema(csv);
+    expect(tables[0]!.columns.map((c) => c.name)).toEqual(["a", "b"]);
+    expect(tables[0]!.foreign_keys!.map((k) => k.references.table)).toEqual(["u", "v"]);
+    expect(warnings).toContain("Ignored 1 repeated column row.");
+  });
+
+  test("a JSON array export with keys imports the same way", () => {
+    const rows = [
+      { TABLE_SCHEMA: "s", TABLE_NAME: "a", COLUMN_NAME: "id", DATA_TYPE: "int", IS_PRIMARY_KEY: true, PK_ORDINAL: 1, ROW_COUNT: 7, TABLE_COMMENT: "A things" },
+      { TABLE_SCHEMA: "s", TABLE_NAME: "b", COLUMN_NAME: "a_id", DATA_TYPE: "int", IS_PRIMARY_KEY: false, FK_NAME: "b_a", FK_ORDINAL: 1, REFERENCES_SCHEMA: "s", REFERENCES_TABLE: "a", REFERENCES_COLUMN: "id" },
+    ];
+    const { tables } = importInformationSchema(JSON.stringify(rows));
+    expect(table(tables, "s.a")).toMatchObject({ primary_key: ["id"], row_count: 7, description: "A things", foreign_keys: [] });
+    expect(table(tables, "s.b").foreign_keys).toEqual([fk(["a_id"], "s", "a", ["id"])]);
+  });
+});
+
+describe("import format detection", () => {
+  test("reads the format from the file name and content", () => {
+    expect(detectFormat("x.sql", "anything")).toBe("ddl");
+    expect(detectFormat("x.DDL", "")).toBe("ddl");
+    expect(detectFormat("manifest.json", JSON.stringify({ metadata: {}, nodes: {} }))).toBe("dbt_manifest");
+    expect(detectFormat("cols.json", "[]")).toBe("information_schema");
+    expect(detectFormat("cols.json", JSON.stringify({ rows: [{ table_name: "t" }] }))).toBe("information_schema");
+    expect(detectFormat("schema.csv", "anything")).toBe("information_schema");
+    expect(detectFormat("schema.tsv", "a\tb")).toBe("information_schema");
+    expect(detectFormat("export", "TABLE_SCHEMA,TABLE_NAME,COLUMN_NAME\ns,t,c")).toBe("information_schema");
+    expect(detectFormat("export", '"table_name";"column_name"\nt;c')).toBe("information_schema");
+    expect(detectFormat("dump.txt", "-- dumped\n/* header */\nCREATE TABLE t (a int);")).toBe("ddl");
+    expect(detectFormat("notes.txt", "hello world")).toBeNull();
+    expect(detectFormat("x.json", JSON.stringify({ a: 1 }))).toBeNull();
+    expect(() => detectFormat("x.json", "{ nope")).toThrow(/looks like JSON but does not parse/);
+    expect(() => detectFormat("catalog.json", read("dbt/catalog.json"))).toThrow(
+      "catalog.json is a dbt catalog.json: pass target/manifest.json with --file and this file with --catalog.",
+    );
+    expect(detectFormat("manifest.json", read("dbt/manifest.json"))).toBe("dbt_manifest");
   });
 });
 
@@ -665,6 +871,30 @@ describe("sl import", () => {
     expect(JSON.parse(out.join("\n")) as ImportJson).toMatchObject({ tables: 1, columns: 2 });
   });
 
+  test("reads the format from the file when --format is left out, and an explicit --format overrides it", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    source(t.root, "pg", "postgres");
+    const csv = await sl(t.root, ["import", "--source", "pg", "--file", fixture("exports/postgres.csv"), "--json"]);
+    expect(csv.code).toBe(0);
+    expect(csv.json<ImportJson>()).toMatchObject({ method: "information_schema", format: "information_schema", format_detected: true, tables: 7, primary_keys: 5, foreign_keys: 5 });
+    const human = await sl(t.root, ["import", "--source", "pg", "--file", fixture("exports/postgres.csv")]);
+    expect(human.out).toContain("from information_schema (read from the file) into snapshots/pg.json");
+    const ddl = await sl(t.root, ["import", "--source", "pg", "--file", fixture("ddl_postgres.sql"), "--json"]);
+    expect(ddl.json<ImportJson>()).toMatchObject({ method: "ddl", format_detected: true });
+    const dbt = await sl(t.root, ["import", "--source", "pg", "--file", fixture("dbt/manifest.json"), "--catalog", fixture("dbt/catalog.json"), "--json"]);
+    expect(dbt.json<ImportJson>()).toMatchObject({ method: "dbt_manifest", format_detected: true, tables: 6 });
+    const json = await sl(t.root, ["import", "--source", "pg", "--file", fixture("info_schema_snowflake.json"), "--json"]);
+    expect(json.json<ImportJson>()).toMatchObject({ method: "information_schema", tables: 4 });
+    writeFileSync(join(t.root, "cols.sql"), "table_schema,table_name,column_name,data_type\ns,t,a,int\n");
+    const forced = await sl(t.root, ["import", "--source", "pg", "--format", "information_schema", "--file", "cols.sql", "--json"]);
+    expect(forced.code).toBe(0);
+    expect(forced.json<ImportJson>()).toMatchObject({ method: "information_schema", format_detected: false, tables: 1 });
+    const mysql = await sl(t.root, ["import", "--source", "pg", "--file", fixture("exports/mysql.tsv"), "--json"]);
+    expect(mysql.json<ImportJson>()).toMatchObject({ tables: 5, primary_keys: 4, foreign_keys: 3 });
+  });
+
   test("rejects bad arguments with a clear message", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
@@ -672,7 +902,14 @@ describe("sl import", () => {
     source(t.root, "wh", "postgres");
     const badFormat = await sl(t.root, ["import", "--source", "wh", "--format", "xlsx", "--file", "x"]);
     expect(badFormat.code).toBe(1);
-    expect(badFormat.err).toContain("--format is required");
+    expect(badFormat.err).toContain("--format must be one of information_schema, dbt_manifest, ddl");
+    writeFileSync(join(t.root, "notes.txt"), "hello\n");
+    const undetectable = await sl(t.root, ["import", "--source", "wh", "--file", "notes.txt"]);
+    expect(undetectable.code).toBe(1);
+    expect(undetectable.err).toContain("Cannot tell the format of notes.txt. Pass --format: one of information_schema, dbt_manifest, ddl");
+    const noFile = await sl(t.root, ["import", "--source", "wh"]);
+    expect(noFile.code).toBe(1);
+    expect(noFile.err).toContain("--file is required");
     const missing = await sl(t.root, ["import", "--source", "wh", "--format", "ddl", "--file", "nope.sql"]);
     expect(missing.code).toBe(1);
     expect(missing.err).toContain("No such file");

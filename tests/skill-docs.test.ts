@@ -1,13 +1,16 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { SQL } from "bun";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMANDS } from "../skills/semantic-layer/scripts/commands/index.ts";
 import { lastApprovedNote } from "../skills/semantic-layer/scripts/lib/access.ts";
+import { runCli } from "../skills/semantic-layer/scripts/lib/cli.ts";
 import { conditionAttributes, parseCondition } from "../skills/semantic-layer/scripts/lib/conditions.ts";
 import { computeStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
 import { schemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { parseYamlText, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { FIXED_NOW, tempRoot } from "./helpers.ts";
+import type { Snapshot } from "../skills/semantic-layer/scripts/lib/types.ts";
+import { FIXED_NOW, initProject, PG_URL, sl, tempRoot } from "./helpers.ts";
 
 // The skill's procedure docs: every `sl` command they show must exist with the flags it uses,
 // and the procedure rules the skill depends on must stay written down.
@@ -21,6 +24,7 @@ const DOCS = [
   "references/joins.md",
   "references/access.md",
   "references/verification.md",
+  "references/baseline.md",
 ];
 const GLOBAL_FLAGS = new Set(["root", "json", "help"]);
 const GOLDENS_SUBCOMMANDS = new Set(["run", "confirm", "check"]);
@@ -127,8 +131,8 @@ describe("sl commands in the skill docs", () => {
 describe("SKILL.md", () => {
   const skill = read("SKILL.md");
 
-  test("stays under about 230 lines", () => {
-    expect(skill.split("\n").length).toBeLessThanOrEqual(230);
+  test("stays under about 255 lines", () => {
+    expect(skill.split("\n").length).toBeLessThanOrEqual(255);
   });
 
   test("every reference it names exists", () => {
@@ -211,6 +215,290 @@ describe("the docs agree with the spec's CLI table", () => {
       if (u.startsWith("<")) continue;
       const v = JSON.parse(u);
       expect(typeof v === "object" && v !== null && !Array.isArray(v)).toBe(true);
+    }
+  });
+});
+
+// `sl <command> --help`, as the CLI prints it.
+async function help(name: string): Promise<string> {
+  const out: string[] = [];
+  const code = await runCli([name, "--help"], { cwd: SKILL_DIR, env: {}, out: (t) => out.push(t), err: (t) => out.push(t) });
+  expect(code).toBe(0);
+  return out.join("\n");
+}
+
+describe("the spec's CLI table agrees with the commands and their --help", () => {
+  const cli = specCli();
+
+  test("every command has a row and every row a command", () => {
+    expect([...cli.keys()].sort()).toEqual(Object.keys(COMMANDS).sort());
+  });
+
+  test("every flag a row names is one the command takes and its --help shows", async () => {
+    const out: string[] = [];
+    for (const [name, flags] of cli) {
+      const spec = (await COMMANDS[name]!()).default;
+      const text = await help(name);
+      for (const flag of flags) {
+        if (GLOBAL_FLAGS.has(flag)) continue;
+        if (!(flag in spec.options)) out.push(`the spec's ${name} row names --${flag}, which the command does not take`);
+        if (!new RegExp(`--${flag}\\b`).test(text)) out.push(`sl ${name} --help does not show --${flag}`);
+      }
+    }
+    expect(out).toEqual([]);
+  });
+
+  test("every flag a command takes is in its row", async () => {
+    const out: string[] = [];
+    for (const [name, load] of Object.entries(COMMANDS)) {
+      const flags = cli.get(name) ?? new Set<string>();
+      for (const flag of Object.keys((await load()).default.options)) {
+        const db = DB_COMMANDS.has(name) && (flag === "emit-sql" || flag === "results");
+        if (!db && !flags.has(flag)) out.push(`sl ${name} takes --${flag}, which its spec row does not name`);
+      }
+    }
+    expect(out).toEqual([]);
+  });
+
+  test("export-sql, baseline and the optional --format have their rows", async () => {
+    expect([...cli.get("export-sql")!].sort()).toEqual(["dialect", "schemas"]);
+    expect([...cli.get("baseline")!].sort()).toEqual(["out", "source", "tables"]);
+    const spec = read("references/spec.md");
+    const importRow = spec.split("\n").find((l) => l.startsWith("| `import "))!;
+    expect(importRow).toContain("[--format information_schema\\|dbt_manifest\\|ddl]");
+    expect(importRow).toContain("a `.sql` file is `ddl`, a JSON object with `nodes` is `dbt_manifest`, and a CSV or a JSON array is `information_schema`");
+    const exportRow = spec.split("\n").find((l) => l.startsWith("| `export-sql "))!;
+    expect(exportRow).toContain("`{ dialect, sql, run_hint }`");
+    expect(exportRow).toContain("Reads no database and needs no project");
+    expect(spec.split("\n").find((l) => l.startsWith("| `baseline "))).toContain("refuses one outside it");
+    for (const name of ["export-sql", "baseline"]) expect((await help(name)).length).toBeGreaterThan(20);
+  });
+
+  test("sl import runs without --format in the docs", () => {
+    const imports = all.filter((i) => /^sl import\b/.test(i.text));
+    expect(imports.length).toBeGreaterThan(3);
+    expect(imports.some((i) => !i.text.includes("--format"))).toBe(true);
+  });
+});
+
+// The schema export contract (spec: Schema exports) and the files that implement it.
+const EXPORT_DIALECTS = ["postgres", "redshift", "mysql", "sqlserver", "snowflake", "bigquery", "databricks", "duckdb"];
+const EXPORT_COLUMNS = [
+  "table_schema",
+  "table_name",
+  "table_type",
+  "table_comment",
+  "row_count",
+  "column_name",
+  "ordinal_position",
+  "data_type",
+  "is_nullable",
+  "column_comment",
+  "is_primary_key",
+  "pk_ordinal",
+  "fk_name",
+  "fk_ordinal",
+  "references_schema",
+  "references_table",
+  "references_column",
+];
+
+// SQL text without its comments and string literals, for keyword checks.
+function sqlCode(sql: string): string {
+  return sql
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--[^\n]*/g, " ")
+    .replace(/'(?:[^']|'')*'/g, "''");
+}
+
+describe("schema exports", () => {
+  const spec = read("references/spec.md");
+  const section = spec.slice(spec.indexOf("## Schema exports"), spec.indexOf("## Baseline brief"));
+
+  test("the spec's contract lists exactly the export columns, in order", () => {
+    const rows = section.split("\n").filter((l) => l.startsWith("| `"));
+    const named = rows.flatMap((l) => [...l.split(" | ")[0]!.matchAll(/`([a-z_]+)`/g)].map((m) => m[1]!));
+    expect(named).toEqual(EXPORT_COLUMNS);
+    expect(section.replace(/\s+/g, " ")).toContain("A column in several foreign keys appears once per key");
+    for (const d of EXPORT_DIALECTS) expect(section).toContain(`\`${d}\``);
+  });
+
+  test("the spec's export-sql row names every dialect", () => {
+    const row = spec.split("\n").find((l) => l.startsWith("| `export-sql "))!;
+    expect(row.split(" | ")[0]).toContain(EXPORT_DIALECTS.join("\\|"));
+  });
+
+  for (const d of EXPORT_DIALECTS) {
+    test(`exports/${d}.sql is a read-only catalog query returning the contract's columns`, () => {
+      const path = join(SKILL_DIR, "references", "exports", `${d}.sql`);
+      expect(existsSync(path)).toBe(true);
+      const sql = readFileSync(path, "utf8");
+      expect(sql.trimStart().startsWith("--") || sql.trimStart().startsWith("/*")).toBe(true);
+      const comments = sql.length - sqlCode(sql).length;
+      expect(comments).toBeGreaterThan(0);
+      expect(sql.toLowerCase()).toContain("csv");
+      const code = sqlCode(sql).toLowerCase();
+      expect(code).toMatch(/\bselect\b/);
+      expect(code).not.toMatch(/\b(insert\s+into|update\s+[\w."`\[\]]+\s+set|delete\s+from|merge\s+into|create\s+(or\s+replace\s+)?(table|view|schema|function|procedure)|drop\s+(table|view|schema)|alter\s+(table|view|schema)|truncate\s|grant\s|revoke\s|copy\s)/);
+      for (const c of EXPORT_COLUMNS) expect(code).toMatch(new RegExp(`\\b${c}\\b`));
+    });
+  }
+
+  test("intake.md gives the export and its run line for every dialect", () => {
+    const intake = read("references/intake.md");
+    const section = intake.slice(intake.indexOf("### Schema export"), intake.indexOf("### dbt manifest"));
+    expect(section).toContain("sl export-sql --dialect postgres --schemas sales,marts");
+    for (const d of EXPORT_DIALECTS) expect(section).toMatch(new RegExp(`\\| \`${d}\` \\| .*${d}\\.sql|\\| \`${d}\` \\| .*(editor|download)`));
+    expect(section).toContain("`references/exports/<dialect>.sql`");
+    expect(section).toContain("sl import --source warehouse --file schema.csv");
+  });
+
+  test("SKILL.md names every export dialect and the file it prints", () => {
+    const skill = read("SKILL.md").replace(/\s+/g, " ");
+    expect(skill).toContain(`(${EXPORT_DIALECTS.join(", ")}; \`references/exports/<d>.sql\`)`);
+  });
+
+  test("sl export-sql prints each dialect's file and names the import", async () => {
+    for (const d of EXPORT_DIALECTS) {
+      const t = tempRoot();
+      try {
+        const plain = await sl(t.root, ["export-sql", "--dialect", d]);
+        expect(plain.code).toBe(0);
+        expect(plain.err).toContain("sl import --source");
+        const r = await sl(t.root, ["export-sql", "--dialect", d, "--json"]);
+        expect(r.code).toBe(0);
+        const j = r.json<{ dialect: string; sql: string; run_hint: string }>();
+        expect(j.dialect).toBe(d);
+        expect(j.run_hint).toContain("sl import --source");
+        for (const c of EXPORT_COLUMNS) expect(j.sql.toLowerCase()).toContain(c);
+        expect(existsSync(join(t.root, "semantic.yaml"))).toBe(false);
+      } finally {
+        t.cleanup();
+      }
+    }
+  });
+});
+
+describe("the baseline in the procedure", () => {
+  const skill = read("SKILL.md").replace(/\s+/g, " ");
+  const baseline = read("references/baseline.md").replace(/\s+/g, " ");
+
+  test("SKILL.md runs the baseline after intake and opens with it", () => {
+    expect(skill).toContain("## After intake: the baseline");
+    expect(skill).toContain('"here is what I think your tables are; correct me"');
+    expect(skill).toMatch(/run `sl init --name <default>`, then `sl add-source` and `sl introspect` \(Phase 1\)[^.]*`sl baseline` for each/);
+    expect(skill.indexOf("## After intake: the baseline")).toBeLessThan(skill.indexOf("## Phase 2: scope and focus"));
+    expect(skill).toContain("| Presenting `sl baseline`, turning its candidate measures and splits into fields, what must be confirmed | `references/baseline.md` |");
+  });
+
+  test("baseline.md covers every part of the brief", () => {
+    for (const heading of [
+      "### Role",
+      "### Probable grain",
+      "### Keys",
+      "### Relationships",
+      "### The star-schema sketch",
+      "### Candidate measures",
+      "### Candidate splits",
+      "### Columns that should not be splits",
+      "### Questions for the owner",
+      "### Without profiles",
+      "## What must be confirmed",
+      "## From the baseline to the layer",
+    ])
+      expect(baseline).toContain(heading);
+    for (const role of ["fact", "dimension", "bridge", "event", "snapshot", "staging", "noise"]) expect(baseline).toContain(`| \`${role}\` |`);
+  });
+
+  test("the brief's roles are the ones the spec lists", () => {
+    const spec = read("references/spec.md").replace(/\s+/g, " ");
+    expect(spec).toContain("one of `fact`, `dimension`, `bridge`, `event`, `snapshot`, `staging`, `noise`, with the reasons");
+  });
+
+  test("the opening message example keeps the round-trip rules", () => {
+    const text = read("references/baseline.md");
+    const quote = text.split("\n").filter((l) => l.startsWith(">")).map((l) => l.replace(/^> ?/, ""));
+    expect(quote[0]).toContain("correct me");
+    const items = quote.filter((l) => /^\d+\. /.test(l));
+    expect(items.length).toBeGreaterThan(2);
+    expect(items.length).toBeLessThanOrEqual(8);
+    expect(quote.at(-1)).toBe("Stop here or continue?");
+    // A grain in the example is offered as a guess.
+    for (const l of items.filter((i) => /one row per/.test(i))) expect(l).toContain("My guess");
+  });
+});
+
+// The export path as SKILL.md and intake.md give it, run against Postgres: export-sql, psql --csv, import without --format, baseline.
+describe("the documented export path, live", () => {
+  const schema = "t_skill_docs_export";
+  const psql = Bun.which("psql");
+  const live = Boolean(PG_URL && psql);
+  let pg: SQL | undefined;
+
+  beforeAll(async () => {
+    if (!live) return;
+    pg = new SQL(PG_URL as string);
+    await pg.unsafe(`drop schema if exists ${schema} cascade`);
+    await pg.unsafe(`create schema ${schema}`);
+    await pg.unsafe(`create table ${schema}.dim_customers (customer_id integer primary key, acquisition_channel text, is_test_account boolean not null default false)`);
+    await pg.unsafe(`comment on table ${schema}.dim_customers is 'One row per customer.'`);
+    await pg.unsafe(
+      `create table ${schema}.fct_orders (order_id integer primary key, customer_id integer references ${schema}.dim_customers, status text, amount_cents bigint, created_at timestamptz)`,
+    );
+    await pg.unsafe(
+      `create table ${schema}.fct_order_items (order_id integer references ${schema}.fct_orders, line_no integer, quantity integer, primary key (order_id, line_no))`,
+    );
+  });
+
+  afterAll(async () => {
+    if (!pg) return;
+    await pg.unsafe(`drop schema if exists ${schema} cascade`);
+    await pg.close();
+  });
+
+  test.skipIf(!live)("export-sql, psql --csv, sl import with no --format, then sl baseline", async () => {
+    const t = tempRoot();
+    try {
+      const exp = await sl(t.root, ["export-sql", "--dialect", "postgres", "--schemas", schema, "--json"]);
+      expect(exp.code).toBe(0);
+      const sqlFile = join(t.dir, "postgres.sql");
+      writeFileSync(sqlFile, exp.json<{ sql: string }>().sql);
+      const run = Bun.spawnSync([psql!, PG_URL as string, "--csv", "-v", "ON_ERROR_STOP=1", "-f", sqlFile]);
+      expect(run.stderr.toString()).toBe("");
+      expect(run.exitCode).toBe(0);
+      const csv = join(t.dir, "schema.csv");
+      writeFileSync(csv, run.stdout);
+
+      await initProject(t.root);
+      expect((await sl(t.root, ["add-source", "--name", "wh", "--dialect", "postgres", "--env", "WAREHOUSE_URL"])).code).toBe(0);
+      const imp = await sl(t.root, ["import", "--source", "wh", "--file", csv, "--json"]);
+      expect(imp.err).toBe("");
+      expect(imp.code).toBe(0);
+      expect(imp.json()).toMatchObject({ method: "information_schema", tables: 3, primary_keys: 3, foreign_keys: 2 });
+      const snap = JSON.parse(readFileSync(join(t.root, "snapshots", "wh.json"), "utf8")) as Snapshot;
+      const items = snap.tables.find((x) => x.name === "fct_order_items")!;
+      expect(items.primary_key).toEqual(["order_id", "line_no"]);
+      expect(items.columns.map((c) => c.name)).toEqual(["order_id", "line_no", "quantity"]);
+      expect(items.foreign_keys).toEqual([{ columns: ["order_id"], references: { schema, table: "fct_orders", columns: ["order_id"] } }]);
+      expect(snap.tables.find((x) => x.name === "dim_customers")!.description).toBe("One row per customer.");
+
+      const human = await sl(t.root, ["baseline", "--source", "wh"]);
+      expect(human.code).toBe(0);
+      for (const name of ["fct_orders", "fct_order_items", "dim_customers"]) expect(human.out).toContain(name);
+      expect(human.out).toMatch(/guess/i);
+      const json = await sl(t.root, ["baseline", "--source", "wh", "--json"]);
+      expect(json.code).toBe(0);
+      const text = JSON.stringify(json.json());
+      for (const word of ["fact", "dimension", "fct_order_items", "acquisition_channel"]) expect(text).toContain(word);
+
+      const outside = await sl(t.root, ["baseline", "--source", "wh", "--out", "../brief.md"]);
+      expect(outside.code).not.toBe(0);
+      expect(existsSync(join(t.dir, "brief.md"))).toBe(false);
+      const written = await sl(t.root, ["baseline", "--source", "wh", "--out", "notes/baseline-wh.md"]);
+      expect(written.code).toBe(0);
+      expect(readFileSync(join(t.root, "notes", "baseline-wh.md"), "utf8")).toContain("fct_orders");
+    } finally {
+      t.cleanup();
     }
   });
 });
@@ -681,6 +969,47 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["access.md", "sl access totals line", 'on the line "Items visible across N source(s) (row filters limit rows, not these counts)"'],
   ["access.md", "row filters always printed", '"row filters: none (every row of every visible model)"'],
   ["access.md", "assigned roles only with --roles", "names assigned roles only when `--roles` was given"],
+  // Schema exports and the baseline.
+  ["SKILL.md", "the export path in intake", "`sl export-sql --dialect <d> [--schemas a,b]` prints the read-only catalog query for their database"],
+  ["SKILL.md", "the export reads no table data", "it reads only the catalog, never table data"],
+  ["SKILL.md", "import detects the format", "The format is detected from the file"],
+  ["SKILL.md", "the baseline is worded as guesses", "every heuristic worded as a guess with its reason, never as fact"],
+  ["SKILL.md", "the baseline drives the session", "its candidate splits become dimensions"],
+  ["SKILL.md", "nothing in the baseline stands unconfirmed", "Nothing in it stands until the owner confirms it in a readback"],
+  ["SKILL.md", "baseline without profiles", "Without profiles it says which facts `sl profile` would measure"],
+  ["SKILL.md", "scoping uses the baseline", "alongside the baseline's star-schema sketch and its noise and staging guesses"],
+  ["SKILL.md", "metrics start from the baseline's ratios", "starting from the baseline's suggested ratios and shares"],
+  ["baseline.md", "guesses never become facts", "Never write a guess from the brief into a model as fact, and never read a brief line back as something to approve"],
+  ["baseline.md", "out stays under the root", "`--out` writes the markdown to a path resolved from the semantic root, never outside it"],
+  ["baseline.md", "the left-out note is the scoping question", "that note is the scoping question (Phase 2)"],
+  ["baseline.md", "relationships are checked, not taken", "the brief's relationship is never the evidence"],
+  ["baseline.md", "likely keys need proof", "A likely key from names alone is a question, not a `primary_key`"],
+  ["baseline.md", "candidate measures are a menu", "never a list to approve"],
+  ["baseline.md", "shares become ratio metrics", "a `count` measure filtered on the flag over the row count"],
+  ["baseline.md", "splits by name are guesses", "Without profiles they are guessed from names"],
+  ["baseline.md", "joined attributes are reached through the join", "a dimension of the joined model, which a request reaches through the join"],
+  ["baseline.md", "no sensitive values", "The brief names sensitive columns but never quotes their values"],
+  ["baseline.md", "answers before a model exists", "Answers given before a table has a model go into its model as soon as `sl draft` writes it, in the same turn"],
+  ["baseline.md", "disagreements are asked", "ask the owner rather than picking one silently"],
+  ["baseline.md", "plain words for the brief's terms", "a fact table is \"a table of things that happen (orders, refunds)\""],
+  ["intake.md", "every path ends in the baseline", "run `sl baseline --source <s>` next and open the conversation with it"],
+  ["intake.md", "import detects the format", "`sl import` detects the format from the file"],
+  ["intake.md", "export failures are fixed in the detail only", "is fixed in that detail only, keeping its output columns"],
+  ["intake.md", "dialects without a CLI dialect", "A Redshift, MySQL or SQL Server database has no dialect of its own in the CLI"],
+  ["intake.md", "older exports still import", "An older export of `information_schema.columns` still imports"],
+  ["interview-guide.md", "each table starts from its baseline entry", "Then read the table's entry in the baseline brief"],
+  ["interview-guide.md", "the splits question", "Keep only the splits the owner names as dimensions to read back"],
+  ["SKILL.md", "scope before following the baseline's profile hint", "scope first (Phase 2) and ignore its closing `sl profile` and `sl draft` hint until the scope is written"],
+  ["SKILL.md", "baseline only for sources with a snapshot", "`sl baseline` for each source that now has a snapshot"],
+  ["SKILL.md", "import names the saved file", "`sl import --source <s> --file <the saved file>` (`schema.csv`, or `schema.tsv` from MySQL)"],
+  ["SKILL.md", "MySQL and SQL Server stop at the baseline", "for MySQL and SQL Server only the export and the baseline are supported"],
+  ["baseline.md", "focus before profiling", "Ignore the brief's closing `sl profile` and `sl draft` hint until then"],
+  ["baseline.md", "the first message shares the item budget", "the baseline items share that budget with the items Phase 0 adds"],
+  ["baseline.md", "fan-out warnings are guesses", "probably several lines per order, to be checked with `sl check-join`"],
+  ["baseline.md", "example values before a profile", "Any values a question names before then are examples, not values found in the data"],
+  ["intake.md", "MySQL and SQL Server layers are Postgres SQL", "no tool, chat or BI tool may run it as is against that database"],
+  ["intake.md", "the stand-in goes in the handoff", "list it in the handoff under Cross-source metrics and engineering asks"],
+  ["spec.md", "BigQuery datasets are identifiers", "BigQuery: each dataset as a backtick-quoted identifier in its per-dataset block, and a name holding a backtick is refused"],
 ];
 
 describe("readbacks and examples", () => {

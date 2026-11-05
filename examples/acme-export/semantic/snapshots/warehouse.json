@@ -1,0 +1,1050 @@
+{
+  "snapshot_version": 1,
+  "source": "warehouse",
+  "dialect": "postgres",
+  "captured_at": "2026-11-05T16:28:02.882Z",
+  "method": "information_schema",
+  "tables": [
+    {
+      "schema": "acme",
+      "name": "audit_log",
+      "kind": "table",
+      "row_count": 500,
+      "description": null,
+      "columns": [
+        {
+          "name": "audit_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "actor",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "action",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "entity",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "entity_id",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "logged_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "customers_tmp",
+      "kind": "table",
+      "row_count": 50,
+      "description": null,
+      "columns": [
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "region_code",
+          "type": "text",
+          "nullable": true,
+          "description": null
+        }
+      ],
+      "primary_key": [],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "dim_currency",
+      "kind": "table",
+      "row_count": 3,
+      "description": null,
+      "columns": [
+        {
+          "name": "currency_code",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "currency_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "minor_units",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [
+        "currency_code"
+      ],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "dim_customers",
+      "kind": "table",
+      "row_count": 500,
+      "description": "Customer accounts, one row per customer. Includes internal test accounts.",
+      "columns": [
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "phone",
+          "type": "text",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "first_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "last_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "signup_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "region_code",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "is_test_account",
+          "type": "boolean",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "acquisition_channel",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [
+        "customer_id"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "region_code"
+          ],
+          "references": {
+            "schema": "acme",
+            "table": "dim_regions",
+            "columns": [
+              "region_code"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "dim_customers_archive",
+      "kind": "table",
+      "row_count": 100,
+      "description": null,
+      "columns": [
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "first_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "last_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "region_code",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "archived_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [
+        "customer_id"
+      ],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "dim_products",
+      "kind": "table",
+      "row_count": 60,
+      "description": null,
+      "columns": [
+        {
+          "name": "product_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "sku",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "product_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "category",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "list_price_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "is_active",
+          "type": "boolean",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "launched_on",
+          "type": "date",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [
+        "product_id"
+      ],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "dim_regions",
+      "kind": "table",
+      "row_count": 6,
+      "description": "Sales regions. One row per region.",
+      "columns": [
+        {
+          "name": "region_code",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "region_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "country_code",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "timezone",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [
+        "region_code"
+      ],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "dim_sales_reps",
+      "kind": "table",
+      "row_count": 16,
+      "description": "Everyone in sales, one row per person, with their manager.",
+      "columns": [
+        {
+          "name": "rep_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "full_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "region_code",
+          "type": "text",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "manager_id",
+          "type": "integer",
+          "nullable": true,
+          "description": null
+        }
+      ],
+      "primary_key": [
+        "rep_id"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "manager_id"
+          ],
+          "references": {
+            "schema": "acme",
+            "table": "dim_sales_reps",
+            "columns": [
+              "rep_id"
+            ]
+          }
+        },
+        {
+          "columns": [
+            "region_code"
+          ],
+          "references": {
+            "schema": "acme",
+            "table": "dim_regions",
+            "columns": [
+              "region_code"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "etl_job_runs",
+      "kind": "table",
+      "row_count": 120,
+      "description": null,
+      "columns": [
+        {
+          "name": "run_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "job_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "finished_at",
+          "type": "timestamp with time zone",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "state",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "rows_loaded",
+          "type": "integer",
+          "nullable": true,
+          "description": null
+        }
+      ],
+      "primary_key": [],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "fct_order_items",
+      "kind": "table",
+      "row_count": 12343,
+      "description": null,
+      "columns": [
+        {
+          "name": "order_item_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "order_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "product_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "quantity",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "unit_price_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [
+        "order_item_id"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "order_id"
+          ],
+          "references": {
+            "schema": "acme",
+            "table": "fct_orders",
+            "columns": [
+              "order_id"
+            ]
+          }
+        },
+        {
+          "columns": [
+            "product_id"
+          ],
+          "references": {
+            "schema": "acme",
+            "table": "dim_products",
+            "columns": [
+              "product_id"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "fct_orders",
+      "kind": "table",
+      "row_count": 5000,
+      "description": "Orders from the storefront, one row per order. Amounts in integer cents.",
+      "columns": [
+        {
+          "name": "order_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "amount_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "shipping_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "ship_region",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "currency",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "discount_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "gift_message",
+          "type": "text",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "sales_rep_id",
+          "type": "integer",
+          "nullable": true,
+          "description": null
+        }
+      ],
+      "primary_key": [
+        "order_id"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "sales_rep_id"
+          ],
+          "references": {
+            "schema": "acme",
+            "table": "dim_sales_reps",
+            "columns": [
+              "rep_id"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "fct_orders_v2_test",
+      "kind": "table",
+      "row_count": 200,
+      "description": null,
+      "columns": [
+        {
+          "name": "order_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "amount_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "discount_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "ship_region",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [
+        "order_id"
+      ],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "fct_refunds",
+      "kind": "table",
+      "row_count": 344,
+      "description": "Refunds issued against orders. An order can have several partial refunds.",
+      "columns": [
+        {
+          "name": "refund_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "order_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "refunded_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "refunded_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "reason",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [
+        "refund_id"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "order_id"
+          ],
+          "references": {
+            "schema": "acme",
+            "table": "fct_orders",
+            "columns": [
+              "order_id"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "schema": "acme",
+      "name": "orders_backup_2024",
+      "kind": "table",
+      "row_count": 400,
+      "description": null,
+      "columns": [
+        {
+          "name": "order_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "amount_cents",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "raw_shopify_orders",
+      "kind": "table",
+      "row_count": 300,
+      "description": "Raw Shopify order export, loaded by the ingestion job. Not cleaned.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "created_at",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "total_price",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "financial_status",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "nullable": true,
+          "description": null
+        }
+      ],
+      "primary_key": [],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "raw_stripe_charges",
+      "kind": "table",
+      "row_count": 300,
+      "description": null,
+      "columns": [
+        {
+          "name": "charge_id",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "amount",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "currency",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "created",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "order_ref",
+          "type": "text",
+          "nullable": true,
+          "description": null
+        }
+      ],
+      "primary_key": [],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "report_daily_sales_20250101",
+      "kind": "table",
+      "row_count": 6,
+      "description": null,
+      "columns": [
+        {
+          "name": "report_date",
+          "type": "date",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "region_code",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "orders",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "revenue_usd",
+          "type": "numeric(12,2)",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "sales_team_closure",
+      "kind": "view",
+      "row_count": null,
+      "description": "Every manager paired with everyone below them in sales, at any depth.",
+      "columns": [
+        {
+          "name": "manager_id",
+          "type": "integer",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "member_id",
+          "type": "integer",
+          "nullable": true,
+          "description": null
+        }
+      ],
+      "primary_key": [],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "schema_migrations",
+      "kind": "table",
+      "row_count": 25,
+      "description": null,
+      "columns": [
+        {
+          "name": "version",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "applied_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "stg_customers",
+      "kind": "table",
+      "row_count": 200,
+      "description": null,
+      "columns": [
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "full_name",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "created_ts",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "stg_orders",
+      "kind": "table",
+      "row_count": 300,
+      "description": null,
+      "columns": [
+        {
+          "name": "order_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "nullable": true,
+          "description": null
+        },
+        {
+          "name": "order_ts",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "amount_usd",
+          "type": "numeric(12,2)",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [],
+      "foreign_keys": []
+    },
+    {
+      "schema": "acme",
+      "name": "tmp_import_errors",
+      "kind": "table",
+      "row_count": 20,
+      "description": null,
+      "columns": [
+        {
+          "name": "error_id",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "source_file",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "line_no",
+          "type": "integer",
+          "nullable": false,
+          "description": null
+        },
+        {
+          "name": "message",
+          "type": "text",
+          "nullable": false,
+          "description": null
+        }
+      ],
+      "primary_key": [],
+      "foreign_keys": []
+    }
+  ]
+}

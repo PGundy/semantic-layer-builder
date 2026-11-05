@@ -1,0 +1,17 @@
+table_schema,table_name,table_type,table_comment,row_count,column_name,ordinal_position,data_type,is_nullable,column_comment,is_primary_key,pk_ordinal,fk_name,fk_ordinal,references_schema,references_table,references_column
+------------,----------,----------,-------------,---------,-----------,----------------,---------,-----------,--------------,--------------,----------,-------,----------,-----------------,----------------,-----------------
+"Sales","Customer",BASE TABLE,"Customers, including resellers",19820,"CustomerID",1,"int",NO,NULL,true,1,NULL,NULL,NULL,NULL,NULL
+"Sales","Customer",BASE TABLE,"Customers, including resellers",19820,"AccountNumber",2,"varchar(10)",NO,"Unique number, as printed",false,NULL,NULL,NULL,NULL,NULL,NULL
+"Sales","Customer",BASE TABLE,"Customers, including resellers",19820,"TerritoryID",3,"int",YES,NULL,false,NULL,"FK_Customer_SalesTerritory",1,"Sales","SalesTerritory","TerritoryID"
+"Sales","SalesOrderDetail",BASE TABLE,NULL,121317,"SalesOrderID",1,"int",NO,NULL,true,1,"FK_SalesOrderDetail_SalesOrderHeader",1,"Sales","SalesOrderHeader","SalesOrderID"
+"Sales","SalesOrderDetail",BASE TABLE,NULL,121317,"SalesOrderDetailID",2,"int",NO,NULL,true,2,NULL,NULL,NULL,NULL,NULL
+"Sales","SalesOrderDetail",BASE TABLE,NULL,121317,"ProductID",3,"int",NO,NULL,false,NULL,"FK_SalesOrderDetail_SpecialOfferProduct",2,"Sales","SpecialOfferProduct","ProductID"
+"Sales","SalesOrderDetail",BASE TABLE,NULL,121317,"SpecialOfferID",4,"int",NO,NULL,false,NULL,"FK_SalesOrderDetail_SpecialOfferProduct",1,"Sales","SpecialOfferProduct","SpecialOfferID"
+"Sales","SalesOrderDetail",BASE TABLE,NULL,121317,"UnitPrice",5,"money",NO,NULL,false,NULL,NULL,NULL,NULL,NULL,NULL
+"Sales","SalesOrderDetail",BASE TABLE,NULL,121317,"LineTotal",6,"numeric(38,6)",NO,"Per product subtotal. Computed as UnitPrice * (1 - UnitPriceDiscount) * OrderQty.",false,NULL,NULL,NULL,NULL,NULL,NULL
+"Sales","SalesOrderHeader",BASE TABLE,NULL,31465,"SalesOrderID",1,"int",NO,NULL,true,1,NULL,NULL,NULL,NULL,NULL
+"Sales","SalesOrderHeader",BASE TABLE,NULL,31465,"OrderDate",2,"datetime",NO,NULL,false,NULL,NULL,NULL,NULL,NULL,NULL
+"Sales","SalesOrderHeader",BASE TABLE,NULL,31465,"Comment",3,"nvarchar(128)",YES,NULL,false,NULL,NULL,NULL,NULL,NULL,NULL
+"Sales","vSalesPerson",VIEW,NULL,NULL,"BusinessEntityID",1,"int",NO,NULL,false,NULL,NULL,NULL,NULL,NULL,NULL
+"Sales","vSalesPerson",VIEW,NULL,NULL,"SalesYTD",2,"money",NO,NULL,false,NULL,NULL,NULL,NULL,NULL,NULL
+"Sales","vSalesPerson",VIEW,NULL,NULL,"Territory, Group",3,"nvarchar(50)",YES,NULL,false,NULL,NULL,NULL,NULL,NULL,NULL

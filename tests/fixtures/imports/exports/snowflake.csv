@@ -1,0 +1,9 @@
+table_schema,table_name,table_type,table_comment,row_count,column_name,ordinal_position,data_type,is_nullable,column_comment,is_primary_key,pk_ordinal,fk_name,fk_ordinal,references_schema,references_table,references_column
+MARTS,DIM_CUSTOMERS,BASE TABLE,"One row per customer, current state",250000,CUSTOMER_ID,1,"NUMBER(38,0)",NO,,true,1,,,,,
+MARTS,DIM_CUSTOMERS,BASE TABLE,"One row per customer, current state",250000,ACQUISITION_CHANNEL,2,TEXT,YES,Where the first order came from,false,,,,,,
+MARTS,FCT_ORDERS,BASE TABLE,,1250000,ORDER_ID,1,"NUMBER(38,0)",NO,,true,1,,,,,
+MARTS,FCT_ORDERS,BASE TABLE,,1250000,CUSTOMER_ID,2,"NUMBER(38,0)",YES,,false,,FK_ORDERS_CUSTOMER,1,MARTS,DIM_CUSTOMERS,CUSTOMER_ID
+MARTS,FCT_ORDERS,BASE TABLE,,1250000,ORDERED_AT,3,TIMESTAMP_NTZ,NO,,false,,,,,,
+MARTS,FCT_ORDERS,BASE TABLE,,1250000,ORDER_TOTAL,4,"NUMBER(12,2)",YES,"Gross, in USD",false,,,,,,
+MARTS,V_ORDERS_DAILY,VIEW,,,ORDER_DATE,1,DATE,YES,,false,,,,,,
+RAW,EVENTS_EXT,EXTERNAL TABLE,,,VALUE,1,VARIANT,NO,,false,,,,,,

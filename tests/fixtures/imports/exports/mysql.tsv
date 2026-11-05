@@ -1,0 +1,15 @@
+table_schema	table_name	table_type	table_comment	row_count	column_name	ordinal_position	data_type	is_nullable	column_comment	is_primary_key	pk_ordinal	fk_name	fk_ordinal	references_schema	references_table	references_column
+"shop"	"customers"	BASE TABLE	"Customers, one per account"	1980	"id"	1	"int unsigned"	NO	NULL	true	1	NULL	NULL	NULL	NULL	NULL
+"shop"	"customers"	BASE TABLE	"Customers, one per account"	1980	"email"	2	"varchar(255)"	NO	"""Primary"" contact, lowercased"	false	NULL	NULL	NULL	NULL	NULL	NULL
+"shop"	"customers"	BASE TABLE	"Customers, one per account"	1980	"tier"	3	"enum('free','pro','enterprise')"	YES	NULL	false	NULL	NULL	NULL	NULL	NULL	NULL
+"shop"	"order_items"	BASE TABLE	NULL	51234	"order_id"	1	"int unsigned"	NO	NULL	true	1	"fk_items_order"	1	"shop"	"orders"	"id"
+"shop"	"order_items"	BASE TABLE	NULL	51234	"product_id"	2	"int unsigned"	NO	NULL	true	2	"fk_items_product"	1	"shop"	"products"	"id"
+"shop"	"order_items"	BASE TABLE	NULL	51234	"unit_price"	3	"decimal(12,2)"	NO	"Price per unit	at order time"	false	NULL	NULL	NULL	NULL	NULL	NULL
+"shop"	"orders"	BASE TABLE	"Orders.
+Amounts in cents."	10012	"id"	1	"int unsigned"	NO	NULL	true	1	NULL	NULL	NULL	NULL	NULL
+"shop"	"orders"	BASE TABLE	"Orders.
+Amounts in cents."	10012	"customer_id"	2	"int unsigned"	YES	NULL	false	NULL	"fk_orders_customer"	1	"shop"	"customers"	"id"
+"shop"	"orders"	BASE TABLE	"Orders.
+Amounts in cents."	10012	"is_test"	3	"tinyint(1)"	NO	NULL	false	NULL	NULL	NULL	NULL	NULL	NULL
+"shop"	"products"	BASE TABLE	NULL	240	"id"	1	"int unsigned"	NO	NULL	true	1	NULL	NULL	NULL	NULL	NULL
+"shop"	"v_revenue"	VIEW	NULL	NULL	"day"	1	"date"	YES	NULL	false	NULL	NULL	NULL	NULL	NULL	NULL

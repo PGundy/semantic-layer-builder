@@ -560,6 +560,49 @@ Personal values:
 - A golden's `expected.rows` are not checked: they are the answer as the golden's role, which may see the column.
 - Replacing a personal value with an id in an approved golden's `question` or `reference` changes no figure and needs no new confirm: edit it and run `sl goldens check`.
 
+## Schema exports
+
+`references/exports/<dialect>.sql` holds one catalog query per database: `postgres`, `redshift`, `mysql`, `sqlserver`, `snowflake`, `bigquery`, `databricks` and `duckdb`. `sl export-sql --dialect <d>` prints it. Each query is read-only and reads only the catalog, never table data. It leaves out the system schemas, and its header comment says how to run it, how to save the result as CSV (tab-separated from `mysql --batch`, which `sl import` reads as well), and how to restrict it to some schemas: uncomment the filter line marked `sl:schema-filter` and list them, or let `sl export-sql --schemas` apply it. BigQuery reads each dataset's metadata separately: its blocks between `sl:per-dataset` and `sl:end-per-dataset` read `my_dataset`, and `--schemas` repeats each block once per dataset, joined by `union all`. It returns one row per column, with exactly these lowercase columns:
+
+| Column | Holds |
+|---|---|
+| `table_schema` | the schema (a BigQuery dataset) |
+| `table_name` | the table or view |
+| `table_type` | the catalog's table type, such as `BASE TABLE` or `VIEW` |
+| `table_comment` | the table's comment, or null |
+| `row_count` | the catalog's row estimate, or null |
+| `column_name` | the column |
+| `ordinal_position` | the column's position in the table, from 1 |
+| `data_type` | the column's type as the catalog writes it |
+| `is_nullable` | whether the column may be null |
+| `column_comment` | the column's comment, or null |
+| `is_primary_key` | `true` or `false` |
+| `pk_ordinal` | the column's position in the primary key, or null |
+| `fk_name` | the name of a foreign key the column is in, or null |
+| `fk_ordinal` | the column's position in that foreign key, or null |
+| `references_schema`, `references_table`, `references_column` | the column that foreign key references, or null |
+
+The five foreign-key columns are null when the column is in no foreign key. A column in several foreign keys appears once per key, so its other values repeat on each of those rows.
+
+`sl import` reads these columns when present, as an `information_schema` import: `primary_key` from the columns whose `is_primary_key` is true, ordered by `pk_ordinal` (else by `ordinal_position`); `foreign_keys` grouped by `fk_name` (else by `references_schema` and `references_table`), each key's columns ordered by `fk_ordinal`; `table_comment` as the table's `description`; and `row_count`. An export without them imports as an information_schema export always has: tables, columns, types, comments and row counts where present.
+
+## Baseline brief
+
+`sl baseline --source <s>` reads the snapshot alone, so it works on an imported export; profiles and existing models sharpen it when present. It reads no table data and writes nothing but the `--out` file. It covers the tables `--tables` names, or else the in-scope tables (all tables when the source has no scope); when more than `focus_threshold` are in scope, it covers the top `focus_threshold` by the ranking `sl status` and `sl tables` use (`rankTables` in `scripts/lib/rank.ts`) and adds a note naming how many it left out and pointing at `sl scope`.
+
+Per table it reports:
+
+- **role**: one of `fact`, `dimension`, `bridge`, `event`, `snapshot`, `staging`, `noise`, with the reasons;
+- **probable grain**: "one row per <x>", a guess from keys and names;
+- **keys**: declared, or likely from names and profiles;
+- **relationships**: declared and inferred, each with its probable relationship, and a fan-out warning when the table is the many side of another fact (order lines under orders);
+- **candidate measures**: the row count; sums of money and quantity columns, with a unit note such as cents; distinct counts of foreign keys; shares of boolean flags; and a suggested ratio when a money sum and a row count sit on one table (average order value);
+- **candidate splits**: time columns with their grains; low-cardinality categorical columns of the table, from profiles when present, else from names (status, type, category, channel, region, country, segment, tier, plan, source, device); and attributes of to-one joined dimensions, labelled with the join path (`customer.acquisition_channel`);
+- **columns that should not be splits**: ids, free text, near-unique strings and sensitive columns (`sensitivityOf` in `scripts/lib/sensitivity.ts`);
+- **questions for the owner**, in order of importance: what a row is, which status values count, which date is "the" date, units and currency, test or deleted rows (`is_test`, `deleted_at`, `is_deleted`, status values such as `test`), soft-delete or history columns (`valid_from`, `valid_to`), and sensitive columns.
+
+A source-level section lists the likely facts and dimensions as a star-schema sketch: which dimensions each fact joins. Every heuristic is worded as a guess for the owner to confirm; the brief never states meaning as fact. Without profiles it says which facts `sl profile` would measure. Where the brief and `sl draft` both classify a column (money, count, time, sensitive), they use the same rules. The brief never quotes a value of a sensitive column.
+
 ## Query-plan protocol
 
 Every command that reads a database first builds a query plan:
@@ -580,7 +623,9 @@ For `duckdb` and `postgres` sources the command runs the plan itself. For any so
 | `init --name <name> [--description <text>] [--default-source <s>]` | Writes `semantic.yaml` and the directory layout. |
 | `add-source --name <s> --dialect <d> [--env VAR] [--database <path>] [--view name=relation]... [--setup <statement>]... [--description <text>]` | Writes `sources/<s>.yaml`. `--env` is required for postgres and refuses anything that looks like a URL or a credential. |
 | `introspect --source <s> [--schemas a,b]` | Captures tables, columns, keys and row estimates into the snapshot. `--schemas` limits it to those schemas, or BigQuery datasets. Prints what changed since the previous snapshot; `--json` adds it as `changes` (see snapshots). Its next hint is `sl profile --source <s>` only when some in-scope table is not profiled; otherwise `sl validate` when modeled tables changed, or `sl status`. |
-| `import --source <s> --format information_schema\|dbt_manifest\|ddl --file <path> [--catalog <catalog.json>]` | Builds the snapshot from shared context instead of a live connection: an information_schema.columns export as CSV or a JSON array, a dbt `manifest.json` with an optional `catalog.json`, or a `.sql` file of DDL. Prints and reports `changes` as `introspect` does. |
+| `import --source <s> [--format information_schema\|dbt_manifest\|ddl] --file <path> [--catalog <catalog.json>]` | Builds the snapshot from shared context instead of a live connection: an information_schema.columns export or a schema export (see Schema exports) as CSV or a JSON array, a dbt `manifest.json` with an optional `catalog.json`, or a `.sql` file of DDL. `--format` is optional: a `.sql` file is `ddl`, a JSON object with `nodes` is `dbt_manifest`, and a CSV or a JSON array is `information_schema`; an explicit `--format` overrides, and a file that fits none is an error naming the formats. Prints and reports `changes` as `introspect` does. |
+| `export-sql --dialect postgres\|redshift\|mysql\|sqlserver\|snowflake\|bigquery\|databricks\|duckdb [--schemas a,b]` | Prints that dialect's schema export query (see Schema exports), with its schema filter applied when `--schemas` is given, each name written as a SQL string literal with its quotes escaped (BigQuery: each dataset as a backtick-quoted identifier in its per-dataset block, and a name holding a backtick is refused); then, on stderr, one line saying how to run it and import the result (`sl import --source <s> --file schema.csv`, or `schema.tsv` for mysql). `--json`: `{ dialect, sql, run_hint }`. Reads no database and needs no project. |
+| `baseline --source <s> [--tables t,...] [--out <file>]` | Read-only. Writes a first-pass brief of the source from its snapshot (see Baseline brief): per table its probable role, grain, keys, relationships, candidate measures and splits, columns that should not be splits and questions for the owner, and a star-schema sketch of the source. Plain output is markdown; `--json` carries the same structure; `--out` writes the markdown to a path resolved from the semantic root and refuses one outside it. |
 | `tables --source <s> [--groups] [--all]` | Lists in-scope tables, or all with `--all`, with size, modeling and profiling state; `--groups` clusters them by schema, prefix and suffix and suggests patterns. A table is profiled (`yes`) when its `profiled_at` is set, `partial` when some columns have profiles but `profiled_at` is missing (a reintrospect added or retyped columns), and otherwise `no`; `--json` carries it as `profile_state`. |
 | `scope --source <s> [--include <p>]... [--exclude <p>]... [--remove <p>]... [--tables a,b] [--clear] [--write]` | Previews the tables a scope change selects; `--write` saves it. `--tables` adds exact names. |
 | `profile --source <s> [--tables t,...] [--refresh]` | Profiles in-scope tables into the snapshot, skipping profiled ones (`profiled_at` set) unless `--refresh`. Stores no raw values of a protected column: its top values are hashed, a text column's `min` and `max` are left out, and its profile carries `redacted: true` (see Profiles of protected columns). |
