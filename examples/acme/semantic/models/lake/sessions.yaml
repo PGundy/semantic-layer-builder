@@ -4,6 +4,7 @@ table: main.sessions
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-26
+approved_hash: sha256:15dab3123186e0ecefb7b4e2d2bfcfb0730dc2bd5798c893817334f49227019a
 description: >-
   Website sessions (visits), one row per session, each with its own session_id: 8,000 sessions from 1 Jan 2024 to
   31 Dec 2025 (3,449 in 2024, 4,551 in 2025; only the 2025 total is checked against a report). Every session counts, anonymous visitors included: customer_id is empty
@@ -34,6 +35,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:15e3c5ae0f1f47ff9d3be5ef28a6982946995f0bebd97ef7009ee947a60e335f
   - name: utm_channel
     expr: coalesce(utm_channel, 'direct')
     type: string
@@ -46,6 +48,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:6292b2d542c02cb5d850cf6d1f3d249e4e9542ff5aed914b52eeda9fde404995
   - name: device
     expr: device
     type: string
@@ -55,6 +58,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:cd5586bcc6e4fee339642fe3c659ad44c50c689f2f456eac5cdea89ece4de007
 measures:
   - name: session_count
     agg: count
@@ -67,3 +71,4 @@ measures:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:57ca7edf1d5b46665e34b45b80d4db74c7a530934b7e017ae04af6d3126431e9

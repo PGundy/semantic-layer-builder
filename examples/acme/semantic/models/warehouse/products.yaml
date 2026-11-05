@@ -4,6 +4,7 @@ table: acme.dim_products
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-26
+approved_hash: sha256:9fb254e12fe5ed909888f15934190a6e14169e06834ceec552e61ccfa6c93105
 description: >-
   Product catalogue, one row per product: 60 products, each with its own product_id and sku, in 5 categories of 12.
   "By product" groups by product_id or sku, never by product_name, because 5 names appear on more than one product.
@@ -26,6 +27,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
+    approved_hash: sha256:b7cce3410deb1d77fca842dd8e245f3fbb7f266611b8699e1bb855529011a1f9
   - name: product_name
     expr: product_name
     type: string
@@ -35,6 +37,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:83849996fc6f5b66ad2c2b662d3c23359b1e123c5d2806bbd173e15694ccff8b
   - name: category
     expr: category
     type: string
@@ -42,6 +45,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:228e562b1185c89d3a97ec152e649c7c22151109bda448c5134002f017679065
   - name: is_active
     expr: is_active
     type: boolean
@@ -51,6 +55,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:81dc0b56c836c9ff4c6e71ba13ef6265870b2dc8e508e2d943828721dce6fe56
   - name: launched_on
     expr: launched_on
     type: time
@@ -74,4 +79,5 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:c6e723ba138f7af18e1348dfbde6411b238290f7489c1f524f648fecf7247d0b
 measures: []

@@ -4,6 +4,7 @@ table: acme.fct_orders
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-26
+approved_hash: sha256:64784e89bffb9973e2cafd70b0027e8b65c1d55fa3ac1fd6d20608769b4b620d
 description: >-
   Orders from the storefront, one row per order. Amounts in integer cents; every order is priced and charged in USD.
   A sale is an order with status completed or shipped; cancelled orders were never charged and refunded orders were
@@ -33,6 +34,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:90b9cacbacbd4784164bb840cbd37aa3be6f9ceda099eca82007a4245db52304
   - name: status
     expr: status
     type: string
@@ -43,17 +45,19 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:ba0d81e365565a776b751051db02d3d8262126d6009ce70e6608e05275853290
   - name: ship_region
     expr: ship_region
     type: string
     description: >-
       Code of the region the order shipped to: NE, WC, SE, MW, SW or INT. This is Acme's sales region: "revenue by
       region", regional reports and sales territories use it, not the customer's home region (customers.home_region), which
-      differs on 307 of 5,000 orders.
+      differs on 248 of the 4,941 orders whose customer still exists; the 59 orders of deleted customers have no home region.
     synonyms: [region, sales region, sales territory]
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:b53043ca96e95fd2188d10ef9f53042fa998282c5cb04cf7e1f9df9b9337fca8
   - name: ship_region_name
     expr: ship_to_region.region_name
     type: string
@@ -64,6 +68,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:43144b7ec4dbe1d61e6d9f72f02eca671ad31e0ded763b5d5ca45a8596a6b13d
   - name: sales_rep_id
     expr: sales_rep_id
     type: number
@@ -75,6 +80,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
+    approved_hash: sha256:3879407904860bca131855e9efd9ca9f7f81826fabb194de00594bfa96f27ad0
 measures:
   - name: order_count
     agg: count
@@ -89,6 +95,7 @@ measures:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:29c1e8d0035f5945df5a6fece2c5fd5b457ae1cce949276a104b5f720a904f7c
   - name: revenue
     expr: amount_cents / 100.0
     agg: sum
@@ -104,6 +111,7 @@ measures:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:f1f11e0edc5941e0b100e49cb3a3f8fd9947f70045b51eaf084b1e89edd240d9
   - name: discount
     expr: discount_cents / 100.0
     agg: sum
@@ -119,6 +127,7 @@ measures:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
+    approved_hash: sha256:ea8c2206fc531d6b03eccf758fb01a86f1505036d9c9bbcf4387e1699332cee2
 joins:
   - name: customer
     to: customers
@@ -135,6 +144,7 @@ joins:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:74f977016f974685e0e9f4f898816e02226d96c0dad9980aef6053e813a1a180
     evidence:
       checked_at: 2026-10-26T08:56:43.946Z
       left_rows: 5000
@@ -158,6 +168,7 @@ joins:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:35b2b5250ca83d5f26d3e118afdb8e3abb6e3c89e1a93a38d800d11601e474d9
     evidence:
       checked_at: 2026-10-26T09:17:52.838Z
       left_rows: 5000
@@ -184,6 +195,7 @@ joins:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:3d60d5ca5948036c79a2d64ddcec9acbf64441273068ef8aa058de831b07eb2f
     evidence:
       checked_at: 2026-10-26T10:43:47.169Z
       to: test_accounts
@@ -213,6 +225,7 @@ joins:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
+    approved_hash: sha256:9be4ac86a6fb7dbcb316c417014531699fd707ad7ad16901cbe091a4bc2e0a48
     evidence:
       checked_at: 2026-10-27T05:34:56.582Z
       to: sales_reps

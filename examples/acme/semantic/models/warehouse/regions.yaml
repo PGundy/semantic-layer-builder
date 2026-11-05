@@ -4,6 +4,7 @@ table: acme.dim_regions
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-26
+approved_hash: sha256:59c87bc5277f2557ccbfd55146d449a2a2f9812c8aef914c1aed71995bbf947d
 description: >-
   Acme's sales regions, one row per region: 6 regions, each with its own region_code (NE, WC, SE, MW, SW, INT). Orders
   reach it through ship_region, which is the sales region used for "revenue by region". No figures are defined on this
@@ -19,6 +20,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:bdb2e58d6fff98f489ae077c13912cfb26f6e361249ee5b22d24e5275ba892bd
   - name: country_code
     expr: country_code
     type: string
@@ -26,6 +28,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:9a7de8b01a2fdc1bcfcce089a47ed1f249a74a350203b221a13c56b8d961f68c
   - name: timezone
     expr: timezone
     type: string
@@ -35,4 +38,5 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:966a49a949ca69407465594a28bac64ba1b82cb2c55764ededea8b64b021a1c3
 measures: []

@@ -4,6 +4,7 @@ table: acme.dim_sales_reps
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-27
+approved_hash: sha256:433612b9104a6ca357a235dc0524cbf424aeb88eefdb150b8858aa5418de391a
 description: >-
   Everyone in sales, one row per person, each with their own rep_id: 16 people. 12 reps, two per region (NE, SE, WC, SW,
   MW, INT); 3 managers with no region of their own (201 over the NE and SE reps, 202 over WC and SW, 203 over MW and
@@ -21,6 +22,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
+    approved_hash: sha256:6a8dfaa78259e29904b9a19f2faf7319989490f3bc2b5105a2ec941ee60b4a01
   - name: full_name
     expr: full_name
     type: string
@@ -30,6 +32,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
+    approved_hash: sha256:592af3e59df42d7901023339f2edfd39e7b19e3acbe725d7149fc57b2158ac53
   - name: email
     expr: email
     type: string
@@ -39,6 +42,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
+    approved_hash: sha256:2ffbfba255a997f98e6fd1231fc6d84cb4e99e9f96ea7d66b4c160891a4c4549
   - name: region_code
     expr: region_code
     type: string
@@ -48,6 +52,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
+    approved_hash: sha256:a318db7000d8e15550fce388cd671e08fa376cc08205f558c22a5b82cbd6124b
   - name: manager_id
     expr: manager_id
     type: number
@@ -55,4 +60,5 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
+    approved_hash: sha256:76846848d5b1806a0b229e3d668fbc3f85c07bf6f8d17cc74b7a6cf7a17df918
 measures: []

@@ -4,6 +4,7 @@ table: acme.sales_team_closure
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-27
+approved_hash: sha256:8a6a6ba6e0a9cb59673ea0aa6f13a017721717858895a7bbcbd2ac6a9033a802
 description: >-
   The sales hierarchy, one row per manager and person below them, at any depth: 27 pairs. 201, 202 and 203 are each
   paired with their 4 reps, and 301 with all 15 people below them (the 3 managers and the 12 reps). A person is never
@@ -21,6 +22,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
+    approved_hash: sha256:1e96d99a8195019486249b6791b7165e0eadb01027d0d69acc60da1675213fdd
   - name: member_id
     expr: member_id
     type: number
@@ -28,4 +30,5 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
+    approved_hash: sha256:44e571a0fbeef7bb0698e5a8d150d0260efd83749f2dfc6315156f855da5726c
 measures: []

@@ -4,6 +4,7 @@ table: main.web_events
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-26
+approved_hash: sha256:705f4da0a445f30fa62e177c0f086ec73055388482ee6d343f7ba9ab49e0ea48
 description: >-
   Front-end tracking events on the website, one row per event, each with its own event_id: 30,551 events from 1 Jan
   2024 to 31 Dec 2025, every one belonging to a session in sessions. No figures are defined on this table: Dana Ruiz
@@ -31,6 +32,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:8bbddba1e5c6805e58ee63d7f2d2444e8833df99f4c7b077eea5ba28ad6ca509
   - name: event_type
     expr: event_type
     type: string
@@ -40,6 +42,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:7321eb0ed71de4845ee264654b71b57cae254298d3971c0ec3507e3cd4428664
   - name: page_path
     expr: page_path
     type: string
@@ -47,6 +50,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:04386b2d3d712d24684ca90fc2d9418831f3832dff257fd02cd8b0be153e1125
 measures: []
 joins:
   - name: session
@@ -61,6 +65,7 @@ joins:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:2ae60499a1c1a71c852110427019555c85417c02511b1dd9e2c69a37faf0c35b
     evidence:
       checked_at: 2026-10-26T09:08:38.699Z
       left_rows: 30551

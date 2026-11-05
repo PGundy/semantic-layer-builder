@@ -161,48 +161,6 @@
           "profile": {
             "null_fraction": 0,
             "distinct_count": 500,
-            "top_values": [
-              {
-                "value": "sha256:50bef0d95e1ce90d",
-                "count": 1
-              },
-              {
-                "value": "sha256:43c4e77079ac8721",
-                "count": 1
-              },
-              {
-                "value": "sha256:99c7445a0bdcf264",
-                "count": 1
-              },
-              {
-                "value": "sha256:c3164d92fb0a92db",
-                "count": 1
-              },
-              {
-                "value": "sha256:a2f926a5c3bcef41",
-                "count": 1
-              },
-              {
-                "value": "sha256:2d7ddd2b828290a0",
-                "count": 1
-              },
-              {
-                "value": "sha256:5f50bac71f301eae",
-                "count": 1
-              },
-              {
-                "value": "sha256:7170f3385fbcddc8",
-                "count": 1
-              },
-              {
-                "value": "sha256:a0d00e403cf49db6",
-                "count": 1
-              },
-              {
-                "value": "sha256:99691bbf1cb69580",
-                "count": 1
-              }
-            ],
             "sampled": false,
             "redacted": true
           }
@@ -215,48 +173,6 @@
           "profile": {
             "null_fraction": 0.122,
             "distinct_count": 437,
-            "top_values": [
-              {
-                "value": "sha256:d7ce10aae71f487d",
-                "count": 2
-              },
-              {
-                "value": "sha256:111b9289ad549be2",
-                "count": 2
-              },
-              {
-                "value": "sha256:6136f82cbdb11af6",
-                "count": 1
-              },
-              {
-                "value": "sha256:63e7e342e1a951d6",
-                "count": 1
-              },
-              {
-                "value": "sha256:3edf46451431b64c",
-                "count": 1
-              },
-              {
-                "value": "sha256:84f1844db75d4473",
-                "count": 1
-              },
-              {
-                "value": "sha256:2997f6c72dd950db",
-                "count": 1
-              },
-              {
-                "value": "sha256:e423c0f776055db4",
-                "count": 1
-              },
-              {
-                "value": "sha256:33266040add3baae",
-                "count": 1
-              },
-              {
-                "value": "sha256:5b6fc8d36a8f1176",
-                "count": 1
-              }
-            ],
             "sampled": false,
             "redacted": true
           }
@@ -269,48 +185,6 @@
           "profile": {
             "null_fraction": 0,
             "distinct_count": 40,
-            "top_values": [
-              {
-                "value": "sha256:2db317222c996b63",
-                "count": 20
-              },
-              {
-                "value": "sha256:cf3a3bbe331c3950",
-                "count": 20
-              },
-              {
-                "value": "sha256:cc967443070ab409",
-                "count": 18
-              },
-              {
-                "value": "sha256:21297e6e966afbd0",
-                "count": 18
-              },
-              {
-                "value": "sha256:fdee430d40bd57de",
-                "count": 17
-              },
-              {
-                "value": "sha256:0478721f1106c2a6",
-                "count": 16
-              },
-              {
-                "value": "sha256:57f62077f2be1597",
-                "count": 16
-              },
-              {
-                "value": "sha256:b1e3c2ec1a80a8cc",
-                "count": 16
-              },
-              {
-                "value": "sha256:7b8bd6c0abf53d22",
-                "count": 15
-              },
-              {
-                "value": "sha256:db9763c0e62cb499",
-                "count": 15
-              }
-            ],
             "sampled": false,
             "redacted": true
           }
@@ -323,48 +197,6 @@
           "profile": {
             "null_fraction": 0,
             "distinct_count": 30,
-            "top_values": [
-              {
-                "value": "sha256:e9b71991b7f947a3",
-                "count": 24
-              },
-              {
-                "value": "sha256:38f4b0788294de61",
-                "count": 24
-              },
-              {
-                "value": "sha256:a8b1fc83cb92ad90",
-                "count": 23
-              },
-              {
-                "value": "sha256:f4d25158ccdd82c2",
-                "count": 23
-              },
-              {
-                "value": "sha256:d24e913a4107af87",
-                "count": 22
-              },
-              {
-                "value": "sha256:a377e09c55929b46",
-                "count": 21
-              },
-              {
-                "value": "sha256:64118260ecb916c2",
-                "count": 20
-              },
-              {
-                "value": "sha256:8cce9002d9db7fdc",
-                "count": 19
-              },
-              {
-                "value": "sha256:3e90907fc3ad3c1a",
-                "count": 19
-              },
-              {
-                "value": "sha256:e2de02f344f594ea",
-                "count": 19
-              }
-            ],
             "sampled": false,
             "redacted": true
           }
@@ -390,32 +222,6 @@
           "profile": {
             "null_fraction": 0,
             "distinct_count": 6,
-            "top_values": [
-              {
-                "value": "sha256:cb58e4600bf0142c",
-                "count": 114
-              },
-              {
-                "value": "sha256:9c7d3cc1bee7acc0",
-                "count": 114
-              },
-              {
-                "value": "sha256:ad9a67fefa847de8",
-                "count": 100
-              },
-              {
-                "value": "sha256:7865b7e6b9d241d7",
-                "count": 74
-              },
-              {
-                "value": "sha256:bade9ea57931f2ef",
-                "count": 72
-              },
-              {
-                "value": "sha256:6da88c34ba124c41",
-                "count": 26
-              }
-            ],
             "sampled": false,
             "redacted": true
           }
@@ -970,48 +776,6 @@
           "profile": {
             "null_fraction": 0,
             "distinct_count": 16,
-            "top_values": [
-              {
-                "value": "sha256:16135434725342f5",
-                "count": 1
-              },
-              {
-                "value": "sha256:c4c9efc45a37f83d",
-                "count": 1
-              },
-              {
-                "value": "sha256:e70fb97553d760f9",
-                "count": 1
-              },
-              {
-                "value": "sha256:4810dc7fa1301346",
-                "count": 1
-              },
-              {
-                "value": "sha256:9c8d6d098948e1a9",
-                "count": 1
-              },
-              {
-                "value": "sha256:51c99f2a7cdc06eb",
-                "count": 1
-              },
-              {
-                "value": "sha256:41ebbbd80e7def7b",
-                "count": 1
-              },
-              {
-                "value": "sha256:083ccdea6c6530e0",
-                "count": 1
-              },
-              {
-                "value": "sha256:729afc770fa99306",
-                "count": 1
-              },
-              {
-                "value": "sha256:81715777d5ea0065",
-                "count": 1
-              }
-            ],
             "sampled": false,
             "redacted": true
           }
@@ -1024,48 +788,6 @@
           "profile": {
             "null_fraction": 0,
             "distinct_count": 16,
-            "top_values": [
-              {
-                "value": "sha256:9a3d584d4a17c8ad",
-                "count": 1
-              },
-              {
-                "value": "sha256:abc173625b86ebd5",
-                "count": 1
-              },
-              {
-                "value": "sha256:6752cb0eda1795de",
-                "count": 1
-              },
-              {
-                "value": "sha256:3c746da0a893b3be",
-                "count": 1
-              },
-              {
-                "value": "sha256:d569caead7534a7a",
-                "count": 1
-              },
-              {
-                "value": "sha256:3b47a8cd0130bbc2",
-                "count": 1
-              },
-              {
-                "value": "sha256:dce61f7883a00aaf",
-                "count": 1
-              },
-              {
-                "value": "sha256:2d23ed388fa881f0",
-                "count": 1
-              },
-              {
-                "value": "sha256:c4058520023d7f6a",
-                "count": 1
-              },
-              {
-                "value": "sha256:3fc707ef43b97dac",
-                "count": 1
-              }
-            ],
             "sampled": false,
             "redacted": true
           }
@@ -1447,12 +1169,6 @@
           "profile": {
             "null_fraction": 0,
             "distinct_count": 1,
-            "top_values": [
-              {
-                "value": "sha256:d60fbd8718eceb7f",
-                "count": 5000
-              }
-            ],
             "sampled": false,
             "redacted": true
           }
@@ -1478,48 +1194,6 @@
           "profile": {
             "null_fraction": 0.889,
             "distinct_count": 555,
-            "top_values": [
-              {
-                "value": "sha256:14155af0dc9d59f4",
-                "count": 1
-              },
-              {
-                "value": "sha256:e1560e7a1a4dfeeb",
-                "count": 1
-              },
-              {
-                "value": "sha256:0cb936af02d40641",
-                "count": 1
-              },
-              {
-                "value": "sha256:0885caa83ebeb79b",
-                "count": 1
-              },
-              {
-                "value": "sha256:234a691cf5a1a81c",
-                "count": 1
-              },
-              {
-                "value": "sha256:1ac803fe9b748386",
-                "count": 1
-              },
-              {
-                "value": "sha256:ccdc5f75f8e2f0f8",
-                "count": 1
-              },
-              {
-                "value": "sha256:08238fda20676cbe",
-                "count": 1
-              },
-              {
-                "value": "sha256:86f73750a2b2e67a",
-                "count": 1
-              },
-              {
-                "value": "sha256:cdc72bc11cd455b8",
-                "count": 1
-              }
-            ],
             "sampled": false,
             "redacted": true
           }

@@ -4,6 +4,7 @@ table: acme.dim_customers
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-26
+approved_hash: sha256:cbfb590c518b285bcd654d411fadf95ff6b4b7cf04b675daae6e7b6bd4f4f8b2
 description: >-
   Customer accounts, one row per customer: 500 customers, each with its own customer_id. Includes internal test
   accounts: a customer is a test account when is_test_account is true or the email ends in @example-test.com (QA does
@@ -47,6 +48,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:19938e900fededa45d2c3cbadd6ca781076770267087b36fc0a6d646fe925b26
   - name: phone
     expr: phone
     type: string
@@ -56,6 +58,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:8a2bcd44f7b4d2ea36e0e4f56dcd5dfa7711646752f728f2606806c4a64362a2
   - name: first_name
     expr: first_name
     type: string
@@ -65,6 +68,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:bc7a80c3a08e7b86c9defe84c36f9b233eb302a068c6fc9f5dc71cca80c693d6
   - name: last_name
     expr: last_name
     type: string
@@ -74,6 +78,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:ca01b4e6acfdeed1ef48f86b4e665058580d364c9acc8ce34ffbea9b3a6064d6
   - name: signup_date
     expr: signup_at
     type: time
@@ -92,6 +97,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:c23cf64bbdcb96589001c93f1e2996216cde164a0ad140485356b4a4f83db6a1
   - name: is_test_account
     expr: is_test_account or email like '%@example-test.com'
     type: boolean
@@ -106,6 +112,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
+    approved_hash: sha256:ee7bab53c197ee258c112983524e28c90d8347be5729d06bb04cab823b203630
   - name: acquisition_channel
     expr: acquisition_channel
     type: string
@@ -118,6 +125,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:ab9c66df5b9d4cdc1565bb6d99b03245e4d22c5115ffaffb1d620fc47326e1af
 measures: []
 joins:
   - name: home_region
@@ -130,10 +138,11 @@ joins:
     origin: declared
     description: >-
       The customer's home region (region_code). This is not Acme's sales region: "revenue by region", regional reports
-      and sales territories use the order's ship_region, which differs from the home region on 307 of 5,000 orders.
+      and sales territories use the order's ship_region, which differs from the home region on 248 of the 4,941 orders whose customer still exists.
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:95bdb1f300e1eccd9399a647a19eaabfedebc6021ac34eaae51e7778494fcc9e
     evidence:
       checked_at: 2026-10-26T09:25:13.778Z
       left_rows: 500

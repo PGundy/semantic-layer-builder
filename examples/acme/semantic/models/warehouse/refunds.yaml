@@ -4,6 +4,7 @@ table: acme.fct_refunds
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-26
+approved_hash: sha256:b2c93b6c49e0ae546534c3a21b09943ce7de9ac13d60a9f502a0bd1a091be3ce
 description: >-
   Refunds issued against orders, one row per refund, amounts in integer cents (USD, as every order). Most refunds are
   partial, an order can have several refunds, and a full refund is sometimes split over two rows (344 refunds on 291
@@ -29,6 +30,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:0b3cec1013bc474c55c4af264c9c84a96faf2ed65b0f964c0b04156dbc851c31
   - name: refunded_at
     expr: refunded_at
     type: time
@@ -46,6 +48,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:1b6828f3a686d16e76e9bf845fbf060b8d6a7e503a43a05dd4c767f80d1a1b35
   - name: reason
     expr: reason
     type: string
@@ -56,6 +59,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:57a0c25aba9b131afbfff4f7d81fa22c68ba83e8bcdded3422310f251b84f80c
 measures:
   - name: refund_amount
     expr: refunded_cents / 100.0
@@ -75,6 +79,7 @@ measures:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:e8b6ada12803aa2c9e98c5b00e9e8cbbd92afd2f8488e468f1ca6e9093b64a28
 joins:
   - name: order
     to: orders
@@ -91,6 +96,7 @@ joins:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:f0f9495ab4feccc1c05c424ea70474ae13f05d737538f0478d1c0efbca03102d
     evidence:
       checked_at: 2026-10-26T10:43:46.981Z
       to: orders

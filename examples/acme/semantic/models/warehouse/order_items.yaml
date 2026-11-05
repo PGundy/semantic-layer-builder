@@ -4,6 +4,7 @@ table: acme.fct_order_items
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-26
+approved_hash: sha256:00c4ff2e3de7249ba467f89e619bb8749ed8cfa238df80ac605f58e1caa8ad9a
 description: >-
   Product lines on storefront orders, one row per product line: 12,343 lines on 5,000 orders, quantity 1 to 3.
   quantity * unit_price_cents adds up exactly to the order's amount_cents on every order. No figures are defined on
@@ -23,6 +24,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:636e6c58158790a2437dfe4072551e338c54189ecd81324a35e10a25fa702a48
   - name: product_id
     expr: product_id
     type: number
@@ -30,6 +32,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:8af5a800ee99d934e33777cf6eae8df338f756e6a76d8c982d85dbe91a765d04
   - name: quantity
     expr: quantity
     type: number
@@ -37,6 +40,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:191f314271d70d135026ff22155f28b4944a83316bc4e74f022151508ed4bb0b
   - name: unit_price
     expr: unit_price_cents / 100.0
     type: number
@@ -47,6 +51,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:4746b7d5b4ba6e82d7d1744628c8e8dfc556724b0c0771039e742c25ce9f8a8d
 measures: []
 joins:
   - name: order
@@ -61,6 +66,7 @@ joins:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:a204f5cedada9365ed894bc48d01699064bab089eb165ca7b42521bd4186c7bb
     evidence:
       checked_at: 2026-10-26T08:56:43.946Z
       left_rows: 12343
@@ -84,6 +90,7 @@ joins:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
+    approved_hash: sha256:c4e1481fa5a3d97b719b3d6c6030e30ea87d908e5f4343627031f55ef023fd61
     evidence:
       checked_at: 2026-10-26T08:56:43.946Z
       left_rows: 12343
