@@ -1,22 +1,21 @@
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 
-// Commands load lazily so a broken or slow module never affects the others.
-export const COMMANDS: Record<string, () => Promise<{ default: CommandSpec }>> = {
-  init: () => import("./init.ts"),
-  "add-source": () => import("./add-source.ts"),
-  introspect: () => import("./introspect.ts"),
-  import: () => import("./import.ts"),
-  tables: () => import("./tables.ts"),
-  scope: () => import("./scope.ts"),
-  profile: () => import("./profile.ts"),
-  draft: () => import("./draft.ts"),
-  "check-join": () => import("./check-join.ts"),
-  approve: () => import("./approve.ts"),
-  validate: () => import("./validate.ts"),
-  status: () => import("./status.ts"),
-  run: () => import("./run.ts"),
-  goldens: () => import("./goldens.ts"),
-  access: () => import("./access.ts"),
-  baseline: () => import("./baseline.ts"),
-  "export-sql": () => import("./export-sql.ts"),
-};
+// Every file in this directory except this one is a command named after the file
+// (add-source.ts is `sl add-source`). Commands load lazily, so a broken or slow
+// module never affects the others, and adding a command needs no edit here.
+const DIR = import.meta.dir;
+
+function discover(): Record<string, () => Promise<{ default: CommandSpec }>> {
+  const out: Record<string, () => Promise<{ default: CommandSpec }>> = {};
+  for (const file of readdirSync(DIR).sort()) {
+    if (!file.endsWith(".ts") || file === "index.ts" || file.endsWith(".test.ts") || file.endsWith(".d.ts")) continue;
+    const name = file.slice(0, -3);
+    if (!/^[a-z][a-z0-9-]*$/.test(name)) continue;
+    out[name] = () => import(join(DIR, file)) as Promise<{ default: CommandSpec }>;
+  }
+  return out;
+}
+
+export const COMMANDS = discover();

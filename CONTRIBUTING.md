@@ -59,3 +59,9 @@ A change should:
 - write docs and comments in the present tense, describing what the code does.
 
 A semantic directory is executable configuration: its `sources/` run setup statements and views on every connection, and its `goldens/` run SQL. Review changes to them, in this repository's examples or anywhere else, as you would review code.
+
+## Branches and pull requests
+
+v1 is built on `release/v1` (docs/PRD.md, decision D8). Branch from it as `v1/<pr-id>-<slug>`, for example `v1/1.4-table-list-files`, and open the pull request against `release/v1`. Each pull request implements one PR of the PRD's plan (section 9), cites its requirement IDs, and fills in `.github/pull_request_template.md`. Spec, schemas, validation and docs change in the same pull request as the behaviour. A pull request merges when `scripts/verify.sh` passes in CI and its review is done; one that touches a file listed in `.github/CODEOWNERS` also needs the owner's review.
+
+A new command is a file in `skills/semantic-layer/scripts/commands/`: the file name is the command name, and the registry finds it without an edit.
