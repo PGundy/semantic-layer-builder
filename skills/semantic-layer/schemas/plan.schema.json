@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": ".sl/plans/<plan_id>.json",
+  "description": "A query plan written by --emit-sql, finished from its stored results with --plan <plan_id>. A working file: gitignored, holds SQL and no data.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "plan_id", "finish", "command", "source", "dialect", "queries"],
+  "properties": {
+    "version": { "const": 1, "description": "Plan file format version." },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{12}$",
+      "description": "A short hash of command, source, dialect and queries; equals the file name."
+    },
+    "finish": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The command that finishes the plan from its stored results: the emitting command with --plan <plan_id>."
+    },
+    "command": { "type": "string", "minLength": 1, "description": "The command that built the plan." },
+    "source": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "description": "The source the queries read." },
+    "dialect": {
+      "enum": ["duckdb", "postgres", "snowflake", "bigquery", "databricks"],
+      "description": "The SQL dialect of the queries."
+    },
+    "queries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "purpose", "sql", "max_rows"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "description": "Query id; results are stored under it." },
+          "purpose": { "type": "string", "description": "What the query measures." },
+          "sql": { "type": "string", "minLength": 1, "description": "The read-only query." },
+          "max_rows": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The most rows to fetch; a result of exactly this many rows is refused as possibly cut off."
+          }
+        }
+      }
+    }
+  }
+}
