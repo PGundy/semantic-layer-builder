@@ -171,7 +171,7 @@ export function schemaIssues(kind: SchemaKind, data: unknown, file: string): Iss
 }
 
 // The eval harness's files (evals/runner), each with a schema under schemas/ (spec.md, Eval runs).
-export const EVAL_SCHEMA_KINDS = ["eval-scenario", "eval-script", "eval-transcript-turn", "eval-summary", "eval-figures", "eval-grades"] as const;
+export const EVAL_SCHEMA_KINDS = ["eval-scenario", "eval-script", "eval-transcript-turn", "eval-summary", "eval-figures", "eval-grades", "eval-baseline"] as const;
 export type EvalSchemaKind = (typeof EVAL_SCHEMA_KINDS)[number];
 
 let evalValidators: Map<EvalSchemaKind, ValidateFunction> | undefined;
