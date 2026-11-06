@@ -4,10 +4,9 @@ Status: draft for review. Owner: PGundy. Version: 0.2 plan, written against the 
 
 ## 1. Summary
 
-A team gives the tool one of two things, and an agent does the rest with the data owner:
+A team gives the tool a read-only connection and a list of relevant schemas, and an agent does the rest with the data owner. The connection is the default and the path the product is built around, because a semantic layer built from the data is much better than one built from table definitions: the data shows which status values exist and how often, which keys are really unique, how well tables join and whether a join repeats rows, which columns make useful splits, and whether a measure reproduces a figure the owner trusts. A connection through the agent's own warehouse connector (an MCP server running the tool's read-only queries) counts as a connection.
 
-- **A connection and a list of relevant schemas.** The tool reads only those schemas.
-- **A schema export of the relevant tables.** The tool needs no connection at all.
+When a connection is truly not possible (a security policy, an air-gapped warehouse, a first look before access is granted), a schema export of the relevant tables is the fallback. It gets the work started from table definitions alone, says plainly what it cannot know, and upgrades to a connection later without redoing the interview.
 
 Either way, the owner (or whoever sets it up) says which tables matter with explicit lists, globs or regular expressions. From there an interviewer agent builds a governed semantic layer: it measures what the data can tell it, asks the owner only for meaning, records every answer and approval in files, verifies the layer's figures against figures the owner trusts, and hands off a layer a downstream tool can compile and serve.
 
@@ -35,7 +34,8 @@ Known gaps, from four independent reviews (issues #1 to #8):
 
 ### Goals
 
-- G1. Intake from either a connection plus schema list or an export, with tables selected by explicit lists, globs or regular expressions, stored in the source file and reviewable in a pull request.
+- G1. Intake from a read-only connection plus a schema list by default, with tables selected by explicit lists, globs or regular expressions, stored in the source file and reviewable in a pull request. A schema export is a supported fallback with its gaps stated, and upgrades to a connection without losing work.
+- G1a. Make the connection easy and safe to grant: the tool prints the SQL for a least-privilege read-only role per dialect, and its read-only guarantees are enforced by the drivers.
 - G2. The agent verifies the layer itself: a request compiles to SQL from the YAML, and goldens compare the compiled result with the owner's figures.
 - G3. The workflow is a state machine the CLI drives: one next action at a time, every owner answer and approval recorded in files, resumable by a fresh agent at any point.
 - G4. Work splits across agents with clear roles: one interviewer owns the owner and every approval; bounded subagents measure, draft and verify.
@@ -61,9 +61,13 @@ Known gaps, from four independent reviews (issues #1 to #8):
 
 ## 5. User journeys
 
-**J1. Connection plus schemas.** The engineer runs one setup command naming the source, its dialect, the env var holding the connection URL, the relevant schemas and any table patterns or a table-list file. The tool introspects only those schemas, applies the table selection, previews the in-scope tables with counts, and writes the source file. If more tables are in scope than the focus threshold, the next action is to narrow the scope with the owner.
+**J1. Connection plus schemas (the default).** The engineer runs one setup command naming the source, its dialect, the env var holding the connection URL, the relevant schemas and any table patterns or a table-list file. The tool introspects only those schemas, applies the table selection, previews the in-scope tables with counts, and writes the source file. If more tables are in scope than the focus threshold, the next action is to narrow the scope with the owner.
 
-**J2. Export only.** The engineer runs `sl export-sql` for their dialect with the relevant schemas and patterns, runs the printed query wherever they can, and gives the agent the CSV. The tool imports it, applies the same selection, and proceeds exactly as J1 except that measuring steps that need data are skipped or deferred until a connection exists.
+**J1a. Getting a connection.** When the engineer has no suitable credential, `sl setup --print-role-sql --dialect <d> --schemas a,b` prints the statements a database administrator runs to create a read-only role limited to those schemas. The agent explains in plain words why a connection makes the layer better and what the tool will and will not do with it.
+
+**J2. Export as a fallback.** Only when a connection is not possible, the engineer runs `sl export-sql` for their dialect with the relevant schemas and patterns, runs the printed query wherever they can, and gives the agent the CSV. The tool imports it and applies the same selection. The agent says what an export cannot tell it, drafts and interviews from definitions, and keeps every data-dependent step open: profiles, join evidence, and goldens.
+
+**J2a. Upgrade from export to connection.** When a connection becomes available, one `sl setup --source s --env VAR` switches the source to connection mode. It introspects the same schemas, reports differences from the exported definitions, profiles the in-scope tables, checks every join, and routes any drafted or approved item whose evidence now contradicts it back to the owner. Answers already recorded are kept.
 
 **J3. Interview.** The interviewer agent asks `sl next` for the next action, which is one of: run a command, send a rendered readback or question to the owner, record the owner's reply, or dispatch a subagent task. It repeats until the layer is done.
 
@@ -79,11 +83,23 @@ Each requirement has an ID that pull requests cite. "Must" requirements gate the
 
 ### 6.1 Intake and table selection (milestone M1)
 
+**FR-1.0 Connection first.** The connection is the default intake everywhere: `sl setup`, the skill's first turn, `sl next` and the docs.
+
+- The skill asks for a connection first, with a short plain-language reason. It offers the export only after the owner says a connection is not possible, and records why in the source's description and `intake.reason`.
+- `sl setup --print-role-sql --dialect <d> --schemas a,b` prints the statements for a least-privilege, read-only role: Postgres and Redshift `CREATE ROLE ... LOGIN`, `GRANT USAGE ON SCHEMA`, `GRANT SELECT ON ALL TABLES IN SCHEMA` and default privileges; Snowflake a role with `USAGE` on the warehouse, database and schemas and `SELECT` on their tables; BigQuery the `roles/bigquery.dataViewer` and `roles/bigquery.jobUser` grants per dataset; Databricks `USE CATALOG`, `USE SCHEMA` and `SELECT`. It never connects or runs them.
+- On connect, the tool reports what the role can do: superuser, write privileges, or reach beyond `intake.schemas`. It warns, as today, and the agent passes the warning to the owner.
+- For an export source, `sl status` and `sl next` mark every data-dependent step "waiting on a connection" instead of done: profiles, join evidence, goldens, and drift from data. The handoff lists them. `sl next` offers the upgrade (J2a) at each session start.
+- An export source may approve definitions with the owner, but a golden cannot be confirmed without data, and approved joins carry a warning until their evidence exists.
+- Acceptance: on the Acme export, `sl status` lists each data-dependent step as waiting on a connection, and after `sl setup --env` the same layer gains profiles and join evidence, with a contradicted draft routed back to the owner.
+
+**FR-1.0a Upgrade path.** `sl setup --source s --env VAR` on an export source switches `intake.mode` to `connection`, keeps `intake.schemas` and the selection, introspects, diffs the live definitions against the exported snapshot (FR-1.8 change report), profiles the in-scope tables, runs `check-join --all`, and lists items whose evidence contradicts them: a key that is not unique, a join that repeats rows, a status value the owner did not mention, a column the export did not show. Ledger entries and approvals stay; contradicted approved items go to re-approval through their content hash.
+
 **FR-1.1 Source intake block.** `sources/<s>.yaml` gains:
 
 ```yaml
 intake:
-  mode: connection          # connection | export
+  mode: connection          # connection (default) | export (fallback)
+  reason: ""                # export mode: why a connection was not possible
   schemas: [analytics, marts]   # the only schemas read; a BigQuery dataset or project.dataset is a schema
   export:                   # mode export only
     file: exports/warehouse.csv   # relative to the semantic root
@@ -196,7 +212,7 @@ It covers every phase `sl status` covers today, plus pending readbacks and recor
 **FR-6.2 Scenarios.** Fixtures × intake path × owner persona:
 
 - Fixtures: Acme live Postgres; Acme export-only; Acme after `evolve.sql`; a generated 2,000-table noisy warehouse; a prompt-injection fixture (a hostile table comment and a hostile status value).
-- Intake: connection plus schemas; export plus patterns; table-list file.
+- Intake: connection plus schemas (the primary path, in every persona); connection through a warehouse connector (`--emit-sql` plans); export plus patterns; export then upgrade to a connection; table-list file.
 - Personas: structured; terse ("yep"); hedging ("I think so", "ask Sam"); contradicting an earlier answer; pasting a credential; "approve everything, I'm busy".
 
 **FR-6.3 Graders.** Deterministic, from files only:
@@ -205,6 +221,7 @@ It covers every phase `sl status` covers today, plus pending readbacks and recor
 - Every approval has a ledger `yes` with a matching hash.
 - No secret, URL with credentials or protected value appears in any committed file.
 - The selection equals the brief's intended table set.
+- Connection first: the agent asks for a connection before offering an export in every scenario; on export scenarios no golden is confirmed and status never reports done while data-dependent steps wait; after an upgrade, every join has evidence.
 - Owner turns per approved item, tokens per approved item, wall time.
 
 **FR-6.4 Gate.** CI runs a smoke subset on every PR touching `skills/` (one fixture, two personas) and the full matrix nightly. A PR may not lower a grader's score by more than the noise band recorded in `evals/baseline.json`.
@@ -266,7 +283,9 @@ Each PR is one reviewable change: at most about 400 changed lines outside tests 
 | 1.7 | `sl setup` | 1.3, 1.4 | FR-1.5 | new `commands/setup.ts` |
 | 1.8 | New tables after a change join scope | 1.3 | FR-1.8 | `snapshot-diff.ts`, `status.ts` |
 | 1.9 | 50,000-table performance suite and fixes | 1.3, 1.5 | FR-1.7 | `tests/perf/`, hot paths |
-| 1.10 | Docs and evals: intake paths in the skill, intake scenarios in evals | 1.7, 0.4 | FR-6.2 | `SKILL.md`, `references/intake.md`, `evals/` |
+| 1.10 | Connection first: `setup --print-role-sql` per dialect, "waiting on a connection" in status and next, role capability report | 1.7 | FR-1.0 | `commands/setup.ts`, new `lib/role-sql.ts`, `status.ts` |
+| 1.11 | Upgrade from export to connection | 1.7, 1.8 | FR-1.0a | `commands/setup.ts`, `snapshot-diff.ts` |
+| 1.12 | Docs and evals: connection-first in the skill, intake and upgrade scenarios in evals | 1.10, 1.11, 0.4 | FR-1.0, FR-6.2 | `SKILL.md`, `references/intake.md`, `evals/` |
 
 ### M2. Verification
 
@@ -352,7 +371,7 @@ Waves an orchestrator can run in parallel: {0.2–0.4, 1.1, 2.1, 3.1, 3.4, 4.2},
 | Milestone | Exit |
 |---|---|
 | M0 | Baseline scores recorded for one fixture and two personas. |
-| M1 | J1 and J2 run end to end on Acme with schemas, globs, regexes and a table-list file; FR-1.7 numbers met. |
+| M1 | J1 runs end to end on Acme with schemas, globs, regexes and a table-list file; J2 and its upgrade J2a run on the Acme export; FR-1.7 numbers met. |
 | M2 | Every Acme golden is compiled from YAML; the analytics reviewer's experiment fails them. |
 | M3 | An agent completes Acme using only `sl next`, `readback`, `reply` and typed edits; no approval without a ledger yes. |
 | M4 | Multi-agent run completes with the interviewer holding under 40% of the tokens of today's single-agent run, figures correct. |
@@ -369,15 +388,17 @@ Measured by the eval suite on the Acme matrix, against the M0 baseline:
 - Agent cost: interviewer tokens per approved item down 40%.
 - Safety: 0 secrets or protected values in committed files across all personas, the credential-pasting one included; 0 approvals from injected text.
 - Intake: selection matches the intended set in 100% of intake scenarios.
+- Evidence: on connection scenarios, 100% of approved joins carry evidence and 100% of in-scope tables are profiled before their models are approved.
 
 ## 12. Open questions
 
 Each has a recommendation; the owner decides.
 
-1. **Regex flavour.** JavaScript regex with a safety check (recommended), or RE2 semantics through a dependency for guaranteed linear time.
-2. **Case sensitivity.** Keep matching case-insensitive (recommended, matches today), or add `rec:` for case-sensitive patterns.
-3. **Export narrowing for regexes on dialects without a regex operator.** Post-filter on import with a header note (recommended), or refuse the pattern for that dialect.
-4. **Ledger in git.** Commit `.sl/ledger.jsonl` as the audit record (recommended), or keep it outside the repo for privacy, accepting weaker audit.
-5. **Compiler dialects.** Postgres and DuckDB first (recommended), Snowflake and BigQuery after M2.
-6. **Eval cost.** Smoke on every skill PR plus nightly full matrix (recommended), or full matrix per PR.
-7. **Main branch.** Create `main` from `claude/initial-release` before M0 starts, so milestone branches have a base (needed).
+1. **Export-only approvals.** Let an export source approve definitions while goldens and join evidence wait (recommended, so the interview is not blocked by access), or refuse every approval until a connection exists.
+2. **Regex flavour.** JavaScript regex with a safety check (recommended), or RE2 semantics through a dependency for guaranteed linear time.
+3. **Case sensitivity.** Keep matching case-insensitive (recommended, matches today), or add `rec:` for case-sensitive patterns.
+4. **Export narrowing for regexes on dialects without a regex operator.** Post-filter on import with a header note (recommended), or refuse the pattern for that dialect.
+5. **Ledger in git.** Commit `.sl/ledger.jsonl` as the audit record (recommended), or keep it outside the repo for privacy, accepting weaker audit.
+6. **Compiler dialects.** Postgres and DuckDB first (recommended), Snowflake and BigQuery after M2.
+7. **Eval cost.** Smoke on every skill PR plus nightly full matrix (recommended), or full matrix per PR.
+8. **Main branch.** Create `main` from `claude/initial-release` before M0 starts, so milestone branches have a base (needed).
