@@ -62,7 +62,7 @@ function nextStep(refusals: Refusal[], source: string, user: Record<string, unkn
 }
 
 const spec: CommandSpec = {
-  summary: "Compile a request to SQL for a postgres or duckdb source, joins included, without running it.",
+  summary: "Compile a request to SQL for a postgres or duckdb source, joins, ratio and derived metrics included, without running it.",
   usage:
     "sql --source <source> --request <file|json> [--role <role>] [--user <json object of attributes>]   " +
     "(prints the SQL and its parameters, or why it is refused; never runs it. --request may be a golden file, which also gives the role and user)",

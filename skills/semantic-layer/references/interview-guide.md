@@ -217,7 +217,7 @@ A dimension can also come from a joined table. To date refunds by the original o
     status: draft
 ```
 
-A metric that combines measures of several models (`net_revenue` = orders revenue minus refunds) groups only by dimensions that exist with the same name in every model it uses, so give such dimensions the same name in each model (`order_date` on both) and approve each. Give the joined dimension the same conversion as the original (`order.created_at at time zone 'America/New_York'` when `orders.order_date` converts), so both sides bucket the same way.
+A metric that combines measures of several models (`net_revenue` = orders revenue minus refunds) groups by dimensions every model it uses reaches through one path of to-one joins (refunds reach `orders.order_date` through their `order` join), or that exist with the same name in each, so give a model with no such path a dimension of the same name (`order_date`) and approve it. Give the joined dimension the same conversion as the original (`order.created_at at time zone 'America/New_York'` when `orders.order_date` converts), so both sides bucket the same way.
 
 Rules of thumb:
 

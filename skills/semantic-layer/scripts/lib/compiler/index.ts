@@ -1,8 +1,9 @@
 // The reference compiler (references/spec.md, Reference compiler): turns a request into SQL for a
 // postgres or duckdb source, with every request filter value a bound parameter. A request reaches
-// other models' fields through to-one joins, and a field's definition joins come along with it. It
-// never runs the SQL. A request that needs what this version does not compile (a metric, a row
-// filter for the user) is refused with the reason.
+// other models' fields through to-one joins, and a field's definition joins come along with it; a
+// request that names a metric compiles each model's measures on their own (metrics.ts). It never
+// runs the SQL. A request that needs what this version does not compile (a row filter for the user)
+// is refused with the reason.
 import { type AccessLayer, type AccessUser, checkRequest, evaluateLayer, loadAccessLayer, type ModelVisibility } from "../access.ts";
 import { quoteIdent } from "../dialect.ts";
 import { loadSnapshot, loadSource } from "../project.ts";
@@ -14,6 +15,7 @@ import type { Dimension, FilterOp, Measure, Model, QueryRequest, Snapshot, Sourc
 import { AGGREGATIONS, NAME_PATTERN, TIME_GRAINS } from "../types.ts";
 import { schemaIssues } from "../validate.ts";
 import { type Instance, JoinPlan, type PlannedJoin, readsJoin } from "./joins.ts";
+import { compileMetrics } from "./metrics.ts";
 import { aggregate, COMPILER_DIALECTS, embed, grained, Params, predicate } from "./sql.ts";
 
 export type { PlannedJoin } from "./joins.ts";
@@ -28,7 +30,8 @@ export type RefusalCode =
   | "invalid_layer"
   | "no_join_path"
   | "ambiguous_join_path"
-  | "join_fans_out";
+  | "join_fans_out"
+  | "no_shared_dimension";
 
 export interface Refusal {
   code: RefusalCode;
@@ -41,7 +44,7 @@ export interface Refusal {
 export interface CompiledColumn {
   name: string;
   ref: string; // as the request names it, model.field or model.field:grain
-  kind: "dimension" | "measure";
+  kind: "dimension" | "measure" | "metric";
 }
 
 export interface Compiled {
@@ -75,6 +78,8 @@ export interface CompileInput {
   user?: AccessUser;
   // The semantic root, which a duckdb source's view files resolve from for the read-only check.
   root?: string;
+  // The parameters bound before this query's, when it is one part of a larger query (metrics.ts).
+  paramStart?: number;
 }
 
 const LATER = "a later version of sl sql adds";
@@ -115,13 +120,12 @@ export function compileLayer(input: CompileInput): CompileResult {
   for (const r of vis.unknown_roles) add("unknown_role", `role ${r} is not a role in access.yaml`);
   for (const p of checkRequest(vis, request).problems) add("not_visible", p.message, p.ref);
 
+  const metric = compileMetrics(input, request, refusals, compileLayer);
+  if (metric) return metric;
   const measures = request.measures ?? [];
   const dimensions = request.dimensions ?? [];
   const filters = request.filters ?? [];
   const orderBy = request.order_by ?? [];
-  for (const ref of [...measures, ...dimensions, ...filters.map((f) => f.field), ...orderBy.map((o) => o.field)])
-    if (NAME_PATTERN.test(ref) && layer.metrics.some((m) => m.name === ref && (m.source ?? source.source) === source.source))
-      add("unsupported_metric", `${ref} is a metric; ${LATER} ratio and derived metrics`, ref);
 
   const models = layer.models.filter((m) => m.source === source.source);
   const fieldRefs = [...measures, ...dimensions].filter((r) => !NAME_PATTERN.test(r));
@@ -252,7 +256,7 @@ export function compileLayer(input: CompileInput): CompileResult {
   if (refusals.length) return refuse(source.source, refusals);
 
   // WHERE predicates are built before HAVING ones, so parameter numbers rise in reading order.
-  const params = new Params();
+  const params = new Params(input.paramStart);
   const clause = (kind: Field["kind"]) =>
     filters.flatMap((f, i) => (filterFields[i]!.kind === kind ? [predicate(sqlOf(filterFields[i]!), f.op as FilterOp, f.value, params)] : []));
   const where = clause("dimension");

@@ -609,11 +609,17 @@ const CASES: Case[] = [
   { name: "golden with no measures starts from its first dimension", file: GOLDEN3, edit: (d) => ((d.request.measures = []), (d.request.dimensions = ["orders.status", "customers.region"])), expect: [] },
 
   // Metrics across models
+  { name: "metric across models grouped by a dimension the other model reaches through a join", file: GOLDEN3, edit: (d) => (d.request.measures = ["revenue_per_customer"]), expect: [] },
   {
-    name: "metric across models grouped by a dimension one model lacks",
+    name: "metric across models grouped by a dimension one model neither has nor reaches",
     file: GOLDEN3,
-    edit: (d) => (d.request.measures = ["revenue_per_customer"]),
-    expect: ["error", GOLDEN3, "request.dimensions[0]", 'metric revenue_per_customer combines measures of orders, customers, so it groups by dimensions that exist with the same name in each; orders has no dimension "region"'],
+    edit: (d) => ((d.request.measures = ["revenue_per_customer"]), (d.request.dimensions = ["orders.status"])),
+    expect: [
+      "error",
+      GOLDEN3,
+      "request.dimensions[0]",
+      'metric revenue_per_customer combines measures of orders, customers, so it groups by dimensions that exist with the same name in each, or that each reaches through one path of to-one joins; customers has no dimension "status" and no such path to orders',
+    ],
   },
   {
     name: "metric across models grouped by a dimension both models carry",

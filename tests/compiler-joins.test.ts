@@ -536,12 +536,12 @@ async function checkGoldens(root: string, run: (c: Compiled) => Promise<Row[]>):
 }
 
 // The analytics reviewer's experiment: with orders.revenue counting cancelled orders, every
-// compiled golden that uses revenue gives a different result.
+// compiled golden that uses revenue, itself or through a metric, gives a different result.
 async function revenueChanged(root: string, run: (c: Compiled) => Promise<Row[]>, compiledNames: string[]): Promise<void> {
   const using = listGoldens(root)
     .map((x) => x.golden)
-    .filter((g) => compiledNames.includes(g.name) && (g.request.measures ?? []).includes("orders.revenue"));
-  expect(using.map((g) => g.name)).toEqual(["analyst_rep_101_by_name_2025", "revenue_by_region_2025"]);
+    .filter((g) => compiledNames.includes(g.name) && (g.request.measures ?? []).some((m) => ["orders.revenue", "average_order_value", "net_revenue"].includes(m)));
+  expect(using.map((g) => g.name)).toEqual(["analyst_rep_101_by_name_2025", "finance_net_revenue_2025", "net_revenue_2025", "revenue_2025", "revenue_by_region_2025"]);
   withCancelled(root);
   for (const g of using) {
     const c = compiled(compileRequest(root, g.request, asUser(g)));
@@ -550,7 +550,16 @@ async function revenueChanged(root: string, run: (c: Compiled) => Promise<Row[]>
   }
 }
 
-const JOIN_GOLDENS = ["analyst_rep_101_by_name_2025", "discount_2025", "order_count_by_region_2025", "refunds_2025", "revenue_by_region_2025"];
+const JOIN_GOLDENS = [
+  "analyst_rep_101_by_name_2025",
+  "discount_2025",
+  "finance_net_revenue_2025",
+  "net_revenue_2025",
+  "order_count_by_region_2025",
+  "refunds_2025",
+  "revenue_2025",
+  "revenue_by_region_2025",
+];
 
 describe("Acme's approved goldens that need joins", () => {
   test("compile to their recorded rows on duckdb, and revenue counting cancelled orders changes every one using revenue", async () => {
