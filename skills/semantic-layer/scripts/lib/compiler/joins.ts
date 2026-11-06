@@ -19,6 +19,7 @@ export interface PlannedJoin {
   model: string;
   type: "left" | "inner";
   for: "request" | "definition";
+  part?: string; // in a metric, the model of the part (CTE) that joins it
 }
 
 export type JoinRefusalCode = "invalid_layer" | "no_join_path" | "ambiguous_join_path" | "join_fans_out";
