@@ -6,6 +6,7 @@
   "workspaces": ["skills/*"],
   "scripts": {
     "sl": "bun skills/semantic-layer/scripts/sl.ts",
+    "mcp": "bun skills/semantic-layer/scripts/mcp/server.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit -p .",
     "fixtures": "bun fixtures/acme/generate.ts",
