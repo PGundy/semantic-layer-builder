@@ -1,9 +1,9 @@
-import { existsSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, writeSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { UserError } from "./errors.ts";
 import type { AccessFile, Golden, MetricsFile, Model, Project, Snapshot, SourceConfig } from "./types.ts";
 import { DEFAULT_BATCH_SIZE, DEFAULT_FOCUS_THRESHOLD, NAME_PATTERN } from "./types.ts";
-import { readJson, readYaml, readYamlIfExists, writeJson } from "./yaml.ts";
+import { readJson, readYaml, readYamlIfExists } from "./yaml.ts";
 
 export function resolveRoot(flag: string | undefined, env: Record<string, string | undefined>, cwd: string): string {
   return resolve(cwd, flag ?? env.SEMANTIC_ROOT ?? "semantic");
@@ -80,14 +80,45 @@ export function requireSnapshot(root: string, source: string): Snapshot {
   return s;
 }
 
+// Tables in snapshot order: by "schema.name", compared with localeCompare. Each key is built once.
+export function sortTables<T extends { schema?: string | null; name: string }>(tables: readonly T[]): T[] {
+  return tables
+    .map((t) => ({ t, k: `${t.schema ?? ""}.${t.name}` }))
+    .sort((a, b) => a.k.localeCompare(b.k))
+    .map((x) => x.t);
+}
+
+// Writes the snapshot file with its tables in snapshot order. The bytes are those of
+// writeJson, but the tables are serialized and written in batches, so a catalog of a million
+// columns is never held as one string. They go to a file beside it that then replaces it, so a
+// failed write leaves the previous snapshot whole.
 export function saveSnapshot(root: string, snapshot: Snapshot): void {
-  const sorted: Snapshot = {
-    ...snapshot,
-    tables: [...snapshot.tables].sort((a, b) =>
-      `${a.schema ?? ""}.${a.name}`.localeCompare(`${b.schema ?? ""}.${b.name}`),
-    ),
-  };
-  writeJson(paths(root).snapshot(snapshot.source), sorted);
+  const path = paths(root).snapshot(snapshot.source);
+  const tables = sortTables(snapshot.tables);
+  const marker = "\u0000sl tables\u0000";
+  const head = JSON.stringify({ ...snapshot, tables: marker }, null, 2);
+  // Top-level keys are the only ones indented by two spaces, so this occurs once.
+  const slot = `\n  "tables": ${JSON.stringify(marker)}`;
+  const at = head.indexOf(slot);
+  mkdirSync(dirname(path), { recursive: true });
+  const partial = `${path}.partial`;
+  const fd = openSync(partial, "w");
+  try {
+    try {
+      writeSync(fd, `${head.slice(0, at)}\n  "tables": ${tables.length ? "[" : "[]"}`);
+      for (let i = 0; i < tables.length; i += 500) {
+        const batch = tables.slice(i, i + 500).map((t) => `\n    ${JSON.stringify(t, null, 2).replaceAll("\n", "\n    ")}`);
+        writeSync(fd, `${i ? "," : ""}${batch.join(",")}`);
+      }
+      writeSync(fd, `${tables.length ? "\n  ]" : ""}${head.slice(at + slot.length)}\n`);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(partial, path);
+  } catch (e) {
+    rmSync(partial, { force: true });
+    throw e;
+  }
 }
 
 export interface LoadedModel {

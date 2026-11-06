@@ -41,6 +41,16 @@ bash scripts/pg-local.sh --stop      # stops it
 
 The live tests create and drop schemas, each test in its own uniquely named schema, in the database `PG_URL` names. They refuse to run unless its host is `localhost`, `127.0.0.1`, `::1` or a socket path, or `SL_TEST_ALLOW_REMOTE=1` is set. Never point `PG_URL` at a database whose data you care about.
 
+### Performance suite
+
+`tests/perf/` checks the large-catalog targets (docs/PRD.md FR-1.7) on a seeded synthetic catalog of 50,000 tables and 1,000,000 columns:
+
+```sh
+bun run perf    # SL_PERF=1 bun test tests/perf: import, scope, tables --groups, status, baseline, introspect
+```
+
+Each command runs as its own process and the suite prints its wall time and peak memory. The catalog is written once per generator version under `${TMPDIR:-/tmp}/sl-perf-g<version>` (`SL_PERF_CACHE` overrides) as an information_schema CSV and a DuckDB database. With `PG_URL` set it also introspects 50,000 Postgres tables, created on the first run in schemas named `slperf_g<version>_50000_*` in the `PG_URL` database and kept for the next (creating them adds under a minute). `bun tests/perf/catalog.ts --drop-pg` drops them. `SL_PERF_CLI` points the suite at another copy of `sl.ts`, such as the base branch's, to compare. `bun test` runs only the quick 5,000-table check (`tests/perf/smoke.test.ts`) and the tests that compare the fast paths with the code they replace (`tests/perf/equivalence.test.ts`).
+
 All test and fixture data is synthetic. Never add real data, real names or real credentials to tests, fixtures or examples.
 
 ## Before you open a pull request
