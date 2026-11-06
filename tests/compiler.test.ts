@@ -364,7 +364,7 @@ describe("refusals", () => {
     return r;
   }
 
-  test("metrics are refused, naming what is missing and that a later version adds it; joins and row filters compile (tests/compiler-joins.test.ts, tests/compiler-access.test.ts)", async () => {
+  test("joins, metrics and row filters compile, a metric's parts each with the user's row filters (tests/compiler-joins.test.ts, tests/compiler-metrics.test.ts, tests/compiler-access.test.ts)", async () => {
     const { root } = await shop();
     expect(compileRequest(root, req({ measures: ["orders.real_revenue"], dimensions: ["orders.customer_region", "customers.region"] })).ok).toBe(true);
     const two = await refusal(root, req({ measures: ["orders.revenue", "customers.customer_count"] }));
@@ -372,8 +372,7 @@ describe("refusals", () => {
     expect(two.reason).toContain("a request's measures must share one model, or be one metric");
 
     writeYaml(join(root, "metrics.yaml"), { metrics: [{ name: "avg_order", source: "shop", type: "ratio", numerator: "orders.revenue", denominator: "orders.order_count", ...ok, description: "x" }] });
-    const metric = await refusal(root, req({ measures: ["avg_order"] }));
-    expect(metric.refusals).toEqual([{ code: "unsupported_metric", ref: "avg_order", message: "avg_order is a metric; a later version of sl sql adds ratio and derived metrics" }]);
+    expect(compileRequest(root, req({ measures: ["avg_order"] })).ok).toBe(true);
 
     writeYaml(join(root, "access.yaml"), {
       ...ok,
@@ -384,6 +383,10 @@ describe("refusals", () => {
     const rf = compiled(compileRequest(root, req({ measures: ["orders.revenue"] }), { user: { region: "NE" } }));
     expect(rf.sql).toContain("where (upper(region) = $1)");
     expect(rf.params).toEqual(["NE"]);
+    const rm = compiled(compileRequest(root, req({ measures: ["avg_order"] }), { user: { region: "NE" } }));
+    expect(rm.sql).toContain("where (upper(region) = $1)");
+    expect(rm.params).toEqual(["NE"]);
+    expect(rm.row_filters).toEqual([{ model: "orders", alias: "orders", in: "where", roles: ["rep"], rows: "filtered", part: "orders" }]);
     // The default audience holds no role, so no row filter applies.
     expect(compileRequest(root, req({ measures: ["orders.revenue"] })).ok).toBe(true);
   });
@@ -455,18 +458,26 @@ describe("sl sql", () => {
   });
 
   test("a golden file gives the request, role and user; a refusal exits 1 naming the next command", async () => {
-    const goldenFile = join(ACME, "goldens", "finance_net_revenue_2025.yaml");
-    const r = await sl(ACME, ["sql", "--request", goldenFile]);
-    expect(r.code).toBe(1);
-    expect(r.err).toContain("net_revenue is a metric; a later version of sl sql adds ratio and derived metrics");
-    expect(r.err).toContain("sl goldens run --name finance_net_revenue_2025");
-    const j = await sl(ACME, ["sql", "--request", goldenFile, "--json"]);
-    const out = j.json<{ ok: boolean; refusals: { code: string }[]; next: string }>();
-    expect(out.ok).toBe(false);
-    expect(out.refusals.map((x) => x.code)).toEqual(["unsupported_metric"]);
+    // A metric golden as finance, and a sales rep's golden with its row filter, both compile.
+    const finance = await sl(ACME, ["sql", "--request", join(ACME, "goldens", "finance_net_revenue_2025.yaml"), "--json"]);
+    expect(finance.code).toBe(0);
+    expect(finance.json<Compiled>().columns.map((c) => c.kind)).toEqual(["dimension", "metric"]);
     const sales = await sl(ACME, ["sql", "--request", join(ACME, "goldens", "sales_rep_101_2025.yaml"), "--json"]);
     expect(sales.code).toBe(0);
     expect(sales.json<Compiled>().params).toEqual([101, 101, "2025-01-01", "2026-01-01"]);
+    // A golden whose request needs what a later version adds (a cumulative metric) names its hand-written SQL.
+    const { root } = await shop();
+    writeYaml(join(root, "metrics.yaml"), { metrics: [{ name: "running", source: "shop", type: "cumulative", expr: "{orders.revenue}", ...ok, description: "x" }] });
+    const goldenFile = join(root, "goldens", "running_total.yaml");
+    writeYaml(goldenFile, { name: "running_total", question: "What is the running revenue?", request: { source: "shop", measures: ["running"] }, sql: "select 1", status: "draft" });
+    const r = await sl(root, ["sql", "--request", goldenFile]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("metric running is of type cumulative, and sl sql compiles ratio and derived metrics only");
+    expect(r.err).toContain("sl goldens run --name running_total");
+    const j = await sl(root, ["sql", "--request", goldenFile, "--json"]);
+    const out = j.json<{ ok: boolean; refusals: { code: string }[]; next: string }>();
+    expect(out.ok).toBe(false);
+    expect(out.refusals.map((x) => x.code)).toEqual(["unsupported_metric"]);
 
     const hidden = await sl(ACME, ["sql", "--request", JSON.stringify({ source: "warehouse", measures: ["refunds.refund_amount"] })]);
     expect(hidden.code).toBe(1);
@@ -489,9 +500,9 @@ describe("sl sql", () => {
     const snow = await sl(root, ["sql", "--request", '{"source":"snow","measures":["orders.revenue"]}']);
     expect(snow.err).toContain("and a later version of sl sql adds other dialects");
     expect(snow.err).toContain("Until a later version compiles it, hand-written SQL computes this figure: write it from the model YAML and run it with your own tool.");
-    writeYaml(join(root, "metrics.yaml"), { metrics: [{ name: "avg_order", source: "shop", type: "ratio", numerator: "orders.revenue", denominator: "orders.order_count", ...ok, description: "x" }] });
-    const joined = await sl(root, ["sql", "--request", '{"source":"shop","measures":["avg_order"]}']);
-    expect(joined.err).toContain("write it from the model YAML and run it with sl run --source shop --file <query.sql>.");
+    writeYaml(join(root, "metrics.yaml"), { metrics: [{ name: "running", source: "shop", type: "cumulative", expr: "{orders.revenue}", ...ok, description: "x" }] });
+    const later = await sl(root, ["sql", "--request", '{"source":"shop","measures":["running"]}']);
+    expect(later.err).toContain("write it from the model YAML and run it with sl run --source shop --file <query.sql>.");
   });
 });
 
@@ -501,7 +512,7 @@ const UNSUPPORTED = new Set(["unsupported_metric"]);
 const asUser = (g: Golden) => ({ ...(g.role ? { role: g.role } : {}), user: g.user ?? {} });
 
 describe("Acme's approved goldens", () => {
-  test("every one with no metric compiles, the lake's to its recorded rows; the rest are refused for what a later version adds", async () => {
+  test("every one compiles, the lake's to its recorded rows; any refused is refused only for what a later version adds", async () => {
     const compiledNames: string[] = [];
     for (const { golden: g } of listGoldens(ACME)) {
       if (g.status !== "approved") continue;
@@ -519,8 +530,11 @@ describe("Acme's approved goldens", () => {
     expect(compiledNames.sort()).toEqual([
       "analyst_rep_101_by_name_2025",
       "discount_2025",
+      "finance_net_revenue_2025",
+      "net_revenue_2025",
       "order_count_by_region_2025",
       "refunds_2025",
+      "revenue_2025",
       "revenue_by_region_2025",
       "sales_head_301_2025",
       "sales_manager_201_2025",
