@@ -265,11 +265,11 @@ describe("status next_step", () => {
     expect(s.sources[0]!.unmodeled_tables).toEqual(["main.dim_customers", "main.orders_tmp", "main.stg_events", "main.web_events"]);
   });
 
-  test("draft models -> interview the next batch; the command never approves a field", async () => {
+  test("draft models -> interview the next batch; the command reads the model's draft fields and the model back", async () => {
     const s = await status({ models: "draft" });
     expect(s.next_step.phase).toBe("interview");
-    expect(s.next_step.command).toBe('sl approve --target wh.customers --by "<owner>"');
-    expect(s.next_step.command).not.toContain("--recursive");
+    expect(s.next_step.command).toBe("sl readback --targets wh.customers.id_dim,wh.customers.total,wh.customers");
+    expect(s.next_step.after_owner_yes).toBe(false);
     expect(s.next_step.message).toContain("customers, orders, web_events");
     expect(s.next_step.message).toContain("on its own only after the owner confirms that readback");
   });
@@ -287,16 +287,16 @@ describe("status next_step", () => {
     writeYaml(join(t.root, "models", "wh", "customers.yaml"), { ...model("dim_customers", true), status: "draft", approved_by: undefined, approved_at: undefined });
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), model("fct_orders", true, { evidence: false }));
     const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.next_step).toMatchObject({ phase: "interview", command: 'sl approve --target wh.customers --by "<owner>"' });
+    expect(s.next_step).toMatchObject({ phase: "interview", command: "sl readback --targets wh.customers" });
   });
 
-  test("a draft model whose fields are approved -> approve the model itself", async () => {
+  test("a draft model whose fields are approved -> read the model itself back", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     build(t.root, {});
     writeYaml(join(t.root, "models", "wh", "customers.yaml"), { ...model("dim_customers", true), status: "draft", approved_by: undefined, approved_at: undefined });
     const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.next_step).toMatchObject({ phase: "interview", command: 'sl approve --target wh.customers --by "<owner>"' });
+    expect(s.next_step).toMatchObject({ phase: "interview", command: "sl readback --targets wh.customers", after_owner_yes: false });
   });
 
   test("an approved model with draft fields does not block later phases; the fields are reported", async () => {
@@ -328,7 +328,7 @@ describe("status next_step", () => {
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), m);
     writeYaml(join(t.root, "models", "wh", "web_events.yaml"), model("web_events", false));
     const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.next_step).toMatchObject({ phase: "interview", command: 'sl approve --target wh.web_events --by "<owner>"' });
+    expect(s.next_step).toMatchObject({ phase: "interview", command: "sl readback --targets wh.web_events.id_dim,wh.web_events.total,wh.web_events" });
     expect(s.next_step.message).toContain("web_events");
     expect(s.next_step.message).not.toContain("orders");
     expect(s.sources[0]!.models_with_draft_fields).toEqual(["orders"]);
@@ -378,7 +378,7 @@ describe("status next_step", () => {
     expect(missing.next_step.phase).toBe("access");
     expect(missing.access).toMatchObject({ state: "missing", roles: 0, open_questions: 0 });
     const draft = await status({ access: "draft" });
-    expect(draft.next_step).toMatchObject({ phase: "access", command: 'sl approve --target access --by "<owner>"' });
+    expect(draft.next_step).toMatchObject({ phase: "access", command: "sl readback --targets access" });
     expect(draft.access).toMatchObject({ state: "draft", roles: 2, open_questions: 0 });
   });
 
@@ -476,7 +476,7 @@ describe("status next_step", () => {
   test("an access.yaml without open questions has no blocked_on", async () => {
     const s = await status({ access: "draft" });
     expect(s.next_step.blocked_on).toBeUndefined();
-    expect(s.next_step.command).toBe('sl approve --target access --by "<owner>"');
+    expect(s.next_step.command).toBe("sl readback --targets access");
   });
 
   test("fewer than 5 approved goldens -> verify, otherwise done", async () => {
@@ -602,17 +602,18 @@ describe("status owner gates and golden coverage", () => {
     expect(needsOwnerYes("sl approver")).toBe(false);
   });
 
-  test("approve steps wait for the owner's yes; other steps do not", async () => {
+  test("sign-off steps name a readback until the owner's yes is recorded; other steps do not wait", async () => {
     const interview = await status({ models: "draft" });
-    expect(interview.next_step).toMatchObject({ phase: "interview", after_owner_yes: true });
+    expect(interview.next_step).toMatchObject({ phase: "interview", after_owner_yes: false });
     const join = await status({ models: "draft", evidence: false });
     expect(join.next_step).toMatchObject({ phase: "interview", after_owner_yes: false });
     const metrics = await status({ metrics: "draft" });
-    expect(metrics.next_step).toMatchObject({ phase: "metrics", after_owner_yes: true });
+    expect(metrics.next_step).toMatchObject({ phase: "metrics", after_owner_yes: false });
+    expect(metrics.next_step.command).toStartWith("sl readback --targets metric:");
     const noMetrics = await status({ metrics: "none" });
     expect(noMetrics.next_step).toMatchObject({ phase: "metrics", command: "sl validate", after_owner_yes: false });
     const access = await status({ access: "draft" });
-    expect(access.next_step).toMatchObject({ phase: "access", after_owner_yes: true });
+    expect(access.next_step).toMatchObject({ phase: "access", command: "sl readback --targets access", after_owner_yes: false });
     const verify = await status({ goldens: 2 });
     expect(verify.next_step).toMatchObject({ phase: "verify", after_owner_yes: false });
     const done = await status({});
@@ -627,7 +628,8 @@ describe("status owner gates and golden coverage", () => {
     build(t.root, { models: "draft" });
     const r = await sl(t.root, ["status"]);
     expect(r.code).toBe(0);
-    expect(r.out).toContain('  Only after the owner says yes to its readback: sl approve --target wh.customers --by "<owner>"');
+    expect(r.out).toContain("\n  sl readback --targets wh.customers.id_dim,wh.customers.total,wh.customers");
+    expect(r.out).not.toContain("Only after the owner says yes");
     build(t.root, { models: "draft", evidence: false });
     const join = await sl(t.root, ["status"]);
     expect(join.out).toContain("\n  sl check-join --source wh --model orders --join customer");
@@ -926,7 +928,7 @@ describe("status access mode and default audience", () => {
   test("a draft open access.yaml with no roles -> the exceptions question, then approve the open baseline", async () => {
     const { st } = await built({ access: "missing" }, (root) => writeYaml(join(root, "access.yaml"), { status: "draft", mode: "open" }));
     expect(st.access).toMatchObject({ state: "draft", roles: 0, mode: "open" });
-    expect(st.next_step).toMatchObject({ phase: "access", command: 'sl approve --target access --by "<owner>"', after_owner_yes: true });
+    expect(st.next_step).toMatchObject({ phase: "access", command: "sl readback --targets access", after_owner_yes: false });
     expect(st.next_step.message).toContain("is there anything some people should not see?");
     expect(st.next_step.message).toContain("no roles yet");
   });
@@ -969,7 +971,7 @@ describe("status access mode and default audience", () => {
       }),
     );
     expect(st.access).toMatchObject({ state: "draft", roles: 0, restrictions: 1, mode: "open" });
-    expect(st.next_step).toMatchObject({ phase: "access", command: 'sl approve --target access --by "<owner>"', after_owner_yes: true });
+    expect(st.next_step).toMatchObject({ phase: "access", command: "sl readback --targets access", after_owner_yes: false });
     expect(st.next_step.message).toContain("0 role(s) and 1 restriction(s)");
     expect(st.next_step.message).toContain("every restriction");
     expect(st.next_step.message).not.toContain("open baseline");
@@ -1550,8 +1552,8 @@ describe("status reapprove phase", () => {
       message:
         "2 approved item(s) changed since they were approved: wh.orders.total, access. Read each back to the owner as it now stands and approve it again " +
         "only after they confirm, or restore the approved definition; sl validate names each one. Until then tools treat each one as a draft (sl access lists them).",
-      command: 'sl approve --target wh.orders.total --by "<owner>"',
-      after_owner_yes: true,
+      command: "sl readback --targets wh.orders.total,access",
+      after_owner_yes: false,
     });
     expect(st.hash_missing).toEqual([]);
     const human = await sl(t.root, ["status"]);
@@ -1581,8 +1583,8 @@ describe("status reapprove phase", () => {
         "1 approved item(s) have no approved_hash while other approved items carry one, so it may have been removed: wh.orders.total. " +
         "Read each back to the owner as it now stands and approve it again only after they confirm, or restore the approved definition; sl validate names each one. " +
         "Until then tools treat each one as a draft (sl access lists them).",
-      command: 'sl approve --target wh.orders.total --by "<owner>"',
-      after_owner_yes: true,
+      command: "sl readback --targets wh.orders.total",
+      after_owner_yes: false,
     });
     expect((await sl(t.root, ["status"])).out).toContain("approved without approved_hash while others carry one: wh.orders.total");
     expect((await approveWithYes(t.root, ["--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
