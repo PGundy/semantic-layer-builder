@@ -1488,6 +1488,9 @@ class Validator {
       metrics: named<Metric>(this.metrics?.data.metrics),
       access: this.accessPresent ? this.access?.data : null,
       access_present: this.accessPresent,
+      // Approval hashes are checked on their own (checkApprovals); these checks read what the
+      // layer exposes once each changed item is approved again.
+      compare_hashes: false,
     };
     return { layer, loaded };
   }
@@ -1812,13 +1815,14 @@ class Validator {
         if (pathIssue) this.error(f, path, pathIssue);
         if (kind !== "dimension") return;
         for (const { metric, models } of spanning) {
-          const missing = models.filter((m) => !this.dimension(req.source, m, parsed.field));
+          // A model reaches the dimension through one shortest to-one path, or has its own of the same name.
+          const missing = models.filter((m) => !this.dimension(req.source, m, parsed.field) && this.pathProblem(req.source, m, "", parsed.model));
           if (missing.length)
             this.error(
               f,
               path,
-              `metric ${metric.name} combines measures of ${models.join(", ")}, so it groups by dimensions that exist with the same name in each; ` +
-                `${missing.join(", ")} ${missing.length === 1 ? "has" : "have"} no dimension "${parsed.field}"`,
+              `metric ${metric.name} combines measures of ${models.join(", ")}, so it groups by dimensions that exist with the same name in each, or that each reaches through one path of to-one joins; ` +
+                `${missing.join(", ")} ${missing.length === 1 ? "has" : "have"} no dimension "${parsed.field}" and no such path to ${parsed.model}`,
             );
         }
       };

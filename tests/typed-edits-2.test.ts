@@ -364,11 +364,11 @@ describe("sl rename", () => {
 
   test("a grain and a filter keep their place in a golden request", async () => {
     const before = text("goldens/net_revenue_2025.yaml");
-    expect((await sl(root, ["rename", "warehouse.refunds.order_date", "order_day"])).code).toBe(1);
-    // order_date exists in both models for net_revenue, so both are renamed together, by hand, below.
-    writeFileSync(join(root, REFUNDS), text(REFUNDS).replace("  - name: order_date\n", "  - name: order_day\n"));
+    const refundsBefore = text(REFUNDS);
+    // net_revenue's refunds part reaches orders.order_date through its order join, so refunds keeps its own order_date.
     const r = await sl(root, ["rename", "warehouse.orders.order_date", "order_day"]);
     expect(r.code).toBe(0);
+    expect(text(REFUNDS)).toBe(refundsBefore);
     expectOnly(before, text("goldens/net_revenue_2025.yaml"), [
       ['  dimensions: ["orders.order_date:year"]\n', '  dimensions: ["orders.order_day:year"]\n'],
       ['    - { field: orders.order_date, op: gte, value: "2025-01-01" }\n', '    - { field: orders.order_day, op: gte, value: "2025-01-01" }\n'],
@@ -376,13 +376,34 @@ describe("sl rename", () => {
     ]);
   });
 
-  test("writes nothing in any file when the result would not validate", async () => {
+  test("renaming refunds.order_date alone validates: net_revenue groups refunds through its order join", async () => {
     const before = tree();
-    // The goldens of net_revenue group by order_date, which refunds then lacks.
+    const r = await sl(root, ["rename", "warehouse.refunds.order_date", "order_day"]);
+    expect(r.code).toBe(0);
+    expectUntouched(before, [REFUNDS, "goldens/refunds_2025.yaml"]);
+    const errors = (await sl(root, ["validate", "--json"])).json<{ issues: { level: string; message: string }[] }>().issues.filter((i) => i.level === "error");
+    // The only error left is the re-approval the rename asks for.
+    expect(errors.map((e) => e.message.split(" changed since")[0])).toEqual(["warehouse.refunds.order_day"]);
+  });
+
+  test("writes nothing in any file when the result would not validate", async () => {
+    // A golden groups refund_rate, refunds over orders, by refunds.order_date. orders has no to-one path to
+    // refunds, so its part groups by its own dimension of the same name, which the rename takes away.
+    const metric = "  - { name: refund_rate, source: warehouse, type: ratio, numerator: refunds.refund_amount, denominator: orders.revenue, format: percent, status: draft }\n";
+    writeFileSync(join(root, "metrics.yaml"), text("metrics.yaml") + metric);
+    const golden = "goldens/refund_rate_by_order_year.yaml";
+    const request = '  source: warehouse\n  measures: [refund_rate]\n  dimensions: ["refunds.order_date:year"]\n';
+    writeFileSync(join(root, golden), `name: refund_rate_by_order_year\nquestion: What share of revenue was refunded, by order year?\nrequest:\n${request}sql: select 1\nstatus: draft\n`);
+    const errorsOn = async (file: string) =>
+      (await sl(root, ["validate", "--json"])).json<{ issues: { level: string; file: string }[] }>().issues.filter((i) => i.level === "error" && i.file === file);
+    expect(await errorsOn(golden)).toEqual([]);
+    const before = tree();
     const r = await sl(root, ["rename", "warehouse.orders.order_date", "order_day"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("Cannot rename warehouse.orders.order_date to order_day: the result would not validate, so nothing was written:");
-    expect(r.err).toContain('refunds has no dimension "order_day"');
+    expect(r.err).toContain(`${golden} request.dimensions[0]: metric refund_rate combines measures of refunds, orders`);
+    expect(r.err).toContain('orders has no dimension "order_date" and no such path to refunds');
+    expect(r.err).toContain("sl validate lists the project's errors");
     expectUntouched(before, []);
   });
 

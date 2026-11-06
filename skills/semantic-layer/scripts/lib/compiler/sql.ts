@@ -5,12 +5,13 @@ import type { Aggregation, Dialect, FilterOp, TimeGrain } from "../types.ts";
 export const COMPILER_DIALECTS: readonly Dialect[] = ["postgres", "duckdb"];
 
 // Request filter values, bound as parameters in the order the SQL reads them: $1, $2, ... on both
-// dialects. A value never enters the SQL text.
+// dialects, after the start parameters bound before them. A value never enters the SQL text.
 export class Params {
   readonly values: unknown[] = [];
+  constructor(private readonly start = 0) {}
   add(value: unknown): string {
     this.values.push(value);
-    return `$${this.values.length}`;
+    return `$${this.start + this.values.length}`;
   }
 }
 
