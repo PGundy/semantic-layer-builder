@@ -7,6 +7,9 @@ import { SQL } from "bun";
 import { cpSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
+import { gradeFigures } from "../evals/graders/figures.ts";
+import type { FigureMapping, RunFiles } from "../evals/graders/types.ts";
+import { REPO_ROOT } from "../evals/runner/files.ts";
 import { loadPostgres } from "../fixtures/acme/load-postgres.ts";
 import { readCsvSql, WAREHOUSE_TABLES } from "../fixtures/acme/schema.ts";
 import { inlineParams } from "../skills/semantic-layer/scripts/lib/goldens.ts";
@@ -99,8 +102,8 @@ function copyAcme(): { root: string; dir: string } {
 
 // A copy of Acme whose warehouse source reads that DuckDB file. DuckDB reads `/ 100.0` as a DOUBLE,
 // so each warehouse measure divides cents as an exact amount, `* 0.01`, approved again on the copy
-// owner's recorded yes, and the goldens' hand-written SQL (Postgres SQL, under the older key sql)
-// does the same and formats a date with DuckDB's strftime.
+// owner's recorded yes, and the goldens' cross_check_sql (Postgres SQL) does the same and formats a
+// date with DuckDB's strftime.
 async function duckdbAcme(): Promise<{ root: string; dir: string }> {
   const t = copyAcme();
   const file = join(t.dir, "warehouse.duckdb");
@@ -143,7 +146,7 @@ function expectAllPass(doc: CheckJson, names: string[]): void {
 // yes to the change, every golden that uses revenue is refused and fails with the step that resolves
 // it; once revenue is approved again, each one fails on its figures, while the hand-written SQL still
 // gives the confirmed rows. The goldens that do not use revenue keep passing.
-async function revenueExperiment(root: string, env: Record<string, string> = {}): Promise<void> {
+async function revenueExperiment(root: string, env: Record<string, string> = {}): Promise<CheckJson> {
   withCancelled(root);
   const before = await sl(root, ["goldens", "check", "--source", "warehouse", "--json"], env);
   expect(before.code).toBe(1);
@@ -175,10 +178,15 @@ async function revenueExperiment(root: string, env: Record<string, string> = {})
     expect({ name, compiled: r.compiled, cross_check: r.cross_check }).toEqual({ name, compiled: "fail", cross_check: "pass" });
     expect(r.diffs[0]).toBe("The rows compiled from the YAML differ from expected.rows, and cross_check_sql still gives them: the layer no longer computes the confirmed figure.");
     expect(r.diffs.slice(1).every((d) => d.startsWith("Compiled: "))).toBe(true);
+    // Each names the figure that moved: revenue, or net_revenue for the metric that reads it.
+    const figure = name.includes("net_revenue") ? "net_revenue" : "revenue";
+    const named = r.diffs.some((d) => d.startsWith("Compiled: ") && new RegExp(`(column |[{ ])${figure}: `).test(d));
+    expect({ name, named }).toEqual({ name, named: true });
   }
   const text = await sl(root, ["goldens", "check", "--source", "warehouse"], env);
   expect(text.out).toContain(`${WAREHOUSE_GOLDENS.length - USING_REVENUE.length} passed, ${USING_REVENUE.length} failed.`);
   expect(text.out).toContain("Next: sl goldens run --name analyst_rep_101_by_name_2025 shows its rows");
+  return doc;
 }
 
 describe("Acme's approved goldens compile from the YAML", () => {
@@ -195,7 +203,11 @@ describe("Acme's approved goldens compile from the YAML", () => {
     expectAllPass(r.json<CheckJson>(), WAREHOUSE_GOLDENS);
     // The same inputs give the same output.
     expect((await sl(root, ["goldens", "check", "--source", "warehouse", "--json"])).out).toBe(r.out);
-    await revenueExperiment(root);
+    const doc = await revenueExperiment(root);
+    expect(byName(doc).revenue_2025!.diffs.slice(1)).toEqual([
+      "Compiled: Row 1: expected {revenue: 301050.82, order_count: 2239, average_order_value: 134.45771326485038}, but no result row matches it.",
+      "Compiled: Result row 1: got {revenue: 334559.67, order_count: 2239, average_order_value: 149.42370254577935}, which is not expected.",
+    ]);
   }, 120_000);
 
   test.skipIf(!PG_URL)(
@@ -227,13 +239,70 @@ describe("Acme's approved goldens compile from the YAML", () => {
   );
 });
 
+// The figures grader on a copy of Acme with every source on DuckDB, its lake views reading the
+// fixture by absolute path, mapped to fixtures/acme/reference-figures.json by the eval scenarios'
+// figure mapping. Acme's net revenue goldens group by the order's year, one row, so their entry
+// here matches grouped requests too.
+function gradeAcme(dir: string, root: string) {
+  const lake = join(root, "sources", "lake.yaml");
+  writeFileSync(lake, readFileSync(lake, "utf8").replaceAll("'../../../fixtures/", `'${join(REPO_ROOT, "fixtures")}/`));
+  const mapping = JSON.parse(readFileSync(join(REPO_ROOT, "evals", "scenarios", "acme.figures.json"), "utf8")) as FigureMapping;
+  for (const e of mapping.figures) if (e.figure === "net_revenue_2025") delete e.request!.grouped;
+  writeFileSync(join(dir, "figures.json"), JSON.stringify(mapping));
+  const run = { dir, root, fixtureDir: join(REPO_ROOT, "fixtures", "acme"), scenarioDir: dir, grading: { figures: "figures.json" } };
+  return gradeFigures(run as unknown as RunFiles);
+}
+
+describe("the figures grader on Acme", () => {
+  test("compiles every approved golden and each mapped one equals its reference figure; the experiment fails the revenue ones", async () => {
+    const { dir, root } = await duckdbAcme();
+    const g = await gradeAcme(dir, root);
+    expect(g.details.filter((d) => !d.includes("matches the reference figure") && !d.includes("maps to no reference figure"))).toEqual([]);
+    const matched = g.details.filter((d) => d.includes("matches the reference figure")).map((d) => d.split(":")[0]);
+    const goldenFiles = (names: string[]) => names.map((n) => `semantic/goldens/${n}.yaml`);
+    expect(matched).toEqual(
+      goldenFiles([
+        "finance_net_revenue_2025",
+        "net_revenue_2025",
+        "refunds_2025",
+        "revenue_2025",
+        "revenue_by_region_2025",
+        "sessions_2025",
+        "spend_2025",
+        "spend_by_channel_2025",
+      ]),
+    );
+    expect(g).toMatchObject({ score: 1, passed: true });
+
+    // Before the owner's yes to the change, the goldens using revenue are refused, so they fail.
+    withCancelled(root);
+    const refused = await gradeAcme(dir, root);
+    expect(refused.passed).toBe(false);
+    const failing = (r: typeof g) => [...new Set(r.details.filter((d) => !d.includes("matches the reference figure") && !d.includes("maps to no reference figure")).map((d) => d.split(":")[0]!.replace(/^semantic\/goldens\/|\.yaml$/g, "")))];
+    expect(failing(refused)).toEqual(USING_REVENUE);
+    expect(refused.details.filter((d) => d.includes("sl sql refuses its request")).length).toBe(USING_REVENUE.length);
+    // Approved again on a recorded yes, each revenue golden mapped to a figure fails, naming it.
+    await reapprove(root, ["warehouse.orders.revenue"]);
+    const after = await gradeAcme(dir, root);
+    expect(after.passed).toBe(false);
+    const wrong = after.details.filter((d) => d.includes("does not match the reference figure"));
+    expect(wrong.map((d) => d.split(":")[0])).toEqual(goldenFiles(["finance_net_revenue_2025", "net_revenue_2025", "revenue_2025", "revenue_by_region_2025"]));
+    expect(after.details).toContain(
+      "semantic/goldens/revenue_2025.yaml: revenue_2025 does not match the reference figure: it is 334559.67, not 301050.82 (compiled by the reference compiler and run on warehouse).",
+    );
+  }, 120_000);
+});
+
 describe("cross_check_sql", () => {
   test("a cross-check that disagrees names itself; the compiled rows still pass; validate reads the older key sql", async () => {
     const { root } = await duckdbAcme();
     const path = join(root, "goldens", "revenue_2025.yaml");
-    const g = readYaml<Golden>(path);
-    expect(g.sql).toBeDefined();
-    // sl validate asks for the older key to be renamed, and errors when a golden has both.
+    // The example's golden under the older key sql: sl validate reads it as cross_check_sql, asks for
+    // the key to be renamed, and errors when a golden has both.
+    const { cross_check_sql: committed, ...rest } = readYaml<Golden>(path);
+    expect(committed).toBeDefined();
+    const g: Golden = { ...rest, sql: committed };
+    writeYaml(path, g);
     const warned = validateProject(root).filter((i) => i.file === "goldens/revenue_2025.yaml" && i.path === "sql");
     expect(warned.map((i) => [i.level, i.message.split(":")[0]])).toEqual([["warning", "is now cross_check_sql"]]);
     // Counts cancelled orders, which revenue's rule leaves out.
@@ -308,7 +377,7 @@ describe("goldens the compiler refuses", () => {
     expect(r.code).toBe(0);
     expect(r.out).toContain("pass  sessions_2025  (checked by cross_check_sql alone: sl sql compiles postgres and duckdb sources)");
     const path = join(t.root, "goldens", "sessions_2025.yaml");
-    const { sql: _s, ...noCross } = readYaml<Golden>(path);
+    const { cross_check_sql: _s, ...noCross } = readYaml<Golden>(path);
     writeYaml(path, noCross);
     const none = await sl(t.root, ["goldens", "check", "--name", "sessions_2025", "--json"]);
     expect(none.code).toBe(1);
@@ -338,7 +407,7 @@ describe("goldens the compiler refuses", () => {
   test("a cross_check_sql that writes is refused in check and run, naming the fix", async () => {
     const t = copyAcme();
     const path = join(t.root, "goldens", "sessions_2025.yaml");
-    const { sql: _s, ...g } = readYaml<Golden>(path);
+    const g = readYaml<Golden>(path);
     writeYaml(path, { ...g, cross_check_sql: "delete from sessions" });
     const r = await sl(t.root, ["goldens", "check", "--name", "sessions_2025"]);
     expect(r.code).toBe(1);

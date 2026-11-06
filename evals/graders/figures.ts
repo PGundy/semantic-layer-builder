@@ -1,11 +1,12 @@
-// figures: every approved golden mapped to a reference figure produces that figure, and no approved
-// golden produces a common mistake's value. A golden's figure comes from compiling its request with
-// the reference compiler and running it on the run's duckdb source when the compiler can; otherwise
-// from the golden's recorded expected rows. Each detail says which path it took.
+// figures: every approved golden compiles from the run's YAML, and each one mapped to a reference
+// figure produces that figure, and none produces a common mistake's value. A golden's figure comes
+// only from compiling its request with the reference compiler, as sl goldens check does, and running
+// it on the run's duckdb source; its recorded expected rows are never read. A golden the compiler
+// refuses, or whose compiled SQL the grader cannot run from files, fails with the reason.
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { type Adapter, openAdapter } from "../../skills/semantic-layer/scripts/lib/adapters/index.ts";
-import { compileRequest } from "../../skills/semantic-layer/scripts/lib/compiler/index.ts";
+import { compileGolden, inlineParams, refusalNext } from "../../skills/semantic-layer/scripts/lib/goldens.ts";
 import { splitQualified } from "../../skills/semantic-layer/scripts/lib/naming.ts";
 import { matchesPattern } from "../../skills/semantic-layer/scripts/lib/patterns.ts";
 import { listGoldens, listModels, loadMetrics, loadSource } from "../../skills/semantic-layer/scripts/lib/project.ts";
@@ -44,44 +45,6 @@ export function equalsFigure(actual: unknown, figure: number, tolerance = 0): bo
   return Number(a.toFixed(places)) === figure;
 }
 
-// Replaces $1, $2, ... outside quotes with the parameters as SQL literals, so the compiled query runs
-// through the adapter's read-only query call, which takes no parameters.
-export function inlineParams(sql: string, params: unknown[]): string {
-  const literal = (v: unknown): string => {
-    if (typeof v === "number" && Number.isFinite(v)) return String(v);
-    if (typeof v === "boolean") return v ? "true" : "false";
-    if (typeof v === "string") return `'${v.replaceAll("'", "''")}'`;
-    throw new Error(`a request parameter is not a string, number or boolean: ${JSON.stringify(v)}`);
-  };
-  let out = "";
-  for (let i = 0; i < sql.length; ) {
-    const ch = sql[i]!;
-    if (ch === "'" || ch === '"') {
-      const end = sql.indexOf(ch, i + 1);
-      const stop = end < 0 ? sql.length : end + 1;
-      out += sql.slice(i, stop);
-      i = stop;
-      continue;
-    }
-    const m = ch === "$" ? /^\$(\d+)/.exec(sql.slice(i)) : null;
-    if (m && Number(m[1]) >= 1 && Number(m[1]) <= params.length) {
-      out += literal(params[Number(m[1]) - 1]);
-      i += m[0].length;
-      continue;
-    }
-    out += ch;
-    i++;
-  }
-  return out;
-}
-
-// The column a request names for a field: field, field_grain or a metric's name.
-const columnOf = (ref: string | undefined): string | undefined => {
-  if (!ref) return undefined;
-  const p = parseRequestField(ref);
-  return p ? (p.grain ? `${p.field}_${p.grain}` : p.field) : ref;
-};
-
 // The model the request starts from: its first measure's, a metric's first measure's (a ratio's
 // numerator, a derived metric's first {model.measure}), or else its first dimension's.
 export function firstModel(golden: Golden, metrics: Metric[]): string | undefined {
@@ -102,27 +65,26 @@ function matches(entry: FigureEntry, golden: Golden, table: string | undefined):
   return r.table === undefined || (table !== undefined && matchesPattern(r.table, splitQualified(table)));
 }
 
-async function produce(run: RunFiles, golden: Golden, adapters: Map<string, Adapter>): Promise<Produced> {
-  const recorded = (why: string): Produced => ({
-    rows: golden.expected?.rows ?? [],
-    key: columnOf(golden.request?.dimensions?.[0]),
-    value: columnOf(golden.request?.measures?.[0]),
-    path: `from the golden's recorded rows, since ${why}`,
-  });
-  let compiled;
-  try {
-    compiled = compileRequest(run.root, golden.request, { role: golden.role, user: golden.user });
-  } catch (e) {
-    return recorded(`the compiler could not read the layer (${(e as Error).message})`);
+// The golden's rows compiled from the run's YAML and run on its duckdb source, or why the grader
+// cannot produce them: it has no request, the compiler refuses the request, or the source is not
+// duckdb, whose data the grader cannot read from files.
+async function produce(run: RunFiles, golden: Golden, adapters: Map<string, Adapter>): Promise<Produced | { failure: string }> {
+  if (!golden.request?.source) return { failure: `it has no request to compile; run sl validate and give ${golden.name} a request` };
+  const compiled = compileGolden(run.root, golden);
+  if (!compiled.ok) return { failure: `sl sql refuses its request: ${compiled.reason}. ${refusalNext(golden, compiled)}` };
+  if (compiled.dialect !== "duckdb") {
+    return {
+      failure:
+        `its request compiles, but ${compiled.source} is ${compiled.dialect} and the grader runs compiled SQL only on duckdb sources, whose data it reads from files; ` +
+        `run sl goldens check --name ${golden.name} against ${compiled.source} instead`,
+    };
   }
-  if (!compiled.ok) return recorded(`sl sql refuses it: ${compiled.reason}`);
-  if (compiled.dialect !== "duckdb") return recorded(`the grader runs compiled SQL on duckdb sources only and ${compiled.source} is ${compiled.dialect}`);
   let adapter = adapters.get(compiled.source);
   if (!adapter) {
     adapter = await openAdapter(run.root, loadSource(run.root, compiled.source), {});
     adapters.set(compiled.source, adapter);
   }
-  const { rows } = await adapter.query(inlineParams(compiled.sql, compiled.params));
+  const { rows } = await adapter.query(inlineParams(compiled.sql, compiled.params, compiled.dialect));
   return {
     rows,
     key: compiled.columns.find((c) => c.kind === "dimension")?.name,
@@ -191,12 +153,17 @@ export async function gradeFigures(run: RunFiles): Promise<GraderResult> {
       const table = model ? tables.get(`${golden.request?.source}.${model}`) : undefined;
       const entry = mapping.figures.find((e) => matches(e, golden, table));
       const fig = entry && reference.figures.find((f) => f.name === entry.figure);
-      let produced: Produced;
+      let produced: Produced | { failure: string };
       try {
         produced = await produce(run, golden, adapters);
       } catch (e) {
+        produced = { failure: `compiling or running its request failed: ${(e as Error).message}; run sl goldens run --name ${golden.name} to see the error` };
+      }
+      // A golden the grader cannot produce from the YAML fails, mapped or not: an approved figure
+      // must compile, and its recorded rows are not a stand-in.
+      if ("failure" in produced) {
         checks++;
-        details.push(`${file}: running its compiled request failed: ${(e as Error).message}`);
+        details.push(`${file}: ${fig ? `${fig.name} is not checked: ` : ""}${produced.failure}`);
         continue;
       }
       const value = scalar(produced);

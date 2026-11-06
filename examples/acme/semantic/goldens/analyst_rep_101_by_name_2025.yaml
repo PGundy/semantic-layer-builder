@@ -11,7 +11,7 @@ request:
     - { field: orders.sales_rep_id, op: eq, value: 101 }
     - { field: orders.order_date, op: gte, value: "2025-01-01" }
     - { field: orders.order_date, op: lt, value: "2026-01-01" }
-sql: |
+cross_check_sql: |
   -- The analyst role: no row filters, and personal data (the rep's full name) allowed.
   select sales_rep.full_name as full_name,
          sum(o.amount_cents / 100.0)

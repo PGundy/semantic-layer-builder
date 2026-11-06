@@ -6,7 +6,7 @@ request:
   filters:
     - { field: sessions.started_at, op: gte, value: "2025-01-01" }
     - { field: sessions.started_at, op: lt, value: "2026-01-01" }
-sql: |
+cross_check_sql: |
   select count(*) as session_count
   from sessions
   where started_at >= '2025-01-01' and started_at < '2026-01-01'
