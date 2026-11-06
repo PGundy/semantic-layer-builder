@@ -1,8 +1,11 @@
 // Plays a skill agent against a simulated data owner for one scenario, under a turn and a token
-// budget, and writes the run: transcript.jsonl, summary.json and the final semantic root.
+// budget, and writes the run: transcript.jsonl, summary.json, the final semantic root and, from the
+// graders, grades.json.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { runCli } from "../../skills/semantic-layer/scripts/lib/cli.ts";
+import { gradeRun, writeGrades } from "../graders/index.ts";
+import type { GradeReport } from "../graders/types.ts";
 import { PERSONAS_DIR, readTree, REPO_ROOT, stableJson } from "./files.ts";
 import { redactSecrets } from "./redact.ts";
 import type { Clock, Driver, Scenario, Speaker, StopReason, Summary, TranscriptTurn } from "./types.ts";
@@ -15,12 +18,15 @@ export interface RunOptions {
   clock: Clock;
   // The directory runs are written under; each run gets <outDir>/<run_id>/.
   outDir: string;
+  // The scenario's file, which a mapping file in its grading resolves from.
+  scenarioFile?: string;
 }
 
 export interface RunResult {
   runDir: string;
   summary: Summary;
   replaced: boolean;
+  grades: GradeReport;
 }
 
 // A clock that starts at `start` and moves `stepMs` forward on every read, for tests and --now.
@@ -162,5 +168,7 @@ export async function runScenario(opts: RunOptions): Promise<RunResult> {
   );
   writeFileSync(join(runDir, "transcript.jsonl"), lines.map((l) => `${l}\n`).join(""));
   writeFileSync(join(runDir, "summary.json"), `${stableJson(summary, 2)}\n`);
-  return { runDir, summary, replaced };
+  const grades = await gradeRun(runDir, { scenario, scenarioFile: opts.scenarioFile });
+  writeGrades(runDir, grades);
+  return { runDir, summary, replaced, grades };
 }

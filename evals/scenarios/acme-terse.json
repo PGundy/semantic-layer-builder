@@ -17,5 +17,13 @@
   "persona": "terse",
   "budgets": { "max_turns": 40, "max_tokens": 400000 },
   "opening": "lake is hooked up. build the layer pls",
-  "script": "acme-terse.script.json"
+  "script": "acme-terse.script.json",
+  "grading": {
+    "figures": "acme.figures.json",
+    "selection": {
+      "lake": ["web_events", "sessions", "marketing_spend"],
+      "warehouse": ["fct_orders", "fct_order_items", "fct_refunds", "dim_customers", "dim_products", "dim_regions"]
+    },
+    "protected_columns": ["dim_customers.email", "dim_customers.phone", "dim_customers.first_name", "dim_customers.last_name"]
+  }
 }

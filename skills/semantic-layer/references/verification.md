@@ -2,7 +2,7 @@
 
 A golden is a question with an answer the owner trusts. It pins a figure that hand-written SQL computes, checked against a figure the business already uses, and later `sl goldens check` reruns that SQL to detect drift in the data. Format details are in `spec.md`.
 
-What a golden does not do yet: test that the YAML computes the figure. You write its SQL by hand from the model YAML, and nothing compiles the YAML to compare with it, so a golden whose SQL leaves out a measure's filter still matches, and an edit to an approved measure passes every golden until the golden's SQL changes too. `sl sql` compiles a request on one model from the YAML (`spec.md`, Reference compiler), but goldens do not run it yet, so keep each golden's SQL in step with the YAML by hand (Keeping the SQL in step with the YAML), and say so when you describe goldens to the owner: "these pin the figures we agreed and catch changes in the data; they do not check the definitions themselves."
+What a golden does not do yet: test that the YAML computes the figure. You write its SQL by hand from the model YAML, and nothing compiles the YAML to compare with it, so a golden whose SQL leaves out a measure's filter still matches, and an edit to an approved measure passes every golden until the golden's SQL changes too. `sl sql` compiles a request from the YAML (`spec.md`, Reference compiler), but goldens do not run it yet, so keep each golden's SQL in step with the YAML by hand (Keeping the SQL in step with the YAML), and say so when you describe goldens to the owner: "these pin the figures we agreed and catch changes in the data; they do not check the definitions themselves."
 
 ## When to write them
 

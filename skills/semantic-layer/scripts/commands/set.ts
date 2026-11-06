@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { isMap, isScalar, isSeq, type Node } from "yaml";
 import type { CommandSpec } from "../lib/command.ts";
@@ -8,44 +6,27 @@ import {
   accessGuard,
   APPROVAL_FIELDS,
   commitEdit,
-  type ItemKind,
   itemMap,
   locate,
+  parseValue,
   placeKey,
   protectionGuard,
   reapproveLines,
   relFile,
+  schemaProperties,
 } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
-import { SCHEMAS_DIR } from "../lib/validate.ts";
-import { parseYamlText } from "../lib/yaml.ts";
 
-interface Prop {
-  type?: string;
-  enum?: unknown[];
-}
-
-// The keys the JSON Schema allows on an item of this kind.
-function schemaProperties(kind: ItemKind): Record<string, Prop> {
-  const file = kind === "metric" ? "metrics" : kind === "access" ? "access" : "model";
-  const schema = JSON.parse(readFileSync(join(SCHEMAS_DIR, `${file}.schema.json`), "utf8")) as {
-    properties: Record<string, Prop>;
-    $defs: Record<string, { properties: Record<string, Prop> }>;
-  };
-  return kind === "model" || kind === "access" ? schema.properties : schema.$defs[kind]!.properties;
-}
-
-// Keys another command owns, with the command to use instead. sl rename, sl add-field and
-// sl remove-field are not in this version yet.
-const LATER = "is not in this version yet; until it is, edit the model file and run sl validate";
+// Keys another command owns, with the command to use instead.
+const FIELDS = "fields are added and removed one at a time with sl add-field <source.model> and sl remove-field <source.model.field>";
 const OWNED: Record<string, string> = {
-  name: `renaming changes every reference to the item, which sl rename does (it ${LATER})`,
-  model: `a model's name is its file name, which sl rename changes (it ${LATER})`,
-  dimensions: `fields are added and removed one at a time with sl add-field and sl remove-field (each ${LATER})`,
-  measures: `fields are added and removed one at a time with sl add-field and sl remove-field (each ${LATER})`,
-  joins: `fields are added and removed one at a time with sl add-field and sl remove-field (each ${LATER})`,
+  name: "renaming changes every reference to the item, which sl rename <ref> <new_name> updates in one write",
+  model: "a model's name is its file name, and sl rename does not rename models: rename the file and its model key together, update every reference, and run sl validate",
+  dimensions: FIELDS,
+  measures: FIELDS,
+  joins: FIELDS,
   ignored_columns: "use sl ignore-column --source <s> --model <m> --column <c>",
   open_questions: 'use sl question add <ref> --text "<question>"',
   evidence: "sl check-join measures the join and writes its evidence",
@@ -53,16 +34,6 @@ const OWNED: Record<string, string> = {
 
 // The access.yaml keys sl set takes; roles, restrictions and user attributes are larger edits.
 const ACCESS_KEYS = ["mode", "default_role"];
-
-// The value as written, trimmed: text for a key whose schema is text or a choice of words (so an expr keeps
-// its quotes, colons and #), and YAML for every other key, so [a, b] is a list and true a boolean.
-function parseValue(key: string, raw: string, prop: Prop): unknown {
-  const words = Array.isArray(prop.enum) && prop.enum.every((v) => typeof v === "string");
-  if (prop.type === "string" || words) return raw.trim();
-  const value = parseYamlText(raw, `the value of ${key}`);
-  if (prop.type === "array" && !Array.isArray(value)) throw new UserError(`${key} is a list: write it as [a, b], for example [${raw.trim()}].`);
-  return value;
-}
 
 function scalarsOnly(v: unknown): boolean {
   return Array.isArray(v) && v.every((x) => x === null || typeof x !== "object");
