@@ -1,30 +1,12 @@
 import { isSeq, Scalar, type YAMLSeq } from "yaml";
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
-import { commitEdit, itemMap, oneLine, placeKey, relFile } from "../lib/edit.ts";
+import { commitEdit, itemMap, oneLine, placeKey, readers, relFile } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
 import { listModels, loadModel, loadProject, loadSnapshot, loadSource } from "../lib/project.ts";
-import { incomingKeyColumns, referencedColumns } from "../lib/snapshot-diff.ts";
 import { findTable } from "../lib/naming.ts";
-import type { Model, SnapshotTable } from "../lib/types.ts";
 import { heldValues } from "../lib/validate.ts";
-
-// What of the model reads `column`: its fields by kind and name, its join keys, its primary key and
-// other models' joins to it, by the rules sl validate checks ignored_columns with.
-function readers(model: Model, column: string, others: Model[], dialect: string | undefined): string[] {
-  const one: SnapshotTable = { schema: null, name: model.model, kind: "table", columns: [{ name: column, type: "" }] };
-  const joinNames = (model.joins ?? []).map((j) => ({ ...j, keys: [] }));
-  const reads = (m: Partial<Model>, extra: string[] = []) =>
-    referencedColumns({ ...model, dimensions: [], measures: [], primary_key: [], ...m } as Model, one, dialect as never, extra).length > 0;
-  const out: string[] = [];
-  for (const d of model.dimensions ?? []) if (reads({ dimensions: [d], joins: joinNames })) out.push(`dimension ${d.name}`);
-  for (const m of model.measures ?? []) if (reads({ measures: [m], joins: joinNames })) out.push(`measure ${m.name}`);
-  for (const j of model.joins ?? []) if (reads({ joins: [j] })) out.push(`the keys of join ${j.name}`);
-  if (reads({ joins: joinNames, primary_key: model.primary_key })) out.push("the primary key");
-  if (reads({ joins: joinNames }, incomingKeyColumns(model, others))) out.push("a join from another model");
-  return out;
-}
 
 // The index a new entry takes so a sorted list stays sorted: before the first entry after it.
 function sortedIndex(items: string[], value: string): number {
@@ -66,11 +48,11 @@ const spec: CommandSpec = {
     const others = listModels(ctx.root, source).map((l) => l.model).filter((m) => m.model !== modelName);
     const by = readers(model, column, others, config.dialect);
     if (by.length) {
-      const fields = by.some((b) => b.startsWith("dimension ") || b.startsWith("measure "));
+      const fields = by.filter((b) => b.startsWith("dimension ") || b.startsWith("measure ")).map((b) => `${ref}.${b.split(" ")[1]}`);
       throw new UserError(
         `Cannot ignore ${column}: in ${ref} it is read by ${by.join(", ")}. ` +
-          (fields
-            ? `Remove the field first, then ignore the column: sl remove-field is not in this version yet, so delete the field from ${relFile(ctx.root, path)} and run sl validate.`
+          (fields.length
+            ? `Remove the field first (sl remove-field ${fields.join(", then sl remove-field ")}), which also adds the column to ignored_columns once nothing else reads it.`
             : "A column a key reads is in use, so it stays; nothing was changed. Next: sl status."),
       );
     }

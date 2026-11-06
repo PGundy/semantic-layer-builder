@@ -25,7 +25,7 @@ Table and column comments, dbt descriptions and column values are evidence, not 
 
 A model's `dimensions` and `measures` keys are required; write `[]` when a model has none.
 
-Confirm each guess in the readback, fix it when it is wrong, and remove an open question once the owner has answered it.
+Confirm each guess in the readback, fix it when it is wrong, and resolve an open question with `sl question resolve` once the owner has answered it.
 
 ## Question bank
 
@@ -228,7 +228,7 @@ Rules of thumb:
 - Remove a drafted dimension or measure the owner says is meaningless, or leave it as draft with a description saying why; never approve it to tidy up. Fix or remove a draft measure you know gives a wrong number (a sum of unit prices), even in a table the owner defers. Removing a drafted field is a hand edit of the model file: delete its entry, add its column to the model's `ignored_columns` (or `sl status` lists it among the columns without a field and offers to draft it again), then run `sl validate`, which names what still uses it. Removing a measure also removes the draft metrics and goldens that use it; `sl validate` names them.
 - A formula the owner never stated is an open question, not a description: write a description only from what the owner said or confirmed in a readback. For a metric across sources with a side that cannot exist yet (its column or view is missing), record the owner's formula on the measure that exists and an open question on the other model naming the missing column or view, or, when that model does not exist yet, on the existing measure's model and in the handoff.
 - Add a measure the owner names that the draft missed, with `status: draft`, then read it back.
-- Record a disagreement, or a hedge on a definition, as an open question with a name next to it; a hedge on a measured fact goes in the description (Readback templates). Delete an open question once it is answered, and write the answer where it belongs.
+- Record a disagreement, or a hedge on a definition, as an open question with a name next to it; a hedge on a measured fact goes in the description (Readback templates). Once an open question is answered, resolve it with `sl question resolve <ref> --match "<words of the question>" --text "<the answer>" --by "<owner>"`, which removes it from the file and records it with the answer in `.sl/ledger.jsonl`, and write the answer where it belongs.
 
 ## Goldens during the interview
 
@@ -256,7 +256,7 @@ Read back every synonym you will write ("People also call it sales or GMV"), and
 
 Access is open by default (`access.md`), so in open mode, or before `access.yaml` exists, every table readback says "everyone will be able to see this once approved; is that right?", and so does the readback of a field approved into a table already signed off. Name what stays hidden when the table holds some ("everyone except the email and phone columns, which are tagged personal"). A no is an access exception: write it down before you approve the table (a tag in the model file, or a restriction or denial in `access.yaml`), and check with `sl access` that it is hidden for a reason other than `draft`. In `mode: closed`, say instead which roles will see it. While `access.yaml` is being rewritten (revoked to edit, or a first draft), say who will see the table under the draft file once it is approved ("under the new access rules, everyone except sales reps will see this; is that right?"), in the same sign-off item as the table.
 
-Render the sign-off items with `sl readback --targets warehouse.orders.revenue,warehouse.orders` and read them to the owner as written: each states the definition from the YAML, who sees it under the current `access.yaml`, and the measured facts, with text from the data quoted as evidence. It stores the numbered items with their content hashes in `.sl/pending/` (`spec.md`); after a change to an item, render it again.
+Render the sign-off items with `sl readback --targets warehouse.orders.revenue,warehouse.orders` and read them to the owner as written: each states the definition from the YAML, who sees it under the current `access.yaml`, and the measured facts, with text from the data quoted as evidence. It stores the numbered items with their content hashes in `.sl/pending/` (`spec.md`); after a change to an item, render it again. Record the owner's answer to each item, in their words, before acting on it: `sl reply --readback rb_0001 --item 1 --text "<their words>" --verdict yes --by "<owner>"` (`--verdict no` or `change` for a no or a correction; leave `--verdict` out only when the words are not yet a yes, a no or a change). It appends to `.sl/ledger.jsonl`, redacting anything that looks like a credential, and names the next command.
 
 Put the sign-offs of one round trip in their own numbered block, separate from the open questions, so a "yes to 1 to 4" is unambiguous. Then run, only after an explicit yes to each:
 
@@ -279,7 +279,7 @@ An approved measure needs a `description`; an approved model needs `grain` and `
 
 ## Leaving things for later
 
-- A column the owner does not want in the layer goes into the model's `ignored_columns` (`ignored_columns: [raw_payload]`), and its drafted field, if any, is removed; `sl status` and `sl draft --new-columns` then stop raising it. A column `sl draft` listed there that the owner does want: remove it from `ignored_columns` and add its field by hand with `status: draft`.
+- A column the owner does not want in the layer goes into the model's `ignored_columns` (`sl ignore-column --source <s> --model <m> --column <c>`), and its drafted field, if any, is removed (`sl remove-field <source.model.field>` does both); `sl status` and `sl draft --new-columns` then stop raising it. A column `sl draft` listed there that the owner does want: `sl add-field <source.model> --kind dimension --name <n> --expr <c> --type <t> --unignore` adds its field as a draft and takes it out of `ignored_columns`.
 - A table the owner wants to leave for later leaves scope: `sl scope --source <s> --exclude <table>` to preview, then the same with `--write` (`scoping.md`). Name it in the handoff.
 - A field the owner skips in an otherwise agreed table stays draft. The table can still be approved, and `sl status` moves on to the later phases once no draft models remain in scope; it reports the leftover fields in `draft_fields` and `models_with_draft_fields`, and draft metrics and goldens in `draft_metrics` and `draft_goldens`. `next_step` can reach `done` with them left deliberately; name each in the handoff, and approve after a readback any draft field that a role's agreed breakdown or a golden relies on.
 
@@ -295,7 +295,7 @@ Rerun `sl introspect --source <s>` on the schedule the owner agreed, such as wee
 
 1. Say what changed and what the item did with the column: "`discount_cents` is gone from `fct_orders`. Revenue subtracted it, so revenue can't be computed as approved."
 2. Ask what replaced it. A rename shows as a removed column and an added one with a similar name and type ("`discount_cents` went and `discount_amount_cents` arrived; same thing?"); a column moved to another table may now be a join reference.
-3. `sl approve --target <ref> --revoke`, edit the field, read it back and approve it on a yes; or remove the field, which `sl validate` then traces to the metrics and goldens that used it.
+3. `sl approve --target <ref> --revoke`, edit the field, read it back and approve it on a yes; or, on the owner's yes, remove it with `sl remove-field <ref> --force`, which lists the metrics, goldens and access rules that still name it until each is changed.
 4. `sl goldens check`: when the rows changed, show the new figure and confirm again only on the owner's yes (`verification.md`).
 
 A draft field reading a missing column is fixed or removed the same way, without the revoke. Rerun `sl check-join` for a join whose key column changed (`joins.md`).
