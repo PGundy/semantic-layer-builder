@@ -172,12 +172,26 @@ Only `duckdb` and `postgres` sources run queries directly. `snowflake`, `bigquer
 
 ### Scope patterns
 
-`scope.include` and `scope.exclude` are lists of patterns. A table is in scope when it matches at least one include pattern, or `include` is empty or absent, and matches no exclude pattern. Exclude wins.
+One selection grammar serves `scope.include` and `scope.exclude`, `--include`, `--exclude` and `--tables`, export filters and table-list files (`scripts/lib/patterns.ts`). A table is in scope when it matches at least one include pattern, or `include` is empty or absent (every table of the snapshot), and matches no exclude pattern. Exclude wins.
 
-- A pattern containing a dot matches the qualified name `schema.table`. A pattern without a dot matches the table name alone.
-- `*` matches any run of characters and `?` matches one character. Matching is case-insensitive.
-- A pattern starting with `re:` is a regular expression, case-insensitive, anchored at both ends, matched against the qualified name if the pattern contains `\.` and against the table name otherwise.
-- Examples: `fct_*` (prefix), `*_daily` (suffix), `*orders*` (contains), `analytics.*` (a whole schema), `re:dim_(customer|product)s?`.
+- An exact name: `table`, `schema.table`, or `catalog.schema.table` when the snapshot's schema carries its catalog (an import spanning several catalogs names a schema `catalog.schema`; a BigQuery `project.dataset` is a schema). A pattern names the schema as the snapshot does, so `analytics.orders` does not match `prod.analytics.orders`.
+- A glob: `*` matches any run of characters, dots included, and `?` matches one character. Every other character, `_`, `%`, `.` and `$` among them, matches itself. Matching is case-insensitive.
+- A pattern with a dot outside quotes matches the qualified name `schema.table`; one without matches the table name alone.
+- A part that starts with a double quote matches exactly up to the closing quote, case included, and may hold dots and wildcard characters: `"OrderItems"` matches `OrderItems` but not `orderitems`, `"Sales".fct_*` matches the tables of the `Sales` schema whose names start with `fct_`, and `public."orders.v2"` names a table whose name holds a dot. `""` inside quotes is one quote. A quote inside a part, as in `odd"name`, is an ordinary character.
+- `re:<regex>`: a JavaScript regular expression, always case-insensitive (a `(?-i:...)` group is refused), anchored at both ends, matched against the qualified name if it contains `\.` and against the table name otherwise.
+- In a table-list file, `!<entry>` excludes; every other line includes.
+- `sl scope --tables` saves each table as its exact pattern, quoting a part that holds a quote, `*` or `?`, or a table name that holds a dot.
+- Examples: `fct_*` (prefix), `*_daily` (suffix), `*orders*` (contains), `analytics.*` (a whole schema), `prod.*.orders` (three parts), `re:dim_(customer|product)s?`.
+
+A regex is checked before it is used, and refused with the character where the problem is (counting from the `r` of `re:`) and a plain fix:
+
+- a body (the part after `re:`) longer than 512 characters;
+- a repeat of a part that holds another repeat, such as `(a+)+`, `(a*)*` or `(\w+\s?)*` (a bounded repeat may hold one when the ways to split a name stay under 1,000, as in `(_?\d{2}){0,2}`);
+- a repeat of a choice whose options can start with the same character or match nothing, such as `(a|aa)+` or `(a|)+`;
+- more than three unbounded repeats in a row that can trade the same characters, such as `a*a*a*a*` or `.*_.*_.*_.*` (`[a-z]+_[a-z]+_...` is fine: `_` keeps them apart; `b?` in `a*b?a*b?a*b?a*` does not, since it can match nothing), or bounded repeats and choices in a row that can split a name in more than about 262,000 ways, such as `a{0,30}a{0,30}a{0,30}a{0,30}` or twenty `a?`;
+- a regex that does not compile, including a `)` that closes no group.
+
+A glob is matched without a regex, so no glob is slow. A quote that starts a part and is never closed is refused with its character. `sl validate` reports every refused pattern in the files as an error at its path. A pattern that matches no table is a warning naming it: `sl scope` prints "Pattern "<p>" matches no table in the snapshot" and lists it in `--json` as `unmatched_patterns`.
 
 ## snapshots/<source>.json
 
@@ -702,6 +716,62 @@ It refuses, naming what is missing and that a later version adds it: a field on 
 The five foreign-key columns are null when the column is in no foreign key. A column in several foreign keys appears once per key, so its other values repeat on each of those rows.
 
 `sl import` reads these columns when present, as an `information_schema` import: `primary_key` from the columns whose `is_primary_key` is true, ordered by `pk_ordinal` (else by `ordinal_position`); `foreign_keys` grouped by `fk_name` (else by `references_schema` and `references_table`), each key's columns ordered by `fk_ordinal`; `table_comment` as the table's `description`; and `row_count`. An export without them imports as an information_schema export always has: tables, columns, types, comments and row counts where present.
+
+## Eval runs
+
+The eval harness (`evals/runner/`, docs/PRD.md FR-6.1) plays a skill agent against a simulated data owner and writes one directory per run. Its files have schemas under `../schemas/eval-*.schema.json`; `evalSchemaIssues` in `scripts/lib/validate.ts` checks them, and the runner refuses a scenario or script that fails its schema.
+
+A scenario, `evals/scenarios/<name>.json` (or `.yaml`), names a fixture under `fixtures/` (its `owner-brief.md` is the owner's private brief), an intake path, a persona (`evals/runner/personas/<persona>.md`) and the budgets. A `connection` intake starts the working root with `semantic.yaml` and one source, written by `sl init` and `sl add-source`; `{fixture}` in a view is replaced by the fixture directory, relative to the root. `opening` is the owner's first message, and `script` the scripted driver's canned turns, relative to the scenario file.
+
+```json
+{
+  "name": "acme-terse",
+  "fixture": "acme",
+  "intake": { "path": "connection", "source": "lake", "dialect": "duckdb", "views": { "sessions": "read_parquet('{fixture}/data/lake/sessions.parquet')" } },
+  "persona": "terse",
+  "budgets": { "max_turns": 40, "max_tokens": 400000 },
+  "opening": "lake is hooked up. build the layer pls",
+  "script": "acme-terse.script.json"
+}
+```
+
+A script holds `skill` and `owner` turns, replayed in order: each has `text` and optional `tokens` (else the text's length divided by 4, rounded up); a skill turn may list `sl` commands, each as its arguments without `--root`, run in the working root with the run's clock before the turn is recorded, and `done: true` ends the session.
+
+```json
+{ "skill": [{ "text": "Keep three tables in scope?", "tokens": 2400, "sl": [["status"]], "done": true }], "owner": [] }
+```
+
+A run's directory is `evals/runs/<run_id>/` (gitignored), or `<out>/<run_id>/`, with `run_id` the scenario name and the run's start time to the millisecond in UTC, as `acme-terse-20260101T000000000Z`; a run with the same id replaces it. It holds:
+
+- `semantic/`: the working semantic root, which is the final root once the run stops. Every skill turn starts fresh from it: the driver receives the root, its files as they stand and the owner's latest message, and nothing from earlier turns. The owner turn receives the brief, the persona and the conversation so far.
+- `transcript.jsonl`: one turn per line, in order, keys sorted. Turn 1 is the owner's `opening`, with 0 tokens. `timestamp` comes from the run's clock, and `commands` lists the sl commands a skill turn ran.
+- `summary.json`: the counts and why the run stopped. `stop_reason` is `done` (the skill agent ended the session), `turn_budget` (the transcript reached `max_turns` turns, the opening included), `token_budget` (both speakers' tokens went past `max_tokens`) or `error`, with `error` saying what failed.
+
+```json
+{ "commands": [{ "command": "sl status", "exit_code": 0 }], "speaker": "skill", "text": "Keep three tables in scope?", "timestamp": "2026-01-01T00:00:06.000Z", "tokens": 2400, "turn": 2 }
+```
+
+```json
+{
+  "budgets": { "max_tokens": 400000, "max_turns": 40 },
+  "driver": "scripted",
+  "finished_at": "2026-01-01T00:00:15.000Z",
+  "fixture": "acme",
+  "intake": "connection",
+  "owner_turns": 3,
+  "persona": "terse",
+  "run_id": "acme-terse-20260101T000000000Z",
+  "scenario": "acme-terse",
+  "skill_turns": 3,
+  "started_at": "2026-01-01T00:00:00.000Z",
+  "stop_reason": "done",
+  "tokens": 8410,
+  "tokens_by_speaker": { "owner": 10, "skill": 8400 },
+  "turns": 6
+}
+```
+
+The transcript and the summary's `error` never hold a credential: before they are written, every span the credential rules of `scripts/lib/credentials.ts` flag (a URL with `user:password@`, a `key=value` secret, a credential-named key set to a quoted literal, spaces around `=` and inside the literal included) is replaced by `[redacted]`, and a text in which the rules still flag something is replaced whole. The drivers see the text as typed, so a pasted credential tests the agent. The run directory's `semantic/` is the agent's own output and is not rewritten.
 
 ## Baseline brief
 
