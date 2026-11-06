@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { AccessFile, MetricsFile, Model } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { initProject, sl, tempRoot } from "./helpers.ts";
+import { approveWithYes, initProject, recordReply, sl, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
@@ -113,7 +113,14 @@ interface Result {
   warnings: string[];
 }
 
-async function approve(root: string, args: string[]) {
+// sl approve after the owner's recorded yes to the target (approve-ledger.test.ts covers approving
+// without one); a revoke and --stamp-hashes need none.
+async function approve(root: string, args: string[], opts: { now?: string } = {}) {
+  return args.includes("--stamp-hashes") ? raw(root, args) : approveWithYes(root, args, opts);
+}
+
+// sl approve with no reply recorded first.
+async function raw(root: string, args: string[]) {
   return sl(root, ["approve", ...args]);
 }
 
@@ -135,15 +142,12 @@ describe("approve targets", () => {
     expect(raw).toContain("status: draft # confirm the values");
   });
 
-  test("--date overrides today and a bad date is refused", async () => {
+  test("approved_at is the day of the owner's reply, not today", async () => {
     const root = await project();
-    const r = await approve(root, ["--target", "wh.orders", "--by", "Dana", "--date", "2026-03-01"]);
+    const r = await approve(root, ["--target", "wh.orders", "--by", "Dana"], { now: "2026-03-01T09:00:00.000Z" });
     expect(r.code).toBe(0);
-    expect(r.out).toContain("Approved wh.orders (draft -> approved) by Dana on 2026-03-01.");
+    expect(r.out).toContain("Approved wh.orders (draft -> approved) by Dana on 2026-03-01 (reply ans_0001).");
     expect(orders(root).approved_at).toBe("2026-03-01");
-    const bad = await approve(root, ["--target", "wh.orders", "--by", "Dana", "--date", "2026-02-30"]);
-    expect(bad.code).toBe(1);
-    expect(bad.err).toContain("--date");
   });
 
   test("a dimension, a measure and a join", async () => {
@@ -228,7 +232,7 @@ measures:
 
   test("the --target error names every target kind, golden included", async () => {
     const root = await project();
-    const r = await approve(root, ["--by", "Dana"]);
+    const r = await raw(root, ["--by", "Dana"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("sl goldens confirm");
   });
@@ -247,13 +251,12 @@ measures:
 });
 
 describe("approve refusals", () => {
-  test("empty --by", async () => {
+  test("an empty --by is refused", async () => {
     const root = await project();
-    for (const args of [["--target", "wh.orders"], ["--target", "wh.orders", "--by", "  "]]) {
-      const r = await approve(root, args);
-      expect(r.code).toBe(1);
-      expect(r.err).toContain("--by is required");
-    }
+    await recordReply(root, "wh.orders");
+    const r = await raw(root, ["--target", "wh.orders", "--by", "  "]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("--by is empty");
     expect(orders(root).status).toBe("draft");
   });
 
@@ -285,7 +288,7 @@ describe("approve refusals", () => {
     const broken = await approve(root, ["--target", "metric:broken", "--by", "Dana"]);
     expect(broken.code).toBe(1);
     expect(broken.err).toContain("wh.orders.nope does not exist");
-    const unknown = await approve(root, ["--target", "metric:nope", "--by", "Dana"]);
+    const unknown = await raw(root, ["--target", "metric:nope", "--by", "Dana"]);
     expect(unknown.code).toBe(1);
     expect(unknown.err).toContain("Known metrics: aov, net, vague, broken");
     expect(text(root, "metrics.yaml")).toBe(METRICS);
@@ -351,7 +354,7 @@ describe("approve refusals", () => {
 
   test("a golden points to sl goldens confirm", async () => {
     const root = await project();
-    const r = await approve(root, ["--target", "golden:revenue_2025", "--by", "Dana"]);
+    const r = await raw(root, ["--target", "golden:revenue_2025", "--by", "Dana"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("sl goldens confirm --name revenue_2025");
   });
@@ -366,13 +369,13 @@ describe("approve refusals", () => {
 
   test("unknown targets and fields", async () => {
     const root = await project();
-    const field = await approve(root, ["--target", "wh.orders.nope", "--by", "Dana"]);
+    const field = await raw(root, ["--target", "wh.orders.nope", "--by", "Dana"]);
     expect(field.code).toBe(1);
     expect(field.err).toContain("Known: order_status, revenue, order_count, customer");
-    const model = await approve(root, ["--target", "wh.nope", "--by", "Dana"]);
+    const model = await raw(root, ["--target", "wh.nope", "--by", "Dana"]);
     expect(model.code).toBe(1);
     expect(model.err).toContain('No model "nope"');
-    const shape = await approve(root, ["--target", "a.b.c.d", "--by", "Dana"]);
+    const shape = await raw(root, ["--target", "a.b.c.d", "--by", "Dana"]);
     expect(shape.code).toBe(1);
     expect(shape.err).toContain("Cannot read target");
   });
@@ -381,11 +384,11 @@ describe("approve refusals", () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     await initProject(t.root);
-    const r = await approve(t.root, ["--target", "access", "--by", "Dana"]);
+    const r = await raw(t.root, ["--target", "access", "--by", "Dana"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("No access.yaml");
     writeFileSync(join(t.root, "access.yaml"), "# todo\n");
-    const empty = await approve(t.root, ["--target", "access", "--by", "Dana"]);
+    const empty = await raw(t.root, ["--target", "access", "--by", "Dana"]);
     expect(empty.code).toBe(1);
     expect(empty.err).toContain("access.yaml has no roles yet");
     expect(text(t.root, "access.yaml")).toBe("# todo\n");
@@ -421,7 +424,7 @@ describe("approve --recursive and --revoke", () => {
 
   test("--recursive applies only to a model", async () => {
     const root = await project();
-    const r = await approve(root, ["--target", "metric:aov", "--by", "Dana", "--recursive"]);
+    const r = await raw(root, ["--target", "metric:aov", "--by", "Dana", "--recursive"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("--recursive applies only");
   });
@@ -466,7 +469,7 @@ describe("approve --recursive and --revoke", () => {
 describe("revoking and approving access.yaml again", () => {
   test("--revoke moves approved_by and approved_at into last_approved and says which version keeps applying", async () => {
     const root = await project();
-    await approve(root, ["--target", "access", "--by", "Dana", "--date", "2026-02-01"]);
+    await approve(root, ["--target", "access", "--by", "Dana"], { now: "2026-02-01T12:00:00.000Z" });
     const r = await approve(root, ["--target", "access", "--revoke"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Revoked access (approved -> draft).");
@@ -499,9 +502,9 @@ describe("revoking and approving access.yaml again", () => {
 
   test("approving again replaces last_approved with approved_by and approved_at", async () => {
     const root = await project();
-    await approve(root, ["--target", "access", "--by", "Dana", "--date", "2026-02-01"]);
+    await approve(root, ["--target", "access", "--by", "Dana"], { now: "2026-02-01T12:00:00.000Z" });
     await approve(root, ["--target", "access", "--revoke"]);
-    const r = await approve(root, ["--target", "access", "--by", "Lee", "--date", "2026-03-01", "--json"]);
+    const r = await approve(root, ["--target", "access", "--by", "Lee", "--json"], { now: "2026-03-01T12:00:00.000Z" });
     expect(r.json<Result>().changed).toEqual([{ target: "access", from: "draft", to: "approved" }]);
     const a = readYaml<Record<string, unknown>>(join(root, "access.yaml"));
     expect(a).toMatchObject({ status: "approved", approved_by: "Lee", approved_at: "2026-03-01" });
@@ -546,12 +549,12 @@ describe("approval hashes", () => {
 
   test("an approved item edited after its approval is approved again, not skipped", async () => {
     const root = await project();
-    await approve(root, ["--target", "wh.orders.revenue", "--by", "Dana", "--date", "2026-01-10"]);
+    await approve(root, ["--target", "wh.orders.revenue", "--by", "Dana"], { now: "2026-01-10T12:00:00.000Z" });
     const before = orders(root).measures[0]!.approved_hash;
     writeFileSync(join(root, "models/wh/orders.yaml"), text(root, "models/wh/orders.yaml").replace("expr: amount\n", "expr: amount * 1000\n"));
     const r = await approve(root, ["--target", "wh.orders.revenue", "--by", "Lee"]);
     expect(r.code).toBe(0);
-    expect(r.out).toBe("Approved wh.orders.revenue again (it changed since its last approval) by Lee on 2026-01-15.");
+    expect(r.out).toBe("Approved wh.orders.revenue again (it changed since its last approval) by Lee on 2026-01-15 (reply ans_0002).");
     const m = orders(root).measures[0]!;
     expect(m).toMatchObject({ approved_by: "Lee", approved_at: "2026-01-15" });
     expect(m.approved_hash).toMatch(HASH);

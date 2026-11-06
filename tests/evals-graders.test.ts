@@ -13,7 +13,7 @@ import { protectedValues } from "../evals/graders/secrets.ts";
 import type { GradeReport, GraderResult } from "../evals/graders/types.ts";
 import type { Golden, Metric } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
-import { sl } from "./helpers.ts";
+import { approveWithYes, sl } from "./helpers.ts";
 
 // The deterministic graders (evals/graders, FR-6.3): both scripted scenarios grade clean, and
 // synthetic run directories built from a scripted run fail each grader the way the spec says.
@@ -67,7 +67,7 @@ async function approveLake(root: string) {
   ];
   for (const [ref, key, value] of edits) expect((await sl(root, ["set", ref, key, value])).code).toBe(0);
   for (const t of ["sessions", "sessions.session_count", "sessions.started_at", "marketing_spend", "marketing_spend.spend", "marketing_spend.channel", "marketing_spend.spend_date"]) {
-    const r = await sl(root, ["approve", "--target", `lake.${t}`, "--by", "Dana Ruiz"]);
+    const r = await approveWithYes(root, ["--target", `lake.${t}`, "--by", "Dana Ruiz"]);
     expect(r.err).toBe("");
   }
 }
