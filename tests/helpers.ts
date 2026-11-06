@@ -133,3 +133,24 @@ export async function approveWithYes(root: string, args: string[], opts: Omit<Re
   if (target && !args.includes("--revoke")) await recordReply(root, args.includes("--recursive") ? refsUnder(root, target) : target, { by: at("--by")?.trim() || "Dana", ...opts });
   return sl(root, ["approve", ...args]);
 }
+
+// sl goldens confirm as the skill runs it: first the golden is read back with the same --tolerance,
+// --results and --plan, and the owner's answer recorded, by --by (default Dana). With --emit-sql
+// nothing is recorded, so no readback is made.
+export async function confirmWithYes(root: string, args: string[], opts: ReplyOptions = {}, env: Record<string, string | undefined> = {}): Promise<CliRun> {
+  const at = (flag: string) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined);
+  const name = at("--name");
+  if (name && !args.includes("--emit-sql")) {
+    const pass = ["--tolerance", "--results", "--plan"].flatMap((f) => (at(f) === undefined ? [] : [f, at(f)!]));
+    const rb = await sl(root, ["readback", "--targets", `golden:${name}`, ...pass, "--json"], { ...env, ...(opts.now ? { SL_NOW: opts.now } : {}) });
+    if (rb.code === 0) {
+      const id = rb.json<{ readback_id: string }>().readback_id;
+      const verdict = opts.verdict === undefined ? "yes" : opts.verdict;
+      const reply = ["reply", "--readback", id, "--item", "1", "--text", "Yes, those rows match.", "--by", opts.by ?? (at("--by")?.trim() || "Dana")];
+      if (verdict !== null) reply.push("--verdict", verdict);
+      const r = await sl(root, reply, opts.now ? { SL_NOW: opts.now } : {});
+      if (r.code !== 0) throw new Error(r.err);
+    }
+  }
+  return sl(root, ["goldens", "confirm", ...args], env);
+}

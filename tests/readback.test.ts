@@ -217,9 +217,10 @@ describe("the pending store", () => {
     ] as const) {
       const r = await sl(root, ["readback", "--targets", `warehouse.orders.revenue,${ref}`]);
       expect(r.code).toBe(1);
-      expect(r.err).toContain(`Unknown target "${ref}": ${why}. Run sl status to see the models, fields and metrics`);
+      expect(r.err).toContain(`Unknown target "${ref}": ${why}. Run sl status to see the models, fields, metrics and goldens`);
     }
-    expect((await sl(root, ["readback", "--targets", "golden:revenue_2025"])).err).toContain("sl goldens run --name revenue_2025");
+    expect((await sl(root, ["readback", "--targets", "golden:nope"])).err).toContain('No golden "nope"');
+    expect((await sl(root, ["readback", "--targets", "warehouse.orders", "--tolerance", "0"])).err).toContain("--tolerance applies only to golden:<name> targets");
     expect((await sl(root, ["readback"])).err).toContain("--targets is required");
     expect(existsSync(join(root, ".sl"))).toBe(false);
   });

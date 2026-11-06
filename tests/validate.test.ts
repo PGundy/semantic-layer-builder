@@ -2494,7 +2494,7 @@ describe("approval hashes", () => {
     // Approving it again on the owner's yes records the hash; it is not "already approved".
     const again = await approveWithYes(root, ["--target", "warehouse.orders.revenue", "--by", "Dana Ruiz"], { now: "2026-02-01T12:00:00.000Z" });
     expect(again.code).toBe(0);
-    expect(again.out).toContain("Approved warehouse.orders.revenue again (its approved_hash was missing) by Dana Ruiz on 2026-02-01 (reply ans_0007).");
+    expect(again.out).toContain("Approved warehouse.orders.revenue again (its approved_hash was missing) by Dana Ruiz on 2026-02-01 (reply ans_0008).");
     expect(atIssues(validateProject(root), MISSING)).toEqual([]);
   });
 
@@ -2633,6 +2633,8 @@ describe("golden requests and their hand-written SQL", () => {
         "goldens pin hand-written SQL; this SQL may not apply orders.revenue's rule: it never names status, is_test_account, which the measure's expr or filter reads. " +
           "Write the measure's expr and filter into the SQL as the model defines them, then run sl goldens check --name revenue_by_month_2025 and read any change back to the owner",
       ],
+      // The owner's yes was to the golden with its old SQL.
+      ["warning", GOLDEN, "", "golden:revenue_by_month_2025 is confirmed, but no recorded owner yes in .sl/ledger.jsonl matches it as it stands"],
     ]);
   });
 

@@ -22,7 +22,7 @@ import {
 import { assertReadOnly, tokenize } from "../skills/semantic-layer/scripts/lib/sql-guard.ts";
 import type { QueryPlan, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, duckdbSource, initProject, isLocalPg, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, confirmWithYes, duckdbSource, initProject, isLocalPg, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -430,7 +430,7 @@ describe("protected values and terminal output", () => {
     expect(run.out).not.toContain("ana@example.com");
     const runJson = await sl(t.root, ["goldens", "run", "--name", "by_email", "--json"]);
     expect(runJson.out).not.toContain("ana@example.com");
-    const confirm = await sl(t.root, ["goldens", "confirm", "--name", "by_email", "--by", "Dana", "--tolerance", "0"]);
+    const confirm = await confirmWithYes(t.root, ["--name", "by_email", "--by", "Dana", "--tolerance", "0"]);
     expect(confirm.code).toBe(0);
     expect(confirm.out).not.toContain("ana@example.com");
     const db = await DuckDBInstance.create(join(t.dir, "wh.duckdb"));

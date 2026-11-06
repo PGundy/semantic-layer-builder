@@ -9,6 +9,7 @@ import {
   type ApprovalEntry,
   accessEntry,
   changedMessage,
+  goldenHash,
   holdsHashes,
   integrity,
   metricEntries,
@@ -24,6 +25,7 @@ import { type CredentialSlot, credentialHint, hasCredential } from "./credential
 import { quoteIdent } from "./dialect.ts";
 import { UserError } from "./errors.ts";
 import { intakeIssues } from "./intake.ts";
+import { DEFAULT_TOLERANCE } from "./goldens.ts";
 import { currentYes, ledgerReplies } from "./ledger.ts";
 import { findTable } from "./naming.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
@@ -1769,6 +1771,8 @@ class Validator {
           if (!attrs.has(key)) this.error(f, `user.${key}`, `"${key}" is not a declared user attribute`);
       }
       if (g.status === "approved" && !g.expected?.rows.length) this.error(f, "expected.rows", "an approved golden needs at least one expected row");
+      else if (g.status === "approved" && !currentYes(this.replies(), `golden:${g.name}`, goldenHash(g as unknown as Record<string, unknown>, g.expected!.rows, g.expected!.tolerance ?? DEFAULT_TOLERANCE)))
+        this.warn(f, "", unconfirmedGoldenMessage(g.name));
       if (typeof g.sql === "string" && callsRound(g.sql, this.identRules(g.request.source).dialect))
         this.warn(
           f,
@@ -2309,6 +2313,16 @@ export function unansweredMessage(refs: string[]): string {
     `${n} approved item${n === 1 ? " has" : "s have"} no recorded owner yes in .sl/ledger.jsonl that matches ${n === 1 ? "it" : "them"} as ${n === 1 ? "it stands" : "they stand"} ` +
     `(approved before sl approve required one): ${shown.join(", ")}${more}; ${n === 1 ? "it stays" : "they stay"} approved. To record a yes, ` +
     `read ${n === 1 ? "it" : "them"} back with sl readback --targets ${shown.join(",")}, then record the owner's answer with sl reply`
+  );
+}
+
+// The warning on a confirmed golden whose owner's latest reply in the ledger is not a yes to it as it
+// stands: its question, request, sql, role, user, tolerance and recorded rows.
+export function unconfirmedGoldenMessage(name: string): string {
+  return (
+    `golden:${name} is confirmed, but no recorded owner yes in .sl/ledger.jsonl matches it as it stands (its question, request, sql, ` +
+    "role, user, tolerance and expected rows; confirmed before sl goldens confirm required one, or edited since); it stays confirmed. " +
+    `To record a yes, read it back with sl readback --targets golden:${name}, record the owner's answer with sl reply, then run sl goldens confirm --name ${name}`
   );
 }
 

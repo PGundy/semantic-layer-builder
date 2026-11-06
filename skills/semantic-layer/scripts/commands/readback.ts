@@ -1,31 +1,47 @@
 import type { CommandSpec } from "../lib/command.ts";
-import { list } from "../lib/command.ts";
+import { list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
-import { nextReadbackId, renderReadbacks, writePending } from "../lib/readback.ts";
+import { type GoldenRun, nextReadbackId, renderReadbacks, writePending } from "../lib/readback.ts";
+import { parseTarget } from "../lib/refs.ts";
+import { goldenRun, passedFlags } from "./goldens.ts";
 import type { PendingReadback } from "../lib/types.ts";
 
 const spec: CommandSpec = {
   summary: "Render a plain-English readback of approve targets and store it in .sl/pending/ for the owner's answer.",
   usage:
-    "readback --targets <ref>,<ref>,...\n\n" +
-    "Each ref is an approve target: source.model, source.model.field, metric:<name> or access. Writes\n" +
+    "readback --targets <ref>,<ref>,... [--tolerance <t>] [--results <file> | --plan <plan_id>]\n\n" +
+    "Each ref is an approve target: source.model, source.model.field, metric:<name> or access, or a golden to\n" +
+    "confirm, golden:<name>, whose SQL it runs (live, or from --results or --plan) to read back the rows with\n" +
+    "the tolerance sl goldens confirm would record (--tolerance, else the file's, else the default). Writes\n" +
     ".sl/pending/<readback_id>.json with the numbered items and each item's content hash.",
   options: {
     targets: { type: "string", multiple: true },
+    tolerance: { type: "string" },
+    results: { type: "string" },
+    plan: { type: "string" },
   },
   async run({ values }, ctx) {
     loadProject(ctx.root);
     const refs = list(values, "targets");
     if (!refs.length) {
-      throw new UserError("--targets is required: a comma-separated list of source.model, source.model.field, metric:<name> or access. Run sl status to see them.");
+      throw new UserError("--targets is required: a comma-separated list of source.model, source.model.field, metric:<name>, golden:<name> or access. Run sl status to see them.");
     }
-    const rendered = renderReadbacks(ctx.root, refs);
+    const names = refs.map(parseTarget).flatMap((t) => (t.kind === "golden" ? [t.name] : []));
+    const flags = (["tolerance", "results", "plan"] as const).filter((f) => str(values, f) !== undefined);
+    if (flags.length && !names.length) throw new UserError(`--${flags[0]} applies only to golden:<name> targets, which read back a golden's rows.`);
+    // A golden's rows come from running its SQL, before anything is written.
+    const goldens = new Map<string, GoldenRun>();
+    for (const name of names) if (!goldens.has(name)) goldens.set(name, await goldenRun(ctx, values, name));
+    const rendered = renderReadbacks(ctx.root, refs, goldens);
     const pending: PendingReadback = {
       readback_id: nextReadbackId(ctx.root),
       created_at: ctx.now().toISOString(),
-      items: rendered.map((r, i) => ({ n: i + 1, target: r.target, kind: "approve" as const, text: r.text, content_hash: r.content_hash })),
+      items: rendered.map((r, i) => {
+        const run = r.target.startsWith("golden:") ? goldens.get(r.target.slice(7)) : undefined;
+        return { n: i + 1, target: r.target, kind: "approve" as const, text: r.text, content_hash: r.content_hash, ...(run ? { tolerance: run.tolerance } : {}) };
+      }),
     };
     const path = writePending(ctx.root, pending);
     if (ctx.json) {
@@ -37,9 +53,13 @@ const spec: CommandSpec = {
       const [head, ...rest] = item.text.split("\n");
       lines.push(`${item.n}. ${head}`, ...rest.map((l) => `   ${l}`), "");
     }
+    // Where confirm reads the rows from, as the readback did.
+    const rowsFrom = passedFlags(values, ["results", "plan"]);
     lines.push(
       "Only after the owner says yes to an item, approve it: " +
-        pending.items.map((i) => `sl approve --target ${i.target} --by "<owner>"`).join("; ") +
+        pending.items
+          .map((i) => (i.target.startsWith("golden:") ? `sl goldens confirm --name ${i.target.slice(7)}${rowsFrom}` : `sl approve --target ${i.target} --by "<owner>"`))
+          .join("; ") +
         ". A no or a change goes into the YAML, then run sl readback again.",
     );
     ctx.out(lines.join("\n"));

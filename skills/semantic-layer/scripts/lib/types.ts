@@ -397,12 +397,14 @@ export type PlanResults = Record<string, ResultRows>;
 
 export interface ReadbackItem {
   n: number;
-  // An approve target: source.model, source.model.field, metric:<name> or access.
+  // An approve target: source.model, source.model.field, metric:<name> or access, or golden:<name>.
   target: string;
   kind: "approve";
   text: string;
   // The target's content hash when it was read back: what sl approve records as approved_hash.
   content_hash: string;
+  // A golden:<name> item only: the tolerance it was read back with, which sl goldens confirm records.
+  tolerance?: number;
 }
 
 export interface PendingReadback {
@@ -430,7 +432,7 @@ export interface LedgerReply {
   kind: "reply";
   readback_id: string;
   item: number;
-  // The approve target the item read back.
+  // The approve target the item read back (golden:<name> for a golden sl goldens confirm records).
   target: string;
   // The target's content hash when it was read back, copied from the pending readback.
   content_hash: string;
