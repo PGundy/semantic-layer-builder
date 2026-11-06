@@ -21,6 +21,7 @@ import { classifyType, isNumeric, isTemporal } from "./column-types.ts";
 import { type Condition, conditionAttributes, type Literal, parseCondition } from "./conditions.ts";
 import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
 import { quoteIdent } from "./dialect.ts";
+import { intakeIssues } from "./intake.ts";
 import { findTable } from "./naming.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
 import { isHashedValue, protectedColumns } from "./profile.ts";
@@ -577,6 +578,7 @@ class Validator {
           if (problem) this.error(l.file, `scope.${key}[${i}]`, problem);
         });
       }
+      for (const x of intakeIssues(s, this.root)) this.issues.push({ level: x.level, file: l.file, path: x.path, message: x.message });
       if (s.dialect !== "duckdb") {
         for (const key of ["database", "setup", "views"] as const)
           if (s.connection?.[key] !== undefined) this.warn(l.file, `connection.${key}`, `is used only by duckdb sources, not ${s.dialect}`);
