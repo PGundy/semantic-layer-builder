@@ -2,10 +2,12 @@ import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { oneLine } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
+import { upgradeCommand } from "../lib/intake.ts";
 import { LEDGER_FILE, openLedger, ownerText, readPending, shellQuote } from "../lib/ledger.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
 import { currentHash } from "../lib/readback.ts";
+import { goldenExportSource } from "../lib/review.ts";
 import type { LedgerReply, ReplyVerdict } from "../lib/types.ts";
 
 const VERDICTS: readonly ReplyVerdict[] = ["yes", "no", "change"];
@@ -71,8 +73,13 @@ const spec: CommandSpec = {
       next = now === null ? "sl status" : again;
       advice = `Next: ${next}.`;
     } else if (verdict === "yes") {
+      // Decision D2: an export source's golden is confirmed only once its source has a connection.
+      const waits = t.startsWith("golden:") ? goldenExportSource(ctx.root, t.slice(7)) : undefined;
       next = t.startsWith("golden:") ? `sl goldens confirm --name ${t.slice(7)}` : `sl approve --target ${t} --by ${shellQuote(by)}`;
-      advice = `The owner said yes to the item as read back. Next: ${next}.`;
+      if (waits) next = `${upgradeCommand(waits.source, waits.dialect)}, then ${next}`;
+      advice = waits
+        ? `The owner said yes to the item as read back, and the yes stays recorded, but ${t} cannot be confirmed until source ${waits.source} has a connection. Next: ${next}.`
+        : `The owner said yes to the item as read back. Next: ${next}.`;
     } else {
       next = again;
       advice = `Make the ${verdict === "no" ? "correction" : "change"} the owner asked for with a typed edit (sl set, sl tag, sl ignore-column or sl question add), then read it back again: ${next}.`;
