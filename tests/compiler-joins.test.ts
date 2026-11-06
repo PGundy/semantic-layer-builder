@@ -1,3 +1,4 @@
+import { CHANGED_SINCE_APPROVAL } from "../skills/semantic-layer/scripts/lib/access.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { SQL } from "bun";
 import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -553,7 +554,16 @@ async function revenueChanged(root: string, run: (c: Compiled) => Promise<Row[]>
     "sales_rep_101_2025",
   ]);
   withCancelled(root);
-  for (const g of using) expectRefusedAsChanged(compileRequest(root, g.request, asUser(g)), "warehouse", "orders.revenue");
+  for (const g of using) {
+    const r = compileRequest(root, g.request, asUser(g));
+    // Each golden is refused only on what it names: revenue itself, changed since approval, and any
+    // metric that reads it, hidden while a measure it reads is a draft.
+    expect(r.ok).toBe(false);
+    if (r.ok) continue;
+    const named = g.request.measures ?? [];
+    expect(r.refusals.every((x) => x.code === "not_visible" && named.includes(x.ref!))).toBe(true);
+    for (const x of r.refusals.filter((x) => x.ref === "orders.revenue")) expect(x.message).toContain(CHANGED_SINCE_APPROVAL);
+  }
   await reapprove(root, ["warehouse.orders.revenue"]);
   for (const g of using) {
     const c = compiled(compileRequest(root, g.request, asUser(g)));

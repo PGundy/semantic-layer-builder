@@ -193,7 +193,9 @@ describe("figures", () => {
   test("a golden whose measure is a metric maps through the metric's first measure", async () => {
     const { dir, root } = copyRun();
     await approveLake(root);
-    write(join(root, "metrics.yaml"), 'metrics:\n  - name: sessions_total\n    source: lake\n    type: derived\n    expr: "{sessions.session_count}"\n    format: integer\n    description: Sessions.\n    status: approved\n');
+    write(join(root, "metrics.yaml"), 'metrics:\n  - name: sessions_total\n    source: lake\n    type: derived\n    expr: "{sessions.session_count}"\n    format: integer\n    description: Sessions.\n    status: draft\n');
+    // The owner approves the metric through a recorded yes, so it carries its approved_hash.
+    expect((await approveWithYes(root, ["--target", "metric:sessions_total", "--by", "Dana Ruiz"])).code).toBe(0);
     // The compiler compiles the metric, so the recorded rows (wrong on purpose) are not read; the golden
     // without the 2025 filter compiles to every year's sessions and fails.
     golden(root, "sessions_2025", { source: "lake", measures: ["sessions_total"], filters: in2025("sessions.started_at") }, [{ sessions_total: 1 }]);
