@@ -364,16 +364,9 @@ describe("refusals", () => {
     return r;
   }
 
-  test("joins, metrics and row filters are refused, naming what is missing and that a later version adds it", async () => {
+  test("metrics and row filters are refused, naming what is missing and that a later version adds it; joins compile (tests/compiler-joins.test.ts)", async () => {
     const { root } = await shop();
-    const def = await refusal(root, req({ measures: ["orders.real_revenue"] }));
-    expect(def.refusals).toEqual([
-      { code: "unsupported_join", ref: "orders.real_revenue", message: "orders.real_revenue reads through join customer as part of its definition; a later version of sl sql adds joins" },
-    ]);
-    const dimJoin = await refusal(root, req({ measures: ["orders.revenue"], dimensions: ["orders.customer_region"] }));
-    expect(dimJoin.refusals.map((x) => x.code)).toEqual(["unsupported_join"]);
-    const other = await refusal(root, req({ measures: ["orders.revenue"], dimensions: ["customers.region"] }));
-    expect(other.reason).toBe("customers.region is on model customers, which a request on orders reaches through a join; a later version of sl sql adds joins");
+    expect(compileRequest(root, req({ measures: ["orders.real_revenue"], dimensions: ["orders.customer_region", "customers.region"] })).ok).toBe(true);
     const two = await refusal(root, req({ measures: ["orders.revenue", "customers.customer_count"] }));
     expect(two.refusals.map((x) => x.code)).toEqual(["invalid_request"]);
     expect(two.reason).toContain("a request's measures must share one model, or be one metric");
@@ -471,7 +464,7 @@ describe("sl sql", () => {
     const j = await sl(ACME, ["sql", "--request", goldenFile, "--json"]);
     const out = j.json<{ ok: boolean; refusals: { code: string }[]; next: string }>();
     expect(out.ok).toBe(false);
-    expect(out.refusals.map((x) => x.code)).toEqual(["unsupported_join", "unsupported_join", "unsupported_row_filter"]);
+    expect(out.refusals.map((x) => x.code)).toEqual(["unsupported_row_filter"]);
 
     const hidden = await sl(ACME, ["sql", "--request", JSON.stringify({ source: "warehouse", measures: ["refunds.refund_amount"] })]);
     expect(hidden.code).toBe(1);
@@ -494,18 +487,19 @@ describe("sl sql", () => {
     const snow = await sl(root, ["sql", "--request", '{"source":"snow","measures":["orders.revenue"]}']);
     expect(snow.err).toContain("and a later version of sl sql adds other dialects");
     expect(snow.err).toContain("Until a later version compiles it, hand-written SQL computes this figure: write it from the model YAML and run it with your own tool.");
-    const joined = await sl(root, ["sql", "--request", '{"source":"shop","measures":["orders.real_revenue"]}']);
+    writeYaml(join(root, "metrics.yaml"), { metrics: [{ name: "avg_order", source: "shop", type: "ratio", numerator: "orders.revenue", denominator: "orders.order_count", ...ok, description: "x" }] });
+    const joined = await sl(root, ["sql", "--request", '{"source":"shop","measures":["avg_order"]}']);
     expect(joined.err).toContain("write it from the model YAML and run it with sl run --source shop --file <query.sql>.");
   });
 });
 
 // --- Acme ----------------------------------------------------------------------------------
 
-const UNSUPPORTED = new Set(["unsupported_join", "unsupported_metric", "unsupported_row_filter"]);
+const UNSUPPORTED = new Set(["unsupported_metric", "unsupported_row_filter"]);
 const asUser = (g: Golden) => ({ ...(g.role ? { role: g.role } : {}), user: g.user ?? {} });
 
 describe("Acme's approved goldens", () => {
-  test("every one on one model with no join, metric or row filter compiles to its recorded rows; the rest are refused for what a later version adds", async () => {
+  test("every one with no metric or row filter compiles, the lake's to its recorded rows; the rest are refused for what a later version adds", async () => {
     const compiledNames: string[] = [];
     for (const { golden: g } of listGoldens(ACME)) {
       if (g.status !== "approved") continue;
@@ -516,10 +510,20 @@ describe("Acme's approved goldens", () => {
         continue;
       }
       compiledNames.push(g.name);
+      if (loadSource(ACME, g.request.source).dialect !== "duckdb") continue; // the warehouse runs in tests/compiler-joins.test.ts
       const rows = await runDuckdb(ACME, loadSource(ACME, g.request.source), r);
       expect(sameRows(g.expected!.rows, rows, (g.request.order_by ?? []).length > 0, g.expected!.tolerance ?? 0)).toEqual([]);
     }
-    expect(compiledNames.sort()).toEqual(["sessions_2025", "spend_2025", "spend_by_channel_2025"]);
+    expect(compiledNames.sort()).toEqual([
+      "analyst_rep_101_by_name_2025",
+      "discount_2025",
+      "order_count_by_region_2025",
+      "refunds_2025",
+      "revenue_by_region_2025",
+      "sessions_2025",
+      "spend_2025",
+      "spend_by_channel_2025",
+    ]);
   });
 });
 
