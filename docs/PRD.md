@@ -1,6 +1,6 @@
 # PRD: agent-driven semantic layer setup
 
-Status: draft for review. Owner: PGundy. Version: 0.2 plan, written against the code at the head of `claude/initial-release`.
+Status: approved for build. Owner: PGundy. Version: the v1 plan, written against the code at the head of `claude/initial-release`. v1 includes every milestone, M0 to M6, and is built on the `release/v1` branch.
 
 ## 1. Summary
 
@@ -120,7 +120,7 @@ scope:
 - `re:<pattern>`: a regular expression, anchored at both ends, case-insensitive, matched against the qualified name when the pattern contains `\.` and the table name otherwise (today's rule).
 - `!<entry>` in a table-list file means exclude.
 - Exclude wins over include. An empty include means every table in the selected schemas.
-- Regex safety: patterns over 512 characters, patterns with nested quantifiers (catastrophic backtracking) and patterns that do not compile are refused with the position of the problem.
+- Regex flavour: JavaScript regular expressions, always case-insensitive (decision D3). Regex safety: patterns over 512 characters, patterns with nested quantifiers (catastrophic backtracking) and patterns that do not compile are refused with the position of the problem.
 - Acceptance: a table of at least 40 cases (prefix, suffix, contains, schema, three-part names, quoted mixed case, regex alternation, exclude precedence, unsafe regex) passes, and a pattern that matches nothing is a warning naming the pattern.
 
 **FR-1.3 Table-list file.** `scope.tables_file` points to a text file, one entry per line in the FR-1.2 grammar, `#` comments and blank lines allowed. It is combined with `include` and `exclude`. `sl scope --from-file <path> --write` imports a file into the source (copying it under `scope/`), and `sl scope --to-file <path>` writes the current selection as a file.
@@ -140,7 +140,7 @@ sl setup --source wh --dialect postgres --env WAREHOUSE_URL --schemas acme,marts
 - Idempotent: rerunning with the same arguments changes nothing; with new ones it updates the source in place and reports the difference.
 - Never stores a URL or credential, as today.
 
-**FR-1.6 Export filters.** `sl export-sql --dialect d --schemas a,b [--include p]... [--exclude p]... [--tables-file f]` pushes the selection into the query where the dialect can express it: exact names and globs as `IN` and `LIKE` (with `_` and `%` escaped), regexes as the dialect's regex operator where one exists (`~*` Postgres, `REGEXP_LIKE` Snowflake and BigQuery, `RLIKE` Databricks, `regexp_matches` DuckDB). Entries a dialect cannot express are listed in a header comment and applied by `sl import` instead. The export never reads table data.
+**FR-1.6 Export filters.** `sl export-sql --dialect d --schemas a,b [--include p]... [--exclude p]... [--tables-file f]` pushes the selection into the query where the dialect can express it: exact names and globs as `IN` and `LIKE` (with `_` and `%` escaped), regexes as the dialect's regex operator where one exists (`~*` Postgres, `REGEXP_LIKE` Snowflake and BigQuery, `RLIKE` Databricks, `regexp_matches` DuckDB). Entries a dialect cannot express are listed in a header comment and applied by `sl import` instead (decision D4): the export reads the wider set of table definitions, still never table data. The export never reads table data.
 
 - Acceptance: for each dialect, the generated SQL is checked against the catalog-only contract test; for Postgres and DuckDB, an export with include and exclude patterns returns exactly the expected tables live.
 
@@ -150,7 +150,7 @@ sl setup --source wh --dialect postgres --env WAREHOUSE_URL --schemas acme,marts
 
 ### 6.2 Verification (milestone M2)
 
-**FR-2.1 Reference compiler.** `sl sql --source s --request <file|json> [--role r] [--user <json>]` compiles a request to SQL for postgres and duckdb, following the spec: measure filters, definition joins of one and two hops, request dimensions through to-one join paths (the shortest unique path), time grains with each dimension's `time_zone`, ratio and derived metrics grouped by shared dimensions, request filters, order and limit, row filters (base model in `WHERE`, joined models in the join's `ON`), hierarchy filters, and visibility through `checkRequest`. User attributes are bound parameters. Output: SQL text plus the parameter list, or a refusal with the reason.
+**FR-2.1 Reference compiler.** `sl sql --source s --request <file|json> [--role r] [--user <json>]` compiles a request to SQL for postgres and duckdb in v1 (decision D5; other dialects follow once the core is proven), following the spec: measure filters, definition joins of one and two hops, request dimensions through to-one join paths (the shortest unique path), time grains with each dimension's `time_zone`, ratio and derived metrics grouped by shared dimensions, request filters, order and limit, row filters (base model in `WHERE`, joined models in the join's `ON`), hierarchy filters, and visibility through `checkRequest`. User attributes are bound parameters. Output: SQL text plus the parameter list, or a refusal with the reason.
 
 - Acceptance: every approved golden in `examples/acme` compiles to SQL whose result equals its recorded rows; the analytics reviewer's experiment (an approved revenue filter changed to count cancelled orders) makes those goldens fail.
 
@@ -224,7 +224,7 @@ It covers every phase `sl status` covers today, plus pending readbacks and recor
 - Connection first: the agent asks for a connection before offering an export in every scenario; on export scenarios no golden is confirmed and status never reports done while data-dependent steps wait; after an upgrade, every join has evidence.
 - Owner turns per approved item, tokens per approved item, wall time.
 
-**FR-6.4 Gate.** CI runs a smoke subset on every PR touching `skills/` (one fixture, two personas) and the full matrix nightly. A PR may not lower a grader's score by more than the noise band recorded in `evals/baseline.json`.
+**FR-6.4 Gate.** CI runs a smoke subset on every PR touching `skills/` or the CLI (one fixture, two personas). The full matrix runs on demand, and must pass before a milestone's last PR lands (decision D6). A PR may not lower a grader's score by more than the noise band recorded in `evals/baseline.json`.
 
 ### 6.7 Distribution (milestone M6)
 
@@ -341,7 +341,7 @@ Waves an orchestrator can run in parallel: {0.2–0.4, 1.1, 2.1, 3.1, 3.4, 4.2},
 
 ## 10. How an agent orchestrates the build
 
-**Branches.** `main` holds released code and only the owner merges into it. Each milestone has an integration branch `release/m<N>`. Each PR branches from its milestone branch as `m<N>/<pr-id>-<slug>` (for example `m1/1.4-table-list-files`) and targets it. When a milestone's PRs are merged and its exit criteria pass, one PR from `release/m<N>` into `main` goes to the owner.
+**Branches (decision D8).** All of v1 is built on `release/v1`, branched from `claude/initial-release`. Each PR branches from `release/v1` as `v1/<pr-id>-<slug>` (for example `v1/1.4-table-list-files`) and targets `release/v1`. Agents merge into `release/v1` only through a green, reviewed PR. A milestone is complete when its exit criteria pass on `release/v1`; dependent PRs of the next milestone may start as soon as their own dependencies are merged. Creating `main` and releasing from it is the owner's decision after v1.
 
 **Per PR loop.**
 
@@ -390,15 +390,19 @@ Measured by the eval suite on the Acme matrix, against the M0 baseline:
 - Intake: selection matches the intended set in 100% of intake scenarios.
 - Evidence: on connection scenarios, 100% of approved joins carry evidence and 100% of in-scope tables are profiled before their models are approved.
 
-## 12. Open questions
+## 12. Decisions
 
-Each has a recommendation; the owner decides.
+Settled with the owner before the build. Each PR that implements one cites it.
 
-1. **Export-only approvals.** Let an export source approve definitions while goldens and join evidence wait (recommended, so the interview is not blocked by access), or refuse every approval until a connection exists.
-2. **Regex flavour.** JavaScript regex with a safety check (recommended), or RE2 semantics through a dependency for guaranteed linear time.
-3. **Case sensitivity.** Keep matching case-insensitive (recommended, matches today), or add `rec:` for case-sensitive patterns.
-4. **Export narrowing for regexes on dialects without a regex operator.** Post-filter on import with a header note (recommended), or refuse the pattern for that dialect.
-5. **Ledger in git.** Commit `.sl/ledger.jsonl` as the audit record (recommended), or keep it outside the repo for privacy, accepting weaker audit.
-6. **Compiler dialects.** Postgres and DuckDB first (recommended), Snowflake and BigQuery after M2.
-7. **Eval cost.** Smoke on every skill PR plus nightly full matrix (recommended), or full matrix per PR.
-8. **Main branch.** Create `main` from `claude/initial-release` before M0 starts, so milestone branches have a base (needed).
+| ID | Decision |
+|---|---|
+| D1 | v1 builds every milestone, M0 to M6. |
+| D2 | An export-only source may approve definitions with the owner; goldens cannot be confirmed and approved joins carry a warning until a connection exists. |
+| D3 | Table patterns are globs and JavaScript regular expressions, anchored and always case-insensitive, with a safety check; no regex dependency. |
+| D4 | A pattern an export query cannot express in a dialect's SQL is applied by `sl import`, and the export header names it. |
+| D5 | The reference compiler supports Postgres and DuckDB in v1. |
+| D6 | Evals: a smoke run on every PR touching the skill or CLI; the full matrix on demand, and before each milestone's last PR lands. |
+| D7 | The answer ledger, `.sl/ledger.jsonl`, is committed next to the YAML it approves. It holds the owner's answers, never data values. |
+| D8 | All v1 work is built on `release/v1`; `main` comes later. |
+
+New questions found during the build go in the PR that finds them, with options and a recommendation, and are added here once the owner decides.
