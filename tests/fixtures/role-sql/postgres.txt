@@ -1,0 +1,18 @@
+-- A read-only role for the semantic layer CLI, limited to schemas acme, marts.
+-- Run by an administrator. sl setup printed this and ran nothing.
+-- Replace <password> with a new password; it goes in the connection URL's environment variable, never in a file.
+CREATE ROLE "sl_reader" LOGIN PASSWORD '<password>';
+GRANT CONNECT ON DATABASE "warehouse" TO "sl_reader";
+GRANT USAGE ON SCHEMA "acme" TO "sl_reader";
+GRANT SELECT ON ALL TABLES IN SCHEMA "acme" TO "sl_reader";
+ALTER DEFAULT PRIVILEGES IN SCHEMA "acme" GRANT SELECT ON TABLES TO "sl_reader";
+GRANT USAGE ON SCHEMA "marts" TO "sl_reader";
+GRANT SELECT ON ALL TABLES IN SCHEMA "marts" TO "sl_reader";
+ALTER DEFAULT PRIVILEGES IN SCHEMA "marts" GRANT SELECT ON TABLES TO "sl_reader";
+ALTER ROLE "sl_reader" SET default_transaction_read_only = on;
+-- ALTER DEFAULT PRIVILEGES covers tables the administrator running it creates later; for tables another role
+-- creates, run it again with FOR ROLE <that role> after ALTER DEFAULT PRIVILEGES.
+-- On Postgres 14 or earlier every role may create objects in schema public; close that with:
+-- REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+
+Next: Give these statements to the database administrator. Once the role exists, the owner puts its connection URL in an environment variable and the CLI connects with sl setup --source <source> --dialect postgres --env <VAR> --schemas acme,marts.

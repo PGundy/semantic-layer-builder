@@ -1,5 +1,5 @@
 import { isAbsolute, resolve } from "node:path";
-import { DuckDBInstance, StatementType, type DuckDBConnection } from "@duckdb/node-api";
+import { DuckDBInstance, JsonDuckDBValueConverter, StatementType, type DuckDBConnection } from "@duckdb/node-api";
 import { UserError } from "../errors.ts";
 import { assertSourceSafe, resolvedRelation, viewFiles } from "../source-safety.ts";
 import { isExplainAnalyze, statements, tokenize } from "../sql-guard.ts";
@@ -98,19 +98,38 @@ export async function openDuckDB(root: string, source: SourceConfig, _opts: Adap
       try {
         const why = refusal(prepared.statementType, sql);
         if (why) throw new UserError(`Refusing the query: ${why}; only read-only queries run here.`);
-        const reader = await prepared.runAndReadAll();
-        const columns = reader.columnNames();
-        const types = reader.columnTypes().map((t) => t.toString());
-        const rows = reader.getRowsJson().map((row) => {
-          const out: Record<string, unknown> = {};
-          columns.forEach((col, i) => {
-            const t = types[i] ?? "";
-            const v = row[i];
-            out[col] = INTEGER_TYPES.test(t) ? normalizeInteger(v) : t.startsWith("DECIMAL") ? normalizeDecimal(v) : (v ?? null);
+        // The result is read a chunk at a time and each chunk turned into rows, so a large
+        // result (a catalog of a million columns) is never held twice.
+        const result = await prepared.stream();
+        try {
+          const columns = result.columnNames();
+          // One conversion per column, chosen once from its type. Text is kept once per distinct
+          // value, so a catalog's schema, table and type names repeated on every column row
+          // share one copy.
+          const seen = new Map<string, string>();
+          const intern = (v: unknown): unknown => {
+            if (typeof v !== "string") return v ?? null;
+            const hit = seen.get(v);
+            if (hit !== undefined) return hit;
+            seen.set(v, v);
+            return v;
+          };
+          const convert = result.columnTypes().map((type): ((v: unknown) => unknown) => {
+            const t = type.toString();
+            return INTEGER_TYPES.test(t) ? normalizeInteger : t.startsWith("DECIMAL") ? normalizeDecimal : t === "VARCHAR" ? intern : (v) => v ?? null;
           });
-          return out;
-        });
-        return { columns, rows };
+          const rows: Record<string, unknown>[] = [];
+          for (let chunk = await result.fetchChunk(); chunk && chunk.rowCount > 0; chunk = await result.fetchChunk()) {
+            for (const row of chunk.convertRows(JsonDuckDBValueConverter)) {
+              const out: Record<string, unknown> = {};
+              for (let i = 0; i < columns.length; i++) out[columns[i]!] = convert[i]!(row[i]);
+              rows.push(out);
+            }
+          }
+          return { columns, rows };
+        } finally {
+          result.closeSync();
+        }
       } finally {
         prepared.destroySync();
       }

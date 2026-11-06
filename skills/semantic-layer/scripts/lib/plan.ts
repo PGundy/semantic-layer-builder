@@ -3,7 +3,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { bool, str, type CommandContext, type OptionValues } from "./command.ts";
 import { UserError } from "./errors.ts";
-import { canRun, openAdapter, type Adapter, type AdapterOptions } from "./adapters/index.ts";
+import { canRun, openAdapter, type Adapter, type AdapterOptions, type RoleReport } from "./adapters/index.ts";
 import { plainText, protectedNames, protectedResultColumns } from "./output.ts";
 import { loadSource } from "./project.ts";
 import type { PlannedQuery, PlanResults, QueryPlan, ResultRows, SourceConfig, StoredPlan } from "./types.ts";
@@ -109,6 +109,8 @@ export interface ExecuteOptions {
   onQuery?: (id: string, index: number, total: number) => void;
   // Where a warning about the connection goes; stderr by default.
   warn?: (message: string) => void;
+  // Called with what the role can do, when the adapter measures it on connect (postgres).
+  onRoleReport?: (report: RoleReport) => void;
 }
 
 // Runs a plan against a duckdb or postgres source, or reads its results from a file. A result
@@ -125,13 +127,15 @@ export async function executePlan(plan: QueryPlan, opts: ExecuteOptions): Promis
     );
   }
   const adapter = await openQueryAdapter(opts.root, opts.source, opts.env, { warn: opts.warn });
+  if (adapter.roleReport) opts.onRoleReport?.(adapter.roleReport);
   const out: PlanResults = {};
   try {
     for (const [i, q] of plan.queries.entries()) {
       try {
         const result = await adapter.query(q.sql);
         assertDistinctColumns(result.columns, true);
-        out[q.id] = lowerKeys(result.rows);
+        // Adapter rows hold exactly the result's columns, so lowercase column names need no copy.
+        out[q.id] = result.columns.every((c) => c === c.toLowerCase()) ? result.rows : lowerKeys(result.rows);
       } catch (e) {
         throw new UserError(`Query failed: ${errorMessage(e, q.sql)}\nQuery "${q.id}" (${q.purpose}):\n${q.sql}`);
       }

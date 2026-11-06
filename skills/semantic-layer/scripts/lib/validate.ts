@@ -23,7 +23,7 @@ import { type Condition, conditionAttributes, type Literal, parseCondition } fro
 import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
 import { quoteIdent } from "./dialect.ts";
 import { UserError } from "./errors.ts";
-import { intakeIssues } from "./intake.ts";
+import { intakeIssues, intakeMode, upgradeCommand } from "./intake.ts";
 import { DEFAULT_TOLERANCE } from "./goldens.ts";
 import { currentYes, ledgerReplies } from "./ledger.ts";
 import { findTable } from "./naming.ts";
@@ -919,7 +919,13 @@ class Validator {
         } else if (ev && ev.suggested_relationship !== j.relationship) {
           this.warn(f, `${p}.relationship`, `is ${j.relationship} but the evidence suggests ${ev.suggested_relationship}`);
         }
-        if (j.status === "approved" && !ev) this.warn(f, p, "is approved without evidence; run `sl check-join`");
+        if (j.status === "approved" && !ev) {
+          const src = this.sources.get(m.source)?.data;
+          // Decision D2: an export source may approve a join, which carries this warning until a connection measures it.
+          if (src && intakeMode(src) === "export") {
+            this.warn(f, p, `is approved without evidence, and source ${m.source} is a schema export, so its evidence waits on a connection: ${upgradeCommand(m.source, src.dialect)}, then \`sl check-join\``);
+          } else this.warn(f, p, "is approved without evidence; run `sl check-join`");
+        }
         // Evidence measured for another target or other keys no longer describes the join; evidence
         // without them predates their recording and is taken as current.
         const staleTo = ev?.to !== undefined && ev.to !== j.to;

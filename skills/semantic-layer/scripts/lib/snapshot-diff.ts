@@ -2,7 +2,7 @@
 // reads, so tools can report the columns a table gained or lost since its model was drafted.
 import { intakeSchemas, schemaFilter } from "./intake.ts";
 import { findTable, qualifiedName, splitQualified } from "./naming.ts";
-import { inScope } from "./patterns.ts";
+import { inScope, scopeTest } from "./patterns.ts";
 import type { Dialect, Model, Scope, Snapshot, SnapshotScopeState, SnapshotTable, SourceConfig } from "./types.ts";
 
 export interface ColumnChanges {
@@ -37,7 +37,12 @@ function pairByName<T>(prev: T[], next: T[], name: (x: T) => string): Map<T, T> 
   }
   const group = <U extends T>(items: U[]) => {
     const out = new Map<string, U[]>();
-    for (const x of items) out.set(name(x).toLowerCase(), [...(out.get(name(x).toLowerCase()) ?? []), x]);
+    for (const x of items) {
+      const k = name(x).toLowerCase();
+      const list = out.get(k);
+      if (list) list.push(x);
+      else out.set(k, [x]);
+    }
     return out;
   };
   const restPrev = group(prev.filter((p) => !taken.has(p)));
@@ -47,6 +52,19 @@ function pairByName<T>(prev: T[], next: T[], name: (x: T) => string): Map<T, T> 
     if (ns.length === 1 && ps?.length === 1) pairs.set(ns[0]!, ps[0]!);
   }
   return pairs;
+}
+
+// Whether two column lists hold the same distinct names in the same order, so pairByName would
+// pair them by position.
+function sameNames(a: { name: string }[], b: { name: string }[]): boolean {
+  if (a.length !== b.length) return false;
+  const seen = new Set<string>();
+  for (let i = 0; i < a.length; i++) {
+    const n = a[i]!.name;
+    if (n !== b[i]!.name || seen.has(n)) return false;
+    seen.add(n);
+  }
+  return true;
 }
 
 // Tables and columns match by name: exactly, else ignoring case when that is unambiguous. A type
@@ -62,13 +80,13 @@ export function diffSnapshots(previous: Snapshot | null | undefined, next: Snaps
       diff.tables_added.push(qualifiedName(t));
       continue;
     }
-    const colPairs = pairByName(old.columns, t.columns, (c) => c.name);
+    const colPairs = sameNames(old.columns, t.columns) ? new Map(t.columns.map((c, i) => [c, old.columns[i]!])) : pairByName(old.columns, t.columns, (c) => c.name);
     const pairedCols = new Set(colPairs.values());
     const change: ColumnChanges = { table: qualifiedName(t), added: [], removed: [], retyped: [] };
     for (const c of t.columns) {
       const o = colPairs.get(c);
       if (!o) change.added.push({ name: c.name, type: c.type });
-      else if (normType(o.type) !== normType(c.type)) change.retyped.push({ name: c.name, from: o.type, to: c.type });
+      else if (o.type !== c.type && normType(o.type) !== normType(c.type)) change.retyped.push({ name: c.name, from: o.type, to: c.type });
     }
     for (const c of old.columns) if (!pairedCols.has(c)) change.removed.push(c.name);
     if (change.added.length || change.removed.length || change.retyped.length) diff.columns.push(change);
@@ -172,7 +190,8 @@ export function selectionMatcher(source: Pick<SourceConfig, "source" | "dialect"
     schemas = [];
   }
   const wanted = schemas.length ? schemaFilter(source, schemas) : () => true;
-  return (t) => inScope(scope, t) && wanted(t.schema);
+  const selected = scopeTest(scope);
+  return (t) => selected(t) && wanted(t.schema);
 }
 
 const textList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);

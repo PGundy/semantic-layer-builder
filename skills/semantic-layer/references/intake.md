@@ -46,6 +46,19 @@ sl setup --source warehouse --dialect postgres --env WAREHOUSE_URL
 
 It switches `intake.mode` to `connection` (removing `intake.reason` and `intake.export`; the export copy stays under `exports/`), introspects the same schemas and reports what differs from the export, profiles the in-scope tables, runs `sl check-join --all`, and lists the drafted and approved items the data contradicts: a primary key that is not unique, a to-one join that repeats rows, a status value no filter or description names, a column the export did not show. Nothing is approved or revoked. Its next action reads the contradicted items back: `sl readback --targets <refs>`. Read each to the owner with its evidence in plain words ("the export said customer_id identifies an order, but the data has 4,980 values in 5,000 orders"); a change they agree goes into the YAML, which makes an approved item a draft again until they approve it. Only the upgrade run prints the list, so read back the refs from that run's output; a rerun is an ordinary connection setup. The rules each kind follows are in `spec.md` (Setup, Upgrade from an export).
 
+**When the owner has no suitable credential**, print the statements their database administrator runs to create a read-only role limited to the schemas, and hand them over; the CLI never connects or runs them:
+
+```
+sl setup --print-role-sql --dialect postgres --schemas acme,marts --database warehouse
+sl setup --print-role-sql --dialect snowflake --schemas ANALYTICS --database ACME --warehouse REPORTING
+sl setup --print-role-sql --dialect bigquery --schemas analytics,marts --project acme-prod
+sl setup --print-role-sql --dialect databricks --schemas analytics --catalog main
+```
+
+It takes `--role-name <name>` (default `sl_reader`, `SL_READER` on Snowflake) and `--dialect redshift` too, and refuses a name that is not a plain identifier. Tell the owner in plain words what the role allows: reading the tables of those schemas, nothing else, and no change to any data. The password (`<password>`) or user (`<user>`) placeholders are for the administrator to fill in; never ask for the value.
+
+**Waiting on a connection.** An export source may approve definitions with the owner, but every step that needs the data waits (decision D2): `sl status` lists profiles, join evidence, goldens and drift from data under "waiting on a connection", never reports `done` (its last phase is `connect`), and ends with the `sl setup --source <s> --dialect <d> --env <VAR>` (for duckdb, `--database <path>`) that upgrades the source to a connection, which `sl next` names once every other step is done. `sl goldens run` and `sl goldens confirm` refuse on an export source, and `sl validate` warns on each approved join without evidence. Write each waiting step in the handoff, and at the start of each session ask the owner once whether a connection is possible now.
+
 ## Connections without secrets
 
 The CLI reads a connection URL from an environment variable whose name the source file stores. The URL itself never goes in a file, in chat or in a command line you print.
@@ -62,7 +75,7 @@ For a warehouse dialect the CLI does not connect at all, so `--env` is optional:
 
 ### A SELECT-only role
 
-The CLI cannot change data: on Postgres the connection starts with `default_transaction_read_only` on, a statement timeout and the time zone UTC (startup options, so a reconnect keeps them), and every query runs alone inside a read-only transaction that is rolled back. A role that can only read is still the owner's best protection, because it also limits what can be read: a read-only transaction does not stop a superuser or a member of `pg_read_server_files` from reading files on the database server through read-only functions, and the CLI's check of the SQL text is only a fallback against that. On connecting, the CLI prints one warning when the role is a superuser or can write to a table: "connect with a SELECT-only role". Pass that warning on to the owner; it does not stop the command.
+`sl setup --print-role-sql` prints the statements for a role like this one for each dialect (One step, above). The CLI cannot change data: on Postgres the connection starts with `default_transaction_read_only` on, a statement timeout and the time zone UTC (startup options, so a reconnect keeps them), and every query runs alone inside a read-only transaction that is rolled back. A role that can only read is still the owner's best protection, because it also limits what can be read: a read-only transaction does not stop a superuser or a member of `pg_read_server_files` from reading files on the database server through read-only functions, and the CLI's check of the SQL text is only a fallback against that. On connecting, the CLI prints one warning when the role is a superuser or can write to a table, measured from the catalog, or can create in a schema, is a member of `pg_read_server_files`, `pg_write_server_files` or `pg_execute_server_program`, or reads schemas outside `intake.schemas`: "connect with a SELECT-only role". Pass that warning on to the owner in plain words; it does not stop the command, and the queries stay read-only. `sl setup --json` and `sl introspect --json` carry the details as `role_report` (`spec.md`, The role report).
 
 Give the owner these statements for Postgres, for their database administrator to run, with the schemas the layer covers:
 
@@ -78,7 +91,7 @@ alter role semantic_reader set default_transaction_read_only = on;
 revoke create on schema public from public;
 ```
 
-The CLI's write check looks at table privileges only, so on Postgres 14 or earlier it does not report a role that can still create tables in `public`; the `revoke` above closes that. Never grant it `pg_read_server_files`, `pg_write_server_files`, `pg_execute_server_program` or superuser. `pg_read_all_data` (Postgres 14 or later) reads every table in every schema, which is broader than the layer needs. On Redshift the same `grant usage` and `grant select` statements apply; on a warehouse, the connector's role needs only read access to the schemas in scope.
+On Postgres 14 or earlier every role may create objects in `public`, so the role report lists `CREATE on public` for a role made this way until the `revoke` above closes it. A schema with no table the role can read is not counted as reach beyond `intake.schemas`, so `public`'s default `USAGE` alone raises no warning. Never grant it `pg_read_server_files`, `pg_write_server_files`, `pg_execute_server_program` or superuser. `pg_read_all_data` (Postgres 14 or later) reads every table in every schema, which is broader than the layer needs. On Redshift the same `grant usage` and `grant select` statements apply; on a warehouse, the connector's role needs only read access to the schemas in scope.
 
 ### DuckDB sources and lakes of files
 
