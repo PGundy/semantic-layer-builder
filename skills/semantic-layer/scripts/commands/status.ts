@@ -52,6 +52,10 @@ function sourceLines(s: SourceStatus): string[] {
     const items = s.new_columns.map((c) => `${c.model}.${c.column} (${c.type})`);
     lines.push(`  columns without a field: ${preview(items, 8)}`);
   }
+  if (s.new_in_scope.length) lines.push(`  new in scope, with no model yet: ${preview(s.new_in_scope, 8)}`);
+  if (s.left_scope_with_models.length) {
+    lines.push(`  left scope with approved models: ${preview(s.left_scope_with_models.map((m) => `${m.model} (${m.table})`), 8)}`);
+  }
   if (s.missing_tables.length) {
     const items = s.missing_tables.map((m) => `${m.model} (${m.table})`);
     lines.push(`  models on tables the snapshot no longer has: ${preview(items, 8)}`);

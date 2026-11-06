@@ -176,6 +176,9 @@ describe("introspect: duckdb", () => {
     expect(r.json<{ changes: unknown }>().changes).toEqual({
       tables_added: ["main.fresh"],
       tables_removed: ["main.gone"],
+      new_in_scope: ["main.fresh"],
+      left_scope: ["main.gone"],
+      left_scope_with_models: [],
       columns: [
         {
           table: "main.t",

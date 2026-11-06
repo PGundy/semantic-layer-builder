@@ -1,8 +1,9 @@
 // How a source's schema changed between two snapshots, and which of a table's columns a model
 // reads, so tools can report the columns a table gained or lost since its model was drafted.
-import { findTable, qualifiedName } from "./naming.ts";
+import { intakeSchemas, schemaFilter } from "./intake.ts";
+import { findTable, qualifiedName, splitQualified } from "./naming.ts";
 import { inScope } from "./patterns.ts";
-import type { Dialect, Model, Scope, Snapshot, SnapshotTable } from "./types.ts";
+import type { Dialect, Model, Scope, Snapshot, SnapshotScopeState, SnapshotTable, SourceConfig } from "./types.ts";
 
 export interface ColumnChanges {
   table: string;
@@ -140,6 +141,143 @@ export function changeLines(diff: SnapshotDiff | null, source: string, modeled?:
     if (tables.length) lines.push(`Modeled tables gained columns (${shortList(tables, 10)}): ${command} drafts them.`);
   }
   if (lost) lines.push("Removed or retyped columns and tables: `sl validate` reports the fields that read a removed column; read the affected fields back to the owner.");
+  return lines;
+}
+
+// Scope changes
+
+export interface ModelOnTable {
+  model: string;
+  table: string;
+}
+
+// How the selection changed between two snapshots: the tables that entered it and have no model
+// (new_in_scope), every table that left it (left_scope), and the approved models on those.
+export interface ScopeChanges {
+  new_in_scope: string[];
+  left_scope: string[];
+  left_scope_with_models: ModelOnTable[];
+}
+
+type Named = { schema?: string | null; name: string };
+
+// Whether a table is in the source's selection: in the effective scope and, when intake.schemas
+// lists schemas, in one of them. An intake.schemas that is not a list of names is left out, so
+// sl status still reads a source sl validate would refuse.
+export function selectionMatcher(source: Pick<SourceConfig, "source" | "dialect" | "connection" | "intake">, scope: Scope | undefined): (t: Named) => boolean {
+  let schemas: string[] = [];
+  try {
+    schemas = intakeSchemas(source);
+  } catch {
+    schemas = [];
+  }
+  const wanted = schemas.length ? schemaFilter(source, schemas) : () => true;
+  return (t) => inScope(scope, t) && wanted(t.schema);
+}
+
+const textList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+const sortedUnique = (items: string[]) => [...new Set(items)].sort();
+
+// A snapshot's recorded selection, read defensively: a hand-edited file may hold anything.
+export function readScopeState(snapshot: Snapshot | null | undefined): SnapshotScopeState | undefined {
+  const raw: unknown = snapshot?.scope_state;
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  return { in_scope: textList(r.in_scope), new_in_scope: textList(r.new_in_scope), left_scope: textList(r.left_scope) };
+}
+
+// The approved models built on one of the tables `names` lists, each with the table as `names`
+// spells it, sorted by model. A model's table is looked up in `tables` first, then among `names`
+// themselves, so a table the snapshot no longer has still counts.
+export function approvedModelsOn(names: string[], tables: SnapshotTable[], models: unknown[]): ModelOnTable[] {
+  if (!names.length) return [];
+  const wanted = new Set(names);
+  const named = names.map((n) => ({ ...splitQualified(n), kind: "table" as const, columns: [] }));
+  const out: ModelOnTable[] = [];
+  for (const m of models) {
+    const { model, table, status } = (m && typeof m === "object" ? m : {}) as { model?: unknown; table?: unknown; status?: unknown };
+    if (status !== "approved" || typeof model !== "string" || typeof table !== "string") continue;
+    const t = findTable(tables, table) ?? findTable(named, table);
+    if (t && wanted.has(qualifiedName(t))) out.push({ model, table: qualifiedName(t) });
+  }
+  return out.sort((a, b) => (a.model < b.model ? -1 : a.model > b.model ? 1 : a.table < b.table ? -1 : a.table > b.table ? 1 : 0));
+}
+
+// Compares the selection of `next` with the one `previous` recorded (its scope_state.in_scope, or,
+// for a snapshot written before scope_state existed, its tables the current selection keeps), and
+// records next's in next.scope_state. new_in_scope there keeps the earlier entries still selected,
+// and left_scope the earlier ones still out, so a rerun before the follow-up keeps them; tables
+// with a model leave new_in_scope, and left_scope keeps only tables with an approved model. When
+// `models` throws (a model file that does not parse), no table counts as modeled. Null when there
+// is no previous snapshot.
+export function recordScope(previous: Snapshot | null | undefined, next: Snapshot, selected: (t: Named) => boolean, models: () => unknown[]): ScopeChanges | null {
+  const now = sortedUnique(next.tables.filter(selected).map(qualifiedName));
+  const nowSet = new Set(now);
+  let list: unknown[] | undefined;
+  try {
+    list = models();
+  } catch {
+    list = undefined;
+  }
+  const modeled = new Set<string>();
+  for (const m of list ?? []) {
+    const table = (m as { table?: unknown } | null)?.table;
+    const t = typeof table === "string" ? findTable(next.tables, table) : undefined;
+    if (t) modeled.add(qualifiedName(t));
+  }
+  if (!previous) {
+    next.scope_state = { in_scope: now, new_in_scope: [], left_scope: [] };
+    return null;
+  }
+  const prior = readScopeState(previous);
+  const before = new Set(prior ? prior.in_scope : previous.tables.filter(selected).map(qualifiedName));
+  const entered = now.filter((n) => !before.has(n) && !modeled.has(n));
+  const left = sortedUnique([...before].filter((n) => !nowSet.has(n)));
+  const withModels = approvedModelsOn(left, previous.tables, list ?? []);
+  const carriedNew = (prior?.new_in_scope ?? []).filter((n) => nowSet.has(n) && !modeled.has(n));
+  const allLeft = sortedUnique([...(prior?.left_scope ?? []).filter((n) => !nowSet.has(n)), ...left]);
+  const keepLeft = list ? new Set(approvedModelsOn(allLeft, next.tables, list).map((x) => x.table)) : new Set(allLeft);
+  next.scope_state = { in_scope: now, new_in_scope: sortedUnique([...carriedNew, ...entered]), left_scope: allLeft.filter((n) => keepLeft.has(n)) };
+  return { new_in_scope: entered, left_scope: left, left_scope_with_models: withModels };
+}
+
+// Names --tables reads as they are: --tables splits on commas and reads * as a glob.
+const PLAIN_NAME = /^[A-Za-z0-9_.]+$/;
+const MAX_NAMED = 8;
+
+// " --tables a,b" naming `names`, or "" when there are more than MAX_NAMED or one is not plain,
+// so the command then covers the whole source.
+export function tablesFlag(names: string[]): string {
+  return names.length && names.length <= MAX_NAMED && names.every((n) => PLAIN_NAME.test(n)) ? ` --tables ${names.join(",")}` : "";
+}
+
+// The lines sl introspect and sl import print about tables that entered or left the selection,
+// with the command that drafts the new ones and what to do about approved models that left.
+// Tables in `removed` (gone from the database, which the change lines name) are not named again.
+export function scopeLines(changes: ScopeChanges | null, source: string, removed: string[] = []): string[] {
+  if (!changes) return [];
+  const lines: string[] = [];
+  const { new_in_scope: entered, left_scope: left, left_scope_with_models: models } = changes;
+  if (entered.length) {
+    lines.push(
+      `New in scope, with no model yet: ${shortList(entered, 10)}. \`sl draft --source ${source}${tablesFlag(entered)}\` drafts ${entered.length === 1 ? "it" : "them"}.`,
+    );
+  }
+  const gone = new Set(removed.map((n) => n.toLowerCase()));
+  const unmatched = left.filter((n) => !gone.has(n.toLowerCase()));
+  if (unmatched.length) {
+    lines.push(
+      `Left scope, no longer matching the scope or intake.schemas: ${shortList(unmatched, 10)}. \`sl scope --source ${source}\` shows what the scope selects.`,
+    );
+  }
+  if (models.length) {
+    const items = models.map((m) => `${m.model} (${m.table})`);
+    lines.push(
+      `Warning: left scope with approved models: ${shortList(items, 10)}. The models are kept and still served. Ask the owner whether each still belongs: ` +
+        `to keep it, bring its table back into scope (\`sl scope --source ${source} --tables <table> --write\`, or restore the pattern or intake.schemas entry that selected it); ` +
+        `otherwise revoke it with \`sl approve --target ${source}.<model> --revoke\` or remove its model file. \`sl status\` lists them until then.`,
+    );
+  }
   return lines;
 }
 
