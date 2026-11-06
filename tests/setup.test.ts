@@ -355,13 +355,15 @@ describe("export path", () => {
     expect(readFileSync(file, "utf8")).toMatch(/reason: VPN only\. +# Dana said so/);
   });
 
-  test("an export source is not switched to a connection, nor a connection source to an export", async () => {
+  test("an export source whose connection fails stays an export source; a connection source is not turned into an export", async () => {
     const { root } = fresh();
     expect((await sl(root, ["setup", "--source", "warehouse", "--dialect", "postgres", "--export", EXPORT_CSV, "--reason", "No access yet."])).code).toBe(0);
     const before = tree(root);
-    const up = await sl(root, ["setup", "--source", "warehouse", "--dialect", "postgres", "--env", "WAREHOUSE_URL"], { WAREHOUSE_URL: "postgres://localhost/x" });
+    // The upgrade to a connection (tests/upgrade.test.ts) reads the catalog first; a refused connection puts everything back.
+    const up = await sl(root, ["setup", "--source", "warehouse", "--dialect", "postgres", "--env", "WAREHOUSE_URL"], { WAREHOUSE_URL: "postgres://sl@127.0.0.1:1/x" });
     expect(up.code).toBe(1);
-    expect(up.err).toContain("To switch by hand: in sources/warehouse.yaml set intake.mode to connection");
+    expect(up.err).toContain("sl setup put sources/warehouse.yaml, the copies, the snapshot and the model files back as they were");
+    expect(tree(root)).toEqual(before);
     const dialect = await sl(root, ["setup", "--source", "warehouse", "--dialect", "snowflake", "--export", EXPORT_CSV]);
     expect(dialect.err).toContain('Source "warehouse" is a postgres source, and sl setup does not change a dialect.');
     expect(tree(root)).toEqual(before);
