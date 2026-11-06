@@ -171,12 +171,26 @@ Only `duckdb` and `postgres` sources run queries directly. `snowflake`, `bigquer
 
 ### Scope patterns
 
-`scope.include` and `scope.exclude` are lists of patterns. A table is in scope when it matches at least one include pattern, or `include` is empty or absent, and matches no exclude pattern. Exclude wins.
+One selection grammar serves `scope.include` and `scope.exclude`, `--include`, `--exclude` and `--tables`, export filters and table-list files (`scripts/lib/patterns.ts`). A table is in scope when it matches at least one include pattern, or `include` is empty or absent (every table of the snapshot), and matches no exclude pattern. Exclude wins.
 
-- A pattern containing a dot matches the qualified name `schema.table`. A pattern without a dot matches the table name alone.
-- `*` matches any run of characters and `?` matches one character. Matching is case-insensitive.
-- A pattern starting with `re:` is a regular expression, case-insensitive, anchored at both ends, matched against the qualified name if the pattern contains `\.` and against the table name otherwise.
-- Examples: `fct_*` (prefix), `*_daily` (suffix), `*orders*` (contains), `analytics.*` (a whole schema), `re:dim_(customer|product)s?`.
+- An exact name: `table`, `schema.table`, or `catalog.schema.table` when the snapshot's schema carries its catalog (an import spanning several catalogs names a schema `catalog.schema`; a BigQuery `project.dataset` is a schema). A pattern names the schema as the snapshot does, so `analytics.orders` does not match `prod.analytics.orders`.
+- A glob: `*` matches any run of characters, dots included, and `?` matches one character. Every other character, `_`, `%`, `.` and `$` among them, matches itself. Matching is case-insensitive.
+- A pattern with a dot outside quotes matches the qualified name `schema.table`; one without matches the table name alone.
+- A part that starts with a double quote matches exactly up to the closing quote, case included, and may hold dots and wildcard characters: `"OrderItems"` matches `OrderItems` but not `orderitems`, `"Sales".fct_*` matches the tables of the `Sales` schema whose names start with `fct_`, and `public."orders.v2"` names a table whose name holds a dot. `""` inside quotes is one quote. A quote inside a part, as in `odd"name`, is an ordinary character.
+- `re:<regex>`: a JavaScript regular expression, always case-insensitive (a `(?-i:...)` group is refused), anchored at both ends, matched against the qualified name if it contains `\.` and against the table name otherwise.
+- In a table-list file, `!<entry>` excludes; every other line includes.
+- `sl scope --tables` saves each table as its exact pattern, quoting a part that holds a quote, `*` or `?`, or a table name that holds a dot.
+- Examples: `fct_*` (prefix), `*_daily` (suffix), `*orders*` (contains), `analytics.*` (a whole schema), `prod.*.orders` (three parts), `re:dim_(customer|product)s?`.
+
+A regex is checked before it is used, and refused with the character where the problem is (counting from the `r` of `re:`) and a plain fix:
+
+- a body (the part after `re:`) longer than 512 characters;
+- a repeat of a part that holds another repeat, such as `(a+)+`, `(a*)*` or `(\w+\s?)*` (a bounded repeat may hold one when the ways to split a name stay under 1,000, as in `(_?\d{2}){0,2}`);
+- a repeat of a choice whose options can start with the same character or match nothing, such as `(a|aa)+` or `(a|)+`;
+- more than three unbounded repeats in a row that can trade the same characters, such as `a*a*a*a*` or `.*_.*_.*_.*` (`[a-z]+_[a-z]+_...` is fine: `_` keeps them apart; `b?` in `a*b?a*b?a*b?a*` does not, since it can match nothing), or bounded repeats and choices in a row that can split a name in more than about 262,000 ways, such as `a{0,30}a{0,30}a{0,30}a{0,30}` or twenty `a?`;
+- a regex that does not compile, including a `)` that closes no group.
+
+A glob is matched without a regex, so no glob is slow. A quote that starts a part and is never closed is refused with its character. `sl validate` reports every refused pattern in the files as an error at its path. A pattern that matches no table is a warning naming it: `sl scope` prints "Pattern "<p>" matches no table in the snapshot" and lists it in `--json` as `unmatched_patterns`.
 
 ## snapshots/<source>.json
 

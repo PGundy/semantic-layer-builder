@@ -76,7 +76,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Patterns a table must match one of; empty or absent includes every table. Globs with * and ?, or re:<regex>; a dot matches schema.table."
+          "description": "Patterns a table must match one of; empty or absent includes every table. Exact names and globs with * and ? (a dot matches schema.table, a \"quoted\" part matches exactly), or re:<regex> (at most 512 characters, checked for slow matching); see spec.md Scope patterns."
         },
         "exclude": {
           "type": "array",

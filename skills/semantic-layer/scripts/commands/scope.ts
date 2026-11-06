@@ -4,7 +4,7 @@ import { bool, list } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { findTable, qualifiedName } from "../lib/naming.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
-import { filterInScope, matchesPattern, validatePattern } from "../lib/patterns.ts";
+import { filterInScope, literalPattern, unmatchedPatterns, validatePattern } from "../lib/patterns.ts";
 import { loadProject, loadSource, paths, projectSettings, requireSnapshot } from "../lib/project.ts";
 import type { Scope } from "../lib/types.ts";
 import { updateYaml } from "../lib/yaml.ts";
@@ -22,9 +22,10 @@ function patterns(values: OptionValues, key: string): string[] {
 }
 
 // The identity of a pattern. Globs match case-insensitively, so they compare
-// lowercased; a re: body stays exact, since case changes a regex's meaning (\d, \D).
+// lowercased; a re: body stays exact, since case changes a regex's meaning (\d, \D),
+// and so does a pattern with a "quoted" part, which matches case included.
 function patternKey(p: string): string {
-  return p.startsWith("re:") ? p : p.toLowerCase();
+  return p.startsWith("re:") || p.includes('"') ? p : p.toLowerCase();
 }
 
 // Drops repeats by patternKey, keeping the first spelling.
@@ -106,7 +107,7 @@ const spec: CommandSpec = {
     for (const name of list(values, "tables")) {
       const t = findTable(tables, name);
       if (t) {
-        tablePatterns.push(qualifiedName(t));
+        tablePatterns.push(literalPattern(t));
         continue;
       }
       const same = name.includes(".") ? [] : tables.filter((x) => x.name.toLowerCase() === name.toLowerCase());
@@ -143,11 +144,13 @@ const spec: CommandSpec = {
     const afterSet = new Set(after);
     const added = after.filter((t) => !beforeSet.has(t));
     const removed = before.filter((t) => !afterSet.has(t));
-    const unmatched = [...include, ...exclude].filter((p) => !tables.some((t) => matchesPattern(p, t)));
+    const unmatched = unmatchedPatterns(next, tables);
     const needsFocus = after.length > focus_threshold;
 
     const warnings: string[] = [];
-    for (const p of unmatched) warnings.push(`Pattern "${p}" matches no table in the snapshot.`);
+    for (const p of unmatched) {
+      warnings.push(`Pattern "${p}" matches no table in the snapshot; check its spelling against \`sl tables --source ${sourceName} --all\`.`);
+    }
     for (const p of notFound) warnings.push(`--remove "${p}" is not in the scope; nothing to remove.`);
     if (!after.length) warnings.push("No table is in scope.");
     if (needsFocus) {
