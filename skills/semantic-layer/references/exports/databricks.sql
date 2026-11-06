@@ -14,6 +14,9 @@
 -- Restrict schemas: uncomment the line marked sl:schema-filter below and list the schemas, or
 -- print this query with the filter applied: sl export-sql --dialect databricks --schemas a,b
 -- (Unity Catalog stores schema names in lowercase).
+--
+-- Restrict tables: sl export-sql --include/--exclude prints this query with a table filter at the
+-- line marked sl:table-filter (a pattern the dialect cannot express is applied by sl import).
 with pk as (
   select k.table_schema, k.table_name, k.column_name, k.ordinal_position as pk_ordinal
   from information_schema.table_constraints tc
@@ -78,4 +81,5 @@ left join pk on pk.table_schema = c.table_schema and pk.table_name = c.table_nam
 left join fk on fk.table_schema = c.table_schema and fk.table_name = c.table_name and fk.column_name = c.column_name
 where c.table_schema <> 'information_schema'
   -- and lower(c.table_schema) in ('default')  -- sl:schema-filter: uncomment and list the schemas to export
+  -- sl:table-filter: sl export-sql --include/--exclude writes the table filter here
 order by table_schema, table_name, ordinal_position, fk_name;

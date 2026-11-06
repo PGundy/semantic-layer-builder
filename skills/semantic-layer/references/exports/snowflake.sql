@@ -18,6 +18,9 @@
 -- or print this query with the filter applied: sl export-sql --dialect snowflake --schemas a,b
 -- (unquoted names are stored in uppercase).
 --
+-- Restrict tables: sl export-sql --include/--exclude prints this query with a table filter at the
+-- line marked sl:table-filter (a pattern the dialect cannot express is applied by sl import).
+--
 -- row_count is INFORMATION_SCHEMA.TABLES.ROW_COUNT; it is empty for views.
 show primary keys in database
 ->> show imported keys in database
@@ -54,4 +57,5 @@ left join $1 fk
   and fk."fk_table_name" = c.table_name and fk."fk_column_name" = c.column_name
 where c.table_schema <> 'INFORMATION_SCHEMA'
   -- and c.table_schema in ('PUBLIC')  -- sl:schema-filter: uncomment and list the schemas to export
+  -- sl:table-filter: sl export-sql --include/--exclude writes the table filter here
 order by 1, 2, 7, 13;

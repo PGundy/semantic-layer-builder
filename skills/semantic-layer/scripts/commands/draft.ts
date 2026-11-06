@@ -9,8 +9,9 @@ import { findTable, qualifiedName } from "../lib/naming.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
 import { inScope, matchesPattern, validatePattern } from "../lib/patterns.ts";
 import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot } from "../lib/project.ts";
+import { effectiveScope } from "../lib/table-list.ts";
 import { rankTables } from "../lib/rank.ts";
-import type { Model, Snapshot, SnapshotTable, SourceConfig } from "../lib/types.ts";
+import type { Model, Scope, Snapshot, SnapshotTable, SourceConfig } from "../lib/types.ts";
 import { updateYaml, writeYaml } from "../lib/yaml.ts";
 import { sourceFlag } from "./tables.ts";
 
@@ -128,6 +129,7 @@ function draftNewColumnsCommand(
   ctx: CommandContext,
   snapshot: Snapshot,
   source: SourceConfig,
+  scope: Scope,
   stripPrefixes: string[],
   refs: string[],
 ): number {
@@ -140,12 +142,12 @@ function draftNewColumnsCommand(
     const t = typeof m.table === "string" ? findTable(snapshot.tables, m.table) : undefined;
     if (t) modeledKeys.add(qualifiedName(t).toLowerCase());
   }
-  const knownTables = snapshot.tables.filter((t) => inScope(source.scope, t) || modeledKeys.has(qualifiedName(t).toLowerCase()));
+  const knownTables = snapshot.tables.filter((t) => inScope(scope, t) || modeledKeys.has(qualifiedName(t).toLowerCase()));
   const updated: (UpdatedEntry & { table: string; path: string })[] = [];
   for (const { path, model } of loaded) {
     if (typeof model.table !== "string" || typeof model.model !== "string") continue;
     const table = findTable(snapshot.tables, model.table);
-    if (!table || !inScope(source.scope, table)) continue;
+    if (!table || !inScope(scope, table)) continue;
     if (picked && !picked.has(qualifiedName(table).toLowerCase())) continue;
     const r = draftNewColumns(snapshot, table, model as Model, existing, { source: sourceName, stripPrefixes, knownTables });
     if (!r.columns.length) continue;
@@ -214,6 +216,7 @@ const spec: CommandSpec = {
     const project = loadProject(ctx.root);
     const sourceName = sourceFlag(values, project);
     const source = loadSource(ctx.root, sourceName);
+    const scope = effectiveScope(ctx.root, source);
     const snapshot = requireSnapshot(ctx.root, sourceName);
     const { focus_threshold } = projectSettings(project);
     // --strip-prefix is saved in the source config the first time, so later drafts name models the same way.
@@ -227,7 +230,7 @@ const spec: CommandSpec = {
           throw new UserError(`--${flag} applies only when drafting new models; --new-columns works without it. Run it again without --${flag}.`);
         }
       }
-      return draftNewColumnsCommand(ctx, snapshot, source, stripPrefixes, list(values, "tables"));
+      return draftNewColumnsCommand(ctx, snapshot, source, scope, stripPrefixes, list(values, "tables"));
     }
 
     const existing = listModels(ctx.root, sourceName).map((l) => l.model).filter((m) => m && typeof m === "object");
@@ -240,7 +243,7 @@ const spec: CommandSpec = {
       if (!modeled.has(key)) modeled.set(key, m.model);
     }
     const keyOf = (t: SnapshotTable) => qualifiedName(t).toLowerCase();
-    const scoped = snapshot.tables.filter((t) => inScope(source.scope, t));
+    const scoped = snapshot.tables.filter((t) => inScope(scope, t));
     const ranked = rankTables(snapshot.tables).map((r) => r.table);
 
     const skipped: SkippedEntry[] = [];
@@ -253,7 +256,7 @@ const spec: CommandSpec = {
         if (!picked.has(keyOf(t))) continue;
         const model = modeled.get(keyOf(t));
         if (model) skipped.push({ table: qualifiedName(t), reason: `already modeled as ${model}` });
-        else if (!inScope(source.scope, t))
+        else if (!inScope(scope, t))
           skipped.push({
             table: qualifiedName(t),
             reason: `out of scope; add it with \`sl scope --source ${sourceName} --tables ${qualifiedName(t)} --write\``,
@@ -261,10 +264,10 @@ const spec: CommandSpec = {
         else selected.push(t);
       }
     } else {
-      selected = ranked.filter((t) => inScope(source.scope, t) && !modeled.has(keyOf(t)));
+      selected = ranked.filter((t) => inScope(scope, t) && !modeled.has(keyOf(t)));
       for (const t of ranked) {
         const model = modeled.get(keyOf(t));
-        if (model && inScope(source.scope, t)) skipped.push({ table: qualifiedName(t), reason: `already modeled as ${model}` });
+        if (model && inScope(scope, t)) skipped.push({ table: qualifiedName(t), reason: `already modeled as ${model}` });
       }
       if (selected.length > focus_threshold && !force) {
         throw new UserError(
@@ -276,7 +279,7 @@ const spec: CommandSpec = {
       }
     }
 
-    const knownTables = snapshot.tables.filter((t) => inScope(source.scope, t) || modeled.has(keyOf(t)));
+    const knownTables = snapshot.tables.filter((t) => inScope(scope, t) || modeled.has(keyOf(t)));
     const { models, notes } = draftModels(snapshot, selected, existing, { source: sourceName, stripPrefixes, knownTables });
 
     const drafted: DraftedEntry[] = [];
