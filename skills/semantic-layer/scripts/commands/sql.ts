@@ -67,7 +67,7 @@ function nextStep(refusals: Refusal[], source: string, user: Record<string, unkn
 }
 
 const spec: CommandSpec = {
-  summary: "Compile a request to SQL for a postgres or duckdb source, joins included, without running it.",
+  summary: "Compile a request to SQL for a postgres or duckdb source, joins, ratio and derived metrics included, without running it.",
   usage:
     "sql --source <source> --request <file|json> [--role <role>] [--user <json object of attributes>]   " +
     "(prints the SQL and its parameters, or why it is refused; never runs it. --request may be a golden file, which also gives the role and user)",
@@ -104,7 +104,7 @@ const spec: CommandSpec = {
     const shown = result.params.map((v, i) => `$${i + 1} = ${JSON.stringify(v)}`).join(", ");
     ctx.out(plainText(`Parameters, bound in order: ${shown || "none"}`));
     for (const r of result.row_filters) {
-      const where = r.in === "where" ? "in WHERE" : `in the ON clause of its join ${r.alias}`;
+      const where = (r.in === "where" ? "in WHERE" : `in the ON clause of its join ${r.alias}`) + (r.part ? ` of the part "${r.part} measures"` : "");
       const who = `${r.roles.length > 1 ? "roles" : "role"} ${r.roles.join(", ")}`;
       ctx.out(
         plainText(

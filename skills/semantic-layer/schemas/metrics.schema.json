@@ -19,7 +19,7 @@
   "$defs": {
     "metric": {
       "type": "object",
-      "description": "A ratio or derived metric. Its measures may come from several models of its source; it then groups by dimensions that exist, with the same name, in every model it uses.",
+      "description": "A ratio or derived metric. Its measures may come from several models of its source; it then groups by dimensions that every model it uses reaches through one path of to-one joins, or that exist with the same name in each.",
       "additionalProperties": false,
       "required": [
         "name",

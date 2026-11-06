@@ -1,8 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { expect } from "bun:test";
 import { DuckDBInstance } from "@duckdb/node-api";
+import { CHANGED_SINCE_APPROVAL, evaluateAccess } from "../skills/semantic-layer/scripts/lib/access.ts";
 import { runCli } from "../skills/semantic-layer/scripts/lib/cli.ts";
+import type { CompileResult } from "../skills/semantic-layer/scripts/lib/compiler/index.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 
@@ -40,6 +43,28 @@ export function tempRoot(): { root: string; dir: string; cleanup: () => void } {
 export async function initProject(root: string, name = "test"): Promise<void> {
   const r = await sl(root, ["init", "--name", name]);
   if (r.code !== 0) throw new Error(r.err);
+}
+
+// The owner's yes in a test copy: sl approve approves again each of `refs`, by default every approved
+// item the access evaluator treats as a draft because it changed since its approval. Throws unless
+// each is approved and current afterwards. Returns the refs it approved.
+export async function reapprove(root: string, refs: string[] = evaluateAccess(root).changed_since_approval): Promise<string[]> {
+  for (const ref of refs) {
+    const r = await approveWithYes(root, ["--target", ref, "--by", "Test Owner"]);
+    if (r.code !== 0) throw new Error(`sl approve --target ${ref}: ${r.err}`);
+  }
+  const left = evaluateAccess(root).changed_since_approval.filter((r) => refs.includes(r));
+  if (left.length) throw new Error(`still changed since approval: ${left.join(", ")}`);
+  return refs;
+}
+
+// Asserts that a compile was refused only because the measure or dimension `field` (model.field)
+// of `source` changed since its approval, naming the command that approves it again.
+export function expectRefusedAsChanged(r: CompileResult, source: string, field: string): void {
+  expect(r.ok).toBe(false);
+  if (r.ok) return;
+  expect([...new Set(r.refusals.map((x) => `${x.code} ${x.ref}`))]).toEqual([`not_visible ${field}`]);
+  for (const x of r.refusals) expect(x.message).toContain(`${CHANGED_SINCE_APPROVAL} (sl approve --target ${source}.${field} --by "<owner>" after the owner's yes)`);
 }
 
 // Writes a DuckDB database file built from SQL statements and a source pointing at it.

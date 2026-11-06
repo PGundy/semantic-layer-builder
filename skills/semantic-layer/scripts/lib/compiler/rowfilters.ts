@@ -17,6 +17,7 @@ export interface AppliedRows {
   in: "where" | "on";
   roles: string[]; // the held roles whose row filters limit the model
   rows: "filtered" | "none";
+  part?: string; // in a metric, the model of the part (CTE) that applies it
 }
 
 export interface RowFilterContext {
