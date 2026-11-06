@@ -7,6 +7,7 @@ import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.t
 import { bool, str } from "../lib/command.ts";
 import { goldenHash } from "../lib/approval-hash.ts";
 import { UserError } from "../lib/errors.ts";
+import { intakeMode, upgradeCommand } from "../lib/intake.ts";
 import type { CompileResult } from "../lib/compiler/index.ts";
 import {
   compareRows,
@@ -91,6 +92,16 @@ function goldenSource(ctx: CommandContext, g: Golden): SourceConfig {
   const name = g.request?.source;
   if (!name) throw new UserError(`Golden "${g.name}" has no request.source.`);
   return loadSource(ctx.root, name);
+}
+
+// Decision D2: an export source has no connection, so a golden's rows cannot come from the data.
+function exportRefusal(sub: "run" | "confirm", g: Golden, source: SourceConfig): UserError {
+  const what = sub === "confirm" ? "it cannot be confirmed without a connection; nothing was recorded" : "there is no connection to run it on";
+  return new UserError(
+    `Cannot ${sub} ${g.name}: source "${source.source}" was set up from a schema export, and a golden's rows come from the data, ` +
+      `so ${what}. Keep it as a draft and name it in the handoff. ` +
+      `Once a connection exists: ${upgradeCommand(source.source, source.dialect)}, then sl goldens run --name ${g.name}.`,
+  );
 }
 
 function requireName(values: OptionValues, sub: Subcommand): string {
@@ -363,6 +374,7 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
     ctx.out(formatJson(emitPlan(ctx, planGolden(ctx, golden, source).plan, { name: "goldens", positionals: ["run"], values })));
     return 0;
   }
+  if (intakeMode(source) === "export" && !input.resultsFile && !input.planId) throw exportRefusal("run", golden, source);
   const { compiled, rows: compiledRows, cross } = await runGoldenQueries(ctx, golden, source, input);
   const rows = compiledRows ?? cross ?? [];
   const columns = resultColumns(rows);
@@ -401,7 +413,13 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
       for (const d of crossCheck.diffs) ctx.out(`  ${plainText(d)}`);
       ctx.out(`Fix cross_check_sql or the layer before confirming, then run sl goldens run --name ${golden.name} again.`);
     }
-    ctx.out(runHint(golden));
+    // Decision D2: an export source's golden is confirmed only after the upgrade, so its hint names that.
+    ctx.out(
+      intakeMode(source) === "export"
+        ? `Source "${source.source}" was set up from a schema export, so ${golden.name} cannot be confirmed yet. ` +
+            `Once a connection exists: ${upgradeCommand(source.source, source.dialect)}, then sl goldens run --name ${golden.name}.`
+        : runHint(golden),
+    );
   }
   return 0;
 }
@@ -416,6 +434,8 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   }
   const parsed = parseTolerance(values, golden);
   const source = goldenSource(ctx, golden);
+  // Decision D2: a golden's rows come from the data, so an export source cannot confirm one.
+  if (intakeMode(source) === "export") throw exportRefusal("confirm", golden, source);
   const input = resultsInput(ctx, values);
   if (bool(values, "emit-sql")) {
     ctx.out(formatJson(emitPlan(ctx, planGolden(ctx, golden, source).plan, { name: "goldens", positionals: ["confirm"], values })));
