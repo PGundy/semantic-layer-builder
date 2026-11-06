@@ -8,7 +8,7 @@ request:
     - { field: orders.order_date, op: gte, value: "2025-01-01" }
     - { field: orders.order_date, op: lt, value: "2026-01-01" }
   order_by: [{ field: orders.ship_region, direction: asc }]
-sql: |
+cross_check_sql: |
   select o.ship_region as ship_region,
          ship_to_region.region_name as ship_region_name,
          count(*)

@@ -10,7 +10,7 @@ request:
   filters:
     - { field: orders.order_date, op: gte, value: "2025-01-01" }
     - { field: orders.order_date, op: lt, value: "2026-01-01" }
-sql: |
+cross_check_sql: |
   -- Revenue and refunds are each totalled on their own by the order's year, then subtracted.
   with rev as (
     select date_trunc('year', o.created_at) as order_date_year,
