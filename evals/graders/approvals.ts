@@ -1,8 +1,10 @@
 // approvals: every approved item has a yes in .sl/ledger.jsonl for its target with a content hash
-// equal to its approved_hash. Without a ledger (it arrives with sl reply) nothing is graded yet.
+// equal to its approved_hash, and every confirmed golden a yes to golden:<name> with the hash of its
+// recorded rows and tolerance. Without a ledger (it arrives with sl reply) nothing is graded yet.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { accessEntry, type ApprovalEntry, metricEntries, modelEntries } from "../../skills/semantic-layer/scripts/lib/approval-hash.ts";
+import { accessEntry, type ApprovalEntry, goldenHash, metricEntries, modelEntries } from "../../skills/semantic-layer/scripts/lib/approval-hash.ts";
+import { DEFAULT_TOLERANCE } from "../../skills/semantic-layer/scripts/lib/goldens.ts";
 import { listGoldens, listModels, loadAccess, loadMetrics, loadSource } from "../../skills/semantic-layer/scripts/lib/project.ts";
 import type { Dialect } from "../../skills/semantic-layer/scripts/lib/types.ts";
 import type { GraderResult, RunFiles } from "./types.ts";
@@ -60,13 +62,24 @@ export function gradeApprovals(run: RunFiles): GraderResult {
         details.push(`semantic/${LEDGER} line ${i + 1} is not JSON; it records no answer.`);
       }
     });
-  const approved = approvedEntries(run.root);
+  // Each approved item and confirmed golden as its target, the hash its yes must carry, and its file.
+  const approved = approvedEntries(run.root).map(({ entry, file }) => ({
+    ref: entry.ref,
+    hash: typeof entry.item.approved_hash === "string" ? entry.item.approved_hash.trim() : "",
+    file,
+    what: "approved",
+  }));
+  for (const { path, golden } of listGoldens(run.root)) {
+    if (golden.status !== "approved") continue;
+    const rows = Array.isArray(golden.expected?.rows) ? golden.expected!.rows : [];
+    const hash = goldenHash(golden as unknown as Record<string, unknown>, rows, golden.expected?.tolerance ?? DEFAULT_TOLERANCE);
+    approved.push({ ref: `golden:${golden.name}`, hash, file: relative(run.root, path), what: "confirmed" });
+  }
   if (!approved.length) return { grader: "approvals", score: null, passed: !details.length, details: [...details, "not graded: nothing is approved"] };
   let ok = 0;
-  for (const { entry, file } of approved) {
-    const hash = typeof entry.item.approved_hash === "string" ? entry.item.approved_hash.trim() : "";
-    if (!hash) details.push(`${file}: ${entry.ref} is approved without an approved_hash, so no ledger yes can match it.`);
-    else if (!yes.has(`${entry.ref}\0${hash}`)) details.push(`${file}: ${entry.ref} is approved, but the ledger holds no yes for it with hash ${hash}.`);
+  for (const { ref, hash, file, what } of approved) {
+    if (!hash) details.push(`${file}: ${ref} is approved without an approved_hash, so no ledger yes can match it.`);
+    else if (!yes.has(`${ref}\0${hash}`)) details.push(`${file}: ${ref} is ${what}, but the ledger holds no yes for it with hash ${hash}.`);
     else ok++;
   }
   if (ok === approved.length) details.push(`All ${ok} approved item(s) have a ledger yes with a matching hash.`);
