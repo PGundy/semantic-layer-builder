@@ -1,3 +1,5 @@
+import type { GradingSpec } from "../graders/types.ts";
+
 // The eval harness's data: scenarios, the driver contract, transcript turns and run summaries.
 // The JSON Schemas under skills/semantic-layer/schemas/eval-*.schema.json encode the same shapes,
 // and skills/semantic-layer/references/spec.md (Eval runs) documents them.
@@ -30,6 +32,8 @@ export interface Scenario {
   opening: string;
   // Canned turns for the scripted driver, relative to the scenario file.
   script?: string;
+  // What the graders compare the run with (evals/graders/).
+  grading?: GradingSpec;
 }
 
 export type Speaker = "skill" | "owner";

@@ -3,7 +3,8 @@
 The eval harness plays the semantic-layer skill against a simulated data owner and records what happened, so a change to the skill or the CLI can be measured (docs/PRD.md, FR-6.1). A run takes one scenario: a fixture, an intake path, an owner persona, and a turn and token budget.
 
 - `runner/`: the runner (`run.ts` is the command), the two drivers and the persona prompts (`runner/personas/`).
-- `scenarios/`: the scenarios and the canned turns the scripted driver replays.
+- `graders/`: the deterministic graders (`grade.ts` is the command).
+- `scenarios/`: the scenarios, the canned turns the scripted driver replays and the figure mapping the graders read (`acme.figures.json`).
 - `runs/`: one directory per run, gitignored.
 
 The file formats are in `skills/semantic-layer/references/spec.md`, section Eval runs, with schemas in `skills/semantic-layer/schemas/eval-*.schema.json`.
@@ -24,7 +25,29 @@ bun evals/runner/run.ts --scenario acme-terse --now 2026-01-01T00:00:00Z --out /
 | `--now <iso time>` | Fixes the clock: it starts there and moves one second per read, so the run id, timestamps and files come out the same every time for the same `--out` (the source's view paths run from the run's root to `fixtures/`, so they change with `--out`). |
 | `--model <id>` | The model for the sdk driver. |
 
-It exits 0 when the skill agent ended the session, 2 when a budget stopped the run and 1 on an error, and prints the run directory. Each run writes `transcript.jsonl` (one turn per line), `summary.json` (turns, tokens and the stop reason: `done`, `turn_budget`, `token_budget` or `error`) and `semantic/`, the semantic root the agent worked in.
+It exits 0 when the skill agent ended the session, 2 when a budget stopped the run and 1 on an error, and prints the run directory. Each run writes `transcript.jsonl` (one turn per line), `summary.json` (turns, tokens and the stop reason: `done`, `turn_budget`, `token_budget` or `error`), `semantic/`, the semantic root the agent worked in, and `grades.json`, what the graders found.
+
+## Grade a run
+
+The runner grades every run when it stops. To grade a run directory again, for example after changing a grader or the scenario's `grading` block:
+
+```sh
+bun evals/graders/grade.ts --run evals/runs/acme-terse-20260101T000000000Z          # a table and the details
+bun evals/graders/grade.ts --run evals/runs/acme-terse-20260101T000000000Z --json   # the report as JSON
+```
+
+It rewrites `grades.json` in the run directory and exits 0 when every grader passed, 1 when one failed. `--scenario <name|file>` grades against another scenario than the one `summary.json` names. The graders read only the run's files, call no model and grade the same run the same way every time:
+
+| Grader | Passes when |
+|---|---|
+| `figures` | Every approved golden mapped to a figure in `fixtures/<fixture>/reference-figures.json` (by the scenario's figure mapping) produces it, and none produces a `common_mistakes` value. The figure comes from compiling the golden's request with the reference compiler and running it on the run's DuckDB source, or, when the compiler refuses it, from the golden's recorded rows; each detail names the path. |
+| `secrets` | No file of the final root, the transcript or the summary holds a credential or a value of a protected column of the fixture's data (the scenario's `protected_columns` and every column the sensitivity rules flag by name). |
+| `selection` | Each source's final scope equals the scenario's `selection` list for it. |
+| `approvals` | Every approved item has a ledger `yes` with its hash; "not graded" until the ledger exists. |
+| `connection_first` | The skill offers an export only after asking for a connection and hearing it is not possible; on an export scenario no golden is confirmed. |
+| `effort` | Never fails: owner turns, owner words and tokens per approved item, and wall time. |
+
+A score is 0 to 1, or empty ("not graded") when there was nothing to grade. The rules each grader applies, the text rules of `connection_first` among them, are in `skills/semantic-layer/references/spec.md`, section Eval runs, Grades.
 
 ## The scenarios
 

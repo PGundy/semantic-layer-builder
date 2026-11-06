@@ -45,6 +45,17 @@ export interface SourceConnection {
   views?: Record<string, string>;
 }
 
+// How the catalog reaches the layer (spec: sources/<source>.yaml, Intake). Absent means connection.
+export const INTAKE_MODES = ["connection", "export"] as const;
+export type IntakeMode = (typeof INTAKE_MODES)[number];
+
+export interface SourceIntake {
+  mode?: IntakeMode;
+  reason?: string | null;
+  schemas?: string[];
+  export?: { file: string };
+}
+
 export interface SourceProfileSettings {
   sample_rows?: number;
   top_values?: number;
@@ -55,6 +66,7 @@ export interface SourceConfig {
   dialect: Dialect;
   description?: string;
   connection?: SourceConnection;
+  intake?: SourceIntake;
   scope?: Scope;
   profile?: SourceProfileSettings;
   draft?: { strip_prefixes?: string[] };
@@ -405,3 +417,37 @@ export interface StoredPlan extends QueryPlan {
   finish: string;
   queries: (PlannedQuery & { max_rows: number })[];
 }
+
+// The answer ledger (.sl/ledger.jsonl), appended to by sl reply and sl question resolve: one JSON
+// object per line, holding the owner's words, never data values.
+
+export type ReplyVerdict = "yes" | "no" | "change";
+
+export interface LedgerReply {
+  id: string; // ans_0001, ans_0002, ...
+  kind: "reply";
+  readback_id: string;
+  item: number;
+  // The approve target the item read back.
+  target: string;
+  // The target's content hash when it was read back, copied from the pending readback.
+  content_hash: string;
+  text: string;
+  verdict: ReplyVerdict | null;
+  by: string;
+  at: string;
+}
+
+export interface LedgerQuestion {
+  id: string;
+  kind: "question";
+  // The ref the question was resolved on: source.model, source.model.field or access, and from
+  // sl review apply also access.roles.<role>.
+  target: string;
+  question: string;
+  text: string;
+  by: string;
+  at: string;
+}
+
+export type LedgerEntry = LedgerReply | LedgerQuestion;
