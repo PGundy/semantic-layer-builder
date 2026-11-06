@@ -199,7 +199,7 @@ function specCli(): Map<string, Set<string>> {
   return out;
 }
 
-// Commands that read a database take --emit-sql and --results (spec: CLI).
+// Commands that read a database take --emit-sql, --results and --plan (spec: CLI).
 const DB_COMMANDS = new Set(["introspect", "profile", "check-join", "goldens"]);
 
 describe("the docs agree with the spec's CLI table", () => {
@@ -221,7 +221,7 @@ describe("the docs agree with the spec's CLI table", () => {
         continue;
       }
       for (const flag of flagsOf(inv.text)) {
-        const db = DB_COMMANDS.has(name) && (flag === "emit-sql" || flag === "results");
+        const db = DB_COMMANDS.has(name) && (flag === "emit-sql" || flag === "results" || flag === "plan");
         if (!GLOBAL_FLAGS.has(flag) && !db && !flags.has(flag)) out.push(`${inv.doc}:${inv.line} the spec's ${name} row has no --${flag}`);
       }
     }
@@ -273,7 +273,7 @@ describe("the spec's CLI table agrees with the commands and their --help", () =>
     for (const [name, load] of Object.entries(COMMANDS)) {
       const flags = cli.get(name) ?? new Set<string>();
       for (const flag of Object.keys((await load()).default.options)) {
-        const db = DB_COMMANDS.has(name) && (flag === "emit-sql" || flag === "results");
+        const db = DB_COMMANDS.has(name) && (flag === "emit-sql" || flag === "results" || flag === "plan");
         if (!db && !flags.has(flag)) out.push(`sl ${name} takes --${flag}, which its spec row does not name`);
       }
     }
@@ -1095,7 +1095,7 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["SKILL.md", "goldens follow YAML edits by hand", "update the SQL of every golden that uses it, by hand, and run them"],
   ["SKILL.md", "a request's measures share one model", "A request's measures share one model, or are one metric"],
   ["verification.md", "goldens do not test the YAML", "What a golden does not do yet: test that the YAML computes the figure"],
-  ["verification.md", "a compiler is planned", "A reference compiler that turns a request into SQL from the YAML is planned"],
+  ["verification.md", "goldens do not run the compiler yet", "`sl sql` compiles a request on one model from the YAML (`spec.md`, Reference compiler), but goldens do not run it yet"],
   ["verification.md", "keeping the SQL in step", "### Keeping the SQL in step with the YAML"],
   ["verification.md", "the rule warning", "goldens pin hand-written SQL; this SQL may not apply <measure>'s rule"],
   ["verification.md", "a request's measures share one model", "a request's measures must share one model, or be one metric"],

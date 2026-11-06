@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "evals/runs/<run_id>/summary.json",
+  "description": "How an eval run went and why it stopped.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "scenario", "fixture", "intake", "persona", "driver", "budgets", "turns", "skill_turns", "owner_turns", "tokens", "tokens_by_speaker", "stop_reason", "started_at", "finished_at"],
+  "properties": {
+    "run_id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*-\\d{8}T\\d{9}Z$" },
+    "scenario": { "type": "string" },
+    "fixture": { "type": "string" },
+    "intake": { "type": "string" },
+    "persona": { "type": "string" },
+    "driver": { "type": "string" },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_turns", "max_tokens"],
+      "properties": { "max_turns": { "type": "integer" }, "max_tokens": { "type": "integer" } }
+    },
+    "turns": { "type": "integer", "minimum": 0 },
+    "skill_turns": { "type": "integer", "minimum": 0 },
+    "owner_turns": { "type": "integer", "minimum": 0 },
+    "tokens": { "type": "integer", "minimum": 0 },
+    "tokens_by_speaker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["skill", "owner"],
+      "properties": { "skill": { "type": "integer" }, "owner": { "type": "integer" } }
+    },
+    "stop_reason": { "enum": ["done", "turn_budget", "token_budget", "error"] },
+    "error": { "type": "string", "description": "Present when stop_reason is error." },
+    "started_at": { "type": "string" },
+    "finished_at": { "type": "string" }
+  }
+}

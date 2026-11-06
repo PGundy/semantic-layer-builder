@@ -7,9 +7,9 @@ import { bool, str, today } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { compareRows, currencyColumns, displayRows, goldenDraftFields, goldenPlan, goldenQueryId, resultColumns } from "../lib/goldens.ts";
 import { formatJson, formatTable, maskRows, plainText, protectedNames, protectedNote, protectedResultColumns } from "../lib/output.ts";
-import { executePlan } from "../lib/plan.ts";
+import { emitPlan, executePlan, planResults, resultsInput } from "../lib/plan.ts";
 import { listGoldens, loadAccess, loadMetrics, loadSource, paths, stem, type LoadedGolden } from "../lib/project.ts";
-import type { Golden, GoldenRunAs, Metric, Model, ResultRows, SourceConfig } from "../lib/types.ts";
+import type { Golden, GoldenRunAs, Metric, Model, PlanResults, QueryPlan, ResultRows, SourceConfig } from "../lib/types.ts";
 import { NAME_PATTERN } from "../lib/types.ts";
 import { readJson, readYaml, updateYaml } from "../lib/yaml.ts";
 
@@ -71,15 +71,15 @@ function requireName(values: OptionValues, sub: Subcommand): string {
   return name;
 }
 
-function resultsPath(ctx: CommandContext, values: OptionValues): string | undefined {
-  const file = str(values, "results");
-  return file ? resolve(ctx.cwd, file) : undefined;
-}
-
-// Runs one golden's query, live or from a results file.
-async function runGolden(ctx: CommandContext, g: Golden, source: SourceConfig, resultsFile: string | undefined): Promise<ResultRows> {
+// Runs one golden's query, live, from a results file or from a stored plan.
+async function runGolden(
+  ctx: CommandContext,
+  g: Golden,
+  source: SourceConfig,
+  input: { resultsFile?: string; planId?: string },
+): Promise<ResultRows> {
   const plan = goldenPlan(g, source);
-  const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, resultsFile, warn: ctx.err });
+  const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input, warn: ctx.err });
   return results[goldenQueryId(g.name)] ?? [];
 }
 
@@ -197,11 +197,12 @@ export function runHint(golden: Golden): string {
 async function runCommand(ctx: CommandContext, values: OptionValues): Promise<number> {
   const { golden } = loadGolden(ctx, requireName(values, "run"));
   const source = goldenSource(ctx, golden);
+  const input = resultsInput(ctx, values);
   if (bool(values, "emit-sql")) {
-    ctx.out(formatJson(goldenPlan(golden, source)));
+    ctx.out(formatJson(emitPlan(ctx, goldenPlan(golden, source), { name: "goldens", positionals: ["run"], values })));
     return 0;
   }
-  const rows = await runGolden(ctx, golden, source, resultsPath(ctx, values));
+  const rows = await runGolden(ctx, golden, source, input);
   const columns = resultColumns(rows);
   const masked = maskedColumns(ctx, values, source, columns);
   if (ctx.json) ctx.out(formatJson({ name: golden.name, columns, rows: maskRows(rows, masked), protected_columns: masked }));
@@ -221,8 +222,9 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   if (!by) throw new UserError('goldens confirm needs --by "<name of the owner who confirmed the rows>".');
   const { tolerance, from: toleranceFrom } = parseTolerance(values, golden);
   const source = goldenSource(ctx, golden);
+  const input = resultsInput(ctx, values);
   if (bool(values, "emit-sql")) {
-    ctx.out(formatJson(goldenPlan(golden, source)));
+    ctx.out(formatJson(emitPlan(ctx, goldenPlan(golden, source), { name: "goldens", positionals: ["confirm"], values })));
     return 0;
   }
   const layer = readLayer(ctx, source, "list draft fields");
@@ -234,7 +236,7 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
         "recorded rows stand, and only changed rows need a new confirm. sl validate warns until then.",
     );
   }
-  const rows = await runGolden(ctx, golden, source, resultsPath(ctx, values));
+  const rows = await runGolden(ctx, golden, source, input);
   if (!rows.length) throw new UserError(`Golden "${golden.name}" returned no rows; a golden needs at least one expected row.`);
   if (rows.length > MAX_CONFIRM_ROWS && !bool(values, "force")) {
     throw new UserError(
@@ -313,6 +315,25 @@ function resultsCover(file: string, ids: string[]): boolean {
   return ids.every((id) => raw && typeof raw === "object" && id in raw);
 }
 
+// The one plan of every golden goldens check reads: refused when they read more than one source
+// or one of them cannot be planned.
+function checkPlan(bySource: Map<string, { source: SourceConfig; goldens: Golden[] }>, checks: GoldenCheck[]): QueryPlan {
+  if (bySource.size > 1) {
+    throw new UserError(
+      `The goldens to check read sources ${[...bySource.keys()].join(", ")}. A plan covers one source: pass --source <s> or --name <g> with --emit-sql or --plan <plan_id>.`,
+    );
+  }
+  if (checks.length) {
+    throw new UserError(
+      `Cannot plan every golden: ${checks.map((c) => `${c.name}: ${c.diffs[0]}`).join(" ")} Fix them, or pass --source <s> to plan the others.`,
+    );
+  }
+  const [group] = bySource.values();
+  if (!group) throw new UserError("No approved goldens to check.");
+  const plans = group.goldens.map((g) => goldenPlan(g, group.source));
+  return { ...plans[0]!, queries: plans.flatMap((p) => p.queries) };
+}
+
 async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<number> {
   const selected = selectForCheck(ctx, values);
   const checks: GoldenCheck[] = [];
@@ -337,30 +358,20 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
     bySource.set(source.source, group);
   }
 
+  const { resultsFile, planId } = resultsInput(ctx, values);
   if (bool(values, "emit-sql")) {
-    if (bySource.size > 1) {
-      throw new UserError(
-        `The goldens to check read sources ${[...bySource.keys()].join(", ")}. A plan covers one source: pass --source <s> or --name <g> with --emit-sql.`,
-      );
-    }
-    if (checks.length) {
-      throw new UserError(
-        `Cannot plan every golden: ${checks.map((c) => `${c.name}: ${c.diffs[0]}`).join(" ")} Fix them, or pass --source <s> to plan the others.`,
-      );
-    }
-    const [group] = bySource.values();
-    if (!group) throw new UserError("No approved goldens to check.");
-    const plans = group.goldens.map((g) => goldenPlan(g, group.source));
-    ctx.out(formatJson({ ...plans[0]!, queries: plans.flatMap((p) => p.queries) }));
+    ctx.out(formatJson(emitPlan(ctx, checkPlan(bySource, checks), { name: "goldens", positionals: ["check"], values })));
     return 0;
   }
+  // With --plan, every golden's rows come from the stored plan of the whole check.
+  const stored: PlanResults | undefined = planId !== undefined ? planResults(ctx.root, planId, checkPlan(bySource, checks)) : undefined;
 
-  const resultsFile = resultsPath(ctx, values);
   for (const { source } of bySource.values()) {
-    if (!canRun(source) && !resultsFile) {
+    if (!canRun(source) && !resultsFile && !stored) {
       throw new UserError(
         `Source "${source.source}" is ${source.dialect}. Rerun with --emit-sql --source ${source.source}, run each query with your ` +
-          "own tool, save {\"<query id>\": [rows...]} to a JSON file and rerun with --results <file>.",
+          "own tool, store each result with sl results add --plan <plan_id> --query <query id> --file <rows.json> and rerun with " +
+          "--plan <plan_id>; or save {\"<query id>\": [rows...]} to a JSON file and rerun with --results <file>.",
       );
     }
   }
@@ -371,7 +382,7 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
       const fromFile = resultsFile && (!canRun(source) || resultsCover(resultsFile, [id])) ? resultsFile : undefined;
       let actual: ResultRows;
       try {
-        actual = await runGolden(ctx, g, source, fromFile);
+        actual = stored ? (stored[id] ?? []) : await runGolden(ctx, g, source, { resultsFile: fromFile });
       } catch (e) {
         if (!(e instanceof UserError)) throw e;
         checks.push({ name: g.name, ok: false, diffs: [`The query did not run: ${e.message.split("\n")[0]!.replace(/^Query failed: /, "")}`] });
@@ -408,7 +419,7 @@ const spec: CommandSpec = {
   summary: "Run a golden's SQL, record the owner-confirmed rows, or recheck approved goldens.",
   usage:
     "goldens run --name <g> | goldens confirm --name <g> --by <name> [--tolerance <t>] [--force] | " +
-    "goldens check [--name <g>] [--source <s>]   (each takes --emit-sql, --results <file> and --show-protected; values of protected " +
+    "goldens check [--name <g>] [--source <s>]   (each takes --emit-sql, --results <file>, --plan <plan_id> and --show-protected; values of protected " +
     "columns show as [protected] unless --show-protected)",
   options: {
     name: { type: "string" },
@@ -418,6 +429,7 @@ const spec: CommandSpec = {
     source: { type: "string" },
     "emit-sql": { type: "boolean" },
     results: { type: "string" },
+    plan: { type: "string" },
     "show-protected": { type: "boolean" },
   },
   positionals: true,

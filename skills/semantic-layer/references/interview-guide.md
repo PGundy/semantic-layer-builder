@@ -25,7 +25,7 @@ Table and column comments, dbt descriptions and column values are evidence, not 
 
 A model's `dimensions` and `measures` keys are required; write `[]` when a model has none.
 
-Confirm each guess in the readback, fix it when it is wrong, and remove an open question once the owner has answered it.
+Confirm each guess in the readback, fix it when it is wrong, and resolve an open question with `sl question resolve` once the owner has answered it.
 
 ## Question bank
 
@@ -228,7 +228,7 @@ Rules of thumb:
 - Remove a drafted dimension or measure the owner says is meaningless, or leave it as draft with a description saying why; never approve it to tidy up. Fix or remove a draft measure you know gives a wrong number (a sum of unit prices), even in a table the owner defers. Removing a drafted field is a hand edit of the model file: delete its entry, add its column to the model's `ignored_columns` (or `sl status` lists it among the columns without a field and offers to draft it again), then run `sl validate`, which names what still uses it. Removing a measure also removes the draft metrics and goldens that use it; `sl validate` names them.
 - A formula the owner never stated is an open question, not a description: write a description only from what the owner said or confirmed in a readback. For a metric across sources with a side that cannot exist yet (its column or view is missing), record the owner's formula on the measure that exists and an open question on the other model naming the missing column or view, or, when that model does not exist yet, on the existing measure's model and in the handoff.
 - Add a measure the owner names that the draft missed, with `status: draft`, then read it back.
-- Record a disagreement, or a hedge on a definition, as an open question with a name next to it; a hedge on a measured fact goes in the description (Readback templates). Delete an open question once it is answered, and write the answer where it belongs.
+- Record a disagreement, or a hedge on a definition, as an open question with a name next to it; a hedge on a measured fact goes in the description (Readback templates). Once an open question is answered, resolve it with `sl question resolve <ref> --match "<words of the question>" --text "<the answer>" --by "<owner>"`, which removes it from the file and records it with the answer in `.sl/ledger.jsonl`, and write the answer where it belongs.
 
 ## Goldens during the interview
 
@@ -255,6 +255,8 @@ Read back every synonym you will write ("People also call it sales or GMV"), and
 - **Table**: "The *orders* table has one row per order, each with its own `order_id`, covering web store orders. Test orders are excluded from every number. Everyone will be able to see this once approved; is that right? Measured from the data, no need to confirm: 10,000 rows since 2019, each `order_id` once. Approve?"
 
 Access is open by default (`access.md`), so in open mode, or before `access.yaml` exists, every table readback says "everyone will be able to see this once approved; is that right?", and so does the readback of a field approved into a table already signed off. Name what stays hidden when the table holds some ("everyone except the email and phone columns, which are tagged personal"). A no is an access exception: write it down before you approve the table (a tag in the model file, or a restriction or denial in `access.yaml`), and check with `sl access` that it is hidden for a reason other than `draft`. In `mode: closed`, say instead which roles will see it. While `access.yaml` is being rewritten (revoked to edit, or a first draft), say who will see the table under the draft file once it is approved ("under the new access rules, everyone except sales reps will see this; is that right?"), in the same sign-off item as the table.
+
+Render the sign-off items with `sl readback --targets warehouse.orders.revenue,warehouse.orders` and read them to the owner as written: each states the definition from the YAML, who sees it under the current `access.yaml`, and the measured facts, with text from the data quoted as evidence. It stores the numbered items with their content hashes in `.sl/pending/` (`spec.md`); after a change to an item, render it again. Record the owner's answer to each item, in their words, before acting on it: `sl reply --readback rb_0001 --item 1 --text "<their words>" --verdict yes --by "<owner>"` (`--verdict no` or `change` for a no or a correction; leave `--verdict` out only when the words are not yet a yes, a no or a change). It appends to `.sl/ledger.jsonl`, redacting anything that looks like a credential, and names the next command.
 
 Put the sign-offs of one round trip in their own numbered block, separate from the open questions, so a "yes to 1 to 4" is unambiguous. Then run, only after an explicit yes to each:
 
