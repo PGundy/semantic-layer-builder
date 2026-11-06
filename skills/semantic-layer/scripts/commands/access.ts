@@ -3,11 +3,14 @@ import { resolve } from "node:path";
 import {
   type AccessVisibility,
   type AppliedRowFilter,
+  CHANGED_SINCE_APPROVAL,
   type Counts,
   evaluateAccess,
+  HASH_MISSING,
   lastApprovedNote,
   type ModelRows,
   type ModelVisibility,
+  reapproveCommand,
   type RowFilterJoinRef,
   type SourceCounts,
 } from "../lib/access.ts";
@@ -76,25 +79,34 @@ function rowLines(ref: string, rows: ModelRows): string[] {
 const counts = (c: Counts, word: string) => `${c.visible}/${c.visible + c.hidden} ${word}`;
 const allCounts = (c: SourceCounts) => `${counts(c.models, "models")}, ${counts(c.fields, "fields")}, ${counts(c.metrics, "metrics")}`;
 
+// Why an item is hidden; on an approved item that changed or lost its hash, its draft reason says so.
+function why(x: { reasons: string[]; changed_since_approval?: true; hash_missing?: true }): string {
+  const draft = x.changed_since_approval ? "draft: changed since approval" : x.hash_missing ? "draft: approved_hash missing" : "draft";
+  return x.reasons.map((r) => (r === "draft" ? draft : r)).join(", ");
+}
+
 function modelLines(m: ModelVisibility, mode: Show): string[] {
   const out: string[] = [];
   if (!m.visible) {
-    if (mode !== "visible") out.push(`    model ${m.ref}: hidden (${m.reasons.join(", ")})${m.fields.length ? `, with its ${m.fields.length} field(s)` : ""}`);
+    if (mode !== "visible") out.push(`    model ${m.ref}: hidden (${why(m)})${m.fields.length ? `, with its ${m.fields.length} field(s)` : ""}`);
     return out;
   }
   if (mode !== "hidden") out.push(`    model ${m.ref}`);
   for (const f of m.fields) {
     if (f.visible && mode !== "hidden") out.push(`      ${f.kind} ${f.name}`);
-    else if (!f.visible && mode !== "visible") out.push(`    ${f.kind} ${f.ref}: hidden (${f.reasons.join(", ")})`);
+    else if (!f.visible && mode !== "visible") out.push(`    ${f.kind} ${f.ref}: hidden (${why(f)})`);
   }
   return out;
 }
 
-// The label on a draft access.yaml: with last_approved, the approved version that keeps applying.
+// The label on a draft access.yaml: with last_approved, the approved version that keeps applying;
+// on an approved one that changed since or lost its hash, also how it is approved again.
 function draftLabel(v: AccessVisibility): string {
+  const note = v.changed_since_approval.includes("access") ? CHANGED_SINCE_APPROVAL : v.hash_missing.includes("access") ? HASH_MISSING : "";
+  const changed = note ? `access.yaml ${note} (${reapproveCommand("access")}). ` : "";
   return v.last_approved
-    ? `This explains a draft. ${lastApprovedNote(v.last_approved)}`
-    : "This explains the draft access.yaml, which is awaiting sign-off: tools serve nothing under it until it is approved.";
+    ? `${changed}This explains a draft. ${lastApprovedNote(v.last_approved)}`
+    : `${changed}This explains the draft access.yaml, which is awaiting sign-off: tools serve nothing under it until it is approved.`;
 }
 
 const NO_ROW_FILTERS = "  row filters: none (every row of every visible model)";
@@ -127,6 +139,16 @@ function render(v: AccessVisibility, mode: Show, rolesGiven: boolean): string {
     lines.push("Warnings:");
     for (const w of v.warnings) lines.push(`  ${w.path}: ${w.message}`);
   }
+  const changed = v.changed_since_approval.filter((r) => r !== "access");
+  if (changed.length) {
+    lines.push("Approved items that changed since approval:");
+    for (const r of changed) lines.push(`  ${r}: ${CHANGED_SINCE_APPROVAL} (${reapproveCommand(r)})`);
+  }
+  const missing = v.hash_missing.filter((r) => r !== "access");
+  if (missing.length) {
+    lines.push("Approved items without approved_hash:");
+    for (const r of missing) lines.push(`  ${r}: ${HASH_MISSING} (${reapproveCommand(r)})`);
+  }
   const n = v.sources.length;
   lines.push(
     `Items visible across ${n} source${n === 1 ? "" : "s"} (row filters limit rows, not these counts): ${allCounts(v.summary)}` +
@@ -138,7 +160,7 @@ function render(v: AccessVisibility, mode: Show, rolesGiven: boolean): string {
     for (const m of s.models) items.push(...modelLines(m, mode));
     for (const m of s.metrics) {
       if (m.visible && mode !== "hidden") items.push(`    metric ${m.name}`);
-      else if (!m.visible && mode !== "visible") items.push(`    metric ${m.name}: hidden (${m.reasons.join(", ")})`);
+      else if (!m.visible && mode !== "visible") items.push(`    metric ${m.name}: hidden (${why(m)})`);
     }
     lines.push(`  ${mode === "all" ? "items" : mode}:`);
     lines.push(...(items.length ? items : ["    none"]));

@@ -9,7 +9,7 @@ import { type Compiled, type CompileResult, compileRequest, type Refused } from 
 import type { Model, QueryRequest } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, duckdbSource, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, duckdbSource, initProject, PG_URL, reapprove, sl, tempRoot, uniqueSchema } from "./helpers.ts";
 
 type Row = Record<string, unknown>;
 
@@ -642,6 +642,8 @@ describe("Acme's sales row filters (invariant: a row-filtered user sees only the
         await loadPostgres(PG_URL!, DATA, schema);
         await db.unsafe(readFileSync(join(DATA, "..", "evolve.sql"), "utf8").replace(/(?<!@)\bacme\./g, `${schema}.`));
         const root = acmeCopy("postgres", schema);
+        // The copy reads the test schema, which changes approved models; the owner approves them again.
+        await reapprove(root);
         await onlyOwnRows(root, schema, runPg);
       } finally {
         await db.unsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {});

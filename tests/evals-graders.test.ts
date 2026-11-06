@@ -219,12 +219,31 @@ describe("figures", () => {
   test("a golden whose measure is a metric maps through the metric's first measure", async () => {
     const { dir, root } = copyRun();
     await approveLake(root);
-    write(join(root, "metrics.yaml"), 'metrics:\n  - name: sessions_total\n    source: lake\n    type: derived\n    expr: "{sessions.session_count}"\n    format: integer\n    description: Sessions.\n    status: approved\n');
-    // The compiler refuses metrics, so the wrong recorded value is what is compared.
+    write(join(root, "metrics.yaml"), 'metrics:\n  - name: sessions_total\n    source: lake\n    type: derived\n    expr: "{sessions.session_count}"\n    format: integer\n    description: Sessions.\n    status: draft\n');
+    // The owner approves the metric through a recorded yes, so it carries its approved_hash.
+    expect((await approveWithYes(root, ["--target", "metric:sessions_total", "--by", "Dana Ruiz"])).code).toBe(0);
+    // The compiler compiles the metric, so the recorded rows (wrong on purpose) are not read; the golden
+    // without the 2025 filter compiles to every year's sessions and fails.
     golden(root, "sessions_2025", { source: "lake", measures: ["sessions_total"], filters: in2025("sessions.started_at") }, [{ sessions_total: 1 }]);
+    golden(root, "sessions_all_2025", { source: "lake", measures: ["sessions_total"] }, [{ sessions_total: 4551 }]);
     const g = grader(await gradeRun(dir), "figures");
-    expect(g).toMatchObject({ score: 0, passed: false });
-    expect(g.details[0]).toStartWith("semantic/goldens/sessions_2025.yaml: sessions_2025 does not match the reference figure: it is 1, not 4551 (from the golden's recorded rows, since sl sql refuses it:");
+    expect(g).toMatchObject({ score: 1 / 2, passed: false });
+    expect(g.details).toEqual([
+      "semantic/goldens/sessions_2025.yaml: sessions_2025 matches the reference figure (compiled by the reference compiler and run on lake).",
+      "semantic/goldens/sessions_all_2025.yaml: sessions_2025 does not match the reference figure: it is 8000, not 4551 (compiled by the reference compiler and run on lake).",
+    ]);
+  });
+
+  test("a metric golden the compiler refuses falls back to its recorded rows, mapped through the metric's first measure", async () => {
+    const { dir, root } = copyRun();
+    await draftWarehouse(root);
+    write(join(root, "metrics.yaml"), 'metrics:\n  - name: rev_metric\n    source: warehouse\n    type: derived\n    expr: "{orders.revenue}"\n    format: currency\n    status: draft\n');
+    golden(root, "revenue_2025", { source: "warehouse", measures: ["rev_metric"] }, [{ rev_metric: 1 }]);
+    golden(root, "gross_revenue_2025", { source: "warehouse", measures: ["rev_metric"] }, [{ rev_metric: 301050.82 }]);
+    const g = grader(await gradeRun(dir), "figures");
+    expect(g).toMatchObject({ score: 1 / 2, passed: false });
+    expect(g.details[0]).toStartWith("semantic/goldens/gross_revenue_2025.yaml: revenue_2025 matches the reference figure (from the golden's recorded rows, since sl sql refuses it:");
+    expect(g.details[1]).toStartWith("semantic/goldens/revenue_2025.yaml: revenue_2025 does not match the reference figure: it is 1, not 301050.82 (from the golden's recorded rows, since sl sql refuses it:");
   });
 
   test("a request's first model: a measure's, a ratio's numerator's, a derived metric's first placeholder's, else a dimension's", () => {
