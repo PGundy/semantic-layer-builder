@@ -18,6 +18,7 @@ import {
   UNHASHED_MESSAGE,
 } from "./approval-hash.ts";
 import { classifyType, isNumeric, isTemporal } from "./column-types.ts";
+import { rowFilterTextProblem } from "./compiler/rowfilters.ts";
 import { type Condition, conditionAttributes, type Literal, parseCondition } from "./conditions.ts";
 import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
 import { quoteIdent } from "./dialect.ts";
@@ -1178,6 +1179,8 @@ class Validator {
           const [source, name] = rf.model.split(".") as [string, string];
           this.checkSqlRefs(f, `${rp}.expr`, expr, this.model(source, name)!, "row filter");
         }
+        const textProblem = rowFilterTextProblem(expr);
+        if (textProblem) this.error(f, `${rp}.expr`, textProblem);
         for (const match of expr.matchAll(USER_PLACEHOLDER))
           if (!attrs.has(match[1]!)) this.error(f, `${rp}.expr`, `{{ user.${match[1]} }} names an undeclared user attribute`);
         const rest = expr.replace(USER_PLACEHOLDER, "");

@@ -364,7 +364,7 @@ describe("refusals", () => {
     return r;
   }
 
-  test("metrics and row filters are refused, naming what is missing and that a later version adds it; joins compile (tests/compiler-joins.test.ts)", async () => {
+  test("metrics are refused, naming what is missing and that a later version adds it; joins and row filters compile (tests/compiler-joins.test.ts, tests/compiler-access.test.ts)", async () => {
     const { root } = await shop();
     expect(compileRequest(root, req({ measures: ["orders.real_revenue"], dimensions: ["orders.customer_region", "customers.region"] })).ok).toBe(true);
     const two = await refusal(root, req({ measures: ["orders.revenue", "customers.customer_count"] }));
@@ -381,10 +381,9 @@ describe("refusals", () => {
       user_attributes: [{ name: "region", type: "string" }],
       roles: [{ name: "rep", assign_when: "user.region is set", row_filters: [{ model: "shop.orders", expr: "upper(region) = {{ user.region }}" }] }],
     });
-    const rf = await refusal(root, req({ measures: ["orders.revenue"] }), { user: { region: "NE" } });
-    expect(rf.refusals).toEqual([
-      { code: "unsupported_row_filter", ref: "shop.orders", message: "a row filter limits this user's rows of orders (role rep); a later version of sl sql adds row filters" },
-    ]);
+    const rf = compiled(compileRequest(root, req({ measures: ["orders.revenue"] }), { user: { region: "NE" } }));
+    expect(rf.sql).toContain("where (upper(region) = $1)");
+    expect(rf.params).toEqual(["NE"]);
     // The default audience holds no role, so no row filter applies.
     expect(compileRequest(root, req({ measures: ["orders.revenue"] })).ok).toBe(true);
   });
@@ -456,15 +455,18 @@ describe("sl sql", () => {
   });
 
   test("a golden file gives the request, role and user; a refusal exits 1 naming the next command", async () => {
-    const goldenFile = join(ACME, "goldens", "sales_rep_101_2025.yaml");
+    const goldenFile = join(ACME, "goldens", "finance_net_revenue_2025.yaml");
     const r = await sl(ACME, ["sql", "--request", goldenFile]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain("a row filter limits this user's rows of orders (role sales); a later version of sl sql adds row filters");
-    expect(r.err).toContain("sl goldens run --name sales_rep_101_2025");
+    expect(r.err).toContain("net_revenue is a metric; a later version of sl sql adds ratio and derived metrics");
+    expect(r.err).toContain("sl goldens run --name finance_net_revenue_2025");
     const j = await sl(ACME, ["sql", "--request", goldenFile, "--json"]);
     const out = j.json<{ ok: boolean; refusals: { code: string }[]; next: string }>();
     expect(out.ok).toBe(false);
-    expect(out.refusals.map((x) => x.code)).toEqual(["unsupported_row_filter"]);
+    expect(out.refusals.map((x) => x.code)).toEqual(["unsupported_metric"]);
+    const sales = await sl(ACME, ["sql", "--request", join(ACME, "goldens", "sales_rep_101_2025.yaml"), "--json"]);
+    expect(sales.code).toBe(0);
+    expect(sales.json<Compiled>().params).toEqual([101, 101, "2025-01-01", "2026-01-01"]);
 
     const hidden = await sl(ACME, ["sql", "--request", JSON.stringify({ source: "warehouse", measures: ["refunds.refund_amount"] })]);
     expect(hidden.code).toBe(1);
@@ -495,11 +497,11 @@ describe("sl sql", () => {
 
 // --- Acme ----------------------------------------------------------------------------------
 
-const UNSUPPORTED = new Set(["unsupported_metric", "unsupported_row_filter"]);
+const UNSUPPORTED = new Set(["unsupported_metric"]);
 const asUser = (g: Golden) => ({ ...(g.role ? { role: g.role } : {}), user: g.user ?? {} });
 
 describe("Acme's approved goldens", () => {
-  test("every one with no metric or row filter compiles, the lake's to its recorded rows; the rest are refused for what a later version adds", async () => {
+  test("every one with no metric compiles, the lake's to its recorded rows; the rest are refused for what a later version adds", async () => {
     const compiledNames: string[] = [];
     for (const { golden: g } of listGoldens(ACME)) {
       if (g.status !== "approved") continue;
@@ -520,6 +522,11 @@ describe("Acme's approved goldens", () => {
       "order_count_by_region_2025",
       "refunds_2025",
       "revenue_by_region_2025",
+      "sales_head_301_2025",
+      "sales_manager_201_2025",
+      "sales_manager_202_2025",
+      "sales_manager_203_2025",
+      "sales_rep_101_2025",
       "sessions_2025",
       "spend_2025",
       "spend_by_channel_2025",

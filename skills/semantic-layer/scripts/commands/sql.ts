@@ -45,11 +45,16 @@ function parseUser(text: string): Record<string, unknown> {
   return v;
 }
 
+// The sl access command that shows what this user, with this role, may see.
+function accessCommand(user: Record<string, unknown>, role: string | undefined): string {
+  const quoted = `'${JSON.stringify(user).replaceAll("'", "'\\''")}'`;
+  return `sl access --user ${quoted}${role ? ` --roles ${role}` : ""}`;
+}
+
 // The command to run after a refusal, by its first kind of problem.
 function nextStep(refusals: Refusal[], source: string, user: Record<string, unknown>, role: string | undefined, golden: string | undefined): string {
   const codes = refusals.map((r) => r.code);
-  const quoted = `'${JSON.stringify(user).replaceAll("'", "'\\''")}'`;
-  const who = `sl access --user ${quoted}${role ? ` --roles ${role}` : ""}`;
+  const who = accessCommand(user, role);
   if (codes.includes("invalid_request")) return "Fix the request (the request format is in references/spec.md, goldens) and run sl sql again.";
   if (codes.includes("invalid_layer")) return "Run sl validate and fix what it reports, then run sl sql again.";
   if (codes.includes("unknown_role") || codes.includes("not_visible"))
@@ -98,6 +103,17 @@ const spec: CommandSpec = {
     ctx.out("");
     const shown = result.params.map((v, i) => `$${i + 1} = ${JSON.stringify(v)}`).join(", ");
     ctx.out(plainText(`Parameters, bound in order: ${shown || "none"}`));
+    for (const r of result.row_filters) {
+      const where = r.in === "where" ? "in WHERE" : `in the ON clause of its join ${r.alias}`;
+      const who = `${r.roles.length > 1 ? "roles" : "role"} ${r.roles.join(", ")}`;
+      ctx.out(
+        plainText(
+          r.rows === "none"
+            ? `This user sees no rows of ${r.model} (${who}), so the SQL reads false ${where}; ${accessCommand(user, role)} says why.`
+            : `Row filters of ${who} limit ${r.model} ${where}, with the user's attributes bound as parameters.`,
+        ),
+      );
+    }
     ctx.out(
       `Compiled for ${result.dialect} from model ${result.model}; sl sql never runs it. Run it with the parameters bound and the session time zone UTC, ` +
         "and compare a golden's recorded rows with sl goldens check.",
