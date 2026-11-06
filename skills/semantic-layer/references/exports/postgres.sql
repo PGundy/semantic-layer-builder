@@ -14,6 +14,9 @@
 -- Restrict schemas: uncomment the line marked sl:schema-filter below and list the schemas,
 -- or print this query with the filter applied: sl export-sql --dialect postgres --schemas a,b
 --
+-- Restrict tables: sl export-sql --include/--exclude prints this query with a table filter at the
+-- line marked sl:table-filter (a pattern the dialect cannot express is applied by sl import).
+--
 -- row_count is the planner's estimate (pg_class.reltuples, kept by ANALYZE and autovacuum);
 -- it is empty for views and for tables never analyzed. Before PostgreSQL 14 a table never
 -- analyzed and an empty one both read reltuples = 0 with no pages, so there an empty table's
@@ -42,6 +45,7 @@ with rel as (
     and n.nspname !~ '^pg_toast'
     and n.nspname !~ '^pg_temp'
     -- and n.nspname in ('public')  -- sl:schema-filter: uncomment and list the schemas to export
+    -- sl:table-filter: sl export-sql --include/--exclude writes the table filter here
 ),
 pk as (
   select con.conrelid as oid, k.attnum, k.ord as pk_ordinal

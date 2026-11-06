@@ -12,6 +12,9 @@
 -- joined by UNION ALL: sl export-sql --dialect bigquery --schemas ds1,ds2
 -- All datasets in one query must share a location.
 --
+-- Restrict tables: sl export-sql --include/--exclude prints this query with a table filter at the
+-- line marked sl:table-filter (a pattern the dialect cannot express is applied by sl import).
+--
 -- Run it and save CSV:
 --   bq --quiet query --use_legacy_sql=false --format=csv --max_rows=1000000 < bigquery.sql > schema.csv
 -- (bq reads the query from stdin; passed as an argument, its opening "--" comment reads as a flag.)
@@ -127,4 +130,5 @@ left join opts o on o.table_schema = c.table_schema and o.table_name = c.table_n
 left join counts n on n.table_schema = c.table_schema and n.table_name = c.table_name
 left join pk on pk.table_schema = c.table_schema and pk.table_name = c.table_name and pk.column_name = c.column_name
 left join fk on fk.table_schema = c.table_schema and fk.table_name = c.table_name and fk.column_name = c.column_name
+-- sl:table-filter: sl export-sql --include/--exclude writes the table filter here
 order by table_schema, table_name, ordinal_position, fk_name;

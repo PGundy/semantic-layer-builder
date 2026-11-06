@@ -15,6 +15,9 @@
 -- Restrict schemas: uncomment the line marked sl:schema-filter below and list the schemas,
 -- or print this query with the filter applied: sl export-sql --dialect sqlserver --schemas a,b
 --
+-- Restrict tables: sl export-sql --include/--exclude prints this query with a table filter at the
+-- line marked sl:table-filter (a pattern the dialect cannot express is applied by sl import).
+--
 -- row_count sums sys.partitions.rows over the heap or clustered index; it is empty for views.
 -- Comments are cut at 1,900 characters, so a quoted comment stays within nvarchar(4000).
 set nocount on;
@@ -30,6 +33,7 @@ with rel as (
   where o.type in ('U', 'V') and o.is_ms_shipped = 0
     and s.name not in ('sys', 'INFORMATION_SCHEMA')
     -- and s.name in (N'dbo')  -- sl:schema-filter: uncomment and list the schemas to export
+    -- sl:table-filter: sl export-sql --include/--exclude writes the table filter here
 ),
 pk as (
   select ic.object_id, ic.column_id, ic.key_ordinal as pk_ordinal

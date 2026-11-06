@@ -51,14 +51,16 @@ export async function main(argv: string[], io: MainIO): Promise<number> {
         ? await sdkDriver({ model: values.model, env: io.env })
         : scriptedDriver(loadScript(scenario, file, values.script), clock);
     const outDir = resolve(values.out ?? resolve(REPO_ROOT, "evals", "runs"));
-    const { runDir, summary, replaced } = await runScenario({ scenario, driver, driverName, clock, outDir });
+    const { runDir, summary, replaced, grades } = await runScenario({ scenario, driver, driverName, clock, outDir, scenarioFile: file });
     const rel = relative(process.cwd(), runDir);
     const shown = rel && !rel.startsWith("..") ? rel : runDir;
     io.out(
       `Run ${summary.run_id}: ${summary.turns} turns (${summary.owner_turns} owner), ${summary.tokens} tokens, stopped: ${summary.stop_reason}.` +
         (replaced ? " It replaced an earlier run with the same id." : ""),
     );
-    io.out(`Wrote ${shown}/transcript.jsonl, ${shown}/summary.json and the final semantic root in ${shown}/semantic.`);
+    io.out(`Wrote ${shown}/transcript.jsonl, ${shown}/summary.json, ${shown}/grades.json and the final semantic root in ${shown}/semantic.`);
+    const failed = grades.graders.filter((g) => !g.passed).map((g) => g.grader);
+    io.out(`Grades: ${failed.length ? `failed ${failed.join(", ")}` : "passed"}; see them with bun evals/graders/grade.ts --run ${shown}.`);
     if (summary.stop_reason === "error") {
       io.err(`The run stopped on an error: ${summary.error}`);
       io.err(`Next: fix it and rerun bun evals/runner/run.ts --scenario ${scenario.name}.`);

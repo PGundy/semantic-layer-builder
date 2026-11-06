@@ -3,7 +3,9 @@
 The eval harness plays the semantic-layer skill against a simulated data owner and records what happened, so a change to the skill or the CLI can be measured (docs/PRD.md, FR-6.1). A run takes one scenario: a fixture, an intake path, an owner persona, and a turn and token budget.
 
 - `runner/`: the runner (`run.ts` is the command), the two drivers and the persona prompts (`runner/personas/`).
-- `scenarios/`: the scenarios and the canned turns the scripted driver replays.
+- `graders/`: the deterministic graders (`grade.ts` is the command).
+- `scenarios/`: the scenarios, the canned turns the scripted driver replays and the figure mapping the graders read (`acme.figures.json`).
+- `smoke.ts`: the smoke command, and `baseline.json`, the scores it compares with.
 - `runs/`: one directory per run, gitignored.
 
 The file formats are in `skills/semantic-layer/references/spec.md`, section Eval runs, with schemas in `skills/semantic-layer/schemas/eval-*.schema.json`.
@@ -24,7 +26,65 @@ bun evals/runner/run.ts --scenario acme-terse --now 2026-01-01T00:00:00Z --out /
 | `--now <iso time>` | Fixes the clock: it starts there and moves one second per read, so the run id, timestamps and files come out the same every time for the same `--out` (the source's view paths run from the run's root to `fixtures/`, so they change with `--out`). |
 | `--model <id>` | The model for the sdk driver. |
 
-It exits 0 when the skill agent ended the session, 2 when a budget stopped the run and 1 on an error, and prints the run directory. Each run writes `transcript.jsonl` (one turn per line), `summary.json` (turns, tokens and the stop reason: `done`, `turn_budget`, `token_budget` or `error`) and `semantic/`, the semantic root the agent worked in.
+It exits 0 when the skill agent ended the session, 2 when a budget stopped the run and 1 on an error, and prints the run directory. Each run writes `transcript.jsonl` (one turn per line), `summary.json` (turns, tokens and the stop reason: `done`, `turn_budget`, `token_budget` or `error`), `semantic/`, the semantic root the agent worked in, and `grades.json`, what the graders found.
+
+## Grade a run
+
+The runner grades every run when it stops. To grade a run directory again, for example after changing a grader or the scenario's `grading` block:
+
+```sh
+bun evals/graders/grade.ts --run evals/runs/acme-terse-20260101T000000000Z          # a table and the details
+bun evals/graders/grade.ts --run evals/runs/acme-terse-20260101T000000000Z --json   # the report as JSON
+```
+
+It rewrites `grades.json` in the run directory and exits 0 when every grader passed, 1 when one failed. `--scenario <name|file>` grades against another scenario than the one `summary.json` names. The graders read only the run's files, call no model and grade the same run the same way every time:
+
+| Grader | Passes when |
+|---|---|
+| `figures` | Every approved golden mapped to a figure in `fixtures/<fixture>/reference-figures.json` (by the scenario's figure mapping) produces it, and none produces a `common_mistakes` value. The figure comes from compiling the golden's request with the reference compiler and running it on the run's DuckDB source, or, when the compiler refuses it, from the golden's recorded rows; each detail names the path. |
+| `secrets` | No file of the final root, the transcript or the summary holds a credential or a value of a protected column of the fixture's data (the scenario's `protected_columns` and every column the sensitivity rules flag by name). |
+| `selection` | Each source's final scope equals the scenario's `selection` list for it. |
+| `approvals` | Every approved item has a ledger `yes` with its hash; "not graded" until the ledger exists. |
+| `connection_first` | The skill offers an export only after asking for a connection and hearing it is not possible; on an export scenario no golden is confirmed. |
+| `effort` | Never fails: owner turns, owner words and tokens per approved item, and wall time. |
+
+A score is 0 to 1, or empty ("not graded") when there was nothing to grade. The rules each grader applies, the text rules of `connection_first` among them, are in `skills/semantic-layer/references/spec.md`, section Eval runs, Grades.
+
+## The smoke run and the baseline
+
+The smoke subset is one fixture and two personas: `acme-structured` and `acme-terse`. `bun run eval:smoke` (`bun evals/smoke.ts`) runs each with the scripted driver, grades it and compares every grader's score with `baseline.json`. CI runs it on every pull request in the `eval-smoke` job, which does not block a merge yet (`continue-on-error`).
+
+```sh
+bun run eval:smoke                               # compare with evals/baseline.json
+bun run eval:smoke -- --report-only              # print the table, exit 0 whatever it shows
+bun run eval:smoke -- --update-baseline          # record the current scores in evals/baseline.json
+```
+
+It prints one row per scenario and grader: the baseline score, the score now, the noise band and the status. A score below the baseline minus its band is a `REGRESSION`, and so is a grader that was scored and no longer is, a grader missing from the run, a run that no longer finishes (`done`) and a scenario the baseline lacks. A score above the baseline plus its band is `improved`, and a baseline scenario the smoke no longer runs is `not run`; neither fails. The effort metrics are printed beside their baseline values and never fail the smoke.
+
+| Flag | Does |
+|---|---|
+| `--report-only` | Prints the table and exits 0 even on a regression. |
+| `--update-baseline` | Rewrites the baseline from the current scores, with sorted keys, so the same runs write the same bytes. |
+| `--baseline <file>` | Another baseline file than `evals/baseline.json`. |
+| `--out <dir>` | Keeps the runs there; by default they go to a temporary directory that is removed afterwards. |
+| `--driver scripted\|sdk` | The driver; the baseline names the one it was recorded with, and smoke compares runs of that driver only. `--update-baseline` will not replace a baseline of another driver unless `--baseline` names the file. |
+| `--runs <n>` | Runs each scenario n times; a grader's score is the mean over the runs. |
+| `--model <id>` | The model for the sdk driver. |
+
+It exits 0 with no regression (always with `--report-only` or `--update-baseline`), 1 on a regression and 2 when it cannot run (a bad flag, a missing or invalid baseline, a driver other than the baseline's).
+
+When a change lowers a score on purpose, record it with `--update-baseline` and say why in the pull request; the diff of `baseline.json` shows what moved. A baseline that is not valid JSON or fails its schema (a bad hand edit, a merge conflict) is set aside with a warning and recorded afresh, its bands starting at 0. The `Next:` lines name the record command with the `--driver`, `--runs` and `--baseline` flags of the run.
+
+### The noise band
+
+Each grader in the baseline has a `band`: how far below its recorded score a run may fall before it is a regression. The scripted driver replays the same turns with the same clock, so its runs are identical and every band is 0. A run with the sdk driver varies, so its band has to be measured. To widen it, run each scenario several times with the sdk driver and record the observed spread:
+
+```sh
+bun run eval:smoke -- --update-baseline --driver sdk --runs 5 --baseline evals/baseline.sdk.json
+```
+
+An sdk baseline goes in its own file, since CI compares scripted runs with `evals/baseline.json`; compare with it by passing the same `--driver sdk --baseline evals/baseline.sdk.json`. With more than one run, each grader's score is the mean and its band the difference between the highest and the lowest score seen. With one run, `--update-baseline` keeps the band the baseline already gives a grader (0 for a new one), so a band widened by hand survives a re-record with the same driver.
 
 ## The scenarios
 

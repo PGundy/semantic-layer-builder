@@ -2,15 +2,20 @@
 // in, as Markdown for a person or JSON for a tool. Each item carries the readback text exactly as
 // stored, its content hash and an empty verdict and answer; the open questions of the models and
 // access.yaml the items belong to follow, each with a stable reference (ref and key) and an empty
-// answer. parseReviewMarkdown reads a filled Markdown form back into the JSON form's structure.
+// answer. parseReviewMarkdown reads a filled Markdown form back into the JSON form's structure, and
+// applyReview records a filled form's answers in the ledger.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, ftruncateSync, lstatSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isScalar, isSeq } from "yaml";
+import { commitEdit, type EditOutcome, itemMap, relFile } from "./edit.ts";
 import { UserError } from "./errors.ts";
+import { LEDGER_FILE, type NewLedgerEntry, openLedger, ownerText, shellQuote } from "./ledger.ts";
+import { plainText } from "./output.ts";
 import { loadAccess, loadMetrics, paths } from "./project.ts";
 import { PENDING_DIR, renderReadbacks } from "./readback.ts";
 import { parseTarget } from "./refs.ts";
-import type { PendingReadback } from "./types.ts";
+import type { LedgerEntry, LedgerQuestion, LedgerReply, PendingReadback } from "./types.ts";
 import { schemaIssues } from "./validate.ts";
 import { readYamlIfExists } from "./yaml.ts";
 
@@ -380,4 +385,212 @@ function isReviewForm(text: string, format: ReviewFormat): boolean {
   } catch {
     return false;
   }
+}
+
+// Applying a filled form ---------------------------------------------------------------------------
+
+// A filled form named on the command line, resolved from the working directory and only read.
+export function readReviewFile(cwd: string, file: string): ReviewForm {
+  const abs = resolve(cwd, file);
+  const ext = extname(abs).toLowerCase();
+  if (ext !== ".md" && ext !== ".json") throw new UserError(`${file} does not end in .md or .json; give the form sl review export wrote, such as .sl/reviews/rb_0001.md.`);
+  const stat = statSync(abs, { throwIfNoEntry: false });
+  if (!stat?.isFile()) throw new UserError(`${file} ${stat ? "is not a file" : "does not exist"}; give the path of the filled form, such as .sl/reviews/rb_0001.md.`);
+  const text = readFileSync(abs, "utf8");
+  return ext === ".md" ? parseReviewMarkdown(text, file) : parseReviewJson(text, file);
+}
+
+// The target's content hash as it stands, or null when it no longer exists.
+function currentHash(root: string, target: string): string | null {
+  try {
+    return renderReadbacks(root, [target])[0]?.content_hash ?? null;
+  } catch (e) {
+    if (e instanceof UserError) return null;
+    throw e;
+  }
+}
+
+// Where a question's ref keeps its open_questions: the file and the map's path inside it.
+function questionHolder(root: string, ref: string): { file: string; path: (string | number)[]; list: string[] } | null {
+  if (ref === "access" || ref.startsWith("access.roles.")) {
+    const file = paths(root).access;
+    const access = existsSync(file) ? readYamlIfExists<Obj>(file) : null;
+    if (ref === "access") return access ? { file, path: [], list: strs(access.open_questions) } : null;
+    const roles = Array.isArray(access?.roles) ? access.roles : [];
+    const i = roles.findIndex((r) => isObj(r) && r.name === ref.slice("access.roles.".length));
+    return i < 0 ? null : { file, path: ["roles", i], list: strs((roles[i] as Obj).open_questions) };
+  }
+  const [source, model] = ref.split(".") as [string, string];
+  const file = paths(root).model(source, model);
+  const data = existsSync(file) ? readYamlIfExists<Obj>(file) : null;
+  return data ? { file, path: [], list: strs(data.open_questions) } : null;
+}
+
+export interface ApplyItemNote {
+  item: number;
+  target: string;
+  verdict: Verdict | null;
+  reason?: string;
+  id?: string;
+}
+
+export interface ApplyQuestionNote {
+  ref: string;
+  key: string;
+  question: string;
+  id?: string;
+}
+
+export interface ReviewApplyOutcome {
+  readback_id: string;
+  recorded: LedgerEntry[];
+  already_recorded: ApplyItemNote[];
+  refused: ApplyItemNote[];
+  questions_already_resolved: ApplyQuestionNote[];
+  questions_not_found: ApplyQuestionNote[];
+  unanswered: { items: ApplyItemNote[]; questions: ApplyQuestionNote[] };
+  edited: EditOutcome[];
+  redacted: boolean;
+  next_steps: string[];
+}
+
+// Appends one entry to the ledger under the next id; a parameter so a test can make it fail.
+export type LedgerAppend = (root: string, entry: NewLedgerEntry) => LedgerEntry;
+const appendEntry: LedgerAppend = (root, entry) => openLedger(root).append(entry);
+
+// Puts the ledger back to the bytes it had (size, or no file), without following a link.
+function truncateLedger(root: string, size: number | null): void {
+  const file = join(root, LEDGER_FILE);
+  const stat = lstatSync(file, { throwIfNoEntry: false });
+  if (!stat?.isFile()) return;
+  if (size === null) return void unlinkSync(file);
+  const fd = openSync(file, constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    ftruncateSync(fd, size);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Records a filled form: each answered item as a reply line exactly as sl reply writes it, unless
+// its hash changed since the form was exported, and each answered open question as sl question
+// resolve does. Everything is checked first; the ledger lines are appended, then the YAML edited, and
+// a failure puts every file and the ledger back, so a question is never gone without its answer. An answer already in the ledger, or a question no
+// longer open, records nothing, so applying a form twice records it once. It never approves.
+export function applyReview(root: string, form: ReviewForm, by: string, at: string, append: LedgerAppend = appendEntry): ReviewApplyOutcome {
+  const id = form.readback_id;
+  const pending = loadPending(root, id);
+  const again = `export the form again with sl review export --readback ${id} --format md|json --force`;
+  const seen = new Set<number>();
+  for (const it of form.items) {
+    const p = pending.items.find((x) => x.n === it.n);
+    if (!p || p.target !== it.target)
+      throw new UserError(`Item ${it.n} (${it.target}) of the form is not an item of ${id}, whose items are ${pending.items.map((i) => `${i.n} (${i.target})`).join(", ")}. Nothing was recorded; ${again}.`);
+    if (seen.has(it.n)) throw new UserError(`Item ${it.n} appears twice in the form. Nothing was recorded; ${again}.`);
+    seen.add(it.n);
+  }
+  const keys = form.questions.map((q) => `${q.ref} ${q.key}`);
+  if (new Set(keys).size !== keys.length) throw new UserError(`A question appears twice in the form. Nothing was recorded; ${again}.`);
+  openLedger(root);
+  const ledgerFile = join(root, LEDGER_FILE);
+  type Line = Partial<LedgerReply> & Partial<LedgerQuestion>;
+  const lines = existsSync(ledgerFile) ? readFileSync(ledgerFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line) : [];
+  const out: ReviewApplyOutcome = { readback_id: id, recorded: [], already_recorded: [], refused: [], questions_already_resolved: [], questions_not_found: [], unanswered: { items: [], questions: [] }, edited: [], redacted: false, next_steps: [] };
+  const replies: Omit<LedgerReply, "id">[] = [];
+  for (const it of form.items) {
+    const p = pending.items.find((x) => x.n === it.n)!;
+    const note: ApplyItemNote = { item: p.n, target: p.target, verdict: it.verdict };
+    const answer = ownerText(it.answer);
+    if (it.verdict === null && !answer.text) {
+      out.unanswered.items.push(note);
+      continue;
+    }
+    // A marked box with no words is recorded with the verdict as the owner's words.
+    const text = answer.text || it.verdict!;
+    const dup = lines.find((l) => l.kind === "reply" && l.readback_id === id && l.item === p.n && l.verdict === it.verdict && l.text === text);
+    if (dup) out.already_recorded.push({ ...note, id: dup.id });
+    else if (it.content_hash !== p.content_hash) out.refused.push({ ...note, reason: `its hash in the form is not the one ${id} recorded, so the form does not show what was read back` });
+    else if (currentHash(root, p.target) !== p.content_hash) out.refused.push({ ...note, reason: `${p.target} changed since the form was exported, so the owner answered text that no longer holds` });
+    else {
+      out.redacted ||= answer.redacted;
+      replies.push({ kind: "reply", readback_id: id, item: p.n, target: p.target, content_hash: p.content_hash, text, verdict: it.verdict, by, at });
+    }
+  }
+  // An item or an open question the form leaves out (deleted by the owner, or added since export)
+  // still needs an answer.
+  for (const p of pending.items) if (!seen.has(p.n)) out.unanswered.items.push({ item: p.n, target: p.target, verdict: null });
+  out.unanswered.items.sort((a, b) => a.item - b.item);
+  const inForm = new Set(keys);
+  for (const q of openQuestions(root, pending.items.map((i) => i.target)))
+    if (!inForm.has(`${q.ref} ${q.key}`)) out.unanswered.questions.push({ ref: q.ref, key: q.key, question: plainText(q.question) });
+  // A question line for this ref with this answer, to a question whose text or key is the form's.
+  const resolvedLine = (q: ReviewQuestion, text: string) =>
+    lines.find((l) => l.kind === "question" && l.target === q.ref && l.text === text && (l.question === plainText(q.question).trim() || questionKey(l.question ?? "") === q.key));
+  // entry is null when the ledger already holds the answer (a run stopped after appending it), so
+  // only the YAML edit is left to make.
+  const resolutions: { file: string; path: (string | number)[]; question: string; entry: Omit<LedgerQuestion, "id"> | null }[] = [];
+  for (const q of form.questions) {
+    const note: ApplyQuestionNote = { ref: q.ref, key: q.key, question: plainText(q.question) };
+    const answer = ownerText(q.answer);
+    if (!answer.text) {
+      out.unanswered.questions.push(note);
+      continue;
+    }
+    const holder = questionHolder(root, q.ref);
+    const question = holder?.list.find((x) => questionKey(x) === q.key);
+    const done = resolvedLine(q, answer.text);
+    if (done) out.questions_already_resolved.push({ ...note, id: done.id });
+    else if (!holder || question === undefined) out.questions_not_found.push(note);
+    else out.redacted ||= answer.redacted;
+    if (holder && question !== undefined)
+      resolutions.push({ file: holder.file, path: holder.path, question, entry: done ? null : { kind: "question", target: q.ref, question: plainText(question).trim(), text: answer.text, by, at } });
+  }
+
+  const written: { file: string; before: string }[] = [];
+  const size = existsSync(ledgerFile) ? statSync(ledgerFile).size : null;
+  let appended = false;
+  try {
+    for (const entry of [...replies, ...resolutions.flatMap((r) => (r.entry ? [r.entry] : []))]) {
+      appended = true;
+      out.recorded.push(append(root, entry));
+    }
+    for (const file of [...new Set(resolutions.map((r) => r.file))]) {
+      const mine = resolutions.filter((r) => r.file === file);
+      const before = readFileSync(file, "utf8");
+      const rel = relFile(root, file);
+      const outcome = commitEdit(root, file, `resolve open questions of ${rel}`, (doc) => {
+        for (const r of mine) {
+          const map = itemMap(doc, r.path);
+          const node = map.get("open_questions", true);
+          // Every copy of the question goes, so a question written twice is resolved once.
+          const kept = isSeq(node) ? node.items.filter((n) => !(isScalar(n) && n.value === r.question)) : [];
+          if (!isSeq(node) || kept.length === node.items.length) throw new UserError(`${rel} changed while it was read; run this again.`);
+          node.items = kept;
+          if (!node.items.length) map.delete("open_questions");
+        }
+      });
+      if (outcome.changed) written.push({ file, before });
+      out.edited.push(outcome);
+    }
+  } catch (e) {
+    for (const w of written.reverse()) writeFileSync(w.file, w.before);
+    if (appended) truncateLedger(root, size);
+    const why = e instanceof Error ? e.message : String(e);
+    throw new UserError(`${why}\nNothing was recorded: ${LEDGER_FILE} and the YAML files are as they were. Fix the cause and run sl review apply again.`);
+  }
+
+  const owner = shellQuote(by);
+  const steps = out.next_steps;
+  const replied = [...out.recorded.filter((e): e is LedgerReply => e.kind === "reply"), ...out.already_recorded];
+  for (const r of replied)
+    if (r.verdict === "yes" && currentHash(root, r.target) === pending.items.find((x) => x.n === r.item)?.content_hash) steps.push(`sl approve --target ${r.target} --by ${owner}`);
+  const edits = [...new Set(replied.filter((r) => r.verdict === "no" || r.verdict === "change").map((r) => r.target))];
+  if (edits.length) steps.push(`make the corrections and changes the owner asked for with typed edits (sl set, sl tag, sl ignore-column or sl question add), then sl readback --targets ${edits.join(",")}`);
+  for (const r of replied.filter((x) => x.verdict === null))
+    steps.push(`ask the owner whether item ${r.item} is a yes, a no or a change, then sl reply --readback ${id} --item ${r.item} --text "<owner's words>" --verdict yes|no|change --by ${owner}`);
+  if (out.refused.length) steps.push(`sl readback --targets ${out.refused.map((r) => r.target).join(",")}, then sl review export --readback <its id> --format md for a new form`);
+  if (out.unanswered.items.length || out.unanswered.questions.length) steps.push(`ask the owner for what is still unanswered, then sl review apply again with the form they return`);
+  if (out.questions_not_found.length) steps.push("sl status lists the open questions that remain");
+  if (!steps.length) steps.push("sl status");
+  return out;
 }
