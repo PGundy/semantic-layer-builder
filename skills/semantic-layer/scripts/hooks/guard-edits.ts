@@ -4,14 +4,18 @@
 // semantic root (a directory holding semantic.yaml) it exits 2, with the reason and the command to
 // use on stderr, when the call would add, change or remove an approval field, change what an
 // approved item's content hash covers, change a confirmed golden's recorded rows, or write
-// .sl/ledger.jsonl or .sl/pending/ by hand. Anything else exits 0. The CLI's own checks
-// (sl validate, sl approve) remain the guarantee; this hook stops the edit before it is made.
+// .sl/ledger.jsonl or .sl/pending/ by hand. Before those checks, a call from one of the plugin's
+// role agents (spec: Agent roles) is held to what lib/roles.ts lets that role run and edit.
+// Anything else exits 0. The CLI's own checks (sl validate, sl approve) remain the guarantee; this
+// hook stops the edit before it is made.
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { accessEntry, carriesHash, metricEntries, modelEntries, type ApprovalEntry } from "../lib/approval-hash.ts";
+import { commandList, DENIED_FLAGS, roleOf, slRefusal, type Role } from "../lib/roles.ts";
 import { DIALECTS, type Dialect, type Model } from "../lib/types.ts";
 import { parseYamlText } from "../lib/yaml.ts";
-import { shellWrites } from "./shell-writes.ts";
+import { shellWrites, tokenize } from "./shell-writes.ts";
 
 export interface Verdict {
   // false: the hook exits 2 and Claude Code refuses the call.
@@ -469,6 +473,163 @@ function bashCall(input: Obj, cwd: string): Verdict {
   return lines.length ? refuse(["semantic-layer: refused this shell command:", ...lines]) : { allow: true };
 }
 
+// --- Role agents -----------------------------------------------------------------------------
+
+// The CLI entry this hook ships with: the only sl a role agent may run.
+const SL_ENTRY = join(import.meta.dir, "..", "sl.ts");
+const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
+const SEPARATORS = new Set([";", ";;", "&&", "||", "|", "|&", "&", "(", ")"]);
+const OUTPUT_REDIRECTS = new Set([">", ">>", ">|", "&>", "&>>"]);
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+type Word = { word: string; dynamic: boolean; pattern?: boolean };
+const isWord = (t: unknown): t is Word => isObject(t) && typeof t.word === "string";
+const expandHome = (p: string) => (p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
+// Command prefixes the interviewer's sl invocations are read through (env SL_NOW=x bun <sl.ts> ...).
+const PREFIXES = new Set(["env", "command", "exec", "nohup", "time", "nice"]);
+const isDenied = (w: string) => DENIED_FLAGS.some((f) => w === f || w.startsWith(`${f}=`));
+
+// Every word of a command, also inside its $(...) and `...`, to look for a flag no role passes.
+function allWords(command: string, depth = 0): string[] {
+  const subs: string[] = [];
+  const words = tokenize(command, subs).flatMap((t) => (isWord(t) ? [t.word] : []));
+  return depth < 3 ? [...words, ...subs.flatMap((x) => allWords(x, depth + 1))] : words;
+}
+
+// Why a role agent's shell command is refused: one line per problem, none when it may run it. For a
+// role whose shell is "sl_only" every simple command must be `bun [run] <the plugin's sl.ts> ...`
+// written out (no variable, no $(...), no unquoted pattern) or a `cd`; input comes only from a heredoc with a quoted
+// delimiter or a <<< string, and output goes nowhere but the terminal and /dev/null. For any role,
+// every sl invocation it can see must be one the role may run.
+function roleShell(role: Role, command: string, cwd: string): string[] {
+  const strict = role.shell === "sl_only";
+  const subs: string[] = [];
+  const toks = tokenize(command, subs);
+  const out: string[] = [];
+  const flag = allWords(command).find(isDenied);
+  if (flag) out.push(`it passes ${flag.split("=")[0]}; protected values are for the owner to print by hand, so no agent passes it. Run the command without it.`);
+  if (strict && subs.length) out.push("it runs a command inside $(...) or `...`, which the hook cannot check; write each value out.");
+  // Every directory a cd may have left the shell in: a relative sl path must name the entry from each.
+  const dirs = [cwd];
+  const entry = realPath(SL_ENTRY);
+  for (let i = 0; i < toks.length; i++) {
+    const words: Word[] = [];
+    for (; i < toks.length; i++) {
+      const t = toks[i]!;
+      if (isWord(t)) {
+        words.push(t);
+        continue;
+      }
+      const op = t.op;
+      if (SEPARATORS.has(op)) break;
+      if (op === "<<" || op === "<<-") {
+        if (strict && t.quoted !== true)
+          out.push("its heredoc's delimiter is not written as a plain quoted word, so the shell may expand the rows or end them elsewhere; write <<'ROWS'.");
+        continue;
+      }
+      const target = toks[i + 1];
+      const to = isWord(target) ? target : undefined;
+      if (to) i++;
+      if (!strict) continue;
+      if (op === "<<<" && to && !to.dynamic) continue;
+      if ((op === ">&" || op === "<&") && to && /^(\d+-?|-)$/.test(to.word)) continue;
+      if (OUTPUT_REDIRECTS.has(op) && to?.word === "/dev/null") continue;
+      out.push(`it uses the redirection ${op}${to ? ` ${to.word}` : ""}; a role agent writes no files and gives sl its input in a heredoc (<<'ROWS') or a <<< string.`);
+    }
+    if (!words.length) continue;
+    let k = 0;
+    // The interviewer's command is read through assignments and prefixes; a role that runs only sl has neither.
+    while (!strict && k < words.length && (ASSIGNMENT.test(words[k]!.word) || PREFIXES.has(words[k]!.word) || (k > 0 && words[k - 1]!.word === "env" && words[k]!.word.startsWith("-"))))
+      k++;
+    const first = words[k];
+    if (!first) continue;
+    if (strict && ASSIGNMENT.test(first.word)) {
+      out.push(`it sets ${first.word.split("=")[0]} before the command; a role agent runs sl with no variables set.`);
+      continue;
+    }
+    if (first.word === "cd" && !first.dynamic) {
+      const args = words.slice(k + 1);
+      if (args.length > 1 || args.some((a) => a.dynamic || a.word.startsWith("-"))) {
+        if (strict) out.push("it runs a cd the hook cannot follow; give sl.ts its absolute path instead.");
+      } else for (const d of [...dirs]) if (dirs.length < 8) dirs.push(resolve(d, expandHome(args[0]?.word ?? "~")));
+      continue;
+    }
+    const bun = !first.dynamic && (first.word === "bun" || (isAbsolute(first.word) && realPath(first.word) === realPath(process.execPath)));
+    const at = bun && words[k + 1]?.word === "run" ? k + 2 : k + 1;
+    const path = words[at];
+    const sl =
+      bun &&
+      path !== undefined &&
+      !path.dynamic &&
+      // To allow a strict role's call the path must name the entry from every directory; to check an
+      // interviewer's call, naming it from any is enough.
+      (isAbsolute(expandHome(path.word)) ? [expandHome(path.word)] : dirs.map((d) => resolve(d, path.word)))[strict ? "every" : "some"]((p) => realPath(p) === entry);
+    if (!sl) {
+      if (strict) out.push(`it runs ${first.dynamic ? "a command named by a variable" : basename(first.word)}${bun ? " on a file other than the plugin's sl.ts" : ""}, and the ${role.title.toLowerCase()} runs only sl.`);
+      continue;
+    }
+    const args = words.slice(at + 1);
+    // The shell may turn a pattern into other words (--{show-protected,json}), so the hook cannot read it.
+    if (words.some((w) => w.pattern)) {
+      out.push("it passes sl an unquoted *, ?, [ or {, which the shell may expand into other arguments; quote that argument.");
+      continue;
+    }
+    // A variable or a command's output may hold any flag (--show-protected), so no role passes one to sl.
+    if (args.some((a) => a.dynamic)) {
+      out.push("it passes sl a variable or a command's output; write each value out.");
+      continue;
+    }
+    const why = slRefusal(role, args.map((a) => a.word));
+    if (why && !(flag && args.some((a) => isDenied(a.word)))) out.push(why);
+  }
+  return [...new Set(out)];
+}
+
+const ROLE_TYPED = `Change it with a typed edit (${TYPED}, sl draft, or sl setup --view for a source's connection.views).`;
+
+// The files inside a semantic root a shell command plainly writes, for a role that edits only outside
+// one. Removing an abandoned plan under .sl/plans/ is the one shell write it makes there.
+function layerShellWrites(command: string, cwd: string, who: string): string[] {
+  const out: string[] = [];
+  for (const w of shellWrites(command, cwd)) {
+    if (w.dynamic) continue;
+    for (const p of expand(w.path)) {
+      const real = realPath(p);
+      const root = semanticRoot(dirname(real));
+      if (!root) continue;
+      const rel = relative(root, real);
+      if (/^(rm|unlink)$/.test(w.how) && rel.startsWith(join(".sl", "plans") + sep)) continue;
+      out.push(`it writes ${rel} in ${root} (${w.how}), and ${who} never edits the semantic layer by hand. ${ROLE_TYPED}`);
+    }
+  }
+  return [...new Set(out)];
+}
+
+// The role check of a call from one of the plugin's agents: a refusal, or undefined to go on to the
+// checks every call gets.
+function roleCall(role: Role, tool: string, input: Obj, cwd: string): Verdict | undefined {
+  const who = `the ${role.title.toLowerCase()} (${role.agent})`;
+  if (EDIT_TOOLS.has(tool)) {
+    if (role.edits === "none")
+      return refuse([`semantic-layer: refused ${tool} for ${who}:`, `- it edits no files. Report the change to the interviewer, who makes it with a typed edit (${TYPED}).`]);
+    const raw = tool === "NotebookEdit" ? input.notebook_path : input.file_path;
+    if (typeof raw !== "string" || !raw) return undefined;
+    const real = realPath(resolve(cwd, raw));
+    const root = semanticRoot(dirname(real));
+    if (root)
+      return refuse([`semantic-layer: refused ${tool} for ${who}:`, `- ${relative(root, real)} is in the semantic layer at ${root}, which ${who} never edits by hand. ${ROLE_TYPED}`]);
+    return undefined;
+  }
+  if (tool !== "Bash" || typeof input.command !== "string") return undefined;
+  const problems = roleShell(role, input.command, cwd);
+  if (role.edits === "outside_layer") problems.push(...layerShellWrites(input.command, cwd, who));
+  if (!problems.length) return undefined;
+  return refuse([
+    `semantic-layer: refused this shell command for ${who}:`,
+    ...problems.map((p) => `- ${p}`),
+    `It may run ${commandList(role)}, each as bun <skill dir>/scripts/sl.ts <command> with the path written out.`,
+  ]);
+}
+
 // The verdict on one PreToolUse call, given the hook's stdin. Input that is not a tool call
 // (not JSON, no tool name, no path or command) is let through with a warning: it names no file
 // the hook could check. Inside a semantic root, input the hook cannot read is refused.
@@ -482,6 +643,16 @@ export function checkToolUse(stdin: string, fallbackCwd = process.cwd()): Verdic
   if (!isObject(input) || typeof input.tool_name !== "string" || !isObject(input.tool_input))
     return { allow: true, message: "semantic-layer hook: the hook input has no tool_name or tool_input; not checked." };
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : fallbackCwd;
+  // A call from one of the plugin's role agents: its role is checked first, and a failure refuses.
+  const role = roleOf(input.agent_type);
+  if (role) {
+    try {
+      const v = roleCall(role, input.tool_name, input.tool_input, cwd);
+      if (v) return v;
+    } catch (e) {
+      return refuse([`semantic-layer: the hook failed while checking this call for the ${role.title.toLowerCase()} (${(e as Error).message}), so it is refused. Retry it.`]);
+    }
+  }
   try {
     switch (input.tool_name) {
       case "Edit":
