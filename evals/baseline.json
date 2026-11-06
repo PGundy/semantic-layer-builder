@@ -4,20 +4,20 @@
   "scenarios": {
     "acme-structured": {
       "effort": {
-        "approved_items": 0,
-        "owner_turns": 2,
-        "owner_turns_per_approved_item": null,
-        "owner_words": 35,
-        "owner_words_per_approved_item": null,
-        "skill_tokens_per_approved_item": null,
-        "tokens": 8490,
-        "tokens_per_approved_item": null,
-        "wall_time_seconds": 15
+        "approved_items": 8,
+        "owner_turns": 5,
+        "owner_turns_per_approved_item": 0.63,
+        "owner_words": 119,
+        "owner_words_per_approved_item": 14.88,
+        "skill_tokens_per_approved_item": 2175,
+        "tokens": 17630,
+        "tokens_per_approved_item": 2203.75,
+        "wall_time_seconds": 55
       },
       "graders": {
         "approvals": {
           "band": 0,
-          "score": null
+          "score": 1
         },
         "connection_first": {
           "band": 0,
@@ -25,7 +25,7 @@
         },
         "figures": {
           "band": 0,
-          "score": null
+          "score": 1
         },
         "secrets": {
           "band": 0,
@@ -40,20 +40,20 @@
     },
     "acme-terse": {
       "effort": {
-        "approved_items": 0,
-        "owner_turns": 2,
-        "owner_turns_per_approved_item": null,
-        "owner_words": 2,
-        "owner_words_per_approved_item": null,
-        "skill_tokens_per_approved_item": null,
-        "tokens": 8410,
-        "tokens_per_approved_item": null,
-        "wall_time_seconds": 15
+        "approved_items": 8,
+        "owner_turns": 5,
+        "owner_turns_per_approved_item": 0.63,
+        "owner_words": 12,
+        "owner_words_per_approved_item": 1.5,
+        "skill_tokens_per_approved_item": 2175,
+        "tokens": 17433,
+        "tokens_per_approved_item": 2179.13,
+        "wall_time_seconds": 55
       },
       "graders": {
         "approvals": {
           "band": 0,
-          "score": null
+          "score": 1
         },
         "connection_first": {
           "band": 0,
@@ -61,7 +61,7 @@
         },
         "figures": {
           "band": 0,
-          "score": null
+          "score": 1
         },
         "secrets": {
           "band": 0,

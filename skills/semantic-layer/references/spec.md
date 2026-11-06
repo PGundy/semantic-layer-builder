@@ -879,10 +879,10 @@ A scenario, `evals/scenarios/<name>.json` (or `.yaml`), names a fixture under `f
 }
 ```
 
-A script holds `skill` and `owner` turns, replayed in order: each has `text` and optional `tokens` (else the text's length divided by 4, rounded up); a skill turn may list `sl` commands, each as its arguments without `--root`, run in the working root with the run's clock before the turn is recorded, and `done: true` ends the session.
+A script holds `skill` and `owner` turns, replayed in order: each has `text` and optional `tokens` (else the text's length divided by 4, rounded up); a skill turn may list `sl` commands, each as its arguments without `--root`, run in the working root with the run's clock before the turn is recorded, and `done: true` ends the session. A skill turn may also hold `write`, files the skill writes by hand (a draft golden, since no command writes one), by path relative to the working root to their text, written before its `sl` commands run. The runner refuses a write that is not a plain path inside the root (absolute, `..` or `.` segments), that passes through a link on its way (dangling or not), that goes under `.sl/` (only `sl readback`, `sl reply` and `sl question` write there), whose text is not valid YAML, or whose text, parsed as YAML (JSON included), sets `status: approved` or an approval field (`approved_by`, `approved_at`, `approved_hash`, `last_approved`, `confirmed_by`, `confirmed_at`, `confirmed_as`) on any map at any depth (only `sl approve` and `sl goldens confirm` approve), before the run when it loads the script and again when the driver writes.
 
 ```json
-{ "skill": [{ "text": "Keep three tables in scope?", "tokens": 2400, "sl": [["status"]], "done": true }], "owner": [] }
+{ "skill": [{ "text": "Keep three tables in scope?", "tokens": 2400, "sl": [["status"]] }, { "text": "I wrote a draft golden.", "write": { "goldens/sessions_2025.yaml": "name: sessions_2025\n..." }, "sl": [["goldens", "run", "--name", "sessions_2025"]], "done": true }], "owner": [{ "text": "yep" }] }
 ```
 
 A run's directory is `evals/runs/<run_id>/` (gitignored), or `<out>/<run_id>/`, with `run_id` the scenario name and the run's start time to the millisecond in UTC, as `acme-terse-20260101T000000000Z`; a run with the same id replaces it. It holds:
@@ -900,19 +900,19 @@ A run's directory is `evals/runs/<run_id>/` (gitignored), or `<out>/<run_id>/`, 
 {
   "budgets": { "max_tokens": 400000, "max_turns": 40 },
   "driver": "scripted",
-  "finished_at": "2026-01-01T00:00:15.000Z",
+  "finished_at": "2026-01-01T00:00:55.000Z",
   "fixture": "acme",
   "intake": "connection",
-  "owner_turns": 3,
+  "owner_turns": 6,
   "persona": "terse",
   "run_id": "acme-terse-20260101T000000000Z",
   "scenario": "acme-terse",
-  "skill_turns": 3,
+  "skill_turns": 6,
   "started_at": "2026-01-01T00:00:00.000Z",
   "stop_reason": "done",
-  "tokens": 8410,
-  "tokens_by_speaker": { "owner": 10, "skill": 8400 },
-  "turns": 6
+  "tokens": 17433,
+  "tokens_by_speaker": { "owner": 33, "skill": 17400 },
+  "turns": 12
 }
 ```
 

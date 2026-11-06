@@ -94,6 +94,9 @@ describe("the committed baseline", () => {
       expect(s.graders.effort).toBeUndefined();
       expect(Object.keys(s.graders).sort()).toEqual(["approvals", "connection_first", "figures", "secrets", "selection"]);
       expect(s.effort.tokens).toBeGreaterThan(0);
+      expect(s.graders.figures!.score).toBe(1);
+      expect(s.graders.approvals!.score).toBe(1);
+      expect(s.effort.approved_items).toBeGreaterThan(0);
     }
   });
 
@@ -115,8 +118,8 @@ describe("the committed baseline", () => {
     const text = r.text();
     expect(text.split("\n")[0]).toMatch(/^scenario\s+grader\s+baseline\s+score\s+band\s+status$/);
     for (const s of SMOKE_SCENARIOS) {
-      expect(tableRow(text, s, "selection")).toMatch(/\s1\s+1\s+0\s+ok$/);
-      expect(tableRow(text, s, "figures")).toMatch(/not graded$/);
+      // The scripted runs reach approvals and goldens, so every grader is scored, and scores 1.
+      for (const g of ["figures", "secrets", "selection", "approvals", "connection_first"]) expect(tableRow(text, s, g)).toMatch(/\s1\s+1\s+0\s+ok$/);
     }
     expect(text).not.toContain("REGRESSION");
     expect(text).toContain("Effort (report only; it never fails the smoke):");
@@ -156,7 +159,7 @@ describe("regressions", () => {
   test("effort metrics never fail the smoke, however far they move", async () => {
     const f = fakeIO({ "acme-terse": report("acme-terse", {}, [], { tokens: 999999, owner_turns: 40 }) });
     expect(await main([], f.io)).toBe(0);
-    expect(f.text()).toContain("tokens 999999 (baseline 8410)");
+    expect(f.text()).toContain("tokens 999999 (baseline 17433)");
     expect(f.text()).not.toContain("REGRESSION");
   });
 

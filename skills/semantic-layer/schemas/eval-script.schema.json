@@ -20,6 +20,11 @@
             "description": "sl commands to run in the working root before the turn is recorded, each as its arguments without --root.",
             "items": { "type": "array", "minItems": 1, "items": { "type": "string" } }
           },
+          "write": {
+            "type": "object",
+            "description": "Files the skill writes by hand before its sl commands run, by path relative to the working root (such as goldens/<name>.yaml) to their text. Never under .sl/, never outside the root or through a link, always valid YAML, and never with status: approved or an approval field.",
+            "additionalProperties": { "type": "string" }
+          },
           "done": { "type": "boolean" }
         }
       }

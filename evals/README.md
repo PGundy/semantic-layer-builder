@@ -95,13 +95,15 @@ Both start from the Acme lake as a DuckDB source over the Parquet files in `fixt
 | `acme-structured` | Answers each question fully and in order. |
 | `acme-terse` | Answers "yep" when a proposal fits, and gives facts in a few words. |
 
+Both scripts follow the flow `skills/semantic-layer/SKILL.md` describes, in six skill turns: introspect, scope the three lake tables, profile and draft; settle what a row of `sessions` and of `marketing_spend` means and write it into the models (`sl question resolve`, `sl set`); read back the two models, `session_count`, `started_at`, `spend` and `spend_date` (`sl readback`); on the owner's yes ("yep" for the terse persona), record it in the owner's words under Dana Ruiz's name (`sl reply`) and approve each item (`sl approve`); write two draft goldens, `sessions_2025` and `marketing_spend_2025`, and run them; on the owner's yes to the figures, write the agreement into each golden's `reference`, confirm them with tolerance 0 (`sl goldens confirm`) and check them. The goldens map to `sessions_2025` and `marketing_spend_2025` in `fixtures/acme/reference-figures.json` through `scenarios/acme.figures.json`, so the `figures` grader compiles their requests and scores 1, and every approval has its ledger yes, so `approvals` scores 1.
+
 ## How a run works
 
 The skill agent gets a fresh context on every turn: the working semantic root (it may run `sl status` there), its files as they stand, and the owner's latest message. Nothing else carries over, so whatever the agent needs later has to be in the files. The simulated owner gets its brief, its persona prompt and the conversation so far, as a person would remember it. The transcript and summary are written when the run stops, and every credential the CLI's rules recognize is replaced by `[redacted]` before they are.
 
 ## The scripted driver
 
-The scripted driver replays a script's skill and owner turns in order, and runs the `sl` commands a skill turn lists in the working root, in-process, with the run's clock. It needs no network and no key, so the tests and CI use it. A script that runs out of turns before a skill turn says `"done": true` stops the run with an error naming the fix.
+The scripted driver replays a script's skill and owner turns in order. A skill turn first writes the files its `write` lists, by path relative to the working root (a draft golden, which the skill writes by hand), then runs the `sl` commands it lists in the working root, in-process, with the run's clock. A write must be a plain path inside the root that passes through no link, not under `.sl/`, and valid YAML that sets neither `status: approved` nor an approval field such as `approved_by` or `confirmed_by` anywhere in it, however it is spelled: only `sl approve` and `sl goldens confirm` approve. The runner refuses a script that breaks this before the run starts. It needs no network and no key, so the tests and CI use it. A script that runs out of turns before a skill turn says `"done": true` stops the run with an error naming the fix.
 
 ## The sdk driver
 
