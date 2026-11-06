@@ -1,5 +1,5 @@
 // Loading scenarios and scripts, reading a semantic root, and writing deterministic JSON.
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { evalSchemaIssues, type EvalSchemaKind } from "../../skills/semantic-layer/scripts/lib/validate.ts";
 import { parseYamlText } from "../../skills/semantic-layer/scripts/lib/yaml.ts";
@@ -13,6 +13,8 @@ export interface ScriptTurn {
   text: string;
   tokens?: number;
   sl?: string[][];
+  // Files the skill writes by hand, by path relative to the working root, before its sl commands run.
+  write?: Record<string, string>;
   done?: boolean;
 }
 
@@ -81,6 +83,10 @@ export function loadScript(scenario: Scenario, scenarioFile: string, override?: 
   if (!existsSync(path)) throw new EvalError(`No script file at ${relative(REPO_ROOT, path)}. Pass --script <file> with one that exists.`);
   const script = checked<Script>("eval-script", path);
   for (const turn of script.skill) {
+    for (const [file, text] of Object.entries(turn.write ?? {})) {
+      const problem = scriptWriteProblem(file, text);
+      if (problem) throw new EvalError(`${relative(REPO_ROOT, path)}: ${problem}`);
+    }
     for (const args of turn.sl ?? []) {
       if (args.some((a) => a === "--root" || a.startsWith("--root="))) {
         throw new EvalError(`${relative(REPO_ROOT, path)}: an sl command passes --root; the driver runs every command in the run's working root, so remove it.`);
@@ -88,6 +94,59 @@ export function loadScript(scenario: Scenario, scenarioFile: string, override?: 
     }
   }
   return script;
+}
+
+// Keys only sl approve and sl goldens confirm write; a hand write that holds one would pose as an approval.
+const APPROVAL_KEYS = ["approved_by", "approved_at", "approved_hash", "last_approved", "confirmed_by", "confirmed_at", "confirmed_as"];
+
+// Whether a parsed document sets status: approved or an approval key on any map at any depth.
+function approves(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(approves);
+  if (!value || typeof value !== "object") return false;
+  const map = value as Record<string, unknown>;
+  if (map.status === "approved" || APPROVAL_KEYS.some((k) => k in map)) return true;
+  return Object.values(map).some(approves);
+}
+
+// Why a scripted hand write may not happen, or undefined. A write stays inside the working root, never
+// touches .sl/ (the readbacks and the owner's answers, which only sl writes) and never approves:
+// only sl approve and sl goldens confirm set status: approved. The text is judged as the CLI reads it,
+// parsed as YAML (JSON included), so no spelling of status: approved gets past; text that does not
+// parse is refused, since the CLI could not read it either.
+export function scriptWriteProblem(file: string, text: string): string | undefined {
+  const parts = file.split(/[\\/]/);
+  if (isAbsolute(file) || !file.trim() || parts.some((p) => p === ".." || p === "." || p === "")) {
+    return `a scripted write names "${file}"; name a file by its plain path inside the semantic root, such as goldens/<name>.yaml.`;
+  }
+  if (parts[0]!.toLowerCase() === ".sl") return `a scripted write names "${file}"; .sl/ holds the readbacks and the owner's answers, which only sl readback, sl reply and sl question write. Record an answer with sl reply instead.`;
+  let doc: unknown;
+  try {
+    doc = parseYamlText(text, file);
+  } catch (e) {
+    return `a scripted write of "${file}" is not valid YAML (${(e as Error).message}); fix its text so sl can read it.`;
+  }
+  if (approves(doc)) return `a scripted write of "${file}" sets status: approved or an approval field; write it as a draft and approve it with sl approve or sl goldens confirm after the owner's recorded yes.`;
+  return undefined;
+}
+
+// The absolute path a scripted write goes to, refusing one that leaves the root through a link.
+export function scriptWritePath(root: string, file: string, text: string): string {
+  const problem = scriptWriteProblem(file, text);
+  if (problem) throw new EvalError(problem);
+  const base = resolve(root);
+  const target = join(base, file);
+  // Every path from the target up to the root must be absent or a plain file or directory: a link at
+  // any level, dangling or not, could lead out of the root.
+  for (let p = target; p !== base && p.startsWith(base + sep); p = dirname(p)) {
+    let linked = false;
+    try {
+      linked = lstatSync(p).isSymbolicLink();
+    } catch {
+      linked = false;
+    }
+    if (linked) throw new EvalError(`a scripted write of "${file}" would leave the semantic root through a link; write inside the root.`);
+  }
+  return target;
 }
 
 // Every file under root, by forward-slash path relative to it, sorted.

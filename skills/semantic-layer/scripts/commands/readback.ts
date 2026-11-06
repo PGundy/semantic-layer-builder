@@ -13,8 +13,9 @@ const spec: CommandSpec = {
   usage:
     "readback --targets <ref>,<ref>,... [--tolerance <t>] [--results <file> | --plan <plan_id>]\n\n" +
     "Each ref is an approve target: source.model, source.model.field, metric:<name> or access, or a golden to\n" +
-    "confirm, golden:<name>, whose SQL it runs (live, or from --results or --plan) to read back the rows with\n" +
-    "the tolerance sl goldens confirm would record (--tolerance, else the file's, else the default). Writes\n" +
+    "confirm, golden:<name>, whose request it compiles and runs with its cross_check_sql (live, or from --results\n" +
+    "or --plan) to read back the rows and tolerance sl goldens confirm would record (--tolerance, else the\n" +
+    "file's, else the default). Writes\n" +
     ".sl/pending/<readback_id>.json with the numbered items and each item's content hash.",
   options: {
     targets: { type: "string", multiple: true },
@@ -31,7 +32,7 @@ const spec: CommandSpec = {
     const names = refs.map(parseTarget).flatMap((t) => (t.kind === "golden" ? [t.name] : []));
     const flags = (["tolerance", "results", "plan"] as const).filter((f) => str(values, f) !== undefined);
     if (flags.length && !names.length) throw new UserError(`--${flags[0]} applies only to golden:<name> targets, which read back a golden's rows.`);
-    // A golden's rows come from running its SQL, before anything is written.
+    // A golden's rows come from compiling and running its request, before anything is written.
     const goldens = new Map<string, GoldenRun>();
     for (const name of names) if (!goldens.has(name)) goldens.set(name, await goldenRun(ctx, values, name));
     const rendered = renderReadbacks(ctx.root, refs, goldens);
