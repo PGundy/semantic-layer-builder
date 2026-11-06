@@ -2,7 +2,9 @@
 // an export stands in for a connection, the schemas read and the export file.
 import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
-import type { Dialect, IntakeMode, SourceConfig } from "./types.ts";
+import { UserError } from "./errors.ts";
+import { schemaMatcher } from "./sql/introspection.ts";
+import type { Dialect, IntakeMode, Snapshot, SnapshotTable, SourceConfig } from "./types.ts";
 
 export function intakeMode(source: Pick<SourceConfig, "intake">): IntakeMode {
   return source.intake?.mode ?? "connection";
@@ -154,4 +156,75 @@ export function intakeIssues(source: SourceConfig, root: string): IntakeIssue[] 
     }
   }
   return out;
+}
+
+// The schemas intake.schemas names, or [] when it is absent or empty (every schema is read).
+// A source file not yet checked by sl validate can hold any value there, so a list of anything
+// but names is refused with the fix.
+export function intakeSchemas(source: Pick<SourceConfig, "intake" | "source">): string[] {
+  const raw: unknown = source.intake?.schemas ?? [];
+  if (!Array.isArray(raw) || raw.some((s) => typeof s !== "string")) {
+    throw new UserError(
+      `intake.schemas in sources/${source.source}.yaml must be a list of schema names, such as [analytics, marts]; fix it and run sl validate.`,
+    );
+  }
+  return [...new Set((raw as string[]).map((s) => s.trim()).filter(Boolean))];
+}
+
+// Whether a snapshot table's schema is one of `schemas`, as the dialect names schemas: the case
+// rules of introspect's own filter (schemaMatcher), plus the forms an import can carry. A BigQuery
+// dataset written alone matches it under any project (`analytics` matches `proj.analytics`), and a
+// project.dataset matches the bare dataset id; a DuckDB table whose schema is prefixed with the
+// database the source opens (`memory.acme`, from an import spanning databases) matches `acme`. A
+// table with no schema matches nothing.
+export function schemaFilter(
+  source: Pick<SourceConfig, "dialect" | "connection">,
+  schemas: readonly string[],
+): (schema: string | null | undefined) => boolean {
+  const base = schemaMatcher(source.dialect, [...schemas]);
+  const bareDatasets = new Set(source.dialect === "bigquery" ? schemas.filter((s) => !s.includes(".")) : []);
+  const own = duckdbDatabase(source)?.toLowerCase();
+  return (schema) => {
+    if (!schema) return false;
+    if (base(schema)) return true;
+    if (bareDatasets.size) return bareDatasets.has(schema.slice(schema.lastIndexOf(".") + 1));
+    const dot = schema.indexOf(".");
+    return dot > 0 && own !== undefined && schema.slice(0, dot).toLowerCase() === own && base(schema.slice(dot + 1));
+  };
+}
+
+// Removes the snapshot's tables whose schema fails schemaFilter for `schemas` (none when it is
+// empty) and returns them, how many and their schemas, sorted (null for tables with no schema).
+export function dropOtherSchemas(
+  source: Pick<SourceConfig, "dialect" | "connection">,
+  snapshot: Snapshot,
+  schemas: readonly string[],
+): { tables: number; schemas: (string | null)[]; removed: SnapshotTable[] } {
+  if (!schemas.length) return { tables: 0, schemas: [], removed: [] };
+  const wanted = schemaFilter(source, schemas);
+  const out = new Set<string | null>();
+  const removed: SnapshotTable[] = [];
+  snapshot.tables = snapshot.tables.filter((t) => {
+    if (wanted(t.schema)) return true;
+    out.add(t.schema || null);
+    removed.push(t);
+    return false;
+  });
+  const names = [...out].filter((x): x is string => x !== null).sort();
+  return { tables: removed.length, schemas: out.has(null) ? [...names, null] : names, removed };
+}
+
+// "a, b, (no schema)", at most ten names.
+export function schemaListText(schemas: readonly (string | null)[]): string {
+  const shown = schemas.slice(0, 10).map((s) => s ?? "(no schema)");
+  return `${shown.join(", ")}${schemas.length > 10 ? `, and ${schemas.length - 10} more` : ""}`;
+}
+
+// "12 tables in 2 schemas", "3 tables in 1 schema or with no schema", "1 table with no schema".
+export function droppedText(dropped: { tables: number; schemas: readonly (string | null)[] }): string {
+  const named = dropped.schemas.filter((s) => s !== null).length;
+  const tables = `${dropped.tables} table${dropped.tables === 1 ? "" : "s"}`;
+  const none = named < dropped.schemas.length;
+  if (!named) return `${tables} with no schema`;
+  return `${tables} in ${named} schema${named === 1 ? "" : "s"}${none ? " or with no schema" : ""}`;
 }
