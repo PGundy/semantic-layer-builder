@@ -2,7 +2,7 @@
 // owner facing many tables can pick a few scope patterns instead of naming
 // tables one by one. Each group carries a ready scope pattern and a suggestion.
 import { qualifiedName } from "./naming.ts";
-import { inScope, matchesPattern } from "./patterns.ts";
+import { checkPattern, inScope, literalPattern, matchesPattern } from "./patterns.ts";
 import { MIGRATION_TABLES, NOISE_WORDS, PIPELINE_WORDS, classifyTable, noiseReason } from "./rank.ts";
 import type { Scope, SnapshotTable } from "./types.ts";
 
@@ -44,6 +44,37 @@ const STAGING_WORDS = new Set(["stg", "staging", "int", "intermediate"]);
 
 function tokens(name: string): string[] {
   return name.toLowerCase().split("_");
+}
+
+function quoted(part: string): string {
+  return `"${part.replaceAll('"', '""')}"`;
+}
+
+// A spelling that reads as something else at the start of a pattern or of a table-list line: re:
+// (a regex), ! (an exclude), # (a comment), or white space that a flag or the file trims.
+function misread(s: string): boolean {
+  return /^(re:|[!#\s])|\s$/i.test(s);
+}
+
+// A schema spelled as it stands in a pattern would mean something else when one of its
+// dot-separated parts starts with a quote (an unclosed quoted part), it holds * or ?, or it is misread.
+function schemaNeedsQuotes(schema: string): boolean {
+  return /[*?]/.test(schema) || schema.split(".").some((p) => p.startsWith('"')) || misread(schema);
+}
+
+// The same for the start of a table name: a leading quote, a wildcard, a dot, or a misread start.
+function prefixNeedsQuotes(prefix: string): boolean {
+  return prefix.startsWith('"') || /[*?.]/.test(prefix) || misread(prefix);
+}
+
+// A schema or prefix group's key and pattern. A spelling that needs quotes is quoted and keeps its
+// case, since a quoted part matches case included; any other is lowercased and matches any case.
+function schemaGroup(schema: string): { key: string; pattern: string } {
+  return schemaNeedsQuotes(schema) ? { key: schema, pattern: `${quoted(schema)}.*` } : { key: schema.toLowerCase(), pattern: `${schema.toLowerCase()}.*` };
+}
+
+function prefixGroup(prefix: string): { key: string; pattern: string } {
+  return prefixNeedsQuotes(prefix) ? { key: prefix, pattern: `${quoted(prefix)}_*` } : { key: prefix.toLowerCase(), pattern: `${prefix.toLowerCase()}_*` };
 }
 
 function plural(n: number, word: string): string {
@@ -115,9 +146,10 @@ function push(map: Map<string, Member[]>, key: string, member: Member): void {
   else map.set(key, [member]);
 }
 
-// True when the pattern selects exactly the listed members out of all tables,
+// True when the pattern is usable and selects exactly the listed members out of all tables,
 // so saving the pattern selects the tables the group shows.
 function exact(pattern: string, list: Member[], all: Member[]): boolean {
+  if (checkPattern(pattern)) return false;
   const inGroup = new Set(list);
   for (const m of all) if (matchesPattern(pattern, m.table) !== inGroup.has(m)) return false;
   return true;
@@ -125,8 +157,10 @@ function exact(pattern: string, list: Member[], all: Member[]): boolean {
 
 // Groups tables by schema, prefix and suffix, plus one group of likely noise.
 // A schema, prefix or suffix group is listed only when its pattern selects
-// exactly its tables; names with glob characters, or a suffix that dated
-// tables also end in, would otherwise select more than the group shows.
+// exactly its tables; a suffix with glob characters, or one that dated tables
+// also end in, would otherwise select more than the group shows. A schema or
+// prefix that a pattern cannot spell plainly (a leading quote, a wildcard) is
+// quoted, so its pattern parses and names it exactly.
 export function groupTables(tables: SnapshotTable[], scope?: Scope): TableGroup[] {
   const members: Member[] = tables.map((t) => ({ table: t, qualified: qualifiedName(t) }));
   const groups: TableGroup[] = [];
@@ -134,27 +168,42 @@ export function groupTables(tables: SnapshotTable[], scope?: Scope): TableGroup[
     if (exact(pattern, list, members)) groups.push(build(kind, key, pattern, list, rated, scope));
   };
 
-  // Schemas are keyed lowercased, since patterns match case-insensitively.
+  // Schemas are keyed lowercased, since plain patterns match case-insensitively.
   const bySchema = new Map<string, Member[]>();
-  for (const m of members) if (m.table.schema) push(bySchema, m.table.schema.toLowerCase(), m);
+  const schemaPattern = new Map<string, string>();
+  for (const m of members) {
+    if (!m.table.schema) continue;
+    const g = schemaGroup(m.table.schema);
+    push(bySchema, g.key, m);
+    schemaPattern.set(g.key, g.pattern);
+  }
   if (bySchema.size > 1) {
     for (const [schema, list] of bySchema) {
       if (list.length < 2) continue;
-      add("schema", schema, `${schema}.*`, list, rateWord(schema, "schema", list.length, schema));
+      add("schema", schema, schemaPattern.get(schema)!, list, rateWord(schema.toLowerCase(), "schema", list.length, schema));
     }
   }
 
   const byPrefix = new Map<string, Member[]>();
   const byPrefix2 = new Map<string, Member[]>();
+  const prefixPattern = new Map<string, string>();
+  // A two-token prefix's parent, the key of its first token.
+  const parentKey = new Map<string, string>();
   const bySuffix = new Map<string, Member[]>();
   const dated: Member[] = [];
   for (const m of members) {
     const parts = tokens(m.table.name);
-    const first = parts[0];
-    const second = parts[1];
-    if (parts.length >= 2 && first) {
-      push(byPrefix, first, m);
-      if (parts.length >= 3 && second) push(byPrefix2, `${first}_${second}`, m);
+    const spelled = m.table.name.split("_");
+    if (parts.length >= 2 && parts[0]) {
+      const one = prefixGroup(spelled[0]!);
+      push(byPrefix, one.key, m);
+      prefixPattern.set(one.key, one.pattern);
+      if (parts.length >= 3 && parts[1]) {
+        const two = prefixGroup(`${spelled[0]}_${spelled[1]}`);
+        push(byPrefix2, two.key, m);
+        prefixPattern.set(two.key, two.pattern);
+        parentKey.set(two.key, one.key);
+      }
     }
     if (DATE_SUFFIX.test(m.table.name)) {
       dated.push(m);
@@ -166,13 +215,13 @@ export function groupTables(tables: SnapshotTable[], scope?: Scope): TableGroup[
 
   for (const [first, list] of byPrefix) {
     if (list.length < 2) continue;
-    add("prefix", `${first}_`, `${first}_*`, list, rateWord(first, "prefix", list.length, `${first}_`));
+    add("prefix", `${first}_`, prefixPattern.get(first)!, list, rateWord(first.toLowerCase(), "prefix", list.length, `${first}_`));
   }
   for (const [two, list] of byPrefix2) {
-    const first = two.slice(0, two.indexOf("_"));
+    const first = parentKey.get(two)!;
     const parent = byPrefix.get(first)?.length ?? 0;
     if (list.length < 2 || list.length >= parent) continue;
-    add("prefix", `${two}_`, `${two}_*`, list, rateWord(first, "prefix", list.length, `${two}_`));
+    add("prefix", `${two}_`, prefixPattern.get(two)!, list, rateWord(first.toLowerCase(), "prefix", list.length, `${two}_`));
   }
 
   for (const [last, list] of bySuffix) {
@@ -211,7 +260,7 @@ export interface SuggestedScope {
 // staging name prefix, schema or comment phrase, not by an int_ prefix alone. A table is also excludable when its
 // schema group is exclude-suggested (raw.*, tmp.*, staging.*). An exclude-suggested group's
 // pattern is used when every table it adds to the excludes is excludable; the excludable tables
-// no such group covers are named exactly. With no include group, the scope selects every table, so
+// no such group covers are named exactly, by literalPattern. With no include group, the scope selects every table, so
 // the excludes cover every excludable table and every exclude-suggested schema.
 export function suggestScope(tables: SnapshotTable[], groups: TableGroup[]): SuggestedScope {
   const includeGroups = groups.filter((g) => g.suggestion === "include" && g.kind !== "noise");
@@ -227,6 +276,7 @@ export function suggestScope(tables: SnapshotTable[], groups: TableGroup[]): Sug
   );
   const include = kept.map((g) => g.pattern);
   const selected = tables.filter((t) => !include.length || include.some((p) => matchesPattern(p, t)));
+  const byName = new Map(tables.map((t) => [qualifiedName(t), t]));
   const caughtNoise = new Set(selected.filter((t) => classifyTable(t)?.excludable === true).map(qualifiedName));
   const selectedNames = new Set(selected.map(qualifiedName));
   const excludable = new Set(caughtNoise);
@@ -246,6 +296,6 @@ export function suggestScope(tables: SnapshotTable[], groups: TableGroup[]): Sug
     exclude.push(g.pattern);
     for (const t of hit) covered.add(t);
   }
-  for (const t of [...caughtNoise].sort(compare)) if (!covered.has(t)) exclude.push(t);
+  for (const t of [...caughtNoise].sort(compare)) if (!covered.has(t)) exclude.push(literalPattern(byName.get(t)!));
   return { include, exclude };
 }

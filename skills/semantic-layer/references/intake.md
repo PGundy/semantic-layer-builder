@@ -12,6 +12,30 @@ Every later phase reads `snapshots/<source>.json`. There are four ways to fill i
 
 Ask the owner which tool you can use to reach each source before choosing. Prefer a path with query access: profiles and join checks need it, and imports carry structure only.
 
+## One step: `sl setup`
+
+`sl setup` does a source's intake in one command: it creates the project when there is none, writes the source file or updates it in place (comments kept), sets the scope, reads the catalog limited to the schemas, previews the in-scope tables with counts and names one next action. The other commands in this guide stay for changing one part later.
+
+Ask for a connection first, with one plain sentence of why: with a connection the tool measures which values exist, which keys are unique and how tables join, and checks figures the owner trusts (profiles, join evidence, goldens); table definitions alone cannot. The owner sets the variable (below); the command names it:
+
+```
+sl setup --source warehouse --dialect postgres --env WAREHOUSE_URL --schemas acme,marts --include "fct_*" --include "dim_*" --exclude "*_tmp"
+sl setup --source warehouse --dialect postgres --env WAREHOUSE_URL --schemas acme --tables-file finance-tables.txt
+sl setup --source lake --dialect duckdb --view "web_events=read_parquet('../data/lake/web_events/*.parquet')" --schemas main
+```
+
+Only after the owner says a connection is not possible, take a schema export (Schema export, below) with their reason in their words; the export is copied to `exports/<source>.<ext>` and recorded in `intake`:
+
+```
+sl setup --source warehouse --dialect postgres --export schema.csv --reason "The warehouse accepts no outside connections." --schemas acme
+```
+
+- Without `--env` or `--export` (for duckdb, `--database` or `--view`) it refuses and explains why a connection is better. `--export` without `--reason` records an empty reason and warns; on a rerun it keeps the reason already recorded.
+- Run it again with the same arguments and nothing changes; with new ones it updates the source and reports the schemas and patterns added and removed. Leaving out a group of flags (`--schemas`; `--include`, `--exclude` and `--tables-file`) leaves that part of the source as it is. A scope change alone does not read the catalog again.
+- Its next action for a connection source with in-scope tables not yet profiled is `sl profile --source <s>`; `sl baseline` follows once they are.
+- Snowflake, BigQuery and Databricks: the CLI does not connect, so the next action is `sl introspect --source <s> --emit-sql` (The query-plan protocol).
+- It does not switch an export source to a connection yet; its message names the steps to do it by hand.
+
 ## Connections without secrets
 
 The CLI reads a connection URL from an environment variable whose name the source file stores. The URL itself never goes in a file, in chat or in a command line you print.

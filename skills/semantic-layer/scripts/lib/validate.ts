@@ -9,6 +9,7 @@ import {
   type ApprovalEntry,
   accessEntry,
   changedMessage,
+  goldenHash,
   holdsHashes,
   integrity,
   metricEntries,
@@ -18,12 +19,12 @@ import {
   UNHASHED_MESSAGE,
 } from "./approval-hash.ts";
 import { classifyType, isNumeric, isTemporal } from "./column-types.ts";
-import { rowFilterTextProblem } from "./compiler/rowfilters.ts";
 import { type Condition, conditionAttributes, type Literal, parseCondition } from "./conditions.ts";
 import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
 import { quoteIdent } from "./dialect.ts";
 import { UserError } from "./errors.ts";
 import { intakeIssues } from "./intake.ts";
+import { DEFAULT_TOLERANCE } from "./goldens.ts";
 import { currentYes, ledgerReplies } from "./ledger.ts";
 import { findTable } from "./naming.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
@@ -34,6 +35,7 @@ import { incomingKeyColumns, referencedColumns } from "./snapshot-diff.ts";
 import { sourceSafetyIssues } from "./source-safety.ts";
 import { readSourceTableList, type SourceTableList } from "./table-list.ts";
 import { bareNames, callsRound, dividesByLiteral, type SqlNames, sqlNames, tokenizeSql } from "./sql-names.ts";
+import { readsText, sqlTextProblem, type TextRole, USER_PLACEHOLDER } from "./sql-text.ts";
 import type {
   AccessFile,
   AccessMode,
@@ -249,7 +251,6 @@ const BARE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DOUBLE_QUOTED_IDENT = /^"((?:[^"]|"")+)"$/;
 const BACKTICK_IDENT = /^`((?:[^`]|``)+)`$/;
 const SQL_LITERALS = new Set(["true", "false", "null", "current_date", "current_timestamp", "current_time", "now"]);
-const USER_PLACEHOLDER = /\{\{\s*user\.([A-Za-z0-9_]+)\s*\}\}/g;
 const ANY_PLACEHOLDER = /\{\{[^{}]*\}\}/g;
 const METRIC_PLACEHOLDER = /\{([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)\}/g;
 // A join reference written alone, as a hierarchy filter's column: <join>.<column> or <join>.<join>.<column>.
@@ -667,6 +668,17 @@ class Validator {
     this.error(file, path, `"${name}" is not a column of ${qualified(table)}${hint}`);
   }
 
+  // Errors when a dimension or measure expr or a measure filter is not one expression the compiler can
+  // place in a query: an unclosed string or comment, unbalanced parentheses, a parameter marker, a
+  // semicolon or a {{ }} placeholder (lib/sql-text.ts). Checked on the dialects sql-guard's
+  // tokenizer reads (postgres, duckdb, or a source of unknown dialect). Returns whether it reported one.
+  checkText(file: string, path: string, text: unknown, role: TextRole, rules: IdentRules): boolean {
+    if (typeof text !== "string" || !readsText(rules.dialect)) return false;
+    const problem = sqlTextProblem(text, role);
+    if (problem) this.error(file, path, problem);
+    return problem !== undefined;
+  }
+
   // Checks the tables and join references an expr, filter or row filter names, and returns the join
   // references it resolved. A dimension expr, a measure filter and a row filter may use
   // <join>.<column> through one of the model's own to-one joins, or <join>.<join>.<column> through a
@@ -868,7 +880,7 @@ class Validator {
         const p = `dimensions[${i}]`;
         claim(d.name, p);
         this.checkColumnRef(f, `${p}.expr`, d.expr, table, rules);
-        const refs = this.checkSqlRefs(f, `${p}.expr`, d.expr, m, "dimension expr");
+        const refs = this.checkText(f, `${p}.expr`, d.expr, "dimension expr", rules) ? [] : this.checkSqlRefs(f, `${p}.expr`, d.expr, m, "dimension expr");
         if (refs.length) this.dimensionRefs.set(`${m.source}.${m.model}.${d.name}`, refs);
         if (d.time_grains && d.type !== "time") this.error(f, `${p}.time_grains`, `is only allowed on time dimensions, not ${d.type}`);
         if (d.time_zone !== undefined) this.checkTimeZone(f, `${p}.time_zone`, d, table, rules);
@@ -878,10 +890,10 @@ class Validator {
         const p = `measures[${i}]`;
         claim(x.name, p);
         this.checkColumnRef(f, `${p}.expr`, x.expr, table, rules);
-        this.checkSqlRefs(f, `${p}.expr`, x.expr, m, "measure expr");
+        if (!this.checkText(f, `${p}.expr`, x.expr, "measure expr", rules)) this.checkSqlRefs(f, `${p}.expr`, x.expr, m, "measure expr");
         if (rules.dialect === "duckdb" && typeof x.expr === "string" && dividesByLiteral(x.expr, rules.dialect))
           this.warn(f, `${p}.expr`, 'divides by a numeric literal; on duckdb "/ 100.0" gives a DOUBLE, so write <col> * 0.01 for an exact amount; this warning never stands');
-        this.checkSqlRefs(f, `${p}.filter`, x.filter, m, "measure filter");
+        if (!this.checkText(f, `${p}.filter`, x.filter, "measure filter", rules)) this.checkSqlRefs(f, `${p}.filter`, x.filter, m, "measure filter");
         if (x.status === "approved" && !x.description) this.error(f, `${p}.description`, "is required on an approved measure");
         this.checkCurrency(f, p, x.format, x.currency, x.status);
       });
@@ -1078,7 +1090,9 @@ class Validator {
         for (const match of m.expr.matchAll(METRIC_PLACEHOLDER)) refs.push({ path: `${p}.expr`, model: match[1]!, measure: match[2]! });
         if (!refs.length) this.error(f, `${p}.expr`, "has no {model.measure} placeholder");
         const rest = m.expr.replace(METRIC_PLACEHOLDER, "");
-        if (!/^[\s\d.+\-*/()]*$/.test(rest)) this.error(f, `${p}.expr`, "may combine {model.measure} placeholders with numbers and + - * / ( ) only");
+        const textProblem = sqlTextProblem(m.expr, "metric expr");
+        if (textProblem) this.error(f, `${p}.expr`, textProblem);
+        else if (!/^[\s\d.+\-*/()]*$/.test(rest)) this.error(f, `${p}.expr`, "may combine {model.measure} placeholders with numbers and + - * / ( ) only");
       }
       for (const r of refs) {
         const measure = this.measure(m.source, r.model, r.measure);
@@ -1179,7 +1193,7 @@ class Validator {
           const [source, name] = rf.model.split(".") as [string, string];
           this.checkSqlRefs(f, `${rp}.expr`, expr, this.model(source, name)!, "row filter");
         }
-        const textProblem = rowFilterTextProblem(expr);
+        const textProblem = sqlTextProblem(expr, "row filter");
         if (textProblem) this.error(f, `${rp}.expr`, textProblem);
         for (const match of expr.matchAll(USER_PLACEHOLDER))
           if (!attrs.has(match[1]!)) this.error(f, `${rp}.expr`, `{{ user.${match[1]} }} names an undeclared user attribute`);
@@ -1772,6 +1786,8 @@ class Validator {
           if (!attrs.has(key)) this.error(f, `user.${key}`, `"${key}" is not a declared user attribute`);
       }
       if (g.status === "approved" && !g.expected?.rows.length) this.error(f, "expected.rows", "an approved golden needs at least one expected row");
+      else if (g.status === "approved" && !currentYes(this.replies(), `golden:${g.name}`, goldenHash(g as unknown as Record<string, unknown>, g.expected!.rows, g.expected!.tolerance ?? DEFAULT_TOLERANCE)))
+        this.warn(f, "", unconfirmedGoldenMessage(g.name));
       if (typeof g.sql === "string" && callsRound(g.sql, this.identRules(g.request.source).dialect))
         this.warn(
           f,
@@ -2313,6 +2329,16 @@ export function unansweredMessage(refs: string[]): string {
     `${n} approved item${n === 1 ? " has" : "s have"} no recorded owner yes in .sl/ledger.jsonl that matches ${n === 1 ? "it" : "them"} as ${n === 1 ? "it stands" : "they stand"} ` +
     `(approved before sl approve required one): ${shown.join(", ")}${more}; ${n === 1 ? "it stays" : "they stay"} approved. To record a yes, ` +
     `read ${n === 1 ? "it" : "them"} back with sl readback --targets ${shown.join(",")}, then record the owner's answer with sl reply`
+  );
+}
+
+// The warning on a confirmed golden whose owner's latest reply in the ledger is not a yes to it as it
+// stands: its question, request, sql, role, user, tolerance and recorded rows.
+export function unconfirmedGoldenMessage(name: string): string {
+  return (
+    `golden:${name} is confirmed, but no recorded owner yes in .sl/ledger.jsonl matches it as it stands (its question, request, sql, ` +
+    "role, user, tolerance and expected rows; confirmed before sl goldens confirm required one, or edited since); it stays confirmed. " +
+    `To record a yes, read it back with sl readback --targets golden:${name}, record the owner's answer with sl reply, then run sl goldens confirm --name ${name}`
   );
 }
 

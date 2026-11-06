@@ -13,7 +13,7 @@ import { UserError } from "./errors.ts";
 import { LEDGER_FILE, type NewLedgerEntry, openLedger, ownerText, shellQuote } from "./ledger.ts";
 import { plainText } from "./output.ts";
 import { loadAccess, loadMetrics, paths } from "./project.ts";
-import { PENDING_DIR, renderReadbacks } from "./readback.ts";
+import { currentHash, PENDING_DIR } from "./readback.ts";
 import { parseTarget } from "./refs.ts";
 import type { LedgerEntry, LedgerQuestion, LedgerReply, PendingReadback } from "./types.ts";
 import { schemaIssues } from "./validate.ts";
@@ -80,13 +80,7 @@ export function loadPending(root: string, id: string): PendingReadback {
 // owner would review text that no longer holds.
 export function assertCurrent(root: string, pending: PendingReadback): void {
   for (const item of pending.items) {
-    let hash: string | undefined;
-    try {
-      hash = renderReadbacks(root, [item.target])[0]?.content_hash;
-    } catch (e) {
-      if (!(e instanceof UserError)) throw e;
-    }
-    if (hash !== item.content_hash) {
+    if (currentHash(root, item.target, item.content_hash) !== item.content_hash) {
       const targets = pending.items.map((i) => i.target).join(",");
       throw new UserError(
         `Item ${item.n} of ${pending.readback_id} (${item.target}) changed since it was read back, so the owner would review text that no longer holds. ` +
@@ -400,16 +394,6 @@ export function readReviewFile(cwd: string, file: string): ReviewForm {
   return ext === ".md" ? parseReviewMarkdown(text, file) : parseReviewJson(text, file);
 }
 
-// The target's content hash as it stands, or null when it no longer exists.
-function currentHash(root: string, target: string): string | null {
-  try {
-    return renderReadbacks(root, [target])[0]?.content_hash ?? null;
-  } catch (e) {
-    if (e instanceof UserError) return null;
-    throw e;
-  }
-}
-
 // Where a question's ref keeps its open_questions: the file and the map's path inside it.
 function questionHolder(root: string, ref: string): { file: string; path: (string | number)[]; list: string[] } | null {
   if (ref === "access" || ref.startsWith("access.roles.")) {
@@ -510,7 +494,7 @@ export function applyReview(root: string, form: ReviewForm, by: string, at: stri
     const dup = lines.find((l) => l.kind === "reply" && l.readback_id === id && l.item === p.n && l.verdict === it.verdict && l.text === text);
     if (dup) out.already_recorded.push({ ...note, id: dup.id });
     else if (it.content_hash !== p.content_hash) out.refused.push({ ...note, reason: `its hash in the form is not the one ${id} recorded, so the form does not show what was read back` });
-    else if (currentHash(root, p.target) !== p.content_hash) out.refused.push({ ...note, reason: `${p.target} changed since the form was exported, so the owner answered text that no longer holds` });
+    else if (currentHash(root, p.target, p.content_hash) !== p.content_hash) out.refused.push({ ...note, reason: `${p.target} changed since the form was exported, so the owner answered text that no longer holds` });
     else {
       out.redacted ||= answer.redacted;
       replies.push({ kind: "reply", readback_id: id, item: p.n, target: p.target, content_hash: p.content_hash, text, verdict: it.verdict, by, at });
@@ -582,8 +566,11 @@ export function applyReview(root: string, form: ReviewForm, by: string, at: stri
   const owner = shellQuote(by);
   const steps = out.next_steps;
   const replied = [...out.recorded.filter((e): e is LedgerReply => e.kind === "reply"), ...out.already_recorded];
-  for (const r of replied)
-    if (r.verdict === "yes" && currentHash(root, r.target) === pending.items.find((x) => x.n === r.item)?.content_hash) steps.push(`sl approve --target ${r.target} --by ${owner}`);
+  for (const r of replied) {
+    const read = pending.items.find((x) => x.n === r.item)?.content_hash;
+    if (r.verdict !== "yes" || read === undefined || currentHash(root, r.target, read) !== read) continue;
+    steps.push(r.target.startsWith("golden:") ? `sl goldens confirm --name ${r.target.slice(7)}` : `sl approve --target ${r.target} --by ${owner}`);
+  }
   const edits = [...new Set(replied.filter((r) => r.verdict === "no" || r.verdict === "change").map((r) => r.target))];
   if (edits.length) steps.push(`make the corrections and changes the owner asked for with typed edits (sl set, sl tag, sl ignore-column or sl question add), then sl readback --targets ${edits.join(",")}`);
   for (const r of replied.filter((x) => x.verdict === null))

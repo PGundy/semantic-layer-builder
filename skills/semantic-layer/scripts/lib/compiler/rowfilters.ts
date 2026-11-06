@@ -4,7 +4,7 @@
 // an attribute contributes no rows, and a model of which the user sees no rows reads false.
 import type { ExprFilterResult, HierarchyFilterResult, ModelRows } from "../access.ts";
 import { quoteIdent, quoteTable } from "../dialect.ts";
-import { type Token, tokenize } from "../sql-guard.ts";
+import { codeOnly, sqlTextProblem, USER_PLACEHOLDER } from "../sql-text.ts";
 import type { Dialect, Model } from "../types.ts";
 import type { Instance, JoinPlan } from "./joins.ts";
 import { embed, type Params } from "./sql.ts";
@@ -29,50 +29,13 @@ export interface RowFilterContext {
   add: (code: "invalid_request" | "invalid_layer", message: string, ref?: string, next?: string) => void;
 }
 
-const PLACEHOLDER = /\{\{\s*user\.([A-Za-z0-9_]+)\s*\}\}/g;
 const FIX_ACCESS = "Fix the row filter in access.yaml, run sl validate, and run sl sql again.";
 
-// The text with its strings, quoted names and comments blanked to spaces, read the way Postgres and
-// DuckDB read them (sql-guard's tokenizer), so a placeholder or a parenthesis found in it is one the
-// SQL reads, at the same place as in the text. Undefined when a string, name or comment is unclosed.
-function codeOnly(sql: string): { code: string; tokens: Token[] } | undefined {
-  let tokens: Token[];
-  try {
-    tokens = tokenize(sql);
-  } catch {
-    return undefined;
-  }
-  let code = "";
-  for (const t of tokens) if (t.kind !== "string" && t.kind !== "ident") code += " ".repeat(t.pos - code.length) + sql.slice(t.pos, t.end);
-  return { code: code + " ".repeat(sql.length - code.length), tokens };
-}
-
-// Why a row filter's text cannot be applied, or undefined. It closes every string, name, comment
-// and parenthesis it opens, so it stays inside the compiler's (...) and ANDs with the rest of the
-// query. It holds no parameter marker ($1, ?, $name), semicolon or placeholder written against a
-// name or a digit, so only the compiler binds parameters and a request's filter values never reach
-// a row filter. sl validate reports the same problems.
-export function rowFilterTextProblem(text: string): string | undefined {
-  const read = codeOnly(text);
-  if (!read) return "has an unclosed string, quoted name or comment";
-  let depth = 0;
-  for (const t of read.tokens) {
-    if (t.kind === "param" || (t.kind === "op" && (t.text === "?" || t.text === "$")))
-      return `has the query parameter marker ${t.text === "$" ? /^\$[A-Za-z0-9_]*/.exec(text.slice(t.pos))![0] : t.text}; a row filter reads the user's values through {{ user.<attribute> }} only, and only the compiler binds parameters`;
-    if (t.kind === "semicolon") return "has a semicolon; a row filter is one SQL predicate";
-    if (t.kind === "op" && t.text === "(") depth++;
-    if (t.kind === "op" && t.text === ")" && --depth < 0) return "closes a parenthesis it never opened; a row filter must balance its parentheses";
-  }
-  if (depth) return "leaves a parenthesis open; a row filter must balance its parentheses";
-  // A placeholder against a name or a digit would bind as part of it: {{ user.x }}1 reads $11.
-  const word = /[A-Za-z0-9_$]/;
-  for (const m of read.code.matchAll(PLACEHOLDER)) {
-    const end = m.index! + m[0].length;
-    if (word.test(read.code[m.index! - 1] ?? "") || word.test(read.code[end] ?? ""))
-      return `writes ${m[0]} against a name or a number; put a space or an operator between them, so it binds as one parameter`;
-  }
-  return undefined;
-}
+// Why a row filter's text cannot be applied, or undefined (lib/sql-text.ts): it closes every string,
+// name, comment and parenthesis it opens, so it stays inside the compiler's (...) and ANDs with the
+// rest of the query, and holds no parameter marker, semicolon or placeholder written against a name
+// or a digit. sl validate reports the same problems.
+export const rowFilterTextProblem = (text: string): string | undefined => sqlTextProblem(text, "row filter");
 
 const scalar = (v: unknown) => typeof v === "string" || typeof v === "number" || typeof v === "boolean";
 
@@ -88,8 +51,8 @@ function bindExpr(f: ExprFilterResult, cx: RowFilterContext, what: string): stri
     return undefined;
   }
   const code = codeOnly(f.expr)!.code;
-  const read = [...code.matchAll(PLACEHOLDER)];
-  if (read.length !== [...f.expr.matchAll(PLACEHOLDER)].length) {
+  const read = [...code.matchAll(USER_PLACEHOLDER)];
+  if (read.length !== [...f.expr.matchAll(USER_PLACEHOLDER)].length) {
     cx.add(
       "invalid_layer",
       `${what} has a {{ user.<attribute> }} inside a string or a comment, where it cannot be bound as a parameter`,

@@ -123,6 +123,15 @@ export interface SnapshotTable {
   columns: SnapshotColumn[];
 }
 
+// The selection sl introspect or sl import recorded when it wrote the snapshot (spec: snapshots,
+// Scope changes): qualified names of the tables in it, those that entered it with no model yet,
+// and those that left it with an approved model.
+export interface SnapshotScopeState {
+  in_scope: string[];
+  new_in_scope: string[];
+  left_scope: string[];
+}
+
 export interface Snapshot {
   snapshot_version: 1;
   source: string;
@@ -130,6 +139,7 @@ export interface Snapshot {
   captured_at: string;
   method: SnapshotMethod;
   tables: SnapshotTable[];
+  scope_state?: SnapshotScopeState;
 }
 
 // Models
@@ -397,12 +407,14 @@ export type PlanResults = Record<string, ResultRows>;
 
 export interface ReadbackItem {
   n: number;
-  // An approve target: source.model, source.model.field, metric:<name> or access.
+  // An approve target: source.model, source.model.field, metric:<name> or access, or golden:<name>.
   target: string;
   kind: "approve";
   text: string;
   // The target's content hash when it was read back: what sl approve records as approved_hash.
   content_hash: string;
+  // A golden:<name> item only: the tolerance it was read back with, which sl goldens confirm records.
+  tolerance?: number;
 }
 
 export interface PendingReadback {
@@ -430,7 +442,7 @@ export interface LedgerReply {
   kind: "reply";
   readback_id: string;
   item: number;
-  // The approve target the item read back.
+  // The approve target the item read back (golden:<name> for a golden sl goldens confirm records).
   target: string;
   // The target's content hash when it was read back, copied from the pending readback.
   content_hash: string;

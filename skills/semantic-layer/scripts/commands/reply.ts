@@ -5,21 +5,11 @@ import { UserError } from "../lib/errors.ts";
 import { LEDGER_FILE, openLedger, ownerText, readPending, shellQuote } from "../lib/ledger.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
-import { renderReadbacks } from "../lib/readback.ts";
+import { currentHash } from "../lib/readback.ts";
 import type { LedgerReply, ReplyVerdict } from "../lib/types.ts";
 
 const VERDICTS: readonly ReplyVerdict[] = ["yes", "no", "change"];
 const USAGE = 'sl reply --readback <readback_id> --item <n> --text "<owner\'s words>" [--verdict yes|no|change] --by "<owner>"';
-
-// The target's content hash as it stands, or null when it no longer exists.
-function currentHash(root: string, target: string): string | null {
-  try {
-    return renderReadbacks(root, [target])[0]!.content_hash;
-  } catch (e) {
-    if (e instanceof UserError) return null;
-    throw e;
-  }
-}
 
 const spec: CommandSpec = {
   summary: "Record the owner's answer to one item of a readback in the answer ledger, .sl/ledger.jsonl.",
@@ -53,7 +43,7 @@ const spec: CommandSpec = {
       throw new UserError(`Readback ${pending.readback_id} has no item ${JSON.stringify(itemRaw)}; its items are ${items}. To ask about something else, read it back first with sl readback --targets <ref>.`);
     }
     const ledger = openLedger(ctx.root);
-    const now = currentHash(ctx.root, item.target);
+    const now = currentHash(ctx.root, item.target, item.content_hash);
     const changed = now !== item.content_hash;
     const entry = ledger.append({
       kind: "reply",
@@ -81,7 +71,7 @@ const spec: CommandSpec = {
       next = now === null ? "sl status" : again;
       advice = `Next: ${next}.`;
     } else if (verdict === "yes") {
-      next = `sl approve --target ${t} --by ${shellQuote(by)}`;
+      next = t.startsWith("golden:") ? `sl goldens confirm --name ${t.slice(7)}` : `sl approve --target ${t} --by ${shellQuote(by)}`;
       advice = `The owner said yes to the item as read back. Next: ${next}.`;
     } else {
       next = again;

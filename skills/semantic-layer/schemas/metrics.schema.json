@@ -58,7 +58,7 @@
         "expr": {
           "type": "string",
           "minLength": 1,
-          "description": "Derived only: arithmetic over {model.measure} placeholders."
+          "description": "Derived only: arithmetic over {model.measure} placeholders, with balanced parentheses (spec.md, Expression text)."
         },
         "format": {
           "enum": [

@@ -34,7 +34,17 @@ import {
   type LoadedModel,
 } from "./project.ts";
 import { rankTables } from "./rank.ts";
-import { incomingKeyColumns, missingColumns, referencedColumns, unreferencedColumns } from "./snapshot-diff.ts";
+import {
+  approvedModelsOn,
+  incomingKeyColumns,
+  missingColumns,
+  type ModelOnTable,
+  readScopeState,
+  referencedColumns,
+  selectionMatcher,
+  tablesFlag,
+  unreferencedColumns,
+} from "./snapshot-diff.ts";
 import { effectiveScope } from "./table-list.ts";
 import { DIALECTS, TO_ONE_RELATIONSHIPS } from "./types.ts";
 import type { AccessMode, Approval, Dialect, Golden, Metric, Model, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
@@ -113,6 +123,13 @@ export interface SourceStatus {
   missing_columns: MissingColumn[];
   // Models whose table is not in the snapshot.
   missing_tables: MissingTable[];
+  // Tables a rerun of sl introspect or sl import found newly in the selection (scope and
+  // intake.schemas) that are still selected and have no model; the draft step names them first.
+  new_in_scope: string[];
+  // Approved models on tables that a rerun found had left the selection (gone from the snapshot or
+  // no longer matching) and that are still out of it. The models are kept; the scope step asks the
+  // owner to restore the table or revoke or remove the model.
+  left_scope_with_models: ModelOnTable[];
   next_batch: BatchEntry[];
 }
 
@@ -457,6 +474,18 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
   }
 
   const unmodeled = scoped.filter((t) => !byTable.has(qualifiedName(t).toLowerCase())).map(qualifiedName);
+  // What the last sl introspect or sl import recorded, as things stand now.
+  const selected = selectionMatcher(config, scope);
+  const byName = new Map(tables.map((t) => [qualifiedName(t), t]));
+  const state = readScopeState(snapshot);
+  const newInScope = (state?.new_in_scope ?? []).filter((n) => {
+    const t = byName.get(n);
+    return !!t && selected(t) && !byTable.has(n.toLowerCase());
+  });
+  const stillOut = (state?.left_scope ?? []).filter((n) => {
+    const t = byName.get(n);
+    return !t || !selected(t);
+  });
   const unprofiled = scoped.filter((t) => profileState(t) !== "yes").map(qualifiedName);
   const partial = scoped.filter((t) => profileState(t) === "partial").map(qualifiedName);
   const unchecked = active.flatMap((m) => (m.joins ?? []).filter((j) => !j.evidence).map((j) => `${m.model}.${j.name}`));
@@ -494,6 +523,8 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
     new_columns: newColumns,
     missing_columns: missing,
     missing_tables: missingTables,
+    new_in_scope: [...new Set(newInScope)],
+    left_scope_with_models: approvedModelsOn(stillOut, tables, models),
     next_batch: nextBatch,
   };
   return { status, drift, approvals: modelApprovals(name, config, models) };
@@ -642,6 +673,27 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     };
   }
 
+  // An approved model whose table left the selection is still served, so the owner decides first
+  // whether it belongs. A table gone from the snapshot opened drift above.
+  const leftScope = sources.find((s) => s.left_scope_with_models.length > 0);
+  if (leftScope) {
+    const s = leftScope.source;
+    const items = leftScope.left_scope_with_models.map((x) => `${x.model} (${x.table})`);
+    const tables = [...new Set(leftScope.left_scope_with_models.map((x) => x.table))];
+    const flag = tablesFlag(tables);
+    return {
+      phase: "scope",
+      source: s,
+      message:
+        `Left scope with approved models: ${preview(items)}. Their tables are no longer selected in "${s}" (by its scope, or by the schemas ` +
+        "intake.schemas lists), but the models are kept and still served. Ask the owner whether each still belongs: to keep it, bring its " +
+        `table back into scope (${flag ? "preview with the command below" : `preview with sl scope --source ${s} --tables <table>`}, then add ` +
+        "--write; remove an exclude that matches it with --remove), or restore the pattern or the intake.schemas entry that selected it; " +
+        `otherwise revoke it with sl approve --target ${s}.<model> --revoke, or remove its model file.`,
+      command: `sl scope --source ${s}${flag}`,
+    };
+  }
+
   const unscoped = sources.find((s) => s.snapshot!.in_scope === 0);
   if (unscoped) {
     const s = unscoped.source;
@@ -683,6 +735,18 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
   const unmodeled = sources.find((s) => s.tables_without_model > 0);
   if (unmodeled) {
     const s = unmodeled.source;
+    const fresh = unmodeled.new_in_scope;
+    if (fresh.length) {
+      const others = unmodeled.tables_without_model - fresh.length;
+      return {
+        phase: "draft",
+        source: s,
+        message:
+          `${fresh.length} table(s) in "${s}" are new in scope and have no model: ${preview(fresh)}. Draft them, then interview the owner about them.` +
+          (others > 0 ? ` ${others} other in-scope table(s) have no model either; sl status names them next.` : ""),
+        command: `sl draft --source ${s}${tablesFlag(fresh)}`,
+      };
+    }
     return {
       phase: "draft",
       source: s,

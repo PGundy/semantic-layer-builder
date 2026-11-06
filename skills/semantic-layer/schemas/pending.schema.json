@@ -27,15 +27,20 @@
           "n": { "type": "integer", "minimum": 1, "description": "The item's number, 1, 2, ... in order." },
           "target": {
             "type": "string",
-            "pattern": "^(access|metric:[a-z][a-z0-9_]*|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)?)$",
-            "description": "The approve target: source.model, source.model.field, metric:<name> or access."
+            "pattern": "^(access|(metric|golden):[a-z][a-z0-9_]*|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)?)$",
+            "description": "The approve target: source.model, source.model.field, metric:<name> or access, or golden:<name>, a golden sl goldens confirm records."
           },
           "kind": { "const": "approve", "description": "What the owner is asked: approve the item." },
           "text": { "type": "string", "minLength": 1, "description": "The readback as rendered for the owner." },
           "content_hash": {
             "type": "string",
             "pattern": "^sha256:[0-9a-f]{64}$",
-            "description": "The target's content hash when it was read back, the value sl approve records as approved_hash."
+            "description": "The target's content hash when it was read back, the value sl approve records as approved_hash; for a golden, the hash of the golden with the rows and tolerance read back."
+          },
+          "tolerance": {
+            "type": "number",
+            "minimum": 0,
+            "description": "golden:<name> items only: the tolerance read back, which sl goldens confirm records when it is not given --tolerance."
           }
         }
       }
