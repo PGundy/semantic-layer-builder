@@ -7,13 +7,13 @@ import { loadScenario, loadScript, readTree, REPO_ROOT, scenarioPath, type Scrip
 import { runScenario, steppingClock } from "../evals/runner/runner.ts";
 import type { TranscriptTurn } from "../evals/runner/types.ts";
 import { main as gradeMain } from "../evals/graders/grade.ts";
-import { equalsFigure, firstModel, inlineParams } from "../evals/graders/figures.ts";
+import { equalsFigure, firstModel } from "../evals/graders/figures.ts";
 import { cleanReason, formatReport, GRADES_FILE, gradeRun } from "../evals/graders/index.ts";
 import { protectedValues } from "../evals/graders/secrets.ts";
 import type { GradeReport, GraderResult } from "../evals/graders/types.ts";
 import type { Golden, Metric } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
-import { approveWithYes, sl } from "./helpers.ts";
+import { approveWithYes, duckdbSource, sl } from "./helpers.ts";
 
 // The deterministic graders (evals/graders, FR-6.3): both scripted scenarios grade clean, and
 // synthetic run directories built from a scripted run fail each grader the way the spec says.
@@ -99,11 +99,22 @@ function withMapping(figures: unknown[]) {
   writeFileSync(join(scenarioDir, "map.json"), JSON.stringify({ figures }));
   return { scenario: loadScenario(file), scenarioFile: file };
 }
-// A draft warehouse orders model the compiler refuses, so goldens on it use their recorded rows.
+// A draft warehouse orders model the compiler refuses.
 async function draftWarehouse(root: string) {
   expect((await sl(root, ["add-source", "--name", "warehouse", "--dialect", "postgres", "--env", "WAREHOUSE_URL"])).code).toBe(0);
   const model = "model: orders\nsource: warehouse\ntable: acme.fct_orders\nstatus: draft\nmeasures:\n  - { name: revenue, expr: amount_cents / 100.0, agg: sum, status: draft }\n";
   write(join(root, "models", "warehouse", "orders.yaml"), model);
+}
+// A warehouse source on a DuckDB file under `dir` whose fct_orders holds one order per amount (in
+// cents), with an orders model and its revenue measure approved on the owner's recorded yes.
+async function duckdbWarehouse(root: string, dir: string, cents: number[]) {
+  const values = cents.map((c, i) => `(${i + 1}, ${c})`).join(", ");
+  await duckdbSource(root, dir, "warehouse", ["create table fct_orders (order_id integer, amount_cents bigint)", `insert into fct_orders values ${values}`]);
+  const model =
+    "model: orders\nsource: warehouse\ntable: main.fct_orders\ngrain: One row per order.\nprimary_key: [order_id]\nstatus: draft\nmeasures:\n" +
+    "  - { name: revenue, expr: amount_cents * 0.01, agg: sum, description: Revenue in US dollars., status: draft }\n";
+  write(join(root, "models", "warehouse", "orders.yaml"), model);
+  for (const t of ["warehouse.orders", "warehouse.orders.revenue"]) expect((await approveWithYes(root, ["--target", t, "--by", "Dana Ruiz"])).err).toBe("");
 }
 const in2025 = (field: string) => [
   { field, op: "gte", value: "2025-01-01" },
@@ -223,25 +234,65 @@ describe("figures", () => {
     expect(g.details[1]).toMatch(/^semantic\/goldens\/spend_by_channel_2025\.yaml: marketing_spend_by_channel_2025 does not match the reference figure: affiliate is 2\d+\.\d+, not 1479\.93/);
   });
 
-  test("a golden the compiler refuses falls back to its recorded rows, and a common mistake fails", async () => {
+  test("a golden the compiler refuses fails with the reason and the next step, mapped or not; its recorded rows are not read", async () => {
     const { dir, root } = copyRun();
     await draftWarehouse(root);
     const req = { source: "warehouse", measures: ["orders.revenue"] };
-    golden(root, "revenue_2025", req, [{ revenue: 323286.12 }]);
-    golden(root, "gross_revenue_2025", req, [{ revenue: 301050.82 }]);
+    // The recorded rows hold the right figure, a common mistake and an unmapped value: none is graded.
+    golden(root, "revenue_2025", req, [{ revenue: 301050.82 }]);
     golden(root, "revenue_check", req, [{ revenue: 344517.51 }]);
     golden(root, "sales_count", req, [{ n: 12 }]);
     const g = grader(await gradeRun(dir), "figures");
-    // Three checks: the two mapped goldens and the unmapped one that equals a common mistake.
-    expect(g).toMatchObject({ score: 1 / 3, passed: false });
-    const refused = "from the golden's recorded rows, since sl sql refuses it: measures[0] names orders.revenue, which this user may not see (draft, model_hidden)";
+    expect(g).toMatchObject({ score: 0, passed: false });
+    const refused = (name: string) =>
+      "sl sql refuses its request: measures[0] names orders.revenue, which this user may not see (draft, model_hidden). " +
+      `Read warehouse.orders.revenue back to the owner with sl readback --targets warehouse.orders.revenue and approve it on their yes, then run sl goldens check --name ${name}; ` +
+      "if its rows changed, confirm again only on the owner's yes.";
     expect(g.details).toEqual([
-      `semantic/goldens/gross_revenue_2025.yaml: revenue_2025 matches the reference figure (${refused}).`,
-      `semantic/goldens/revenue_2025.yaml: revenue_2025 does not match the reference figure: it is 323286.12, not 301050.82 (${refused}).`,
-      "semantic/goldens/revenue_2025.yaml: revenue_2025 equals the common mistake revenue_2025_with_test_accounts: Revenue without excluding test accounts.",
-      `semantic/goldens/revenue_check.yaml: 344517.51 (${refused}) equals the common mistake revenue_2025_all_statuses: Revenue with cancelled and refunded orders left in.`,
-      "semantic/goldens/sales_count.yaml: maps to no reference figure in evals/scenarios/acme.figures.json, so it is not compared.",
+      `semantic/goldens/revenue_2025.yaml: revenue_2025 is not checked: ${refused("revenue_2025")}`,
+      `semantic/goldens/revenue_check.yaml: ${refused("revenue_check")}`,
+      `semantic/goldens/sales_count.yaml: ${refused("sales_count")}`,
     ]);
+  });
+
+  test("a compiled golden that equals a common mistake fails, mapped or not", async () => {
+    const { dir, root } = copyRun();
+    // Revenue with cancelled and refunded orders left in.
+    await duckdbWarehouse(root, dir, [34451751]);
+    const req = { source: "warehouse", measures: ["orders.revenue"] };
+    golden(root, "revenue_2025", req, [{ revenue: 301050.82 }]);
+    golden(root, "sales_total", req, [{ revenue: 301050.82 }]);
+    const g = grader(await gradeRun(dir), "figures");
+    expect(g).toMatchObject({ score: 0, passed: false });
+    expect(g.details).toEqual([
+      "semantic/goldens/revenue_2025.yaml: revenue_2025 does not match the reference figure: it is 344517.51, not 301050.82 (compiled by the reference compiler and run on warehouse).",
+      "semantic/goldens/revenue_2025.yaml: revenue_2025 equals the common mistake revenue_2025_all_statuses: Revenue with cancelled and refunded orders left in.",
+      "semantic/goldens/sales_total.yaml: 344517.51 (compiled by the reference compiler and run on warehouse) equals the common mistake revenue_2025_all_statuses: Revenue with cancelled and refunded orders left in.",
+    ]);
+  });
+
+  test("a golden that compiles for a source that is not duckdb fails: the grader cannot run it from files", async () => {
+    const { dir, root } = copyRun();
+    await duckdbWarehouse(root, dir, [30105082]);
+    write(join(root, "sources", "warehouse.yaml"), "source: warehouse\ndialect: postgres\nconnection:\n  env: WAREHOUSE_URL\n");
+    golden(root, "revenue_2025", { source: "warehouse", measures: ["orders.revenue"] }, [{ revenue: 301050.82 }]);
+    const g = grader(await gradeRun(dir), "figures");
+    expect(g).toMatchObject({ score: 0, passed: false });
+    expect(g.details).toEqual([
+      "semantic/goldens/revenue_2025.yaml: revenue_2025 is not checked: its request compiles, but warehouse is postgres and the grader runs compiled SQL only on duckdb sources, whose data it reads from files; " +
+        "run sl goldens check --name revenue_2025 against warehouse instead",
+    ]);
+  });
+
+  test("an approved golden with no request fails, naming the fix, and its recorded rows are not read", async () => {
+    const { dir, root } = copyRun();
+    await duckdbWarehouse(root, dir, [30105082]);
+    golden(root, "revenue_2025", { source: "warehouse", measures: ["orders.revenue"] }, [{ revenue: 301050.82 }]);
+    const path = join(root, "goldens", "revenue_2025.yaml");
+    writeFileSync(path, readFileSync(path, "utf8").replace(/^request: .*\n/m, ""));
+    const g = grader(await gradeRun(dir), "figures");
+    expect(g).toMatchObject({ score: 0, passed: false });
+    expect(g.details).toEqual(["semantic/goldens/revenue_2025.yaml: it has no request to compile; run sl validate and give revenue_2025 a request"]);
   });
 
   test("a golden whose measure is a metric maps through the metric's first measure", async () => {
@@ -262,16 +313,16 @@ describe("figures", () => {
     ]);
   });
 
-  test("a metric golden the compiler refuses falls back to its recorded rows, mapped through the metric's first measure", async () => {
+  test("a metric golden the compiler refuses fails, mapped through the metric's first measure", async () => {
     const { dir, root } = copyRun();
     await draftWarehouse(root);
     write(join(root, "metrics.yaml"), 'metrics:\n  - name: rev_metric\n    source: warehouse\n    type: derived\n    expr: "{orders.revenue}"\n    format: currency\n    status: draft\n');
-    golden(root, "revenue_2025", { source: "warehouse", measures: ["rev_metric"] }, [{ rev_metric: 1 }]);
     golden(root, "gross_revenue_2025", { source: "warehouse", measures: ["rev_metric"] }, [{ rev_metric: 301050.82 }]);
     const g = grader(await gradeRun(dir), "figures");
-    expect(g).toMatchObject({ score: 1 / 2, passed: false });
-    expect(g.details[0]).toStartWith("semantic/goldens/gross_revenue_2025.yaml: revenue_2025 matches the reference figure (from the golden's recorded rows, since sl sql refuses it:");
-    expect(g.details[1]).toStartWith("semantic/goldens/revenue_2025.yaml: revenue_2025 does not match the reference figure: it is 1, not 301050.82 (from the golden's recorded rows, since sl sql refuses it:");
+    expect(g).toMatchObject({ score: 0, passed: false });
+    expect(g.details).toHaveLength(1);
+    expect(g.details[0]).toStartWith("semantic/goldens/gross_revenue_2025.yaml: revenue_2025 is not checked: sl sql refuses its request: ");
+    expect(g.details[0]).toContain("rev_metric");
   });
 
   test("a request's first model: a measure's, a ratio's numerator's, a derived metric's first placeholder's, else a dimension's", () => {
@@ -289,8 +340,8 @@ describe("figures", () => {
 
   test("a mapping tolerance does not widen a common mistake", async () => {
     const { dir, root } = copyRun();
-    await draftWarehouse(root);
-    golden(root, "revenue_2025", { source: "warehouse", measures: ["orders.revenue"] }, [{ revenue: 301050.82 }]);
+    await duckdbWarehouse(root, dir, [30105082]);
+    golden(root, "revenue_2025", { source: "warehouse", measures: ["orders.revenue"] }, [{ revenue: 1 }]);
     // revenue_2025_with_shipping is 305494.15, within 2% of the right figure.
     const opts = withMapping([{ figure: "revenue_2025", golden: "revenue_2025", tolerance: 0.02 }]);
     expect(grader(await gradeRun(dir, opts), "figures")).toMatchObject({ score: 1, passed: true });
@@ -322,12 +373,6 @@ describe("figures", () => {
     expect(equalsFigure("x", 1)).toBe(false);
   });
 
-  test("parameters are written in as literals outside quotes", () => {
-    expect(inlineParams(`select '$1' as "$2" from t where a >= $1 and b in ($2, $3) and c = $10`, ["it's", 2, true])).toBe(
-      `select '$1' as "$2" from t where a >= 'it''s' and b in (2, true) and c = $10`,
-    );
-    expect(() => inlineParams("select $1", [{}])).toThrow("not a string, number or boolean");
-  });
 });
 
 describe("secrets", () => {

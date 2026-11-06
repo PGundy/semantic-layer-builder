@@ -41,7 +41,7 @@ It rewrites `grades.json` in the run directory and exits 0 when every grader pas
 
 | Grader | Passes when |
 |---|---|
-| `figures` | Every approved golden mapped to a figure in `fixtures/<fixture>/reference-figures.json` (by the scenario's figure mapping) produces it, and none produces a `common_mistakes` value. The figure comes from compiling the golden's request with the reference compiler and running it on the run's DuckDB source, or, when the compiler refuses it, from the golden's recorded rows; each detail names the path. |
+| `figures` | Every approved golden mapped to a figure in `fixtures/<fixture>/reference-figures.json` (by the scenario's figure mapping) produces it, and none produces a `common_mistakes` value. The figure comes only from compiling the golden's request with the reference compiler and running it on the run's DuckDB source, never from its recorded rows; an approved golden with no request, one the compiler refuses, or one on a source that is not DuckDB fails with the reason and the next step. |
 | `secrets` | No file of the final root, the transcript or the summary holds a credential or a value of a protected column of the fixture's data (the scenario's `protected_columns` and every column the sensitivity rules flag by name). |
 | `selection` | Each source's final scope equals the scenario's `selection` list for it. |
 | `approvals` | Every approved item, and every confirmed golden, has a ledger `yes` with its hash; "not graded" until the ledger exists. |
