@@ -131,13 +131,14 @@ describe("both scripted scenarios grade clean", () => {
         "semantic/goldens/marketing_spend_2025.yaml: marketing_spend_2025 matches the reference figure (compiled by the reference compiler and run on lake).",
         "semantic/goldens/sessions_2025.yaml: sessions_2025 matches the reference figure (compiled by the reference compiler and run on lake).",
       ]);
-      expect(grader(written, "approvals").details).toEqual(["All 6 approved item(s) have a ledger yes with a matching hash."]);
+      // Six approved items and two confirmed goldens, each with the owner's recorded yes.
+      expect(grader(written, "approvals").details).toEqual(["All 8 approved item(s) have a ledger yes with a matching hash."]);
       expect(grader(written, "selection").details).toEqual([
         "semantic/sources/lake.yaml: the scope is the intended 3 table(s): web_events, sessions, marketing_spend.",
         "warehouse: not graded, the run has no source warehouse.",
       ]);
       expect(grader(written, "secrets").details[0]).toContain("dim_customers.email, dim_customers.first_name, dim_customers.last_name, dim_customers.phone");
-      expect(grader(written, "effort").metrics).toMatchObject({ approved_items: 8, owner_turns: 5, tokens: r.summary.tokens, wall_time_seconds: 15 });
+      expect(grader(written, "effort").metrics).toMatchObject({ approved_items: 8, owner_turns: 6, tokens: r.summary.tokens, wall_time_seconds: 17 });
     });
   }
 
@@ -150,13 +151,40 @@ describe("both scripted scenarios grade clean", () => {
     expect(dropped).toBeDefined();
     writeFileSync(ledger, `${lines.filter((l) => l !== dropped).join("\n")}\n`);
     const g = grader(await gradeRun(r.runDir), "approvals");
-    expect(g).toMatchObject({ passed: false, score: 5 / 6 });
+    expect(g).toMatchObject({ passed: false, score: 7 / 8 });
     expect(g.details).toEqual([
       `semantic/models/lake/sessions.yaml: lake.sessions.session_count is approved, but the ledger holds no yes for it with hash ${JSON.parse(dropped).content_hash}.`,
+    ]);
+    // A confirmed golden without its yes fails too: the grader counts golden:<name> like any approval.
+    const goldenYes = lines.find((l) => isYes(l) && JSON.parse(l).target === "golden:marketing_spend_2025")!;
+    expect(goldenYes).toBeDefined();
+    writeFileSync(ledger, `${lines.filter((l) => l !== goldenYes).join("\n")}\n`);
+    const gg = grader(await gradeRun(r.runDir), "approvals");
+    expect(gg).toMatchObject({ passed: false, score: 7 / 8 });
+    expect(gg.details).toEqual([
+      `semantic/goldens/marketing_spend_2025.yaml: golden:marketing_spend_2025 is confirmed, but the ledger holds no yes for it with hash ${JSON.parse(goldenYes).content_hash}.`,
     ]);
     // With no yes left at all, nothing approved is backed and the grader scores 0.
     writeFileSync(ledger, lines.filter((l) => !isYes(l)).map((l) => `${l}\n`).join(""));
     expect(grader(await gradeRun(r.runDir), "approvals")).toMatchObject({ passed: false, score: 0 });
+  });
+
+  test("a hand edit to a confirmed golden's tolerance or rows after its yes fails the approvals grader", async () => {
+    const r = await scripted("acme-structured");
+    for (const [from, to] of [
+      ["tolerance: 0", "tolerance: 0.01"],
+      ["session_count: 4551", "session_count: 4552"],
+    ] as const) {
+      const dir = join(temp(), "acme-structured-20260101T000000000Z");
+      cpSync(r.runDir, dir, { recursive: true });
+      const p = join(dir, "semantic", "goldens", "sessions_2025.yaml");
+      const text = readFileSync(p, "utf8");
+      expect(text).toContain(from);
+      writeFileSync(p, text.replace(from, to));
+      const g = grader(await gradeRun(dir), "approvals");
+      expect(g).toMatchObject({ passed: false, score: 7 / 8 });
+      expect(g.details.join("\n")).toContain("golden:sessions_2025 is confirmed, but the ledger holds no yes");
+    }
   });
 
   test("the same run grades to the same bytes", async () => {

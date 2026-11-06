@@ -70,14 +70,23 @@
       ]
     },
     {
-      "text": "I wrote your agreement into each golden's reference, confirmed both with tolerance 0, and the check passes. Where things stand: sessions and marketing_spend are signed off with their counts, spend and dates, and two goldens pin 2025's sessions and spend. Still draft: web_events and the other sessions and marketing_spend fields. There is no access.yaml yet, so access is open: everyone sees every approved item. That is all for this session; next time I will read back web_events first.\n\nStop here or continue?",
-      "tokens": 2600,
-      "done": true,
+      "text": "I wrote your agreement into each golden's reference. Sign-offs, read back from the files, with the rows their SQL returns now:\n\n1. golden:sessions_2025 (golden): \"How many sessions were there in 2025?\" It asks lake for sessions.session_count, only rows where sessions.started_at is at least '2025-01-01' and below '2026-01-01'. It runs as no role of its own (access.yaml's default role, or the default audience). Your figure (reference): \"Matches Dana Ruiz's sessions report for 2025, 4,551 sessions, anonymous sessions included, UTC dates.\" Its SQL returns now 1 row: session_count 4551. Tolerance: 0: later runs must give exactly these figures. Approve?\n2. golden:marketing_spend_2025 (golden): \"How much did we spend on marketing in 2025?\" It asks lake for marketing_spend.spend, only rows where marketing_spend.spend_date is at least '2025-01-01' and below '2026-01-01'. It runs as no role of its own (access.yaml's default role, or the default audience). Your figure (reference): \"Matches Dana Ruiz's marketing spend report for 2025, $16,502.34 over all paid channels, in US dollars.\" Its SQL returns now 1 row: spend 16502.34. Tolerance: 0: later runs must give exactly these figures. Approve?\n\nStop here or continue?",
+      "tokens": 2200,
       "write": {
         "goldens/sessions_2025.yaml": "name: sessions_2025\nquestion: How many sessions were there in 2025?\nrequest:\n  source: lake\n  measures: [sessions.session_count]\n  filters:\n    - { field: sessions.started_at, op: gte, value: \"2025-01-01\" }\n    - { field: sessions.started_at, op: lt, value: \"2026-01-01\" }\nsql: |\n  select count(*) as session_count\n  from main.sessions\n  where started_at >= '2025-01-01' and started_at < '2026-01-01'\nreference: Matches Dana Ruiz's sessions report for 2025, 4,551 sessions, anonymous sessions included, UTC dates.\nstatus: draft\n",
         "goldens/marketing_spend_2025.yaml": "name: marketing_spend_2025\nquestion: How much did we spend on marketing in 2025?\nrequest:\n  source: lake\n  measures: [marketing_spend.spend]\n  filters:\n    - { field: marketing_spend.spend_date, op: gte, value: \"2025-01-01\" }\n    - { field: marketing_spend.spend_date, op: lt, value: \"2026-01-01\" }\nsql: |\n  select sum(spend_cents * 0.01) as spend\n  from main.marketing_spend\n  where spend_date >= '2025-01-01' and spend_date < '2026-01-01'\nreference: Matches Dana Ruiz's marketing spend report for 2025, $16,502.34 over all paid channels, in US dollars.\nstatus: draft\n"
       },
       "sl": [
+        ["readback", "--targets", "golden:sessions_2025,golden:marketing_spend_2025", "--tolerance", "0"]
+      ]
+    },
+    {
+      "text": "Confirmed both goldens on your yes, with tolerance 0, and the check passes. Where things stand: sessions and marketing_spend are signed off with their counts, spend and dates, and two goldens pin 2025's sessions and spend. Still draft: web_events and the other sessions and marketing_spend fields. There is no access.yaml yet, so access is open: everyone sees every approved item. That is all for this session; next time I will read back web_events first.\n\nStop here or continue?",
+      "tokens": 2600,
+      "done": true,
+      "sl": [
+        ["reply", "--readback", "rb_0002", "--item", "1", "--text", "yep", "--verdict", "yes", "--by", "Dana Ruiz"],
+        ["reply", "--readback", "rb_0002", "--item", "2", "--text", "yep", "--verdict", "yes", "--by", "Dana Ruiz"],
         ["goldens", "confirm", "--name", "sessions_2025", "--by", "Dana Ruiz", "--tolerance", "0"],
         ["goldens", "confirm", "--name", "marketing_spend_2025", "--by", "Dana Ruiz", "--tolerance", "0"],
         ["goldens", "check"],
@@ -106,6 +115,10 @@
     {
       "text": "yep, both match. tolerance 0",
       "tokens": 10
+    },
+    {
+      "text": "yep",
+      "tokens": 5
     }
   ]
 }

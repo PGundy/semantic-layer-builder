@@ -13,6 +13,8 @@ import { REDACTED, redactSecrets } from "../evals/runner/redact.ts";
 import { main } from "../evals/runner/run.ts";
 import { runIdFor, runScenario, steppingClock } from "../evals/runner/runner.ts";
 import type { Driver, Scenario, SkillTurnInput, Summary, TranscriptTurn } from "../evals/runner/types.ts";
+import { goldenHash } from "../skills/semantic-layer/scripts/lib/approval-hash.ts";
+import type { Golden } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { sl } from "./helpers.ts";
 
 // The eval runner (evals/runner, FR-6.1) with the scripted driver: transcript and summary shape,
@@ -48,6 +50,8 @@ async function run(scenario: Scenario, driver: Driver, out = outDir()) {
 // The items the shipped scripts read back and approve, in readback order.
 const APPROVED = ["lake.sessions", "lake.sessions.session_count", "lake.sessions.started_at", "lake.marketing_spend", "lake.marketing_spend.spend", "lake.marketing_spend.spend_date"];
 type Item = { name?: string };
+// The goldens they write, read back and confirm, in readback order.
+const GOLDENS = ["sessions_2025", "marketing_spend_2025"];
 
 const scripted = (scenario: Scenario, script: Script) => scriptedDriver(script, steppingClock("2026-06-01T00:00:00Z"));
 
@@ -59,14 +63,14 @@ describe("both shipped scenarios run with the scripted driver", () => {
 
       expect(r.summary.run_id).toBe(`${name}-20260101T000000000Z`);
       expect(evalSchemaIssues("eval-summary", r.summary, "summary.json")).toEqual([]);
-      expect(r.summary).toMatchObject({ scenario: name, fixture: "acme", intake: "connection", driver: "scripted", stop_reason: "done", turns: 12 });
+      expect(r.summary).toMatchObject({ scenario: name, fixture: "acme", intake: "connection", driver: "scripted", stop_reason: "done", turns: 14 });
       expect(r.summary.skill_turns + r.summary.owner_turns).toBe(r.summary.turns);
       expect(r.summary.tokens).toBe(r.transcript.reduce((n, t) => n + t.tokens, 0));
-      expect(r.summary.tokens_by_speaker.skill).toBe(17400);
+      expect(r.summary.tokens_by_speaker.skill).toBe(19600);
 
       for (const t of r.transcript) expect(evalSchemaIssues("eval-transcript-turn", t, "transcript.jsonl")).toEqual([]);
-      expect(r.transcript.map((t) => t.turn)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
-      expect(r.transcript.map((t) => t.speaker)).toEqual(Array.from({ length: 6 }, () => ["owner", "skill"] as const).flat());
+      expect(r.transcript.map((t) => t.turn)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+      expect(r.transcript.map((t) => t.speaker)).toEqual(Array.from({ length: 7 }, () => ["owner", "skill"] as const).flat());
       expect(r.transcript[0]).toMatchObject({ text: scenario.opening, tokens: 0 });
       const times = r.transcript.map((t) => t.timestamp);
       expect([...times].sort()).toEqual(times);
@@ -85,6 +89,7 @@ describe("both shipped scenarios run with the scripted driver", () => {
         ".gitignore",
         ".sl/ledger.jsonl",
         ".sl/pending/rb_0001.json",
+        ".sl/pending/rb_0002.json",
         "goldens/marketing_spend_2025.yaml",
         "goldens/sessions_2025.yaml",
         "models/lake/marketing_spend.yaml",
@@ -99,28 +104,51 @@ describe("both shipped scenarios run with the scripted driver", () => {
       expect((await sl(root, ["validate"])).code).toBe(0);
 
       // The flow SKILL.md describes: readback, the owner's yes recorded in their words with their
-      // name, sl approve, then the agreement written into each golden's reference and the goldens confirmed on the
-      // owner's yes to the figures.
+      // name, sl approve, then the agreement written into each golden's reference, the goldens read
+      // back with their rows and tolerance 0, and confirmed only on the owner's recorded yes to that.
       const owners = r.transcript.filter((t) => t.speaker === "owner").map((t) => t.text);
       const ledger = readFileSync(join(root, ".sl", "ledger.jsonl"), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
       const replies = ledger.filter((e) => e.kind === "reply");
-      expect(replies.map((e) => e.target)).toEqual(APPROVED);
-      for (const e of replies) expect(e).toMatchObject({ readback_id: "rb_0001", verdict: "yes", by: "Dana Ruiz", text: owners[4] });
-      if (name === "acme-terse") expect(owners[4]).toBe("yep");
+      expect(replies.map((e) => e.target)).toEqual([...APPROVED, ...GOLDENS.map((g) => `golden:${g}`)]);
+      for (const e of replies.slice(0, APPROVED.length)) expect(e).toMatchObject({ readback_id: "rb_0001", verdict: "yes", by: "Dana Ruiz", text: owners[4] });
+      replies.slice(APPROVED.length).forEach((e, i) => expect(e).toMatchObject({ readback_id: "rb_0002", item: i + 1, verdict: "yes", by: "Dana Ruiz", text: owners[6] }));
+      if (name === "acme-terse") expect([owners[4], owners[6]]).toEqual(["yep", "yep"]);
+      else expect(owners[6]).toStartWith("Yes, both are right");
+      // The golden readback comes after the reference is written, the owner's yes after it, and the
+      // confirm after the yes is recorded, in that order.
+      const turnOf = (re: RegExp) => r.transcript.find((t) => (t.commands ?? []).some((c) => re.test(c.command)))!.turn;
+      const readbackTurn = turnOf(/^sl readback --targets golden:sessions_2025,golden:marketing_spend_2025 --tolerance 0$/);
+      const confirmTurn = turnOf(/^sl goldens confirm --name sessions_2025 /);
+      expect(confirmTurn).toBe(readbackTurn + 2);
+      const confirmCommands = r.transcript[confirmTurn - 1]!.commands!.map((c) => c.command);
+      expect(confirmCommands.findIndex((c) => c.startsWith("sl reply --readback rb_0002"))).toBeLessThan(confirmCommands.findIndex((c) => c.startsWith("sl goldens confirm")));
       for (const ref of APPROVED) {
         const [, model, field] = ref.split(".");
         const doc = parseYamlText(readFileSync(join(root, "models", "lake", `${model}.yaml`), "utf8")) as Record<string, unknown>;
         const item = field ? [...(doc.dimensions as Item[]), ...(doc.measures as Item[])].find((f) => f.name === field)! : doc;
         expect(item).toMatchObject({ status: "approved", approved_by: "Dana Ruiz", approved_at: "2026-06-01" });
       }
-      const goldens = ["sessions_2025", "marketing_spend_2025"].map((g) => parseYamlText(readFileSync(join(root, "goldens", `${g}.yaml`), "utf8")));
+      const goldens = GOLDENS.map((g) => parseYamlText(readFileSync(join(root, "goldens", `${g}.yaml`), "utf8")) as Golden);
       expect(goldens).toMatchObject([
         { status: "approved", confirmed_by: "Dana Ruiz", reference: expect.stringMatching(/^Matches Dana Ruiz's sessions report/), expected: { tolerance: 0, rows: [{ session_count: 4551 }] } },
         { status: "approved", confirmed_by: "Dana Ruiz", reference: expect.stringMatching(/^Matches Dana Ruiz's marketing spend report/), expected: { tolerance: 0 } },
       ]);
+      // Each yes is to the golden as it was confirmed: its rows and tolerance 0.
+      goldens.forEach((g, i) => expect(replies[APPROVED.length + i].content_hash).toBe(goldenHash(g as unknown as Record<string, unknown>, g.expected!.rows, 0)));
       expect(r.transcript.at(-1)!.commands!.map((c) => c.command)).toContain("sl goldens check");
     });
   }
+});
+
+test("without the owner's recorded yes to the golden readback, the scripted confirm is refused", async () => {
+  const { scenario, script } = scenarioNamed("acme-terse");
+  const last = script.skill.at(-1)!;
+  const noYes: Script = { ...script, skill: [...script.skill.slice(0, -1), { ...last, sl: last.sl!.filter((a) => a[0] !== "reply") }] };
+  const r = await run(scenario, scripted(scenario, noYes));
+  const confirms = r.transcript.at(-1)!.commands!.filter((c) => c.command.startsWith("sl goldens confirm"));
+  expect(confirms.map((c) => c.exit_code)).toEqual([1, 1]);
+  const golden = parseYamlText(readFileSync(join(r.runDir, "semantic", "goldens", "sessions_2025.yaml"), "utf8")) as Golden;
+  expect(golden.status).toBe("draft");
 });
 
 describe("budgets", () => {
@@ -168,7 +196,7 @@ describe("fresh context per skill turn", () => {
       ownerTurn: (input) => inner.ownerTurn(input),
     };
     const r = await run(scenario, recording);
-    expect(seen).toHaveLength(6);
+    expect(seen).toHaveLength(7);
 
     const owners = r.transcript.filter((t) => t.speaker === "owner").map((t) => t.text);
     const skills = r.transcript.filter((t) => t.speaker === "skill").map((t) => t.text);
@@ -187,7 +215,7 @@ describe("fresh context per skill turn", () => {
     expect(Object.keys(seen[0]!.input.files)).toEqual([".gitignore", "semantic.yaml", "sources/lake.yaml"]);
     expect(Object.keys(seen[1]!.input.files)).toContain("snapshots/lake.json");
     // No transcript sits in the run directory while the run is going.
-    expect(seen.map((s) => s.transcript)).toEqual(Array(6).fill(false));
+    expect(seen.map((s) => s.transcript)).toEqual(Array(7).fill(false));
   });
 
   test("the owner driver receives the brief, the persona and the conversation so far", async () => {
@@ -416,7 +444,7 @@ describe("errors are plain and name the fix", () => {
     const dir = outDir();
     const io = { out: (t: string) => out.push(t), err: (t: string) => out.push(t), env: {} };
     expect(await main(["--scenario", "acme-terse", "--now", START, "--out", dir], io)).toBe(0);
-    expect(out[0]).toBe("Run acme-terse-20260101T000000000Z: 12 turns (6 owner), 17433 tokens, stopped: done.");
+    expect(out[0]).toBe("Run acme-terse-20260101T000000000Z: 14 turns (7 owner), 19638 tokens, stopped: done.");
     expect(out.at(-1)).toContain("Next: read");
     expect(existsSync(join(dir, "acme-terse-20260101T000000000Z", "summary.json"))).toBe(true);
   });

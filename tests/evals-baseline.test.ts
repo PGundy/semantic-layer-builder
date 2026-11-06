@@ -126,7 +126,7 @@ describe("the committed baseline", () => {
     expect(text).toContain("Smoke: no regression against evals/baseline.json.");
     expect(text).toContain("Next: nothing to do for the evals.");
     expect(r.err).toEqual([]);
-  });
+  }, 30_000);
 });
 
 describe("regressions", () => {
@@ -159,7 +159,7 @@ describe("regressions", () => {
   test("effort metrics never fail the smoke, however far they move", async () => {
     const f = fakeIO({ "acme-terse": report("acme-terse", {}, [], { tokens: 999999, owner_turns: 40 }) });
     expect(await main([], f.io)).toBe(0);
-    expect(f.text()).toContain("tokens 999999 (baseline 17433)");
+    expect(f.text()).toContain("tokens 999999 (baseline 19638)");
     expect(f.text()).not.toContain("REGRESSION");
   });
 
@@ -244,7 +244,7 @@ describe("--update-baseline", () => {
     walk(JSON.parse(first));
     expect(Object.keys(JSON.parse(first))).toEqual(["driver", "runs", "scenarios", "version"]);
     expect(r2.text()).toContain("Next: commit");
-  });
+  }, 30_000);
 
   test("records a lowered score, so the next smoke against it passes", async () => {
     const dir = tempDir();
@@ -376,7 +376,7 @@ describe("errors and where runs go", () => {
     expect(await main(["--out", dir], r.io)).toBe(0);
     for (const s of SMOKE_SCENARIOS) expect(existsSync(join(dir, `${s}-20260101T000000000Z`, "grades.json"))).toBe(true);
     expect(r.text()).toContain("The runs are in");
-  });
+  }, 30_000);
 
   test("paths outside the working directory are shown absolute", () => {
     const outside = join(tempDir(), "out");

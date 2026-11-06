@@ -5,14 +5,14 @@
     "acme-structured": {
       "effort": {
         "approved_items": 8,
-        "owner_turns": 5,
-        "owner_turns_per_approved_item": 0.63,
-        "owner_words": 119,
-        "owner_words_per_approved_item": 14.88,
-        "skill_tokens_per_approved_item": 2175,
-        "tokens": 17630,
-        "tokens_per_approved_item": 2203.75,
-        "wall_time_seconds": 55
+        "owner_turns": 6,
+        "owner_turns_per_approved_item": 0.75,
+        "owner_words": 139,
+        "owner_words_per_approved_item": 17.38,
+        "skill_tokens_per_approved_item": 2450,
+        "tokens": 19860,
+        "tokens_per_approved_item": 2482.5,
+        "wall_time_seconds": 60
       },
       "graders": {
         "approvals": {
@@ -41,14 +41,14 @@
     "acme-terse": {
       "effort": {
         "approved_items": 8,
-        "owner_turns": 5,
-        "owner_turns_per_approved_item": 0.63,
-        "owner_words": 12,
-        "owner_words_per_approved_item": 1.5,
-        "skill_tokens_per_approved_item": 2175,
-        "tokens": 17433,
-        "tokens_per_approved_item": 2179.13,
-        "wall_time_seconds": 55
+        "owner_turns": 6,
+        "owner_turns_per_approved_item": 0.75,
+        "owner_words": 13,
+        "owner_words_per_approved_item": 1.63,
+        "skill_tokens_per_approved_item": 2450,
+        "tokens": 19638,
+        "tokens_per_approved_item": 2454.75,
+        "wall_time_seconds": 60
       },
       "graders": {
         "approvals": {
