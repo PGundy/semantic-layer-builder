@@ -144,7 +144,7 @@ describe("acme-export", () => {
       "semantic/goldens/: no golden is confirmed on this export scenario.",
       "sl status: the next step is metrics, not done, while lake waits on a connection (profiles, join_evidence, goldens, drift_from_data).",
     ]);
-    expect(grader(r.grades, "approvals").details).toEqual(["All 7 approved item(s) have a ledger yes with a matching hash."]);
+    expect(grader(r.grades, "approvals").details).toEqual(["All 7 approved item(s) have the owner's latest reply as a yes with a matching hash."]);
   }, 60_000);
 
   test("a confirmed golden, a done status while steps wait and a lost export source each fail connection_first", async () => {
