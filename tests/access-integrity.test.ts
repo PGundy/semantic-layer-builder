@@ -3,7 +3,7 @@ import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type AccessVisibility, checkRequest, evaluateAccess, evaluateLayer, loadAccessLayer, lookup } from "../skills/semantic-layer/scripts/lib/access.ts";
 import type { ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
-import { sl, tempRoot } from "./helpers.ts";
+import { approveWithYes, sl, tempRoot } from "./helpers.ts";
 
 // The access evaluator treats an approved item whose content no longer matches its approved_hash as
 // a draft, on a copy of examples/acme, whose items are approved with content hashes. This guards
@@ -109,7 +109,7 @@ describe("approved items that changed since approval", () => {
     expect(st.next_step.phase).toBe("reapprove");
     expect(st.next_step.message).toContain("Until then tools treat each one as a draft (sl access lists them).");
     // The owner's yes, recorded by sl approve, makes it visible again.
-    expect((await sl(root, ["approve", "--target", "warehouse.orders.revenue", "--by", "Dana Ruiz"])).code).toBe(0);
+    expect((await approveWithYes(root, ["--target", "warehouse.orders.revenue", "--by", "Dana Ruiz"])).code).toBe(0);
     const after = evaluateAccess(root);
     expect(after.changed_since_approval).toEqual([]);
     expect(field(after, "warehouse.orders.revenue")).toMatchObject({ status: "approved", visible: true });
@@ -264,7 +264,7 @@ describe("approved items that changed since approval", () => {
     expect(issues.some((i) => i.message.includes("access_draft"))).toBe(false);
 
     // Approving it again after the owner's yes serves it again.
-    expect((await sl(root, ["approve", "--target", "access", "--by", "Dana Ruiz", "--date", "2026-11-01"])).code).toBe(0);
+    expect((await approveWithYes(root, ["--target", "access", "--by", "Dana Ruiz"])).code).toBe(0);
     const after = evaluateAccess(root);
     expect(after.access_file).toBe("approved");
     expect(after.changed_since_approval).toEqual([]);
