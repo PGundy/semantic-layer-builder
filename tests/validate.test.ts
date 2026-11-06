@@ -2496,7 +2496,7 @@ describe("approval hashes", () => {
     expect(readYaml<Doc>(join(root, ORDERS)).measures[0].approved_hash).toBeUndefined();
     const st = (await sl(root, ["status", "--json"])).json<{ hash_missing: string[]; next_step: { phase: string; command: string } }>();
     expect(st.hash_missing).toEqual(["warehouse.orders.revenue"]);
-    expect(st.next_step).toMatchObject({ phase: "reapprove", command: 'sl approve --target warehouse.orders.revenue --by "<owner>"' });
+    expect(st.next_step).toMatchObject({ phase: "reapprove", command: "sl readback --targets warehouse.orders.revenue" });
     // Approving it again on the owner's yes records the hash; it is not "already approved".
     const again = await approveWithYes(root, ["--target", "warehouse.orders.revenue", "--by", "Dana Ruiz"], { now: "2026-02-01T12:00:00.000Z" });
     expect(again.code).toBe(0);
