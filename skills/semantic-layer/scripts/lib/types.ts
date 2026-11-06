@@ -357,7 +357,9 @@ export interface Golden {
   role?: string;
   user?: Record<string, unknown>;
   request: QueryRequest;
-  sql: string;
+  // Hand-written SQL the compiled request is checked against; `sql` is its older name, read as it.
+  cross_check_sql?: string;
+  sql?: string;
   expected?: { tolerance?: number; rows: Record<string, unknown>[] };
   reference?: string;
   status: Status;

@@ -1,6 +1,6 @@
 // Structural (JSON Schema) and semantic (cross-reference) validation of a semantic root.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
 import { parseDocument } from "yaml";
@@ -334,9 +334,10 @@ class Validator {
 
   // The YAML files of a directory paired with their stems. A stem defined by both a .yaml and a
   // .yml file is an error and only the .yaml file is read; a lone .yml file gets a warning because
-  // other sl commands open <stem>.yaml.
+  // other sl commands open <stem>.yaml. A file only in overrides is read as if it were written.
   yamlEntries(dir: string): { file: string; stem: string }[] {
-    const files = yamlFiles(dir);
+    const added = [...(this.overrides?.keys() ?? [])].filter((p) => dirname(p) === dir && /\.ya?ml$/.test(p)).map((p) => basename(p));
+    const files = [...new Set([...yamlFiles(dir), ...added])].sort();
     const out: { file: string; stem: string }[] = [];
     for (const f of files) {
       const stem = f.replace(/\.ya?ml$/, "");
@@ -1772,10 +1773,19 @@ class Validator {
           if (!attrs.has(key)) this.error(f, `user.${key}`, `"${key}" is not a declared user attribute`);
       }
       if (g.status === "approved" && !g.expected?.rows.length) this.error(f, "expected.rows", "an approved golden needs at least one expected row");
-      if (typeof g.sql === "string" && callsRound(g.sql, this.identRules(g.request.source).dialect))
+      const crossKey = crossCheckKey(g);
+      if (typeof g.sql === "string" && typeof g.cross_check_sql === "string")
+        this.error(f, "sql", "is the older name of cross_check_sql, and the golden has both; keep cross_check_sql and remove sql");
+      else if (typeof g.sql === "string")
         this.warn(
           f,
           "sql",
+          `is now cross_check_sql: rename the key; until then it is read as cross_check_sql, a hand-written query that sl goldens check runs next to the request compiled from the YAML, and both must give expected.rows`,
+        );
+      if (crossKey && callsRound(g[crossKey]!, this.identRules(g.request.source).dialect))
+        this.warn(
+          f,
+          crossKey,
           "calls round(); a golden's SQL applies the measure exactly as written; round() hides float noise, so remove it. " +
             "This warning never stands, whatever the golden's reference says; once round() is removed, " +
             `sl goldens check --name ${g.name} fails on rows recorded rounded until the owner says yes to the unrounded figure and it is confirmed again`,
@@ -1879,16 +1889,17 @@ class Validator {
     return parsed && this.measure(source, parsed.model, parsed.field) ? [parsed.model] : [];
   }
 
-  // Warns when a golden's SQL never names a column that a requested measure's expr or filter reads
-  // (for a metric, each of its measures'): goldens pin hand-written SQL, and nothing yet compiles the
-  // request, so SQL that leaves out a measure's rule records a figure the layer would not give.
+  // Warns when a golden's cross_check_sql never names a column that a requested measure's expr or
+  // filter reads (for a metric, each of its measures'): such SQL leaves out the measure's rule, and
+  // sl goldens check fails when it disagrees with the request compiled from the YAML.
   checkGoldenSqlRules(l: Loaded<Golden>): void {
     const g = l.data;
     const req = g.request;
-    if (typeof g.sql !== "string") return;
+    const crossKey = crossCheckKey(g);
+    if (!crossKey) return;
     const dialect = this.identRules(req.source).dialect;
     const named = new Set<string>();
-    for (const tok of tokenizeSql(g.sql, dialect)) if (tok.t === "id") named.add(tok.v.toLowerCase());
+    for (const tok of tokenizeSql(g[crossKey]!, dialect)) if (tok.t === "id") named.add(tok.v.toLowerCase());
     const measures: [string, string][] = [];
     for (const ref of strings(req.measures)) {
       if (/^[a-z][a-z0-9_]*$/.test(ref)) {
@@ -1912,8 +1923,8 @@ class Validator {
       if (!missing.length) continue;
       this.warn(
         l.file,
-        "sql",
-        `goldens pin hand-written SQL; this SQL may not apply ${key}'s rule: it never names ${missing.join(", ")}, which the measure's ` +
+        crossKey,
+        `this hand-written SQL may not apply ${key}'s rule: it never names ${missing.join(", ")}, which the measure's ` +
           `${measure.filter ? "expr or filter" : "expr"} reads. Write the measure's expr and filter into the SQL as the model defines them, ` +
           `then run sl goldens check --name ${g.name} and read any change back to the owner`,
       );
@@ -2322,4 +2333,9 @@ export function unansweredMessage(refs: string[]): string {
 // as an edit would write them, by absolute path; each must be an existing file.
 export function validateProject(root: string, overrides?: ReadonlyMap<string, string>): Issue[] {
   return new Validator(root, overrides).run();
+}
+
+// The key holding a golden's hand-written cross-check query: cross_check_sql, else its older name sql.
+function crossCheckKey(g: Golden): "cross_check_sql" | "sql" | undefined {
+  return typeof g.cross_check_sql === "string" ? "cross_check_sql" : typeof g.sql === "string" ? "sql" : undefined;
 }

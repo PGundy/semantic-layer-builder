@@ -20,8 +20,8 @@ import {
   viewFiles,
 } from "../skills/semantic-layer/scripts/lib/source-safety.ts";
 import { assertReadOnly, tokenize } from "../skills/semantic-layer/scripts/lib/sql-guard.ts";
-import type { QueryPlan, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
+import type { Model, QueryPlan, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
+import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { assertLocalPg, duckdbSource, initProject, isLocalPg, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
@@ -419,9 +419,14 @@ describe("protected values and terminal output", () => {
 
   test("goldens run, confirm and check never print protected values by default", async () => {
     const t = await project();
+    // The request compiles to the email column, which looks personal, as its cross_check_sql reads it.
+    const ok = { status: "approved" as const, approved_by: "Dana", approved_at: "2026-01-15" };
+    const model = readYaml<Model>(join(t.root, "models", "wh", "customers.yaml"));
+    model.dimensions = [...model.dimensions.map((d) => (d.name === "city" ? { ...d, ...ok } : d)), { name: "email", expr: "email", type: "string", ...ok }];
+    writeYaml(join(t.root, "models", "wh", "customers.yaml"), { ...model, ...ok, measures: [{ name: "n", agg: "count", description: "Customers.", ...ok }] });
     writeFileSync(
       join(t.root, "goldens", "by_email.yaml"),
-      "name: by_email\nquestion: Orders by email\nrequest:\n  source: wh\n  measures: [customers.n]\n  dimensions: [customers.city]\n" +
+      "name: by_email\nquestion: Orders by email\nrequest:\n  source: wh\n  measures: [customers.n]\n  dimensions: [customers.email, customers.city]\n" +
         "sql: select email, city, count(*) as n from customers group by email, city\nstatus: draft\n",
     );
     const run = await sl(t.root, ["goldens", "run", "--name", "by_email"]);

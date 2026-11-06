@@ -199,13 +199,13 @@ describe("goldenPlan", () => {
     status: "draft",
   };
 
-  test("builds a one-query plan with the golden id", () => {
+  test("without a compiled request, plans the cross-check alone under its own id", () => {
     const plan = goldenPlan(golden, { source: "wh", dialect: "snowflake" });
     expect(plan).toEqual({
       command: "goldens",
       source: "wh",
       dialect: "snowflake",
-      queries: [{ id: "golden:total", purpose: "What is the total?", sql: "select 1 as n" }],
+      queries: [{ id: "golden:total:cross_check", purpose: "What is the total? (cross_check_sql)", sql: "select 1 as n" }],
     });
   });
 
@@ -299,7 +299,7 @@ request:
   measures: [orders.revenue]
   dimensions: [orders.region]
 sql: |
-  select region, sum(amount) as revenue, count(*) as orders
+  select region, sum(amount) as revenue
   from orders
   group by region
 reference: Finance Q1 pack. # keep this note
@@ -311,11 +311,23 @@ const ORDERS = [
   "insert into orders values (1, 'east', 100.00), (2, 'east', 50.50), (3, 'west', 200.00), (4, 'north', 10.25)",
 ];
 
-async function setup(goldenYaml = GOLDEN_YAML, statements = ORDERS) {
+// The orders model approved, itself and every field.
+const approvedOrders = (): Model => ({ ...ordersModel("approved"), ...APPROVED });
+
+// An approved access.yaml with the analyst role GOLDEN_YAML runs as.
+const ACCESS = { status: "approved", approved_by: "Dana", approved_at: "2026-01-15", mode: "open", roles: [{ name: "analyst", description: "Analysts." }] };
+
+// A project with the orders table, a golden on it and, unless `layer` is false, an approved orders
+// model and access.yaml, so the golden's request compiles.
+async function setup(goldenYaml = GOLDEN_YAML, statements = ORDERS, layer = true) {
   const t = tempRoot();
   cleanup = t.cleanup;
   await initProject(t.root);
   await duckdbSource(t.root, t.dir, "wh", statements);
+  if (layer) {
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), approvedOrders());
+    writeYaml(join(t.root, "access.yaml"), ACCESS);
+  }
   const goldenPath = join(t.root, "goldens", "revenue_by_region.yaml");
   writeFileSync(goldenPath, goldenYaml);
   return { ...t, goldenPath };
@@ -337,9 +349,9 @@ describe("goldens CLI on duckdb", () => {
     expect(run.code).toBe(0);
     const ran = run.json<{ name: string; columns: string[]; rows: Record<string, unknown>[] }>();
     expect(ran.name).toBe("revenue_by_region");
-    expect(ran.columns).toEqual(["region", "revenue", "orders"]);
+    expect(ran.columns).toEqual(["region", "revenue"]);
     expect(ran.rows).toHaveLength(3);
-    expect(ran.rows).toContainEqual({ region: "east", revenue: 150.5, orders: 2 });
+    expect(ran.rows).toContainEqual({ region: "east", revenue: 150.5 });
 
     const human = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
     expect(human.code).toBe(0);
@@ -365,7 +377,7 @@ describe("goldens CLI on duckdb", () => {
     expect(saved.confirmed_by).toBe("Dana Ruiz");
     expect(saved.confirmed_at).toBe("2026-01-15");
     expect(saved.expected?.tolerance).toBe(0.005);
-    expect(saved.expected?.rows).toContainEqual({ region: "west", revenue: 200, orders: 1 });
+    expect(saved.expected?.rows).toContainEqual({ region: "west", revenue: 200 });
 
     const rerun = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
     expect(rerun.code).toBe(0);
@@ -381,7 +393,8 @@ describe("goldens CLI on duckdb", () => {
 
     const pass = await sl(t.root, ["goldens", "check", "--json"]);
     expect(pass.code).toBe(0);
-    expect(pass.json()).toEqual({ passed: 1, failed: 0, results: [{ name: "revenue_by_region", ok: true, diffs: [] }] });
+    // The request compiled from the YAML and the golden's cross_check_sql (written as sql) both give the rows.
+    expect(pass.json()).toEqual({ passed: 1, failed: 0, results: [{ name: "revenue_by_region", ok: true, diffs: [], compiled: "pass", cross_check: "pass" }] });
 
     const passHuman = await sl(t.root, ["goldens", "check"]);
     expect(passHuman.out).toContain("pass  revenue_by_region");
@@ -395,7 +408,11 @@ describe("goldens CLI on duckdb", () => {
     const failed = fail.json<{ passed: number; failed: number; results: { name: string; ok: boolean; diffs: string[] }[] }>();
     expect(failed.failed).toBe(1);
     const westRow = saved.expected!.rows.findIndex((r) => r.region === "west") + 1;
-    expect(failed.results[0]!.diffs).toEqual([`Row ${westRow} (region="west"), column revenue: expected 200, got 250.`]);
+    expect(failed.results[0]!.diffs).toEqual([
+      "Both the rows compiled from the YAML and cross_check_sql differ from expected.rows.",
+      `Compiled: Row ${westRow} (region="west"), column revenue: expected 200, got 250.`,
+      `cross_check_sql: Row ${westRow} (region="west"), column revenue: expected 200, got 250.`,
+    ]);
 
     const failHuman = await sl(t.root, ["goldens", "check", "--name", "revenue_by_region"]);
     expect(failHuman.code).toBe(1);
@@ -415,15 +432,26 @@ describe("goldens CLI on duckdb", () => {
     writeFileSync(t.goldenPath, reversed);
     const r = await sl(t.root, ["goldens", "check", "--json"]);
     expect(r.code).toBe(1);
-    expect(r.json<{ results: { diffs: string[] }[] }>().results[0]!.diffs[0]).toBe('Row 1, column region: expected "east", got "west".');
+    // Only the cross-check changed: the difference names it, and the compiled rows still pass.
+    expect(r.json<{ results: { diffs: string[] }[] }>().results[0]).toMatchObject({
+      compiled: "pass",
+      cross_check: "fail",
+      diffs: [
+        "cross_check_sql differs from expected.rows, and the rows compiled from the YAML match them: fix cross_check_sql or remove it.",
+        'cross_check_sql: Row 1, column region: expected "east", got "west".',
+        "cross_check_sql: Row 1, column revenue: expected 150.5, got 200.",
+        'cross_check_sql: Row 3, column region: expected "west", got "east".',
+        "cross_check_sql: Row 3, column revenue: expected 200, got 150.5.",
+      ],
+    });
   });
 
   test("confirm refuses more than 200 rows without --force", async () => {
     const big = GOLDEN_YAML.replace(
-      "select region, sum(amount) as revenue, count(*) as orders\n  from orders\n  group by region",
+      "select region, sum(amount) as revenue\n  from orders\n  group by region",
       "select range as id from range(201)",
     );
-    const t = await setup(big);
+    const t = await setup(big, ORDERS, false);
     const refused = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana"]);
     expect(refused.code).toBe(1);
     expect(refused.err).toContain("201 rows, more than 200");
@@ -468,7 +496,7 @@ describe("goldens CLI on duckdb", () => {
       "approve it after its readback, then run sl goldens check --name revenue_by_region; if it passes the recorded rows stand, and only changed rows need a new confirm",
     );
 
-    writeYaml(join(t.root, "models", "wh", "orders.yaml"), ordersModel("approved"));
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), approvedOrders());
     // Once the field is approved, the recorded rows stand when the check passes.
     const check = await sl(t.root, ["goldens", "check", "--name", "revenue_by_region"]);
     expect(check.code).toBe(0);
@@ -508,7 +536,7 @@ describe("goldens CLI on duckdb", () => {
   });
 
   test("confirm notes request fields the layer does not have yet before recording", async () => {
-    const t = await setup();
+    const t = await setup(GOLDEN_YAML, ORDERS, false);
     const r = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0"]);
     expect(r.code).toBe(0);
     expect(r.err).toContain('Golden "revenue_by_region" names fields the layer does not have yet');
@@ -524,7 +552,7 @@ describe("goldens CLI on duckdb", () => {
     expect(again.code).toBe(0);
     const saved = readYaml<Golden>(t.goldenPath);
     expect(saved.expected?.tolerance).toBe(0);
-    expect(saved.expected?.rows).toContainEqual({ region: "west", revenue: 300, orders: 1 });
+    expect(saved.expected?.rows).toContainEqual({ region: "west", revenue: 300 });
     expect(saved.confirmed_by).toBe("Lee");
     const kept = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Lee"]);
     expect(kept.out).toContain("(tolerance 0, kept from the file)");
@@ -548,7 +576,7 @@ describe("goldens CLI on duckdb", () => {
     const check = await sl(t.root, ["goldens", "check", "--json"]);
     expect(check.code).toBe(1);
     const diff = check.json<{ results: { diffs: string[] }[] }>().results[0]!.diffs[0]!;
-    expect(diff).toStartWith("The query did not run: ");
+    expect(diff).toStartWith("cross_check_sql did not run: ");
     expect(diff).not.toContain("Query failed");
     expect(diff).toContain("no_such_table");
   });
@@ -630,21 +658,21 @@ describe("currency display", () => {
 
   test("goldens run and confirm print currency measures to two decimals; JSON and the recorded rows keep the figures", async () => {
     const t = await setup();
-    const model = ordersModel("approved");
+    const model = approvedOrders();
     model.measures[0]!.format = "currency";
     model.measures[0]!.currency = "USD";
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), model);
     const run = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
     expect(run.code).toBe(0);
-    expect(run.out).toMatch(/east\s+150\.50\s+2\n/);
-    expect(run.out).toMatch(/west\s+200\.00\s+1\n/);
+    expect(run.out).toMatch(/east\s+150\.50\n/);
+    expect(run.out).toMatch(/west\s+200\.00\n/);
     const json = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region", "--json"]);
-    expect(json.json<{ rows: unknown[] }>().rows).toContainEqual({ region: "east", revenue: 150.5, orders: 2 });
+    expect(json.json<{ rows: unknown[] }>().rows).toContainEqual({ region: "east", revenue: 150.5 });
     const confirm = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0"]);
     expect(confirm.code).toBe(0);
-    expect(confirm.out).toMatch(/north\s+10\.25\s+1\n/);
-    expect(confirm.out).toMatch(/east\s+150\.50\s+2\n/);
-    expect(readYaml<Golden>(t.goldenPath).expected?.rows).toContainEqual({ region: "east", revenue: 150.5, orders: 2 });
+    expect(confirm.out).toMatch(/north\s+10\.25\n/);
+    expect(confirm.out).toMatch(/east\s+150\.50\n/);
+    expect(readYaml<Golden>(t.goldenPath).expected?.rows).toContainEqual({ region: "east", revenue: 150.5 });
   });
 });
 
@@ -706,6 +734,8 @@ describe("goldens CLI on a snowflake source", () => {
     cleanup = t.cleanup;
     await initProject(t.root);
     writeYaml(join(t.root, "sources", "wh.yaml"), { source: "wh", dialect: "snowflake", connection: { env: "WH_URL" } });
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), approvedOrders());
+    writeYaml(join(t.root, "access.yaml"), ACCESS);
     const goldenPath = join(t.root, "goldens", "revenue_by_region.yaml");
     writeFileSync(goldenPath, GOLDEN_YAML);
 
@@ -717,22 +747,23 @@ describe("goldens CLI on a snowflake source", () => {
     expect(emit.code).toBe(0);
     const plan = emit.json<QueryPlan>();
     expect(plan.dialect).toBe("snowflake");
-    expect(plan.queries.map((q) => q.id)).toEqual(["golden:revenue_by_region"]);
+    // sl sql compiles postgres and duckdb sources, so a snowflake golden runs its cross_check_sql alone.
+    expect(plan.queries.map((q) => q.id)).toEqual(["golden:revenue_by_region:cross_check"]);
     expect(plan.queries[0]!.sql).toContain("group by region");
 
     const resultsFile = join(t.dir, "results.json");
     writeFileSync(
       resultsFile,
       JSON.stringify({
-        "golden:revenue_by_region": [
-          { REGION: "east", REVENUE: "150.50", ORDERS: 2 },
-          { REGION: "west", REVENUE: "200.00", ORDERS: 1 },
+        "golden:revenue_by_region:cross_check": [
+          { REGION: "east", REVENUE: "150.50" },
+          { REGION: "west", REVENUE: "200.00" },
         ],
       }),
     );
     const run = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region", "--results", resultsFile, "--json"]);
     expect(run.code).toBe(0);
-    expect(run.json<{ columns: string[] }>().columns).toEqual(["region", "revenue", "orders"]);
+    expect(run.json<{ columns: string[] }>().columns).toEqual(["region", "revenue"]);
 
     const confirm = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", "Dana", "--results", resultsFile]);
     expect(confirm.code).toBe(0);
@@ -740,7 +771,7 @@ describe("goldens CLI on a snowflake source", () => {
 
     const checkEmit = await sl(t.root, ["goldens", "check", "--emit-sql"]);
     expect(checkEmit.code).toBe(0);
-    expect(checkEmit.json<QueryPlan>().queries.map((q) => q.id)).toEqual(["golden:revenue_by_region"]);
+    expect(checkEmit.json<QueryPlan>().queries.map((q) => q.id)).toEqual(["golden:revenue_by_region:cross_check"]);
 
     const noResults = await sl(t.root, ["goldens", "check"]);
     expect(noResults.code).toBe(1);
@@ -750,9 +781,9 @@ describe("goldens CLI on a snowflake source", () => {
     writeFileSync(
       resultsFile,
       JSON.stringify({
-        "golden:revenue_by_region": [
-          { region: "west", revenue: 200, orders: 1 },
-          { region: "east", revenue: 150.5, orders: 2 },
+        "golden:revenue_by_region:cross_check": [
+          { region: "west", revenue: 200 },
+          { region: "east", revenue: 150.5 },
         ],
       }),
     );
@@ -800,7 +831,7 @@ describe("goldens CLI safety and resilience", () => {
       ["broken", false],
       ["revenue_by_region", true],
     ]);
-    expect(doc.results[0]!.diffs[0]).toContain("Cannot load its source");
+    expect(doc.results[0]!.diffs[0]).toContain("Cannot plan this golden: Unknown source \"gone\"");
     expect(doc.results[0]!.diffs[0]).toContain("gone");
   });
 
@@ -815,7 +846,7 @@ describe("goldens CLI safety and resilience", () => {
   test("a hand-written expected block with no tolerance is checked at half a percent", async () => {
     const t = await setup();
     const handWritten = GOLDEN_YAML.replace("status: draft", "status: approved").concat(
-      "expected:\n  rows:\n    - { region: east, revenue: 150.0, orders: 2 }\n    - { region: west, revenue: 200, orders: 1 }\n    - { region: north, revenue: 10.25, orders: 1 }\n",
+      "expected:\n  rows:\n    - { region: east, revenue: 150.0 }\n    - { region: west, revenue: 200 }\n    - { region: north, revenue: 10.25 }\n",
     );
     writeFileSync(t.goldenPath, handWritten);
     const r = await sl(t.root, ["goldens", "check", "--json"]);

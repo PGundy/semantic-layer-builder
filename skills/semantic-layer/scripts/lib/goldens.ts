@@ -1,8 +1,11 @@
+import { type AccessLayer, CHANGED_SINCE_APPROVAL, loadAccessLayer } from "./access.ts";
+import { type CompileResult, compileLayer, compileRequest, type Refused } from "./compiler/index.ts";
 import { UserError } from "./errors.ts";
 import { PROTECTED_VALUE } from "./output.ts";
+import { loadSnapshot, loadSource } from "./project.ts";
 import { findField, parseRequestField } from "./refs.ts";
-import { assertReadOnly } from "./sql-guard.ts";
-import type { Golden, Metric, Model, QueryPlan, ResultRows, SourceConfig } from "./types.ts";
+import { assertReadOnly, tokenize } from "./sql-guard.ts";
+import type { Dialect, Golden, Metric, Model, QueryPlan, ResultRows, SourceConfig } from "./types.ts";
 import { NAME_PATTERN } from "./types.ts";
 
 export const MAX_DIFFS = 10;
@@ -298,20 +301,179 @@ export function goldenQueryId(name: string): string {
   return `golden:${name}`;
 }
 
-// The one-query plan that runs a golden's SQL against its request's source.
-export function goldenPlan(golden: Golden, source: SourceConfig): QueryPlan {
-  if (typeof golden.sql !== "string" || !golden.sql.trim()) throw new UserError(`Golden "${golden.name}" has no sql.`);
-  try {
-    assertReadOnly(golden.sql);
-  } catch (e) {
-    throw new UserError(`Golden "${golden.name}": ${(e as Error).message}`);
-  }
+// The query id of a golden's cross_check_sql, next to its compiled query golden:<name>.
+export function crossCheckQueryId(name: string): string {
+  return `golden:${name}:cross_check`;
+}
+
+// The hand-written query a golden's compiled request is checked against: cross_check_sql, else
+// the older key sql, read as it. Undefined when the golden has neither.
+export function crossCheckSql(golden: Golden): string | undefined {
+  const raw = typeof golden.cross_check_sql === "string" ? golden.cross_check_sql : typeof golden.sql === "string" ? golden.sql : undefined;
+  return raw?.trim() ? raw.trim() : undefined;
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+// The layer with every model, field, join, metric and access.yaml read as approved, and no
+// approval hash compared: what a draft golden's request compiles against before its fields are.
+function approvedLayer(layer: AccessLayer): AccessLayer {
+  const approve = <T>(xs: T[] | undefined): T[] | undefined => (Array.isArray(xs) ? xs.map((x) => (isObj(x) ? { ...x, status: "approved" } : x)) : xs);
   return {
-    command: "goldens",
-    source: source.source,
-    dialect: source.dialect,
-    queries: [{ id: goldenQueryId(golden.name), purpose: golden.question || `Golden ${golden.name}`, sql: golden.sql.trim() }],
+    ...layer,
+    compare_hashes: false,
+    models: layer.models.map((m) => ({ ...m, status: "approved", dimensions: approve(m.dimensions)!, measures: approve(m.measures)!, joins: approve(m.joins) })),
+    metrics: approve(layer.metrics) ?? [],
+    access: isObj(layer.access) ? { ...layer.access, status: "approved" } : layer.access,
   };
+}
+
+// Compiles a golden's request from the current YAML as the role and user it runs as, the way
+// sl sql does. An approved golden compiles strictly: a draft field, or an approved one changed
+// since its approval, is refused. Any other golden previews its request with every item read as
+// approved, so its rows can be read back to the owner before its fields are approved.
+// A layer too malformed for the compiler to read is a refusal that names sl validate.
+export function compileGolden(root: string, golden: Golden): CompileResult {
+  const role = typeof golden.role === "string" ? golden.role : undefined;
+  const attributes = isObj(golden.user) ? golden.user : {};
+  const source = loadSource(root, golden.request.source);
+  try {
+    if (golden.status === "approved") return compileRequest(root, golden.request, { ...(role ? { role } : {}), user: attributes });
+    return compileLayer({
+      layer: approvedLayer(loadAccessLayer(root)),
+      source,
+      snapshot: loadSnapshot(root, source.source),
+      request: golden.request,
+      user: { attributes, roles: role ? [role] : [] },
+      root,
+    });
+  } catch (e) {
+    if (e instanceof UserError || !(e instanceof TypeError)) throw e;
+    const message = `the compiler could not read the layer (${e.message.split("\n")[0]}); run sl validate`;
+    return { ok: false, source: source.source, reason: message, refusals: [{ code: "invalid_layer", message }] };
+  }
+}
+
+// Whether a refusal is only that the compiler does not support the source's dialect.
+export function onlyUnsupportedDialect(r: CompileResult): boolean {
+  return !r.ok && r.refusals.every((x) => x.code === "unsupported_dialect");
+}
+
+// The approve target a refusal waits on: an item changed since its approval, a draft field or
+// metric the request names, or a draft or changed measure that hides a metric.
+function awaitedTarget(r: Refused): string | undefined {
+  for (const x of r.refusals) {
+    if (x.code !== "not_visible") continue;
+    if (x.ref === "access.yaml") return "access";
+    const changed = x.message.includes(CHANGED_SINCE_APPROVAL) ? /sl approve --target (\S+)/.exec(x.message)?.[1] : undefined;
+    if (changed) return changed;
+    const hidden = /measure_hidden:([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)/.exec(x.message)?.[1];
+    if (hidden) return `${r.source}.${hidden}`;
+    if (/\((draft|draft, [^)]*)\)/.test(x.message) && x.ref) return x.ref.includes(".") ? `${r.source}.${x.ref.split(":")[0]}` : `metric:${x.ref}`;
+  }
+  return undefined;
+}
+
+// The step that resolves a golden's refusal: the refusal's own, approving the item it waits on
+// (a draft access.yaml included) after the owner's yes, sl validate for a layer error, else sl sql
+// for the details. The recheck is goldens check for a golden with expected rows, else goldens run.
+export function refusalNext(golden: Golden, r: Refused): string {
+  const own = r.refusals.find((x) => x.next)?.next;
+  if (own) return own;
+  const target = awaitedTarget(r);
+  const confirmed = (golden.expected?.rows?.length ?? 0) > 0;
+  const recheck = confirmed ? `sl goldens check --name ${golden.name}` : `sl goldens run --name ${golden.name}`;
+  if (target) {
+    const after = confirmed ? `; if its rows changed, confirm again only on the owner's yes` : "";
+    return `Read ${target} back to the owner with sl readback --targets ${target} and approve it on their yes, then run ${recheck}${after}.`;
+  }
+  if (r.refusals.some((x) => x.code === "invalid_layer")) return `Run sl validate and fix what it reports, then run ${recheck}.`;
+  if (onlyUnsupportedDialect(r)) {
+    return (
+      `sl sql compiles postgres and duckdb sources only: write the golden's query by hand from the model YAML as cross_check_sql, ` +
+      `then run sl goldens run --name ${golden.name} --emit-sql to plan it.`
+    );
+  }
+  return `Run sl sql --request goldens/${golden.name}.yaml to see why, fix the request or the layer, then run ${recheck}.`;
+}
+
+// A request value or user attribute as a SQL literal: text quoted, with '' for a quote (and on
+// postgres as E'...' with backslashes doubled when it holds one), finite numbers as written (in
+// parentheses when negative; on postgres quoted, so that like an unbound parameter the literal
+// takes the type of the column it is compared with), booleans as true and false. Anything else
+// is refused.
+function sqlLiteral(v: unknown, dialect: Dialect, n: number): string {
+  if (typeof v === "string") {
+    const quoted = v.replaceAll("'", "''");
+    return dialect === "postgres" && v.includes("\\") ? `E'${quoted.replaceAll("\\", "\\\\")}'` : `'${quoted}'`;
+  }
+  if ((typeof v === "number" && Number.isFinite(v)) || typeof v === "bigint") {
+    if (dialect === "postgres") return `'${v}'`;
+    return v < 0 ? `(${v})` : String(v);
+  }
+  if (typeof v === "boolean") return v ? "true" : "false";
+  throw new UserError(`Parameter $${n} of the compiled query is ${JSON.stringify(v) ?? String(v)}; a golden's filter values and user attributes are text, numbers or true and false.`);
+}
+
+// The compiled SQL with each bound parameter ($1, $2, ...) written as a literal, read with the
+// tokenizer the read-only check uses, so a marker inside a string or a comment is left alone. The
+// query then runs through the read-only adapters, and a plan's SQL runs in any tool as it stands.
+export function inlineParams(sql: string, params: readonly unknown[], dialect: Dialect): string {
+  let out = "";
+  let at = 0;
+  for (const t of tokenize(sql)) {
+    if (t.kind !== "param") continue;
+    const n = Number(t.text.slice(1));
+    if (!(n >= 1 && n <= params.length)) throw new UserError(`The compiled query reads parameter ${t.text}, which it does not bind; run sl validate.`);
+    out += sql.slice(at, t.pos) + sqlLiteral(params[n - 1], dialect, n);
+    at = t.end;
+  }
+  return out + sql.slice(at);
+}
+
+// The plan that runs a golden against its request's source: its request compiled from the YAML
+// (query golden:<name>) when it compiles, and its cross_check_sql (golden:<name>:cross_check) when
+// it has one. A golden with neither is refused with the compiler's reason.
+export function goldenPlan(golden: Golden, source: SourceConfig, compiled?: CompileResult): QueryPlan {
+  const purpose = golden.question || `Golden ${golden.name}`;
+  const queries: QueryPlan["queries"] = [];
+  if (compiled?.ok) queries.push({ id: goldenQueryId(golden.name), purpose, sql: inlineParams(compiled.sql, compiled.params, source.dialect) });
+  const cross = crossCheckSql(golden);
+  if (cross !== undefined) {
+    try {
+      assertReadOnly(cross);
+    } catch (e) {
+      throw new UserError(`Golden "${golden.name}": ${(e as Error).message}`);
+    }
+    queries.push({ id: crossCheckQueryId(golden.name), purpose: `${purpose} (cross_check_sql)`, sql: cross });
+  }
+  if (queries.length) return { command: "goldens", source: source.source, dialect: source.dialect, queries };
+  if (compiled && !compiled.ok) throw new UserError(`Golden "${golden.name}" does not compile from the current YAML: ${compiled.reason}. ${refusalNext(golden, compiled)}`);
+  throw new UserError(`Golden "${golden.name}" has no cross_check_sql, and its request was not compiled.`);
+}
+
+export interface GoldenJudgement extends CompareResult {
+  // How the compiled rows and the cross_check_sql rows compare with the expected rows, each when it ran.
+  compiled?: "pass" | "fail";
+  cross_check?: "pass" | "fail";
+}
+
+// Compares a golden's expected rows with its compiled rows and its cross_check_sql rows, each when
+// it ran. With both, every difference names the query it is in, and the first says which differs.
+export function judgeGolden(expected: Row[], compiled: Row[] | undefined, cross: Row[] | undefined, opts: CompareOptions): GoldenJudgement {
+  const c = compiled && compareRows(expected, compiled, opts);
+  const x = cross && compareRows(expected, cross, opts);
+  const verdict = (key: "compiled" | "cross_check", r: CompareResult | undefined) => (r ? { [key]: r.ok ? "pass" : "fail" } : {});
+  if (!c || !x) {
+    const only = c ?? x;
+    return { ok: only?.ok ?? false, diffs: only?.diffs ?? [], ...verdict("compiled", c), ...verdict("cross_check", x) };
+  }
+  const diffs: string[] = [];
+  if (!c.ok && x.ok) diffs.push("The rows compiled from the YAML differ from expected.rows, and cross_check_sql still gives them: the layer no longer computes the confirmed figure.");
+  if (c.ok && !x.ok) diffs.push("cross_check_sql differs from expected.rows, and the rows compiled from the YAML match them: fix cross_check_sql or remove it.");
+  if (!c.ok && !x.ok) diffs.push("Both the rows compiled from the YAML and cross_check_sql differ from expected.rows.");
+  diffs.push(...c.diffs.map((d) => `Compiled: ${d}`), ...x.diffs.map((d) => `cross_check_sql: ${d}`));
+  return { ok: c.ok && x.ok, diffs, ...verdict("compiled", c), ...verdict("cross_check", x) };
 }
 
 // The measure references a metric combines, in the exact model.measure form sl approve

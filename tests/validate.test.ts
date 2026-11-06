@@ -804,7 +804,7 @@ const CASES: Case[] = [
       mutate(r, ORDERS, (d) => (d.measures[0].filter = "status <> 'cancelled' and not coalesce(customer.is_test_account or customer.email like '%@example-test.com', false)"));
     },
     // revenue's filter now reads customer.email, which no golden's hand-written SQL names.
-    expect: GOLDEN_FILES_ORDERED.map((g): Expected => ["warning", g, "sql", "this SQL may not apply orders.revenue's rule: it never names email"]),
+    expect: GOLDEN_FILES_ORDERED.map((g): Expected => ["warning", g, "cross_check_sql", "this hand-written SQL may not apply orders.revenue's rule: it never names email"]),
   },
   {
     name: "a field that writes only part of a redefining dimension's rule out keeps the warning",
@@ -815,7 +815,7 @@ const CASES: Case[] = [
     },
     expect: [
       ["warning", ORDERS, "measures[0].filter", "customer.is_test_account reads the column is_test_account of public.dim_customers, not dimension is_test_account"],
-      ...GOLDEN_FILES_ORDERED.map((g): Expected => ["warning", g, "sql", "this SQL may not apply orders.revenue's rule: it never names email"]),
+      ...GOLDEN_FILES_ORDERED.map((g): Expected => ["warning", g, "cross_check_sql", "this hand-written SQL may not apply orders.revenue's rule: it never names email"]),
     ],
   },
   {
@@ -839,7 +839,7 @@ const CASES: Case[] = [
     },
     expect: [
       ["warning", SHIPMENTS, "measures[0].filter", "order.customer.is_test_account reads the column is_test_account"],
-      ...GOLDEN_FILES_ORDERED.map((g): Expected => ["warning", g, "sql", "this SQL may not apply orders.revenue's rule: it never names email"]),
+      ...GOLDEN_FILES_ORDERED.map((g): Expected => ["warning", g, "cross_check_sql", "this hand-written SQL may not apply orders.revenue's rule: it never names email"]),
     ],
   },
 
@@ -886,11 +886,11 @@ const CASES: Case[] = [
   {
     name: "a golden's sql that calls round()",
     file: GOLDEN,
-    edit: (d) => (d.sql = "select round(sum(o.amount_cents / 100.0) filter (where o.status <> 'cancelled' and not c.is_test_account), 2) as revenue from public.fct_orders o"),
+    edit: (d) => (d.cross_check_sql = "select round(sum(o.amount_cents / 100.0) filter (where o.status <> 'cancelled' and not c.is_test_account), 2) as revenue from public.fct_orders o"),
     expect: [
       "warning",
       GOLDEN,
-      "sql",
+      "cross_check_sql",
       "calls round(); a golden's SQL applies the measure exactly as written; round() hides float noise, so remove it. This warning never stands, whatever the golden's reference says; " +
         "once round() is removed, sl goldens check --name revenue_by_month_2025 fails on rows recorded rounded until the owner says yes to the unrounded figure and it is confirmed again",
     ],
@@ -898,7 +898,7 @@ const CASES: Case[] = [
   {
     name: "round in a golden's string literal or comment",
     file: GOLDEN,
-    edit: (d) => (d.sql = "select 'round(x)' as label, sum(amount_cents) filter (where status <> 'x' and not is_test_account) -- round(y)\nfrom public.fct_orders"),
+    edit: (d) => (d.cross_check_sql = "select 'round(x)' as label, sum(amount_cents) filter (where status <> 'x' and not is_test_account) -- round(y)\nfrom public.fct_orders"),
     expect: [],
   },
   {
@@ -2630,13 +2630,13 @@ describe("golden requests and their hand-written SQL", () => {
     // The analyst's goldens/wrong.yaml: revenue is approved with a status filter, and the golden's
     // SQL summed every sale. It validated, confirmed and passed.
     const root = copyFixture();
-    mutate(root, GOLDEN, (d) => (d.sql = "select date_trunc('month', created_at) as m, sum(amount_cents / 100.0) as revenue\nfrom public.fct_orders group by 1"));
+    mutate(root, GOLDEN, (d) => (d.cross_check_sql = "select date_trunc('month', created_at) as m, sum(amount_cents / 100.0) as revenue\nfrom public.fct_orders group by 1"));
     expectExactly(validateProject(root), [
       [
         "warning",
         GOLDEN,
-        "sql",
-        "goldens pin hand-written SQL; this SQL may not apply orders.revenue's rule: it never names status, is_test_account, which the measure's expr or filter reads. " +
+        "cross_check_sql",
+        "this hand-written SQL may not apply orders.revenue's rule: it never names status, is_test_account, which the measure's expr or filter reads. " +
           "Write the measure's expr and filter into the SQL as the model defines them, then run sl goldens check --name revenue_by_month_2025 and read any change back to the owner",
       ],
     ]);
@@ -2648,18 +2648,18 @@ describe("golden requests and their hand-written SQL", () => {
     mutate(root, ORDERS, (d) => {
       d.measures[0].filter = "extract(year from created_at) >= 2020 and status not similar to 'cancel%' and coalesce(customer.is_test_account, false) = false";
     });
-    mutate(root, GOLDEN, (d) => (d.sql = "select date_trunc('month', created_at) as m, sum(amount_cents / 100.0) as revenue\nfrom public.fct_orders group by 1"));
-    const warned = validateProject(root).filter((i) => i.file === GOLDEN && i.path === "sql").map((i) => i.message);
+    mutate(root, GOLDEN, (d) => (d.cross_check_sql = "select date_trunc('month', created_at) as m, sum(amount_cents / 100.0) as revenue\nfrom public.fct_orders group by 1"));
+    const warned = validateProject(root).filter((i) => i.file === GOLDEN && i.path === "cross_check_sql").map((i) => i.message);
     expect(warned).toHaveLength(1);
     expect(warned[0]).toContain("it never names status, is_test_account, which");
   });
 
   test("a metric's measures are checked, names in comments and strings do not count, and a count of rows needs nothing", () => {
     const root = copyFixture();
-    mutate(root, GOLDEN2, (d) => (d.sql = "select ship_region, sum(amount_cents) / count(*) -- status, is_test_account\nfrom public.fct_orders where 'status' <> '' group by 1"));
-    const warned = validateProject(root).filter((i) => i.file === GOLDEN2 && i.path === "sql").map((i) => i.message);
+    mutate(root, GOLDEN2, (d) => (d.cross_check_sql = "select ship_region, sum(amount_cents) / count(*) -- status, is_test_account\nfrom public.fct_orders where 'status' <> '' group by 1"));
+    const warned = validateProject(root).filter((i) => i.file === GOLDEN2 && i.path === "cross_check_sql").map((i) => i.message);
     expect(warned).toHaveLength(1);
-    expect(warned[0]).toContain("this SQL may not apply orders.revenue's rule: it never names status, is_test_account");
+    expect(warned[0]).toContain("this hand-written SQL may not apply orders.revenue's rule: it never names status, is_test_account");
   });
 });
 
