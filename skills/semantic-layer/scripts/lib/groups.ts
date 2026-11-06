@@ -2,7 +2,7 @@
 // owner facing many tables can pick a few scope patterns instead of naming
 // tables one by one. Each group carries a ready scope pattern and a suggestion.
 import { qualifiedName } from "./naming.ts";
-import { checkPattern, inScope, literalPattern, matchesPattern } from "./patterns.ts";
+import { checkPattern, inScope, literalPattern, type MatchIndex, matchesPattern, matchIndex } from "./patterns.ts";
 import { MIGRATION_TABLES, NOISE_WORDS, PIPELINE_WORDS, classifyTable, noiseReason } from "./rank.ts";
 import type { Scope, SnapshotTable } from "./types.ts";
 
@@ -122,6 +122,8 @@ function rateSuffix(token: string, count: number): Rated {
 interface Member {
   table: SnapshotTable;
   qualified: string;
+  // Position in the tables groupTables was given.
+  index: number;
 }
 
 function build(kind: GroupKind, key: string, pattern: string, members: Member[], rated: Rated, scope?: Scope): TableGroup {
@@ -148,11 +150,10 @@ function push(map: Map<string, Member[]>, key: string, member: Member): void {
 
 // True when the pattern is usable and selects exactly the listed members out of all tables,
 // so saving the pattern selects the tables the group shows.
-function exact(pattern: string, list: Member[], all: Member[]): boolean {
+function exact(pattern: string, list: Member[], index: MatchIndex<SnapshotTable>): boolean {
   if (checkPattern(pattern)) return false;
-  const inGroup = new Set(list);
-  for (const m of all) if (matchesPattern(pattern, m.table) !== inGroup.has(m)) return false;
-  return true;
+  const hits = index.matched(pattern);
+  return index.count(pattern) === list.length && list.every((m) => hits[m.index] === 1);
 }
 
 // Groups tables by schema, prefix and suffix, plus one group of likely noise.
@@ -162,10 +163,11 @@ function exact(pattern: string, list: Member[], all: Member[]): boolean {
 // prefix that a pattern cannot spell plainly (a leading quote, a wildcard) is
 // quoted, so its pattern parses and names it exactly.
 export function groupTables(tables: SnapshotTable[], scope?: Scope): TableGroup[] {
-  const members: Member[] = tables.map((t) => ({ table: t, qualified: qualifiedName(t) }));
+  const members: Member[] = tables.map((t, index) => ({ table: t, qualified: qualifiedName(t), index }));
+  const index = matchIndex(tables);
   const groups: TableGroup[] = [];
   const add = (kind: GroupKind, key: string, pattern: string, list: Member[], rated: Rated): void => {
-    if (exact(pattern, list, members)) groups.push(build(kind, key, pattern, list, rated, scope));
+    if (exact(pattern, list, index)) groups.push(build(kind, key, pattern, list, rated, scope));
   };
 
   // Schemas are keyed lowercased, since plain patterns match case-insensitively.
@@ -264,13 +266,14 @@ export interface SuggestedScope {
 // the excludes cover every excludable table and every exclude-suggested schema.
 export function suggestScope(tables: SnapshotTable[], groups: TableGroup[]): SuggestedScope {
   const includeGroups = groups.filter((g) => g.suggestion === "include" && g.kind !== "noise");
+  const tableSets = new Map(includeGroups.map((g) => [g, new Set(g.tables)]));
   const kept = includeGroups.filter(
     (g) =>
       !includeGroups.some(
         (o) =>
           o !== g &&
           o.tables.length >= g.tables.length &&
-          g.tables.every((t) => o.tables.includes(t)) &&
+          g.tables.every((t) => tableSets.get(o)!.has(t)) &&
           (o.tables.length > g.tables.length || includeGroups.indexOf(o) < includeGroups.indexOf(g)),
       ),
   );

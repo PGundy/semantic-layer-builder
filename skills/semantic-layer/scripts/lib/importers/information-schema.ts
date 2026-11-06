@@ -5,7 +5,7 @@
 // foreign keys (a column in several foreign keys has one row per key).
 import { UserError } from "../errors.ts";
 import type { ForeignKey, SnapshotColumn, SnapshotTable, TableKind } from "../types.ts";
-import { parseCsv } from "./csv.ts";
+import { forEachCsvRow } from "./csv.ts";
 
 export interface ImportResult {
   tables: SnapshotTable[];
@@ -115,8 +115,14 @@ const NULL_MARKERS = new Set(["NULL", "\\N"]);
 
 // True for the dashed line sqlcmd prints under its header.
 function isRuleRow(row: Row): boolean {
-  const values = Object.values(row).map((v) => String(v ?? "").trim());
-  return values.some((v) => v !== "") && values.every((v) => v === "" || /^-+$/.test(v));
+  let dashes = false;
+  for (const k in row) {
+    const v = String(row[k] ?? "").trim();
+    if (v === "") continue;
+    if (!/^-+$/.test(v)) return false;
+    dashes = true;
+  }
+  return dashes;
 }
 
 function lowerKeys(row: unknown): Row {
@@ -142,16 +148,21 @@ export function readRows(content: string, label = "input"): Row[] {
     }
     return (rows as unknown[]).map(lowerKeys);
   }
-  return parseCsv(content)
-    .filter((r) => !isRuleRow(r))
-    .map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, NULL_MARKERS.has(v.trim()) ? "" : v])));
+  const rows: Row[] = [];
+  forEachCsvRow(content, (r) => {
+    if (isRuleRow(r)) return;
+    for (const k in r) if (NULL_MARKERS.has(r[k]!.trim())) r[k] = "";
+    rows.push(r);
+  });
+  return rows;
 }
 
 export function importInformationSchema(content: string, label = "input"): ImportResult {
   const rows = readRows(content, label);
   const warnings: string[] = [];
   if (!rows.length) throw new UserError(`${label}: no rows.`);
-  const headers = new Set(rows.flatMap((r) => Object.keys(r)));
+  const headers = new Set<string>();
+  for (const r of rows) for (const k in r) headers.add(k);
   const has = (keys: readonly string[]) => keys.some((k) => headers.has(k));
   const missing: string[] = [];
   if (!has(FIELDS.table)) missing.push("table_name");

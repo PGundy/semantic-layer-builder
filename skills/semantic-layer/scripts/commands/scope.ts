@@ -6,7 +6,7 @@ import { bool, list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { findTable, qualifiedName } from "../lib/naming.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
-import { checkPattern, filterInScope, literalPattern, matchesPattern, unmatchedPatterns, validatePattern } from "../lib/patterns.ts";
+import { checkPattern, literalPattern, matchesPattern, matchIndex, validatePattern } from "../lib/patterns.ts";
 import { loadProject, loadSource, paths, projectSettings, requireSnapshot } from "../lib/project.ts";
 import {
   combineScope,
@@ -301,14 +301,17 @@ const spec: CommandSpec = {
     if (nextList) next.tables_file = nextList.rel;
     const nextScope = combineScope(next, nextList?.entries ?? []);
 
-    const before = filterInScope(combineScope(current, currentList?.entries ?? []), tables).map(qualifiedName);
-    const afterTables = filterInScope(nextScope, tables);
+    // Each entry is matched against the tables once, for the before and after lists, the
+    // unmatched entries and the per-entry counts.
+    const index = matchIndex(tables);
+    const before = index.filter(combineScope(current, currentList?.entries ?? [])).map(qualifiedName);
+    const afterTables = index.filter(nextScope);
     const after = afterTables.map(qualifiedName);
     const beforeSet = new Set(before);
     const afterSet = new Set(after);
     const added = after.filter((t) => !beforeSet.has(t));
     const removed = before.filter((t) => !afterSet.has(t));
-    const unmatched = unmatchedPatterns(nextScope, tables);
+    const unmatched = index.unmatched(nextScope);
     const needsFocus = after.length > focus_threshold;
 
     // Every entry of the previewed scope with its origin: the lists, then the file's lines.
@@ -419,7 +422,7 @@ const spec: CommandSpec = {
       return 0;
     }
     const entryCounts = entries.map((e) => {
-      const matches = tables.filter((t) => matchesPattern(e.entry, t)).length;
+      const matches = index.count(e.entry);
       return { ...e, matches, unmatched: matches === 0 };
     });
     const bySchema = new Map<string, number>();

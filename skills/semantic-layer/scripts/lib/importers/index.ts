@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { basename, extname } from "node:path";
 import { UserError } from "../errors.ts";
+import { sortTables } from "../project.ts";
 import type { Snapshot, SnapshotMethod, SourceConfig } from "../types.ts";
 import { importDbt } from "./dbt.ts";
 import { importDdl } from "./ddl.ts";
@@ -116,7 +117,7 @@ export async function importSnapshot(
     dialect: source.dialect,
     captured_at: capturedAt,
     method: format,
-    tables: tables.sort((a, b) => `${a.schema ?? ""}.${a.name}`.localeCompare(`${b.schema ?? ""}.${b.name}`)),
+    tables: sortTables(tables),
   };
   return { snapshot, warnings, format, detected: requested === undefined };
 }
