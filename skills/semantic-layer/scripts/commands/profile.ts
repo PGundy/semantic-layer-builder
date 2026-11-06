@@ -7,6 +7,7 @@ import { inScope } from "../lib/patterns.ts";
 import { emitPlan, executePlan, removePlan, resultsInput, withMaxRows } from "../lib/plan.ts";
 import { applyProfile, protectedColumns, redactSnapshot, summarizeTable } from "../lib/profile.ts";
 import { listModels, loadSource, paths, requireSnapshot, saveSnapshot } from "../lib/project.ts";
+import { effectiveScope } from "../lib/table-list.ts";
 import { buildProfilePlan, MAX_TOP_COLUMNS, topQueryId } from "../lib/sql/profile.ts";
 import type { Snapshot, SnapshotTable, SourceConfig } from "../lib/types.ts";
 
@@ -54,6 +55,7 @@ const spec: CommandSpec = {
       return redactOnly(ctx, source, snapshot);
     }
 
+    const scope = effectiveScope(ctx.root, source);
     const named = list(values, "tables");
     let candidates: SnapshotTable[];
     if (named.length) {
@@ -70,7 +72,7 @@ const spec: CommandSpec = {
             "Use a qualified schema.table name when a bare name is ambiguous; `sl tables` lists them.",
         );
       }
-      const outOfScope = [...found.keys()].filter((q) => !inScope(source.scope, found.get(q)!));
+      const outOfScope = [...found.keys()].filter((q) => !inScope(scope, found.get(q)!));
       if (outOfScope.length) {
         throw new UserError(
           `${outOfScope.join(", ")} ${outOfScope.length === 1 ? "is" : "are"} out of scope for source "${sourceName}". ` +
@@ -79,7 +81,7 @@ const spec: CommandSpec = {
       }
       candidates = [...found.values()];
     } else {
-      candidates = snapshot.tables.filter((t) => inScope(source.scope, t));
+      candidates = snapshot.tables.filter((t) => inScope(scope, t));
     }
 
     const skipped: Skipped[] = [];

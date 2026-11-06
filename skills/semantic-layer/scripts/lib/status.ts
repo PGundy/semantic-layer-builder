@@ -35,6 +35,7 @@ import {
 } from "./project.ts";
 import { rankTables } from "./rank.ts";
 import { incomingKeyColumns, missingColumns, referencedColumns, unreferencedColumns } from "./snapshot-diff.ts";
+import { effectiveScope } from "./table-list.ts";
 import { DIALECTS, TO_ONE_RELATIONSHIPS } from "./types.ts";
 import type { AccessMode, Approval, Dialect, Golden, Metric, Model, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
 
@@ -405,6 +406,7 @@ function tableNewColumns(
 
 function sourceStatus(root: string, name: string, settings: ProjectStatus["settings"]): SourceReport {
   const config = loadSource(root, name);
+  const scope = effectiveScope(root, config);
   const snapshot = loadSnapshot(root, name);
   const models = listModels(root, name).map((l) => l.model);
   const dims = models.flatMap((m) => m.dimensions ?? []);
@@ -426,7 +428,7 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
       }
       byTable.set(qualifiedName(t).toLowerCase(), m);
       resolved.set(m, t);
-      if (inScope(config.scope, t)) scopedModels.set(m, t);
+      if (inScope(scope, t)) scopedModels.set(m, t);
     }
   }
   const active = models.filter((m) => scopedModels.has(m));
@@ -444,8 +446,8 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
   drift.tables = missingTables.filter((x) => approvedModels.has(x.model));
 
   const tables = snapshot?.tables ?? [];
-  const scoped = tables.filter((t) => inScope(config.scope, t));
-  const ranked = rankTables(tables).filter((r) => inScope(config.scope, r.table));
+  const scoped = tables.filter((t) => inScope(scope, t));
+  const ranked = rankTables(tables).filter((r) => inScope(scope, r.table));
   const nextBatch: BatchEntry[] = [];
   for (const r of ranked) {
     if (nextBatch.length >= settings.batch_size) break;

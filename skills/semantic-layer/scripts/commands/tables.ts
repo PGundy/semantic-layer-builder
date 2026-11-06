@@ -8,6 +8,7 @@ import { inScope } from "../lib/patterns.ts";
 import { listModels, loadProject, loadSource, projectSettings, requireSnapshot } from "../lib/project.ts";
 import { rankTables } from "../lib/rank.ts";
 import { profileState, type ProfileState } from "../lib/status.ts";
+import { effectiveScope } from "../lib/table-list.ts";
 import { NAME_PATTERN, type Project, type SnapshotTable, type Status } from "../lib/types.ts";
 
 export interface TableRow {
@@ -97,6 +98,7 @@ const spec: CommandSpec = {
     const project = loadProject(ctx.root);
     const sourceName = sourceFlag(values, project);
     const source = loadSource(ctx.root, sourceName);
+    const scope = effectiveScope(ctx.root, source);
     const snapshot = requireSnapshot(ctx.root, sourceName);
     const { focus_threshold } = projectSettings(project);
     const all = bool(values, "all");
@@ -106,7 +108,7 @@ const spec: CommandSpec = {
     const rows: TableRow[] = [];
     let inScopeCount = 0;
     for (const r of ranked) {
-      const scoped = inScope(source.scope, r.table);
+      const scoped = inScope(scope, r.table);
       if (scoped) inScopeCount++;
       if (!scoped && !all) continue;
       const m = models.get(r.qualified);
@@ -124,7 +126,7 @@ const spec: CommandSpec = {
       });
     }
     const needsFocus = inScopeCount > focus_threshold;
-    const groups = bool(values, "groups") ? groupTables(snapshot.tables, source.scope) : undefined;
+    const groups = bool(values, "groups") ? groupTables(snapshot.tables, scope) : undefined;
     const suggested = groups ? suggestScope(snapshot.tables, groups) : undefined;
 
     if (ctx.json) {

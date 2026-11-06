@@ -85,6 +85,11 @@
             "minLength": 1
           },
           "description": "Patterns that remove a table from scope."
+        },
+        "tables_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A table-list file, relative to the semantic root (usually scope/<source>.txt): one pattern per line, !<pattern> to exclude, # comments. Its entries join include and exclude; see spec.md Table-list files."
         }
       }
     },

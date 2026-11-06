@@ -10,6 +10,7 @@ A semantic layer is one directory, `semantic/` by default. `--root` or the `SEMA
 semantic/
   semantic.yaml                 project file
   sources/<source>.yaml         one per data source
+  scope/<source>.txt            optional table-list file, written by sl scope --from-file
   snapshots/<source>.json       schema snapshot per source, written by tools
   models/<source>/<model>.yaml  one per modeled table
   metrics.yaml                  derived and ratio metrics
@@ -136,6 +137,7 @@ connection:
 scope:
   include: ["public.fct_*", "public.dim_*"]
   exclude: ["*_tmp", "*_backup"]
+  tables_file: scope/warehouse.txt   # optional table-list file, see Table-list files
 profile:
   sample_rows: 100000        # profile over a sample when tables are larger; omit for full scans
   top_values: 10
@@ -178,7 +180,7 @@ One selection grammar serves `scope.include` and `scope.exclude`, `--include`, `
 - A pattern with a dot outside quotes matches the qualified name `schema.table`; one without matches the table name alone.
 - A part that starts with a double quote matches exactly up to the closing quote, case included, and may hold dots and wildcard characters: `"OrderItems"` matches `OrderItems` but not `orderitems`, `"Sales".fct_*` matches the tables of the `Sales` schema whose names start with `fct_`, and `public."orders.v2"` names a table whose name holds a dot. `""` inside quotes is one quote. A quote inside a part, as in `odd"name`, is an ordinary character.
 - `re:<regex>`: a JavaScript regular expression, always case-insensitive (a `(?-i:...)` group is refused), anchored at both ends, matched against the qualified name if it contains `\.` and against the table name otherwise.
-- In a table-list file, `!<entry>` excludes; every other line includes.
+- In a table-list file, `!<entry>` excludes; every other line includes (see Table-list files).
 - `sl scope --tables` saves each table as its exact pattern, quoting a part that holds a quote, `*` or `?`, or a table name that holds a dot.
 - Examples: `fct_*` (prefix), `*_daily` (suffix), `*orders*` (contains), `analytics.*` (a whole schema), `prod.*.orders` (three parts), `re:dim_(customer|product)s?`.
 
@@ -191,6 +193,25 @@ A regex is checked before it is used, and refused with the character where the p
 - a regex that does not compile, including a `)` that closes no group.
 
 A glob is matched without a regex, so no glob is slow. A quote that starts a part and is never closed is refused with its character. `sl validate` reports every refused pattern in the files as an error at its path. A pattern that matches no table is a warning naming it: `sl scope` prints "Pattern "<p>" matches no table in the snapshot" and lists it in `--json` as `unmatched_patterns`.
+
+### Table-list files
+
+`scope.tables_file` names a table-list file, a path relative to the semantic root (`sl scope --from-file` writes `scope/<source>.txt`). A path that is absolute or leads outside the root, a symbolic link included, is refused.
+
+```
+# Finance tables agreed with Dana.
+analytics.fct_orders
+analytics.dim_*          # every dimension
+re:analytics\.fct_(orders|refunds)_v\d+
+!*_tmp
+```
+
+- One entry per line in the grammar above; `!<entry>` excludes. Lines end in LF or CRLF.
+- `#` starts a comment at the start of a line or after a space or tab, outside a `"quoted"` part; blank lines are skipped. A `#` that follows a space inside a `re:` entry starts a comment, so write it as `\x23`.
+- Each entry is checked as a scope pattern; a problem names the file, the line and the character.
+- The file's entries join the source's lists: its includes add to `scope.include`, its excludes to `scope.exclude`, exclude wins, and an empty include after joining means every table. Every command that decides scope (`scope`, `tables`, `status`, `draft`, `profile`, `baseline`, `introspect`, `import`) reads the joined scope; a missing file or one with a bad entry stops it with the fix.
+- `sl validate` errors when the file is missing (naming `sl scope --from-file`), is not a file, or is outside the root, and on each bad entry at `line <n>, character <c>` of the file.
+- `sl scope --to-file` writes one exact name per selected table, sorted, under a header comment; a name that could be misread (a leading `!`, `#` or `re:`, a quote, space at an end or before `#`, a letter outside ASCII) or that differs from another table's only in case is written with both parts quoted, so the file reads back as the same selection. A name with a line break cannot be written, and `--to-file` refuses it.
 
 ## snapshots/<source>.json
 
@@ -815,7 +836,7 @@ For `duckdb` and `postgres` sources the command runs the plan itself. For any so
 | `export-sql --dialect postgres\|redshift\|mysql\|sqlserver\|snowflake\|bigquery\|databricks\|duckdb [--schemas a,b]` | Prints that dialect's schema export query (see Schema exports), with its schema filter applied when `--schemas` is given, each name written as a SQL string literal with its quotes escaped (BigQuery: each dataset as a backtick-quoted identifier in its per-dataset block, and a name holding a backtick is refused); then, on stderr, one line saying how to run it and import the result (`sl import --source <s> --file schema.csv`, or `schema.tsv` for mysql). `--json`: `{ dialect, sql, run_hint }`. Reads no database and needs no project. |
 | `baseline --source <s> [--tables t,...] [--out <file>]` | Read-only. Writes a first-pass brief of the source from its snapshot (see Baseline brief): per table its probable role, grain, keys, relationships, candidate measures and splits, columns that should not be splits and questions for the owner, and a star-schema sketch of the source. Plain output is markdown; `--json` carries the same structure; `--out` writes the markdown to a path resolved from the semantic root and refuses one outside it. |
 | `tables --source <s> [--groups] [--all]` | Lists in-scope tables, or all with `--all`, with size, modeling and profiling state; `--groups` clusters them by schema, prefix and suffix and suggests patterns. A table is profiled (`yes`) when its `profiled_at` is set, `partial` when some columns have profiles but `profiled_at` is missing (a reintrospect added or retyped columns), and otherwise `no`; `--json` carries it as `profile_state`. |
-| `scope --source <s> [--include <p>]... [--exclude <p>]... [--remove <p>]... [--tables a,b] [--clear] [--write]` | Previews the tables a scope change selects; `--write` saves it. `--tables` adds exact names. |
+| `scope --source <s> [--include <p>]... [--exclude <p>]... [--remove <p>]... [--tables a,b] [--from-file <path>] [--to-file <path>] [--force] [--clear] [--write]` | Previews the tables a scope change selects; `--write` saves it. `--tables` adds exact names. `--from-file` (a path from the working directory) checks a table-list file, previews the scope with its entries in place of the saved file's, and with `--write` copies it to `scope/<s>.txt` and sets `scope.tables_file`. `--to-file` (a path from the semantic root, refused outside it and on the files sl manages) writes the previewed selection as a table-list file of exact names; it refuses an empty selection, which would read back as every table. Neither replaces an existing file with other contents without `--force`. `--clear` also drops `scope.tables_file`. `--json` adds `tables_file` (`{ path, include, exclude }` entry counts, or null) and `to_file`. See Table-list files. |
 | `profile --source <s> [--tables t,...] [--refresh]` | Profiles in-scope tables into the snapshot, skipping profiled ones (`profiled_at` set) unless `--refresh`. Stores counts only for a protected column: no top values, raw or hashed, and a `min` and `max` only for a number or a date, with `redacted: true` (see Profiles of protected columns). Over `profile.sample_rows`, a table is read through one sample (`TABLESAMPLE SYSTEM` on Postgres and BigQuery), and all its top values come from one query over it (see Sampling); a BigQuery profile prints a cost warning first. |
 | `profile --source <s> --redact` | Rewrites the existing snapshot's profiles of protected columns that way, without querying the database, and removes hashed top values earlier versions stored. |
 | `draft --source <s> [--tables t,...] [--strip-prefix p,...] [--force]` | Writes draft models for in-scope tables that have none, with inferred keys and joins. Never overwrites a model. Refuses more tables than `focus_threshold` without `--tables` or `--force`. `--strip-prefix` is saved as `draft.strip_prefixes`. Tags a field `pii` when its column's name looks like personal data and `sensitive` when it looks like pay, banking, card, health, credential or free-text data, each with an open question (see Profiles of protected columns for the names). Leaves out a string column that is not a key or a code-like column and has a different value on nearly every row (more than 90% distinct over at least 50 rows), with an open question, and lists every column it leaves out in `ignored_columns`. A date or timestamp column gets a time dimension even inside a composite primary key; a timestamp without a time zone gets an open question asking which zone it is stored in, for `time_zone`. Money columns follow the baseline's rules (currency-code suffixes, `numeric(p,2)`), and a column or table comment naming a currency code turns the currency question into a confirmation. A table of 2 or 3 columns whose names all end in `_id`, such as a closure or bridge table, gets every column as a dimension, `primary_key` all of them and no `count_distinct` measures, with an open question asking the owner to confirm each combination appears once. |
