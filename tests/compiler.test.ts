@@ -11,7 +11,7 @@ import { listGoldens, loadSource } from "../skills/semantic-layer/scripts/lib/pr
 import { resolvedRelation } from "../skills/semantic-layer/scripts/lib/source-safety.ts";
 import type { Golden, Model, QueryRequest, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, duckdbSource, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, duckdbSource, expectRefusedAsChanged, initProject, PG_URL, reapprove, sl, tempRoot, uniqueSchema } from "./helpers.ts";
 
 type Row = Record<string, unknown>;
 
@@ -536,7 +536,8 @@ describe("Acme's approved goldens", () => {
 
 // The Acme warehouse with each definition join written out without one, so a request on orders
 // alone reaches its recorded figures: the test-account rule as a list of the test customers' ids,
-// and the region name as a case over the regions. A later version compiles the joins themselves.
+// and the region name as a case over the regions, each approved again by the copy's owner. A later
+// version compiles the joins themselves.
 async function standInOrders(root: string, dialect: "duckdb" | "postgres", schema: string, testIds: number[], regions: Row[]): Promise<void> {
   const path = join(root, "models", "warehouse", "orders.yaml");
   const m = readYaml<Model>(path);
@@ -552,6 +553,7 @@ async function standInOrders(root: string, dialect: "duckdb" | "postgres", schem
   const name = m.dimensions.find((d) => d.name === "ship_region_name")!;
   name.expr = `case ship_region ${regions.map((r) => `when '${r.region_code}' then '${r.region_name}'`).join(" ")} end`;
   writeYaml(path, m);
+  expect(await reapprove(root)).toContain("warehouse.orders.ship_region_name");
 }
 
 const golden = (name: string) => readYaml<Golden>(join(ACME, "goldens", `${name}.yaml`));
@@ -580,7 +582,7 @@ async function acmeFacts(): Promise<{ testIds: number[]; regions: Row[] }> {
 }
 
 describe("Acme's warehouse goldens on duckdb, with definition joins written out", () => {
-  test("revenue and order count by region compile to the recorded rows, and revenue counting cancelled orders does not", async () => {
+  test("revenue and order count by region compile to the recorded rows; revenue counting cancelled orders is refused until approved again, then does not", async () => {
     const { root, dir } = await acmeCopy();
     const { testIds, regions } = await acmeFacts();
     expect(testIds.length).toBe(20);
@@ -594,6 +596,8 @@ describe("Acme's warehouse goldens on duckdb, with definition joins written out"
     }
     withCancelled(root);
     const g = golden("revenue_by_region_2025");
+    expectRefusedAsChanged(compileRequest(root, g.request, asUser(g)), "warehouse", "orders.revenue");
+    await reapprove(root, ["warehouse.orders.revenue"]);
     const c = compiled(compileRequest(root, g.request, asUser(g)));
     expect(c.sql).toContain("'cancelled'");
     const diffs = sameRows(g.expected!.rows, await runDuckdb(root, source, c), true);
@@ -604,7 +608,7 @@ describe("Acme's warehouse goldens on duckdb, with definition joins written out"
 
 describe("Acme's warehouse goldens on postgres, with definition joins written out", () => {
   test.skipIf(!PG_URL)(
-    "revenue, order count by region and discount compile to the recorded rows; grains match hand-written SQL; cancelled orders change revenue",
+    "revenue, order count by region and discount compile to the recorded rows; grains match hand-written SQL; cancelled orders change revenue once approved again",
     async () => {
       assertLocalPg(PG_URL);
       const schema = uniqueSchema("sl_compiler");
@@ -645,6 +649,7 @@ describe("Acme's warehouse goldens on postgres, with definition joins written ou
         const m = readYaml<Model>(path);
         m.dimensions.push({ ...m.dimensions[0]!, name: "order_date_ny", expr: "created_at at time zone 'America/New_York'", time_grains: ["day"] });
         writeYaml(path, m);
+        await reapprove(root, ["warehouse.orders.order_date_ny"]);
         const ny = compiled(compileRequest(root, { source: "warehouse", measures: ["orders.order_count"], dimensions: ["orders.order_date_ny:day"], order_by: [{ field: "orders.order_date_ny" }] }));
         const nyHand = await runPg({
           sql: `select cast(created_at at time zone 'America/New_York' as date) as order_date_ny_day,
@@ -663,6 +668,8 @@ describe("Acme's warehouse goldens on postgres, with definition joins written ou
 
         withCancelled(root);
         const g = golden("revenue_by_region_2025");
+        expectRefusedAsChanged(compileRequest(root, g.request, asUser(g)), "warehouse", "orders.revenue");
+        await reapprove(root, ["warehouse.orders.revenue"]);
         expect(sameRows(g.expected!.rows, await runPg(compiled(compileRequest(root, g.request, asUser(g)))), true).length).toBe(6);
       } finally {
         await db.unsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {});
