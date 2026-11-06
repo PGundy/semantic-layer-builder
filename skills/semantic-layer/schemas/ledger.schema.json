@@ -16,8 +16,8 @@
     "item": { "type": "integer", "minimum": 1, "description": "kind reply: the item number in that readback." },
     "target": {
       "type": "string",
-      "pattern": "^(access|metric:[a-z][a-z0-9_]*|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)?)$",
-      "description": "kind reply: the item's approve target; kind question: the ref the question was resolved on (source.model, source.model.field or access, and from sl review apply also access.roles.<role>)."
+      "pattern": "^(access|(metric|golden):[a-z][a-z0-9_]*|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)?)$",
+      "description": "kind reply: the item's approve target (golden:<name> for a golden); kind question: the ref the question was resolved on (source.model, source.model.field or access, and from sl review apply also access.roles.<role>)."
     },
     "content_hash": {
       "type": "string",

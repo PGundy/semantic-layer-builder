@@ -16,7 +16,7 @@ export function parseTarget(ref: string): Target {
   const parts = ref.split(".");
   if (parts.length === 2) return { kind: "model", source: parts[0]!, model: parts[1]! };
   if (parts.length === 3) return { kind: "field", source: parts[0]!, model: parts[1]!, field: parts[2]! };
-  throw new UserError(`Cannot read target "${ref}". Use source.model, source.model.field, metric:<name> or access (goldens: sl goldens confirm).`);
+  throw new UserError(`Cannot read target "${ref}". Use source.model, source.model.field, metric:<name>, golden:<name> or access.`);
 }
 
 export type FieldMatch =
