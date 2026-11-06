@@ -45,6 +45,17 @@ export interface SourceConnection {
   views?: Record<string, string>;
 }
 
+// How the catalog reaches the layer (spec: sources/<source>.yaml, Intake). Absent means connection.
+export const INTAKE_MODES = ["connection", "export"] as const;
+export type IntakeMode = (typeof INTAKE_MODES)[number];
+
+export interface SourceIntake {
+  mode?: IntakeMode;
+  reason?: string | null;
+  schemas?: string[];
+  export?: { file: string };
+}
+
 export interface SourceProfileSettings {
   sample_rows?: number;
   top_values?: number;
@@ -55,6 +66,7 @@ export interface SourceConfig {
   dialect: Dialect;
   description?: string;
   connection?: SourceConnection;
+  intake?: SourceIntake;
   scope?: Scope;
   profile?: SourceProfileSettings;
   draft?: { strip_prefixes?: string[] };
@@ -429,7 +441,8 @@ export interface LedgerReply {
 export interface LedgerQuestion {
   id: string;
   kind: "question";
-  // The ref the question was resolved on: source.model, source.model.field or access.
+  // The ref the question was resolved on: source.model, source.model.field or access, and from
+  // sl review apply also access.roles.<role>.
   target: string;
   question: string;
   text: string;

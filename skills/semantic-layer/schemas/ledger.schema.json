@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": ".sl/ledger.jsonl (one line)",
-  "description": "One line of the answer ledger, appended by sl reply (kind reply: the owner's answer to an item of a readback) or sl question resolve (kind question: the owner's answer to an open question). It holds the owner's words, never data values.",
+  "description": "One line of the answer ledger, appended by sl reply (kind reply: the owner's answer to an item of a readback), sl question resolve (kind question: the owner's answer to an open question) or sl review apply (either kind, from a filled review form). It holds the owner's words, never data values.",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "kind", "target", "text", "by", "at"],
@@ -17,7 +17,7 @@
     "target": {
       "type": "string",
       "pattern": "^(access|metric:[a-z][a-z0-9_]*|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)?)$",
-      "description": "kind reply: the item's approve target; kind question: the ref the question was resolved on (source.model, source.model.field or access)."
+      "description": "kind reply: the item's approve target; kind question: the ref the question was resolved on (source.model, source.model.field or access, and from sl review apply also access.roles.<role>)."
     },
     "content_hash": {
       "type": "string",
