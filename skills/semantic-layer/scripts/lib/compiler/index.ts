@@ -11,6 +11,7 @@ import { parseRequestField } from "../refs.ts";
 import { globInsideViews } from "../source-safety.ts";
 import { assertReadOnly } from "../sql-guard.ts";
 import { sqlNames } from "../sql-names.ts";
+import { sqlTextProblem, type TextRole } from "../sql-text.ts";
 import type { Dimension, FilterOp, Measure, Model, QueryRequest, Snapshot, SourceConfig, TimeGrain } from "../types.ts";
 import { AGGREGATIONS, NAME_PATTERN, TIME_GRAINS } from "../types.ts";
 import { schemaIssues } from "../validate.ts";
@@ -158,9 +159,15 @@ export function compileLayer(input: CompileInput): CompileResult {
       else if (!(grains as readonly string[]).includes(p.grain))
         add("invalid_request", `${position} names ${ref}, but ${p.model}.${p.field} has the grains ${grains.join(", ")}`, ref);
     }
-    const texts = dim ? [dim.expr] : [(item as Measure).expr, (item as Measure).filter];
-    for (const t of texts) {
+    const at = dim ? `dimensions[${(model.dimensions ?? []).indexOf(dim)}]` : `measures[${(model.measures ?? []).indexOf(mea!)}]`;
+    const texts: [TextRole, string, unknown][] = dim ? [["dimension expr", "expr", dim.expr]] : [["measure expr", "expr", mea!.expr], ["measure filter", "filter", mea!.filter]];
+    for (const [role, key, t] of texts) {
       if (t === undefined && !dim) continue;
+      const problem = typeof t === "string" ? sqlTextProblem(t, role) : undefined;
+      if (problem) {
+        add("invalid_layer", `model ${p.model} ${at}.${key} (${p.field}) ${problem}`, ref, `Fix the ${role} of ${p.model}.${p.field} in its model file, run sl validate, and run sl sql again.`);
+        continue;
+      }
       if (typeof t !== "string" || !t.trim() || sqlNames(t, dialect).subquery) {
         add("invalid_layer", `${p.model}.${p.field} has an expr or filter the compiler cannot use; run sl validate`, ref);
         continue;
