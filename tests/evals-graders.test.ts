@@ -268,8 +268,9 @@ describe("figures", () => {
     const g = grader(await gradeRun(dir), "figures");
     expect(g).toMatchObject({ score: 0, passed: false });
     const refused = (name: string) =>
-      "sl sql refuses its request: measures[0] names orders.revenue, which this user may not see (draft, model_hidden). " +
-      `Read warehouse.orders.revenue back to the owner with sl readback --targets warehouse.orders.revenue and approve it on their yes, then run sl goldens check --name ${name}; ` +
+      "sl sql refuses its request: measures[0] names orders.revenue, which is held back because it is a draft and model orders is a draft; " +
+      'it is served once orders.revenue and model orders are read back and approved: sl readback --targets warehouse.orders.revenue,warehouse.orders, then sl approve --target warehouse.orders.revenue --by "<owner>" and sl approve --target warehouse.orders --by "<owner>" after the owner\'s yes. ' +
+      `Read warehouse.orders.revenue and warehouse.orders back to the owner with sl readback --targets warehouse.orders.revenue,warehouse.orders and approve them on their yes, then run sl goldens check --name ${name}; ` +
       "if its rows changed, confirm again only on the owner's yes.";
     expect(g.details).toEqual([
       `semantic/goldens/revenue_2025.yaml: revenue_2025 is not checked: ${refused("revenue_2025")}`,

@@ -159,10 +159,23 @@ async function revenueExperiment(root: string, env: Record<string, string> = {})
     }
     expect({ name, ok: r.ok, compiled: r.compiled }).toEqual({ name, ok: false, compiled: "refused" });
     expect(r.diffs[0]).toStartWith("The request does not compile from the current YAML: ");
-    // revenue itself is changed since its approval; a metric that reads it is hidden while it is.
-    expect(r.diffs[0]).toMatch(/changed since approval|measure_hidden:orders\.revenue/);
+    // revenue itself is changed since its approval; a metric that reads it is held back while it is.
+    // Each says so in plain words and names the readback, with no reason code and no "may not see".
+    expect(r.diffs[0]).toContain("orders.revenue");
+    expect(r.diffs[0]).toContain("changed since approval");
+    expect(r.diffs[0]).toContain("sl readback --targets warehouse.orders.revenue, then sl approve --target warehouse.orders.revenue");
+    expect(r.diffs[0]).not.toMatch(/measure_hidden|may not see|\(draft/);
     expect(r.next).toStartWith("Read warehouse.orders.revenue back to the owner with sl readback --targets warehouse.orders.revenue and approve it on their yes");
   }
+  const approve = `sl readback --targets warehouse.orders.revenue, then sl approve --target warehouse.orders.revenue --by "<owner>" after the owner's yes`;
+  expect(refused.revenue_2025!.diffs[0]).toBe(
+    `The request does not compile from the current YAML: measures[0] names orders.revenue, which changed since approval; treated as draft until it is read back and approved again: ${approve}; ` +
+      `measures[2] names average_order_value, which is held back because it reads orders.revenue, which changed since approval; it is served once orders.revenue is read back and approved again: ${approve}.`,
+  );
+  expect(refused.net_revenue_2025!.diffs[0]).toBe(
+    "The request does not compile from the current YAML: measures[0] names net_revenue, which is held back because it reads orders.revenue, which changed since approval; " +
+      `it is served once orders.revenue is read back and approved again: ${approve}.`,
+  );
   const human = await sl(root, ["goldens", "check", "--name", "revenue_2025"], env);
   expect(human.code).toBe(1);
   expect(human.out).toContain("FAIL  revenue_2025");

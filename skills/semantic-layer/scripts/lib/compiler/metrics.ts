@@ -100,8 +100,8 @@ export function compileMetrics(input: CompileInput, request: QueryRequest, prior
   if (![...measures, ...dimensions, ...filters.map((f) => f.field), ...orderBy.map((o) => o.field)].some((r) => metricOf(r))) return undefined;
 
   const refusals = [...prior];
-  const add = (code: RefusalCode, message: string, ref?: string, next?: string) => {
-    if (!refusals.some((r) => r.code === code && r.message === message)) refusals.push({ code, message, ...(ref ? { ref } : {}), ...(next ? { next } : {}) });
+  const add = (code: RefusalCode, message: string, ref?: string, next?: string, extra?: Pick<Refusal, "reasons" | "awaits">) => {
+    if (!refusals.some((r) => r.code === code && r.message === message)) refusals.push({ code, message, ...(ref ? { ref } : {}), ...(next ? { next } : {}), ...extra });
   };
   const refuse = (): CompileResult => ({ ok: false, source: source.source, reason: refusals.map((r) => r.message).join("; "), refusals });
   if (refusals.length) return refuse();
@@ -247,7 +247,11 @@ export function compileMetrics(input: CompileInput, request: QueryRequest, prior
     // request does; its parameters follow those of the parts before it.
     const r = compile({ ...input, request: part, paramStart: params.values.length });
     if (!r.ok) {
-      for (const x of r.refusals) add(x.code, model === base ? x.message : `for the measures of ${model}: ${x.message}`, x.ref, x.next);
+      for (const x of r.refusals)
+        add(x.code, model === base ? x.message : `for the measures of ${model}: ${x.message}`, x.ref, x.next, {
+          ...(x.reasons ? { reasons: x.reasons } : {}),
+          ...(x.awaits ? { awaits: x.awaits } : {}),
+        });
       continue;
     }
     params.values.push(...r.params);

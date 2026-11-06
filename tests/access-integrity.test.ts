@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type AccessVisibility, checkRequest, evaluateAccess, evaluateLayer, loadAccessLayer, lookup } from "../skills/semantic-layer/scripts/lib/access.ts";
+import { compileRequest, type Refused } from "../skills/semantic-layer/scripts/lib/compiler/index.ts";
+import { refusalNext } from "../skills/semantic-layer/scripts/lib/goldens.ts";
 import type { ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
+import type { Golden } from "../skills/semantic-layer/scripts/lib/types.ts";
+import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { approveWithYes, sl, tempRoot } from "./helpers.ts";
 
 // The access evaluator treats an approved item whose content no longer matches its approved_hash as
@@ -76,7 +80,11 @@ describe("approved items that changed since approval", () => {
     expect(check.ok).toBe(false);
     expect(check.problems).toHaveLength(1);
     expect(check.problems[0]).toMatchObject({ position: "measures", ref: "orders.revenue", reasons: ["draft"] });
-    expect(check.problems[0]!.message).toContain(`${NOTE} (sl approve --target warehouse.orders.revenue --by "<owner>" after the owner's yes)`);
+    // The refusal says the measure changed since approval and names the readback, not an access rule or a reason code.
+    expect(check.problems[0]!.message).toBe(
+      `measures[0] names orders.revenue, which ${NOTE}: sl readback --targets warehouse.orders.revenue, then sl approve --target warehouse.orders.revenue --by "<owner>" after the owner's yes`,
+    );
+    expect(check.problems[0]!.awaits).toEqual(["warehouse.orders.revenue"]);
 
     const human = await sl(root, ["access"]);
     expect(human.code).toBe(0);
@@ -149,7 +157,9 @@ describe("approved items that changed since approval", () => {
     expect(v.changed_since_approval).toEqual(["metric:average_order_value"]);
     expect(metric(v, "average_order_value")).toMatchObject({ status: "draft", visible: false, reasons: ["draft"], changed_since_approval: true });
     const r = checkRequest(v, { source: "warehouse", measures: ["average_order_value"] });
-    expect(r.problems[0]!.message).toContain(`${NOTE} (sl approve --target metric:average_order_value --by "<owner>" after the owner's yes)`);
+    expect(r.problems[0]!.message).toBe(
+      `measures[0] names average_order_value, which ${NOTE}: sl readback --targets metric:average_order_value, then sl approve --target metric:average_order_value --by "<owner>" after the owner's yes`,
+    );
     expect((await sl(root, ["access"])).out).toContain("metric average_order_value: hidden (draft: changed since approval)");
   });
 
@@ -162,7 +172,9 @@ describe("approved items that changed since approval", () => {
     expect(field(v, "warehouse.customers.email")).toMatchObject({ status: "draft", visible: false, reasons: ["draft"], hash_missing: true });
     const r = checkRequest(v, { source: "warehouse", measures: ["orders.order_count"], dimensions: ["customers.email"] });
     expect(r.ok).toBe(false);
-    expect(r.problems[0]!.message).toContain(`it is ${MISSING} (sl approve --target warehouse.customers.email --by "<owner>" after the owner's yes)`);
+    expect(r.problems[0]!.message).toBe(
+      `dimensions[0] names customers.email, which is ${MISSING}: sl readback --targets warehouse.customers.email, then sl approve --target warehouse.customers.email --by "<owner>" after the owner's yes`,
+    );
     const human = (await sl(root, ["access"])).out;
     expect(human).toContain("dimension warehouse.customers.email: hidden (draft: approved_hash missing)");
     expect(human).toContain(`Approved items without approved_hash:\n  warehouse.customers.email: ${MISSING} (sl approve --target warehouse.customers.email --by "<owner>" after the owner's yes)`);
@@ -270,5 +282,101 @@ describe("approved items that changed since approval", () => {
     expect(after.changed_since_approval).toEqual([]);
     expect(after).not.toHaveProperty("last_approved");
     expect(checkRequest(after, revenueRequest).ok).toBe(true);
+  });
+});
+
+// A reference held back only for approval is refused in plain words that name the readback; one an
+// access rule hides keeps "this user may not see" with its reasons. Which requests are refused does
+// not change.
+describe("refusals for items held back for approval", () => {
+  const changeRevenue = () => editItem(ORDERS, "revenue", "status in ('completed', 'shipped')", "status in ('completed', 'shipped', 'cancelled')");
+  const refusedFor = (name: string): { golden: Golden; r: Refused } => {
+    const golden = readYaml<Golden>(join(root, "goldens", `${name}.yaml`));
+    const r = compileRequest(root, golden.request, { ...(golden.role ? { role: golden.role } : {}), user: golden.user ?? {} });
+    expect(r.ok).toBe(false);
+    return { golden, r: r as Refused };
+  };
+  const STEPS = `sl readback --targets warehouse.orders.revenue, then sl approve --target warehouse.orders.revenue --by "<owner>" after the owner's yes`;
+
+  test("a metric golden reading a changed measure names the measure and its readback, with the codes in reasons and awaits", async () => {
+    changeRevenue();
+    const { golden, r } = refusedFor("net_revenue_2025");
+    expect(r.refusals).toEqual([
+      {
+        code: "not_visible",
+        ref: "net_revenue",
+        message: `measures[0] names net_revenue, which is held back because it reads orders.revenue, which changed since approval; it is served once orders.revenue is read back and approved again: ${STEPS}`,
+        reasons: ["measure_hidden:orders.revenue"],
+        awaits: ["warehouse.orders.revenue"],
+      },
+    ]);
+    expect(r.reason).not.toMatch(/may not see|measure_hidden/);
+    expect(refusalNext(golden, r)).toBe(
+      "Read warehouse.orders.revenue back to the owner with sl readback --targets warehouse.orders.revenue and approve it on their yes, " +
+        "then run sl goldens check --name net_revenue_2025; if its rows changed, confirm again only on the owner's yes.",
+    );
+    const { r: revenue } = refusedFor("revenue_2025");
+    expect(revenue.refusals[0]).toMatchObject({ ref: "orders.revenue", reasons: ["draft"], awaits: ["warehouse.orders.revenue"] });
+    expect(revenue.refusals[0]!.message).toBe(`measures[0] names orders.revenue, which ${NOTE}: ${STEPS}`);
+
+    // sl sql --json carries the same codes; its plain output carries none.
+    const request = JSON.stringify({ source: "warehouse", measures: ["net_revenue"] });
+    const json = (await sl(root, ["sql", "--request", request, "--role", "analyst", "--json"])).json<Refused & { next: string }>();
+    expect(json.refusals[0]).toMatchObject({ code: "not_visible", reasons: ["measure_hidden:orders.revenue"], awaits: ["warehouse.orders.revenue"] });
+    // The next step is the readback, not sl access: no access rule hides it.
+    const next = "Read warehouse.orders.revenue back to the owner with sl readback --targets warehouse.orders.revenue and approve it on their yes, then run sl sql again.";
+    expect(json.next).toBe(next);
+    const plain = await sl(root, ["sql", "--request", request, "--role", "analyst"]);
+    expect(plain.code).toBe(1);
+    expect(plain.err).toContain("sl readback --targets warehouse.orders.revenue");
+    expect(plain.err).toContain(next);
+    expect(plain.err).not.toMatch(/may (not )?see|measure_hidden|sl access/);
+  });
+
+  test("a metric part's refusal keeps its reasons and awaits", () => {
+    editItem(ORDERS, "order_date", "expr: created_at", "expr: created_at + interval '0 hours'");
+    const request = { source: "warehouse", measures: ["net_revenue"], dimensions: ["refunds.order_date:year"] };
+    const r = compileRequest(root, request, { role: "analyst", user: { department: "analytics" } }) as Refused;
+    expect(r.ok).toBe(false);
+    expect(r.refusals).toHaveLength(1);
+    expect(r.refusals[0]).toMatchObject({ code: "not_visible", ref: "orders.order_date:year", reasons: ["draft"], awaits: ["warehouse.orders.order_date"] });
+    expect(r.refusals[0]!.message).not.toMatch(/may not see|\(draft/);
+  });
+
+  test("a metric or measure an access rule hides keeps its message, even while a measure it reads changed", () => {
+    const everyone = { source: "warehouse", measures: ["net_revenue"] };
+    const before = compileRequest(root, everyone) as Refused;
+    expect(before.refusals).toEqual([
+      {
+        code: "not_visible",
+        ref: "net_revenue",
+        message: "measures[0] names net_revenue, which this user may not see (restricted:refunds_and_net_revenue, measure_hidden:refunds.refund_amount)",
+        reasons: ["restricted:refunds_and_net_revenue", "measure_hidden:refunds.refund_amount"],
+      },
+    ]);
+    const refunds = compileRequest(root, { source: "warehouse", measures: ["refunds.refund_amount"] }) as Refused;
+    expect(refunds.refusals.map((x) => [x.message, x.awaits])).toEqual([["measures[0] names refunds.refund_amount, which this user may not see (model_hidden)", undefined]]);
+    changeRevenue();
+    // Approving revenue again would not show net revenue to this user, so the access wording stays.
+    const after = compileRequest(root, everyone) as Refused;
+    expect(after.refusals.map((x) => [x.message, x.awaits])).toEqual([
+      ["measures[0] names net_revenue, which this user may not see (restricted:refunds_and_net_revenue, measure_hidden:orders.revenue, measure_hidden:refunds.refund_amount)", undefined],
+    ]);
+  });
+
+  test("a draft model's draft measure names both targets, and refusalNext reads both back", () => {
+    edit(ORDERS, "status: approved", "status: draft");
+    editItem(ORDERS, "revenue", "status: approved", "status: draft");
+    const r = compileRequest(root, revenueRequest) as Refused;
+    expect(r.refusals[0]).toMatchObject({ reasons: ["draft", "model_hidden"], awaits: ["warehouse.orders.revenue", "warehouse.orders"] });
+    expect(r.refusals[0]!.message).toBe(
+      "measures[0] names orders.revenue, which is held back because it is a draft and model orders is a draft; it is served once orders.revenue and model orders are read back and approved: " +
+        'sl readback --targets warehouse.orders.revenue,warehouse.orders, then sl approve --target warehouse.orders.revenue --by "<owner>" and sl approve --target warehouse.orders --by "<owner>" after the owner\'s yes',
+    );
+    const golden = { name: "revenue_check", question: "q", request: revenueRequest, sql: "-", status: "approved" } as unknown as Golden;
+    expect(refusalNext(golden, r)).toBe(
+      "Read warehouse.orders.revenue and warehouse.orders back to the owner with sl readback --targets warehouse.orders.revenue,warehouse.orders and approve them on their yes, " +
+        "then run sl goldens run --name revenue_check.",
+    );
   });
 });

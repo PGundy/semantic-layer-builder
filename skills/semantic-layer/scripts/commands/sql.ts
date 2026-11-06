@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { andList } from "../lib/access.ts";
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { type CompileResult, compileRequest, type Refusal } from "../lib/compiler/index.ts";
@@ -57,6 +58,12 @@ function nextStep(refusals: Refusal[], source: string, user: Record<string, unkn
   const who = accessCommand(user, role);
   if (codes.includes("invalid_request")) return "Fix the request (the request format is in references/spec.md, goldens) and run sl sql again.";
   if (codes.includes("invalid_layer")) return "Run sl validate and fix what it reports, then run sl sql again.";
+  // Only approval hides what the request names: the readback and the owner's yes resolve it.
+  const held = refusals.filter((r) => r.code === "not_visible");
+  if (!codes.includes("unknown_role") && held.length && held.every((r) => r.awaits?.length)) {
+    const targets = [...new Set(held.flatMap((r) => r.awaits!))];
+    return `Read ${andList(targets)} back to the owner with sl readback --targets ${targets.join(",")} and approve ${targets.length > 1 ? "them" : "it"} on their yes, then run sl sql again.`;
+  }
   if (codes.includes("unknown_role") || codes.includes("not_visible"))
     return `Check each field name against the model YAML, and see what this user may see with ${who}.`;
   const own = refusals.find((r) => r.next);

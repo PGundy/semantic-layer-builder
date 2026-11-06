@@ -1165,6 +1165,10 @@ export interface RequestProblem {
   ref: string;
   reasons: string[];
   message: string;
+  // Present when nothing but approval hides the reference: the approve targets (the item itself,
+  // its model, or a measure a metric reads) that are drafts, changed since approval or missing
+  // their hash, which a readback and the owner's yes make visible again.
+  awaits?: string[];
 }
 
 export interface RequestCheck {
@@ -1183,9 +1187,71 @@ export function lookup(visibility: AccessVisibility, source: string, ref: string
   return model?.fields.find((f) => f.name === parsed.field);
 }
 
+// One approve target a hidden reference waits on, and why: a draft, changed since approval, or
+// approved without the hash other items carry.
+interface Hold {
+  target: string;
+  name: string;
+  kind: "self" | "model" | "measure";
+  held: "draft" | "changed" | "hash_missing";
+}
+
+const HELD: Record<Hold["held"], string> = {
+  draft: "is a draft",
+  changed: "changed since approval",
+  hash_missing: "is approved, but its approved_hash is missing while other items carry one",
+};
+
+// What a hidden reference waits on when only approval hides it: each reason is the item's own
+// draft status, its model's, or a measure the metric reads, followed down to its own reasons.
+// Undefined when anything else hides it (an access rule, a broken role, an unknown measure).
+function holdsOf(visibility: AccessVisibility, source: string, hit: FieldVisibility | MetricVisibility): Hold[] | undefined {
+  const s = visibility.sources.find((x) => x.source === source);
+  const out: Hold[] = [];
+  const walk = (x: FieldVisibility | MetricVisibility | ModelVisibility, kind: Hold["kind"], name: string): boolean => {
+    for (const r of x.reasons) {
+      if (r === "draft") {
+        const held = x.changed_since_approval ? "changed" : x.hash_missing ? "hash_missing" : "draft";
+        if (!out.some((h) => h.target === x.ref)) out.push({ target: x.ref, name, kind, held });
+        continue;
+      }
+      const model = r === "model_hidden" && "kind" in x ? s?.models.find((m) => m.fields.includes(x)) : undefined;
+      if (model) {
+        if (!walk(model, "model", `model ${model.model}`)) return false;
+        continue;
+      }
+      const measure = r.startsWith("measure_hidden:") && "measures" in x ? r.slice("measure_hidden:".length) : undefined;
+      const field = measure ? lookup(visibility, source, measure) : undefined;
+      if (!measure || !field || !walk(field, "measure", measure)) return false;
+    }
+    return true;
+  };
+  return walk(hit, "self", "") && out.length ? out : undefined;
+}
+
+export const andList = (xs: string[]): string => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
+
+// The refusal for a reference only approval hides, in plain words: what it waits on and the
+// readback and approval that make it visible.
+function heldMessage(head: string, ref: string, holds: Hold[]): string {
+  const targets = holds.map((h) => h.target);
+  const approve = `${targets.map((t) => `sl approve --target ${t} --by "<owner>"`).join(" and ")} after the owner's yes`;
+  const steps = `sl readback --targets ${targets.join(",")}, then ${approve}`;
+  const [only] = holds;
+  if (holds.length === 1 && only!.kind === "self") {
+    const why = only!.held === "changed" ? CHANGED_SINCE_APPROVAL : only!.held === "hash_missing" ? `is ${HASH_MISSING}` : "is a draft until it is read back and approved";
+    return `${head} ${why}: ${steps}`;
+  }
+  const phrase = (h: Hold) => (h.kind === "self" ? `it ${HELD[h.held]}` : h.kind === "model" ? `${h.name} ${HELD[h.held]}` : `it reads ${h.name}, which ${HELD[h.held]}`);
+  const names = holds.map((h) => (h.kind === "self" ? ref : h.name));
+  const again = holds.some((h) => h.held !== "draft") ? " again" : "";
+  return `${head} is held back because ${andList(holds.map(phrase))}; it is served once ${andList(names)} ${names.length > 1 ? "are" : "is"} read back and approved${again}: ${steps}`;
+}
+
 // Checks that a request names only fields and metrics the user may see, in every position it can
 // name one: measures (selected), dimensions (grouped), filters and order_by. A reference that
-// resolves to nothing is refused too.
+// resolves to nothing is refused too. A reference hidden only because it, its model or a measure
+// it reads awaits approval says so and names the readback; any other says this user may not see it.
 export function checkRequest(visibility: AccessVisibility, request: QueryRequest): RequestCheck {
   // Tools serve nothing under an access.yaml awaiting sign-off (spec: Draft and approved access files).
   if (visibility.access_file === "draft") {
@@ -1208,9 +1274,15 @@ export function checkRequest(visibility: AccessVisibility, request: QueryRequest
       return;
     }
     if (!hit.visible) {
+      const head = `${position}[${index}] names ${ref}, which`;
+      const holds = holdsOf(visibility, source, hit);
+      if (holds) {
+        problems.push({ position, index, ref, reasons: hit.reasons, message: heldMessage(head, ref, holds), awaits: holds.map((h) => h.target) });
+        return;
+      }
       const why = hit.changed_since_approval ? CHANGED_SINCE_APPROVAL : hit.hash_missing ? HASH_MISSING : "";
       const changed = why ? `; it ${why.startsWith("approved") ? "is " : ""}${why} (${reapproveCommand(hit.ref)})` : "";
-      problems.push({ position, index, ref, reasons: hit.reasons, message: `${position}[${index}] names ${ref}, which this user may not see (${hit.reasons.join(", ")})${changed}` });
+      problems.push({ position, index, ref, reasons: hit.reasons, message: `${head} this user may not see (${hit.reasons.join(", ")})${changed}` });
     }
   };
   const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);

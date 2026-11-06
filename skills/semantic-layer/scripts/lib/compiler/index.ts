@@ -41,6 +41,10 @@ export interface Refusal {
   message: string;
   // The command or step that resolves this refusal, when it is specific to it.
   next?: string;
+  // not_visible: the access evaluator's reasons (draft, protected_tag:<tag>, measure_hidden:<ref>, ...),
+  // and, when nothing but approval hides the reference, the approve targets it waits on.
+  reasons?: string[];
+  awaits?: string[];
 }
 
 export interface CompiledColumn {
@@ -107,8 +111,8 @@ export function compileLayer(input: CompileInput): CompileResult {
   const { layer, source } = input;
   const dialect = source.dialect;
   const refusals: Refusal[] = [];
-  const add = (code: RefusalCode, message: string, ref?: string, next?: string) => {
-    if (!refusals.some((r) => r.code === code && r.message === message)) refusals.push({ code, message, ...(ref ? { ref } : {}), ...(next ? { next } : {}) });
+  const add = (code: RefusalCode, message: string, ref?: string, next?: string, extra?: Pick<Refusal, "reasons" | "awaits">) => {
+    if (!refusals.some((r) => r.code === code && r.message === message)) refusals.push({ code, message, ...(ref ? { ref } : {}), ...(next ? { next } : {}), ...extra });
   };
 
   const shape = schemaIssues("golden", { name: "request", question: "request", sql: "-", status: "draft", request: input.request }, "request");
@@ -122,7 +126,7 @@ export function compileLayer(input: CompileInput): CompileResult {
   // Visibility first: a request names only what its user may see (access.ts checkRequest).
   const vis = evaluateLayer(layer, input.user ?? {});
   for (const r of vis.unknown_roles) add("unknown_role", `role ${r} is not a role in access.yaml`);
-  for (const p of checkRequest(vis, request).problems) add("not_visible", p.message, p.ref);
+  for (const p of checkRequest(vis, request).problems) add("not_visible", p.message, p.ref, undefined, { reasons: p.reasons, ...(p.awaits ? { awaits: p.awaits } : {}) });
 
   const metric = compileMetrics(input, request, refusals, compileLayer);
   if (metric) return metric;
