@@ -102,7 +102,7 @@ request:
   dimensions: [regions.region_name]
 ```
 
-When a field cannot be reached that way (refunds by the order's month), add a dimension to the measure's own model through a join reference (`refunds.order_date` with `expr: order.created_at`, `interview-guide.md`). A request with a metric that combines several models groups by dimensions that exist, with the same name, in every model it uses: `net_revenue` by `orders.order_date:month` needs `refunds.order_date` too.
+When a field cannot be reached that way (refunds by the order's month), add a dimension to the measure's own model through a join reference (`refunds.order_date` with `expr: order.created_at`, `interview-guide.md`). A request with a metric that combines several models groups by dimensions every model it uses reaches through one path of to-one joins, or has with the same name: `net_revenue` by `orders.order_date:month` reads the refunds' dates through their `order` join.
 
 ### Checks before running
 

@@ -1,9 +1,9 @@
 // The reference compiler (references/spec.md, Reference compiler): turns a request into SQL for a
 // postgres or duckdb source, with every request filter value a bound parameter. A request reaches
-// other models' fields through to-one joins, and a field's definition joins come along with it. It
-// never runs the SQL. The user's row filters limit the base model in WHERE and a model a request
-// path reaches in its join's ON clause (rowfilters.ts). A request that needs what this version does
-// not compile (a metric) is refused with the reason.
+// other models' fields through to-one joins, and a field's definition joins come along with it; a
+// request that names a metric compiles each model's measures on their own (metrics.ts). It never
+// runs the SQL. The user's row filters limit the base model in WHERE and a model a request path
+// reaches in its join's ON clause (rowfilters.ts), in every part of a metric as in a plain request.
 import { type AccessLayer, type AccessUser, checkRequest, evaluateLayer, loadAccessLayer, type ModelRows } from "../access.ts";
 import { quoteIdent } from "../dialect.ts";
 import { loadSnapshot, loadSource } from "../project.ts";
@@ -15,6 +15,7 @@ import type { Dimension, FilterOp, Measure, Model, QueryRequest, Snapshot, Sourc
 import { AGGREGATIONS, NAME_PATTERN, TIME_GRAINS } from "../types.ts";
 import { schemaIssues } from "../validate.ts";
 import { type Instance, JoinPlan, type PlannedJoin, readsJoin } from "./joins.ts";
+import { compileMetrics } from "./metrics.ts";
 import { type AppliedRows, rowsPredicate } from "./rowfilters.ts";
 import { aggregate, COMPILER_DIALECTS, embed, grained, Params, predicate } from "./sql.ts";
 
@@ -30,7 +31,8 @@ export type RefusalCode =
   | "invalid_layer"
   | "no_join_path"
   | "ambiguous_join_path"
-  | "join_fans_out";
+  | "join_fans_out"
+  | "no_shared_dimension";
 
 export interface Refusal {
   code: RefusalCode;
@@ -43,7 +45,7 @@ export interface Refusal {
 export interface CompiledColumn {
   name: string;
   ref: string; // as the request names it, model.field or model.field:grain
-  kind: "dimension" | "measure";
+  kind: "dimension" | "measure" | "metric";
 }
 
 export interface Compiled {
@@ -79,6 +81,8 @@ export interface CompileInput {
   user?: AccessUser;
   // The semantic root, which a duckdb source's view files resolve from for the read-only check.
   root?: string;
+  // The parameters bound before this query's, when it is one part of a larger query (metrics.ts).
+  paramStart?: number;
 }
 
 const LATER = "a later version of sl sql adds";
@@ -119,13 +123,12 @@ export function compileLayer(input: CompileInput): CompileResult {
   for (const r of vis.unknown_roles) add("unknown_role", `role ${r} is not a role in access.yaml`);
   for (const p of checkRequest(vis, request).problems) add("not_visible", p.message, p.ref);
 
+  const metric = compileMetrics(input, request, refusals, compileLayer);
+  if (metric) return metric;
   const measures = request.measures ?? [];
   const dimensions = request.dimensions ?? [];
   const filters = request.filters ?? [];
   const orderBy = request.order_by ?? [];
-  for (const ref of [...measures, ...dimensions, ...filters.map((f) => f.field), ...orderBy.map((o) => o.field)])
-    if (NAME_PATTERN.test(ref) && layer.metrics.some((m) => m.name === ref && (m.source ?? source.source) === source.source))
-      add("unsupported_metric", `${ref} is a metric; ${LATER} ratio and derived metrics`, ref);
 
   const models = layer.models.filter((m) => m.source === source.source);
   const fieldRefs = [...measures, ...dimensions].filter((r) => !NAME_PATTERN.test(r));
@@ -227,7 +230,7 @@ export function compileLayer(input: CompileInput): CompileResult {
   // numbered in reading order: those ON clauses, then WHERE, then HAVING.
   const rowsOf = (m: Model): ModelRows | undefined => vis.sources.find((s) => s.source === source.source)?.models.find((x) => x.model === m.model)?.row_filters;
   const baseRows = rowsOf(base);
-  const params = new Params();
+  const params = new Params(input.paramStart);
   const applied: AppliedRows[] = [];
   const restrict = (inst: Instance, where: AppliedRows["in"]): string | undefined => {
     const rows = rowsOf(inst.model);
