@@ -64,7 +64,7 @@ export interface Issue {
   message: string;
 }
 
-export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden", "plan"] as const;
+export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden", "pending", "plan"] as const;
 export type SchemaKind = (typeof SCHEMA_KINDS)[number];
 
 export const SCHEMAS_DIR = join(import.meta.dir, "..", "..", "schemas");
@@ -393,6 +393,16 @@ class Validator {
     for (const { file: f, stem } of this.yamlEntries(goldensDir)) {
       const l = this.load<Golden>(join(goldensDir, f), "golden", stem);
       if (l) this.goldens.push(l);
+    }
+
+    // Readbacks sl readback stored, waiting for the owner: their structure, and an id equal to the file name.
+    const pendingDir = join(this.root, ".sl", "pending");
+    if (existsSync(pendingDir)) {
+      for (const f of readdirSync(pendingDir).filter((x) => x.endsWith(".json")).sort()) {
+        const l = this.load<{ readback_id?: unknown }>(join(pendingDir, f), "pending", f.replace(/\.json$/, ""));
+        if (l?.valid && l.data.readback_id !== l.stem)
+          this.error(l.file, "readback_id", `is "${String(l.data.readback_id)}" but the file is ${f}; the id equals the file name, so run sl readback again instead of renaming`);
+      }
     }
   }
 

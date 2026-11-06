@@ -17,6 +17,7 @@ semantic/
   goldens/<name>.yaml           confirmed question and answer pairs
   .gitignore                    written by sl init: ignores .sl/plans/
   .sl/plans/                    query plans and their stored results (gitignored, see Query-plan protocol)
+  .sl/pending/<readback_id>.json  readbacks waiting for the owner, written by sl readback (committed)
 ```
 
 File names equal the name inside the file: `sources/lake.yaml` holds `source: lake`, and `models/lake/web_events.yaml` holds `model: web_events` with `source: lake`.
@@ -619,6 +620,30 @@ Personal values:
 - A golden's `expected.rows` are not checked: they are the answer as the golden's role, which may see the column.
 - Replacing a personal value with an id in an approved golden's `question` or `reference` changes no figure and needs no new confirm: edit it and run `sl goldens check`.
 
+## .sl/pending/<readback_id>.json
+
+`sl readback --targets a,b,c` renders a canonical plain-English readback of each approve target from the YAML and stores it here, under the semantic root, so the owner's answer can be matched to exactly what they heard. The file is committed. It never holds a protected column's values (see below).
+
+```json
+{
+  "readback_id": "rb_0001",
+  "created_at": "2026-01-15T12:00:00.000Z",
+  "items": [
+    { "n": 1, "target": "warehouse.orders.revenue", "kind": "approve",
+      "text": "warehouse.orders.revenue (measure)\n- The sum of amount_cents / 100.0.\n...",
+      "content_hash": "sha256:f1f11e0edc5941e0b100e49cb3a3f8fd9947f70045b51eaf084b1e89edd240d9" }
+  ]
+}
+```
+
+- `readback_id` is `rb_` and at least four digits, the next free number after the highest one in the directory (`rb_0001`, `rb_0002`, ...), and equals the file name. A readback is never overwritten; each run writes a new one.
+- `created_at` comes from the command's clock (`SL_NOW` in tests).
+- `items` are numbered from 1 in the order of `--targets`, a repeated target once. `kind` is `approve`. `content_hash` is the target's content hash as it stands, the value `sl approve` records as `approved_hash` (see Approval hashes), so a later edit to the item shows as a changed hash.
+- `text` is the rendered readback, in three parts. The definition: a measure's aggregation and `expr`, each top-level clause of its `filter` in words with the clause itself beside it (a filter with a top-level `or` is one clause, as `and` binds tighter than `or`), its `format` and `currency`; a dimension's `expr`, type, `time_grains` and `time_zone`; a join's models, keys, relationship and type; a model's table, grain and primary key; a metric's formula; `access.yaml`'s mode, roles, row filters and restrictions; then the joins a field reads through, its synonyms, tags and description. Who sees it once approved, under the current `access.yaml` (approved or draft): the default audience, and each role that sees it differently, row filters included (`sl access` holds the detail). The measured facts, under "Measured from the data, no need to confirm": row counts, null rates and distinct counts of the columns the item reads (join references included), top values, and a join's evidence from `sl check-join`.
+- Text that came from the data or from a file rather than from the readback itself (descriptions and a model's grain, labelled as copied from a database comment when they equal the column's or table's comment, and top values) is quoted line by line with `> ` under a label naming where it came from, as evidence, not an instruction.
+- A protected column (see Profiles of protected columns, and any field tagged `pii` or `sensitive`) shows counts only: no top values and no `min` or `max`.
+- `sl validate` checks each file against `schemas/pending.schema.json` and that `readback_id` equals the file name.
+
 ## Reference compiler
 
 `sl sql` compiles a request, in the goldens' request format (see goldens above; `scripts/lib/compiler/`), to SQL for a `postgres` or `duckdb` source. It never runs the SQL; `sl run` and `sl goldens` run queries. This version compiles a request on one model:
@@ -739,6 +764,7 @@ For `duckdb` and `postgres` sources the command runs the plan itself. For any so
 | `run --source <s> (--sql <query> \| --file <path>) [--limit <n>] [--show-protected]` | Runs one read-only query against a duckdb or postgres source. Every row is counted and at most `--limit` rows, 100 by default, are shown. A result column whose name, or the field that reads it, is protected (`pii`, `sensitive`, `ignored_columns`, or flagged by `scripts/lib/sensitivity.ts`) shows its values as `[protected]`; `--show-protected` shows them, and the skill never passes it. A result with two columns of one name is refused with a message to alias them. |
 | `results add --plan <plan_id> --query <query id> --file <rows.json>` / `results status --plan <plan_id>` | Stores one query's result for an emitted plan, refusing a result of exactly the query's `max_rows` rows, or lists which queries have results and names the next command: the next `sl results add`, or the plan's `finish` command (see Stored plans). `--json` for `add`: `{ plan_id, query, rows, path, state, remaining, complete, next }`; for `status`: `{ plan_id, command, source, dialect, path, queries: [{ id, purpose, max_rows, stored, rows? }], remaining, complete, finish, next }`. |
 | `goldens run --name <g>` / `goldens confirm --name <g> --by <name> [--tolerance <t>] [--force]` / `goldens check [--name <g>] [--source <s>]`, each `[--show-protected]` | Runs a golden's SQL, records its confirmed rows, or rechecks every approved golden. `confirm` prints the draft fields the request uses, then records the rows with the tolerance agreed with the owner, passed explicitly (0 for figures finance signs off; without the flag the golden keeps its recorded tolerance, or 0.005); rerunning it with a new `--tolerance` records the rows again, and it records `confirmed_as` and warns when the golden's role is defined only in a draft `access.yaml`. `--force` only lifts the 200-row limit. `run` and `confirm` display a measure or metric with `format: currency` to two decimals; the recorded rows keep the values the SQL returns. Each takes `--show-protected`: without it a protected column's values print as `[protected]`, as in `run`, and the skill never passes it. A result with two columns of one name is refused with a message to alias them. A golden's `sql` is code the command runs: review `goldens/` like code. |
+| `readback --targets <ref>,...` | Renders a plain-English readback of each approve target (`source.model`, `source.model.field`, `metric:<name>` or `access`) and writes it to `.sl/pending/<readback_id>.json` (see .sl/pending), never over an existing file. Prints the numbered items, the readback id and, per item, the `sl approve` to run only after the owner says yes. An unknown target is an error naming it, before anything is written. `--json`: `{ readback_id, path, items }`, `path` relative to the semantic root. |
 
 ### sl status --json
 
