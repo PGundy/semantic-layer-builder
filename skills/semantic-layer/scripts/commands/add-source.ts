@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
-import { str } from "../lib/command.ts";
+import { list, str } from "../lib/command.ts";
 import { credentialHint, hasCredential } from "../lib/credentials.ts";
 import { UserError } from "../lib/errors.ts";
+import { SCHEMA_NAME_HINT, schemaListIssues } from "../lib/intake.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject, paths } from "../lib/project.ts";
 import { DIALECTS, NAME_PATTERN, RUNNABLE_DIALECTS, type Dialect, type SourceConfig, type SourceConnection } from "../lib/types.ts";
@@ -33,7 +34,7 @@ const spec: CommandSpec = {
   summary: "Write sources/<name>.yaml for a new data source.",
   usage:
     "add-source --name <source> --dialect duckdb|postgres|snowflake|bigquery|databricks [--env VAR] [--database <path>] " +
-    "[--view name=relation]... [--setup <statement>]... [--description <text>]",
+    "[--view name=relation]... [--setup <statement>]... [--schemas a,b] [--description <text>]",
   options: {
     name: { type: "string" },
     dialect: { type: "string" },
@@ -41,6 +42,7 @@ const spec: CommandSpec = {
     database: { type: "string" },
     view: { type: "string", multiple: true },
     setup: { type: "string", multiple: true },
+    schemas: { type: "string", multiple: true },
     description: { type: "string" },
   },
   async run({ values }, ctx) {
@@ -60,6 +62,12 @@ const spec: CommandSpec = {
     const database = str(values, "database");
     const views = many(values, "view");
     const setup = many(values, "setup");
+    // --schemas a,b (or repeated): the only schemas the source reads, written as intake.schemas.
+    const schemas = list(values, "schemas");
+    if (values.schemas !== undefined && !schemas.length) throw new UserError(`--schemas needs at least one schema name; ${SCHEMA_NAME_HINT}.`);
+    const schemaIssues = schemaListIssues(schemas, { dialect, connection: { database } }, (i) => `name ${i + 1}`);
+    const schemaError = schemaIssues.find((x) => x.level === "error");
+    if (schemaError) throw new UserError(`--schemas: ${schemaError.path} ${schemaError.message}. Fix it and run sl add-source again.`);
 
     if (env !== undefined) {
       // The value is never echoed: it may be the secret itself.
@@ -109,26 +117,36 @@ const spec: CommandSpec = {
     const description = str(values, "description");
     if (description) source.description = description;
     if (Object.keys(connection).length) source.connection = connection;
+    if (schemas.length) source.intake = { mode: "connection", schemas };
     writeYaml(file, source);
 
     const runnable = RUNNABLE_DIALECTS.includes(dialect);
-    const notes: string[] = [];
+    const notes: string[] = schemaIssues.map((x) => `--schemas: ${x.path} ${x.message}.`);
     if (env && !ctx.env[env]) notes.push(`Environment variable ${env} is not set in this shell; set it before running queries.`);
     const db = connection.database;
     if (dialect === "duckdb" && db !== undefined && db !== ":memory:" && !NOT_A_FILE.test(db) && !existsSync(resolve(ctx.root, db))) {
       notes.push("The database file does not exist yet; its path resolves from the semantic root.");
     }
+    // A name may hold $, which a shell would expand, so such a list is single-quoted.
+    const schemaList = schemas.join(",");
+    const schemaArg = schemaList.includes("$") ? `'${schemaList}'` : schemaList;
+    const schemaFlag = schemas.length ? ` --schemas ${schemaArg}` : dialect === "bigquery" ? " --schemas <dataset>" : "";
     const next = runnable
-      ? `sl introspect --source ${name}`
-      : `sl introspect --source ${name}${dialect === "bigquery" ? " --schemas <dataset>" : ""} --emit-sql, run the queries with your own tool, then rerun with --results <file>`;
+      ? `sl introspect --source ${name}${schemaFlag}`
+      : `sl introspect --source ${name}${schemaFlag} --emit-sql, run the queries with your own tool, then rerun with --results <file>`;
     // Setup statements and the database value stay out of the output.
     const viewNames = Object.keys(connection.views ?? {});
     const setupCount = connection.setup?.length ?? 0;
 
     if (ctx.json) {
-      ctx.out(formatJson({ source: name, dialect, path: file, env: env ?? null, views: viewNames, setup_statements: setupCount, runnable, notes, next }));
+      ctx.out(formatJson({ source: name, dialect, path: file, env: env ?? null, views: viewNames, setup_statements: setupCount, schemas, runnable, notes, next }));
     } else {
-      const parts = [dialect, ...(viewNames.length ? [`views ${viewNames.join(", ")}`] : []), ...(setupCount ? [`${setupCount} setup statement${setupCount === 1 ? "" : "s"}`] : [])];
+      const parts = [
+        dialect,
+        ...(viewNames.length ? [`views ${viewNames.join(", ")}`] : []),
+        ...(setupCount ? [`${setupCount} setup statement${setupCount === 1 ? "" : "s"}`] : []),
+        ...(schemas.length ? [`schema${schemas.length === 1 ? "" : "s"} ${schemas.join(", ")}`] : []),
+      ];
       ctx.out(`Wrote ${relative(ctx.cwd, file) || file} (${parts.join("; ")}).`);
       for (const n of notes) ctx.out(n);
       ctx.out(`Next: ${next}`);

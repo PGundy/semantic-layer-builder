@@ -405,10 +405,52 @@ class Splicer {
   private flow(node: YAMLMap | YAMLSeq): Edit[] | null {
     const r = rangeOf(node);
     if (!r) return null;
+    const inPlace = isMap(node) ? this.flowMapValues(node) : null;
+    if (inPlace) return inPlace;
     const rebuilt = isSeq(node) ? this.flowSeq(node, r) : null;
     const text = rebuilt ?? this.bare(node, () => this.render(node)).replace(/\n$/, "");
     if (text.includes("\n") && rebuilt === null) return null;
     return [{ start: r[0], end: r[1], text }];
+  }
+
+  // Edits a flow map whose pairs are the same, in the same order, with the same keys, by splicing
+  // each changed value in place, so the map keeps its spacing; null when anything else changed.
+  private flowMapValues(map: YAMLMap): Edit[] | null {
+    const s = this.snaps.get(map);
+    const items = map.items as Pair[];
+    if (s?.kind !== "map" || items.length !== s.pairs.length) return null;
+    const edits: Edit[] = [];
+    for (const [i, p] of items.entries()) {
+      const ps = this.pairSnaps.get(p);
+      if (p !== s.pairs[i] || !ps || p.key !== ps.key || p.value !== ps.value || this.changed(p.key)) return null;
+      if (!isScalar(p.value) && !(isNode(p.value) && (p.value as YAMLMap).flow)) return null;
+      const sub = isScalar(p.value) ? this.flowScalar(p.value) : this.splice(p.value, 0);
+      if (!sub) return null;
+      edits.push(...sub);
+    }
+    return edits;
+  }
+
+  // A kept flow map item's source text with its in-place edits, or null when an edit reaches
+  // outside its range or adds a line break, so the item is re-rendered.
+  private spliceWithin(node: unknown, [start, end]: Range): string | null {
+    const edits = this.splice(node, 0);
+    if (!edits || edits.some((e) => e.start < start || e.end > end || e.text.includes("\n"))) return null;
+    let out = this.text.slice(start, end);
+    for (const e of [...edits].sort((a, b) => b.start - a.start)) out = out.slice(0, e.start - start) + e.text + out.slice(e.end - start);
+    return out;
+  }
+
+  // A changed scalar inside a flow collection, rendered as a flow item so a comma or bracket in it
+  // is quoted; null when it cannot be replaced in place.
+  private flowScalar(node: Scalar): Edit[] | null {
+    if (!this.changed(node)) return [];
+    const r = rangeOf(node);
+    const s = this.snaps.get(node);
+    if (!r || (s?.kind === "scalar" && (s.anchor !== undefined || s.tag !== undefined))) return null;
+    const out = this.bare(node, () => this.renderItems([node], true)).replace(/\n$/, "");
+    if (out.includes("\n") || !out.startsWith("[") || !out.endsWith("]")) return null;
+    return [{ start: r[0], end: r[1], text: out.slice(1, -1) }];
   }
 
   // Rebuilds a flow sequence from its kept items' source text, the original separators
@@ -430,8 +472,9 @@ class Splicer {
     const pieces: string[] = [];
     for (const item of seq.items) {
       const i = index.get(item);
-      if (i !== undefined && !this.changed(item)) {
-        pieces.push(this.text.slice(rs[i]![0], rs[i]![1]));
+      const kept = i === undefined ? null : !this.changed(item) ? this.text.slice(rs[i]![0], rs[i]![1]) : isMap(item) && item.flow ? this.spliceWithin(item, rs[i]!) : null;
+      if (kept !== null) {
+        pieces.push(kept);
         continue;
       }
       const out = this.bare(item, () => this.renderItems([item], true)).replace(/\n$/, "");

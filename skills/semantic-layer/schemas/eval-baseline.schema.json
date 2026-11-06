@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "evals/baseline.json",
+  "description": "The smoke subset's recorded grader scores and noise bands, which bun evals/smoke.ts compares each run with.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "driver", "runs", "scenarios"],
+  "properties": {
+    "version": { "const": 1 },
+    "driver": { "enum": ["scripted", "sdk"], "description": "The driver the scores were recorded with; smoke compares runs of the same driver only." },
+    "runs": { "type": "integer", "minimum": 1, "description": "Runs per scenario the scores are the mean of." },
+    "scenarios": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]*$" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stop_reason", "graders", "effort"],
+        "properties": {
+          "stop_reason": { "enum": ["done", "turn_budget", "token_budget", "error"] },
+          "graders": {
+            "type": "object",
+            "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["score", "band"],
+              "properties": {
+                "score": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "The mean score over the runs; null when nothing was graded." },
+                "band": { "type": "number", "minimum": 0, "maximum": 1, "description": "The noise band: a score below score minus band is a regression." }
+              }
+            }
+          },
+          "effort": {
+            "type": "object",
+            "additionalProperties": { "type": ["number", "null"] },
+            "description": "The effort grader's metrics, reported and never compared."
+          }
+        }
+      }
+    }
+  }
+}

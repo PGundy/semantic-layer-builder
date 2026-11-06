@@ -367,7 +367,7 @@ describe("sl ignore-column", () => {
     const field = await sl(root, ["ignore-column", "--source", "warehouse", "--model", "orders", "--column", "amount_cents"]);
     expect(field.code).toBe(1);
     expect(field.err).toContain("Cannot ignore amount_cents: in warehouse.orders it is read by measure revenue");
-    expect(field.err).toContain("sl remove-field is not in this version yet, so delete the field from models/warehouse/orders.yaml and run sl validate");
+    expect(field.err).toContain("Remove the field first (sl remove-field warehouse.orders.revenue), which also adds the column to ignored_columns");
     const key = await sl(root, ["ignore-column", "--source", "warehouse", "--model", "orders", "--column", "order_id"]);
     expect(key.err).toContain("the primary key");
     const incoming = await sl(root, ["ignore-column", "--source", "warehouse", "--model", "customers", "--column", "customer_id"]);
