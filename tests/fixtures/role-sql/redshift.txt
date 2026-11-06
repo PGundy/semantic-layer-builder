@@ -1,0 +1,14 @@
+-- A read-only user for the semantic layer CLI, limited to schemas acme, marts.
+-- Run by an administrator. sl setup printed this and ran nothing.
+-- Replace <password> with a new password; it goes in the connection URL's environment variable, never in a file.
+CREATE USER "semantic_reader" PASSWORD '<password>';
+GRANT USAGE ON SCHEMA "acme" TO "semantic_reader";
+GRANT SELECT ON ALL TABLES IN SCHEMA "acme" TO "semantic_reader";
+ALTER DEFAULT PRIVILEGES IN SCHEMA "acme" GRANT SELECT ON TABLES TO "semantic_reader";
+GRANT USAGE ON SCHEMA "marts" TO "semantic_reader";
+GRANT SELECT ON ALL TABLES IN SCHEMA "marts" TO "semantic_reader";
+ALTER DEFAULT PRIVILEGES IN SCHEMA "marts" GRANT SELECT ON TABLES TO "semantic_reader";
+-- ALTER DEFAULT PRIVILEGES covers tables the administrator running it creates later; for tables another role
+-- creates, run it again with FOR ROLE <that role> after ALTER DEFAULT PRIVILEGES.
+
+Next: Give these statements to the database administrator. Once the role exists, your warehouse connector logs in as it and runs the read-only queries; for a schema export instead, sl export-sql --dialect redshift --schemas acme,marts.

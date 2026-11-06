@@ -47,9 +47,10 @@ import {
   tablesFlag,
   unreferencedColumns,
 } from "./snapshot-diff.ts";
+import { intakeMode, upgradeCommand } from "./intake.ts";
 import { effectiveScope } from "./table-list.ts";
 import { DIALECTS, TO_ONE_RELATIONSHIPS } from "./types.ts";
-import type { AccessMode, Approval, Dialect, Golden, LedgerReply, Metric, Model, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
+import type { AccessMode, Approval, Dialect, Golden, IntakeMode, LedgerReply, Metric, Model, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
 
 // Golden count below which the verify phase stays open.
 export const MIN_APPROVED_GOLDENS = 5;
@@ -86,11 +87,25 @@ export function profileState(t: Pick<SnapshotTable, "profiled_at" | "columns">):
   return Array.isArray(t.columns) && t.columns.some((c) => c?.profile !== undefined && c?.profile !== null) ? "partial" : "no";
 }
 
+// A step that needs the data, which an export source cannot take until it has a connection.
+export type WaitingStepName = "profiles" | "join_evidence" | "goldens" | "drift_from_data";
+
+export interface WaitingStep {
+  step: WaitingStepName;
+  message: string;
+}
+
 export interface SourceStatus {
   source: string;
   dialect: Dialect;
-  // The CLI can open a live connection: duckdb, or postgres with connection.env set.
+  // intake.mode: connection, or export for a source read from a schema export.
+  intake_mode: IntakeMode;
+  // The CLI can open a live connection: duckdb, or postgres with connection.env set, and not an export source.
   runnable: boolean;
+  // Export sources: every data-dependent step, waiting on a connection; empty for a connection source.
+  waiting_on_connection: WaitingStep[];
+  // Approved joins of in-scope models without evidence, as model.join; sl validate warns on each.
+  approved_joins_without_evidence: string[];
   snapshot: SnapshotSummary | null;
   needs_focus: boolean;
   models: { total: number; approved: number; draft: number };
@@ -165,6 +180,7 @@ export type Phase =
   | "metrics"
   | "access"
   | "verify"
+  | "connect"
   | "done";
 
 export interface NextStep {
@@ -179,6 +195,9 @@ export interface NextStep {
   // Set when the step waits on the owner rather than on a command: open_questions while access.yaml
   // holds open questions. command then only explains the current file.
   blocked_on?: "open_questions";
+  // Present while a reported source is an export source: the sl setup that gives it a connection,
+  // after which the steps waiting on a connection run.
+  connection_upgrade?: string;
 }
 
 // Visible counts for the default audience, and the approved models, fields and metrics hidden from it
@@ -332,9 +351,10 @@ function draftFields(m: LoadedModel["model"]): string[] {
     .map((f) => `${m.model}.${f.name}`);
 }
 
-// Whether the CLI can open a live connection for the source, not only emit query plans.
+// Whether the CLI can open a live connection for the source, not only emit query plans. An export
+// source has none, whatever its connection block holds.
 function liveRunnable(config: SourceConfig): boolean {
-  if (!canRun(config)) return false;
+  if (!canRun(config) || intakeMode(config) === "export") return false;
   return config.dialect === "duckdb" || !!config.connection?.env;
 }
 
@@ -503,12 +523,17 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
   const unprofiled = scoped.filter((t) => profileState(t) !== "yes").map(qualifiedName);
   const partial = scoped.filter((t) => profileState(t) === "partial").map(qualifiedName);
   const unchecked = active.flatMap((m) => (m.joins ?? []).filter((j) => !j.evidence).map((j) => `${m.model}.${j.name}`));
+  const approvedUnchecked = active.flatMap((m) => (m.joins ?? []).filter((j) => !j.evidence && j.status === "approved").map((j) => `${m.model}.${j.name}`));
   const modelCount = count(models);
+  const mode = intakeMode(config);
 
   const status: SourceStatus = {
     source: name,
     dialect: config.dialect,
+    intake_mode: mode,
     runnable: liveRunnable(config),
+    waiting_on_connection: mode === "export" ? waitingSteps(unprofiled.length, unchecked.length, approvedUnchecked.length) : [],
+    approved_joins_without_evidence: approvedUnchecked,
     snapshot: snapshot
       ? {
           method: snapshot.method,
@@ -542,6 +567,36 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
     next_batch: nextBatch,
   };
   return { status, drift, approvals: modelApprovals(name, config, models) };
+}
+
+// The data-dependent steps of an export source, each waiting on a connection.
+function waitingSteps(unprofiled: number, unchecked: number, approvedUnchecked: number): WaitingStep[] {
+  const approved = approvedUnchecked ? `, ${approvedUnchecked} of them approved, which sl validate warns on` : "";
+  return [
+    { step: "profiles", message: `profiles: ${unprofiled} in-scope table(s) have no profile, so their values, nulls and key uniqueness are unmeasured` },
+    {
+      step: "join_evidence",
+      message: unchecked
+        ? `join evidence: ${unchecked} join(s) have no evidence of match rate or fan-out${approved}`
+        : "join evidence: no join has evidence of match rate or fan-out; each join drafted waits for it",
+    },
+    { step: "goldens", message: "goldens: a golden's rows come from the data, so none can be run or confirmed (sl goldens run and sl goldens confirm refuse)" },
+    { step: "drift_from_data", message: "drift from data: sl goldens check and refreshed profiles need the data; a new export shows catalog changes only" },
+  ];
+}
+
+// The step that waits on a connection once everything an export source's definitions allow is done.
+function connectStep(s: SourceStatus): Step {
+  return {
+    phase: "connect",
+    source: s.source,
+    message:
+      `Every step the definitions allow is done for "${s.source}", which was set up from a schema export. Waiting on a connection: ` +
+      "profiles, join evidence, goldens and drift from data, so the layer is not done. Ask the owner whether a read-only connection " +
+      "is possible now (sl setup --print-role-sql prints a role for their database administrator); with one, upgrade the source with " +
+      "the command below and the waiting steps run.",
+    command: upgradeCommand(s.source, s.dialect),
+  };
 }
 
 // The profile step's message: the in-scope tables with no profile, and apart from them those whose
@@ -609,6 +664,15 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
   }
 
   const noSnap = sources.find((s) => !s.snapshot);
+  if (noSnap?.intake_mode === "export") {
+    const s = noSnap.source;
+    return {
+      phase: "introspect",
+      source: s,
+      message: `Source "${s}" is an export source with no snapshot. Import its schema export (intake.export.file).`,
+      command: `sl import --source ${s}`,
+    };
+  }
   if (noSnap) {
     const s = noSnap.source;
     return noSnap.runnable
@@ -799,8 +863,9 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     const what = batchModels.length
       ? `the next batch in "${s}": ${batchModels.join(", ")}`
       : `the draft models in "${s}": ${preview(drafty.draft_models)}`;
-    // A join is measured before it is read back, so an unchecked join in the batch comes first.
-    const join = drafty.unchecked_joins.find((j) => models.includes(j.split(".")[0]!));
+    // A join is measured before it is read back, so an unchecked join in the batch comes first; an
+    // export source's joins wait on a connection.
+    const join = drafty.intake_mode === "export" ? undefined : drafty.unchecked_joins.find((j) => models.includes(j.split(".")[0]!));
     return {
       phase: "interview",
       source: s,
@@ -814,7 +879,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     };
   }
 
-  const unchecked = sources.find((s) => s.joins_without_evidence > 0);
+  const unchecked = sources.find((s) => s.joins_without_evidence > 0 && s.intake_mode !== "export");
   if (unchecked) {
     const s = unchecked.source;
     const [model, join] = unchecked.unchecked_joins[0]!.split(".");
@@ -924,6 +989,10 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     };
   }
 
+  // Goldens need data: with only export sources, the connection comes first.
+  const exported = sources.find((s) => s.intake_mode === "export");
+  if (exported && sources.every((s) => s.intake_mode === "export")) return connectStep(exported);
+
   const uncovered = status.roles_without_goldens;
   const roleNote = uncovered.length ? ` Roles without an approved golden: ${uncovered.join(", ")}.` : "";
   if (status.goldens.approved < MIN_APPROVED_GOLDENS) {
@@ -950,6 +1019,8 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       command: `sl goldens run --name <golden>`,
     };
   }
+
+  if (exported) return connectStep(exported);
 
   // Draft metrics, goldens and fields may stay deliberately: the owner can defer them, and
   // the handoff names each one.
@@ -1249,7 +1320,8 @@ export function statusDetail(root: string, only?: string): StatusDetail {
   });
   // A draft that records the approval a revoke set aside says which version keeps applying.
   if (found.phase === "access" && lastApproved) found.message += ` ${lastApprovedNote(lastApproved)}`;
-  const step: NextStep = { ...found, after_owner_yes: needsOwnerYes(found.command) };
+  const exportSource = sources.find((s) => s.intake_mode === "export");
+  const step: NextStep = { ...found, after_owner_yes: needsOwnerYes(found.command), ...(exportSource ? { connection_upgrade: upgradeCommand(exportSource.source, exportSource.dialect) } : {}) };
   const batchSource = sources.find((s) => s.source === step.source && s.next_batch.length) ?? sources.find((s) => s.next_batch.length);
   const status: ProjectStatus = {
     ...base,

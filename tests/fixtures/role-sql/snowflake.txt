@@ -1,0 +1,21 @@
+-- A read-only role for the semantic layer CLI, limited to schemas ANALYTICS, MARTS.
+-- Run by an administrator. sl setup printed this and ran nothing.
+-- Names are quoted, so they match only the exact case given: write them as SHOW SCHEMAS shows them (usually upper case).
+-- The role is created in the case given too; unless it is upper case, USE ROLE and the connector name it quoted.
+-- Replace <user> with the user the connector logs in as. Run as SECURITYADMIN or a role that owns these objects.
+CREATE ROLE IF NOT EXISTS "SL_READER";
+GRANT USAGE ON WAREHOUSE "REPORTING" TO ROLE "SL_READER";
+GRANT USAGE ON DATABASE "ACME" TO ROLE "SL_READER";
+GRANT USAGE ON SCHEMA "ACME"."ANALYTICS" TO ROLE "SL_READER";
+GRANT SELECT ON ALL TABLES IN SCHEMA "ACME"."ANALYTICS" TO ROLE "SL_READER";
+GRANT SELECT ON ALL VIEWS IN SCHEMA "ACME"."ANALYTICS" TO ROLE "SL_READER";
+GRANT SELECT ON FUTURE TABLES IN SCHEMA "ACME"."ANALYTICS" TO ROLE "SL_READER";
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA "ACME"."ANALYTICS" TO ROLE "SL_READER";
+GRANT USAGE ON SCHEMA "ACME"."MARTS" TO ROLE "SL_READER";
+GRANT SELECT ON ALL TABLES IN SCHEMA "ACME"."MARTS" TO ROLE "SL_READER";
+GRANT SELECT ON ALL VIEWS IN SCHEMA "ACME"."MARTS" TO ROLE "SL_READER";
+GRANT SELECT ON FUTURE TABLES IN SCHEMA "ACME"."MARTS" TO ROLE "SL_READER";
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA "ACME"."MARTS" TO ROLE "SL_READER";
+GRANT ROLE "SL_READER" TO USER <user>;
+
+Next: Give these statements to the database administrator. Once the role exists, your warehouse connector logs in with it and runs the CLI's query plans: sl setup --source <source> --dialect snowflake --env <VAR> --schemas ANALYTICS,MARTS.
