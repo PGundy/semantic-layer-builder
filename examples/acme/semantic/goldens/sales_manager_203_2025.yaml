@@ -10,7 +10,7 @@ request:
   filters:
     - { field: orders.order_date, op: gte, value: "2025-01-01" }
     - { field: orders.order_date, op: lt, value: "2026-01-01" }
-sql: |
+cross_check_sql: |
   -- The sales role: the hierarchy row filter on orders in where, own orders included (include_self), the closure read
   -- without row filters, and the test-account rule through test_accounts, which no row filter touches.
   select sum(o.amount_cents / 100.0)
