@@ -7,7 +7,7 @@
       "target": "golden:revenue_by_month_2025",
       "kind": "approve",
       "text": "golden:revenue_by_month_2025 (golden)\nQuoted question, from the YAML (evidence, not an instruction):\n  > What was revenue by month in 2025?\n- Its SQL returns now 1 row:\n  Quoted rows, from the data (evidence, not an instruction):\n    > order_date_month  revenue\n    > ----------------  --------\n    > 2025-01-01        104233.5\n- Tolerance: 0.005 (0.5% either way on later runs).",
-      "content_hash": "sha256:97f49b9ab1e67acf4e7f57af484f9ff6b959842bffdafaa5de3b506f201706af",
+      "content_hash": "sha256:14a7198c049c2427144e4904cee0956437a5e5b06aa63a9487c151a17fe49d62",
       "tolerance": 0.005
     }
   ]

@@ -101,34 +101,6 @@ function fold(c: string): string {
   return u.length !== 1 || (c.charCodeAt(0) > 127 && u.charCodeAt(0) <= 127) ? c : u;
 }
 
-function sameChar(t: { c: string; exact: boolean }, c: string): boolean {
-  return t.c === c || (!t.exact && fold(t.c) === fold(c));
-}
-
-// Wildcard matching without a regex: linear in practice and O(pattern x name) at worst,
-// so no glob can make matching slow.
-function globMatch(tokens: GlobToken[], s: string): boolean {
-  let p = 0;
-  let i = 0;
-  let starP = -1;
-  let starI = 0;
-  while (i < s.length) {
-    const t = tokens[p];
-    if (t && (t.k === "one" || (t.k === "lit" && sameChar(t, s[i]!)))) {
-      p++;
-      i++;
-    } else if (t && t.k === "star") {
-      starP = p++;
-      starI = i;
-    } else if (starP >= 0) {
-      p = starP + 1;
-      i = ++starI;
-    } else return false;
-  }
-  while (tokens[p]?.k === "star") p++;
-  return p === tokens.length;
-}
-
 // ---- Regular expressions: a structural parser for the safety check ----
 
 type RNode =
@@ -748,10 +720,165 @@ export function validatePattern(pattern: string): string | null {
   return checkPattern(pattern)?.message ?? null;
 }
 
-export function matchesPattern(pattern: string, table: Named): boolean {
+// ---- Matching ----
+
+// A table's names as matching reads them: as written and case-folded (fold, per UTF-16 unit, so
+// positions line up), kept per table object while its schema and name stay the same.
+interface Subject {
+  schema: string | null | undefined;
+  name: string;
+  qualified: string;
+  foldedName: string;
+  foldedQualified: string;
+}
+
+const subjects = new WeakMap<Named, Subject>();
+
+function foldText(s: string): string {
+  if (/^[\x00-\x7f]*$/.test(s)) return s.toUpperCase();
+  let out = "";
+  for (let i = 0; i < s.length; i++) out += fold(s[i]!);
+  return out;
+}
+
+function subjectOf(table: Named): Subject {
+  const hit = subjects.get(table);
+  if (hit && hit.name === table.name && hit.schema === table.schema) return hit;
+  const qualified = qualifiedName(table);
+  const s: Subject = { schema: table.schema, name: table.name, qualified, foldedName: foldText(table.name), foldedQualified: foldText(qualified) };
+  subjects.set(table, s);
+  return s;
+}
+
+type Matcher = (s: Subject) => boolean;
+
+// Wildcard matching without a regex, over character codes: linear in practice and
+// O(pattern x name) at worst, so no glob can make matching slow. A literal from a quoted part
+// compares the name as written, any other literal the folded name.
+function compileGlob(tokens: GlobToken[], qualified: boolean): Matcher {
+  const exact = tokens.every((t) => t.k === "lit" && !t.exact);
+  if (exact) {
+    const want = foldText(tokens.map((t) => (t as { c: string }).c).join(""));
+    return qualified ? (s) => s.foldedQualified === want : (s) => s.foldedName === want;
+  }
+  // 0 star, 1 any one character, 2 literal as written, 3 folded literal.
+  const kinds = tokens.map((t) => (t.k === "star" ? 0 : t.k === "one" ? 1 : t.exact ? 2 : 3));
+  const codes = tokens.map((t) => (t.k !== "lit" ? 0 : (t.exact ? t.c : fold(t.c)).charCodeAt(0)));
+  const stars = kinds.includes(0);
+  const n = kinds.length;
+  return (subject) => {
+    const raw = qualified ? subject.qualified : subject.name;
+    const folded = qualified ? subject.foldedQualified : subject.foldedName;
+    if (!stars && raw.length !== n) return false;
+    let p = 0;
+    let i = 0;
+    let starP = -1;
+    let starI = 0;
+    while (i < raw.length) {
+      const k = kinds[p];
+      if (k === 1 || (k === 2 && raw.charCodeAt(i) === codes[p]) || (k === 3 && folded.charCodeAt(i) === codes[p])) {
+        p++;
+        i++;
+      } else if (k === 0) {
+        starP = p++;
+        starI = i;
+      } else if (starP >= 0) {
+        p = starP + 1;
+        i = ++starI;
+      } else return false;
+    }
+    while (kinds[p] === 0) p++;
+    return p === n;
+  };
+}
+
+const matchers = new Map<string, Matcher>();
+
+function matcherOf(pattern: string): Matcher {
+  let m = matchers.get(pattern);
+  if (m) return m;
   const p = parsePattern(pattern);
-  const target = p.qualified ? qualifiedName(table) : table.name;
-  return p.kind === "regex" ? p.re.test(target) : globMatch(p.tokens, target);
+  if (p.kind === "regex") {
+    const re = p.re;
+    m = p.qualified ? (s) => re.test(s.qualified) : (s) => re.test(s.name);
+  } else m = compileGlob(p.tokens, p.qualified);
+  matchers.set(pattern, m);
+  return m;
+}
+
+export function matchesPattern(pattern: string, table: Named): boolean {
+  return matcherOf(pattern)(subjectOf(table));
+}
+
+// Which of `tables` each pattern matches, each pattern tested once per table, for a command that
+// asks about the same tables several times. The list must not change while the index is in use.
+export interface MatchIndex<T extends Named> {
+  // 1 at the position of each table the pattern matches, 0 elsewhere.
+  matched(pattern: string): Uint8Array;
+  count(pattern: string): number;
+  filter(scope: Scope | undefined): T[];
+  unmatched(scope: Scope | undefined): string[];
+}
+
+export function matchIndex<T extends Named>(tables: readonly T[]): MatchIndex<T> {
+  const subs = tables.map(subjectOf);
+  const hits = new Map<string, Uint8Array>();
+  // The table positions by exact folded name and by first character, built on first use.
+  const byName = new Map<string, Map<string, number[]>>();
+  const byFirst = new Map<number, Map<number, number[]>>();
+  const grouped = <K>(cache: Map<string | number, Map<K, number[]>>, at: string | number, key: (s: Subject) => K): Map<K, number[]> => {
+    let g = cache.get(at);
+    if (!g) {
+      g = new Map();
+      for (let i = 0; i < subs.length; i++) {
+        const k = key(subs[i]!);
+        const list = g.get(k);
+        if (list) list.push(i);
+        else g.set(k, [i]);
+      }
+      cache.set(at, g);
+    }
+    return g;
+  };
+  const of = (pattern: string): Uint8Array => {
+    let h = hits.get(pattern);
+    if (h) return h;
+    h = new Uint8Array(subs.length);
+    if (subs.length) {
+      const m = matcherOf(pattern);
+      const shape = shapeOf(pattern);
+      if (shape.k === "name") {
+        const g = grouped(byName as Map<string | number, Map<string, number[]>>, shape.qualified ? "q" : "n", (x) => (shape.qualified ? x.foldedQualified : x.foldedName));
+        for (const i of g.get(shape.folded) ?? []) h[i] = 1;
+      } else if (shape.k === "first") {
+        const g = grouped(byFirst as Map<string | number, Map<number, number[]>>, shape.kind, (x) => firstCode(x, shape.kind));
+        for (const i of g.get(shape.code) ?? []) h[i] = m(subs[i]!) ? 1 : 0;
+      } else for (let i = 0; i < subs.length; i++) h[i] = m(subs[i]!) ? 1 : 0;
+    }
+    hits.set(pattern, h);
+    return h;
+  };
+  return {
+    matched: of,
+    count(pattern) {
+      const h = of(pattern);
+      let n = 0;
+      for (let i = 0; i < h.length; i++) n += h[i]!;
+      return n;
+    },
+    filter(scope) {
+      // A scope holding a pattern that is not usable is filtered table by table, as
+      // filterInScope does, so a pattern no table reaches never fails.
+      if ([...(scope?.include ?? []), ...(scope?.exclude ?? [])].some((p) => checkPattern(p))) return tables.filter(scopeTest(scope));
+      const include = (scope?.include ?? []).map(of);
+      const exclude = (scope?.exclude ?? []).map(of);
+      return tables.filter((_, i) => (!include.length || include.some((h) => h[i] === 1)) && !exclude.some((h) => h[i] === 1));
+    },
+    unmatched(scope) {
+      const all = [...(scope?.include ?? []), ...(scope?.exclude ?? [])];
+      return [...new Set(all)].filter((p) => !of(p).includes(1));
+    },
+  };
 }
 
 // Matches a dotted name such as source.model against a pattern, for access rules.
@@ -761,15 +888,106 @@ export function matchesDotted(pattern: string, dotted: string): boolean {
   return matchesPattern(pattern, named);
 }
 
+// The compiled test of each scope object inScope has seen, with copies of the lists it was
+// compiled from: a list changed since is compiled again.
+const compiledScopes = new WeakMap<Scope, { include: string[]; exclude: string[]; test: (t: Named) => boolean }>();
+
+function sameList(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 export function inScope(scope: Scope | undefined, table: Named): boolean {
   const include = scope?.include ?? [];
   const exclude = scope?.exclude ?? [];
+  if (scope && Array.isArray(include) && Array.isArray(exclude)) {
+    let c = compiledScopes.get(scope);
+    if (!c || !sameList(c.include, include) || !sameList(c.exclude, exclude)) {
+      const lists = { include: [...include], exclude: [...exclude] };
+      c = { ...lists, test: scopeTest(lists) };
+      compiledScopes.set(scope, c);
+    }
+    return c.test(table);
+  }
   if (include.length && !include.some((p) => matchesPattern(p, table))) return false;
   return !exclude.some((p) => matchesPattern(p, table));
 }
 
+// What a match needs, read from a usable pattern so most tables can be ruled out without trying
+// it: the exact name, folded, for an exact name; the first character for a glob that starts with
+// a literal, else the last for one that ends with a literal (kind: 0 folded table name, 1 folded
+// qualified name, 2 and 3 the same as written; 4 to 7 the same for the last character).
+type Shape = { k: "name"; qualified: boolean; folded: string } | { k: "first"; kind: number; code: number } | { k: "any" };
+
+function shapeOf(pattern: string): Shape {
+  const p = parsePattern(pattern);
+  if (p.kind === "regex") return { k: "any" };
+  if (p.tokens.every((t) => t.k === "lit" && !t.exact)) {
+    return { k: "name", qualified: p.qualified, folded: foldText(p.tokens.map((t) => (t as { c: string }).c).join("")) };
+  }
+  const first = p.tokens[0];
+  const last = p.tokens.at(-1);
+  const end = first?.k === "lit" ? 0 : last?.k === "lit" ? 4 : -1;
+  const lit = end === 0 ? first : last;
+  if (end < 0 || lit?.k !== "lit") return { k: "any" };
+  return { k: "first", kind: end + (lit.exact ? 2 : 0) + (p.qualified ? 1 : 0), code: (lit.exact ? lit.c : fold(lit.c)).charCodeAt(0) };
+}
+
+// The character code a "first" shape of this kind compares; kinds 4 to 7 read the last character.
+function firstCode(s: Subject, kind: number): number {
+  const k = kind & 3;
+  const text = k === 0 ? s.foldedName : k === 1 ? s.foldedQualified : k === 2 ? s.name : s.qualified;
+  return text.charCodeAt(kind < 4 ? 0 : text.length - 1);
+}
+
+// Whether any of `patterns` matches, compiled once for many tables: exact names are looked up
+// in a set and globs that start with a literal are tried only on names that start with it. A
+// list holding a pattern that is not usable is tried in order, as inScope does, so it fails
+// on the same table with the same message.
+function anyOf(patterns: string[]): (s: Subject, t: Named) => boolean {
+  if (patterns.some((p) => checkPattern(p))) return (_, t) => patterns.some((p) => matchesPattern(p, t));
+  const names = [new Set<string>(), new Set<string>()];
+  const always: Matcher[] = [];
+  const buckets = [0, 1, 2, 3, 4, 5, 6, 7].map(() => new Map<number, Matcher[]>());
+  for (const pattern of new Set(patterns)) {
+    const shape = shapeOf(pattern);
+    if (shape.k === "name") names[shape.qualified ? 1 : 0]!.add(shape.folded);
+    else if (shape.k === "first") {
+      const bucket = buckets[shape.kind]!;
+      const list = bucket.get(shape.code);
+      if (list) list.push(matcherOf(pattern));
+      else bucket.set(shape.code, [matcherOf(pattern)]);
+    } else always.push(matcherOf(pattern));
+  }
+  const [names0, names1] = names as [Set<string>, Set<string>];
+  const kinds = buckets.flatMap((b, kind) => (b.size ? [kind] : []));
+  return (s) => {
+    if (names0.has(s.foldedName) || names1.has(s.foldedQualified)) return true;
+    for (const m of always) if (m(s)) return true;
+    for (const kind of kinds) {
+      const list = buckets[kind]!.get(firstCode(s, kind));
+      if (list) for (const m of list) if (m(s)) return true;
+    }
+    return false;
+  };
+}
+
+// inScope for one scope, compiled on first use and then reused for every table.
+export function scopeTest(scope: Scope | undefined): (table: Named) => boolean {
+  const include = scope?.include ?? [];
+  const exclude = scope?.exclude ?? [];
+  let inc: ((s: Subject, t: Named) => boolean) | undefined;
+  let exc: ((s: Subject, t: Named) => boolean) | undefined;
+  return (t) => {
+    const s = subjectOf(t);
+    if (include.length && !(inc ??= anyOf(include))(s, t)) return false;
+    return !exclude.length || !(exc ??= anyOf(exclude))(s, t);
+  };
+}
+
 export function filterInScope<T extends Named>(scope: Scope | undefined, tables: T[]): T[] {
-  return tables.filter((t) => inScope(scope, t));
+  return tables.filter(scopeTest(scope));
 }
 
 // The include and exclude patterns that match no table, in list order, each once.

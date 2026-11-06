@@ -356,10 +356,12 @@ describe("other commands finish from a plan", () => {
       model: "orders",
       source: "wh",
       table: "main.orders",
-      status: "draft",
+      status: "approved",
+      approved_by: "Test Owner",
+      approved_at: "2026-01-15",
       primary_key: ["order_id"],
-      dimensions: [{ name: "status", expr: "status", type: "string", status: "draft" }],
-      measures: [],
+      dimensions: [{ name: "status", expr: "status", type: "string", status: "approved", approved_by: "Test Owner", approved_at: "2026-01-15" }],
+      measures: [{ name: "orders", agg: "count", description: "Orders.", status: "approved", approved_by: "Test Owner", approved_at: "2026-01-15" }],
       joins: [{ name: "customer", to: "customers", keys: [{ from: "customer_id", to: "customer_id" }], relationship: "many_to_one", status: "draft" }],
     });
     writeYaml(join(t.root, "models", "wh", "customers.yaml"), {
@@ -384,12 +386,16 @@ describe("other commands finish from a plan", () => {
     writeYaml(join(t.root, "goldens", "orders_by_status.yaml"), {
       name: "orders_by_status",
       question: "How many orders are there per status?",
-      request: { source: "wh", measures: [], dimensions: ["orders.status"] },
+      request: { source: "wh", measures: ["orders.orders"], dimensions: ["orders.status"], order_by: [{ field: "orders.status" }] },
       sql: "select status, count(*) as orders from main.orders group by status order by status",
       status: "draft",
     });
     const goldenPlan = await emit(t.root, ["goldens", "run", "--name", "orders_by_status"]);
-    expect(goldenPlan.queries.map((q) => [q.id, q.max_rows])).toEqual([["golden:orders_by_status", 10_000]]);
+    // The request compiled from the YAML, and the golden's cross_check_sql (written under its older name sql).
+    expect(goldenPlan.queries.map((q) => [q.id, q.max_rows])).toEqual([
+      ["golden:orders_by_status", 10_000],
+      ["golden:orders_by_status:cross_check", 10_000],
+    ]);
     await addAll(t.root, goldenPlan, await runQueries(t.root, t.dir, goldenPlan));
     const run = await sl(t.root, ["goldens", "run", "--name", "orders_by_status", "--plan", goldenPlan.plan_id, "--json"]);
     expect(run.code).toBe(0);
@@ -407,13 +413,13 @@ describe("other commands finish from a plan", () => {
       confirmed_at: "2026-01-15",
     });
     const checkPlan = await emit(t.root, ["goldens", "check", "--source", "wh"]);
-    expect(checkPlan.queries.map((q) => q.id)).toEqual(["golden:orders_by_status"]);
+    expect(checkPlan.queries.map((q) => q.id)).toEqual(["golden:orders_by_status", "golden:orders_by_status:cross_check"]);
     // The same query as goldens run's plan: the same plan, whose results are stored already.
     expect(checkPlan.plan_id).toBe(goldenPlan.plan_id);
     const status = await sl(t.root, ["results", "status", "--plan", checkPlan.plan_id, "--json"]);
     expect(status.json<StatusJson>().next).toBe(`Next: sl goldens check --source wh --plan ${checkPlan.plan_id}`);
     const check = await sl(t.root, ["goldens", "check", "--source", "wh", "--plan", checkPlan.plan_id, "--json"]);
-    expect(check.json()).toEqual({ passed: 1, failed: 0, results: [{ name: "orders_by_status", ok: true, diffs: [] }] });
+    expect(check.json()).toEqual({ passed: 1, failed: 0, results: [{ name: "orders_by_status", ok: true, diffs: [], compiled: "pass", cross_check: "pass" }] });
   });
 });
 
@@ -466,9 +472,10 @@ describe("protected values", () => {
     golden("emails", "select customer_id, email from main.customers order by customer_id limit 3");
     const plan = await emit(t.root, ["goldens", "run", "--name", "emails"]);
     const files = await runQueries(t.root, t.dir, plan);
-    const refused = await sl(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "golden:emails", "--file", files.get("golden:emails")!]);
+    // The request names nothing to compile, so the plan runs the golden's cross_check_sql alone.
+    const refused = await sl(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "golden:emails:cross_check", "--file", files.get("golden:emails:cross_check")!]);
     expect(refused.code).toBe(1);
-    expect(refused.err).toContain('The result of "golden:emails" has protected column email');
+    expect(refused.err).toContain('The result of "golden:emails:cross_check" has protected column email');
     expect(refused.err).toContain("sl goldens run --name emails --results <file>");
     expect(existsSync(join(t.root, ".sl", "plans", plan.plan_id))).toBe(false);
 

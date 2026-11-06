@@ -1,5 +1,6 @@
 // Turns the rows of an introspection plan (lib/sql/introspection.ts) into a snapshot,
 // carrying over what earlier runs learned that a catalog read cannot see again.
+import { sortTables } from "./project.ts";
 import type {
   ForeignKey,
   PlanResults,
@@ -176,7 +177,7 @@ export function buildSnapshot(source: SourceConfig, results: PlanResults, captur
   const keepKeys = { primary: results.primary_keys === undefined, foreign: results.foreign_keys === undefined };
   if (previous) mergePrevious(tables, previous, keepKeys);
 
-  const out = [...tables.values()].sort((a, b) => `${a.schema ?? ""}.${a.name}`.localeCompare(`${b.schema ?? ""}.${b.name}`));
+  const out = sortTables([...tables.values()]);
   return { snapshot_version: 1, source: source.source, dialect: source.dialect, captured_at: capturedAt, method: "live", tables: out };
 }
 

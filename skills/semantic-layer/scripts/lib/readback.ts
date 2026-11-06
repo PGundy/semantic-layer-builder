@@ -534,6 +534,10 @@ export interface GoldenRun {
   from: "flag" | "file" | "default";
   // The result columns whose values the readback shows as [protected].
   masked: string[];
+  // Which query gave the rows: the request compiled from the current YAML, or cross_check_sql when
+  // the request does not compile; and whether cross_check_sql ran too and gave the same rows.
+  from_query?: "compiled" | "cross_check_sql";
+  cross_checked?: boolean;
 }
 
 const OP_WORDS: Record<string, string> = {
@@ -566,6 +570,14 @@ function requestWords(g: Golden): string[] {
   return out;
 }
 
+// Which query a golden readback's rows come from, in words.
+function rowsFrom(g: Golden, run: GoldenRun): string {
+  if (run.from_query === "compiled") return "Its request, compiled from the current YAML, returns now";
+  if (run.from_query === "cross_check_sql")
+    return `Its request does not compile from the current YAML (sl goldens run --name ${g.name} says why); its cross_check_sql returns now`;
+  return "Its SQL returns now";
+}
+
 function renderGolden(g: Golden, run: GoldenRun): string[] {
   const user = isObj(g.user) && Object.keys(g.user).length ? ` with user attributes ${flat(JSON.stringify(g.user))}` : "";
   const role = typeof g.role === "string" ? `role ${g.role}` : "no role of its own (access.yaml's default role, or the default audience)";
@@ -582,9 +594,10 @@ function renderGolden(g: Golden, run: GoldenRun): string[] {
     ...(typeof g.reference === "string" && g.reference.trim()
       ? quoted("", "figure the owner trusts (reference), from the YAML", g.reference)
       : ["- No reference yet: write in reference where the owner's trusted figure comes from."]),
-    `- Its SQL returns now ${num(n)} row${n === 1 ? "" : "s"}:`,
+    `- ${rowsFrom(g, run)} ${num(n)} row${n === 1 ? "" : "s"}:`,
     ...(n ? quoted("  ", "rows, from the data", formatTable(maskRows(run.rows, run.masked))) : ["  (no rows: a golden needs at least one, so it cannot be confirmed)"]),
   ];
+  if (run.cross_checked) out.push("- Its cross_check_sql gives the same rows.");
   if (run.masked.length) out.push(`- Protected columns shown as ${PROTECTED_VALUE}: ${run.masked.map(flat).join(", ")}.`);
   out.push(
     `- Tolerance: ${tol}${run.from === "default" ? ", the default; agree one with the owner and read it back with --tolerance <t>" : ""}.`,
@@ -594,9 +607,9 @@ function renderGolden(g: Golden, run: GoldenRun): string[] {
 }
 
 // The hash of a target that was read back with `stored`, as the target stands now, or null when it
-// no longer exists. A golden's hash covers the rows its SQL returns, which only a run gives: while
-// goldens/<name>.yaml exists the stored hash stands, and sl goldens confirm reruns the SQL and refuses
-// a yes whose hash no longer matches.
+// no longer exists. A golden's hash covers the rows its request compiles to, which only a run gives:
+// while goldens/<name>.yaml exists the stored hash stands, and sl goldens confirm reruns the golden
+// and refuses a yes whose hash no longer matches.
 export function currentHash(root: string, target: string, stored: string): string | null {
   const golden = /^golden:([a-z][a-z0-9_]*)$/.exec(target)?.[1];
   if (golden) return existsSync(paths(root).golden(golden)) ? stored : null;
@@ -609,7 +622,7 @@ export function currentHash(root: string, target: string, stored: string): strin
 }
 
 // Renders each target's readback with the content hash sl approve would record for it. A golden
-// target (golden:<name>) needs its rows in `goldens`, keyed by name: sl readback runs its SQL first.
+// target (golden:<name>) needs its rows in `goldens`, keyed by name: sl readback runs the golden first.
 // An unknown target is an error naming it, before anything is written.
 export function renderReadbacks(
   root: string,
@@ -632,7 +645,7 @@ export function renderReadbacks(
         const g = existsSync(file) ? readYamlIfExists<Golden>(file) : null;
         if (!isObj(g)) throw unknown(ref, `there is no goldens/${t.name}.yaml`);
         const run = goldens.get(t.name);
-        if (!run) throw new UserError(`${ref} is read back with the rows its SQL returns: run sl readback --targets ${ref}.`);
+        if (!run) throw new UserError(`${ref} is read back with the rows its request compiles to: run sl readback --targets ${ref}.`);
         const text = renderGolden(g, run).join("\n");
         return { target: ref, text, content_hash: goldenHash(g as unknown as Obj, run.rows, run.tolerance) };
       }

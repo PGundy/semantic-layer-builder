@@ -28,7 +28,7 @@ const DOCS = [
   "references/baseline.md",
 ];
 const GLOBAL_FLAGS = new Set(["root", "json", "help"]);
-const GOLDENS_SUBCOMMANDS = new Set(["run", "confirm", "check"]);
+const GOLDENS_SUBCOMMANDS = new Set(["run", "confirm", "check", "new"]);
 
 function read(doc: string): string {
   return readFileSync(join(SKILL_DIR, doc), "utf8");
@@ -777,7 +777,7 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["SKILL.md", "rule goldens request the trusted grain", "confirm its measured rows only when its `reference` says which rows were checked against a report; otherwise request only the trusted grain"],
   ["verification.md", "a golden may pin a rule", "### A golden that pins a rule"],
   ["verification.md", "rule goldens request the trusted grain", "Otherwise request only the trusted grain"],
-  ["verification.md", "round in golden SQL warns", "`sl validate` warns on `round(` in a golden's `sql`"],
+  ["verification.md", "round in golden SQL warns", "`sl validate` warns on `round(` in a golden's `cross_check_sql`"],
   ["verification.md", "approved golden with a draft field is rechecked", "approve the field after its readback, then run `sl goldens check --name <g>`: if it passes, the recorded rows stand; only rows that changed need a new confirm"],
   ["SKILL.md", "approved golden with a draft field is rechecked", "then run `sl goldens check --name <g>`: if it passes, the recorded rows stand, and only changed rows need a new confirm"],
   ["verification.md", "roles without goldens hold verify", "keeps `next_step` at `verify` until a golden that runs as that role is written and confirmed"],
@@ -1091,15 +1091,16 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["joins.md", "fan-out overrides", "record the reason in their words on the join"],
   ["joins.md", "text keys are inferred", "text keys included (`order_lines.sku` to `products.sku`)"],
   // Goldens are honest about what they test.
-  ["SKILL.md", "goldens do not test the YAML", "It does not test that the YAML computes that figure"],
-  ["SKILL.md", "goldens follow YAML edits by hand", "update the SQL of every golden that uses it, by hand, and run them"],
+  ["SKILL.md", "goldens compile the YAML", "`sl goldens check` compiles every approved golden's request from the current YAML"],
+  ["SKILL.md", "an approved edit fails its goldens", "fails every golden that uses it once the edit is approved again, and until then those goldens fail as refused"],
+  ["SKILL.md", "goldens are written with goldens new", "`sl goldens new --name <g> --question \"<question>\" --request <json>`"],
   ["SKILL.md", "a request's measures share one model", "A request's measures share one model, or are one metric"],
-  ["verification.md", "goldens do not test the YAML", "What a golden does not do yet: test that the YAML computes the figure"],
-  ["verification.md", "goldens do not run the compiler yet", "`sl sql` compiles a request from the YAML (`spec.md`, Reference compiler), but goldens do not run it yet"],
+  ["verification.md", "goldens run the compiler", "Goldens run the reference compiler (`spec.md`, Reference compiler)"],
+  ["verification.md", "cross_check_sql disagreement is named", "requires both to give the recorded rows and names the one that differs"],
   ["verification.md", "keeping the SQL in step", "### Keeping the SQL in step with the YAML"],
-  ["verification.md", "the rule warning", "goldens pin hand-written SQL; this SQL may not apply <measure>'s rule"],
+  ["verification.md", "the rule warning", "this hand-written SQL may not apply <measure>'s rule"],
   ["verification.md", "a request's measures share one model", "a request's measures must share one model, or be one metric"],
-  ["verification.md", "drift checks rerun SQL, not YAML", "It reruns the SQL, not the YAML"],
+  ["verification.md", "drift checks compile the YAML", "It compiles every approved golden's request from the current YAML"],
   // Time zones per type and dialect.
   ["interview-guide.md", "time zones per type and dialect", "### Time zones per type and dialect"],
   ["interview-guide.md", "a naive timestamp records time_zone", "the dimension records the zone it was recorded in as `time_zone`"],
