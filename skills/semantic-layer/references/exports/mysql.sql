@@ -13,6 +13,9 @@
 -- Restrict schemas (databases): uncomment the line marked sl:schema-filter below and list them,
 -- or print this query with the filter applied: sl export-sql --dialect mysql --schemas a,b
 --
+-- Restrict tables: sl export-sql --include/--exclude prints this query with a table filter at the
+-- line marked sl:table-filter (a pattern the dialect cannot express is applied by sl import).
+--
 -- row_count is information_schema.tables.table_rows: an estimate for InnoDB, empty for views.
 -- mysql --batch prints NULL for an empty value; sl import reads it as empty.
 select
@@ -47,4 +50,5 @@ left join information_schema.key_column_usage fk
 where c.table_schema not in ('mysql', 'information_schema', 'performance_schema', 'sys')
   and t.table_type in ('BASE TABLE', 'VIEW', 'SYSTEM VERSIONED')
   -- and c.table_schema in ('shop')  -- sl:schema-filter: uncomment and list the schemas to export
+  -- sl:table-filter: sl export-sql --include/--exclude writes the table filter here
 order by c.table_schema, c.table_name, c.ordinal_position, fk.constraint_name;
