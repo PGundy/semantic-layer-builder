@@ -170,6 +170,34 @@ export function schemaIssues(kind: SchemaKind, data: unknown, file: string): Iss
   return out;
 }
 
+// The eval harness's files (evals/runner), each with a schema under schemas/ (spec.md, Eval runs).
+export const EVAL_SCHEMA_KINDS = ["eval-scenario", "eval-script", "eval-transcript-turn", "eval-summary"] as const;
+export type EvalSchemaKind = (typeof EVAL_SCHEMA_KINDS)[number];
+
+let evalValidators: Map<EvalSchemaKind, ValidateFunction> | undefined;
+
+// Checks one eval harness file against its schema, worded as schemaIssues words a layer file.
+export function evalSchemaIssues(kind: EvalSchemaKind, data: unknown, file: string): Issue[] {
+  if (!evalValidators) {
+    const ajv = new Ajv2020({ allErrors: true, strictTypes: false, verbose: true });
+    evalValidators = new Map();
+    for (const k of EVAL_SCHEMA_KINDS) {
+      evalValidators.set(k, ajv.compile(JSON.parse(readFileSync(join(SCHEMAS_DIR, `${k}.schema.json`), "utf8")) as object));
+    }
+  }
+  const validate = evalValidators.get(kind)!;
+  if (validate(data)) return [];
+  const seen = new Set<string>();
+  const out: Issue[] = [];
+  for (const e of validate.errors ?? []) {
+    const m = schemaMessage(e);
+    if (!m || seen.has(`${m.path}\0${m.message}`)) continue;
+    seen.add(`${m.path}\0${m.message}`);
+    out.push({ level: "error", file, ...m });
+  }
+  return out;
+}
+
 export { callsRound, dividesByLiteral, sqlNames } from "./sql-names.ts";
 
 type SqlRole = "dimension expr" | "measure expr" | "measure filter" | "row filter";

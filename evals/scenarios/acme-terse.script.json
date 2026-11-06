@@ -1,0 +1,24 @@
+{
+  "skill": [
+    {
+      "text": "I read the lake source: five tables. web_events_2024_archive and tmp_session_dedupe look like an archive copy and a scratch table. Keep web_events, sessions and marketing_spend in scope and leave those two out?",
+      "tokens": 2400,
+      "sl": [["status"], ["introspect", "--source", "lake"]]
+    },
+    {
+      "text": "Done: three tables in scope, measured. Are the timestamps stored in UTC, and do your reports count days in UTC?",
+      "tokens": 3100,
+      "sl": [["scope", "--source", "lake", "--exclude", "web_events_2024_archive", "--exclude", "tmp_session_dedupe", "--write"], ["profile", "--source", "lake"]]
+    },
+    {
+      "text": "I drafted the three models with UTC days. Every item is a draft until you confirm its readback. That is all for this session; next time I will read back web_events first.",
+      "tokens": 2900,
+      "sl": [["draft", "--source", "lake"], ["status"]],
+      "done": true
+    }
+  ],
+  "owner": [
+    { "text": "yep", "tokens": 5 },
+    { "text": "utc", "tokens": 5 }
+  ]
+}
