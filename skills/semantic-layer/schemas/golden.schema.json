@@ -8,7 +8,6 @@
     "name",
     "question",
     "request",
-    "sql",
     "status"
   ],
   "properties": {
@@ -103,10 +102,15 @@
         }
       }
     },
+    "cross_check_sql": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional hand-written query whose rows must equal expected.rows, as the rows the request compiles to must."
+    },
     "sql": {
       "type": "string",
       "minLength": 1,
-      "description": "The query that produced the expected rows."
+      "description": "The older name of cross_check_sql, read as it; sl validate asks for it to be renamed."
     },
     "expected": {
       "type": "object",
