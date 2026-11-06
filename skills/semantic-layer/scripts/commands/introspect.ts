@@ -14,6 +14,8 @@ import { profileState } from "../lib/status.ts";
 import { introspectionPlan, schemaMatcher } from "../lib/sql/introspection.ts";
 import { effectiveScope } from "../lib/table-list.ts";
 import type { Scope, Snapshot, SnapshotTable, SourceConfig, TableKind } from "../lib/types.ts";
+import type { RoleReport } from "../lib/adapters/index.ts";
+import { roleNote } from "../lib/role-sql.ts";
 
 // Datasets named by include patterns such as "analytics.*", those of the table-list file
 // included, for a BigQuery source introspected without --schemas.
@@ -171,7 +173,8 @@ const spec: CommandSpec = {
       ctx.out(formatJson(emitPlan(ctx, plan, { name: "introspect", values })));
       return 0;
     }
-    const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input });
+    let roleReport: RoleReport | undefined;
+    const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input, onRoleReport: (r) => (roleReport = r) });
 
     const previous = loadSnapshot(ctx.root, source.source);
     const snapshot = buildSnapshot(source, results, ctx.now().toISOString(), previous);
@@ -224,6 +227,7 @@ const spec: CommandSpec = {
           ...(note ? { schemas_note: note } : {}),
           dropped: { tables: left.tables, schemas: left.schemas },
           changes,
+          ...(roleReport ? { role_report: roleReport } : {}),
           next,
         }),
       );
@@ -238,6 +242,7 @@ const spec: CommandSpec = {
       const modeled = diff ? modeledTables(snapshot, loadModels, scope) : undefined;
       for (const line of [...changeLines(diff, source.source, modeled), ...scopeLines(scopeChanges, source.source, diff?.tables_removed)]) ctx.out(line);
       if (unknownRows) ctx.out(unknownRows.note);
+      if (roleReport && !roleReport.least_privilege) ctx.out(roleNote(source, roleReport));
       ctx.out(next);
     }
     return 0;
