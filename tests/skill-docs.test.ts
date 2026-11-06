@@ -1095,7 +1095,7 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["SKILL.md", "goldens follow YAML edits by hand", "update the SQL of every golden that uses it, by hand, and run them"],
   ["SKILL.md", "a request's measures share one model", "A request's measures share one model, or are one metric"],
   ["verification.md", "goldens do not test the YAML", "What a golden does not do yet: test that the YAML computes the figure"],
-  ["verification.md", "a compiler is planned", "A reference compiler that turns a request into SQL from the YAML is planned"],
+  ["verification.md", "goldens do not run the compiler yet", "`sl sql` compiles a request on one model from the YAML (`spec.md`, Reference compiler), but goldens do not run it yet"],
   ["verification.md", "keeping the SQL in step", "### Keeping the SQL in step with the YAML"],
   ["verification.md", "the rule warning", "goldens pin hand-written SQL; this SQL may not apply <measure>'s rule"],
   ["verification.md", "a request's measures share one model", "a request's measures must share one model, or be one metric"],
