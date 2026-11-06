@@ -914,10 +914,10 @@ A scenario, `evals/scenarios/<name>.json` (or `.yaml`), names a fixture under `f
 }
 ```
 
-A script holds `skill` and `owner` turns, replayed in order: each has `text` and optional `tokens` (else the text's length divided by 4, rounded up); a skill turn may list `sl` commands, each as its arguments without `--root`, run in the working root with the run's clock before the turn is recorded, and `done: true` ends the session.
+A script holds `skill` and `owner` turns, replayed in order: each has `text` and optional `tokens` (else the text's length divided by 4, rounded up); a skill turn may list `sl` commands, each as its arguments without `--root`, run in the working root with the run's clock before the turn is recorded, and `done: true` ends the session. A skill turn may also hold `write`, files the skill writes by hand (a draft golden, since no command writes one), by path relative to the working root to their text, written before its `sl` commands run. The runner refuses a write that is not a plain path inside the root (absolute, `..` or `.` segments), that passes through a link on its way (dangling or not), that goes under `.sl/` (only `sl readback`, `sl reply` and `sl question` write there), whose text is not valid YAML, or whose text, parsed as YAML (JSON included), sets `status: approved` or an approval field (`approved_by`, `approved_at`, `approved_hash`, `last_approved`, `confirmed_by`, `confirmed_at`, `confirmed_as`) on any map at any depth (only `sl approve` and `sl goldens confirm` approve), before the run when it loads the script and again when the driver writes.
 
 ```json
-{ "skill": [{ "text": "Keep three tables in scope?", "tokens": 2400, "sl": [["status"]], "done": true }], "owner": [] }
+{ "skill": [{ "text": "Keep three tables in scope?", "tokens": 2400, "sl": [["status"]] }, { "text": "I wrote a draft golden.", "write": { "goldens/sessions_2025.yaml": "name: sessions_2025\n..." }, "sl": [["goldens", "run", "--name", "sessions_2025"]], "done": true }], "owner": [{ "text": "yep" }] }
 ```
 
 A run's directory is `evals/runs/<run_id>/` (gitignored), or `<out>/<run_id>/`, with `run_id` the scenario name and the run's start time to the millisecond in UTC, as `acme-terse-20260101T000000000Z`; a run with the same id replaces it. It holds:
@@ -935,19 +935,19 @@ A run's directory is `evals/runs/<run_id>/` (gitignored), or `<out>/<run_id>/`, 
 {
   "budgets": { "max_tokens": 400000, "max_turns": 40 },
   "driver": "scripted",
-  "finished_at": "2026-01-01T00:00:15.000Z",
+  "finished_at": "2026-01-01T00:01:00.000Z",
   "fixture": "acme",
   "intake": "connection",
-  "owner_turns": 3,
+  "owner_turns": 7,
   "persona": "terse",
   "run_id": "acme-terse-20260101T000000000Z",
   "scenario": "acme-terse",
-  "skill_turns": 3,
+  "skill_turns": 7,
   "started_at": "2026-01-01T00:00:00.000Z",
   "stop_reason": "done",
-  "tokens": 8410,
-  "tokens_by_speaker": { "owner": 10, "skill": 8400 },
-  "turns": 6
+  "tokens": 19638,
+  "tokens_by_speaker": { "owner": 38, "skill": 19600 },
+  "turns": 14
 }
 ```
 
@@ -977,7 +977,7 @@ A scenario's `grading` block says what to compare with: `figures`, a figure mapp
 - **figures.** Each approved golden is mapped to a figure of `fixtures/<fixture>/reference-figures.json` by the first entry of the mapping file whose conditions all hold: `golden`, the golden's name as a scope pattern (exact, glob or `re:`); `request.source`; `request.table`, the table of the model the request starts from (its first measure's model; for a metric, the model of a ratio's numerator or of a derived metric's first `{model.measure}`; with no measures, its first dimension's), as a scope pattern; and `request.grouped`, whether the request has dimensions. The golden's figure comes from compiling its request with the reference compiler, as its `role` and `user`, and running the SQL on the run's duckdb source through the read-only adapter, with the parameters written in as quoted literals; when the compiler refuses the request, or the source is not duckdb, it comes from the golden's `expected.rows`, and the detail says which path it took and why. A figure with a `value` takes the one row's first measure column (or its only number); a figure with `rows` matches the golden's rows by its first dimension against the entry's `key` and its first measure against the entry's `value`, with no row more or less. A value equals a figure when it is within the entry's relative `tolerance` (0 by default) or rounds to it at the figure's decimal places. Any approved golden whose single value rounds to a `common_mistakes` value fails, mapped or not (the tolerance does not apply to a mistake); one mapped to nothing is otherwise only listed. A mapping entry that names a figure the reference file lacks fails the grader. Schema: `../schemas/eval-figures.schema.json`.
 - **secrets.** No line of a file in `semantic/`, of `transcript.jsonl` or of `summary.json` holds a credential by the rules of `scripts/lib/credentials.ts` (`[redacted]` is not one), or a protected value. Protected columns are those `protected_columns` lists and those the name rules of `scripts/lib/sensitivity.ts` flag, in every CSV and Parquet file under `fixtures/<fixture>/data/` (a file's table is its name without the extension). An email, a phone number or a two-word name of a protected column (and, in a table with `first_name` and `last_name`, each "first last") matches anywhere as a word or two adjacent words, in any case; a phone number also matches by its last ten digits, whatever its punctuation. Any other value of 3 or more characters of a listed column, or of one the rules tag `pii`, matches only as a whole quoted string or YAML value in a `.json`, `.jsonl` or `.yaml` file, so a first name inside a sentence is not a finding; a column tagged `sensitive` as free text contributes only its emails and phone numbers. Findings name the file, the line and the column, never the value; one finding fails the grader.
 - **selection.** For each source `selection` lists, the tables of its snapshot that its scope keeps (`filterInScope` in `scripts/lib/patterns.ts`) equal the list. A missing snapshot fails. A listed source the run has no file for is not graded, unless it is the scenario's intake source.
-- **approvals.** Every approved model, field, join, metric and access file has a line in `semantic/.sl/ledger.jsonl` with `verdict: "yes"`, its approve target as `target` and its `approved_hash` as `content_hash`. Without a ledger it reports "not graded: no ledger yet" with score null.
+- **approvals.** Every approved model, field, join, metric and access file has a line in `semantic/.sl/ledger.jsonl` with `verdict: "yes"`, its approve target as `target` and its `approved_hash` as `content_hash`, and every approved golden one with `golden:<name>` as `target` and, as `content_hash`, the golden hash of its question, request, SQL, role and user with its recorded `expected.rows` and tolerance (what `sl goldens confirm` checks). Without a ledger it reports "not graded: no ledger yet" with score null.
 - **connection_first.** A skill turn offers an export when its text matches `export`, `exports`, `exported`, `exporting`, `export-sql`, `catalog query`, `catalog file` or `catalog csv` (any case, as words), leaving out a negated one (`no export`, `without an export`, `not need an export`, `don't need an export`), or it runs `sl export-sql` or `sl import`. A skill turn asks for a connection when its text holds a `?` and one of `connect`, `connects`, `connecting`, `connection`, `connection string`, `connection URL`, `database URL`, `environment variable`, `read-only role`, `SELECT-only role`, `credential` or `credentials`. An owner turn declines a connection when it says it cannot (`can't`, `cant`, `cannot`, `unable to`, `not able to`, `not allowed to`, `no way to`, `won't`, `wont`, `isn't possible`, `not possible`, `not an option`) followed in the same sentence by a word starting `connect` or by `access`, or says "no connection", "no direct connection", "no access" or "no direct access". The grader passes when no skill turn offers an export, or when the first that does comes after a skill turn asking for a connection and an owner turn after it declining one. On a scenario whose `summary.json` has `intake: "export"`, it also fails when a golden is approved in `semantic/goldens/` or `sl goldens confirm` succeeded in a turn.
 - **effort.** Never fails and scores null; its `metrics` are `approved_items` (approved models, fields, joins, metrics, access file and goldens), `owner_turns` and `owner_words` (the owner's answers, the opening left out), each per approved item, `tokens`, `tokens_per_approved_item`, `skill_tokens_per_approved_item` and `wall_time_seconds` from `summary.json`'s `started_at` and `finished_at`. A per-item metric is null while nothing is approved. When it cannot read the root, it says "could not measure: <reason>", still passes and scores null.
 
