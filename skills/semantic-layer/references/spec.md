@@ -18,6 +18,7 @@ semantic/
   .gitignore                    written by sl init: ignores .sl/plans/
   .sl/plans/                    query plans and their stored results (gitignored, see Query-plan protocol)
   .sl/pending/<readback_id>.json  readbacks waiting for the owner, written by sl readback (committed)
+  .sl/reviews/<readback_id>.<md|json>  review forms for the owner, written by sl review export (committed)
 ```
 
 File names equal the name inside the file: `sources/lake.yaml` holds `source: lake`, and `models/lake/web_events.yaml` holds `model: web_events` with `source: lake`.
@@ -658,6 +659,35 @@ Personal values:
 - A protected column (see Profiles of protected columns, and any field tagged `pii` or `sensitive`) shows counts only: no top values and no `min` or `max`.
 - `sl validate` checks each file against `schemas/pending.schema.json` and that `readback_id` equals the file name.
 
+## Review forms
+
+`sl review export --readback <readback_id> --format md|json` writes a pending readback as a form the owner fills in, to `.sl/reviews/<readback_id>.<md|json>` by default. It holds nothing the pending readback and the YAML do not already hold, so it never holds a protected column's values. The JSON form (schema `review.schema.json`):
+
+```json
+{
+  "version": 1,
+  "readback_id": "rb_0001",
+  "created_at": "2026-01-15T12:00:00.000Z",
+  "items": [
+    { "n": 1, "target": "warehouse.orders.revenue",
+      "content_hash": "sha256:f1f11e0edc5941e0b100e49cb3a3f8fd9947f70045b51eaf084b1e89edd240d9",
+      "text": "warehouse.orders.revenue (measure)\n- The sum of amount_cents / 100.0.\n...",
+      "verdict": null, "answer": "" }
+  ],
+  "questions": [
+    { "ref": "warehouse.customers", "key": "q_3c1f0e9a2b7d4c55", "question": "Which date is the signup date?", "answer": "" }
+  ]
+}
+```
+
+- `items` are the readback's items in order, each with its number, target, `content_hash` and `text` exactly as `.sl/pending/<readback_id>.json` holds them. `verdict` is `yes` (right as written), `no` (wrong), `change` (right once something changes) or `null` while unanswered; `answer` is the owner's own words, empty while unanswered.
+- `questions` are the open questions of what the items belong to, in item order without repeats: a model's or a field's model, the models a metric's measures are on, and for `access` the top-level questions of `access.yaml` and each role's. `ref` is `source.model`, `access` or `access.roles.<role>`; `key` is `q_` and the SHA-256 of the question as stored, cut to 16 hex characters, so the question can be found again after the form returns.
+- `created_at` comes from the command's clock (`SL_NOW` in tests); the same readback, YAML and clock give the same bytes.
+- The Markdown form says at the top how to fill it in and that only the verdicts and answers are read back in. Its first marker, `<!-- sl-review {"version":1,"readback_id":...,"created_at":...} -->`, names the readback. Each item is a `## Item <n>: <target>` heading, a marker `<!-- sl-item {"n":...,"target":...,"content_hash":...} -->`, the readback text with every line behind `> ` (so no line of it, data-borne text included, can pass for a marker or a fill-in line), a line `Verdict: [ ] yes  [ ] no  [ ] change` and a line `Answer:` followed by an empty fenced block. Open questions follow under `## Open questions`, each a `### Question <i>: <ref>` heading, a marker `<!-- sl-question {"ref":...,"key":...} -->`, the file that holds it, the question behind `> ` and the same `Answer:` block.
+- Reading a Markdown form back (`parseReviewMarkdown` in `scripts/lib/review.ts`) gives the JSON form's structure: the texts from the quoted lines, a verdict from the one box marked with anything but spaces (`[x]`, `[ x ]`, `[✓]`), or the bare word yes, no or change left on the `Verdict:` line, and an answer from the lines after `Answer:` up to the next heading or marker, without the fence around them and without a fenced block left empty. More than one verdict, other text on the `Verdict:` line, a changed or repeated marker, or a result the schema refuses is an error.
+- `sl review export` refuses a readback id that is unknown or not of the form `rb_0001`, and a readback whose item changed since it was read back (its content hash is no longer the target's), naming the `sl readback` that makes a fresh one. `--out` is resolved from the semantic root and must end in the format's extension; a path outside the root (also through a link), under `sources/`, `snapshots/`, `models/`, `goldens/`, `.sl/pending/` or `.sl/plans/`, a link or a directory is refused. An existing file is never overwritten without `--force`, and even with it only when the file is a review form. A form the schema would refuse (a YAML open question that is empty, say) is not written; the message names `sl validate`.
+- `sl validate` checks each `.sl/reviews/*.json` against `schemas/review.schema.json`.
+
 ## Reference compiler
 
 `sl sql` compiles a request, in the goldens' request format (see goldens above; `scripts/lib/compiler/`), to SQL for a `postgres` or `duckdb` source. It never runs the SQL; `sl run` and `sl goldens` run queries. This version compiles a request on one model:
@@ -835,6 +865,7 @@ For `duckdb` and `postgres` sources the command runs the plan itself. For any so
 | `results add --plan <plan_id> --query <query id> --file <rows.json>` / `results status --plan <plan_id>` | Stores one query's result for an emitted plan, refusing a result of exactly the query's `max_rows` rows, or lists which queries have results and names the next command: the next `sl results add`, or the plan's `finish` command (see Stored plans). `--json` for `add`: `{ plan_id, query, rows, path, state, remaining, complete, next }`; for `status`: `{ plan_id, command, source, dialect, path, queries: [{ id, purpose, max_rows, stored, rows? }], remaining, complete, finish, next }`. |
 | `goldens run --name <g>` / `goldens confirm --name <g> --by <name> [--tolerance <t>] [--force]` / `goldens check [--name <g>] [--source <s>]`, each `[--show-protected]` | Runs a golden's SQL, records its confirmed rows, or rechecks every approved golden. `confirm` prints the draft fields the request uses, then records the rows with the tolerance agreed with the owner, passed explicitly (0 for figures finance signs off; without the flag the golden keeps its recorded tolerance, or 0.005); rerunning it with a new `--tolerance` records the rows again, and it records `confirmed_as` and warns when the golden's role is defined only in a draft `access.yaml`. `--force` only lifts the 200-row limit. `run` and `confirm` display a measure or metric with `format: currency` to two decimals; the recorded rows keep the values the SQL returns. Each takes `--show-protected`: without it a protected column's values print as `[protected]`, as in `run`, and the skill never passes it. A result with two columns of one name is refused with a message to alias them. A golden's `sql` is code the command runs: review `goldens/` like code. |
 | `readback --targets <ref>,...` | Renders a plain-English readback of each approve target (`source.model`, `source.model.field`, `metric:<name>` or `access`) and writes it to `.sl/pending/<readback_id>.json` (see .sl/pending), never over an existing file. Prints the numbered items, the readback id and, per item, the `sl approve` to run only after the owner says yes. An unknown target is an error naming it, before anything is written. `--json`: `{ readback_id, path, items }`, `path` relative to the semantic root. |
+| `review export --readback <readback_id> --format md\|json [--out <path>] [--force]` | Writes the pending readback as a form the owner fills in (see Review forms): per item its number, target, readback text and content hash, an empty verdict (yes, no or change) and an empty answer, then the open questions of the models and `access.yaml` the items belong to, each with an empty answer. Markdown for the owner, JSON for a tool. Writes `.sl/reviews/<readback_id>.<md\|json>` or `--out`, a path resolved from the semantic root that it refuses outside it, never over an existing file unless `--force`. Refuses an unknown readback and one whose items changed since it was read back. Prints the path and the next step. `--json`: `{ readback_id, format, path, item_count, question_count, next }`, `path` relative to the semantic root. |
 
 ### sl status --json
 
