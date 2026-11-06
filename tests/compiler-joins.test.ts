@@ -12,7 +12,7 @@ import { listGoldens } from "../skills/semantic-layer/scripts/lib/project.ts";
 import { sqlNames } from "../skills/semantic-layer/scripts/lib/sql-names.ts";
 import type { Golden, Model, QueryRequest } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, duckdbSource, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, duckdbSource, expectRefusedAsChanged, initProject, PG_URL, reapprove, sl, tempRoot, uniqueSchema } from "./helpers.ts";
 
 type Row = Record<string, unknown>;
 
@@ -487,8 +487,9 @@ describe("determinism and qualification", () => {
 const NEEDS_LATER = new Set(["unsupported_metric"]);
 const asUser = (g: Golden) => ({ ...(g.role ? { role: g.role } : {}), user: g.user ?? {} });
 
-// A copy of Acme whose warehouse models read the tables in schema, on dialect.
-function acmeCopy(dialect: "duckdb" | "postgres", schema: string, database?: string): string {
+// A copy of Acme whose warehouse models read the tables in schema, on dialect, each changed item
+// approved again by the copy's owner.
+async function acmeCopy(dialect: "duckdb" | "postgres", schema: string, database?: string): Promise<string> {
   const t = tempRoot();
   cleanup = t.cleanup;
   cpSync(ACME, t.root, { recursive: true });
@@ -502,6 +503,7 @@ function acmeCopy(dialect: "duckdb" | "postgres", schema: string, database?: str
   }
   const conn = dialect === "duckdb" ? `connection:\n  database: ${JSON.stringify(database)}\n` : "connection:\n  env: PG_URL\n";
   writeFileSync(join(t.root, "sources", "warehouse.yaml"), `source: warehouse\ndialect: ${dialect}\n${conn}`);
+  await reapprove(t.root);
   return t.root;
 }
 
@@ -532,7 +534,8 @@ async function checkGoldens(root: string, run: (c: Compiled) => Promise<Row[]>):
 }
 
 // The analytics reviewer's experiment: with orders.revenue counting cancelled orders, every
-// compiled golden that uses revenue, itself or through a metric, gives a different result.
+// compiled golden that uses revenue, itself or through a metric, is refused until the owner
+// approves revenue again, and then gives a different result.
 async function revenueChanged(root: string, run: (c: Compiled) => Promise<Row[]>, compiledNames: string[]): Promise<void> {
   const using = listGoldens(root)
     .map((x) => x.golden)
@@ -550,6 +553,8 @@ async function revenueChanged(root: string, run: (c: Compiled) => Promise<Row[]>
     "sales_rep_101_2025",
   ]);
   withCancelled(root);
+  for (const g of using) expectRefusedAsChanged(compileRequest(root, g.request, asUser(g)), "warehouse", "orders.revenue");
+  await reapprove(root, ["warehouse.orders.revenue"]);
   for (const g of using) {
     const c = compiled(compileRequest(root, g.request, asUser(g)));
     expect(c.sql).toContain("'cancelled'");
@@ -599,7 +604,7 @@ const JOIN_GOLDENS = [
 ];
 
 describe("Acme's approved goldens that need joins", () => {
-  test("compile to their recorded rows on duckdb, and revenue counting cancelled orders changes every one using revenue", async () => {
+  test("compile to their recorded rows on duckdb; revenue counting cancelled orders is refused until approved again, then changes every one using revenue", async () => {
     const t = tempRoot();
     const file = join(t.dir, "warehouse.duckdb");
     const instance = await DuckDBInstance.create(file);
@@ -621,7 +626,7 @@ describe("Acme's approved goldens that need joins", () => {
     for (const stmt of evolve.split(/;\s*\n/).map((s) => s.trim()).filter(Boolean)) await cx.run(stmt);
     cx.closeSync();
     instance.closeSync();
-    const root = acmeCopy("duckdb", "acme", file);
+    const root = await acmeCopy("duckdb", "acme", file);
     const outer = cleanup;
     cleanup = () => {
       outer?.();
@@ -635,7 +640,7 @@ describe("Acme's approved goldens that need joins", () => {
   }, 60_000);
 
   test.skipIf(!PG_URL)(
-    "compile to their recorded rows on postgres, and revenue counting cancelled orders changes every one using revenue",
+    "compile to their recorded rows on postgres; revenue counting cancelled orders is refused until approved again, then changes every one using revenue",
     async () => {
       assertLocalPg(PG_URL);
       const schema = uniqueSchema("sl_joins");
@@ -643,7 +648,7 @@ describe("Acme's approved goldens that need joins", () => {
       try {
         await loadPostgres(PG_URL!, DATA, schema);
         await db.unsafe(readFileSync(join(DATA, "..", "evolve.sql"), "utf8").replace(/(?<!@)\bacme\./g, `${schema}.`));
-        const root = acmeCopy("postgres", schema);
+        const root = await acmeCopy("postgres", schema);
         const names = await checkGoldens(root, runPg);
         expect(names).toEqual(JOIN_GOLDENS);
         await salesAverageOrderValue(root, runPg);

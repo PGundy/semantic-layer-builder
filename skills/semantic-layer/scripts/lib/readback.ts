@@ -302,11 +302,15 @@ function reasonText(r: string): string {
   return r;
 }
 
-// The layer as it would stand with every item approved: who sees an item once it is approved.
+// The layer as it would stand with every item approved: who sees an item once it is approved. An
+// item approved again records its new hash, so no item counts as changed since approval or as
+// missing its hash here; the state of access.yaml and the tools that serve users still compare
+// hashes.
 function approvedLayer(layer: AccessLayer): AccessLayer {
   const ok = <T,>(x: T): T => ({ ...x, status: "approved" });
   return {
     ...layer,
+    compare_hashes: false,
     models: layer.models.map((m) => ({ ...ok(m), dimensions: objs<Obj>(m.dimensions).map(ok), measures: objs<Obj>(m.measures).map(ok) }) as unknown as Model),
     metrics: layer.metrics.map(ok),
   };
@@ -317,17 +321,20 @@ interface Audience {
   vis: AccessVisibility;
 }
 
-// The default audience and each role of access.yaml, evaluated once per sl readback.
-type Audiences = () => { layer: AccessLayer; list: Audience[] };
+// The default audience and each role of access.yaml, evaluated once per sl readback, and the state
+// of access.yaml as it stands, hashes compared.
+type Audiences = () => { layer: AccessLayer; list: Audience[]; access_file: AccessVisibility["access_file"] };
 
-function audiences(root: string): { layer: AccessLayer; list: Audience[] } {
-  const layer = approvedLayer(loadAccessLayer(root));
+function audiences(root: string): ReturnType<Audiences> {
+  const current = loadAccessLayer(root);
+  const access_file = evaluateLayer(current, {}).access_file;
+  const layer = approvedLayer(current);
   const roles = objs<{ name?: unknown }>(isObj(layer.access) ? layer.access.roles : undefined)
     .map((r) => r.name)
     .filter((n): n is string => typeof n === "string");
   const list = [{ label: "Default audience (a user with no role)", vis: evaluateLayer(layer, {}) }];
   for (const r of roles) list.push({ label: `Role ${r}`, vis: evaluateLayer(layer, { roles: [r] }) });
-  return { layer, list };
+  return { layer, list, access_file };
 }
 
 // What one audience sees of a model, field or metric, in words.
@@ -344,8 +351,8 @@ function seen(vis: AccessVisibility, ref: string): string {
 }
 
 function whoSees(aud: Audiences, refs: string[]): string[] {
-  const { layer, list } = aud();
-  const state = !layer.access_present ? "there is no access.yaml, so access is open" : `access.yaml is ${list[0]!.vis.access_file}, mode ${list[0]!.vis.mode}`;
+  const { layer, list, access_file } = aud();
+  const state = !layer.access_present ? "there is no access.yaml, so access is open" : `access.yaml is ${access_file}, mode ${list[0]!.vis.mode}`;
   const one = (vis: AccessVisibility) => {
     const each = refs.map((r) => [r, seen(vis, r)] as const);
     if (each.length === 1) return each[0]![1];

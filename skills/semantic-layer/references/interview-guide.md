@@ -277,7 +277,7 @@ sl approve --target warehouse.orders
 | The access file | `access` |
 | A golden | use `sl goldens confirm`, see `verification.md` |
 
-An approved measure needs a `description`; an approved model needs `grain` and `primary_key`; `sl validate` reports an error otherwise, so fill them in before approving. If the owner later changes their mind about an approved item, return it to draft with `sl approve --target <ref> --revoke`, edit it, and read it back again. `sl approve` records `approved_hash`, a hash of what was approved; an approved item edited without the revoke makes `sl validate` error that it "changed since it was approved", and `sl status` routes to `reapprove` until it is read back and approved again or the edit is undone.
+An approved measure needs a `description`; an approved model needs `grain` and `primary_key`; `sl validate` reports an error otherwise, so fill them in before approving. If the owner later changes their mind about an approved item, return it to draft with `sl approve --target <ref> --revoke`, edit it, and read it back again. `sl approve` records `approved_hash`, a hash of what was approved; an approved item edited without the revoke makes `sl validate` error that it "changed since it was approved", and `sl status` routes to `reapprove` until it is read back and approved again or the edit is undone. Meanwhile tools treat it as a draft: `sl access` shows it hidden ("changed since approval"), and a changed `access.yaml` serves nothing. The same holds for an approved item whose `approved_hash` was removed while other items carry one.
 
 ## Leaving things for later
 
