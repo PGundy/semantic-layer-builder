@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "evals/scenarios/<name>.json",
+  "description": "One eval scenario: a fixture, an intake path, an owner persona and the run's budgets.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "fixture", "intake", "persona", "budgets", "opening"],
+  "properties": {
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "Equals the file name without its extension." },
+    "description": { "type": "string" },
+    "fixture": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$", "description": "A directory under fixtures/ holding owner-brief.md." },
+    "intake": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "source", "dialect", "views"],
+      "description": "How the working semantic root starts.",
+      "properties": {
+        "path": { "enum": ["connection"], "description": "connection: the project and one source exist; the skill agent carries on from sl status." },
+        "source": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "dialect": { "enum": ["duckdb"] },
+        "views": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
+          "additionalProperties": { "type": "string", "minLength": 1 },
+          "description": "View name -> relation; {fixture} is replaced by the fixture directory, relative to the semantic root."
+        }
+      }
+    },
+    "persona": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "A persona prompt in evals/runner/personas/<persona>.md." },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_turns", "max_tokens"],
+      "properties": {
+        "max_turns": { "type": "integer", "minimum": 1, "description": "Transcript turns, the opening included." },
+        "max_tokens": { "type": "integer", "minimum": 1, "description": "Tokens across both speakers." }
+      }
+    },
+    "opening": { "type": "string", "minLength": 1, "description": "The owner's first message, turn 1." },
+    "script": { "type": "string", "description": "Canned turns for the scripted driver, relative to the scenario file." }
+  }
+}
