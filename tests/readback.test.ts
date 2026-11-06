@@ -135,6 +135,35 @@ describe("sl readback renders each kind of target", () => {
     // A draft is hidden from everyone today; the readback says who sees it once approved.
     expect(items[1]!.text).toContain("- Default audience (a user with no role): sees it.");
   });
+
+  test("an approved field that changed since approval: who sees it once approved again, while access hides it as a draft", async () => {
+    const { root } = acme();
+    const file = join(root, "models", "warehouse", "orders.yaml");
+    writeFileSync(file, readFileSync(file, "utf8").replace("name: revenue\n    expr: amount_cents / 100.0\n    agg: sum\n    filter: status in ('completed', 'shipped')", "name: revenue\n    expr: amount_cents / 100.0\n    agg: sum\n    filter: status in ('completed', 'shipped', 'cancelled')"));
+    const { items } = await readback(root, "warehouse.orders.revenue");
+    expect(items[0]!.text).toContain("Who sees it once approved (access.yaml is approved, mode open):\n- Default audience (a user with no role): sees it.");
+    const access = (await sl(root, ["access", "--json"])).json<{ changed_since_approval: string[] }>();
+    expect(access.changed_since_approval).toEqual(["warehouse.orders.revenue"]);
+    expect((await sl(root, ["access"])).out).toContain("measure warehouse.orders.revenue: hidden (draft: changed since approval)");
+  });
+
+  test("an access.yaml that changed since approval is named a draft, as sl access names it", async () => {
+    const { root } = acme();
+    const file = join(root, "access.yaml");
+    writeFileSync(file, readFileSync(file, "utf8").replace("assign_when: user.department == 'finance'", "assign_when: user.department == 'finance' or user.department == 'sales'"));
+    const access = (await sl(root, ["access", "--json"])).json<{ access_file: string; changed_since_approval: string[] }>();
+    expect(access.access_file).toBe("draft");
+    expect(access.changed_since_approval).toEqual(["access"]);
+    const { items } = await readback(root, "warehouse.orders.revenue");
+    expect(items[0]!.text).toContain("Who sees it once approved (access.yaml is draft, mode open):");
+  });
+
+  test("a revoked access.yaml is named a draft", async () => {
+    const { root } = acme();
+    expect((await sl(root, ["approve", "--target", "access", "--revoke"])).code).toBe(0);
+    const { items } = await readback(root, "warehouse.orders.revenue");
+    expect(items[0]!.text).toContain("Who sees it once approved (access.yaml is draft, mode open):");
+  });
 });
 
 describe("the pending store", () => {
