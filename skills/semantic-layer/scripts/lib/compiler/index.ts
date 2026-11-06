@@ -1,10 +1,10 @@
-// The reference compiler (references/spec.md, Reference compiler): turns a request on one model
-// into SQL for a postgres or duckdb source, with every request filter value a bound parameter. It
-// never runs the SQL. A request that needs what this version does not compile (a join, a metric, a
-// row filter for the user) is refused with the reason.
+// The reference compiler (references/spec.md, Reference compiler): turns a request into SQL for a
+// postgres or duckdb source, with every request filter value a bound parameter. A request reaches
+// other models' fields through to-one joins, and a field's definition joins come along with it. It
+// never runs the SQL. A request that needs what this version does not compile (a metric, a row
+// filter for the user) is refused with the reason.
 import { type AccessLayer, type AccessUser, checkRequest, evaluateLayer, loadAccessLayer, type ModelVisibility } from "../access.ts";
-import { quoteIdent, quoteTable } from "../dialect.ts";
-import { findTable, splitQualified } from "../naming.ts";
+import { quoteIdent } from "../dialect.ts";
 import { loadSnapshot, loadSource } from "../project.ts";
 import { parseRequestField } from "../refs.ts";
 import { globInsideViews } from "../source-safety.ts";
@@ -13,22 +13,29 @@ import { sqlNames } from "../sql-names.ts";
 import type { Dimension, FilterOp, Measure, Model, QueryRequest, Snapshot, SourceConfig, TimeGrain } from "../types.ts";
 import { AGGREGATIONS, NAME_PATTERN, TIME_GRAINS } from "../types.ts";
 import { schemaIssues } from "../validate.ts";
+import { type Instance, JoinPlan, type PlannedJoin, readsJoin } from "./joins.ts";
 import { aggregate, COMPILER_DIALECTS, embed, grained, Params, predicate } from "./sql.ts";
+
+export type { PlannedJoin } from "./joins.ts";
 
 export type RefusalCode =
   | "invalid_request"
   | "unknown_role"
   | "not_visible"
   | "unsupported_dialect"
-  | "unsupported_join"
   | "unsupported_metric"
   | "unsupported_row_filter"
-  | "invalid_layer";
+  | "invalid_layer"
+  | "no_join_path"
+  | "ambiguous_join_path"
+  | "join_fans_out";
 
 export interface Refusal {
   code: RefusalCode;
   ref?: string;
   message: string;
+  // The command or step that resolves this refusal, when it is specific to it.
+  next?: string;
 }
 
 export interface CompiledColumn {
@@ -45,6 +52,8 @@ export interface Compiled {
   sql: string;
   params: unknown[];
   columns: CompiledColumn[];
+  // The joins the SQL adds, in its order: request paths to other models' fields, and definition joins.
+  joins: PlannedJoin[];
   // The session time zone the SQL assumes: a grain over a value with a time zone buckets in it.
   session_time_zone: "UTC";
 }
@@ -80,19 +89,6 @@ interface Field {
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
-// The join names a SQL expression reads through: <join>.<column> chains starting at one of the
-// model's joins. Other dotted names read struct fields of the model's own columns.
-function joinsRead(sql: string, model: Model, dialect: SourceConfig["dialect"]): string[] {
-  const joins = (model.joins ?? []).map((j) => j.name);
-  const out = new Set<string>();
-  for (const c of sqlNames(sql, dialect).chains) {
-    const first = c.parts[0]!;
-    const hit = joins.find((j) => (c.quoted[0] ? j === first : j.toLowerCase() === first.toLowerCase()));
-    if (hit) out.add(hit);
-  }
-  return [...out].sort();
-}
-
 function refuse(source: string, refusals: Refusal[]): Refused {
   return { ok: false, source, reason: refusals.map((r) => r.message).join("; "), refusals };
 }
@@ -102,8 +98,8 @@ export function compileLayer(input: CompileInput): CompileResult {
   const { layer, source } = input;
   const dialect = source.dialect;
   const refusals: Refusal[] = [];
-  const add = (code: RefusalCode, message: string, ref?: string) => {
-    if (!refusals.some((r) => r.code === code && r.message === message)) refusals.push({ code, message, ...(ref ? { ref } : {}) });
+  const add = (code: RefusalCode, message: string, ref?: string, next?: string) => {
+    if (!refusals.some((r) => r.code === code && r.message === message)) refusals.push({ code, message, ...(ref ? { ref } : {}), ...(next ? { next } : {}) });
   };
 
   const shape = schemaIssues("golden", { name: "request", question: "request", sql: "-", status: "draft", request: input.request }, "request");
@@ -133,21 +129,22 @@ export function compileLayer(input: CompileInput): CompileResult {
   const base = models.find((m) => m.model === baseName);
   if (!measures.length && !dimensions.length) add("invalid_request", "the request names no measure or dimension");
 
+  // Measures come from the base model; dimensions and dimension filters may be on any model the
+  // base reaches through to-one joins.
   const resolve = (ref: string, position: string): Field | undefined => {
     const p = parseRequestField(ref);
     const model = p && models.find((m) => m.model === p.model);
     if (!p || !model || !base) return undefined; // reported by checkRequest
-    if (model !== base) {
-      const measureModels = new Set(measures.filter((r) => !NAME_PATTERN.test(r)).map((r) => parseRequestField(r)?.model));
-      if (measureModels.size > 1) add("invalid_request", "a request's measures must share one model, or be one metric");
-      else add("unsupported_join", `${ref} is on model ${model.model}, which a request on ${base.model} reaches through a join; ${LATER} joins`, ref);
-      return undefined;
-    }
     const dim = (model.dimensions ?? []).find((d) => d.name === p.field);
     const mea = (model.measures ?? []).find((m) => m.name === p.field);
     const item = dim ?? mea;
     if (!item) return undefined;
     const kind = dim ? "dimension" : "measure";
+    if (model !== base && mea && !position.startsWith("dimensions")) {
+      if (position.startsWith("measures")) add("invalid_request", "a request's measures must share one model, or be one metric");
+      else add("invalid_request", `${position} names ${ref}, a measure of model ${model.model}; a request filters only on measures of ${base.model}, the model of its measures`, ref);
+      return undefined;
+    }
     if (p.grain !== undefined) {
       const grains = dim?.time_grains ?? TIME_GRAINS;
       if (!dim || dim.type !== "time") add("invalid_request", `${position} names ${ref}, but ${p.model}.${p.field} is not a time dimension, so it takes no grain`, ref);
@@ -161,9 +158,9 @@ export function compileLayer(input: CompileInput): CompileResult {
         add("invalid_layer", `${p.model}.${p.field} has an expr or filter the compiler cannot use; run sl validate`, ref);
         continue;
       }
-      for (const j of joinsRead(t, model, dialect))
-        add("unsupported_join", `${p.model}.${p.field} reads through join ${j} as part of its definition; ${LATER} joins`, ref);
     }
+    if (typeof mea?.expr === "string" && readsJoin(mea.expr, model))
+      add("invalid_layer", `${p.model}.${p.field} has an expr that reads a join reference; a measure expr reads only its model's own columns; run sl validate`, ref);
     return { ref, model, kind, item, ...(p.grain ? { grain: p.grain as TimeGrain } : {}) };
   };
 
@@ -206,30 +203,52 @@ export function compileLayer(input: CompileInput): CompileResult {
     return k;
   });
 
-  if (base) {
-    const mv: ModelVisibility | undefined = vis.sources.find((s) => s.source === source.source)?.models.find((m) => m.model === base.model);
+  // A model a row filter limits for this user, the base or one a request path reaches.
+  const rowFilter = (model: string, how: string) => {
+    const mv: ModelVisibility | undefined = vis.sources.find((s) => s.source === source.source)?.models.find((m) => m.model === model);
     if (mv?.row_filters && mv.row_filters.rows !== "all") {
       const roles = mv.row_filters.branches.map((b) => b.role).join(", ");
       const what = mv.row_filters.rows === "none" ? "this user sees no rows of" : "a row filter limits this user's rows of";
-      add("unsupported_row_filter", `${what} ${base.model} (role ${roles}); ${LATER} row filters`, `${source.source}.${base.model}`);
+      add("unsupported_row_filter", `${what} ${model}${how} (role ${roles}); ${LATER} row filters`, `${source.source}.${model}`);
     }
-  }
+  };
+  if (base) rowFilter(base.model, "");
   if (refusals.length || !base) return refuse(source.source, refusals);
 
-  // Every field is on the base model, so its exprs read the one table unqualified.
-  const sqlOf = (f: Field): string => {
-    if (f.kind === "measure") {
-      const m = f.item as Measure;
-      return aggregate(dialect, m.agg, m.expr, m.filter);
-    }
-    const d = f.item as Dimension;
-    return f.grain ? grained(dialect, embed(d.expr), f.grain) : embed(d.expr);
-  };
   for (const f of selected) {
     const m = f.item as Measure;
     if (!(AGGREGATIONS as readonly string[]).includes(m.agg) || (m.expr === undefined && m.agg !== "count"))
       add("invalid_layer", `${f.ref} needs an agg, and an expr unless it is a count; run sl validate`, f.ref);
   }
+  if (refusals.length) return refuse(source.source, refusals);
+
+  // A query that reads only the base table keeps its exprs as written; one with joins qualifies
+  // every column with its table's alias. The fields are in reading order (the columns, then WHERE
+  // filters, then HAVING ones), so the joins follow it.
+  const kept = filterFields.filter((f): f is Field => !!f);
+  const used = [...columns.map((c) => c.field), ...kept.filter((f) => f.kind === "dimension"), ...kept.filter((f) => f.kind === "measure")];
+  const texts = (f: Field) => (f.kind === "dimension" ? [(f.item as Dimension).expr] : [(f.item as Measure).expr, (f.item as Measure).filter]);
+  const qualified = used.some((f) => f.model !== base || texts(f).some((t) => t !== undefined && readsJoin(t, f.model)));
+  const plan = new JoinPlan({ source: source.source, dialect, models, snapshot: input.snapshot, base, qualified, add });
+  const done = new Map<string, string>();
+  const sqlOf = (f: Field): string => {
+    const known = done.get(f.ref);
+    if (known !== undefined) return known;
+    const inst: Instance = plan.requestPath(f.model, f.ref) ?? plan.base;
+    const own = (t: string) => plan.sql(t, inst, f.ref);
+    let out: string;
+    if (f.kind === "measure") {
+      const m = f.item as Measure;
+      out = aggregate(dialect, m.agg, m.expr === undefined ? undefined : own(m.expr), m.filter === undefined ? undefined : own(m.filter));
+    } else {
+      const d = f.item as Dimension;
+      out = f.grain ? grained(dialect, embed(own(d.expr)), f.grain) : embed(own(d.expr));
+    }
+    done.set(f.ref, out);
+    return out;
+  };
+  for (const f of used) sqlOf(f);
+  for (const r of plan.reached) rowFilter(r.model.model, `, which the request reaches through ${r.alias}`);
   if (refusals.length) return refuse(source.source, refusals);
 
   // WHERE predicates are built before HAVING ones, so parameter numbers rise in reading order.
@@ -238,13 +257,7 @@ export function compileLayer(input: CompileInput): CompileResult {
     filters.flatMap((f, i) => (filterFields[i]!.kind === kind ? [predicate(sqlOf(filterFields[i]!), f.op as FilterOp, f.value, params)] : []));
   const where = clause("dimension");
   const having = clause("measure");
-  const snapTable = input.snapshot ? findTable(input.snapshot.tables, base.table) : undefined;
-  const table = snapTable ? { schema: snapTable.schema, name: snapTable.name } : splitQualified(base.table);
-  const lines = [
-    "select",
-    columns.map((c) => `  ${sqlOf(c.field)} as ${quoteIdent(dialect, c.name)}`).join(",\n"),
-    `from ${quoteTable(dialect, table)}`,
-  ];
+  const lines = ["select", columns.map((c) => `  ${sqlOf(c.field)} as ${quoteIdent(dialect, c.name)}`).join(",\n"), ...plan.from()];
   if (where.length) lines.push(`where ${where.join("\n  and ")}`);
   if (dims.length) lines.push(`group by ${dims.map((_, i) => i + 1).join(", ")}`);
   if (having.length) lines.push(`having ${having.join("\n  and ")}`);
@@ -265,6 +278,7 @@ export function compileLayer(input: CompileInput): CompileResult {
     sql,
     params: params.values,
     columns: columns.map((c) => ({ name: c.name, ref: c.field.ref, kind: c.field.kind })),
+    joins: plan.joins,
     session_time_zone: "UTC",
   };
 }

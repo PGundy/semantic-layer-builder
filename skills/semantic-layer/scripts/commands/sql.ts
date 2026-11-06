@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
-import { type CompileResult, compileRequest, type RefusalCode } from "../lib/compiler/index.ts";
+import { type CompileResult, compileRequest, type Refusal } from "../lib/compiler/index.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson, plainText } from "../lib/output.ts";
 import { parseYamlText } from "../lib/yaml.ts";
@@ -46,20 +46,23 @@ function parseUser(text: string): Record<string, unknown> {
 }
 
 // The command to run after a refusal, by its first kind of problem.
-function nextStep(codes: RefusalCode[], source: string, user: Record<string, unknown>, role: string | undefined, golden: string | undefined): string {
+function nextStep(refusals: Refusal[], source: string, user: Record<string, unknown>, role: string | undefined, golden: string | undefined): string {
+  const codes = refusals.map((r) => r.code);
   const quoted = `'${JSON.stringify(user).replaceAll("'", "'\\''")}'`;
   const who = `sl access --user ${quoted}${role ? ` --roles ${role}` : ""}`;
   if (codes.includes("invalid_request")) return "Fix the request (the request format is in references/spec.md, goldens) and run sl sql again.";
   if (codes.includes("invalid_layer")) return "Run sl validate and fix what it reports, then run sl sql again.";
   if (codes.includes("unknown_role") || codes.includes("not_visible"))
     return `Check each field name against the model YAML, and see what this user may see with ${who}.`;
+  const own = refusals.find((r) => r.next);
+  if (own) return own.next!;
   const run = codes.includes("unsupported_dialect") ? "run it with your own tool" : `run it with sl run --source ${source} --file <query.sql>`;
   const check = golden ? `sl goldens run --name ${golden}` : `write it from the model YAML and ${run}`;
   return `Until a later version compiles it, hand-written SQL computes this figure: ${check}.`;
 }
 
 const spec: CommandSpec = {
-  summary: "Compile a request on one model to SQL for a postgres or duckdb source, without running it.",
+  summary: "Compile a request to SQL for a postgres or duckdb source, joins included, without running it.",
   usage:
     "sql --source <source> --request <file|json> [--role <role>] [--user <json object of attributes>]   " +
     "(prints the SQL and its parameters, or why it is refused; never runs it. --request may be a golden file, which also gives the role and user)",
@@ -78,7 +81,7 @@ const spec: CommandSpec = {
     const role = str(values, "role") ?? read.role;
     const result: CompileResult = compileRequest(ctx.root, read.request, { source: str(values, "source"), role, user });
     if (!result.ok) {
-      const next = nextStep(result.refusals.map((r) => r.code), result.source, user, role, read.golden);
+      const next = nextStep(result.refusals, result.source, user, role, read.golden);
       if (ctx.json) ctx.out(formatJson({ ...result, next }));
       else {
         ctx.err(plainText(`sl sql refused the request: ${result.refusals.length === 1 ? result.reason : ""}`).trimEnd());
