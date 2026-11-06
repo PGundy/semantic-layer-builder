@@ -76,6 +76,7 @@ describe("both shipped scenarios run with the scripted driver", () => {
       // The final semantic root holds what the scripted commands wrote, and it validates.
       const root = join(r.runDir, "semantic");
       expect(Object.keys(readTree(root))).toEqual([
+        ".gitignore",
         "models/lake/marketing_spend.yaml",
         "models/lake/sessions.yaml",
         "models/lake/web_events.yaml",
@@ -149,7 +150,7 @@ describe("fresh context per skill turn", () => {
       for (const earlier of owners.slice(0, i)) expect(text).not.toContain(earlier);
     });
     // Files carry over: the second turn sees the snapshot the first turn's introspect wrote.
-    expect(Object.keys(seen[0]!.input.files)).toEqual(["semantic.yaml", "sources/lake.yaml"]);
+    expect(Object.keys(seen[0]!.input.files)).toEqual([".gitignore", "semantic.yaml", "sources/lake.yaml"]);
     expect(Object.keys(seen[1]!.input.files)).toContain("snapshots/lake.json");
     // No transcript sits in the run directory while the run is going.
     expect(seen.map((s) => s.transcript)).toEqual([false, false, false]);
