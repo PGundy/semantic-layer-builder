@@ -441,7 +441,8 @@ export interface LedgerReply {
 export interface LedgerQuestion {
   id: string;
   kind: "question";
-  // The ref the question was resolved on: source.model, source.model.field or access.
+  // The ref the question was resolved on: source.model, source.model.field or access, and from
+  // sl review apply also access.roles.<role>.
   target: string;
   question: string;
   text: string;
