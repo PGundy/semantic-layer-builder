@@ -17,8 +17,10 @@ export interface ShellWrite {
   how: string;
 }
 
-// A `<<` or `<<-` operator carries its heredoc's body once the tokenizer has read it.
-type Tok = { op: string; body?: string } | { word: string; dynamic: boolean };
+// A `<<` or `<<-` operator carries its heredoc's body once the tokenizer has read it, and whether
+// its delimiter was quoted (<<'EOF'), so the shell expands nothing in the body.
+// A word is `pattern` when it holds an unquoted *, ?, [ or {, which the shell may expand into other words.
+type Tok = { op: string; body?: string; quoted?: boolean } | { word: string; dynamic: boolean; pattern?: boolean };
 
 const OPS = ["&>>", "<<<", "<<-", ";;", "&&", "||", "|&", ">>", ">|", "&>", ">&", "<&", "<>", "<<", ";", "&", "|", "(", ")", ">", "<"];
 
@@ -39,19 +41,80 @@ function substitution(s: string, i: number): number {
   return s.length;
 }
 
+// A $'...' string whose $ is at s[i]: its text with the escapes bash decodes, where it ends, and
+// whether it held an escape this reader does not decode (so the word cannot be read).
+function ansiC(s: string, i: number): { text: string; end: number; unread: boolean } {
+  const simple: Record<string, string> = { a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "\\": "\\", "'": "'", '"': '"', "?": "?" };
+  let text = "";
+  let unread = false;
+  let j = i + 2;
+  for (; j < s.length && s[j] !== "'"; j++) {
+    if (s[j] !== "\\") {
+      text += s[j];
+      continue;
+    }
+    const e = s[++j] ?? "";
+    const hex = /^x([0-9A-Fa-f]{1,2})/.exec(s.slice(j));
+    const oct = /^[0-7]{1,3}/.exec(s.slice(j));
+    if (e in simple) text += simple[e];
+    else if (hex) {
+      text += String.fromCharCode(parseInt(hex[1]!, 16));
+      j += hex[0].length - 1;
+    } else if (oct) {
+      text += String.fromCharCode(parseInt(oct[0], 8) & 0xff);
+      j += oct[0].length - 1;
+    } else unread = true;
+  }
+  return { text, end: Math.min(j + 1, s.length), unread };
+}
+
+// A heredoc's delimiter word starting at s[i], read the way bash reads it: quotes and backslashes are
+// removed and make it quoted (<<\EOF, <<E"O"F and <<'EOF' all end at a line EOF, and expand nothing).
+// Undefined when the word holds what this reader does not follow ($'...', $"...", $(...), `...`).
+function heredocWord(s: string, i: number): { delim: string; quoted: boolean; end: number } | undefined {
+  let delim = "";
+  let quoted = false;
+  let j = i;
+  while (j < s.length && !/[\s;&|<>()]/.test(s[j]!)) {
+    const c = s[j]!;
+    if (c === "`" || (c === "$" && /['"(]/.test(s[j + 1] ?? ""))) return undefined;
+    if (c === "\\") {
+      if (s[j + 1] !== "\n") {
+        quoted = true;
+        delim += s[j + 1] ?? "";
+      }
+      j += 2;
+    } else if (c === "'" || c === '"') {
+      const close = s.indexOf(c, j + 1);
+      if (close < 0) return undefined;
+      const text = s.slice(j + 1, close);
+      if (c === '"' && /[\\`]|\$\(/.test(text)) return undefined;
+      quoted = true;
+      delim += text;
+      j = close + 1;
+    } else {
+      delim += c;
+      j++;
+    }
+  }
+  return delim ? { delim, quoted, end: j } : undefined;
+}
+
 // The command's tokens; the text inside each $(...) and `...` it holds is added to `subs`.
 export function tokenize(s: string, subs: string[] = []): Tok[] {
   const out: Tok[] = [];
   let word = "";
   let inWord = false;
   let dynamic = false;
-  const heredocs: { delim: string; strip: boolean; tok: { op: string; body?: string } }[] = [];
+  let pattern = false;
+  const heredocs: { delim: string; strip: boolean; quoted: boolean; tok: { op: string; body?: string; quoted?: boolean } }[] = [];
   const sub = (at: number, j: number) => subs.push(s.slice(at + (s[at] === "`" ? 1 : 2), s[j - 1] === (s[at] === "`" ? "`" : ")") ? j - 1 : j));
   const end = () => {
-    if (inWord) out.push({ word, dynamic });
+    if (inWord) out.push(pattern ? { word, dynamic, pattern } : { word, dynamic });
     word = "";
     inWord = false;
     dynamic = false;
+    pattern = false;
   };
   let i = 0;
   while (i < s.length) {
@@ -65,8 +128,14 @@ export function tokenize(s: string, subs: string[] = []): Tok[] {
         const body: string[] = [];
         while (i < s.length) {
           const nl = s.indexOf("\n", i);
-          const line = s.slice(i, nl < 0 ? s.length : nl);
+          let line = s.slice(i, nl < 0 ? s.length : nl);
           i = nl < 0 ? s.length : nl + 1;
+          // Under an unquoted delimiter bash joins a line ending in \ to the next before it compares.
+          while (!h.quoted && /(^|[^\\])(\\\\)*\\$/.test(line) && i < s.length) {
+            const next = s.indexOf("\n", i);
+            line = line.slice(0, -1) + s.slice(i, next < 0 ? s.length : next);
+            i = next < 0 ? s.length : next + 1;
+          }
           if ((h.strip ? line.replace(/^\t+/, "") : line) === h.delim) break;
           body.push(line);
         }
@@ -88,6 +157,20 @@ export function tokenize(s: string, subs: string[] = []): Tok[] {
       if (s[i + 1] !== "\n") word += s[i + 1] ?? "";
       inWord = inWord || s[i + 1] !== "\n";
       i += 2;
+      continue;
+    }
+    if (c === "$" && s[i + 1] === "'") {
+      const a = ansiC(s, i);
+      word += a.text;
+      inWord = true;
+      dynamic = dynamic || a.unread;
+      i = a.end;
+      continue;
+    }
+    // $"..." is translated by the locale, so its text is not certain: read it as a "..." that is dynamic.
+    if (c === "$" && s[i + 1] === '"') {
+      dynamic = true;
+      i++;
       continue;
     }
     if (c === "'") {
@@ -136,19 +219,21 @@ export function tokenize(s: string, subs: string[] = []): Tok[] {
     }
     if (op) {
       end();
-      const tok: { op: string; body?: string } = { op };
+      const tok: { op: string; body?: string; quoted?: boolean } = { op };
       out.push(tok);
       i += op.length;
       if (op === "<<" || op === "<<-") {
         while (s[i] === " " || s[i] === "\t") i++;
-        const m = /^(['"]?)([^\s'";|&<>()]+)\1/.exec(s.slice(i));
-        if (m) {
-          heredocs.push({ delim: m[2]!, strip: op === "<<-", tok });
-          i += m[0].length;
+        const d = heredocWord(s, i);
+        if (d) {
+          heredocs.push({ delim: d.delim, strip: op === "<<-", quoted: d.quoted, tok });
+          tok.quoted = d.quoted;
+          i = d.end;
         }
       }
       continue;
     }
+    if (/[*?[{]/.test(c)) pattern = true;
     word += c;
     inWord = true;
     i++;
