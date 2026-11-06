@@ -221,7 +221,7 @@ describe("compiled metrics", () => {
       { name: "region", ref: "orders.region", kind: "dimension" },
       { name: "refund_rate", ref: "refund_rate", kind: "metric" },
     ]);
-    expect(c.joins).toEqual([{ alias: "refunds.order", via: "refunds.order", model: "orders", type: "left", for: "request" }]);
+    expect(c.joins).toEqual([{ alias: "refunds.order", via: "refunds.order", model: "orders", type: "left", for: "request", part: "refunds" }]);
     expect(plain(await runDuckdb(file, c))).toEqual(EXPECTED.refund_rate!);
   });
 
@@ -369,26 +369,74 @@ describe("metric refusals", () => {
     expect(refused(compileRequest(root, req({ measures: ["odd"] }))).reason).toContain("metric odd has an expr sl sql cannot read");
   });
 
-  test("a draft metric, and a row filter on any model a metric reads, are refused", async () => {
+  test("a draft metric is refused", async () => {
     const { root } = await shop();
     writeYaml(join(root, "metrics.yaml"), { metrics: [{ ...METRICS[0], status: "draft" }] });
     expect(refused(compileRequest(root, req({ measures: ["refund_rate"] }))).refusals.map((x) => x.code)).toEqual(["not_visible"]);
-    writeYaml(join(root, "metrics.yaml"), { metrics: METRICS });
-    writeYaml(join(root, "access.yaml"), {
-      ...ok,
-      mode: "open",
-      user_attributes: [{ name: "region", type: "string" }],
-      roles: [{ name: "rep", assign_when: "user.region is set", row_filters: [{ model: "shop.visits", expr: "region = {{ user.region }}" }] }],
-    });
-    const rf = refused(compileRequest(root, byRegion(["conversion"]), { user: { region: "ne" } }));
-    expect(rf.refusals).toEqual([
-      {
-        code: "unsupported_row_filter",
-        ref: "shop.visits",
-        message: "for the measures of visits: a row filter limits this user's rows of visits (role rep); a later version of sl sql adds row filters",
-      },
+  });
+});
+
+// A rep sees the orders, refunds and visits of their own region only: refunds through their order.
+function repAccess(root: string, models = ["orders", "refunds", "visits"]): void {
+  const exprs: Record<string, string> = { orders: "region = {{ user.region }}", refunds: "order.region = {{ user.region }}", visits: "region = {{ user.region }}" };
+  writeYaml(join(root, "access.yaml"), {
+    ...ok,
+    mode: "open",
+    user_attributes: [{ name: "region", type: "string" }],
+    roles: [{ name: "rep", assign_when: "user.region is set", row_filters: models.map((m) => ({ model: `shop.${m}`, expr: exprs[m] })) }],
+  });
+}
+
+describe("metrics and the user's row filters", () => {
+  test("every part applies the user's row filters, its parameters numbered in reading order across the parts, and the figures are the user's rows only", async () => {
+    const { root, file } = await shop();
+    repAccess(root);
+    const c = compiled(compileRequest(root, byRegion(["net_per_visit"]), { user: { region: "ne" } }));
+    // orders: WHERE; refunds: the orders row filter in the ON clause of its path to orders, then its own in WHERE; visits: WHERE.
+    expect(c.params).toEqual(["ne", "ne", "ne", "ne"]);
+    const at = ["where (region = $1)", `on "refunds"."order_id" = "refunds.order"."order_id" and ("refunds.order".region = $2)`, `where ("refunds~order".region = $3)`, "where (region = $4)"].map((x) => c.sql.indexOf(x));
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect([...at].sort((x, y) => x - y)).toEqual(at);
+    expect(c.row_filters.map((r) => [r.part, r.model, r.in])).toEqual([
+      ["orders", "orders", "where"],
+      ["refunds", "orders", "on"],
+      ["refunds", "refunds", "where"],
+      ["visits", "visits", "where"],
     ]);
-    expect(compileRequest(root, byRegion(["conversion"])).ok).toBe(true);
+    expect(plain(await runDuckdb(file, c))).toEqual(EXPECTED.net_per_visit!.filter((r) => r.region === "ne"));
+    // A ratio without dimensions: one row of the user's totals.
+    const total = compiled(compileRequest(root, req({ measures: ["refund_rate"] }), { user: { region: "wc" } }));
+    expect(plain(await runDuckdb(file, total))).toEqual([{ refund_rate: 0.5 }]);
+    // Without a role the default audience has no row filter, so every region is there.
+    expect(plain(await runDuckdb(file, compiled(compileRequest(root, byRegion(["net_per_visit"])))))).toEqual(EXPECTED.net_per_visit!);
+  });
+
+  test("a row filter on one model a metric reads limits that part only", async () => {
+    const { root, file } = await shop();
+    repAccess(root, ["visits"]);
+    const c = compiled(compileRequest(root, byRegion(["conversion"]), { user: { region: "ne" } }));
+    expect(c.row_filters).toEqual([{ model: "visits", alias: "visits", in: "where", roles: ["rep"], rows: "filtered", part: "visits" }]);
+    expect(c.params).toEqual(["ne"]);
+    expect(plain(await runDuckdb(file, c))).toEqual([
+      { region: "ne", conversion: 0.5 },
+      { region: "se", conversion: null },
+      { region: "wc", conversion: null },
+      { region: null, conversion: null },
+    ]);
+  });
+
+  test("a hostile attribute stays a bound parameter in every part and matches no rows", async () => {
+    const { root, file } = await shop();
+    repAccess(root);
+    const hostile = "ne' or 1=1 --";
+    const c = compiled(compileRequest(root, byRegion(["net_revenue"], { filters: [{ field: "orders.status", op: "neq", value: "x" }] }), { user: { region: hostile } }));
+    expect(c.sql).not.toContain("1=1");
+    expect(c.params).toEqual([hostile, "x", hostile, hostile, "x"]);
+    expect(plain(await runDuckdb(file, c))).toEqual([]);
+    const out = await sl(root, ["sql", "--request", JSON.stringify(byRegion(["net_revenue"])), "--user", JSON.stringify({ region: hostile })]);
+    expect(out.code).toBe(0);
+    expect(out.out).toContain('Row filters of role rep limit orders in WHERE of the part "orders measures"');
+    expect(out.out).toContain('Row filters of role rep limit orders in the ON clause of its join refunds.order of the part "refunds measures"');
   });
 });
 
@@ -491,4 +539,196 @@ describe("compiled metrics on postgres", () => {
     },
     60_000,
   );
+});
+
+// A shop whose sales reps see their own orders and those of the reps below them (a hierarchy row
+// filter through a closure model), refunds through their order; and a role limited to a list of regions.
+const hierNum = { type: "number", ...ok };
+
+function hierModels(schema: string): Model[] {
+  return [
+    {
+      model: "orders",
+      source: "shop",
+      table: `${schema}.orders`,
+      ...ok,
+      primary_key: ["order_id"],
+      grain: "One row per order.",
+      dimensions: [
+        { name: "region", expr: "region", type: "string", ...ok },
+        { name: "rep_id", expr: "rep_id", ...hierNum },
+      ],
+      measures: [
+        { name: "revenue", expr: "amount", agg: "sum", ...ok },
+        { name: "order_count", agg: "count", ...ok },
+      ],
+    },
+    {
+      model: "refunds",
+      source: "shop",
+      table: `${schema}.refunds`,
+      ...ok,
+      primary_key: ["refund_id"],
+      grain: "One row per refund.",
+      dimensions: [{ name: "region", expr: "order.region", type: "string", ...ok }],
+      measures: [
+        { name: "refund_amount", expr: "amount", agg: "sum", ...ok },
+        { name: "refund_count", agg: "count", ...ok },
+      ],
+      joins: [{ name: "order", to: "orders", keys: [{ from: "order_id", to: "order_id" }], relationship: "many_to_one", type: "left", ...ok }],
+    },
+    { model: "closure", source: "shop", table: `${schema}.closure`, ...ok, primary_key: ["manager_id", "member_id"], grain: "One row per pair.", dimensions: [{ name: "manager_id", expr: "manager_id", ...hierNum }], measures: [] },
+  ] as unknown as Model[];
+}
+
+const hierTables = (s: string) => [
+  `create table ${s}.orders (order_id integer, rep_id integer, region varchar, amount integer)`,
+  `insert into ${s}.orders values (1, 101, 'NE', 100), (2, 102, 'NE', 200), (3, 103, 'WC', 400), (4, 201, 'SE', 800), (5, 101, 'WC', 1600)`,
+  `create table ${s}.refunds (refund_id integer, order_id integer, amount integer)`,
+  `insert into ${s}.refunds values (1, 1, 10), (2, 2, 20), (3, 3, 40), (4, 4, 80), (5, 5, 160), (6, 5, 1)`,
+  `create table ${s}.closure (manager_id integer, member_id integer)`,
+  `insert into ${s}.closure values (201, 101), (201, 102), (301, 101), (301, 102), (301, 103), (301, 201)`,
+];
+
+const hierRule = (column: string) => ({ hierarchy: { column, via: "shop.closure", manager: "manager_id", member: "member_id", user: "user.employee_id", include_self: true } });
+const HIER_METRICS = [
+  { name: "net", source: "shop", type: "derived", expr: "{orders.revenue} - {refunds.refund_amount}", ...ok, description: "Net." },
+  { name: "refund_rate", source: "shop", type: "ratio", numerator: "refunds.refund_count", denominator: "orders.order_count", ...ok, description: "Refunds per order." },
+];
+
+function writeHierLayer(root: string, schema: string, refundsFiltered = true): void {
+  for (const m of hierModels(schema)) writeYaml(join(root, "models", "shop", `${m.model}.yaml`), m);
+  writeYaml(join(root, "metrics.yaml"), { metrics: HIER_METRICS });
+  writeYaml(join(root, "access.yaml"), {
+    ...ok,
+    mode: "open",
+    user_attributes: [
+      { name: "employee_id", type: "number" },
+      { name: "regions", type: "string_list" },
+    ],
+    roles: [
+      { name: "sales", row_filters: [{ model: "shop.orders", ...hierRule("rep_id") }, ...(refundsFiltered ? [{ model: "shop.refunds", ...hierRule("order.rep_id") }] : [])] },
+      { name: "multi", row_filters: [{ model: "shop.orders", expr: "region in {{ user.regions }}" }, { model: "shop.refunds", expr: "order.region in {{ user.regions }}" }] },
+    ],
+  });
+}
+
+async function hierShop(refundsFiltered = true) {
+  const t = tempRoot();
+  cleanup = t.cleanup;
+  await initProject(t.root);
+  const src = await duckdbSource(t.root, t.dir, "shop", hierTables("main"));
+  writeHierLayer(t.root, "main", refundsFiltered);
+  return { root: t.root, file: src.connection!.database! };
+}
+
+// Each $n in the SQL text appears in ascending order, and params has exactly as many values.
+function hierInReadingOrder(c: Compiled): void {
+  const seen = [...c.sql.matchAll(/\$(\d+)/g)].map((m) => Number(m[1]));
+  expect(seen).toEqual(seen.map((_, i) => i + 1));
+  expect(c.params.length).toBe(seen.length);
+}
+
+// Manager 201 sees reps 101, 102 and their own 201: orders 1, 2, 4, 5.
+const MANAGER = { role: "sales", user: { employee_id: 201 } };
+
+describe("metrics and hierarchy row filters", () => {
+  test("a two-model derived metric by region, a dimension filter and a metric filter: params in reading order, only the manager's rows", async () => {
+    const { root, file } = await hierShop();
+    const r = req({
+      measures: ["net"],
+      dimensions: ["orders.region"],
+      filters: [
+        { field: "orders.region", op: "neq", value: "ZZ" },
+        { field: "net", op: "gt", value: -1000000 },
+      ],
+      order_by: [{ field: "orders.region" }],
+    });
+    const c = compiled(compileRequest(root, r, MANAGER));
+    hierInReadingOrder(c);
+    expect(c.row_filters.map((x) => [x.part, x.model, x.in])).toEqual([
+      ["orders", "orders", "where"],
+      ["refunds", "orders", "on"],
+      ["refunds", "refunds", "where"],
+    ]);
+    expect(c.params[c.params.length - 1]).toBe(-1000000);
+    const again = compiled(compileRequest(root, r, MANAGER));
+    expect([again.sql, again.params, again.joins]).toEqual([c.sql, c.params, c.joins]);
+    // NE: orders 1,2 = 300, refunds 30 -> 270. SE: 800 - 80 = 720. WC: order 5 only = 1600 - 161 = 1439.
+    expect(plain(await runDuckdb(file, c))).toEqual([
+      { region: "NE", net: 270 },
+      { region: "SE", net: 720 },
+      { region: "WC", net: 1439 },
+    ]);
+  });
+
+  test("without dimensions, a ratio counts only the rep's own rows in each part", async () => {
+    const { root, file } = await hierShop();
+    const c = compiled(compileRequest(root, req({ measures: ["refund_rate"] }), { role: "sales", user: { employee_id: 101 } }));
+    hierInReadingOrder(c);
+    // Rep 101: orders 1 and 5 (2 orders), refunds 1, 5, 6 (3 refunds).
+    expect(plain(await runDuckdb(file, c))).toEqual([{ refund_rate: 1.5 }]);
+  });
+
+  test("a sales user with no employee_id sees no rows in any part", async () => {
+    const { root, file } = await hierShop();
+    const c = compiled(compileRequest(root, req({ measures: ["refund_rate"] }), { role: "sales", user: {} }));
+    expect(c.row_filters.every((x) => x.rows === "none")).toBe(true);
+    expect(plain(await runDuckdb(file, c))).toEqual([{ refund_rate: null }]);
+    const out = await sl(root, ["sql", "--request", JSON.stringify(req({ measures: ["refund_rate"] })), "--role", "sales", "--user", "{}"]);
+    expect(out.code).toBe(0);
+    expect(out.out).toContain('so the SQL reads false in WHERE of the part "orders measures"');
+    expect(out.out).toContain('so the SQL reads false in WHERE of the part "refunds measures"');
+  });
+
+  test("a list attribute stays bound, one parameter per element, in every part; a hostile element matches nothing", async () => {
+    const { root, file } = await hierShop();
+    const hostile = "NE') or ('1'='1";
+    const c = compiled(compileRequest(root, req({ measures: ["net"], dimensions: ["orders.region"], order_by: [{ field: "orders.region" }] }), { role: "multi", user: { regions: ["WC", hostile] } }));
+    hierInReadingOrder(c);
+    expect(c.sql).not.toContain("'1'='1");
+    expect(c.params.filter((p) => p === hostile).length).toBe(3);
+    // Every part keeps WC only; refunds whose order is outside WC fall in the null group of the ON join only if refunds were unfiltered.
+    expect(plain(await runDuckdb(file, c))).toEqual([{ region: "WC", net: 2000 - 201 }]);
+  });
+
+  test.skipIf(!PG_URL)("on postgres, the manager's two-model metric gives the same rows", async () => {
+    assertLocalPg(PG_URL);
+    const schema = uniqueSchema("slmh");
+    const db = new SQL({ url: PG_URL!, max: 1 });
+    const t = tempRoot();
+    try {
+      await db.unsafe(`CREATE SCHEMA "${schema}"`);
+      for (const s of hierTables(`"${schema}"`)) await db.unsafe(s.replace(/varchar/g, "text"));
+      await initProject(t.root);
+      writeYaml(join(t.root, "sources", "shop.yaml"), { source: "shop", dialect: "postgres", connection: { env: "PG_URL" } });
+      writeHierLayer(t.root, schema);
+      const c = compiled(compileRequest(t.root, req({ measures: ["net"], dimensions: ["orders.region"], order_by: [{ field: "orders.region" }] }), MANAGER));
+      hierInReadingOrder(c);
+      expect(plain(await runPg(c))).toEqual([
+        { region: "NE", net: 270 },
+        { region: "SE", net: 720 },
+        { region: "WC", net: 1439 },
+      ]);
+      const hostile = compiled(compileRequest(t.root, req({ measures: ["refund_rate"] }), { role: "sales", user: { employee_id: "101) or (1=1" } }));
+      await expect(runPg(hostile)).rejects.toThrow(/invalid input syntax|convert/i);
+    } finally {
+      await db.unsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {});
+      await db.close();
+      t.cleanup();
+    }
+  });
+});
+
+describe("a joined model's row filter in a part that reaches it", () => {
+  test("with only orders filtered, the refunds part limits orders in its ON join, so other reps' refunds land in the null group as a plain request's do", async () => {
+    const { root, file } = await hierShop(false);
+    const c = compiled(compileRequest(root, req({ measures: ["net"], dimensions: ["orders.region"], order_by: [{ field: "orders.region" }] }), { role: "sales", user: { employee_id: 101 } }));
+    const plainRefunds = compiled(compileRequest(root, req({ measures: ["refunds.refund_amount"], dimensions: ["orders.region"], order_by: [{ field: "orders.region" }] }), { role: "sales", user: { employee_id: 101 } }));
+    const rows = plain(await runDuckdb(file, c));
+    const refundRows = plain(await runDuckdb(file, plainRefunds));
+    // Same grouping semantics as 2.4's plain request.
+    expect(refundRows.find((x) => x.region === null)?.refund_amount).toBe(20 + 40 + 80);
+    expect(rows.find((x) => x.region === null)?.net).toBe(-(20 + 40 + 80));
+  });
 });

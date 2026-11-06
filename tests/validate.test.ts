@@ -16,7 +16,7 @@ import {
 } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { conditionAttributes, parseCondition } from "../skills/semantic-layer/scripts/lib/conditions.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { sl } from "./helpers.ts";
+import { approveWithYes, recordReply, sl } from "./helpers.ts";
 
 const FIXTURE = join(import.meta.dir, "fixtures", "valid");
 const SPEC = join(import.meta.dir, "..", "skills", "semantic-layer", "references", "spec.md");
@@ -74,7 +74,8 @@ const withoutApprovalHashes = (issues: Issue[]) =>
     (i) =>
       !i.message.includes("changed since it was approved") &&
       !i.message.includes("approved before content hashes") &&
-      !i.message.includes("approved_hash is missing while other approved items carry one"),
+      !i.message.includes("approved_hash is missing while other approved items carry one") &&
+      !i.message.includes("no recorded owner yes in .sl/ledger.jsonl"),
   );
 
 describe("valid fixture", () => {
@@ -1675,6 +1676,8 @@ describe("access modes, conditions, restrictions, hierarchy filters, ignored col
     // The fixture's other items carry hashes, so the hand-approved dimension is stamped only on
     // --confirm-unchanged.
     expect((await sl(root, ["approve", "--stamp-hashes", "--confirm-unchanged"])).code).toBe(0);
+    // With the owner's yes recorded, validate does not warn that it has none.
+    await recordReply(root, "warehouse.orders.notes", { by: "Dana Ruiz" });
     const r = await sl(root, ["validate", "--json"]);
     expect(r.code).toBe(0);
     const body = r.json<{ ok: boolean; warnings: number; issues: Issue[] }>();
@@ -2495,9 +2498,9 @@ describe("approval hashes", () => {
     expect(st.hash_missing).toEqual(["warehouse.orders.revenue"]);
     expect(st.next_step).toMatchObject({ phase: "reapprove", command: 'sl approve --target warehouse.orders.revenue --by "<owner>"' });
     // Approving it again on the owner's yes records the hash; it is not "already approved".
-    const again = await sl(root, ["approve", "--target", "warehouse.orders.revenue", "--by", "Dana Ruiz", "--date", "2026-02-01"]);
+    const again = await approveWithYes(root, ["--target", "warehouse.orders.revenue", "--by", "Dana Ruiz"], { now: "2026-02-01T12:00:00.000Z" });
     expect(again.code).toBe(0);
-    expect(again.out).toContain("Approved warehouse.orders.revenue again (its approved_hash was missing) by Dana Ruiz on 2026-02-01.");
+    expect(again.out).toContain("Approved warehouse.orders.revenue again (its approved_hash was missing) by Dana Ruiz on 2026-02-01 (reply ans_0007).");
     expect(atIssues(validateProject(root), MISSING)).toEqual([]);
   });
 
@@ -2566,7 +2569,7 @@ describe("joins whose evidence shows fan-out", () => {
   test("sl approve warns that validate will error on such a join", async () => {
     const root = copyFixture();
     fanOut(root, { status: "draft", approved_by: undefined, approved_at: undefined, approved_hash: undefined });
-    const r = await sl(root, ["approve", "--target", "warehouse.orders.customer", "--by", "Dana Ruiz", "--json"]);
+    const r = await approveWithYes(root, ["--target", "warehouse.orders.customer", "--by", "Dana Ruiz", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<{ warnings: string[] }>().warnings).toEqual([
       'Join warehouse.orders.customer is many_to_one, but its evidence shows fan-out (the key of customers is not unique, and a row matches up to 5 rows of customers); sl validate errors on it until the keys or the relationship are fixed, or fanout_override: "<reason>" records why the owner accepts it.',
@@ -2576,7 +2579,7 @@ describe("joins whose evidence shows fan-out", () => {
   test("sl approve words the fan-out from the evidence it has, names many_to_many's bridge table and skips stale evidence", async () => {
     const draft = { status: "draft", approved_by: undefined, approved_at: undefined, approved_hash: undefined };
     const approveWarnings = async (root: string) => {
-      const r = await sl(root, ["approve", "--target", "warehouse.orders.customer", "--by", "Dana Ruiz", "--json"]);
+      const r = await approveWithYes(root, ["--target", "warehouse.orders.customer", "--by", "Dana Ruiz", "--json"]);
       expect(r.code).toBe(0);
       return r.json<{ warnings: string[] }>().warnings;
     };

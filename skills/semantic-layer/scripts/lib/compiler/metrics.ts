@@ -1,15 +1,15 @@
 // Metrics in the reference compiler (references/spec.md, Reference compiler): a request that names
 // a ratio or derived metric. The measures it needs are aggregated per model, each model in a CTE
 // compiled as a one-model request grouped by the request's dimensions; the CTEs combine on those
-// dimensions, and each metric is computed over their columns. Filters on dimensions apply inside
-// every CTE, filters on measures and metrics in the outer WHERE.
+// dimensions, and each metric is computed over their columns. Filters on dimensions, and the user's
+// row filters, apply inside every CTE; filters on measures and metrics in the outer WHERE.
 import { quoteIdent } from "../dialect.ts";
 import { parseRequestField } from "../refs.ts";
 import { globInsideViews } from "../source-safety.ts";
 import { assertReadOnly } from "../sql-guard.ts";
 import type { Dialect, FilterOp, Measure, Metric, QueryRequest, RequestFilter } from "../types.ts";
 import { NAME_PATTERN } from "../types.ts";
-import type { CompiledColumn, CompileInput, CompileResult, PlannedJoin, Refusal, RefusalCode } from "./index.ts";
+import type { AppliedRows, CompiledColumn, CompileInput, CompileResult, PlannedJoin, Refusal, RefusalCode } from "./index.ts";
 import { JoinPlan } from "./joins.ts";
 import { Params, predicate } from "./sql.ts";
 
@@ -230,6 +230,7 @@ export function compileMetrics(input: CompileInput, request: QueryRequest, prior
   const cte = (model: string) => q(`${model} measures`);
   const params = new Params();
   const joins: PlannedJoin[] = [];
+  const rowFilters: AppliedRows[] = [];
   const bodies: string[] = [];
   let dimNames: string[] = [];
   for (const model of parts) {
@@ -242,13 +243,16 @@ export function compileMetrics(input: CompileInput, request: QueryRequest, prior
       ...(dims.length ? { dimensions: dims as string[] } : {}),
       ...(where.length ? { filters: where as RequestFilter[] } : {}),
     };
+    // Each part is compiled for the request's user, so it applies their row filters as a plain
+    // request does; its parameters follow those of the parts before it.
     const r = compile({ ...input, request: part, paramStart: params.values.length });
     if (!r.ok) {
       for (const x of r.refusals) add(x.code, model === base ? x.message : `for the measures of ${model}: ${x.message}`, x.ref, x.next);
       continue;
     }
     params.values.push(...r.params);
-    joins.push(...r.joins);
+    joins.push(...r.joins.map((x) => ({ ...x, part: model })));
+    rowFilters.push(...r.row_filters.map((x) => ({ ...x, part: model })));
     bodies.push(`${cte(model)} as (\n${r.sql}\n)`);
     if (model === base) dimNames = r.columns.slice(0, dimensions.length).map((c) => c.name);
   }
@@ -322,6 +326,7 @@ export function compileMetrics(input: CompileInput, request: QueryRequest, prior
     params: params.values,
     columns: columns.map(({ name, ref, kind }) => ({ name, ref, kind })),
     joins,
+    row_filters: rowFilters,
     session_time_zone: "UTC",
   };
 }

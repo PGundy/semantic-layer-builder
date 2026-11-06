@@ -243,13 +243,9 @@ describe("definition joins", () => {
     expect(await runDuckdb(file, everyone)).toEqual([{ real_revenue: "180.00" }]);
     // Naming the model is what visibility governs: hidden from everyone, row-filtered for the rep.
     expect(refused(compileRequest(root, req({ measures: ["orders.revenue"], dimensions: ["customers.region"] }))).refusals.map((r) => r.code)).toEqual(["not_visible"]);
-    expect(refused(compileRequest(root, req({ measures: ["orders.revenue"], dimensions: ["customers.region"] }), { user: { region: "NE" } })).refusals).toEqual([
-      {
-        code: "unsupported_row_filter",
-        ref: "shop.customers",
-        message: "a row filter limits this user's rows of customers, which the request reaches through orders.customer (role rep); a later version of sl sql adds row filters",
-      },
-    ]);
+    const path = compiled(compileRequest(root, req({ measures: ["orders.real_revenue"], dimensions: ["customers.region"] }), { user: { region: "NE" } }));
+    expect(path.sql).toContain(`left join "main"."shop_customers" as "orders.customer" on "orders"."customer_id" = "orders.customer"."customer_id" and ("orders.customer".home_code = $1)`);
+    expect(path.joins.map((j) => `${j.for}:${j.alias}`)).toEqual(["request:orders.customer", "definition:orders~customer"]);
   });
 });
 
@@ -488,7 +484,7 @@ describe("determinism and qualification", () => {
 
 // --- Acme: every approved golden that needs joins and nothing a later version adds -----------
 
-const NEEDS_LATER = new Set(["unsupported_metric", "unsupported_row_filter"]);
+const NEEDS_LATER = new Set(["unsupported_metric"]);
 const asUser = (g: Golden) => ({ ...(g.role ? { role: g.role } : {}), user: g.user ?? {} });
 
 // A copy of Acme whose warehouse models read the tables in schema, on dialect.
@@ -541,13 +537,49 @@ async function revenueChanged(root: string, run: (c: Compiled) => Promise<Row[]>
   const using = listGoldens(root)
     .map((x) => x.golden)
     .filter((g) => compiledNames.includes(g.name) && (g.request.measures ?? []).some((m) => ["orders.revenue", "average_order_value", "net_revenue"].includes(m)));
-  expect(using.map((g) => g.name)).toEqual(["analyst_rep_101_by_name_2025", "finance_net_revenue_2025", "net_revenue_2025", "revenue_2025", "revenue_by_region_2025"]);
+  expect(using.map((g) => g.name)).toEqual([
+    "analyst_rep_101_by_name_2025",
+    "finance_net_revenue_2025",
+    "net_revenue_2025",
+    "revenue_2025",
+    "revenue_by_region_2025",
+    "sales_head_301_2025",
+    "sales_manager_201_2025",
+    "sales_manager_202_2025",
+    "sales_manager_203_2025",
+    "sales_rep_101_2025",
+  ]);
   withCancelled(root);
   for (const g of using) {
     const c = compiled(compileRequest(root, g.request, asUser(g)));
     expect(c.sql).toContain("'cancelled'");
     expect(diffs(g.expected!.rows, await run(c), (g.request.order_by ?? []).length > 0).length).toBeGreaterThan(0);
   }
+}
+
+// Acme has no approved golden that asks a sales user for a metric, so each sales golden's request
+// is asked again for average_order_value: the user's hierarchy row filter applies inside its part,
+// and the figure is the golden's own revenue over its order count.
+async function salesAverageOrderValue(root: string, run: (c: Compiled) => Promise<Row[]>): Promise<void> {
+  const sales = listGoldens(root)
+    .map((x) => x.golden)
+    .filter((g) => g.status === "approved" && g.role === "sales");
+  expect(sales.length).toBeGreaterThan(0);
+  for (const g of sales) {
+    const c = compiled(compileRequest(root, { ...g.request, measures: ["average_order_value"] }, asUser(g)));
+    expect(c.row_filters).toEqual([{ model: "orders", alias: "orders", in: "where", roles: ["sales"], rows: "filtered", part: "orders" }]);
+    expect(c.params).toEqual([g.user!.employee_id, g.user!.employee_id, "2025-01-01", "2026-01-01"]);
+    const [want] = g.expected!.rows as { revenue: number; order_count: number }[];
+    const [got] = await run(c);
+    expect(Math.abs(Number(got!.average_order_value) - want!.revenue / want!.order_count)).toBeLessThan(1e-9);
+  }
+  // A hostile employee id is a bound parameter, never SQL text: the database reads it as one value
+  // and refuses it as an id rather than running it.
+  const id = "101) or (1=1";
+  const hostile = compiled(compileRequest(root, { ...sales[0]!.request, measures: ["average_order_value"] }, { role: "sales", user: { department: "sales", employee_id: id } }));
+  expect(hostile.sql).not.toContain("1=1");
+  expect(hostile.params.slice(0, 2)).toEqual([id, id]);
+  await expect(run(hostile)).rejects.toThrow(/convert|invalid input syntax/i);
 }
 
 const JOIN_GOLDENS = [
@@ -559,6 +591,11 @@ const JOIN_GOLDENS = [
   "refunds_2025",
   "revenue_2025",
   "revenue_by_region_2025",
+  "sales_head_301_2025",
+  "sales_manager_201_2025",
+  "sales_manager_202_2025",
+  "sales_manager_203_2025",
+  "sales_rep_101_2025",
 ];
 
 describe("Acme's approved goldens that need joins", () => {
@@ -593,6 +630,7 @@ describe("Acme's approved goldens that need joins", () => {
     const run = (c: Compiled) => runDuckdb(file, c);
     const names = await checkGoldens(root, run);
     expect(names).toEqual(JOIN_GOLDENS);
+    await salesAverageOrderValue(root, run);
     await revenueChanged(root, run, names);
   }, 60_000);
 
@@ -608,6 +646,7 @@ describe("Acme's approved goldens that need joins", () => {
         const root = acmeCopy("postgres", schema);
         const names = await checkGoldens(root, runPg);
         expect(names).toEqual(JOIN_GOLDENS);
+        await salesAverageOrderValue(root, runPg);
         await revenueChanged(root, runPg, names);
       } finally {
         await db.unsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {});
