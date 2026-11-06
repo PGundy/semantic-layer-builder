@@ -10,19 +10,22 @@ import { intakeMode, intakeSchemas, SCHEMA_NAME_HINT, schemaListIssues } from ".
 import { qualifiedName } from "../lib/naming.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
 import { filterInScope } from "../lib/patterns.ts";
-import { loadProject, loadSnapshot, paths, projectSettings } from "../lib/project.ts";
+import { listModels, loadProject, loadSnapshot, loadSource, paths, projectSettings } from "../lib/project.ts";
 import type { RoleReport } from "../lib/adapters/index.ts";
 import { printRoleSql, roleNote } from "../lib/role-sql.ts";
 import { applySourceState, listChange, type ListChange, patternKey, projectName, scopePreview, type SourceState } from "../lib/setup.ts";
 import { changeLines, type SnapshotDiff } from "../lib/snapshot-diff.ts";
+import { type Contradiction, contradictedRefs, dropExportIntake, findContradictions } from "../lib/upgrade.ts";
 import { profileState } from "../lib/status.ts";
 import { effectiveScope, parseTableList, problemsMessage, rootPath } from "../lib/table-list.ts";
-import { DIALECTS, NAME_PATTERN, RUNNABLE_DIALECTS, type Dialect, type SourceConfig } from "../lib/types.ts";
+import { DIALECTS, NAME_PATTERN, RUNNABLE_DIALECTS, type Dialect, type Snapshot, type SourceConfig } from "../lib/types.ts";
 import { editYamlText, parseYamlText } from "../lib/yaml.ts";
 import { checkEnv, many, NOT_A_FILE, parseViews, refuseCredentials } from "./add-source.ts";
+import checkJoinCommand from "./check-join.ts";
 import importCommand from "./import.ts";
 import initCommand from "./init.ts";
 import introspectCommand from "./introspect.ts";
+import profileCommand from "./profile.ts";
 
 const CONNECTION_FIRST =
   "sl setup needs a connection, or a schema export when a connection is not possible. A connection gives a much better layer: " +
@@ -57,10 +60,55 @@ function inputFile(ctx: CommandContext, arg: string, flag: string, what: string)
 }
 
 // Runs another command's run with its output captured as JSON, so setup reports one result.
-async function runQuiet(command: CommandSpec, values: Record<string, string>, ctx: CommandContext): Promise<Record<string, unknown>> {
+async function runQuiet(command: CommandSpec, values: Record<string, string | boolean>, ctx: CommandContext): Promise<Record<string, unknown>> {
   const out: string[] = [];
   await command.run({ values, positionals: [] }, { ...ctx, json: true, out: (t) => out.push(t) });
   return JSON.parse(out.join("\n") || "{}") as Record<string, unknown>;
+}
+
+interface UpgradeReport {
+  profiled: string[];
+  joins_checked: string[];
+  joins_skipped: { ref: string; reason: string }[];
+  contradictions: Contradiction[];
+}
+
+// The upgrade's steps after introspect: profiles the in-scope tables (none when no table or more
+// than the focus threshold are in scope), checks every join with check-join --all, and lists the
+// items the evidence contradicts against the exported snapshot. `backup` keeps each model file
+// before check-join writes evidence into it, so a failure puts it back.
+async function upgradeSteps(ctx: CommandContext, name: string, exported: Snapshot | null, backup: (path: string) => void): Promise<UpgradeReport> {
+  const source = loadSource(ctx.root, name);
+  const inScope = filterInScope(effectiveScope(ctx.root, source), loadSnapshot(ctx.root, name)?.tables ?? []).length;
+  const focused = inScope > 0 && inScope <= projectSettings(loadProject(ctx.root)).focus_threshold;
+  const profile = focused ? await runQuiet(profileCommand, { source: name }, ctx) : {};
+  const profiled = ((profile.profiled ?? []) as { table: string }[]).map((t) => t.table);
+  for (const l of listModels(ctx.root, name)) backup(l.path);
+  const joins = await runQuiet(checkJoinCommand, { source: name, all: true }, ctx);
+  const checks = (joins.checks ?? []) as { model: string; join: string; evidence: unknown; sentence: string }[];
+  const skipped = (joins.skipped ?? []) as { model: string; join: string; reason: string }[];
+  const ref = (x: { model: string; join: string }) => `${name}.${x.model}.${x.join}`;
+  const models = listModels(ctx.root, name).map((l) => l.model);
+  return {
+    profiled,
+    joins_checked: checks.filter((c) => c.evidence).map(ref),
+    joins_skipped: [...skipped.map((x) => ({ ref: ref(x), reason: x.reason })), ...checks.filter((c) => !c.evidence).map((c) => ({ ref: ref(c), reason: c.sentence }))],
+    contradictions: findContradictions(name, source.dialect, exported, loadSnapshot(ctx.root, name)!, models),
+  };
+}
+
+// What the upgrade did and found, for the text output; null `report` when the dialect is not read.
+function upgradeLines(rel: string, name: string, exportFile: string | undefined, report: UpgradeReport | null): string[] {
+  const kept = exportFile ? ` The export ${exportFile} stays on disk.` : "";
+  const lines = [`Upgraded ${name} from a schema export to a connection: ${rel} now has intake.mode connection, without intake.reason or intake.export.${kept}`];
+  if (!report) return [...lines, "Profiles and join checks follow once the catalog is read through the query plan below."];
+  lines.push(report.profiled.length ? `Profiled ${plural(report.profiled.length, "table")}.` : "Profiled no table: none is in scope, or more than the focus threshold are.");
+  lines.push(`Checked ${plural(report.joins_checked.length, "join")} and wrote ${report.joins_checked.length === 1 ? "its" : "their"} evidence.`);
+  for (const s of report.joins_skipped) lines.push(`  ${s.ref} not checked: ${s.reason}`);
+  if (!report.contradictions.length) return [...lines, "The data contradicts no drafted or approved item."];
+  lines.push(`The data contradicts ${plural(report.contradictions.length, "item")}; read ${report.contradictions.length === 1 ? "it" : "them"} back to the owner (approvals stay until they answer):`);
+  for (const c of report.contradictions) lines.push(`  ${c.ref}${c.approved ? " (approved)" : ""}: ${c.evidence}`);
+  return lines;
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -78,7 +126,9 @@ const spec: CommandSpec = {
     "  Runs sl init when there is no project, writes or updates sources/<source>.yaml in place, sets the scope,\n" +
     "  reads the catalog (introspect, or import of the export copied to exports/<source>.<ext>) and previews the scope.\n" +
     "  A connection comes first: --export with --reason is the fallback. The same arguments again change nothing;\n" +
-    "  a group of flags left out (--schemas; the scope flags; --database; --view) leaves that part of the source as it is.",
+    "  a group of flags left out (--schemas; the scope flags; --database; --view) leaves that part of the source as it is.\n" +
+    "  An export source given its connection is upgraded: it introspects, profiles, checks every join and lists the items\n" +
+    "  the data contradicts, for sl readback.",
   options: {
     source: { type: "string" },
     dialect: { type: "string" },
@@ -169,12 +219,8 @@ const spec: CommandSpec = {
     if (old && old.dialect !== dialect) {
       throw new UserError(`Source "${name}" is a ${old.dialect} source, and sl setup does not change a dialect. Run sl setup with --dialect ${old.dialect}, or pick another --source name.`);
     }
-    if (old && intakeMode(old) === "export" && mode === "connection") {
-      throw new UserError(
-        `Source "${name}" was set up from a schema export, and sl setup does not switch it to a connection yet. To switch by hand: in ${rel} set intake.mode to connection, ` +
-          `remove intake.reason and intake.export, add connection.env with the variable's name (or connection.database for duckdb), then run sl validate and sl introspect --source ${name}.`,
-      );
-    }
+    // An export source given its connection is upgraded (spec: Setup, Upgrade from an export).
+    const upgrading = old !== null && intakeMode(old) === "export" && mode === "connection";
     if (old && intakeMode(old) === "connection" && mode === "export") {
       throw new UserError(`Source "${name}" reads the catalog through a connection; sl setup does not turn it into an export source. Keep using the connection, or set up the export under another --source name.`);
     }
@@ -189,7 +235,7 @@ const spec: CommandSpec = {
     const spelled = (given: string[], had: readonly string[] | undefined) => given.map((g) => had?.find((h) => patternKey(h) === patternKey(g)) ?? g);
     const state: SourceState = {
       env,
-      database: duck && mode === "connection" ? (database ?? (old ? undefined : ":memory:")) : undefined,
+      database: duck && mode === "connection" ? (database ?? (old && !upgrading ? undefined : ":memory:")) : undefined,
       views: viewMap,
       mode,
       // Without --reason a recorded reason stays; a source without one gets "" and a warning.
@@ -198,7 +244,10 @@ const spec: CommandSpec = {
       exportFile: exportRel,
       scope: scopeGiven ? { include: spelled(include, old?.scope?.include), exclude: spelled(exclude, old?.scope?.exclude), tables_file: tablesArg !== undefined ? `scope/${name}.txt` : undefined } : undefined,
     };
-    const newText = editYamlText(oldText ?? `source: ${name}\ndialect: ${dialect}\n`, (doc) => applySourceState(doc, state), rel);
+    const newText = editYamlText(oldText ?? `source: ${name}\ndialect: ${dialect}\n`, (doc) => {
+      applySourceState(doc, state);
+      if (upgrading) dropExportIntake(doc);
+    }, rel);
     const next = parseYamlText(newText, rel) as SourceConfig;
     if (mode === "export" && !next.intake?.reason) {
       warnings.push(
@@ -221,7 +270,7 @@ const spec: CommandSpec = {
       include: listChange(oldScope.include, newScope.include),
       exclude: listChange(oldScope.exclude, newScope.exclude),
       tables_file: (newScope.tables_file === undefined ? (oldScope.tables_file === undefined ? null : "removed") : (tablesCopy?.status ?? (oldScope.tables_file === newScope.tables_file ? null : "added"))) as CopyStatus,
-      export_file: (exportCopy?.status ?? (old?.intake?.export?.file === next.intake?.export?.file ? null : "added")) as CopyStatus,
+      export_file: (exportCopy?.status ?? (old?.intake?.export?.file === next.intake?.export?.file ? null : next.intake?.export?.file === undefined ? "removed" : "added")) as CopyStatus,
     };
     const created = oldText === null;
     const updated = !created && newText !== oldText;
@@ -264,6 +313,7 @@ const spec: CommandSpec = {
       writeFileSync(path, data);
     };
     let result: Record<string, unknown> | null = null;
+    let upgrade: UpgradeReport | null = null;
     try {
       if (created || updated) write(file, newText);
       for (const c of [tablesCopy, exportCopy]) if (c?.status) write(c.to, c.data);
@@ -271,6 +321,7 @@ const spec: CommandSpec = {
         const snap = p.snapshot(name);
         backups.set(snap, existsSync(snap) ? readFileSync(snap) : null);
         result = await runQuiet(mode === "export" ? importCommand : introspectCommand, { source: name }, ctx);
+        if (upgrading) upgrade = await upgradeSteps(ctx, name, oldSnapshot, (path) => backups.has(path) || backups.set(path, readFileSync(path)));
       }
     } catch (e) {
       for (const [path, data] of backups) {
@@ -279,7 +330,8 @@ const spec: CommandSpec = {
       }
       if (!(e instanceof UserError)) throw e;
       const kept = projectCreated ? " (the project it created stays)" : "";
-      throw new UserError(`${e.message}\nsl setup put ${rel}, the copies and the snapshot back as they were${kept}; fix the problem and run the same sl setup command again.`);
+      const models = upgrading ? ", the snapshot and the model files" : " and the snapshot";
+      throw new UserError(`${e.message}\nsl setup put ${rel}, the copies${models} back as they were${kept}; fix the problem and run the same sl setup command again.`);
     }
 
     const snapshot = loadSnapshot(ctx.root, name);
@@ -295,8 +347,12 @@ const spec: CommandSpec = {
     if (roleReport && !roleReport.least_privilege) warnings.push(roleNote(next, roleReport));
     if (preview?.needs_focus) warnings.push(`${preview.in_scope} tables are in scope, more than the focus threshold of ${focus_threshold}; narrow the scope with the owner before drafting.`);
     const dialectFlag = RUNNABLE_DIALECTS.includes(dialect) ? "" : " --emit-sql";
-    const nextAction =
-      refresh && !read
+    // A connection the CLI does not read keeps the query-plan step while its snapshot came from an export.
+    const unread = refresh || (mode === "connection" && !live && snapshot !== null && snapshot.method !== "live");
+    const contradicted = contradictedRefs(upgrade?.contradictions ?? []);
+    const nextAction = contradicted.length
+      ? `sl readback --targets ${contradicted.join(",")}`
+      : unread && !read
         ? `sl introspect --source ${name} --emit-sql`
         : !preview || preview.in_scope === 0
           ? `sl tables --source ${name} --all`
@@ -322,6 +378,12 @@ const spec: CommandSpec = {
           changed,
           warnings,
           next: nextAction,
+          upgraded: upgrading,
+          changes: upgrading ? ((result?.changes as SnapshotDiff | null | undefined) ?? null) : null,
+          profiled: upgrade?.profiled ?? [],
+          joins_checked: upgrade?.joins_checked ?? [],
+          joins_skipped: upgrade?.joins_skipped ?? [],
+          contradictions: upgrade?.contradictions ?? [],
         }),
       );
       return 0;
@@ -339,7 +401,7 @@ const spec: CommandSpec = {
       lines.push(`Updated ${rel} in place:`);
       if (changes.connection.length) lines.push(`  connection: ${changes.connection.join(", ")} changed`);
       if (changes.intake_mode) lines.push(`  intake.mode: ${mode}`);
-      if (changes.reason) lines.push("  intake.reason changed");
+      if (changes.reason) lines.push(upgrading ? "  intake.reason and intake.export removed" : "  intake.reason changed");
       for (const [key, c] of [["schemas", changes.schemas], ["include", changes.include], ["exclude", changes.exclude]] as const) {
         if (listText(c)) lines.push(`  ${key}: ${listText(c)}`);
       }
@@ -352,6 +414,8 @@ const spec: CommandSpec = {
       lines.push(...changeLines((result.changes as SnapshotDiff | null) ?? null, name));
     } else if (refresh) {
       lines.push(`The CLI does not connect to ${dialect}, so the catalog is read through the query plan below.`);
+    } else if (unread) {
+      lines.push(`The snapshot came from a schema export, not the connection; the CLI does not connect to ${dialect}, so read it through the query plan below.`);
     } else if (snapshot) {
       lines.push(`The snapshot was not read again: the connection, schemas and export are unchanged (sl ${mode === "export" ? "import" : "introspect"} --source ${name} reads it again).`);
     }
@@ -364,10 +428,11 @@ const spec: CommandSpec = {
       if (rows.length) lines.push(formatTable(rows, ["table", "rows"]));
       if (preview.tables.length > MAX_SHOWN) lines.push(`... and ${preview.tables.length - MAX_SHOWN} more (sl tables --source ${name}).`);
     }
+    if (upgrading) lines.push("", ...upgradeLines(rel, name, old?.intake?.export?.file, upgrade));
     for (const w of warnings) if (!roleWarnings.includes(w)) lines.push(`Warning: ${w}`);
     lines.push("");
     lines.push(
-      refresh && !read
+      unread && !read && !contradicted.length
         ? `Next: ${nextAction}, run the queries it prints with your own SQL tool, save the results as a JSON file, then run sl introspect --source ${name} --results <file>.`
         : `Next: ${nextAction}`,
     );

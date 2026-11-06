@@ -265,10 +265,10 @@ export function roleNote(source: { source: string; intake?: { schemas?: unknown 
   const what = report.superuser
     ? "is a superuser"
     : report.schemas_measured === false
-      ? "may do more than read the schemas the layer covers, unmeasured"
+      ? "may be able to do more than read the schemas the layer covers, since its grants could not be measured"
       : "can do more than read the schemas the layer covers";
   return (
-    `The role source "${source.source}" connects as ${what} (see the warning). Tell the owner; their database administrator can create a ` +
+    `The role that source "${source.source}" connects as ${what} (see the warning above). Tell the owner; their database administrator can create a ` +
     `read-only role from the statements sl setup --print-role-sql --dialect postgres --schemas ${roleSqlSchemasFlag(source.intake?.schemas)} prints.`
   );
 }

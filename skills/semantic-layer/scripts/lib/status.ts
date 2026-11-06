@@ -1,7 +1,7 @@
 // Progress of a semantic layer, read from its files alone, and the next step
 // the skill should take. Nothing here touches a database.
-import { existsSync } from "node:fs";
-import { basename } from "node:path";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import {
   type AccessLayer,
   type AccessVisibility,
@@ -14,7 +14,9 @@ import {
   metricMeasureRefs,
 } from "./access.ts";
 import { canRun } from "./adapters/index.ts";
-import { accessEntry, type ApprovalEntry, holdsHashes, integrity, metricEntries, modelEntries } from "./approval-hash.ts";
+import { accessEntry, type ApprovalEntry, goldenHash, holdsHashes, type Integrity, integrity, metricEntries, modelEntries } from "./approval-hash.ts";
+import { DEFAULT_TOLERANCE } from "./goldens.ts";
+import { currentYes, LEDGER_FILE, ledgerReplies } from "./ledger.ts";
 import { findTable, qualifiedName } from "./naming.ts";
 import { inScope } from "./patterns.ts";
 import { parseRequestField } from "./refs.ts";
@@ -45,10 +47,10 @@ import {
   tablesFlag,
   unreferencedColumns,
 } from "./snapshot-diff.ts";
-import { intakeMode } from "./intake.ts";
+import { intakeMode, upgradeCommand } from "./intake.ts";
 import { effectiveScope } from "./table-list.ts";
 import { DIALECTS, TO_ONE_RELATIONSHIPS } from "./types.ts";
-import type { AccessMode, Approval, Dialect, Golden, IntakeMode, Metric, Model, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
+import type { AccessMode, Approval, Dialect, Golden, IntakeMode, LedgerReply, Metric, Model, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
 
 // Golden count below which the verify phase stays open.
 export const MIN_APPROVED_GOLDENS = 5;
@@ -187,7 +189,8 @@ export interface NextStep {
   command: string;
   source?: string;
   // True when the command records the owner's approval (sl approve, sl goldens confirm):
-  // it runs only after the owner says yes to its readback.
+  // it runs only after the owner says yes to its readback. A step that signs items off names
+  // sl readback for them until the ledger holds the owner's yes to one as it stands, then sl approve.
   after_owner_yes: boolean;
   // Set when the step waits on the owner rather than on a command: open_questions while access.yaml
   // holds open questions. command then only explains the current file.
@@ -243,6 +246,10 @@ export interface ProjectStatus {
   // Approved items without an approved_hash while other items record one: the hash may have been
   // removed, so each is read back and approved again. Empty while no item records a hash.
   hash_missing: string[];
+  // Approved items and goldens whose owner's latest reply in the ledger is not a yes to them as they
+  // stand (approved before sl approve required one), as approve targets and golden:<name>. They stay
+  // approved and never hold a phase open; sl next reads them back once every phase is done.
+  approved_without_yes: string[];
   goldens: ApprovalCount;
   // Names of the goldens that are not approved; a golden without a string name goes by its file name.
   draft_goldens: string[];
@@ -329,6 +336,13 @@ function draftGoldenNames(goldens: LoadedGolden[]): string[] {
     if (g.status === "approved") return [];
     return [typeof g.name === "string" && g.name !== "" ? g.name : stem(basename(path))];
   });
+}
+
+// The draft metrics that can be read back as metric:<name>; a name sl approve cannot target is left
+// to sl validate.
+function draftMetricTargets(names: string[]): string[] {
+  const refs = names.filter((n) => /^[a-z][a-z0-9_]*$/.test(n)).map((n) => `metric:${n}`);
+  return refs.length ? refs : ["metric:<name>"];
 }
 
 function draftFields(m: LoadedModel["model"]): string[] {
@@ -571,11 +585,6 @@ function waitingSteps(unprofiled: number, unchecked: number, approvedUnchecked: 
   ];
 }
 
-// The command that gives an export source a connection (spec: Setup).
-export function upgradeCommand(s: Pick<SourceStatus, "source" | "dialect">): string {
-  return `sl setup --source ${s.source} --dialect ${s.dialect} --env <VAR>`;
-}
-
 // The step that waits on a connection once everything an export source's definitions allow is done.
 function connectStep(s: SourceStatus): Step {
   return {
@@ -586,7 +595,7 @@ function connectStep(s: SourceStatus): Step {
       "profiles, join evidence, goldens and drift from data, so the layer is not done. Ask the owner whether a read-only connection " +
       "is possible now (sl setup --print-role-sql prints a role for their database administrator); with one, upgrade the source with " +
       "the command below and the waiting steps run.",
-    command: upgradeCommand(s),
+    command: upgradeCommand(s.source, s.dialect),
   };
 }
 
@@ -636,6 +645,9 @@ interface StepContext {
   accessProblem: string | null;
   // access.yaml's open questions, top level first, then per role.
   accessQuestions: string[];
+  // The command that signs off the targets: sl approve of the first one the owner's latest reply in
+  // the ledger is a yes to as it stands, else sl readback of them all.
+  signOff: (refs: string[]) => string;
 }
 
 const OPEN_BASELINE = "everyone sees every approved model, field and metric except those tagged pii or sensitive";
@@ -738,7 +750,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       message:
         `${parts.join(" ")} Read each back to the owner as it now stands and approve it again only after they confirm, or restore ` +
         "the approved definition; sl validate names each one. Until then tools treat each one as a draft (sl access lists them).",
-      command: `sl approve --target ${changed[0] ?? missing[0]} --by "<owner>"`,
+      command: ctx.signOff([...changed, ...missing]),
     };
   }
 
@@ -863,7 +875,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         "read the model back and approve it once they confirm. Fields the owner leaves for later stay draft and go in the handoff.",
       command: join
         ? `sl check-join --source ${s} --model ${join.split(".")[0]} --join ${join.split(".")[1]}`
-        : `sl approve --target ${s}.${target} --by "<owner>"`,
+        : ctx.signOff([...drafty.draft_fields.filter((f) => f.startsWith(`${target}.`)).map((f) => `${s}.${f}`), `${s}.${target}`]),
     };
   }
 
@@ -887,7 +899,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         status.metrics.draft > 0
           ? `${status.metrics.draft} metric(s) in metrics.yaml are drafts. Read them back to the owner and approve what they confirm.`
           : "No metrics yet. Ask the owner which ratios and derived figures they report, and write them to metrics.yaml as drafts.",
-      command: status.metrics.draft > 0 ? `sl approve --target metric:<name> --by "<owner>"` : "sl validate",
+      command: status.metrics.draft > 0 ? ctx.signOff(draftMetricTargets(status.draft_metrics)) : "sl validate",
     };
   }
 
@@ -965,7 +977,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         message:
           `access.yaml is open and has no roles yet: ${OPEN_BASELINE}. Ask the owner the exceptions question: ${EXCEPTIONS_QUESTION} ` +
           "Write the roles, restrictions and tags they name as a draft; when there are none, read the open baseline back and approve access.yaml once they confirm.",
-        command: `sl approve --target access --by "<owner>"`,
+        command: ctx.signOff(["access"]),
       };
     }
     return {
@@ -973,7 +985,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       message:
         `access.yaml is a draft in ${access.mode} mode with ${access.roles} role(s) and ${access.restrictions} restriction(s). ` +
         "Read the mode, every role and every restriction back to the owner and approve it once they confirm.",
-      command: `sl approve --target access --by "<owner>"`,
+      command: ctx.signOff(["access"]),
     };
   }
 
@@ -1183,8 +1195,35 @@ function rowFilterJoinsWithoutGoldens(
   return out;
 }
 
+// An approve target's content hash as it now stands and where its approval stands; a golden appears
+// only once approved, hashed over its recorded rows and tolerance.
+export interface TargetState {
+  hash: string;
+  state: Integrity;
+}
+
+// The status with what sl next reads beside it: every approve target of the project by ref, and the
+// kind: reply lines of the ledger (lines it cannot read are skipped; sl validate reports them).
+export interface StatusDetail {
+  status: ProjectStatus;
+  targets: Map<string, TargetState>;
+  replies: LedgerReply[];
+}
+
+// The ledger's reply lines, or none when it is missing, not a plain file or reached through a linked
+// .sl directory, which sl approve refuses (lib/ledger.ts readReplies).
+function readLedger(root: string): LedgerReply[] {
+  const file = join(root, LEDGER_FILE);
+  const plain = lstatSync(dirname(file), { throwIfNoEntry: false })?.isDirectory() && lstatSync(file, { throwIfNoEntry: false })?.isFile();
+  return plain ? ledgerReplies(readFileSync(file, "utf8")) : [];
+}
+
 // Reads the project and every source (or only `only`) and works out where the layer stands.
 export function computeStatus(root: string, only?: string): ProjectStatus {
+  return statusDetail(root, only).status;
+}
+
+export function statusDetail(root: string, only?: string): StatusDetail {
   const project = loadProject(root);
   const settings = projectSettings(project);
   // The default source comes first, so its tables are interviewed first.
@@ -1226,6 +1265,21 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
   const goldenLayer = approvedLayer(loadAccessLayer(root));
   const approvedGoldens = goldens.filter((g): g is Golden => isRecord(g) && g.status === "approved");
   const goldenRoles = new Set(approvedGoldens.flatMap((g) => goldenRunsAs(goldenLayer, g)));
+  const replies = readLedger(root);
+  const targets = new Map<string, TargetState>();
+  for (const e of [...reports.flatMap((r) => r.approvals), ...allMetricEntries, ...accessEntries]) {
+    if (!targets.has(e.ref)) targets.set(e.ref, { hash: e.hash, state: integrity(e, projectHashed) });
+  }
+  for (const g of approvedGoldens) {
+    if (typeof g.name !== "string" || !Array.isArray(g.expected?.rows)) continue;
+    const hash = goldenHash(g as unknown as Record<string, unknown>, g.expected.rows, g.expected.tolerance ?? DEFAULT_TOLERANCE);
+    targets.set(`golden:${g.name}`, { hash, state: "current" });
+  }
+  const withoutYes = (refs: string[]) =>
+    refs.filter((ref) => {
+      const t = targets.get(ref);
+      return !!t && (t.state === "current" || t.state === "unhashed") && !currentYes(replies, ref, t.hash);
+    });
 
   const base = {
     project: project.name,
@@ -1245,6 +1299,7 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
     open_questions: sources.reduce((n, s) => n + s.open_questions, accessQuestions),
     changed_since_approval: refsIn(approvals, "changed", projectHashed),
     hash_missing: refsIn(approvals, "missing", projectHashed),
+    approved_without_yes: withoutYes([...approvals.map((e) => e.ref), ...approvedGoldens.map((g) => `golden:${g.name}`)]),
     goldens: count(goldens),
     draft_goldens: draftGoldenNames(loadedGoldens),
     roles_without_goldens: roleNames(access).filter((r) => !goldenRoles.has(r)),
@@ -1255,15 +1310,23 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
     accessReadable: accessState === "missing" || (!!access && typeof access === "object" && !Array.isArray(access)),
     accessProblem: accessProblem(audience),
     accessQuestions: accessQuestionTexts,
+    signOff: (refs) => {
+      const ready = refs.find((ref) => {
+        const t = targets.get(ref);
+        return !!t && !!currentYes(replies, ref, t.hash);
+      });
+      return ready ? `sl approve --target ${ready}` : `sl readback --targets ${refs.join(",")}`;
+    },
   });
   // A draft that records the approval a revoke set aside says which version keeps applying.
   if (found.phase === "access" && lastApproved) found.message += ` ${lastApprovedNote(lastApproved)}`;
   const exportSource = sources.find((s) => s.intake_mode === "export");
-  const step: NextStep = { ...found, after_owner_yes: needsOwnerYes(found.command), ...(exportSource ? { connection_upgrade: upgradeCommand(exportSource) } : {}) };
+  const step: NextStep = { ...found, after_owner_yes: needsOwnerYes(found.command), ...(exportSource ? { connection_upgrade: upgradeCommand(exportSource.source, exportSource.dialect) } : {}) };
   const batchSource = sources.find((s) => s.source === step.source && s.next_batch.length) ?? sources.find((s) => s.next_batch.length);
-  return {
+  const status: ProjectStatus = {
     ...base,
     next_batch: batchSource ? { source: batchSource.source, tables: batchSource.next_batch } : null,
     next_step: step,
   };
+  return { status, targets, replies };
 }

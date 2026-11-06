@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // The semantic-layer CLI as an MCP server: JSON-RPC 2.0 over stdio, one JSON message per line.
 // Each CLI command is one tool; a call runs the command in-process with --json in the server's
-// semantic root. stdout carries protocol messages only; logs go to stderr.
+// semantic root. stdout carries protocol messages only; logs go to stderr. When the client declares
+// elicitation, approve, goldens confirm and reply with verdict yes ask the owner in the client (elicit.ts).
 import { existsSync, realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
@@ -11,6 +12,7 @@ import { COMMANDS } from "../commands/index.ts";
 import { runCli } from "../lib/cli.ts";
 import type { CommandSpec } from "../lib/command.ts";
 import { resolveRoot } from "../lib/project.ts";
+import { ELICIT_TIMEOUT_MS, Elicitor, elicitationNote, ownerGate, type Run, toolResult } from "./elicit.ts";
 import { argvOf, ROOT_ARG, schemaValidator, toolOf, type Tool } from "./schema.ts";
 
 export const PROTOCOL_VERSION = "2025-06-18";
@@ -32,6 +34,10 @@ export interface ServerOptions {
   cwd: string;
   env: Record<string, string | undefined>;
   log: (text: string) => void;
+  // Writes one message to the client; without it the server never sends a request of its own.
+  send?: (msg: Message) => void;
+  // How long to wait for the owner's answer to an elicitation (default ELICIT_TIMEOUT_MS).
+  elicitTimeoutMs?: number;
 }
 
 class RpcError extends Error {
@@ -69,10 +75,23 @@ export class Server {
   private entries: Promise<Map<string, Entry>> | undefined;
   // Tool calls run one at a time, in the order they arrive, so two commands never write the same file at once.
   private queue: Promise<unknown> = Promise.resolve();
+  // Set when the client declared the elicitation capability in its latest initialize.
+  private clientElicits = false;
+  private readonly elicitor: Elicitor | undefined;
   readonly root: string;
 
   constructor(private readonly opts: ServerOptions) {
     this.root = resolve(opts.root);
+    if (opts.send) this.elicitor = new Elicitor(opts.send, opts.elicitTimeoutMs ?? ELICIT_TIMEOUT_MS);
+  }
+
+  // The client went away: an elicitation still waiting ends with nothing recorded.
+  close(): void {
+    this.elicitor?.close();
+  }
+
+  private get elicits(): boolean {
+    return this.clientElicits && this.elicitor !== undefined;
   }
 
   // Every discovered command, by tool name. A command that fails to load is logged and left out.
@@ -106,8 +125,11 @@ export class Server {
     }
     const id = (hasId ? m.id : null) as Id;
     if (m.jsonrpc !== "2.0" || typeof m.method !== "string") {
-      // A response from the client (to a request this server never sends) needs no answer.
-      if (m.jsonrpc === "2.0" && hasId && ("result" in m || "error" in m)) return null;
+      // A response from the client answers an elicitation this server sent, or nothing; it needs no answer.
+      if (m.jsonrpc === "2.0" && hasId && ("result" in m || "error" in m)) {
+        this.elicitor?.receive(m);
+        return null;
+      }
       return failure(id, INVALID_REQUEST, 'A request needs "jsonrpc": "2.0" and a "method".');
     }
     if (!hasId) return null; // notifications/initialized, notifications/cancelled and any other notification
@@ -126,6 +148,8 @@ export class Server {
     switch (method) {
       case "initialize": {
         const asked = params.protocolVersion;
+        const caps = params.capabilities;
+        this.clientElicits = typeof caps === "object" && caps !== null && !Array.isArray(caps) && typeof (caps as Message).elicitation === "object" && (caps as Message).elicitation !== null;
         return {
           protocolVersion: typeof asked === "string" && SUPPORTED_VERSIONS.has(asked) ? asked : PROTOCOL_VERSION,
           capabilities: { tools: {} },
@@ -136,7 +160,7 @@ export class Server {
       case "ping":
         return {};
       case "tools/list":
-        return { tools: [...(await this.tools()).values()].map((e) => e.tool) };
+        return { tools: [...(await this.tools()).values()].map((e) => ({ ...e.tool, description: e.tool.description + elicitationNote(e.command, this.elicits) })) };
       case "tools/call": {
         const run = this.queue.then(() => this.call(params));
         this.queue = run.catch(() => undefined);
@@ -164,17 +188,26 @@ export class Server {
         `This server works only in the semantic root ${this.root}; leave out "root" to use it. To work in another root, start the server again with --root <dir>.`,
       );
     }
+    const argv = argvOf(entry.command, entry.spec, a, this.root);
+    if (this.elicits) {
+      const gated = await ownerGate(entry.command, a, {
+        root: this.root,
+        argv,
+        run: (x) => this.exec(x),
+        ask: (message) => this.elicitor!.ask(message),
+        timeoutMs: this.elicitor!.timeoutMs,
+      });
+      if (gated) return gated;
+    }
+    return toolResult(entry.command, await this.exec(argv));
+  }
+
+  // Runs one sl command in-process, collecting what it prints.
+  private async exec(argv: string[]): Promise<Run> {
     const out: string[] = [];
     const err: string[] = [];
-    const code = await runCli(argvOf(entry.command, entry.spec, a, this.root), {
-      cwd: this.opts.cwd,
-      env: this.opts.env,
-      out: (t) => out.push(t),
-      err: (t) => err.push(t),
-    });
-    const content = [out.join("\n"), err.join("\n")].filter((t) => t !== "").map((text) => ({ type: "text", text }));
-    if (!content.length) content.push({ type: "text", text: code === 0 ? "{}" : `sl ${entry.command} exited with code ${code}.` });
-    return code === 0 ? { content } : { content, isError: true };
+    const code = await runCli(argv, { cwd: this.opts.cwd, env: this.opts.env, out: (t) => out.push(t), err: (t) => err.push(t) });
+    return { code, out: out.join("\n"), err: err.join("\n") };
   }
 }
 
@@ -182,19 +215,29 @@ function failure(id: Id, code: number, message: string): Message {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
-const USAGE = `Usage: bun skills/semantic-layer/scripts/mcp/server.ts [--root <dir>]
+const USAGE = `Usage: bun skills/semantic-layer/scripts/mcp/server.ts [--root <dir>] [--elicit-timeout <seconds>]
 
 Serves every sl command as an MCP tool over stdio. The semantic root is --root, else SEMANTIC_ROOT,
-else ./semantic; a tool call cannot name another root.`;
+else ./semantic; a tool call cannot name another root. When the client declares elicitation, the owner
+answers approvals in the client; --elicit-timeout is how long to wait for that answer (default ${ELICIT_TIMEOUT_MS / 1000}).`;
 
 // Reads one JSON-RPC message per line from stdin and writes each response as one line to stdout.
 async function main(): Promise<number> {
   const log = (t: string) => process.stderr.write(`${t}\n`);
-  let flags: { root?: string; help?: boolean };
+  let flags: { root?: string; help?: boolean; "elicit-timeout"?: string };
   try {
-    flags = parseArgs({ args: process.argv.slice(2), options: { root: { type: "string" }, help: { type: "boolean", short: "h" } }, strict: true }).values;
+    flags = parseArgs({
+      args: process.argv.slice(2),
+      options: { root: { type: "string" }, help: { type: "boolean", short: "h" }, "elicit-timeout": { type: "string" } },
+      strict: true,
+    }).values;
   } catch (e) {
     log(`sl mcp: ${(e as Error).message}\n\n${USAGE}`);
+    return 1;
+  }
+  const seconds = flags["elicit-timeout"] === undefined ? ELICIT_TIMEOUT_MS / 1000 : Number(flags["elicit-timeout"]);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    log(`sl mcp: --elicit-timeout is a number of seconds above 0, not ${JSON.stringify(flags["elicit-timeout"])}.\n\n${USAGE}`);
     return 1;
   }
   if (flags.help) {
@@ -204,7 +247,8 @@ async function main(): Promise<number> {
   // Anything that prints with console.log during a call goes to stderr, never into the protocol stream.
   const write = process.stdout.write.bind(process.stdout);
   console.log = console.info = console.debug = (...a: unknown[]) => console.error(...a);
-  const server = new Server({ root: resolveRoot(flags.root, process.env, process.cwd()), cwd: process.cwd(), env: process.env, log });
+  const send = (msg: Message) => void write(`${JSON.stringify(msg)}\n`);
+  const server = new Server({ root: resolveRoot(flags.root, process.env, process.cwd()), cwd: process.cwd(), env: process.env, log, send, elicitTimeoutMs: seconds * 1000 });
   log(`sl mcp: serving the semantic root ${server.root} over stdio`);
   const pending = new Set<Promise<void>>();
   for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
@@ -222,6 +266,7 @@ async function main(): Promise<number> {
     pending.add(p);
     void p.finally(() => pending.delete(p));
   }
+  server.close();
   await Promise.all(pending);
   await new Promise<void>((done) => process.stdout.write("", () => done()));
   return 0;

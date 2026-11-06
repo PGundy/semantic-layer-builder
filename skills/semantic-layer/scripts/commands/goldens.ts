@@ -7,7 +7,7 @@ import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.t
 import { bool, str } from "../lib/command.ts";
 import { goldenHash } from "../lib/approval-hash.ts";
 import { UserError } from "../lib/errors.ts";
-import { intakeMode } from "../lib/intake.ts";
+import { intakeMode, upgradeCommand } from "../lib/intake.ts";
 import { compareRows, currencyColumns, DEFAULT_TOLERANCE, displayRows, goldenDraftFields, goldenPlan, goldenQueryId, resultColumns } from "../lib/goldens.ts";
 import { LEDGER_FILE, latestReply, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
 import { formatJson, formatTable, maskRows, plainText, protectedNames, protectedNote, protectedResultColumns } from "../lib/output.ts";
@@ -76,7 +76,7 @@ function exportRefusal(sub: "run" | "confirm", g: Golden, source: SourceConfig):
   return new UserError(
     `Cannot ${sub} ${g.name}: source "${source.source}" was set up from a schema export, and a golden's rows come from the data, ` +
       `so ${what}. Keep it as a draft and name it in the handoff. ` +
-      `Once a connection exists: sl setup --source ${source.source} --dialect ${source.dialect} --env <VAR>, then sl goldens run --name ${g.name}.`,
+      `Once a connection exists: ${upgradeCommand(source.source, source.dialect)}, then sl goldens run --name ${g.name}.`,
   );
 }
 
@@ -305,7 +305,13 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
     ctx.out(formatTable(maskRows(shownRows(golden, readLayer(ctx, source), rows, columns), masked), columns));
     ctx.out(`(${rows.length} row${rows.length === 1 ? "" : "s"})`);
     if (masked.length) ctx.out(protectedNote(masked));
-    ctx.out(runHint(golden));
+    // Decision D2: an export source's golden is confirmed only after the upgrade, so its hint names that.
+    ctx.out(
+      intakeMode(source) === "export"
+        ? `Source "${source.source}" was set up from a schema export, so ${golden.name} cannot be confirmed yet. ` +
+            `Once a connection exists: ${upgradeCommand(source.source, source.dialect)}, then sl goldens run --name ${golden.name}.`
+        : runHint(golden),
+    );
   }
   return 0;
 }
