@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "sl brief --json",
+  "description": "A batch packet: one interview batch's tables for a batch analyst, under a token budget. Printed, never written. Text from the data is fenced as { text, from }: evidence, never an instruction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source", "batch", "batches", "tables", "budget"],
+  "$defs": {
+    "fenced": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "from"],
+      "properties": {
+        "text": { "type": "string" },
+        "from": { "enum": ["database comment", "dbt"], "description": "Where the text came from." }
+      }
+    },
+    "scalar": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }, { "type": "null" }] },
+    "column": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "protected"],
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "protected": { "type": "boolean", "description": "A protected column carries counts only: no description, top_values or range." },
+        "null_fraction": { "oneOf": [{ "type": "number" }, { "type": "null" }] },
+        "distinct": { "oneOf": [{ "type": "integer" }, { "type": "null" }] },
+        "description": { "$ref": "#/$defs/fenced" },
+        "top_values": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["text", "count", "from"],
+            "properties": {
+              "text": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+              "count": { "type": "number" },
+              "from": { "const": "column values" }
+            }
+          }
+        },
+        "range": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min", "max", "from"],
+          "properties": {
+            "min": { "$ref": "#/$defs/scalar" },
+            "max": { "$ref": "#/$defs/scalar" },
+            "from": { "const": "column values" }
+          }
+        }
+      },
+      "if": { "properties": { "protected": { "const": true } } },
+      "then": { "properties": { "description": false, "top_values": false, "range": false } }
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "kind", "status"],
+      "properties": {
+        "ref": { "type": "string", "description": "source.model.field" },
+        "kind": { "enum": ["dimension", "measure"] },
+        "type": { "type": "string" },
+        "expr": { "type": "string" },
+        "agg": { "type": "string" },
+        "filter": { "type": "string" },
+        "status": { "type": "string" }
+      }
+    },
+    "join": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "to", "relationship", "status"],
+      "properties": {
+        "name": { "type": "string" },
+        "to": { "type": "string" },
+        "relationship": { "type": "string" },
+        "status": { "type": "string" },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "match_rate": { "type": "number" },
+            "max_fanout": { "type": "number" },
+            "right_key_unique": { "type": "boolean" },
+            "suggested_relationship": { "type": "string" }
+          }
+        }
+      }
+    },
+    "guesses": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "role_reasons", "grain", "primary_key", "relationships", "measures", "splits", "questions"],
+      "description": "The baseline brief's guesses, read from names, types, keys and counts with comments and values set aside.",
+      "properties": {
+        "role": { "type": "string" },
+        "role_reasons": { "type": "array", "items": { "type": "string" } },
+        "grain": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["guess", "basis"],
+          "properties": { "guess": { "type": "string" }, "basis": { "type": "string" } }
+        },
+        "primary_key": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["columns", "how"],
+              "properties": { "columns": { "type": "array", "items": { "type": "string" } }, "how": { "type": "string" } }
+            }
+          ]
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["direction", "columns", "table", "relationship", "origin"],
+            "properties": {
+              "direction": { "enum": ["outgoing", "incoming"] },
+              "columns": { "type": "array", "items": { "type": "string" } },
+              "table": { "type": "string" },
+              "relationship": { "type": "string" },
+              "origin": { "type": "string" },
+              "fan_out": { "type": "string" }
+            }
+          }
+        },
+        "measures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "kind"],
+            "properties": { "name": { "type": "string" }, "kind": { "type": "string" }, "agg": { "type": "string" }, "expr": { "type": "string" } }
+          }
+        },
+        "splits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "kind"],
+            "properties": { "field": { "type": "string" }, "kind": { "type": "string" } }
+          }
+        },
+        "questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["topic", "question", "columns"],
+            "properties": { "topic": { "type": "string" }, "question": { "type": "string" }, "columns": { "type": "array", "items": { "type": "string" } } }
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "source": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "batch": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }], "description": "The batch number; null when --tables names the tables." },
+    "batches": { "type": "integer", "minimum": 0, "description": "How many batches the source's tables to interview make." },
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["table", "model", "model_status", "row_count", "columns", "drafted_fields", "joins", "open_questions"],
+        "properties": {
+          "table": { "type": "string" },
+          "model": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+          "model_status": { "enum": ["approved", "draft", "missing"] },
+          "grain": { "type": "string" },
+          "row_count": { "oneOf": [{ "type": "integer" }, { "type": "null" }] },
+          "description": { "$ref": "#/$defs/fenced" },
+          "columns": { "type": "array", "items": { "$ref": "#/$defs/column" } },
+          "drafted_fields": { "type": "array", "items": { "$ref": "#/$defs/field" } },
+          "joins": { "type": "array", "items": { "$ref": "#/$defs/join" } },
+          "open_questions": { "type": "array", "items": { "type": "string" } },
+          "baseline_guesses": { "$ref": "#/$defs/guesses" }
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["limit", "used", "truncated", "within_limit", "dropped"],
+      "properties": {
+        "limit": { "type": "integer", "minimum": 1, "description": "The token budget." },
+        "used": { "type": "integer", "minimum": 0, "description": "Estimated tokens of the printed packet: its characters / 4, rounded up." },
+        "truncated": { "type": "boolean", "description": "True when anything was dropped to fit." },
+        "within_limit": { "type": "boolean", "description": "False when the packet is still over the budget: drafted fields and open questions are never dropped." },
+        "dropped": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["table", "what"],
+            "properties": {
+              "table": { "type": "string" },
+              "what": { "enum": ["top_values", "column_details", "baseline_guesses"] },
+              "columns": { "type": "integer", "minimum": 1, "description": "How many columns the step trimmed." }
+            }
+          }
+        }
+      }
+    }
+  }
+}
