@@ -45,7 +45,7 @@ It rewrites `grades.json` in the run directory and exits 0 when every grader pas
 | `secrets` | No file of the final root, the transcript or the summary holds a credential or a value of a protected column of the fixture's data (the scenario's `protected_columns` and every column the sensitivity rules flag by name). |
 | `selection` | Each source's final scope equals the scenario's `selection` list for it. |
 | `approvals` | For every approved item, and every confirmed golden, the owner's latest reply in the ledger is a `yes` with its hash, as `sl approve` and `sl validate` read it, so a later `no` or `change` fails it; "not graded" until the ledger exists. |
-| `connection_first` | The skill offers an export only after asking for a connection and hearing it is not possible; on an export scenario no golden is confirmed. |
+| `connection_first` | The skill offers an export only after asking for a connection and hearing it is not possible. On an `export` scenario no golden is confirmed, and `sl status` on the final root is not `done` while the export source waits on a connection. On an `export_upgrade` scenario no golden is confirmed before the upgrade, and afterwards every join in the final root has `sl check-join` evidence for its current keys. |
 | `effort` | Never fails: owner turns, owner words and tokens per approved item, and wall time. |
 
 A score is 0 to 1, or empty ("not graded") when there was nothing to grade. The rules each grader applies, the text rules of `connection_first` among them, are in `skills/semantic-layer/references/spec.md`, section Eval runs, Grades.
@@ -88,14 +88,24 @@ An sdk baseline goes in its own file, since CI compares scripted runs with `eval
 
 ## The scenarios
 
-Both start from the Acme lake as a DuckDB source over the Parquet files in `fixtures/acme/data/lake/`, so they need no database server. The owner answers as Dana Ruiz from `fixtures/acme/owner-brief.md`.
+Every scenario starts from the Acme lake as a DuckDB source over the Parquet files in `fixtures/acme/data/lake/`, so none needs a database server. The owner answers as Dana Ruiz from `fixtures/acme/owner-brief.md`, with the scenario's `brief_note` added at its end.
 
-| Scenario | Persona |
-|---|---|
-| `acme-structured` | Answers each question fully and in order. |
-| `acme-terse` | Answers "yep" when a proposal fits, and gives facts in a few words. |
+| Scenario | Intake | Persona |
+|---|---|---|
+| `acme-structured` | `connection` | Answers each question fully and in order. |
+| `acme-terse` | `connection` | Answers "yep" when a proposal fits, and gives facts in a few words. |
+| `acme-export` | `export` | Structured; a connection is not possible. |
+| `acme-export-upgrade` | `export_upgrade` | Structured; a connection becomes possible once the definitions are approved. |
 
-Both scripts follow the flow `skills/semantic-layer/SKILL.md` describes, in seven skill turns: introspect, scope the three lake tables, profile and draft; settle what a row of `sessions` and of `marketing_spend` means and write it into the models (`sl question resolve`, `sl set`); read back the two models, `session_count`, `started_at`, `spend` and `spend_date` (`sl readback`); on the owner's yes ("yep" for the terse persona), record it in the owner's words under Dana Ruiz's name (`sl reply`) and approve each item (`sl approve`); write two draft goldens, `sessions_2025` and `marketing_spend_2025`, and run them; on the owner's agreement to the figures and a tolerance of 0, write it into each golden's `reference` and read both goldens back with the rows their SQL returns now (`sl readback --targets golden:sessions_2025,golden:marketing_spend_2025 --tolerance 0`); on the owner's yes ("yep" for the terse persona), record it under Dana Ruiz's name (`sl reply`), confirm them with tolerance 0 (`sl goldens confirm`, which refuses without that yes) and check them. The goldens map to `sessions_2025` and `marketing_spend_2025` in `fixtures/acme/reference-figures.json` through `scenarios/acme.figures.json`, so the `figures` grader compiles their requests and scores 1, and the owner's latest reply to every approval and confirmed golden is that yes, so `approvals` scores 1.
+A `connection` intake starts with the project and the lake source already written. An `export` or `export_upgrade` intake starts with the project and, at `shared/lake-schema.csv` in the root, the schema export the owner shares: the fixture's views read with `sl export-sql --dialect duckdb`'s catalog query, no table data. The smoke subset is the two connection scenarios; the full matrix (on demand, docs/PRD.md FR-6.4) runs every scenario here:
+
+```sh
+for s in acme-structured acme-terse acme-export acme-export-upgrade; do bun evals/runner/run.ts --scenario $s; done
+```
+
+The two connection scripts follow the flow `skills/semantic-layer/SKILL.md` describes, in seven skill turns: introspect, scope the three lake tables, profile and draft; settle what a row of `sessions` and of `marketing_spend` means and write it into the models (`sl question resolve`, `sl set`); read back the two models, `session_count`, `started_at`, `spend` and `spend_date` (`sl readback`); on the owner's yes ("yep" for the terse persona), record it in the owner's words under Dana Ruiz's name (`sl reply`) and approve each item (`sl approve`); write two draft goldens, `sessions_2025` and `marketing_spend_2025`, and run them; on the owner's agreement to the figures and a tolerance of 0, write it into each golden's `reference` and read both goldens back with the rows their SQL returns now (`sl readback --targets golden:sessions_2025,golden:marketing_spend_2025 --tolerance 0`); on the owner's yes ("yep" for the terse persona), record it under Dana Ruiz's name (`sl reply`), confirm them with tolerance 0 (`sl goldens confirm`, which refuses without that yes) and check them. The goldens map to `sessions_2025` and `marketing_spend_2025` in `fixtures/acme/reference-figures.json` through `scenarios/acme.figures.json`, so the `figures` grader compiles their requests and scores 1, and the owner's latest reply to every approval and confirmed golden is that yes, so `approvals` scores 1.
+
+The two export scripts open the same way: the skill asks for a read-only connection with its reason, the owner says one is not possible, and only then does the skill print the export query (`sl export-sql`) and import the shared file with the owner's reason (`sl setup --export shared/lake-schema.csv --reason ...`). It scopes and drafts the three tables, writes the owner's answers and the join from `web_events` to `sessions` into the models, reads back seven definitions and approves them on the owner's recorded yes. No golden is confirmed: there is no data to confirm against. `acme-export` ends there, with `sl status` listing profiles, join evidence, goldens and drift from data as waiting on a connection, not `done`, and the upgrade named. In `acme-export-upgrade` the owner then gives the connection: the skill runs `sl next`, upgrades the source with `sl setup --source lake --dialect duckdb --view ...` (profiles, join evidence, the contradiction list), reads back the one contradicted draft, `web_events.event_type`, whose data holds event types no description names, and approves it on the owner's answer. `figures` is not graded on either, since no golden is approved.
 
 ## How a run works
 
@@ -103,7 +113,7 @@ The skill agent gets a fresh context on every turn: the working semantic root (i
 
 ## The scripted driver
 
-The scripted driver replays a script's skill and owner turns in order. A skill turn first writes the files its `write` lists, by path relative to the working root (a draft golden, which the skill writes by hand), then runs the `sl` commands it lists in the working root, in-process, with the run's clock. A write must be a plain path inside the root that passes through no link, not under `.sl/`, and valid YAML that sets neither `status: approved` nor an approval field such as `approved_by` or `confirmed_by` anywhere in it, however it is spelled: only `sl approve` and `sl goldens confirm` approve. The runner refuses a script that breaks this before the run starts. It needs no network and no key, so the tests and CI use it. A script that runs out of turns before a skill turn says `"done": true` stops the run with an error naming the fix.
+The scripted driver replays a script's skill and owner turns in order. A skill turn first writes the files its `write` lists, by path relative to the working root (a draft golden, which the skill writes by hand), then runs the `sl` commands it lists in the working root, in-process, with the run's clock. `{fixture}` in an `sl` argument stands for the fixture directory relative to the root, as in a scenario's views, so a script can give a source its connection; the transcript keeps the argument as written. A write must be a plain path inside the root that passes through no link, not under `.sl/`, and valid YAML that sets neither `status: approved` nor an approval field such as `approved_by` or `confirmed_by` anywhere in it, however it is spelled: only `sl approve` and `sl goldens confirm` approve. The runner refuses a script that breaks this before the run starts. It needs no network and no key, so the tests and CI use it. A script that runs out of turns before a skill turn says `"done": true` stops the run with an error naming the fix.
 
 ## The sdk driver
 
