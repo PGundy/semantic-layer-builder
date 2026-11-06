@@ -21,6 +21,7 @@ import { classifyType, isNumeric, isTemporal } from "./column-types.ts";
 import { type Condition, conditionAttributes, type Literal, parseCondition } from "./conditions.ts";
 import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
 import { quoteIdent } from "./dialect.ts";
+import { intakeIssues } from "./intake.ts";
 import { currentYes, ledgerReplies } from "./ledger.ts";
 import { findTable } from "./naming.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
@@ -173,7 +174,7 @@ export function schemaIssues(kind: SchemaKind, data: unknown, file: string): Iss
 }
 
 // The eval harness's files (evals/runner), each with a schema under schemas/ (spec.md, Eval runs).
-export const EVAL_SCHEMA_KINDS = ["eval-scenario", "eval-script", "eval-transcript-turn", "eval-summary"] as const;
+export const EVAL_SCHEMA_KINDS = ["eval-scenario", "eval-script", "eval-transcript-turn", "eval-summary", "eval-figures", "eval-grades"] as const;
 export type EvalSchemaKind = (typeof EVAL_SCHEMA_KINDS)[number];
 
 let evalValidators: Map<EvalSchemaKind, ValidateFunction> | undefined;
@@ -579,6 +580,7 @@ class Validator {
           if (problem) this.error(l.file, `scope.${key}[${i}]`, problem);
         });
       }
+      for (const x of intakeIssues(s, this.root)) this.issues.push({ level: x.level, file: l.file, path: x.path, message: x.message });
       if (s.dialect !== "duckdb") {
         for (const key of ["database", "setup", "views"] as const)
           if (s.connection?.[key] !== undefined) this.warn(l.file, `connection.${key}`, `is used only by duckdb sources, not ${s.dialect}`);

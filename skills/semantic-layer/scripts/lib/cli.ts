@@ -32,11 +32,13 @@ function clock(env: Record<string, string | undefined>): () => Date {
 
 async function usage(io: CliIO): Promise<void> {
   const lines = ["Usage: sl <command> [flags]", GLOBAL_HELP, ""];
+  // The summaries start in one column, past the longest command name.
+  const width = Math.max(...Object.keys(COMMANDS).map((n) => n.length));
   for (const [name, load] of Object.entries(COMMANDS)) {
     try {
-      lines.push(`  ${name.padEnd(12)} ${(await load()).default.summary}`);
+      lines.push(`  ${name.padEnd(width)} ${(await load()).default.summary}`);
     } catch {
-      lines.push(`  ${name.padEnd(12)} (unavailable)`);
+      lines.push(`  ${name.padEnd(width)} (unavailable)`);
     }
   }
   io.out(lines.join("\n"));

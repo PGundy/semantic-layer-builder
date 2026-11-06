@@ -38,6 +38,25 @@
       }
     },
     "opening": { "type": "string", "minLength": 1, "description": "The owner's first message, turn 1." },
-    "script": { "type": "string", "description": "Canned turns for the scripted driver, relative to the scenario file." }
+    "script": { "type": "string", "description": "Canned turns for the scripted driver, relative to the scenario file." },
+    "grading": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What the graders (evals/graders/) compare a run with.",
+      "properties": {
+        "figures": { "type": "string", "description": "A figure mapping file (eval-figures.schema.json), relative to the scenario file." },
+        "selection": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
+          "additionalProperties": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "description": "Source -> the tables the owner's brief puts in scope, by name or schema.table."
+        },
+        "protected_columns": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9_]+\\.[A-Za-z0-9_]+$" },
+          "description": "table.column of the fixture's data whose values never appear in a run's files, beside those the sensitivity rules flag."
+        }
+      }
+    }
   }
 }
