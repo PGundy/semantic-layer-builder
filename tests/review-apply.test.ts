@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runCli } from "../skills/semantic-layer/scripts/lib/cli.ts";
 import { openLedger } from "../skills/semantic-layer/scripts/lib/ledger.ts";
 import { applyReview, parseReviewMarkdown, questionKey, type ReviewForm } from "../skills/semantic-layer/scripts/lib/review.ts";
@@ -444,5 +444,163 @@ describe("sl review apply edges", () => {
     expect((await apply(root, jsonPath(root))).code).not.toBe(0);
     expect(accessText(root)).toBe(before);
     expect(readFileSync(join(dir, "elsewhere.jsonl"), "utf8")).toBe("");
+  });
+});
+
+// Decision D2: a golden of an export source cannot be confirmed until the source has a connection,
+// so a yes to one names the upgrade first, once per source, and the yes stays recorded.
+describe("a yes to an export source's golden names the upgrade, not a confirm that refuses", () => {
+  const EXPORT_CSV = join(import.meta.dir, "..", "examples", "acme-export", "schema.csv");
+  const UPGRADE = "sl setup --source warehouse --dialect postgres --env <VAR>";
+  const yes = (root: string, item = 1) => sl(root, ["reply", "--readback", "rb_0001", "--item", String(item), "--text", "Yes, 5 orders.", "--verdict", "yes", "--by", OWNER]);
+
+  // The Acme export set up as an export source, with its layer approved and the draft goldens `names` on it.
+  async function exportCopy(names: string[]): Promise<{ root: string; measure: string }> {
+    const dir = mkdtempSync(join(tmpdir(), "sl-review-export-"));
+    temps.push(dir);
+    const root = join(dir, "semantic");
+    const setup = ["setup", "--source", "warehouse", "--dialect", "postgres", "--export", EXPORT_CSV, "--reason", "The warehouse accepts no outside connections."];
+    expect((await sl(root, [...setup, "--schemas", "acme", "--include", "fct_orders,dim_customers,dim_regions"])).code).toBe(0);
+    expect((await sl(root, ["draft", "--source", "warehouse"])).code).toBe(0);
+    const ok = { status: "approved", approved_by: OWNER, approved_at: "2026-01-15" };
+    for (const f of readdirSync(join(root, "models", "warehouse"))) {
+      const file = join(root, "models", "warehouse", f);
+      const m = readYaml<Model>(file);
+      const all = <T extends { description?: string }>(xs: T[] | undefined) => (xs ?? []).map((x) => ({ description: "Agreed with the owner.", ...x, ...ok }));
+      writeYaml(file, { ...m, ...ok, dimensions: all(m.dimensions), measures: all(m.measures), joins: all(m.joins) });
+    }
+    writeYaml(join(root, "access.yaml"), { version: 1, mode: "open", ...ok });
+    const measure = readYaml<Model>(join(root, "models", "warehouse", "fct_orders.yaml")).measures![0]!.name;
+    for (const name of names)
+      writeYaml(join(root, "goldens", `${name}.yaml`), { name, question: "How many orders are there?", request: { source: "warehouse", measures: [`fct_orders.${measure}`] }, status: "draft" });
+    return { root, measure };
+  }
+
+  // The golden orders_total read back from a plan, its rows stored with sl results add, as rb_0001.
+  async function readBackFromPlan(): Promise<string> {
+    const { root, measure } = await exportCopy(["orders_total"]);
+    const plan = (await sl(root, ["goldens", "run", "--name", "orders_total", "--emit-sql", "--json"])).json<{ plan_id: string; queries: { id: string }[] }>();
+    writeFileSync(join(root, "rows.json"), JSON.stringify([{ [measure]: 5 }]));
+    expect((await sl(root, ["results", "add", "--plan", plan.plan_id, "--query", plan.queries[0]!.id, "--file", join(root, "rows.json")])).code).toBe(0);
+    expect((await sl(root, ["readback", "--targets", "golden:orders_total", "--plan", plan.plan_id])).code).toBe(0);
+    return root;
+  }
+
+  // The source as a connection source: its intake block removed and a connection set.
+  function connect(root: string): void {
+    const file = join(root, "sources", "warehouse.yaml");
+    const { intake: _, ...rest } = readYaml<Record<string, unknown>>(file);
+    writeYaml(file, { ...rest, connection: { env: "PG_URL" } });
+  }
+
+  async function applyYes(root: string): Promise<{ next: string; next_steps: string[]; recorded: LedgerEntry[] }> {
+    expect((await sl(root, ["review", "export", "--readback", "rb_0001", "--format", "json"])).code).toBe(0);
+    const form = readJsonForm(root);
+    for (const it of form.items) it.verdict = "yes";
+    writeJsonForm(root, form);
+    const r = await apply(root, jsonPath(root), "--json");
+    expect(r.code).toBe(0);
+    return r.json();
+  }
+
+  test("sl review apply records the yes and names the upgrade, then the confirm", async () => {
+    const root = await readBackFromPlan();
+    const out = await applyYes(root);
+    const step = `golden:orders_total cannot be confirmed until source warehouse has a connection: ${UPGRADE}, then sl goldens confirm --name orders_total`;
+    expect(out.recorded).toMatchObject([{ kind: "reply", target: "golden:orders_total", verdict: "yes", by: OWNER }]);
+    expect(out.next_steps).toEqual([step]);
+    expect(out.next).toBe(step);
+    expect(out.next_steps).not.toContain("sl goldens confirm --name orders_total");
+    const text = await apply(root, jsonPath(root));
+    expect(text.out).toContain(`Already recorded, so not recorded again:\n  - item 1 (golden:orders_total), verdict yes (ans_0001)`);
+    expect(text.out).toContain(`Next:\n  - ${step}`);
+  });
+
+  test("several goldens of one export source name the upgrade once; a connection source's golden names the confirm", async () => {
+    const { root, measure } = await exportCopy(["orders_total", "orders_again"]);
+    writeFileSync(join(root, "res.json"), JSON.stringify({ "golden:orders_total": [{ [measure]: 5 }], "golden:orders_again": [{ [measure]: 5 }] }));
+    expect((await sl(root, ["readback", "--targets", "golden:orders_total,golden:orders_again,warehouse.fct_orders", "--results", join(root, "res.json")])).code).toBe(0);
+    const twin = join(dirname(root), "twin");
+    cpSync(root, twin, { recursive: true });
+    const out = await applyYes(root);
+    expect(out.recorded.length).toBe(3);
+    // The model's open questions, still unanswered, add a last step.
+    expect(out.next_steps.slice(0, 2)).toEqual([
+      `golden:orders_total and golden:orders_again cannot be confirmed until source warehouse has a connection: ${UPGRADE}, then sl goldens confirm --name orders_total and sl goldens confirm --name orders_again`,
+      `sl approve --target warehouse.fct_orders --by "${OWNER}"`,
+    ]);
+    // Once the source has a connection, each yes names its confirm again.
+    connect(twin);
+    expect((await applyYes(twin)).next_steps.slice(0, 3)).toEqual([
+      "sl goldens confirm --name orders_total",
+      "sl goldens confirm --name orders_again",
+      `sl approve --target warehouse.fct_orders --by "${OWNER}"`,
+    ]);
+  });
+
+  test("sl reply names the upgrade for an export source's golden and the confirm for a connection source's", async () => {
+    const root = await readBackFromPlan();
+    const twin = join(dirname(root), "twin");
+    cpSync(root, twin, { recursive: true });
+    const r = await yes(root);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(
+      `the yes stays recorded, but golden:orders_total cannot be confirmed until source warehouse has a connection. Next: ${UPGRADE}, then sl goldens confirm --name orders_total.`,
+    );
+    expect(entries(root)).toMatchObject([{ kind: "reply", target: "golden:orders_total", verdict: "yes" }]);
+    const again = await sl(root, ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Yes.", "--verdict", "yes", "--by", OWNER, "--json"]);
+    expect(again.json<{ next: string }>().next).toBe(`${UPGRADE}, then sl goldens confirm --name orders_total`);
+    connect(twin);
+    const c = await yes(twin);
+    expect(c.out).toContain("The owner said yes to the item as read back. Next: sl goldens confirm --name orders_total.");
+    expect(c.out).not.toContain("sl setup");
+  });
+
+  test("is deterministic: two copies give the same ledger and output", async () => {
+    const runs: string[][] = [];
+    for (let i = 0; i < 2; i++) {
+      const root = await readBackFromPlan();
+      const out = await applyYes(root);
+      const r = await yes(root);
+      runs.push([ledger(root).replaceAll(root, "<root>"), JSON.stringify(out.next_steps), r.out]);
+    }
+    expect(runs[1]).toEqual(runs[0]!);
+  });
+
+  // Goldens a, c and b read back with a model as rb_0001; c then reads from a second export source, lake (duckdb).
+  async function twoSources(): Promise<string> {
+    const { root, measure } = await exportCopy(["a_total", "c_total", "b_total"]);
+    const rows = [{ [measure]: 5 }];
+    writeFileSync(join(root, "res.json"), JSON.stringify({ "golden:a_total": rows, "golden:c_total": rows, "golden:b_total": rows }));
+    const r = await sl(root, ["readback", "--targets", "golden:a_total,golden:c_total,golden:b_total,warehouse.fct_orders", "--results", join(root, "res.json")]);
+    expect(r.code).toBe(0);
+    writeYaml(join(root, "sources", "lake.yaml"), { ...readYaml<Record<string, unknown>>(join(root, "sources", "warehouse.yaml")), source: "lake", dialect: "duckdb" });
+    const g = readYaml<{ request: Record<string, unknown> }>(join(root, "goldens", "c_total.yaml"));
+    writeYaml(join(root, "goldens", "c_total.yaml"), { ...g, request: { ...g.request, source: "lake" } });
+    return root;
+  }
+
+  test("two export sources: one step each, at its first golden's place, a duckdb source naming --database", async () => {
+    const root = await twoSources();
+    const out = await applyYes(root);
+    expect(out.next_steps.slice(0, 3)).toEqual([
+      `golden:a_total and golden:b_total cannot be confirmed until source warehouse has a connection: ${UPGRADE}, then sl goldens confirm --name a_total and sl goldens confirm --name b_total`,
+      "golden:c_total cannot be confirmed until source lake has a connection: sl setup --source lake --dialect duckdb --database <path>, then sl goldens confirm --name c_total",
+      `sl approve --target warehouse.fct_orders --by "${OWNER}"`,
+    ]);
+    for (const s of out.next_steps) expect(s.startsWith("sl goldens confirm")).toBe(false);
+    // A second apply records nothing and names the same steps.
+    expect((await apply(root, jsonPath(root), "--json")).json<{ next_steps: string[] }>().next_steps).toEqual(out.next_steps);
+    const rep = await sl(root, ["reply", "--readback", "rb_0001", "--item", "2", "--text", "Yes.", "--verdict", "yes", "--by", OWNER, "--json"]);
+    expect(rep.json<{ next: string }>().next).toBe("sl setup --source lake --dialect duckdb --database <path>, then sl goldens confirm --name c_total");
+  });
+
+  test("a golden with no request.source, or whose source file cannot be read, names the confirm", async () => {
+    const root = await twoSources();
+    const g = readYaml<{ request: Record<string, unknown> }>(join(root, "goldens", "a_total.yaml"));
+    const { source: _, ...request } = g.request;
+    writeYaml(join(root, "goldens", "a_total.yaml"), { ...g, request });
+    writeFileSync(join(root, "sources", "lake.yaml"), "source: [unclosed\n");
+    expect((await applyYes(root)).next_steps.slice(0, 2)).toEqual(["sl goldens confirm --name a_total", "sl goldens confirm --name c_total"]);
   });
 });
