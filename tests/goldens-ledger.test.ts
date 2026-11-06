@@ -86,7 +86,8 @@ describe("sl readback --targets golden:<name>", () => {
       "Grouped by: orders.region.",
       "Runs as no role of its own",
       "> Finance Q1 pack, 360.75 in total.",
-      "Its SQL returns now 3 rows:",
+      // No model defines orders here, so the request does not compile and the rows are its cross_check_sql's (the older key sql).
+      `Its request does not compile from the current YAML (sl goldens run --name ${NAME} says why); its cross_check_sql returns now 3 rows:`,
       "> east    150.5    2",
       "Tolerance: 0: later runs must give exactly these figures.",
       "sl goldens confirm --name revenue_by_region",
@@ -159,7 +160,7 @@ describe("sl goldens confirm requires the owner's recorded yes", () => {
     expect(r.code).toBe(1);
     expect(r.err).toContain(
       `Cannot confirm ${TARGET}: no owner reply to its readback is recorded; nothing was recorded. sl goldens confirm needs the owner's yes in .sl/ledger.jsonl ` +
-        `to the golden with the rows its SQL returns now. Next: sl readback --targets ${TARGET} --tolerance 0, read it to the owner, record their answer with ` +
+        `to the golden with the rows its request compiles to now. Next: sl readback --targets ${TARGET} --tolerance 0, read it to the owner, record their answer with ` +
         `sl reply --readback <readback_id> --item <n> --text "<owner's words>" --verdict yes --by "<owner>", then sl goldens confirm --name ${NAME} --tolerance 0.`,
     );
     expect(readFileSync(t.goldenPath, "utf8")).toBe(before);
@@ -211,7 +212,7 @@ describe("sl goldens confirm requires the owner's recorded yes", () => {
     const r = await sl(t.root, ["goldens", "confirm", "--name", NAME]);
     expect(r.code).toBe(1);
     expect(r.err).toContain(
-      `Cannot confirm ${TARGET}: the golden, the rows its SQL returns or the tolerance changed since the owner said yes (ans_0001, to item 1 of rb_0001), ` +
+      `Cannot confirm ${TARGET}: the golden, the rows its request compiles to now or the tolerance changed since the owner said yes (ans_0001, to item 1 of rb_0001), ` +
         "so that yes is to figures it no longer has; nothing was recorded.",
     );
     expect(r.err).toContain(`Next: sl readback --targets ${TARGET}, read it to the owner`);
@@ -303,7 +304,7 @@ describe("golden readbacks through review forms and on warehouse sources", () =>
     const live = await sl(t.root, ["readback", "--targets", TARGET, "--tolerance", "0"]);
     expect(live.code).toBe(1);
     expect(live.err).toContain(
-      `${TARGET} runs on source "wh", which is snowflake, so sl cannot run its SQL; nothing was written. Write its plan with sl goldens run --name ${NAME} --emit-sql, ` +
+      `${TARGET} runs on source "wh", which is snowflake, so sl cannot run its queries; nothing was written. Write its plan with sl goldens run --name ${NAME} --emit-sql, ` +
         "run the query with your own tool, store the rows with sl results add --plan <plan_id> --query <query id> --file <rows.json>, then " +
         `sl readback --targets ${TARGET} --tolerance 0 --plan <plan_id>`,
     );
@@ -312,14 +313,16 @@ describe("golden readbacks through review forms and on warehouse sources", () =>
     const planId = emit.json<{ plan_id: string }>().plan_id;
     const rowsFile = join(t.dir, "rows a.json");
     writeFileSync(rowsFile, JSON.stringify([{ region: "east", revenue: 150.5, orders: 2 }]));
-    expect((await sl(t.root, ["results", "add", "--plan", planId, "--query", TARGET, "--file", rowsFile])).code).toBe(0);
+    // sl sql does not compile snowflake, so the plan holds the golden's cross_check_sql (its older key sql) alone.
+    expect(emit.json<{ queries: { id: string }[] }>().queries.map((q) => q.id)).toEqual([`${TARGET}:cross_check`]);
+    expect((await sl(t.root, ["results", "add", "--plan", planId, "--query", `${TARGET}:cross_check`, "--file", rowsFile])).code).toBe(0);
     const rb = await sl(t.root, ["readback", "--targets", TARGET, "--tolerance", "0", "--plan", planId]);
     expect(rb.code).toBe(0);
     expect(rb.out).toContain(`sl goldens confirm --name ${NAME} --plan ${planId}`);
     // A --results path is quoted for the shell in the confirm step.
     const fileRb = await sl(t.root, ["readback", "--targets", TARGET, "--results", join(t.dir, "res a.json")]);
     expect(fileRb.code).toBe(1);
-    writeFileSync(join(t.dir, "res a.json"), JSON.stringify({ [TARGET]: [{ region: "east", revenue: 150.5, orders: 2 }] }));
+    writeFileSync(join(t.dir, "res a.json"), JSON.stringify({ [`${TARGET}:cross_check`]: [{ region: "east", revenue: 150.5, orders: 2 }] }));
     const quoted = await sl(t.root, ["readback", "--targets", TARGET, "--results", join(t.dir, "res a.json")]);
     expect(quoted.code).toBe(0);
     expect(quoted.out).toContain(`sl goldens confirm --name ${NAME} --results "${join(t.dir, "res a.json")}"`);
@@ -350,7 +353,7 @@ describe("sl validate and goldens confirmed without a yes", () => {
     expect(w[0]!.level).toBe("warning");
     expect(readYaml<Golden>(t.goldenPath).status).toBe("approved");
     expect(w[0]!.message).toBe(
-      `${TARGET} is confirmed, but no recorded owner yes in .sl/ledger.jsonl matches it as it stands (its question, request, sql, role, user, tolerance and expected rows; ` +
+      `${TARGET} is confirmed, but no recorded owner yes in .sl/ledger.jsonl matches it as it stands (its question, request, cross_check_sql, role, user, tolerance and expected rows; ` +
         "confirmed before sl goldens confirm required one, or edited since); it stays confirmed. To record a yes, read it back with " +
         `sl readback --targets ${TARGET}, record the owner's answer with sl reply, then run sl goldens confirm --name ${NAME}`,
     );
@@ -369,6 +372,128 @@ describe("sl validate and goldens confirmed without a yes", () => {
   });
 });
 
+// The golden's request compiled from an orders model: the rows a readback shows, its hash covers and
+// confirm records all come from the compiled query, and cross_check_sql must agree with it.
+describe("sl goldens confirm on the compiled path", () => {
+  const ok = { status: "approved" as const, approved_by: "Dana Ruiz", approved_at: "2026-01-15" };
+  const orders = (expr = "amount") => ({
+    model: "orders",
+    source: "wh",
+    table: "main.orders",
+    ...ok,
+    dimensions: [{ name: "region", expr: "region", type: "string", ...ok }],
+    measures: [{ name: "revenue", expr, agg: "sum", description: "Revenue.", ...ok }],
+  });
+  const CROSS = "select region, sum(amount) as revenue from orders group by region";
+
+  async function compiledSetup(extra = "") {
+    const t = await setup();
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), orders());
+    writeFileSync(t.goldenPath, GOLDEN_YAML.replace(/sql: \|\n(  .*\n)+/, extra));
+    return t;
+  }
+
+  test("the readback shows the compiled rows, its hash covers them and confirm records exactly them", async () => {
+    const t = await compiledSetup();
+    const human = await sl(t.root, ["readback", "--targets", TARGET, "--tolerance", "0"]);
+    expect(human.code).toBe(0);
+    expect(human.out).toContain("Its request, compiled from the current YAML, returns now 3 rows:");
+    const item = (JSON.parse(readFileSync(join(t.root, ".sl", "pending", "rb_0001.json"), "utf8")) as PendingReadback).items[0]!;
+    const compiled = (await sl(t.root, ["goldens", "run", "--name", NAME, "--json"])).json<{ rows: Record<string, unknown>[] }>().rows;
+    expect(item.content_hash).toBe(goldenHash(readYaml(t.goldenPath), compiled, 0));
+    await reply(t.root, "rb_0001", "yes");
+    expect((await sl(t.root, ["goldens", "confirm", "--name", NAME])).code).toBe(0);
+    const saved = readYaml<Golden>(t.goldenPath);
+    expect(goldenHash(saved as unknown as Record<string, unknown>, saved.expected!.rows, 0)).toBe(item.content_hash);
+    expect(await warningsAbout(t.root)).toEqual([]);
+  });
+
+  test("a model change after the yes changes the compiled rows: confirm is refused and writes nothing", async () => {
+    const t = await compiledSetup();
+    await reply(t.root, (await readback(t.root)).readback_id, "yes");
+    writeYaml(join(t.root, "models", "wh", "orders.yaml"), orders("amount * 2"));
+    const before = readFileSync(t.goldenPath, "utf8");
+    const r = await sl(t.root, ["goldens", "confirm", "--name", NAME]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("the rows its request compiles to now or the tolerance changed since the owner said yes");
+    expect(r.err).toContain(`Next: sl readback --targets ${TARGET}`);
+    expect(readFileSync(t.goldenPath, "utf8")).toBe(before);
+  });
+
+  test("cross_check_sql that agrees is read back as agreeing, and renaming sql to cross_check_sql keeps the yes", async () => {
+    const t = await compiledSetup(`sql: ${CROSS}\n`);
+    const rb = await sl(t.root, ["readback", "--targets", TARGET]);
+    expect(rb.out).toContain("Its request, compiled from the current YAML, returns now 3 rows:");
+    expect(rb.out).toContain("Its cross_check_sql gives the same rows.");
+    await reply(t.root, "rb_0001", "yes");
+    writeFileSync(t.goldenPath, readFileSync(t.goldenPath, "utf8").replace("sql:", "cross_check_sql:"));
+    expect((await sl(t.root, ["goldens", "confirm", "--name", NAME])).code).toBe(0);
+    expect(readYaml<Golden>(t.goldenPath).confirmed_by).toBe("Dana Ruiz");
+  });
+
+  test("cross_check_sql that disagrees is refused at readback and at confirm, writing nothing", async () => {
+    const t = await compiledSetup(`cross_check_sql: ${CROSS.replace("sum(amount)", "sum(amount) * 3")}\n`);
+    const rb = await sl(t.root, ["readback", "--targets", TARGET]);
+    expect(rb.code).toBe(1);
+    expect(rb.err).toContain("cross_check_sql gives other rows than the request compiled from the YAML");
+    expect(rb.err).toContain(`sl goldens run --name ${NAME}`);
+    expect(existsSync(join(t.root, ".sl", "pending"))).toBe(false);
+    const before = readFileSync(t.goldenPath, "utf8");
+    expect((await sl(t.root, ["goldens", "confirm", "--name", NAME])).code).toBe(1);
+    expect(readFileSync(t.goldenPath, "utf8")).toBe(before);
+  });
+
+  test("agreement is judged at the tolerance read back and recorded, not the default", async () => {
+    // 0.4% apart: within the default 0.005, not at tolerance 0.
+    const t = await compiledSetup(`cross_check_sql: ${CROSS.replace("sum(amount)", "sum(amount) * 1.004")}\n`);
+    const loose = await sl(t.root, ["readback", "--targets", TARGET]);
+    expect(loose.code).toBe(0);
+    expect(loose.out).toContain("Its cross_check_sql gives the same rows.");
+    const strict = await sl(t.root, ["readback", "--targets", TARGET, "--tolerance", "0"]);
+    expect(strict.code).toBe(1);
+    expect(strict.err).toContain("cross_check_sql gives other rows than the request compiled from the YAML at tolerance 0");
+    const run = await sl(t.root, ["goldens", "run", "--name", NAME, "--tolerance", "0", "--json"]);
+    expect(run.json<{ cross_check: { ok: boolean } }>().cross_check.ok).toBe(false);
+    // A yes to the default tolerance cannot be confirmed at tolerance 0: the queries disagree there.
+    await reply(t.root, (await readback(t.root)).readback_id, "yes");
+    const before = readFileSync(t.goldenPath, "utf8");
+    const r = await sl(t.root, ["goldens", "confirm", "--name", NAME, "--tolerance", "0"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("at tolerance 0");
+    expect(readFileSync(t.goldenPath, "utf8")).toBe(before);
+    // Confirmed at the tolerance read back, its first check passes.
+    expect((await sl(t.root, ["goldens", "confirm", "--name", NAME])).code).toBe(0);
+    expect((await sl(t.root, ["goldens", "check", "--name", NAME, "--json"])).json<{ failed: number }>().failed).toBe(0);
+  });
+
+  test("a protected column in the compiled rows is masked in the readback text, JSON and pending file", async () => {
+    const t = await compiledSetup();
+    await mutate(t.db, "create table customers (id integer, email varchar, city varchar); insert into customers values (1, 'ana@example.com', 'Lisbon')");
+    writeYaml(join(t.root, "models", "wh", "customers.yaml"), {
+      model: "customers",
+      source: "wh",
+      table: "main.customers",
+      ...ok,
+      dimensions: [
+        { name: "email", expr: "email", type: "string", ...ok },
+        { name: "city", expr: "city", type: "string", ...ok },
+      ],
+      measures: [{ name: "n", agg: "count", description: "Customers.", ...ok }],
+    });
+    writeFileSync(
+      join(t.root, "goldens", "by_email.yaml"),
+      "name: by_email\nquestion: Customers by email\nrequest:\n  source: wh\n  measures: [customers.n]\n  dimensions: [customers.email, customers.city]\nstatus: draft\n",
+    );
+    const human = await sl(t.root, ["readback", "--targets", "golden:by_email"]);
+    expect(human.code).toBe(0);
+    expect(human.out).toContain("compiled from the current YAML");
+    expect(human.out).toContain(PROTECTED_VALUE);
+    expect(human.out).not.toContain("ana@example.com");
+    expect((await sl(t.root, ["readback", "--targets", "golden:by_email", "--json"])).out).not.toContain("ana@example.com");
+    for (const f of ["rb_0001.json", "rb_0002.json"]) expect(readFileSync(join(t.root, ".sl", "pending", f), "utf8")).not.toContain("ana@example.com");
+  });
+});
+
 describe("goldenHash", () => {
   const g = { name: "g", question: "q", request: { source: "wh", measures: ["orders.revenue"] }, sql: "select 1", status: "draft" };
   const rows = [
@@ -382,12 +507,17 @@ describe("goldenHash", () => {
     expect(goldenHash(ordered, rows, 0)).not.toBe(goldenHash(ordered, [...rows].reverse(), 0));
   });
 
-  test("covers rows, tolerance, sql, cross_check_sql, role and user, not reference; no user is an empty user", () => {
+  test("covers rows, tolerance, cross_check_sql under either key, role and user, not reference; no user is an empty user", () => {
     const base = goldenHash(g, rows, 0);
     expect(goldenHash(g, [{ region: "east", n: 1 }], 0)).not.toBe(base);
     expect(goldenHash(g, rows, 0.005)).not.toBe(base);
     expect(goldenHash({ ...g, sql: "select 2" }, rows, 0)).not.toBe(base);
-    expect(goldenHash({ ...g, cross_check_sql: "select 1" }, rows, 0)).not.toBe(base);
+    expect(goldenHash({ ...g, cross_check_sql: "select 2" }, rows, 0)).not.toBe(base);
+    // sql is the older key of cross_check_sql: renaming it keeps the hash, and cross_check_sql wins when both are written.
+    const { sql, ...renamed } = g;
+    expect(goldenHash({ ...renamed, cross_check_sql: sql }, rows, 0)).toBe(base);
+    expect(goldenHash({ ...g, cross_check_sql: "select 2" }, rows, 0)).toBe(goldenHash({ ...renamed, cross_check_sql: "select 2" }, rows, 0));
+    expect(goldenHash(renamed, rows, 0)).not.toBe(base);
     expect(goldenHash({ ...g, role: "analyst" }, rows, 0)).not.toBe(base);
     expect(goldenHash({ ...g, user: { region: "west" } }, rows, 0)).not.toBe(base);
     expect(goldenHash({ ...g, user: {} }, rows, 0)).toBe(base);

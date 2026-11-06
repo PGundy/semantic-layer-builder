@@ -1,5 +1,5 @@
 import { validateProject } from "../lib/validate.ts";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { canRun } from "../lib/adapters/index.ts";
 import { validDate } from "./approve.ts";
@@ -8,7 +8,23 @@ import { bool, str } from "../lib/command.ts";
 import { goldenHash } from "../lib/approval-hash.ts";
 import { UserError } from "../lib/errors.ts";
 import { intakeMode, upgradeCommand } from "../lib/intake.ts";
-import { compareRows, currencyColumns, DEFAULT_TOLERANCE, displayRows, goldenDraftFields, goldenPlan, goldenQueryId, resultColumns } from "../lib/goldens.ts";
+import type { CompileResult } from "../lib/compiler/index.ts";
+import {
+  compareRows,
+  compileGolden,
+  crossCheckQueryId,
+  crossCheckSql,
+  currencyColumns,
+  DEFAULT_TOLERANCE,
+  displayRows,
+  goldenDraftFields,
+  goldenPlan,
+  goldenQueryId,
+  judgeGolden,
+  onlyUnsupportedDialect,
+  refusalNext,
+  resultColumns,
+} from "../lib/goldens.ts";
 import { LEDGER_FILE, latestReply, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
 import { formatJson, formatTable, maskRows, plainText, protectedNames, protectedNote, protectedResultColumns } from "../lib/output.ts";
 import { emitPlan, executePlan, planResults, resultsInput } from "../lib/plan.ts";
@@ -16,18 +32,26 @@ import type { GoldenRun } from "../lib/readback.ts";
 import { listGoldens, loadAccess, loadMetrics, loadSource, paths, stem, type LoadedGolden } from "../lib/project.ts";
 import type { Golden, GoldenRunAs, LedgerReply, Metric, Model, PlanResults, QueryPlan, ResultRows, SourceConfig } from "../lib/types.ts";
 import { NAME_PATTERN } from "../lib/types.ts";
-import { readJson, readYaml, updateYaml } from "../lib/yaml.ts";
+import { schemaIssues } from "../lib/validate.ts";
+import { parseYamlText, readJson, readYaml, updateYaml, writeYaml } from "../lib/yaml.ts";
 
 export const MAX_CONFIRM_ROWS = 200;
 export { DEFAULT_TOLERANCE };
 
-const SUBCOMMANDS = ["run", "confirm", "check"] as const;
+const SUBCOMMANDS = ["run", "confirm", "check", "new"] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
 
 export interface GoldenCheck {
   name: string;
   ok: boolean;
   diffs: string[];
+  // How the rows compiled from the YAML compared: pass or fail; refused when the compiler refused
+  // the request; unsupported when it does not compile the source's dialect (cross_check_sql alone runs).
+  compiled?: "pass" | "fail" | "refused" | "unsupported";
+  // How cross_check_sql compared, when the golden has one and it ran.
+  cross_check?: "pass" | "fail";
+  // The step that resolves a refusal.
+  next?: string;
 }
 
 // The golden file for a name, refusing any name that could reach outside goldens/.
@@ -86,16 +110,71 @@ function requireName(values: OptionValues, sub: Subcommand): string {
   return name;
 }
 
-// Runs one golden's query, live, from a results file or from a stored plan.
+// A golden's plan: its request compiled from the current YAML (see compileGolden) and its
+// cross_check_sql, each when there is one.
+function planGolden(ctx: CommandContext, g: Golden, source: SourceConfig): { plan: QueryPlan; compiled: CompileResult } {
+  const compiled = compileGolden(ctx.root, g);
+  return { plan: goldenPlan(g, source, compiled), compiled };
+}
+
+interface GoldenRows {
+  compiled: CompileResult;
+  // The compiled query's rows, when the request compiled; the cross_check_sql rows, when it has one.
+  rows?: ResultRows;
+  cross?: ResultRows;
+}
+
+// Runs a golden's queries, live, from a results file or from a stored plan.
+async function runGoldenQueries(ctx: CommandContext, g: Golden, source: SourceConfig, input: { resultsFile?: string; planId?: string }): Promise<GoldenRows> {
+  const { plan, compiled } = planGolden(ctx, g, source);
+  const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input, warn: ctx.err });
+  return {
+    compiled,
+    ...(compiled.ok ? { rows: results[goldenQueryId(g.name)] ?? [] } : {}),
+    ...(crossCheckSql(g) !== undefined ? { cross: results[crossCheckQueryId(g.name)] ?? [] } : {}),
+  };
+}
+
+// What a golden's rows are when its request does not compile: its cross_check_sql's, said on stderr.
+function notCompiledNote(g: Golden, compiled: CompileResult): string {
+  if (compiled.ok) return "";
+  return plainText(
+    `Golden "${g.name}" does not compile from the current YAML (${compiled.reason}); these rows come from its cross_check_sql. ${refusalNext(g, compiled)}`,
+  );
+}
+
+// The rows a golden records, from one run of its queries: the rows compiled from the YAML, or its
+// cross_check_sql's when its request does not compile. Refused when both ran and disagree at
+// `tolerance`, the tolerance the readback states and confirm records, so a yes is never to rows its
+// first goldens check would fail. sl readback reads back, and goldenHash covers, the rows of such a
+// run, and sl goldens confirm records the rows of its own run only when their hash matches the
+// owner's yes.
 async function runGolden(
   ctx: CommandContext,
   g: Golden,
   source: SourceConfig,
   input: { resultsFile?: string; planId?: string },
-): Promise<ResultRows> {
-  const plan = goldenPlan(g, source);
-  const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input, warn: ctx.err });
-  return results[goldenQueryId(g.name)] ?? [];
+  tolerance: number,
+): Promise<{ rows: ResultRows; from: GoldenRun["from_query"]; cross_checked: boolean }> {
+  const { compiled, rows, cross } = await runGoldenQueries(ctx, g, source, input);
+  if (rows && cross) {
+    const cmp = compareRows(rows, cross, { ordered: orderedGolden(g), tolerance, protectedColumns: protectedColumnsOf(ctx, source, [rows, cross]) });
+    if (!cmp.ok) {
+      throw new UserError(
+        `Golden "${g.name}": cross_check_sql gives other rows than the request compiled from the YAML at tolerance ${tolerance} (expected is the compiled, got is cross_check_sql): ` +
+          `${cmp.diffs.join(" ")} Fix cross_check_sql or the layer, then run sl goldens run --name ${g.name}.`,
+      );
+    }
+  }
+  if (!rows) ctx.err(notCompiledNote(g, compiled));
+  return { rows: rows ?? cross ?? [], from: rows ? "compiled" : "cross_check_sql", cross_checked: !!(rows && cross) };
+}
+
+const orderedGolden = (g: Golden): boolean => (g.request?.order_by ?? []).length > 0;
+
+// The protected columns (see protectedResultColumns) of the given results, always masked in differences.
+function protectedColumnsOf(ctx: CommandContext, source: SourceConfig, results: ResultRows[]): string[] {
+  return protectedResultColumns([...new Set(results.flatMap((r) => resultColumns(r)))], protectedNames(ctx.root, source));
 }
 
 // The result columns whose values goldens prints as [protected] (see protectedResultColumns),
@@ -238,14 +317,14 @@ export async function goldenRun(ctx: CommandContext, values: OptionValues, name:
   const input = resultsInput(ctx, values);
   if (!canRun(source) && input.planId === undefined && !input.resultsFile) {
     throw new UserError(
-      `golden:${name} runs on source "${source.source}", which is ${source.dialect}, so sl cannot run its SQL; nothing was written. ` +
+      `golden:${name} runs on source "${source.source}", which is ${source.dialect}, so sl cannot run its queries; nothing was written. ` +
         `Write its plan with sl goldens run --name ${name} --emit-sql, run the query with your own tool, store the rows with ` +
         `sl results add --plan <plan_id> --query <query id> --file <rows.json>, then sl readback --targets golden:${name}${passedFlags(values, ["tolerance"])} --plan <plan_id> ` +
         `(or save {"<query id>": [rows...]} to a JSON file and pass --results <file>).`,
     );
   }
-  const rows = await runGolden(ctx, golden, source, input);
-  return { rows, tolerance, from, masked: protectedResultColumns(resultColumns(rows), protectedNames(ctx.root, source)) };
+  const { rows, from: fromQuery, cross_checked } = await runGolden(ctx, golden, source, input, tolerance);
+  return { rows, tolerance, from, from_query: fromQuery, cross_checked, masked: protectedResultColumns(resultColumns(rows), protectedNames(ctx.root, source)) };
 }
 
 // The tolerance the readback item a reply answers stated, when that readback is still stored.
@@ -271,7 +350,7 @@ function confirmGate(r: LedgerReply | undefined, values: OptionValues, golden: G
   if (!r) reason = "no owner reply to its readback is recorded";
   else if (r.verdict !== "yes") reason = `the owner's latest reply (${ref}) is ${r.verdict === null ? "recorded without a verdict" : `"${r.verdict}", not yes`}`;
   else if (r.content_hash !== hash)
-    reason = `the golden, the rows its SQL returns or the tolerance changed since the owner said yes (${ref}), so that yes is to figures it no longer has`;
+    reason = `the golden, the rows its request compiles to now or the tolerance changed since the owner said yes (${ref}), so that yes is to figures it no longer has`;
   else if (by !== undefined && by.toLowerCase() !== r.by.trim().toLowerCase()) {
     throw new UserError(
       `Cannot confirm ${target}: --by ${shellQuote(by)} is not the owner who said yes (${ref}), ${shellQuote(r.by)}; nothing was recorded. ` +
@@ -281,7 +360,7 @@ function confirmGate(r: LedgerReply | undefined, values: OptionValues, golden: G
   if (reason) {
     throw new UserError(
       `Cannot confirm ${target}: ${reason}; nothing was recorded. sl goldens confirm needs the owner's yes in ${LEDGER_FILE} to the golden ` +
-        `with the rows its SQL returns now. Next: ${confirmSteps(golden.name, flags)}.`,
+        `with the rows its request compiles to now. Next: ${confirmSteps(golden.name, flags)}.`,
     );
   }
   return { by: r!.by, at: r!.at.slice(0, 10), ledger: r!.id };
@@ -292,19 +371,48 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
   const source = goldenSource(ctx, golden);
   const input = resultsInput(ctx, values);
   if (bool(values, "emit-sql")) {
-    ctx.out(formatJson(emitPlan(ctx, goldenPlan(golden, source), { name: "goldens", positionals: ["run"], values })));
+    ctx.out(formatJson(emitPlan(ctx, planGolden(ctx, golden, source).plan, { name: "goldens", positionals: ["run"], values })));
     return 0;
   }
   if (intakeMode(source) === "export" && !input.resultsFile && !input.planId) throw exportRefusal("run", golden, source);
-  const rows = await runGolden(ctx, golden, source, input);
+  const { compiled, rows: compiledRows, cross } = await runGoldenQueries(ctx, golden, source, input);
+  const rows = compiledRows ?? cross ?? [];
   const columns = resultColumns(rows);
   const masked = maskedColumns(ctx, values, source, columns);
-  if (ctx.json) ctx.out(formatJson({ name: golden.name, columns, rows: maskRows(rows, masked), protected_columns: masked }));
-  else {
+  // cross_check_sql against the compiled rows at the tolerance a confirm would record: expected is
+  // the compiled, got is cross_check_sql.
+  const crossCheck =
+    compiledRows && cross
+      ? compareRows(compiledRows, cross, {
+          ordered: orderedGolden(golden),
+          tolerance: parseTolerance(values, golden).tolerance,
+          protectedColumns: maskedColumns(ctx, values, source, resultColumns([...compiledRows, ...cross])),
+        })
+      : undefined;
+  if (ctx.json) {
+    ctx.out(
+      formatJson({
+        name: golden.name,
+        columns,
+        rows: maskRows(rows, masked),
+        protected_columns: masked,
+        compiled: compiled.ok,
+        ...(compiled.ok ? { sql: compiled.sql, params: compiled.params } : { refused: { reason: compiled.reason, next: refusalNext(golden, compiled) } }),
+        ...(crossCheck ? { cross_check: crossCheck } : {}),
+      }),
+    );
+  } else {
     ctx.out(plainText(`${golden.name}: ${golden.question}`));
     ctx.out(formatTable(maskRows(shownRows(golden, readLayer(ctx, source), rows, columns), masked), columns));
     ctx.out(`(${rows.length} row${rows.length === 1 ? "" : "s"})`);
     if (masked.length) ctx.out(protectedNote(masked));
+    ctx.out(compiledRows ? "These rows are the request compiled from the current YAML." : notCompiledNote(golden, compiled));
+    if (crossCheck?.ok) ctx.out("cross_check_sql gives the same rows.");
+    else if (crossCheck) {
+      ctx.out("cross_check_sql gives other rows (expected is the compiled, got is cross_check_sql):");
+      for (const d of crossCheck.diffs) ctx.out(`  ${plainText(d)}`);
+      ctx.out(`Fix cross_check_sql or the layer before confirming, then run sl goldens run --name ${golden.name} again.`);
+    }
     // Decision D2: an export source's golden is confirmed only after the upgrade, so its hint names that.
     ctx.out(
       intakeMode(source) === "export"
@@ -330,10 +438,14 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   if (intakeMode(source) === "export") throw exportRefusal("confirm", golden, source);
   const input = resultsInput(ctx, values);
   if (bool(values, "emit-sql")) {
-    ctx.out(formatJson(emitPlan(ctx, goldenPlan(golden, source), { name: "goldens", positionals: ["confirm"], values })));
+    ctx.out(formatJson(emitPlan(ctx, planGolden(ctx, golden, source).plan, { name: "goldens", positionals: ["confirm"], values })));
     return 0;
   }
-  const rows = await runGolden(ctx, golden, source, input);
+  // Without --tolerance, the tolerance the owner's latest reply heard in its readback.
+  const reply = latestReply(readReplies(ctx.root), `golden:${golden.name}`);
+  const heard = parsed.from === "flag" ? undefined : readbackTolerance(ctx.root, reply);
+  const { tolerance, from: toleranceFrom } = heard === undefined || heard === parsed.tolerance ? parsed : { tolerance: heard, from: "readback" as const };
+  const { rows } = await runGolden(ctx, golden, source, input, tolerance);
   if (!rows.length) throw new UserError(`Golden "${golden.name}" returned no rows; a golden needs at least one expected row.`);
   if (rows.length > MAX_CONFIRM_ROWS && !bool(values, "force")) {
     throw new UserError(
@@ -341,10 +453,6 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
         "owner can check by eye; aggregate further or add a limit, or pass --force to record every row.",
     );
   }
-  // Without --tolerance, the tolerance the owner's latest reply heard in its readback.
-  const reply = latestReply(readReplies(ctx.root), `golden:${golden.name}`);
-  const heard = parsed.from === "flag" ? undefined : readbackTolerance(ctx.root, reply);
-  const { tolerance, from: toleranceFrom } = heard === undefined || heard === parsed.tolerance ? parsed : { tolerance: heard, from: "readback" as const };
   const yes = confirmGate(reply, values, golden, goldenHash(golden as unknown as Record<string, unknown>, rows, tolerance), by);
   const layer = readLayer(ctx, source, "list draft fields");
   const draftFields = goldenDraftFields(golden, layer.models, layer.metrics);
@@ -435,56 +543,81 @@ function resultsCover(file: string, ids: string[]): boolean {
   return ids.every((id) => raw && typeof raw === "object" && id in raw);
 }
 
-// The one plan of every golden goldens check reads: refused when they read more than one source
-// or one of them cannot be planned.
-function checkPlan(bySource: Map<string, { source: SourceConfig; goldens: Golden[] }>, checks: GoldenCheck[]): QueryPlan {
+interface Planned {
+  golden: Golden;
+  plan: QueryPlan;
+  compiled: CompileResult;
+}
+
+// The one plan of every golden goldens check runs: refused when they read more than one source
+// or one of them cannot be loaded. A golden the compiler refuses is not planned; it fails the check.
+function checkPlan(bySource: Map<string, { source: SourceConfig; goldens: Planned[] }>, problems: GoldenCheck[]): QueryPlan {
   if (bySource.size > 1) {
     throw new UserError(
       `The goldens to check read sources ${[...bySource.keys()].join(", ")}. A plan covers one source: pass --source <s> or --name <g> with --emit-sql or --plan <plan_id>.`,
     );
   }
-  if (checks.length) {
+  if (problems.length) {
     throw new UserError(
-      `Cannot plan every golden: ${checks.map((c) => `${c.name}: ${c.diffs[0]}`).join(" ")} Fix them, or pass --source <s> to plan the others.`,
+      `Cannot plan every golden: ${problems.map((c) => `${c.name}: ${c.diffs[0]}`).join(" ")} Fix them, or pass --source <s> to plan the others.`,
     );
   }
   const [group] = bySource.values();
-  if (!group) throw new UserError("No approved goldens to check.");
-  const plans = group.goldens.map((g) => goldenPlan(g, group.source));
+  if (!group) throw new UserError("No approved goldens to check that compile or have cross_check_sql; sl goldens check without --emit-sql says why.");
+  const plans = group.goldens.map((g) => g.plan);
   return { ...plans[0]!, queries: plans.flatMap((p) => p.queries) };
+}
+
+// A golden the compiler refuses, as a failed check that names why and the step that resolves it.
+function refusedCheck(g: Golden, compiled: CompileResult & { ok: false }): GoldenCheck {
+  return { name: g.name, ok: false, diffs: [`The request does not compile from the current YAML: ${compiled.reason}.`], compiled: "refused", next: refusalNext(g, compiled) };
 }
 
 async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<number> {
   const selected = selectForCheck(ctx, values);
   const checks: GoldenCheck[] = [];
-  const bySource = new Map<string, { source: SourceConfig; goldens: Golden[] }>();
+  const problems: GoldenCheck[] = [];
+  const bySource = new Map<string, { source: SourceConfig; goldens: Planned[] }>();
   for (const loaded of selected) {
     const g = loaded.golden;
     const problem = goldenProblem(loaded);
     if (problem) {
-      checks.push({ name: stem(basename(loaded.path)), ok: false, diffs: [problem] });
+      problems.push({ name: stem(basename(loaded.path)), ok: false, diffs: [problem] });
       continue;
     }
     let source: SourceConfig;
+    let planned: { plan: QueryPlan; compiled: CompileResult };
     try {
       source = goldenSource(ctx, g);
+      const compiled = compileGolden(ctx.root, g);
+      // A source the compiler does not support is checked by its cross_check_sql alone; any other
+      // refusal fails the golden, whatever its cross_check_sql gives.
+      if (!compiled.ok && (!onlyUnsupportedDialect(compiled) || crossCheckSql(g) === undefined)) {
+        checks.push(refusedCheck(g, compiled));
+        continue;
+      }
+      planned = { plan: goldenPlan(g, source, compiled), compiled };
     } catch (e) {
       if (!(e instanceof UserError)) throw e;
-      checks.push({ name: g.name, ok: false, diffs: [`Cannot load its source: ${e.message.split("\n")[0]}`] });
+      const next = `Fix what this says in goldens/${g.name}.yaml or the layer, then run sl validate and sl goldens check --name ${g.name}.`;
+      problems.push({ name: g.name, ok: false, diffs: [`Cannot plan this golden: ${e.message.split("\n")[0]}`], next });
       continue;
     }
     const group = bySource.get(source.source) ?? { source, goldens: [] };
-    group.goldens.push(g);
+    group.goldens.push({ golden: g, ...planned });
     bySource.set(source.source, group);
   }
 
   const { resultsFile, planId } = resultsInput(ctx, values);
   if (bool(values, "emit-sql")) {
-    ctx.out(formatJson(emitPlan(ctx, checkPlan(bySource, checks), { name: "goldens", positionals: ["check"], values })));
+    const plan = checkPlan(bySource, problems);
+    for (const c of checks) ctx.err(plainText(`Not planned: ${c.name}. ${c.diffs[0]} ${c.next}`));
+    ctx.out(formatJson(emitPlan(ctx, plan, { name: "goldens", positionals: ["check"], values })));
     return 0;
   }
+  checks.push(...problems);
   // With --plan, every golden's rows come from the stored plan of the whole check.
-  const stored: PlanResults | undefined = planId !== undefined ? planResults(ctx.root, planId, checkPlan(bySource, checks)) : undefined;
+  const stored: PlanResults | undefined = planId !== undefined ? planResults(ctx.root, planId, checkPlan(bySource, problems)) : undefined;
 
   for (const { source } of bySource.values()) {
     if (!canRun(source) && !resultsFile && !stored) {
@@ -497,24 +630,35 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
   }
 
   for (const { source, goldens: group } of bySource.values()) {
-    for (const g of group) {
-      const id = goldenQueryId(g.name);
-      const fromFile = resultsFile && (!canRun(source) || resultsCover(resultsFile, [id])) ? resultsFile : undefined;
-      let actual: ResultRows;
-      try {
-        actual = stored ? (stored[id] ?? []) : await runGolden(ctx, g, source, { resultsFile: fromFile });
-      } catch (e) {
-        if (!(e instanceof UserError)) throw e;
-        checks.push({ name: g.name, ok: false, diffs: [`The query did not run: ${e.message.split("\n")[0]!.replace(/^Query failed: /, "")}`] });
+    for (const { golden: g, plan, compiled } of group) {
+      const ids = plan.queries.map((q) => q.id);
+      const fromFile = resultsFile && (!canRun(source) || resultsCover(resultsFile, ids)) ? resultsFile : undefined;
+      // Each query runs on its own, so a failure names the one that failed.
+      const results: PlanResults = stored ?? {};
+      let failure: string | undefined;
+      for (const q of stored ? [] : plan.queries) {
+        try {
+          Object.assign(results, await executePlan({ ...plan, queries: [q] }, { root: ctx.root, source, env: ctx.env, resultsFile: fromFile, warn: ctx.err }));
+        } catch (e) {
+          if (!(e instanceof UserError)) throw e;
+          const why = e.message.split("\n")[0]!.replace(/^Query failed: /, "");
+          failure = q.id === goldenQueryId(g.name) ? `The query did not run: ${why}` : `cross_check_sql did not run: ${why}`;
+          break;
+        }
+      }
+      if (failure) {
+        checks.push({ name: g.name, ok: false, diffs: [failure] });
         continue;
       }
       const expected = lowerKeys(g.expected?.rows ?? []);
-      const { ok, diffs } = compareRows(expected, actual, {
-        ordered: (g.request?.order_by ?? []).length > 0,
+      const compiledRows = compiled.ok ? (results[goldenQueryId(g.name)] ?? []) : undefined;
+      const crossRows = crossCheckSql(g) !== undefined ? (results[crossCheckQueryId(g.name)] ?? []) : undefined;
+      const judged = judgeGolden(expected, compiledRows, crossRows, {
+        ordered: orderedGolden(g),
         tolerance: g.expected?.tolerance ?? DEFAULT_TOLERANCE,
-        protectedColumns: maskedColumns(ctx, values, source, [...new Set([...resultColumns(expected), ...resultColumns(actual)])]),
+        protectedColumns: maskedColumns(ctx, values, source, resultColumns([...expected, ...(compiledRows ?? []), ...(crossRows ?? [])])),
       });
-      checks.push({ name: g.name, ok, diffs });
+      checks.push({ name: g.name, ...judged, ...(compiled.ok ? {} : { compiled: "unsupported" as const }) });
     }
   }
   checks.sort((a, b) => a.name.localeCompare(b.name));
@@ -526,24 +670,154 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
   else {
     const lines: string[] = [];
     for (const c of checks) {
-      lines.push(`${c.ok ? "pass" : "FAIL"}  ${c.name}`);
+      const note = c.compiled === "unsupported" ? "  (checked by cross_check_sql alone: sl sql compiles postgres and duckdb sources)" : "";
+      lines.push(`${c.ok ? "pass" : "FAIL"}  ${c.name}${note}`);
       for (const d of c.diffs) lines.push(`      ${plainText(d)}`);
+      if (c.next) lines.push(`      Next: ${plainText(c.next)}`);
     }
     lines.push(`${passed} passed, ${failed} failed.`);
+    const changed = checks.find((c) => !c.ok && !c.next);
+    if (changed) {
+      lines.push(
+        `Next: sl goldens run --name ${changed.name} shows its rows; read any change back to the owner, and confirm again only on their yes: ` +
+          `${confirmSteps(changed.name, "")}.`,
+      );
+    }
     ctx.out(lines.join("\n"));
   }
   return failed ? 1 : 0;
 }
 
+// --request for goldens new: a JSON object, or a YAML or JSON file holding a request or a whole
+// golden (its request, role and user). A request without a source takes --source.
+function readNewRequest(ctx: CommandContext, text: string, sourceFlag: string | undefined): { request: Record<string, unknown>; role?: string; user?: Record<string, unknown> } {
+  let doc: unknown;
+  if (text.trim().startsWith("{")) {
+    try {
+      doc = JSON.parse(text);
+    } catch (e) {
+      throw new UserError(`--request is not valid JSON: ${(e as Error).message}`);
+    }
+  } else {
+    const file = resolve(ctx.cwd, text);
+    if (!existsSync(file)) throw new UserError(`--request: no file ${text}. Pass a request as a JSON object or a file holding one.`);
+    doc = parseYamlText(readFileSync(file, "utf8"), text);
+  }
+  const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+  if (!isObj(doc)) throw new UserError('--request must be a JSON object, such as {"source": "lake", "measures": ["sessions.session_count"]}.');
+  const whole = isObj(doc.request);
+  const request = whole ? (doc.request as Record<string, unknown>) : doc;
+  if (request.source === undefined && sourceFlag) request.source = sourceFlag;
+  if (sourceFlag && request.source !== sourceFlag) throw new UserError(`The request is on source ${String(request.source)}, not ${sourceFlag}; drop --source or fix the request.`);
+  return {
+    request,
+    ...(whole && typeof doc.role === "string" ? { role: doc.role } : {}),
+    ...(whole && isObj(doc.user) ? { user: doc.user } : {}),
+  };
+}
+
+function parseUserFlag(text: string): Record<string, unknown> {
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch (e) {
+    throw new UserError(`--user is not valid JSON: ${(e as Error).message}`);
+  }
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new UserError('--user must be a JSON object of user attributes, such as {"department": "sales"}.');
+  return v as Record<string, unknown>;
+}
+
+// Why a new golden's role or user does not fit access.yaml, as sl validate reports it.
+function accessProblem(ctx: CommandContext, role: string | undefined, user: Record<string, unknown> | undefined): string | undefined {
+  const access = loadAccess(ctx.root);
+  if (!access || typeof access !== "object") return undefined;
+  const roles = Array.isArray(access.roles) ? access.roles.map((r) => r?.name) : [];
+  if (role !== undefined && !roles.includes(role)) return `--role ${role} is not a role in access.yaml (roles: ${roles.join(", ") || "none"}); sl access lists them.`;
+  const attrs = Array.isArray(access.user_attributes) ? access.user_attributes.map((a) => a?.name) : [];
+  const unknown = Object.keys(user ?? {}).filter((k) => !attrs.includes(k));
+  if (unknown.length) return `--user names ${unknown.join(", ")}, which access.yaml does not declare as user attributes (declared: ${attrs.join(", ") || "none"}).`;
+  return undefined;
+}
+
+// goldens new: writes goldens/<name>.yaml as a draft golden holding the question and request, and
+// prints the SQL the request compiles to now. The SQL is not stored: the request is the golden, and
+// sl sql --request goldens/<name>.yaml prints it again from the YAML as it then stands.
+async function newCommand(ctx: CommandContext, values: OptionValues): Promise<number> {
+  const name = requireName(values, "new");
+  const path = goldenPath(ctx, name);
+  const file = relative(ctx.root, path);
+  const taken = listGoldens(ctx.root).find((g) => stem(basename(g.path)) === name);
+  if (taken) {
+    throw new UserError(`Golden "${name}" already exists (${relative(ctx.root, taken.path)}). Pick another --name, or see it with sl goldens run --name ${name}.`);
+  }
+  const question = str(values, "question")?.trim();
+  if (!question) throw new UserError('goldens new needs --question "<the question in plain English>".');
+  const text = str(values, "request");
+  if (!text) throw new UserError("goldens new needs --request <json|file>: a JSON object or a file holding a request.");
+  const read = readNewRequest(ctx, text, str(values, "source"));
+  const role = str(values, "role") ?? read.role;
+  const userFlag = str(values, "user");
+  const user = userFlag !== undefined ? parseUserFlag(userFlag) : read.user;
+  const golden = { name, question, ...(role !== undefined ? { role } : {}), ...(user !== undefined ? { user } : {}), request: read.request, status: "draft" } as unknown as Golden;
+  const issues = schemaIssues("golden", golden, file);
+  if (issues.length) {
+    throw new UserError(
+      `The golden would not be valid, so nothing was written:\n${issues.map((i) => `  ${i.path || "golden"}: ${i.message}`).join("\n")}\n` +
+        "Fix the request (the format is in references/spec.md, goldens) and run sl goldens new again.",
+    );
+  }
+  const source = goldenSource(ctx, golden);
+  const problem = accessProblem(ctx, role, user);
+  if (problem) throw new UserError(`${problem} Nothing was written.`);
+  // The whole project as sl validate would read it with this golden written (JSON is YAML).
+  const errors = validateProject(ctx.root, new Map([[paths(ctx.root).golden(name), JSON.stringify(golden)]])).filter((i) => i.level === "error" && i.file === file.split(sep).join("/"));
+  if (errors.length) {
+    throw new UserError(
+      `sl validate would report errors on the golden, so nothing was written:\n${errors.map((i) => `  ${i.path || "golden"}: ${i.message}`).join("\n")}\n` +
+        "Fix the request, --role or --user and run sl goldens new again.",
+    );
+  }
+  const compiled = compileGolden(ctx.root, golden);
+  writeYaml(path, golden);
+  const next =
+    `Run sl goldens run --name ${name} to see its rows; once its measures are approved, confirm it on the owner's yes: ` +
+    `${confirmSteps(name, " --tolerance <agreed tolerance>")}.`;
+  const refused = compiled.ok ? undefined : { reason: compiled.reason, refusals: compiled.refusals, next: refusalNext(golden, compiled) };
+  if (ctx.json) {
+    ctx.out(
+      formatJson({
+        name,
+        path: file,
+        written: true,
+        status: "draft",
+        source: source.source,
+        compiled: compiled.ok,
+        ...(compiled.ok ? { sql: compiled.sql, params: compiled.params } : { refused }),
+        next,
+      }),
+    );
+    return 0;
+  }
+  ctx.out(`Wrote ${file}, a draft golden.`);
+  if (compiled.ok) {
+    ctx.out(`Its request compiles from the current YAML to this SQL, which the golden does not store (sl sql --request ${file} prints it again):`);
+    ctx.out(plainText(compiled.sql));
+    ctx.out(plainText(`Parameters, bound in order: ${compiled.params.map((v, i) => `$${i + 1} = ${JSON.stringify(v)}`).join(", ") || "none"}`));
+  } else ctx.out(plainText(`Its request does not compile from the current YAML yet: ${refused!.reason}. ${refused!.next}`));
+  ctx.out(next);
+  return 0;
+}
+
 const spec: CommandSpec = {
-  summary: "Run a golden's SQL, record its rows on the owner's recorded yes, or recheck approved goldens.",
+  summary: "Compile and run a golden's request, record its rows on the owner's recorded yes, recheck approved goldens, or write a draft golden.",
   usage:
     "goldens run --name <g> | goldens confirm --name <g> [--by <name>] [--tolerance <t>] [--force] | " +
     "goldens check [--name <g>] [--source <s>]   (each takes --emit-sql, --results <file>, --plan <plan_id> and --show-protected; values of protected " +
-    "columns show as [protected] unless --show-protected)\n\n" +
-    "confirm records the rows only when the owner's latest reply to golden:<g> in .sl/ledger.jsonl is a yes to the golden with\n" +
-    "these rows and this tolerance (sl readback --targets golden:<g>, then sl reply --verdict yes); confirmed_by and\n" +
-    "confirmed_at come from that reply, and --by, when given, must name the same owner.",
+    "columns show as [protected] unless --show-protected) | " +
+    'goldens new --name <g> --question "<question>" --request <json|file> [--source <s>] [--role <role>] [--user <json>]\n\n' +
+    "confirm records the rows the request compiles to now only when the owner's latest reply to golden:<g> in .sl/ledger.jsonl\n" +
+    "is a yes to the golden with these rows and this tolerance (sl readback --targets golden:<g>, then sl reply --verdict yes);\n" +
+    "confirmed_by and confirmed_at come from that reply, and --by, when given, must name the same owner.",
   options: {
     name: { type: "string" },
     by: { type: "string" },
@@ -554,6 +828,10 @@ const spec: CommandSpec = {
     results: { type: "string" },
     plan: { type: "string" },
     "show-protected": { type: "boolean" },
+    question: { type: "string" },
+    request: { type: "string" },
+    role: { type: "string" },
+    user: { type: "string" },
   },
   positionals: true,
   async run({ values, positionals }, ctx) {
@@ -569,6 +847,8 @@ const spec: CommandSpec = {
         return confirmCommand(ctx, values);
       case "check":
         return checkCommand(ctx, values);
+      case "new":
+        return newCommand(ctx, values);
     }
   },
 };

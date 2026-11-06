@@ -248,12 +248,12 @@ describe("an export source waits on a connection (the Acme export)", () => {
       name: "orders_total",
       question: "How many orders are there?",
       request: { source: "warehouse", measures: [`fct_orders.${measure}`] },
-      sql: "select count(*) as order_count from acme.fct_orders",
       status: "draft",
     });
     const plan = (await sl(root, ["goldens", "run", "--name", "orders_total", "--emit-sql", "--json"])).json<{ plan_id: string; queries: { id: string }[] }>();
     const rows = join(root, "rows.json");
-    writeFileSync(rows, JSON.stringify([{ order_count: 5 }]));
+    writeFileSync(rows, JSON.stringify([{ [measure]: 5 }]));
+    expect(plan.queries.length).toBe(1);
     expect((await sl(root, ["results", "add", "--plan", plan.plan_id, "--query", plan.queries[0]!.id, "--file", rows])).code).toBe(0);
     // Rows from a plan show, but the hint names the upgrade, not a confirm that would refuse.
     const run = await sl(root, ["goldens", "run", "--name", "orders_total", "--plan", plan.plan_id]);
