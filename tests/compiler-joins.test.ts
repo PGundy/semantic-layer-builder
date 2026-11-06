@@ -243,13 +243,9 @@ describe("definition joins", () => {
     expect(await runDuckdb(file, everyone)).toEqual([{ real_revenue: "180.00" }]);
     // Naming the model is what visibility governs: hidden from everyone, row-filtered for the rep.
     expect(refused(compileRequest(root, req({ measures: ["orders.revenue"], dimensions: ["customers.region"] }))).refusals.map((r) => r.code)).toEqual(["not_visible"]);
-    expect(refused(compileRequest(root, req({ measures: ["orders.revenue"], dimensions: ["customers.region"] }), { user: { region: "NE" } })).refusals).toEqual([
-      {
-        code: "unsupported_row_filter",
-        ref: "shop.customers",
-        message: "a row filter limits this user's rows of customers, which the request reaches through orders.customer (role rep); a later version of sl sql adds row filters",
-      },
-    ]);
+    const path = compiled(compileRequest(root, req({ measures: ["orders.real_revenue"], dimensions: ["customers.region"] }), { user: { region: "NE" } }));
+    expect(path.sql).toContain(`left join "main"."shop_customers" as "orders.customer" on "orders"."customer_id" = "orders.customer"."customer_id" and ("orders.customer".home_code = $1)`);
+    expect(path.joins.map((j) => `${j.for}:${j.alias}`)).toEqual(["request:orders.customer", "definition:orders~customer"]);
   });
 });
 
@@ -488,7 +484,7 @@ describe("determinism and qualification", () => {
 
 // --- Acme: every approved golden that needs joins and nothing a later version adds -----------
 
-const NEEDS_LATER = new Set(["unsupported_metric", "unsupported_row_filter"]);
+const NEEDS_LATER = new Set(["unsupported_metric"]);
 const asUser = (g: Golden) => ({ ...(g.role ? { role: g.role } : {}), user: g.user ?? {} });
 
 // A copy of Acme whose warehouse models read the tables in schema, on dialect, each changed item
@@ -544,7 +540,15 @@ async function revenueChanged(root: string, run: (c: Compiled) => Promise<Row[]>
   const using = listGoldens(root)
     .map((x) => x.golden)
     .filter((g) => compiledNames.includes(g.name) && (g.request.measures ?? []).includes("orders.revenue"));
-  expect(using.map((g) => g.name)).toEqual(["analyst_rep_101_by_name_2025", "revenue_by_region_2025"]);
+  expect(using.map((g) => g.name)).toEqual([
+    "analyst_rep_101_by_name_2025",
+    "revenue_by_region_2025",
+    "sales_head_301_2025",
+    "sales_manager_201_2025",
+    "sales_manager_202_2025",
+    "sales_manager_203_2025",
+    "sales_rep_101_2025",
+  ]);
   withCancelled(root);
   for (const g of using) expectRefusedAsChanged(compileRequest(root, g.request, asUser(g)), "warehouse", "orders.revenue");
   await reapprove(root, ["warehouse.orders.revenue"]);
@@ -555,7 +559,18 @@ async function revenueChanged(root: string, run: (c: Compiled) => Promise<Row[]>
   }
 }
 
-const JOIN_GOLDENS = ["analyst_rep_101_by_name_2025", "discount_2025", "order_count_by_region_2025", "refunds_2025", "revenue_by_region_2025"];
+const JOIN_GOLDENS = [
+  "analyst_rep_101_by_name_2025",
+  "discount_2025",
+  "order_count_by_region_2025",
+  "refunds_2025",
+  "revenue_by_region_2025",
+  "sales_head_301_2025",
+  "sales_manager_201_2025",
+  "sales_manager_202_2025",
+  "sales_manager_203_2025",
+  "sales_rep_101_2025",
+];
 
 describe("Acme's approved goldens that need joins", () => {
   test("compile to their recorded rows on duckdb; revenue counting cancelled orders is refused until approved again, then changes every one using revenue", async () => {

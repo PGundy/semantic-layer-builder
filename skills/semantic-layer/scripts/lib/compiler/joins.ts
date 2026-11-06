@@ -32,6 +32,18 @@ export interface JoinContext {
   // false when the query reads one table: exprs then stay exactly as written.
   qualified: boolean;
   add: (code: JoinRefusalCode, message: string, ref?: string, next?: string) => void;
+  // The user's row filter on a model a request path reaches, for that join's ON clause (rowfilters.ts).
+  restrict?: (inst: Instance) => string | undefined;
+}
+
+// One join of the query. A request path's row filter that reads through joins nests them inside it,
+// so its ON clause can read them and a left join still keeps the rows it does not match.
+interface JoinLine {
+  type: "left" | "inner";
+  table: string;
+  alias: string;
+  on: string;
+  nest: JoinLine[];
 }
 
 const TO_ONE = ["many_to_one", "one_to_one"];
@@ -60,9 +72,10 @@ function fanOut(j: Join): { why: string; bridge: boolean } | undefined {
 
 export class JoinPlan {
   readonly joins: PlannedJoin[] = [];
-  readonly reached: Instance[] = []; // models a request reaches through a path, for their row filters
   readonly base: Instance;
-  private readonly lines: string[] = [];
+  private readonly lines: JoinLine[] = [];
+  // Set while a request path's row filter is compiled: the joins it reads through go inside it.
+  private nest: JoinLine[] | undefined;
   private readonly instances = new Map<string, Instance>();
   private readonly paths = new Map<string, Instance | undefined>();
 
@@ -74,13 +87,13 @@ export class JoinPlan {
     return this.cx.models.find((m) => m.model === name);
   }
 
-  private table(model: Model): { ref: { schema?: string | null; name: string }; columns?: string[] } {
+  table(model: Model): { ref: { schema?: string | null; name: string }; columns?: string[] } {
     const t = this.cx.snapshot ? findTable(this.cx.snapshot.tables, model.table) : undefined;
     return t ? { ref: { schema: t.schema, name: t.name }, ...(t.columns.length ? { columns: t.columns.map((c) => c.name) } : {}) } : { ref: splitQualified(model.table) };
   }
 
   // A key column as the snapshot spells it, when the snapshot has the table.
-  private keyColumn(model: Model, name: string): string {
+  keyColumn(model: Model, name: string): string {
     const cols = this.table(model).columns ?? [];
     return cols.find((c) => c === name) ?? cols.find((c) => c.toLowerCase() === name.toLowerCase()) ?? name;
   }
@@ -121,8 +134,14 @@ export class JoinPlan {
     this.joins.push({ alias, via, model: target.model, type, for: purpose });
     const q = (s: string) => quoteIdent(dialect, s);
     const on = j.keys.map((k) => `${q(owner.alias)}.${q(this.keyColumn(owner.model, k.from))} = ${q(alias)}.${q(this.keyColumn(target, k.to))}`);
-    this.lines.push(`${type} join ${quoteTable(dialect, this.table(target).ref)} as ${q(alias)} on ${on.join(" and ")}`);
-    if (purpose === "request") this.reached.push(inst);
+    const line: JoinLine = { type, table: quoteTable(dialect, this.table(target).ref), alias, on: on.join(" and "), nest: [] };
+    (this.nest ?? this.lines).push(line);
+    if (purpose === "request") {
+      this.nest = line.nest;
+      const rows = this.cx.restrict?.(inst);
+      this.nest = undefined;
+      if (rows) line.on += ` and ${rows}`;
+    }
     return inst;
   }
 
@@ -175,7 +194,8 @@ export class JoinPlan {
   }
 
   // A layer expr or filter of inst's model as the query reads it: each own column under inst's
-  // alias and each join reference under its definition join, added once per chain.
+  // alias and each join reference under its definition join, added once per chain. Inside a request
+  // path's row filter the definition joins are its own, inst's alias, ~row_filter~ and the chain.
   sql(text: string, inst: Instance, ref: string): string {
     if (!this.cx.qualified) return text;
     const q = (s: string) => quoteIdent(this.cx.dialect, s);
@@ -188,7 +208,8 @@ export class JoinPlan {
       const second = r.parts.length > 2 ? (this.model(first.to)?.joins ?? []).find(sameName(r.parts[1]!, r.quoted[1]!)) : undefined;
       const chain = second ? [first, second] : [first];
       let at: Instance | undefined = inst;
-      for (const [k, j] of chain.entries()) at = at && this.hop(at, j, `${inst.alias}~${chain.slice(0, k + 1).map((c) => c.name).join(".")}`, "definition", ref);
+      const owner = this.nest ? `${inst.alias}~row_filter` : inst.alias;
+      for (const [k, j] of chain.entries()) at = at && this.hop(at, j, `${owner}~${chain.slice(0, k + 1).map((c) => c.name).join(".")}`, "definition", ref);
       if (!at) failed = true;
       return at ? `${q(at.alias)}.${as(chain.length)}` : undefined;
     });
@@ -198,6 +219,11 @@ export class JoinPlan {
   // FROM and its joins, in the order the query first needs them.
   from(): string[] {
     const t = quoteTable(this.cx.dialect, this.table(this.cx.base).ref);
-    return [this.cx.qualified ? `from ${t} as ${quoteIdent(this.cx.dialect, this.base.alias)}` : `from ${t}`, ...this.lines];
+    const q = (s: string) => quoteIdent(this.cx.dialect, s);
+    const line = (j: JoinLine): string =>
+      j.nest.length
+        ? `${j.type} join (${j.table} as ${q(j.alias)}\n  ${j.nest.map(line).join("\n  ")}) on ${j.on}`
+        : `${j.type} join ${j.table} as ${q(j.alias)} on ${j.on}`;
+    return [this.cx.qualified ? `from ${t} as ${q(this.base.alias)}` : `from ${t}`, ...this.lines.map(line)];
   }
 }

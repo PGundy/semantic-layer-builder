@@ -1,9 +1,10 @@
 // The reference compiler (references/spec.md, Reference compiler): turns a request into SQL for a
 // postgres or duckdb source, with every request filter value a bound parameter. A request reaches
 // other models' fields through to-one joins, and a field's definition joins come along with it. It
-// never runs the SQL. A request that needs what this version does not compile (a metric, a row
-// filter for the user) is refused with the reason.
-import { type AccessLayer, type AccessUser, checkRequest, evaluateLayer, loadAccessLayer, type ModelVisibility } from "../access.ts";
+// never runs the SQL. The user's row filters limit the base model in WHERE and a model a request
+// path reaches in its join's ON clause (rowfilters.ts). A request that needs what this version does
+// not compile (a metric) is refused with the reason.
+import { type AccessLayer, type AccessUser, checkRequest, evaluateLayer, loadAccessLayer, type ModelRows } from "../access.ts";
 import { quoteIdent } from "../dialect.ts";
 import { loadSnapshot, loadSource } from "../project.ts";
 import { parseRequestField } from "../refs.ts";
@@ -14,9 +15,11 @@ import type { Dimension, FilterOp, Measure, Model, QueryRequest, Snapshot, Sourc
 import { AGGREGATIONS, NAME_PATTERN, TIME_GRAINS } from "../types.ts";
 import { schemaIssues } from "../validate.ts";
 import { type Instance, JoinPlan, type PlannedJoin, readsJoin } from "./joins.ts";
+import { type AppliedRows, rowsPredicate } from "./rowfilters.ts";
 import { aggregate, COMPILER_DIALECTS, embed, grained, Params, predicate } from "./sql.ts";
 
 export type { PlannedJoin } from "./joins.ts";
+export type { AppliedRows } from "./rowfilters.ts";
 
 export type RefusalCode =
   | "invalid_request"
@@ -24,7 +27,6 @@ export type RefusalCode =
   | "not_visible"
   | "unsupported_dialect"
   | "unsupported_metric"
-  | "unsupported_row_filter"
   | "invalid_layer"
   | "no_join_path"
   | "ambiguous_join_path"
@@ -54,6 +56,8 @@ export interface Compiled {
   columns: CompiledColumn[];
   // The joins the SQL adds, in its order: request paths to other models' fields, and definition joins.
   joins: PlannedJoin[];
+  // The user's row filters the SQL applies, in its order: in join ON clauses, then in WHERE.
+  row_filters: AppliedRows[];
   // The session time zone the SQL assumes: a grain over a value with a time zone buckets in it.
   session_time_zone: "UTC";
 }
@@ -203,16 +207,6 @@ export function compileLayer(input: CompileInput): CompileResult {
     return k;
   });
 
-  // A model a row filter limits for this user, the base or one a request path reaches.
-  const rowFilter = (model: string, how: string) => {
-    const mv: ModelVisibility | undefined = vis.sources.find((s) => s.source === source.source)?.models.find((m) => m.model === model);
-    if (mv?.row_filters && mv.row_filters.rows !== "all") {
-      const roles = mv.row_filters.branches.map((b) => b.role).join(", ");
-      const what = mv.row_filters.rows === "none" ? "this user sees no rows of" : "a row filter limits this user's rows of";
-      add("unsupported_row_filter", `${what} ${model}${how} (role ${roles}); ${LATER} row filters`, `${source.source}.${model}`);
-    }
-  };
-  if (base) rowFilter(base.model, "");
   if (refusals.length || !base) return refuse(source.source, refusals);
 
   for (const f of selected) {
@@ -228,8 +222,22 @@ export function compileLayer(input: CompileInput): CompileResult {
   const kept = filterFields.filter((f): f is Field => !!f);
   const used = [...columns.map((c) => c.field), ...kept.filter((f) => f.kind === "dimension"), ...kept.filter((f) => f.kind === "measure")];
   const texts = (f: Field) => (f.kind === "dimension" ? [(f.item as Dimension).expr] : [(f.item as Measure).expr, (f.item as Measure).filter]);
-  const qualified = used.some((f) => f.model !== base || texts(f).some((t) => t !== undefined && readsJoin(t, f.model)));
-  const plan = new JoinPlan({ source: source.source, dialect, models, snapshot: input.snapshot, base, qualified, add });
+  // The user's row filters, as lib/access.ts evaluates them: each limits its model where the query
+  // reads it, the base in WHERE and a request path's model in its join's ON clause. Parameters are
+  // numbered in reading order: those ON clauses, then WHERE, then HAVING.
+  const rowsOf = (m: Model): ModelRows | undefined => vis.sources.find((s) => s.source === source.source)?.models.find((x) => x.model === m.model)?.row_filters;
+  const baseRows = rowsOf(base);
+  const params = new Params();
+  const applied: AppliedRows[] = [];
+  const restrict = (inst: Instance, where: AppliedRows["in"]): string | undefined => {
+    const rows = rowsOf(inst.model);
+    if (!rows || rows.rows === "all") return undefined;
+    applied.push({ model: inst.model.model, alias: inst.alias, in: where, roles: rows.branches.map((b) => b.role), rows: rows.rows });
+    return rowsPredicate(rows, inst, { source: source.source, dialect, models, params, plan: () => plan, add });
+  };
+  const filterJoins = baseRows?.rows === "filtered" && baseRows.branches.some((b) => !b.no_rows && b.filters.some((f) => f.join_refs?.length));
+  const qualified = filterJoins || used.some((f) => f.model !== base || texts(f).some((t) => t !== undefined && readsJoin(t, f.model)));
+  const plan: JoinPlan = new JoinPlan({ source: source.source, dialect, models, snapshot: input.snapshot, base, qualified, add, restrict: (inst) => restrict(inst, "on") });
   const done = new Map<string, string>();
   const sqlOf = (f: Field): string => {
     const known = done.get(f.ref);
@@ -248,14 +256,13 @@ export function compileLayer(input: CompileInput): CompileResult {
     return out;
   };
   for (const f of used) sqlOf(f);
-  for (const r of plan.reached) rowFilter(r.model.model, `, which the request reaches through ${r.alias}`);
+  const baseFilter = restrict(plan.base, "where");
   if (refusals.length) return refuse(source.source, refusals);
 
   // WHERE predicates are built before HAVING ones, so parameter numbers rise in reading order.
-  const params = new Params();
   const clause = (kind: Field["kind"]) =>
     filters.flatMap((f, i) => (filterFields[i]!.kind === kind ? [predicate(sqlOf(filterFields[i]!), f.op as FilterOp, f.value, params)] : []));
-  const where = clause("dimension");
+  const where = [...(baseFilter ? [baseFilter] : []), ...clause("dimension")];
   const having = clause("measure");
   const lines = ["select", columns.map((c) => `  ${sqlOf(c.field)} as ${quoteIdent(dialect, c.name)}`).join(",\n"), ...plan.from()];
   if (where.length) lines.push(`where ${where.join("\n  and ")}`);
@@ -279,6 +286,7 @@ export function compileLayer(input: CompileInput): CompileResult {
     params: params.values,
     columns: columns.map((c) => ({ name: c.name, ref: c.field.ref, kind: c.field.kind })),
     joins: plan.joins,
+    row_filters: applied,
     session_time_zone: "UTC",
   };
 }
