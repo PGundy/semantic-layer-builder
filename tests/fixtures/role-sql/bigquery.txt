@@ -1,0 +1,12 @@
+# A read-only service account for the semantic layer CLI, limited to datasets analytics, marts.
+# Run by an administrator. sl setup printed this and ran nothing.
+# roles/bigquery.jobUser on the project lets it run queries; roles/bigquery.dataViewer on each dataset lets it read only those.
+# Run in a shell signed in to gcloud as a project administrator. The connector then uses this service account,
+# through workload identity or a key kept outside the semantic root.
+# For datasets outside the US multi-region, add --location=<region> to each bq query.
+gcloud iam service-accounts create sl-reader --project=acme-prod --display-name="Semantic layer reader"
+gcloud projects add-iam-policy-binding acme-prod --member=serviceAccount:sl-reader@acme-prod.iam.gserviceaccount.com --role=roles/bigquery.jobUser
+bq query --project_id=acme-prod --nouse_legacy_sql 'GRANT `roles/bigquery.dataViewer` ON SCHEMA `acme-prod`.`analytics` TO "serviceAccount:sl-reader@acme-prod.iam.gserviceaccount.com"'
+bq query --project_id=acme-prod --nouse_legacy_sql 'GRANT `roles/bigquery.dataViewer` ON SCHEMA `acme-prod`.`marts` TO "serviceAccount:sl-reader@acme-prod.iam.gserviceaccount.com"'
+
+Next: Give these commands to the database administrator. Once the role exists, your warehouse connector logs in with it and runs the CLI's query plans: sl setup --source <source> --dialect bigquery --env <VAR> --schemas analytics,marts.

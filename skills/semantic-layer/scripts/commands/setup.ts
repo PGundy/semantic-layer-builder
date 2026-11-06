@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { dirname, extname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { CommandContext, CommandSpec } from "../lib/command.ts";
-import { list, str } from "../lib/command.ts";
+import { bool, list, str } from "../lib/command.ts";
 import { redactCredentials } from "../lib/credentials.ts";
 import { UserError } from "../lib/errors.ts";
 import { patternFlags } from "../lib/export-filters.ts";
@@ -11,6 +11,8 @@ import { qualifiedName } from "../lib/naming.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
 import { filterInScope } from "../lib/patterns.ts";
 import { loadProject, loadSnapshot, paths, projectSettings } from "../lib/project.ts";
+import type { RoleReport } from "../lib/adapters/index.ts";
+import { printRoleSql, roleNote } from "../lib/role-sql.ts";
 import { applySourceState, listChange, type ListChange, patternKey, projectName, scopePreview, type SourceState } from "../lib/setup.ts";
 import { changeLines, type SnapshotDiff } from "../lib/snapshot-diff.ts";
 import { profileState } from "../lib/status.ts";
@@ -70,7 +72,9 @@ const spec: CommandSpec = {
   usage:
     "setup --source <source> --dialect duckdb|postgres|snowflake|bigquery|databricks (--env VAR | --export <file> [--reason <text>])\n" +
     "      [--schemas a,b] [--include <pattern>]... [--exclude <pattern>]... [--tables-file <path>]\n" +
-    "      [--database <path>] [--view name=relation]... [--name <project>]\n\n" +
+    "      [--database <path>] [--view name=relation]... [--name <project>]\n" +
+    "setup --print-role-sql --dialect postgres|redshift|snowflake|bigquery|databricks --schemas a,b [--role-name sl_reader]\n" +
+    "      [--database <name>] [--warehouse <name>] [--catalog <name>] [--project <id>]\n\n" +
     "  Runs sl init when there is no project, writes or updates sources/<source>.yaml in place, sets the scope,\n" +
     "  reads the catalog (introspect, or import of the export copied to exports/<source>.<ext>) and previews the scope.\n" +
     "  A connection comes first: --export with --reason is the fallback. The same arguments again change nothing;\n" +
@@ -88,8 +92,17 @@ const spec: CommandSpec = {
     database: { type: "string" },
     view: { type: "string", multiple: true },
     name: { type: "string" },
+    "print-role-sql": { type: "boolean" },
+    "role-name": { type: "string" },
+    warehouse: { type: "string" },
+    catalog: { type: "string" },
+    project: { type: "string" },
   },
   async run({ values }, ctx) {
+    if (bool(values, "print-role-sql")) return printRoleSql(values, ctx);
+    for (const f of ["role-name", "warehouse", "catalog", "project"]) {
+      if (values[f] !== undefined) throw new UserError(`--${f} goes with --print-role-sql; run sl setup again without it, or add --print-role-sql.`);
+    }
     // Every flag is checked before anything is written.
     const name = str(values, "source");
     if (!name || !NAME_PATTERN.test(name)) throw new UserError("--source is required and must match ^[a-z][a-z0-9_]*$, for example --source warehouse.");
@@ -275,6 +288,11 @@ const spec: CommandSpec = {
     const preview = snapshot ? scopePreview(next.scope, scope, snapshot, before, focus_threshold) : null;
     for (const pat of preview?.unmatched_patterns ?? []) warnings.push(`Pattern "${pat}" matches no table in the snapshot; check its spelling against sl tables --source ${name} --all.`);
     for (const w of (result?.warnings as string[] | undefined) ?? []) warnings.push(w);
+    // The role's warnings: the adapter prints them on stderr, so the plain output adds only the note.
+    const roleReport = result?.role_report as RoleReport | undefined;
+    const roleWarnings = (roleReport?.warnings ?? []).map((w) => w.replace(/^Warning: /, ""));
+    warnings.push(...roleWarnings);
+    if (roleReport && !roleReport.least_privilege) warnings.push(roleNote(next, roleReport));
     if (preview?.needs_focus) warnings.push(`${preview.in_scope} tables are in scope, more than the focus threshold of ${focus_threshold}; narrow the scope with the owner before drafting.`);
     const dialectFlag = RUNNABLE_DIALECTS.includes(dialect) ? "" : " --emit-sql";
     const nextAction =
@@ -300,6 +318,7 @@ const spec: CommandSpec = {
           intake,
           snapshot: { read, current: !refresh || read, ...(counts ?? {}), changes: (result?.changes as SnapshotDiff | null | undefined) ?? null },
           scope: preview,
+          ...(roleReport ? { role_report: roleReport } : {}),
           changed,
           warnings,
           next: nextAction,
@@ -345,7 +364,7 @@ const spec: CommandSpec = {
       if (rows.length) lines.push(formatTable(rows, ["table", "rows"]));
       if (preview.tables.length > MAX_SHOWN) lines.push(`... and ${preview.tables.length - MAX_SHOWN} more (sl tables --source ${name}).`);
     }
-    for (const w of warnings) lines.push(`Warning: ${w}`);
+    for (const w of warnings) if (!roleWarnings.includes(w)) lines.push(`Warning: ${w}`);
     lines.push("");
     lines.push(
       refresh && !read

@@ -22,7 +22,8 @@ function audienceLine(st: ProjectStatus): string {
 }
 
 function sourceLines(s: SourceStatus): string[] {
-  const lines = [`${s.source} (${s.dialect}${s.runnable ? "" : ", via query plans"})`];
+  const how = s.intake_mode === "export" ? ", from a schema export" : s.runnable ? "" : ", via query plans";
+  const lines = [`${s.source} (${s.dialect}${how})`];
   if (!s.snapshot) {
     lines.push("  snapshot: none");
     return lines;
@@ -44,6 +45,14 @@ function sourceLines(s: SourceStatus): string[] {
   // Draft fields inside approved models do not block later phases; they are listed for the handoff.
   const approvedDrafts = s.draft_fields.filter((f) => s.models_with_draft_fields.includes(f.split(".")[0]!));
   if (approvedDrafts.length) lines.push(`  draft fields in approved models: ${approvedDrafts.join(", ")}`);
+  if (s.waiting_on_connection.length) {
+    lines.push(`  waiting on a connection: ${s.waiting_on_connection.map((w) => w.step.replace(/_/g, " ")).join(", ")}`);
+    for (const w of s.waiting_on_connection) lines.push(`    ${w.message}`);
+  }
+  if (s.approved_joins_without_evidence.length) {
+    const why = s.intake_mode === "export" ? "their evidence waits on a connection" : "run sl check-join";
+    lines.push(`  warning: approved joins without evidence (${why}): ${preview(s.approved_joins_without_evidence, 8)}`);
+  }
   if (s.missing_columns.length) {
     const items = s.missing_columns.map((m) => `${m.model}.${m.field} reads ${m.column}`);
     lines.push(`  missing columns: ${preview(items, 8)}`);
@@ -96,6 +105,9 @@ function render(st: ProjectStatus): string {
         ? `  Only after the owner says yes to its readback: ${st.next_step.command}`
         : `  ${st.next_step.command}`,
   );
+  if (st.next_step.connection_upgrade && st.next_step.command !== st.next_step.connection_upgrade) {
+    lines.push(`With a connection, the waiting steps run: ${st.next_step.connection_upgrade}`);
+  }
   return lines.join("\n");
 }
 

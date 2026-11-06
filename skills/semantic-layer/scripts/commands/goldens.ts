@@ -7,6 +7,7 @@ import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.t
 import { bool, str } from "../lib/command.ts";
 import { goldenHash } from "../lib/approval-hash.ts";
 import { UserError } from "../lib/errors.ts";
+import { intakeMode } from "../lib/intake.ts";
 import { compareRows, currencyColumns, DEFAULT_TOLERANCE, displayRows, goldenDraftFields, goldenPlan, goldenQueryId, resultColumns } from "../lib/goldens.ts";
 import { LEDGER_FILE, latestReply, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
 import { formatJson, formatTable, maskRows, plainText, protectedNames, protectedNote, protectedResultColumns } from "../lib/output.ts";
@@ -67,6 +68,16 @@ function goldenSource(ctx: CommandContext, g: Golden): SourceConfig {
   const name = g.request?.source;
   if (!name) throw new UserError(`Golden "${g.name}" has no request.source.`);
   return loadSource(ctx.root, name);
+}
+
+// Decision D2: an export source has no connection, so a golden's rows cannot come from the data.
+function exportRefusal(sub: "run" | "confirm", g: Golden, source: SourceConfig): UserError {
+  const what = sub === "confirm" ? "it cannot be confirmed without a connection; nothing was recorded" : "there is no connection to run it on";
+  return new UserError(
+    `Cannot ${sub} ${g.name}: source "${source.source}" was set up from a schema export, and a golden's rows come from the data, ` +
+      `so ${what}. Keep it as a draft and name it in the handoff. ` +
+      `Once a connection exists: sl setup --source ${source.source} --dialect ${source.dialect} --env <VAR>, then sl goldens run --name ${g.name}.`,
+  );
 }
 
 function requireName(values: OptionValues, sub: Subcommand): string {
@@ -284,6 +295,7 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
     ctx.out(formatJson(emitPlan(ctx, goldenPlan(golden, source), { name: "goldens", positionals: ["run"], values })));
     return 0;
   }
+  if (intakeMode(source) === "export" && !input.resultsFile && !input.planId) throw exportRefusal("run", golden, source);
   const rows = await runGolden(ctx, golden, source, input);
   const columns = resultColumns(rows);
   const masked = maskedColumns(ctx, values, source, columns);
@@ -308,6 +320,8 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   }
   const parsed = parseTolerance(values, golden);
   const source = goldenSource(ctx, golden);
+  // Decision D2: a golden's rows come from the data, so an export source cannot confirm one.
+  if (intakeMode(source) === "export") throw exportRefusal("confirm", golden, source);
   const input = resultsInput(ctx, values);
   if (bool(values, "emit-sql")) {
     ctx.out(formatJson(emitPlan(ctx, goldenPlan(golden, source), { name: "goldens", positionals: ["confirm"], values })));
