@@ -511,10 +511,12 @@ describe("connection first", () => {
     writeFileSync(join(dir, "summary.json"), JSON.stringify({ ...summary, intake: "export" }));
     golden(root, "g", { source: "lake", measures: ["sessions.session_count"] }, [{ session_count: 8000 }]);
     const g = grader(await gradeRun(dir), "connection_first");
-    expect(g).toMatchObject({ passed: false, score: 0.5 });
+    // The root's lake source reads a connection, so the status row fails as well.
+    expect(g).toMatchObject({ passed: false, score: 1 / 3 });
     expect(g.details.slice(1)).toEqual([
       "semantic/goldens/: an export scenario has no data to confirm against, but g is confirmed.",
       "transcript.jsonl turn 5: sl goldens confirm succeeded on an export scenario.",
+      "semantic/sources/: no source is a schema export at the end of this export scenario (never set up with sl setup --export, or upgraded).",
     ]);
   });
 });

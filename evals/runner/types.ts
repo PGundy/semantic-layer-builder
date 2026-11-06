@@ -21,11 +21,27 @@ export interface ConnectionIntake {
   views: Record<string, string>;
 }
 
+// An export intake starts the working root with the project only and, at shared/<source>-schema.csv,
+// the schema export the owner shares when a connection is not possible: the fixture's views read
+// with sl export-sql's catalog query. The skill imports it (sl setup --export) only after asking
+// for a connection. export_upgrade starts the same way; later the owner gives the connection and
+// the script upgrades the source to the same views, written in its sl arguments with {fixture}.
+export interface ExportIntake {
+  path: "export" | "export_upgrade";
+  source: string;
+  dialect: "duckdb";
+  views: Record<string, string>;
+}
+
+export type Intake = ConnectionIntake | ExportIntake;
+
 export interface Scenario {
   name: string;
   description?: string;
   fixture: string;
-  intake: ConnectionIntake;
+  intake: Intake;
+  // Appended to the owner's brief: what this scenario changes about the owner's situation.
+  brief_note?: string;
   persona: string;
   budgets: Budgets;
   // The owner's first message, turn 1 of every transcript.

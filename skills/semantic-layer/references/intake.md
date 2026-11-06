@@ -10,13 +10,13 @@ Every later phase reads `snapshots/<source>.json`. There are four ways to fill i
 | Other shared context | the owner can share a dbt project, DDL or an older export | `sl import` |
 | Manual | none of the above fits | you write the snapshot JSON by hand |
 
-Ask the owner which tool you can use to reach each source before choosing. Prefer a path with query access: profiles and join checks need it, and imports carry structure only.
+Ask for a read-only connection to each source first (One step, below), and which tool you can use to reach it. Prefer a path with query access: profiles, join checks and goldens need it, and imports carry structure only. A schema export or other shared context comes only after the owner says a connection is not possible.
 
 ## One step: `sl setup`
 
 `sl setup` does a source's intake in one command: it creates the project when there is none, writes the source file or updates it in place (comments kept), sets the scope, reads the catalog limited to the schemas, previews the in-scope tables with counts and names one next action. The other commands in this guide stay for changing one part later.
 
-Ask for a connection first, with one plain sentence of why: with a connection the tool measures which values exist, which keys are unique and how tables join, and checks figures the owner trusts (profiles, join evidence, goldens); table definitions alone cannot. The owner sets the variable (below); the command names it:
+Ask for a connection first, with one plain sentence of why: with a connection the tool measures which values exist, which keys are unique and how tables join, and checks figures the owner trusts (profiles, join evidence, goldens); table definitions alone cannot, and the role only reads. The owner sets the variable (below); the command names it:
 
 ```
 sl setup --source warehouse --dialect postgres --env WAREHOUSE_URL --schemas acme,marts --include "fct_*" --include "dim_*" --exclude "*_tmp"
@@ -24,9 +24,10 @@ sl setup --source warehouse --dialect postgres --env WAREHOUSE_URL --schemas acm
 sl setup --source lake --dialect duckdb --view "web_events=read_parquet('../data/lake/web_events/*.parquet')" --schemas main
 ```
 
-Only after the owner says a connection is not possible, take a schema export (Schema export, below) with their reason in their words; the export is copied to `exports/<source>.<ext>` and recorded in `intake`:
+Only after the owner says a connection is not possible, offer a schema export (Schema export, below): give them the query, limited to the schemas and, with the scope patterns, to the tables they named, then import the file they save with their reason in their words. The export is copied to `exports/<source>.<ext>` and the reason recorded in `intake.reason`; write the same reason into the source's `description`:
 
 ```
+sl export-sql --dialect postgres --schemas acme --include "fct_*" --include "dim_*" --exclude "*_tmp"
 sl setup --source warehouse --dialect postgres --export schema.csv --reason "The warehouse accepts no outside connections." --schemas acme
 ```
 
@@ -57,7 +58,7 @@ sl setup --print-role-sql --dialect databricks --schemas analytics --catalog mai
 
 It takes `--role-name <name>` (default `sl_reader`, `SL_READER` on Snowflake) and `--dialect redshift` too, and refuses a name that is not a plain identifier. Tell the owner in plain words what the role allows: reading the tables of those schemas, nothing else, and no change to any data. The password (`<password>`) or user (`<user>`) placeholders are for the administrator to fill in; never ask for the value.
 
-**Waiting on a connection.** An export source may approve definitions with the owner, but every step that needs the data waits (decision D2): `sl status` lists profiles, join evidence, goldens and drift from data under "waiting on a connection", never reports `done` (its last phase is `connect`), and ends with the `sl setup --source <s> --dialect <d> --env <VAR>` (for duckdb, `--database <path>`) that upgrades the source to a connection, which `sl next` names once every other step is done. `sl goldens run` and `sl goldens confirm` refuse on an export source, and `sl validate` warns on each approved join without evidence. Write each waiting step in the handoff, and at the start of each session ask the owner once whether a connection is possible now.
+**Waiting on a connection.** An export source may approve definitions with the owner, but every step that needs the data waits (decision D2): `sl status` lists profiles, join evidence, goldens and drift from data under "waiting on a connection", never reports `done` (its last phase is `connect`), and ends with the `sl setup --source <s> --dialect <d> --env <VAR>` (for duckdb, `--database <path>`) that upgrades the source to a connection. `sl status` names that upgrade on every session start (`next_step.connection_upgrade` in `--json`), and `sl next` names it (kind `run`) as the `connect` step once every other step is done. `sl goldens run` and `sl goldens confirm` refuse on an export source, and `sl validate` warns on each approved join without evidence. Write each waiting step in the handoff, and at the start of each session ask the owner once whether a connection is possible now.
 
 ## Connections without secrets
 
@@ -236,9 +237,10 @@ The quickest start when the owner can run one query but cannot give you access, 
 
 ```
 sl export-sql --dialect postgres --schemas sales,marts
+sl export-sql --dialect postgres --schemas sales,marts --include "fct_*" --include "dim_*" --exclude "*_backup"
 ```
 
-It prints the query, with its schema filter line (marked `sl:schema-filter`) applied when `--schemas` is given (without it, every schema but the system ones), and on stderr one line saying how to run it and import the result; `--json` gives `{ dialect, sql, run_hint }`. It needs no project and reads no database. Send the owner the query (or point them at the file) and the run line for their database; the header comment of each file says the same:
+It prints the query, with its schema filter line (marked `sl:schema-filter`) applied when `--schemas` is given (without it, every schema but the system ones), and on stderr one line saying how to run it and import the result; `--json` gives `{ dialect, sql, run_hint }`. `--include` and `--exclude` take scope patterns (`scoping.md`) and are written into the query at its `sl:table-filter` line, so the export lists only those tables; a pattern the dialect's SQL cannot express is deferred, and the header names the `sl import --source <source> --file <file>` with the `--include` and `--exclude` that apply it at import. It needs no project and reads no database. Send the owner the query (or point them at the file) and the run line for their database; the header comment of each file says the same:
 
 | Database | `--dialect` | Run it and save CSV |
 |---|---|---|
