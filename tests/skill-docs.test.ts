@@ -281,7 +281,7 @@ describe("the spec's CLI table agrees with the commands and their --help", () =>
   });
 
   test("export-sql, baseline and the optional --format have their rows", async () => {
-    expect([...cli.get("export-sql")!].sort()).toEqual(["dialect", "schemas"]);
+    expect([...cli.get("export-sql")!].sort()).toEqual(["dialect", "exclude", "include", "schemas"]);
     expect([...cli.get("baseline")!].sort()).toEqual(["out", "source", "tables"]);
     const spec = read("references/spec.md");
     const importRow = spec.split("\n").find((l) => l.startsWith("| `import "))!;

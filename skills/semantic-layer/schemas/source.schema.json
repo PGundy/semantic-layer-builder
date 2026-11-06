@@ -65,6 +65,50 @@
         }
       }
     },
+    "intake": {
+      "type": "object",
+      "description": "How the catalog reaches the layer and which schemas are read. Absent means mode connection with no schema limit.",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "connection",
+            "export"
+          ],
+          "description": "connection (the default when absent): the tools read the catalog through connection. export: the owner shared a catalog export because a connection was not possible."
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Export mode: why a connection was not possible, in the owner's words. sl validate warns when it is empty in export mode."
+        },
+        "schemas": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "The only schemas read. A plain identifier; for BigQuery a dataset or project.dataset, for DuckDB an attached database's database.schema. sl validate errors on a duplicate and on a name that is not one, and warns on an empty list."
+        },
+        "export": {
+          "type": "object",
+          "description": "Export mode only: the catalog export the source was imported from.",
+          "additionalProperties": false,
+          "required": [
+            "file"
+          ],
+          "properties": {
+            "file": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path of the export file, relative to the semantic root and inside it."
+            }
+          }
+        }
+      }
+    },
     "scope": {
       "type": "object",
       "description": "Which tables are in scope. Exclude wins over include.",
@@ -85,6 +129,11 @@
             "minLength": 1
           },
           "description": "Patterns that remove a table from scope."
+        },
+        "tables_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A table-list file, relative to the semantic root (usually scope/<source>.txt): one pattern per line, !<pattern> to exclude, # comments. Its entries join include and exclude; see spec.md Table-list files."
         }
       }
     },

@@ -1,0 +1,79 @@
+{
+  "driver": "scripted",
+  "runs": 1,
+  "scenarios": {
+    "acme-structured": {
+      "effort": {
+        "approved_items": 0,
+        "owner_turns": 2,
+        "owner_turns_per_approved_item": null,
+        "owner_words": 35,
+        "owner_words_per_approved_item": null,
+        "skill_tokens_per_approved_item": null,
+        "tokens": 8490,
+        "tokens_per_approved_item": null,
+        "wall_time_seconds": 15
+      },
+      "graders": {
+        "approvals": {
+          "band": 0,
+          "score": null
+        },
+        "connection_first": {
+          "band": 0,
+          "score": 1
+        },
+        "figures": {
+          "band": 0,
+          "score": null
+        },
+        "secrets": {
+          "band": 0,
+          "score": 1
+        },
+        "selection": {
+          "band": 0,
+          "score": 1
+        }
+      },
+      "stop_reason": "done"
+    },
+    "acme-terse": {
+      "effort": {
+        "approved_items": 0,
+        "owner_turns": 2,
+        "owner_turns_per_approved_item": null,
+        "owner_words": 2,
+        "owner_words_per_approved_item": null,
+        "skill_tokens_per_approved_item": null,
+        "tokens": 8410,
+        "tokens_per_approved_item": null,
+        "wall_time_seconds": 15
+      },
+      "graders": {
+        "approvals": {
+          "band": 0,
+          "score": null
+        },
+        "connection_first": {
+          "band": 0,
+          "score": 1
+        },
+        "figures": {
+          "band": 0,
+          "score": null
+        },
+        "secrets": {
+          "band": 0,
+          "score": 1
+        },
+        "selection": {
+          "band": 0,
+          "score": 1
+        }
+      },
+      "stop_reason": "done"
+    }
+  },
+  "version": 1
+}

@@ -446,10 +446,10 @@ describe("spec examples of eval files pass their schemas", () => {
   const section = spec.slice(spec.indexOf("## Eval runs"), spec.indexOf("## Baseline brief"));
   const blocks = [...section.matchAll(/```json\n([\s\S]*?)\n```/g)].map((m) => JSON.parse(m[1]!) as Record<string, unknown>);
   const kindOf = (b: Record<string, unknown>): EvalSchemaKind =>
-    "opening" in b ? "eval-scenario" : "speaker" in b ? "eval-transcript-turn" : "stop_reason" in b ? "eval-summary" : "eval-script";
+    "opening" in b ? "eval-scenario" : "speaker" in b ? "eval-transcript-turn" : "stop_reason" in b ? "eval-summary" : "graders" in b ? "eval-grades" : "figures" in b ? "eval-figures" : "eval-script";
 
   test("the section shows one example of each file", () => {
-    expect(blocks.map(kindOf).sort()).toEqual(["eval-scenario", "eval-script", "eval-summary", "eval-transcript-turn"]);
+    expect(blocks.map(kindOf).sort()).toEqual(["eval-figures", "eval-grades", "eval-scenario", "eval-script", "eval-summary", "eval-transcript-turn"]);
   });
   for (const [i, b] of blocks.entries()) {
     test(`example ${i + 1} (${kindOf(b)})`, () => expect(evalSchemaIssues(kindOf(b), b, "spec.md")).toEqual([]));

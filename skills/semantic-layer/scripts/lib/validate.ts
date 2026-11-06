@@ -21,6 +21,8 @@ import { classifyType, isNumeric, isTemporal } from "./column-types.ts";
 import { type Condition, conditionAttributes, type Literal, parseCondition } from "./conditions.ts";
 import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
 import { quoteIdent } from "./dialect.ts";
+import { UserError } from "./errors.ts";
+import { intakeIssues } from "./intake.ts";
 import { findTable } from "./naming.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
 import { isHashedValue, protectedColumns } from "./profile.ts";
@@ -28,6 +30,7 @@ import { parseRequestField } from "./refs.ts";
 import { type Sensitivity, sensitivityOf } from "./sensitivity.ts";
 import { incomingKeyColumns, referencedColumns } from "./snapshot-diff.ts";
 import { sourceSafetyIssues } from "./source-safety.ts";
+import { readSourceTableList, type SourceTableList } from "./table-list.ts";
 import { bareNames, callsRound, dividesByLiteral, type SqlNames, sqlNames, tokenizeSql } from "./sql-names.ts";
 import type {
   AccessFile,
@@ -171,7 +174,7 @@ export function schemaIssues(kind: SchemaKind, data: unknown, file: string): Iss
 }
 
 // The eval harness's files (evals/runner), each with a schema under schemas/ (spec.md, Eval runs).
-export const EVAL_SCHEMA_KINDS = ["eval-scenario", "eval-script", "eval-transcript-turn", "eval-summary"] as const;
+export const EVAL_SCHEMA_KINDS = ["eval-scenario", "eval-script", "eval-transcript-turn", "eval-summary", "eval-figures", "eval-grades", "eval-baseline"] as const;
 export type EvalSchemaKind = (typeof EVAL_SCHEMA_KINDS)[number];
 
 let evalValidators: Map<EvalSchemaKind, ValidateFunction> | undefined;
@@ -562,6 +565,28 @@ class Validator {
         if (typeof relation === "string" && hasCredential("view", relation)) flag(`connection.views.${name}`, "view");
   }
 
+  // Errors when a source's table-list file is outside the root or missing, and on each of its
+  // entries that is not a usable pattern, at its line and character.
+  checkTablesFile(file: string, source: string, rel: string): void {
+    let list: SourceTableList;
+    try {
+      list = readSourceTableList(this.root, rel);
+    } catch (e) {
+      if (!(e instanceof UserError)) throw e;
+      this.error(file, "scope.tables_file", e.message);
+      return;
+    }
+    if (!list.exists) {
+      this.error(
+        file,
+        "scope.tables_file",
+        `names ${rel}, which does not exist; import a table-list file with \`sl scope --source ${source} --from-file <path> --write\`, or remove scope.tables_file`,
+      );
+      return;
+    }
+    for (const p of list.problems) this.error(this.rel(list.path), `line ${p.line}, character ${p.column}`, p.message);
+  }
+
   checkSources(): void {
     for (const [stem, l] of this.sources) {
       this.checkSourceCredentials(l);
@@ -577,6 +602,9 @@ class Validator {
           if (problem) this.error(l.file, `scope.${key}[${i}]`, problem);
         });
       }
+      // A tables_file that is not a string is already a schema error.
+      if (typeof s.scope?.tables_file === "string") this.checkTablesFile(l.file, s.source, s.scope.tables_file);
+      for (const x of intakeIssues(s, this.root)) this.issues.push({ level: x.level, file: l.file, path: x.path, message: x.message });
       if (s.dialect !== "duckdb") {
         for (const key of ["database", "setup", "views"] as const)
           if (s.connection?.[key] !== undefined) this.warn(l.file, `connection.${key}`, `is used only by duckdb sources, not ${s.dialect}`);
