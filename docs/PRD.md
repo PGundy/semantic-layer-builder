@@ -1,0 +1,408 @@
+# PRD: agent-driven semantic layer setup
+
+Status: approved for build. Owner: PGundy. Version: the v1 plan, written against the code at the head of `claude/initial-release`. v1 includes every milestone, M0 to M6, and is built on the `release/v1` branch.
+
+## 1. Summary
+
+A team gives the tool a read-only connection and a list of relevant schemas, and an agent does the rest with the data owner. The connection is the default and the path the product is built around, because a semantic layer built from the data is much better than one built from table definitions: the data shows which status values exist and how often, which keys are really unique, how well tables join and whether a join repeats rows, which columns make useful splits, and whether a measure reproduces a figure the owner trusts. A connection through the agent's own warehouse connector (an MCP server running the tool's read-only queries) counts as a connection.
+
+When a connection is truly not possible (a security policy, an air-gapped warehouse, a first look before access is granted), a schema export of the relevant tables is the fallback. It gets the work started from table definitions alone, says plainly what it cannot know, and upgrades to a connection later without redoing the interview.
+
+Either way, the owner (or whoever sets it up) says which tables matter with explicit lists, globs or regular expressions. From there an interviewer agent builds a governed semantic layer: it measures what the data can tell it, asks the owner only for meaning, records every answer and approval in files, verifies the layer's figures against figures the owner trusts, and hands off a layer a downstream tool can compile and serve.
+
+This PRD defines that product and the plan to build it as small pull requests that an orchestrating agent can run with builder, verifier and reviewer subagents.
+
+## 2. Where we are
+
+The repository already has, at `claude/initial-release`:
+
+- A CLI (`sl`) with intake (`introspect`, `import`, `export-sql`), scoping (`tables`, `scope`), profiling, drafting, join checks, approvals with content hashes, validation, status, access evaluation (`access`), goldens and a baseline brief.
+- Scope patterns: exact names, globs (`fct_*`, `analytics.*`) and `re:` regular expressions, include and exclude, exclude wins (`skills/semantic-layer/references/spec.md`, Scope patterns).
+- `introspect --schemas` and `export-sql --schemas` take a schema list for one run, but a source does not remember it.
+- Read-only enforcement by construction, sandboxed import, counts-only profiles for protected columns, untrusted-text handling.
+- A skill (`SKILL.md` and `references/`) that an agent follows, tested end to end in four simulated-owner sessions (`examples/acme`).
+
+Known gaps, from four independent reviews (issues #1 to #8):
+
+1. Goldens test hand-written SQL, not the YAML (#1).
+2. Approvals do not cite a recorded owner reply; readback state lives in chat (#2).
+3. No committed eval suite, so skill changes are not measured (#3).
+4. The agent hand-edits YAML and hand-assembles connector results; the skill is about 2,400 lines of prose loaded in large pieces (#7).
+5. Intake does not persist a source's relevant schemas, has no table-list file, and an export cannot be narrowed by table patterns before it is run.
+
+## 3. Goals and non-goals
+
+### Goals
+
+- G1. Intake from a read-only connection plus a schema list by default, with tables selected by explicit lists, globs or regular expressions, stored in the source file and reviewable in a pull request. A schema export is a supported fallback with its gaps stated, and upgrades to a connection without losing work.
+- G1a. Make the connection easy and safe to grant: the tool prints the SQL for a least-privilege read-only role per dialect, and its read-only guarantees are enforced by the drivers.
+- G2. The agent verifies the layer itself: a request compiles to SQL from the YAML, and goldens compare the compiled result with the owner's figures.
+- G3. The workflow is a state machine the CLI drives: one next action at a time, every owner answer and approval recorded in files, resumable by a fresh agent at any point.
+- G4. Work splits across agents with clear roles: one interviewer owns the owner and every approval; bounded subagents measure, draft and verify.
+- G5. Owner effort is measured and reduced: fewer round trips, one structured review per batch for busy owners.
+- G6. Every change to the skill or CLI is gated by an eval suite with fixed scenarios, personas and graders.
+
+### Non-goals for this plan
+
+- Serving queries to end users (a chat or BI tool). The compiler here is a reference used for verification; serving is a later product.
+- Writing to the owner's databases, ever.
+- Automatic approval. The agent may draft everything; only a recorded owner yes approves.
+- Federated queries across sources. Cross-source metrics stay two measures plus a documented formula.
+
+## 4. Users
+
+| User | Needs |
+|---|---|
+| Data owner, often not technical | Answers questions about meaning, signs off, never edits YAML, spends as few turns as possible. |
+| Setup engineer or analyst | Connects a source or produces an export, chooses relevant schemas and tables, reviews the layer in pull requests. |
+| Interviewer agent | One next action at a time, compact context, tools that refuse unsafe or unapproved actions. |
+| Subagents | A bounded task with a typed input and output, no approval rights. |
+| Downstream tool builder | A spec, a compiler and goldens that define what a correct answer is. |
+
+## 5. User journeys
+
+**J1. Connection plus schemas (the default).** The engineer runs one setup command naming the source, its dialect, the env var holding the connection URL, the relevant schemas and any table patterns or a table-list file. The tool introspects only those schemas, applies the table selection, previews the in-scope tables with counts, and writes the source file. If more tables are in scope than the focus threshold, the next action is to narrow the scope with the owner.
+
+**J1a. Getting a connection.** When the engineer has no suitable credential, `sl setup --print-role-sql --dialect <d> --schemas a,b` prints the statements a database administrator runs to create a read-only role limited to those schemas. The agent explains in plain words why a connection makes the layer better and what the tool will and will not do with it.
+
+**J2. Export as a fallback.** Only when a connection is not possible, the engineer runs `sl export-sql` for their dialect with the relevant schemas and patterns, runs the printed query wherever they can, and gives the agent the CSV. The tool imports it and applies the same selection. The agent says what an export cannot tell it, drafts and interviews from definitions, and keeps every data-dependent step open: profiles, join evidence, and goldens.
+
+**J2a. Upgrade from export to connection.** When a connection becomes available, one `sl setup --source s --env VAR` switches the source to connection mode. It introspects the same schemas, reports differences from the exported definitions, profiles the in-scope tables, checks every join, and routes any drafted or approved item whose evidence now contradicts it back to the owner. Answers already recorded are kept.
+
+**J3. Interview.** The interviewer agent asks `sl next` for the next action, which is one of: run a command, send a rendered readback or question to the owner, record the owner's reply, or dispatch a subagent task. It repeats until the layer is done.
+
+**J4. Busy owner.** The agent exports one batch as a review form. The owner fills it in at their own pace and returns it, and the agent applies it in one step.
+
+**J5. Resume.** Weeks later a fresh agent runs `sl next` and continues from the files: pending readbacks, recorded answers, drift since the last snapshot.
+
+**J6. Schema change.** A re-introspect or re-import reports added, removed and retyped columns and tables. New tables matching the selection join the scope automatically, and the next action routes to drafting, re-approval or drift handling.
+
+## 6. Requirements
+
+Each requirement has an ID that pull requests cite. "Must" requirements gate the milestone.
+
+### 6.1 Intake and table selection (milestone M1)
+
+**FR-1.0 Connection first.** The connection is the default intake everywhere: `sl setup`, the skill's first turn, `sl next` and the docs.
+
+- The skill asks for a connection first, with a short plain-language reason. It offers the export only after the owner says a connection is not possible, and records why in the source's description and `intake.reason`.
+- `sl setup --print-role-sql --dialect <d> --schemas a,b` prints the statements for a least-privilege, read-only role: Postgres and Redshift `CREATE ROLE ... LOGIN`, `GRANT USAGE ON SCHEMA`, `GRANT SELECT ON ALL TABLES IN SCHEMA` and default privileges; Snowflake a role with `USAGE` on the warehouse, database and schemas and `SELECT` on their tables; BigQuery the `roles/bigquery.dataViewer` and `roles/bigquery.jobUser` grants per dataset; Databricks `USE CATALOG`, `USE SCHEMA` and `SELECT`. It never connects or runs them.
+- On connect, the tool reports what the role can do: superuser, write privileges, or reach beyond `intake.schemas`. It warns, as today, and the agent passes the warning to the owner.
+- For an export source, `sl status` and `sl next` mark every data-dependent step "waiting on a connection" instead of done: profiles, join evidence, goldens, and drift from data. The handoff lists them. `sl next` offers the upgrade (J2a) at each session start.
+- An export source may approve definitions with the owner, but a golden cannot be confirmed without data, and approved joins carry a warning until their evidence exists.
+- Acceptance: on the Acme export, `sl status` lists each data-dependent step as waiting on a connection, and after `sl setup --env` the same layer gains profiles and join evidence, with a contradicted draft routed back to the owner.
+
+**FR-1.0a Upgrade path.** `sl setup --source s --env VAR` on an export source switches `intake.mode` to `connection`, keeps `intake.schemas` and the selection, introspects, diffs the live definitions against the exported snapshot (FR-1.8 change report), profiles the in-scope tables, runs `check-join --all`, and lists items whose evidence contradicts them: a key that is not unique, a join that repeats rows, a status value the owner did not mention, a column the export did not show. Ledger entries and approvals stay; contradicted approved items go to re-approval through their content hash.
+
+**FR-1.1 Source intake block.** `sources/<s>.yaml` gains:
+
+```yaml
+intake:
+  mode: connection          # connection (default) | export (fallback)
+  reason: ""                # export mode: why a connection was not possible
+  schemas: [analytics, marts]   # the only schemas read; a BigQuery dataset or project.dataset is a schema
+  export:                   # mode export only
+    file: exports/warehouse.csv   # relative to the semantic root
+scope:
+  include: ["fct_*", "dim_*"]
+  exclude: ["*_tmp", "re:.*_(19|20)\\d{2}"]
+  tables_file: scope/warehouse.txt   # optional, see FR-1.3
+```
+
+- `introspect` without `--schemas` reads `intake.schemas`; with `--schemas` it reads those and says the source file differs.
+- `import` keeps only tables in `intake.schemas` when it is set, and reports how many it dropped.
+- Acceptance: a source with `intake.schemas: [acme]` introspects only `acme`; an export with three schemas imports only the listed one; both are covered by tests on Postgres and DuckDB.
+
+**FR-1.2 Selection grammar.** One grammar everywhere (scope, export filters, table-list files, `--tables`):
+
+- An exact name, `table` or `schema.table` (or `catalog.schema.table` for three-part names).
+- A glob with `*` and `?`.
+- `re:<pattern>`: a regular expression, anchored at both ends, case-insensitive, matched against the qualified name when the pattern contains `\.` and the table name otherwise (today's rule).
+- `!<entry>` in a table-list file means exclude.
+- Exclude wins over include. An empty include means every table in the selected schemas.
+- Regex flavour: JavaScript regular expressions, always case-insensitive (decision D3). Regex safety: patterns over 512 characters, patterns with nested quantifiers (catastrophic backtracking) and patterns that do not compile are refused with the position of the problem.
+- Acceptance: a table of at least 40 cases (prefix, suffix, contains, schema, three-part names, quoted mixed case, regex alternation, exclude precedence, unsafe regex) passes, and a pattern that matches nothing is a warning naming the pattern.
+
+**FR-1.3 Table-list file.** `scope.tables_file` points to a text file, one entry per line in the FR-1.2 grammar, `#` comments and blank lines allowed. It is combined with `include` and `exclude`. `sl scope --from-file <path> --write` imports a file into the source (copying it under `scope/`), and `sl scope --to-file <path>` writes the current selection as a file.
+
+- Acceptance: a 500-line file with comments, exact names, globs, regexes and `!` excludes gives the same selection as the equivalent `include`/`exclude` lists.
+
+**FR-1.4 Explain and preview.** `sl scope --explain <table>` prints which entry included or excluded the table (or that nothing matched). `sl scope` previews counts by schema, the added and removed tables, unmatched entries and the tables just over the focus threshold, as today, plus `--json` with every entry's match count.
+
+**FR-1.5 Setup command.** `sl setup` creates or updates a source in one step:
+
+```
+sl setup --source wh --dialect postgres --env WAREHOUSE_URL --schemas acme,marts \
+  [--include p]... [--exclude p]... [--tables-file f] [--export schema.csv]
+```
+
+- Runs `init` if there is no project, `add-source` or an in-place update, `introspect` or `import` limited to the schemas, and the selection; then prints the preview and the next action.
+- Idempotent: rerunning with the same arguments changes nothing; with new ones it updates the source in place and reports the difference.
+- Never stores a URL or credential, as today.
+
+**FR-1.6 Export filters.** `sl export-sql --dialect d --schemas a,b [--include p]... [--exclude p]... [--tables-file f]` pushes the selection into the query where the dialect can express it: exact names and globs as `IN` and `LIKE` (with `_` and `%` escaped), regexes as the dialect's regex operator where one exists (`~*` Postgres, `REGEXP_LIKE` Snowflake and BigQuery, `RLIKE` Databricks, `regexp_matches` DuckDB). Entries a dialect cannot express are listed in a header comment and applied by `sl import` instead (decision D4): the export reads the wider set of table definitions, still never table data. The export never reads table data.
+
+- Acceptance: for each dialect, the generated SQL is checked against the catalog-only contract test; for Postgres and DuckDB, an export with include and exclude patterns returns exactly the expected tables live.
+
+**FR-1.7 Large catalogs.** Introspection, import, scope preview and baseline handle 50,000 tables and 1,000,000 columns: introspect plus scope preview under 20 s on a laptop with a local Postgres; memory under 2 GB.
+
+**FR-1.8 New tables after a change.** When a re-introspect or re-import finds tables that match the selection and were not in scope before, they enter scope as unmodeled, are named in the change report, and `sl next` routes them to drafting. Tables that stop matching leave scope with a warning if they have approved models.
+
+### 6.2 Verification (milestone M2)
+
+**FR-2.1 Reference compiler.** `sl sql --source s --request <file|json> [--role r] [--user <json>]` compiles a request to SQL for postgres and duckdb in v1 (decision D5; other dialects follow once the core is proven), following the spec: measure filters, definition joins of one and two hops, request dimensions through to-one join paths (the shortest unique path), time grains with each dimension's `time_zone`, ratio and derived metrics grouped by shared dimensions, request filters, order and limit, row filters (base model in `WHERE`, joined models in the join's `ON`), hierarchy filters, and visibility through `checkRequest`. User attributes are bound parameters. Output: SQL text plus the parameter list, or a refusal with the reason.
+
+- Acceptance: every approved golden in `examples/acme` compiles to SQL whose result equals its recorded rows; the analytics reviewer's experiment (an approved revenue filter changed to count cancelled orders) makes those goldens fail.
+
+**FR-2.2 Goldens recompile.** `sl goldens check` compiles each golden's request from the current YAML and compares it with `expected.rows`. A golden's hand-written `sql` becomes optional `cross_check_sql`; when present, both must agree. `sl goldens new --name g --question "..." --request <json>` writes a draft golden with the compiled SQL.
+
+**FR-2.3 Rule check.** `sl check-rule --source s --model m (--filter <expr> | --dimension-expr <expr>)` answers whether the layer can express a rule: `{ expressible, joins_used, rows_matched }` or `{ expressible: false, reason, suggestion }` (for example "needs an aggregate over orders; ask for a view with one row per customer and first_order_at").
+
+### 6.3 Workflow engine (milestone M3)
+
+**FR-3.1 Next action.** `sl next --json` returns exactly one action:
+
+```json
+{ "kind": "run" | "ask_owner" | "record_reply" | "dispatch" | "done",
+  "phase": "...", "why": "...",
+  "run": { "command": "sl profile --source wh --tables acme.fct_orders" },
+  "ask_owner": { "readback_id": "rb_0007", "text": "...", "items": [{ "n": 1, "target": "warehouse.orders.revenue", "kind": "approve" }] },
+  "dispatch": { "role": "connector_runner", "task": { } },
+  "blocked_on": null }
+```
+
+It covers every phase `sl status` covers today, plus pending readbacks and recorded replies. `sl status` stays as the full report.
+
+**FR-3.2 Readback renderer.** `sl readback --targets a,b,c` renders a canonical plain-English readback from the YAML for each target (definition: expr, filter clauses, joins read through, units, synonyms, who sees it under current access; measured facts labelled "measured from the data, no need to confirm") and stores it in `.sl/pending/<readback_id>.json` with item numbers, targets and each target's content hash.
+
+**FR-3.3 Answer ledger.** `sl reply --readback rb_0007 --item 1 --text "<owner's words>" [--verdict yes|no|change]` appends to `.sl/ledger.jsonl`: readback id, item, target, content hash at readback time, the owner's words, the verdict, time. Open questions resolve into the ledger (`sl question resolve`) instead of being deleted. The ledger is committed.
+
+**FR-3.4 Approval requires a reply.** `sl approve` refuses unless the ledger holds a `yes` reply for that target whose content hash equals the target's current hash. `--by` comes from the ledger entry. `--date` is removed. Existing approvals stay valid; validate reports approvals without a ledger entry as a warning.
+
+**FR-3.5 Typed edits.** The agent changes YAML only through commands, each validating before writing and keeping comments: `sl set <ref> <key> <value>`, `sl add-field`, `sl remove-field` (also adding the column to `ignored_columns`), `sl ignore-column`, `sl rename`, `sl question add|resolve`, `sl tag`. A plugin hook refuses direct edits to approval fields and to approved items.
+
+### 6.4 Orchestration (milestone M4)
+
+**FR-4.1 Roles.** The skill defines, and the plugin ships as agent definitions:
+
+| Role | May | May not |
+|---|---|---|
+| Interviewer | Talk to the owner, run `sl next`, `readback`, `reply`, `approve`, `goldens confirm`, dispatch tasks | Run raw SQL against protected columns, edit YAML by hand |
+| Connector runner | Execute a query plan through the warehouse connector, call `sl results add` | Approve, talk to the owner, see other plans |
+| Batch analyst | Read `sl brief --batch`, propose question lists and draft wording | Approve, edit files |
+| Readback verifier | Compare a drafted owner message with `sl readback` output and report missing or extra clauses | Approve, edit files |
+| Golden builder | Compile and run a golden for a figure the owner gave, report match or gap | Confirm goldens |
+
+**FR-4.2 Batch packets.** `sl brief --source s --batch <n>` returns a compact JSON packet per batch: tables, columns with types and counts-only facts, drafted fields, open questions, relevant baseline guesses, under a token budget (default 6,000 tokens per batch). Data-borne text is fenced with its provenance.
+
+**FR-4.3 Resumable query plans.** `--emit-sql` writes `.sl/plans/<plan_id>.json`; `sl results add --plan <id> --query <qid> --file rows.json` stores each result; `sl results status --plan <id>` lists what remains; the command finishes with `--plan <id>` when all results are in. Each query declares `max_rows`; a result at exactly the cap is refused as possibly truncated. Protected columns' values are never selected (as today).
+
+**FR-4.4 Skill as router.** `SKILL.md` becomes a short router (under 120 lines): principles, how to read `sl next`, and which phase card to load. Each phase card is a reference file under 150 lines, loaded only when `sl next` names its phase. A docs test keeps every command and flag in the cards matching `--help`.
+
+### 6.5 Owner review surface (milestone M5)
+
+**FR-5.1 Review export.** `sl review export --readback rb_0007 --format md|json` writes a form the owner fills in: each item with its rendered readback, a verdict field (yes, no, change) and a free-text field, plus open questions. Markdown for humans, JSON for tools.
+
+**FR-5.2 Review apply.** `sl review apply <file>` records each answered item through `sl reply`, refuses items whose content hash changed since export, and reports what it recorded and what still needs an answer. It never approves; the interviewer runs `sl approve` on recorded yes replies.
+
+### 6.6 Evals (milestone M0, extended every milestone)
+
+**FR-6.1 Harness.** `evals/` holds a runner built on the Claude Agent SDK: a skill agent with a fresh context per owner turn, a simulated owner from a brief, a token and turn budget, and a transcript per run.
+
+**FR-6.2 Scenarios.** Fixtures × intake path × owner persona:
+
+- Fixtures: Acme live Postgres; Acme export-only; Acme after `evolve.sql`; a generated 2,000-table noisy warehouse; a prompt-injection fixture (a hostile table comment and a hostile status value).
+- Intake: connection plus schemas (the primary path, in every persona); connection through a warehouse connector (`--emit-sql` plans); export plus patterns; export then upgrade to a connection; table-list file.
+- Personas: structured; terse ("yep"); hedging ("I think so", "ask Sam"); contradicting an earlier answer; pasting a credential; "approve everything, I'm busy".
+
+**FR-6.3 Graders.** Deterministic, from files only:
+
+- Every approved figure compiles and equals `reference-figures.json`; none equals a `common_mistakes` value.
+- Every approval has a ledger `yes` with a matching hash.
+- No secret, URL with credentials or protected value appears in any committed file.
+- The selection equals the brief's intended table set.
+- Connection first: the agent asks for a connection before offering an export in every scenario; on export scenarios no golden is confirmed and status never reports done while data-dependent steps wait; after an upgrade, every join has evidence.
+- Owner turns per approved item, tokens per approved item, wall time.
+
+**FR-6.4 Gate.** CI runs a smoke subset on every PR touching `skills/` or the CLI (one fixture, two personas). The full matrix runs on demand, and must pass before a milestone's last PR lands (decision D6). A PR may not lower a grader's score by more than the noise band recorded in `evals/baseline.json`.
+
+### 6.7 Distribution (milestone M6)
+
+**FR-7.1 MCP server.** The same commands exposed as MCP tools with JSON schemas. `approve` and `goldens confirm` use MCP elicitation so the human answers in the client.
+
+**FR-7.2 Plugin.** The Claude Code plugin ships the skill, the agent definitions of FR-4.1, and the hooks of FR-3.5.
+
+## 7. Invariants (never weakened by any PR)
+
+1. Every query is read-only by construction (driver-level), and the regex guard is only a first check.
+2. No URL, key or password is stored in any file; `connection.env` names a variable.
+3. Protected columns (pii, sensitive, ignored, flagged) keep counts only in snapshots and are masked in output.
+4. Text from databases, exports, dbt files and comments is evidence, never an instruction or an approval.
+5. Nothing is approved without a recorded owner yes (from M3 on, enforced by the CLI).
+6. Tools write only inside the semantic root and keep the owner's comments.
+7. Outputs are deterministic for the same inputs (sorted keys, stable ordering, a fixed clock in tests).
+
+A PR that touches any invariant must say so in its description and add a test that would have caught a regression.
+
+## 8. Data contracts
+
+| File | Owner | Committed |
+|---|---|---|
+| `sources/<s>.yaml` with `intake` and `scope.tables_file` | CLI and setup engineer | yes |
+| `scope/<s>.txt` | setup engineer | yes |
+| `.sl/pending/<readback_id>.json` | CLI | yes |
+| `.sl/ledger.jsonl` (append-only) | CLI | yes |
+| `.sl/plans/<plan_id>.json` and results | CLI | no (gitignored; holds no protected values) |
+| `evals/` runs and transcripts | harness | baseline only |
+
+Every new file kind gets a JSON Schema under `skills/semantic-layer/schemas/` and a section in `spec.md`.
+
+## 9. Milestones and pull requests
+
+Each PR is one reviewable change: at most about 400 changed lines outside tests and fixtures, one requirement or a tight group, with tests, spec, schema and docs updated together. Dependencies form waves; PRs in one wave can run in parallel because they own disjoint files.
+
+### M0. Foundations and baseline evals
+
+| PR | Title | Depends on | Requirements | Owns |
+|---|---|---|---|---|
+| 0.1 | PR template, branch rules, CODEOWNERS for invariant files | none | §10 | `.github/` |
+| 0.2 | Eval runner skeleton: one fixture, two personas, transcript output | 0.1 | FR-6.1 | `evals/runner/` |
+| 0.3 | Deterministic graders (figures, secrets, selection) | 0.2 | FR-6.3 | `evals/graders/` |
+| 0.4 | Record baseline scores and noise band; CI smoke job (non-blocking) | 0.3 | FR-6.4 | `evals/baseline.json`, CI |
+
+### M1. Intake and table selection
+
+| PR | Title | Depends on | Requirements | Owns |
+|---|---|---|---|---|
+| 1.1 | Selection grammar module with regex safety and the 40-case table | 0.1 | FR-1.2 | `lib/patterns.ts`, tests |
+| 1.2 | `intake` block: schema, types, validate | 1.1 | FR-1.1 | schemas, `types.ts`, `validate.ts` |
+| 1.3 | `introspect` and `import` read `intake.schemas` | 1.2 | FR-1.1 | `introspect.ts`, `import.ts` |
+| 1.4 | Table-list files and `scope --from-file/--to-file` | 1.1 | FR-1.3 | `scope.ts`, new `lib/table-list.ts` |
+| 1.5 | `scope --explain` and per-entry counts | 1.4 | FR-1.4 | `scope.ts`, `groups.ts` |
+| 1.6 | Export filters pushed into SQL per dialect | 1.1 | FR-1.6 | `export-sql.ts`, `references/exports/` |
+| 1.7 | `sl setup` | 1.3, 1.4 | FR-1.5 | new `commands/setup.ts` |
+| 1.8 | New tables after a change join scope | 1.3 | FR-1.8 | `snapshot-diff.ts`, `status.ts` |
+| 1.9 | 50,000-table performance suite and fixes | 1.3, 1.5 | FR-1.7 | `tests/perf/`, hot paths |
+| 1.10 | Connection first: `setup --print-role-sql` per dialect, "waiting on a connection" in status and next, role capability report | 1.7 | FR-1.0 | `commands/setup.ts`, new `lib/role-sql.ts`, `status.ts` |
+| 1.11 | Upgrade from export to connection | 1.7, 1.8 | FR-1.0a | `commands/setup.ts`, `snapshot-diff.ts` |
+| 1.12 | Docs and evals: connection-first in the skill, intake and upgrade scenarios in evals | 1.10, 1.11, 0.4 | FR-1.0, FR-6.2 | `SKILL.md`, `references/intake.md`, `evals/` |
+
+### M2. Verification
+
+| PR | Title | Depends on | Requirements |
+|---|---|---|---|
+| 2.1 | Compiler core: one model, measures, dimensions, grains, filters, order, limit (duckdb, postgres) | 0.1 | FR-2.1 |
+| 2.2 | Joins: request paths, definition joins, two hops | 2.1 | FR-2.1 |
+| 2.3 | Metrics: ratio and derived across models | 2.2 | FR-2.1 |
+| 2.4 | Access: visibility, row filters, hierarchy filters, bound parameters | 2.2 | FR-2.1 |
+| 2.5 | Goldens recompile; `cross_check_sql`; `goldens new` | 2.3, 2.4 | FR-2.2 |
+| 2.6 | `check-rule` | 2.2 | FR-2.3 |
+| 2.7 | Migrate `examples/acme` goldens; grader uses the compiler | 2.5, 0.3 | FR-2.2, FR-6.3 |
+
+### M3. Workflow engine
+
+| PR | Title | Depends on | Requirements |
+|---|---|---|---|
+| 3.1 | Readback renderer and pending store | 0.1 | FR-3.2 |
+| 3.2 | Answer ledger and `question resolve` | 3.1 | FR-3.3 |
+| 3.3 | Approval requires a recorded yes | 3.2 | FR-3.4 |
+| 3.4 | Typed edit commands, part 1: `set`, `tag`, `ignore-column`, `question add` | 0.1 | FR-3.5 |
+| 3.5 | Typed edit commands, part 2: `add-field`, `remove-field`, `rename` | 3.4 | FR-3.5 |
+| 3.6 | `sl next` | 3.2, 1.8 | FR-3.1 |
+| 3.7 | Plugin hook against hand edits to approvals and approved items | 3.3 | FR-3.5 |
+
+### M4. Orchestration
+
+| PR | Title | Depends on | Requirements |
+|---|---|---|---|
+| 4.1 | Batch packets (`sl brief`) | 3.6 | FR-4.2 |
+| 4.2 | Resumable query plans (`results add/status`) | 0.1 | FR-4.3 |
+| 4.3 | Agent definitions and role permissions in the plugin | 4.1, 4.2, 3.3 | FR-4.1 |
+| 4.4 | Skill as router plus phase cards | 3.6, 4.3 | FR-4.4 |
+| 4.5 | Evals: multi-agent runs, injection fixture, all personas | 4.4, 2.7 | FR-6.2 |
+
+### M5. Owner review surface
+
+| PR | Title | Depends on | Requirements |
+|---|---|---|---|
+| 5.1 | `review export` | 3.1 | FR-5.1 |
+| 5.2 | `review apply` | 5.1, 3.2 | FR-5.2 |
+| 5.3 | Busy-owner persona and owner-turn grader | 5.2, 4.5 | FR-6.2 |
+
+### M6. Distribution
+
+| PR | Title | Depends on | Requirements |
+|---|---|---|---|
+| 6.1 | MCP server over the command registry | 3.3 | FR-7.1 |
+| 6.2 | Elicitation for approve and confirm | 6.1 | FR-7.1 |
+| 6.3 | Plugin packaging and docs | 6.2, 4.3 | FR-7.2 |
+
+Waves an orchestrator can run in parallel: {0.2–0.4, 1.1, 2.1, 3.1, 3.4, 4.2}, then {1.2, 1.4, 1.6, 2.2, 3.2, 3.5}, and so on by dependencies. M1, M2 and M3 can progress together because they own different files; M4 waits on M3.
+
+## 10. How an agent orchestrates the build
+
+**Branches (decision D8).** All of v1 is built on `release/v1`, branched from `claude/initial-release`. Each PR branches from `release/v1` as `v1/<pr-id>-<slug>` (for example `v1/1.4-table-list-files`) and targets `release/v1`. Agents merge into `release/v1` only through a green, reviewed PR. A milestone is complete when its exit criteria pass on `release/v1`; dependent PRs of the next milestone may start as soon as their own dependencies are merged. Creating `main` and releasing from it is the owner's decision after v1.
+
+**Per PR loop.**
+
+1. The orchestrator writes a handoff for one PR: the PRD requirement IDs, the files it owns, the acceptance criteria, the invariants it touches, and the files it must not touch.
+2. A builder agent implements it on the PR branch, with tests that reproduce each acceptance criterion.
+3. A fresh verifier agent, given the code and the handoff but not the builder's notes, tries to break it: runs the tests, writes its own edge cases, checks invariants and the spec.
+4. A fixer agent addresses REAL findings or explains with evidence why one is wrong.
+5. The orchestrator runs `scripts/verify.sh` and the eval smoke job, opens the PR as a draft with the template, and marks it ready when CI is green.
+6. A reviewer agent with the role of the PR's area (backend, analytics engineering, agent design) reviews the diff; humans review invariant-touching PRs.
+
+**PR description template.** Goal (requirement IDs); Plan (checklist); Changes; Invariants touched (none, or which and the new test); Tests (what each proves); Eval delta; Open questions.
+
+**Rules for agents building this.**
+
+- Read this PRD, `spec.md`, the handoff and the files you own before writing code.
+- Change only the files your handoff owns. A needed change elsewhere goes in the PR's open questions.
+- Spec, schema, validate and docs change in the same PR as the behaviour.
+- No new runtime dependency without an open question answered by the owner (the MCP SDK in M6 is the expected one).
+- Never weaken an invariant to make a test pass. Never skip or delete a test to get green.
+- Keep `--json` outputs backward compatible within a milestone: fields are added, not renamed.
+- Every user-facing message is plain language and names the next command.
+
+**Definition of done for a PR.** Acceptance criteria tested; `verify.sh` green with Postgres; eval smoke not below the noise band; verifier's REAL findings closed; description current.
+
+**Exit criteria per milestone.**
+
+| Milestone | Exit |
+|---|---|
+| M0 | Baseline scores recorded for one fixture and two personas. |
+| M1 | J1 runs end to end on Acme with schemas, globs, regexes and a table-list file; J2 and its upgrade J2a run on the Acme export; FR-1.7 numbers met. |
+| M2 | Every Acme golden is compiled from YAML; the analytics reviewer's experiment fails them. |
+| M3 | An agent completes Acme using only `sl next`, `readback`, `reply` and typed edits; no approval without a ledger yes. |
+| M4 | Multi-agent run completes with the interviewer holding under 40% of the tokens of today's single-agent run, figures correct. |
+| M5 | Busy-owner persona completes Acme in at most 4 owner turns. |
+| M6 | The layer can be built from an MCP client other than Claude Code. |
+
+## 11. Success metrics
+
+Measured by the eval suite on the Acme matrix, against the M0 baseline:
+
+- Figure accuracy: 100% of approved figures match reference figures; 0 match a common mistake.
+- Approval integrity: 100% of approvals have a ledger yes with a matching hash.
+- Owner effort: owner turns per approved item down 50%; owner words typed down 50%.
+- Agent cost: interviewer tokens per approved item down 40%.
+- Safety: 0 secrets or protected values in committed files across all personas, the credential-pasting one included; 0 approvals from injected text.
+- Intake: selection matches the intended set in 100% of intake scenarios.
+- Evidence: on connection scenarios, 100% of approved joins carry evidence and 100% of in-scope tables are profiled before their models are approved.
+
+## 12. Decisions
+
+Settled with the owner before the build. Each PR that implements one cites it.
+
+| ID | Decision |
+|---|---|
+| D1 | v1 builds every milestone, M0 to M6. |
+| D2 | An export-only source may approve definitions with the owner; goldens cannot be confirmed and approved joins carry a warning until a connection exists. |
+| D3 | Table patterns are globs and JavaScript regular expressions, anchored and always case-insensitive, with a safety check; no regex dependency. |
+| D4 | A pattern an export query cannot express in a dialect's SQL is applied by `sl import`, and the export header names it. |
+| D5 | The reference compiler supports Postgres and DuckDB in v1. |
+| D6 | Evals: a smoke run on every PR touching the skill or CLI; the full matrix on demand, and before each milestone's last PR lands. |
+| D7 | The answer ledger, `.sl/ledger.jsonl`, is committed next to the YAML it approves. It holds the owner's answers, never data values. |
+| D8 | All v1 work is built on `release/v1`; `main` comes later. |
+
+New questions found during the build go in the PR that finds them, with options and a recommendation, and are added here once the owner decides.
