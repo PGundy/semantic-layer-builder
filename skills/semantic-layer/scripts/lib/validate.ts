@@ -18,11 +18,13 @@ import {
   UNHASHED_MESSAGE,
 } from "./approval-hash.ts";
 import { classifyType, isNumeric, isTemporal } from "./column-types.ts";
+import { rowFilterTextProblem } from "./compiler/rowfilters.ts";
 import { type Condition, conditionAttributes, type Literal, parseCondition } from "./conditions.ts";
 import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
 import { quoteIdent } from "./dialect.ts";
 import { UserError } from "./errors.ts";
 import { intakeIssues } from "./intake.ts";
+import { currentYes, ledgerReplies } from "./ledger.ts";
 import { findTable } from "./naming.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
 import { isHashedValue, protectedColumns } from "./profile.ts";
@@ -45,6 +47,7 @@ import type {
   Join,
   JoinEvidence,
   JoinKey,
+  LedgerReply,
   Measure,
   Metric,
   MetricsFile,
@@ -966,21 +969,35 @@ class Validator {
     return this.projectHashedCache;
   }
 
+  // The kind: reply lines of .sl/ledger.jsonl; checkLedger reports the lines it cannot read.
+  repliesCache?: LedgerReply[];
+  replies(): LedgerReply[] {
+    if (this.repliesCache) return this.repliesCache;
+    const abs = join(this.root, ".sl", "ledger.jsonl");
+    const text = this.overrides?.get(abs) ?? (existsSync(abs) && statSync(abs).isFile() ? readFileSync(abs, "utf8") : "");
+    this.repliesCache = ledgerReplies(text);
+    return this.repliesCache;
+  }
+
   // Errors on an approved item whose content no longer matches its approved_hash. Warns once per file
   // when approved items carry no hash and no item of the project records one (approved before
   // content hashes), and on each approved item without a hash once other items record one, since
-  // its hash may have been removed.
+  // its hash may have been removed. Warns once per file, too, on approved items whose owner's latest
+  // reply in the ledger is not a yes to them as they stand (approved before sl approve required one).
   checkApprovals(file: string, entries: ApprovalEntry[]): void {
     let unhashed = 0;
+    const unanswered: string[] = [];
     const hashed = this.projectHashed();
     for (const e of entries) {
       const state = integrity(e, hashed);
       if (state === "changed") this.error(file, pathText(e.path), changedMessage(e));
       else if (state === "missing") this.warn(file, pathText(e.path), missingMessage(e));
       else if (state === "unhashed") unhashed++;
+      if (state !== "draft" && state !== "changed" && !currentYes(this.replies(), e.ref, e.hash)) unanswered.push(e.ref);
     }
     if (unhashed)
       this.warn(file, "", `${unhashed} approved item${unhashed === 1 ? " was" : "s were"} ${UNHASHED_MESSAGE}`);
+    if (unanswered.length) this.warn(file, "", unansweredMessage(unanswered));
   }
 
   // A time dimension's time_zone: an IANA zone, and only for values stored without a zone. When the
@@ -1162,6 +1179,8 @@ class Validator {
           const [source, name] = rf.model.split(".") as [string, string];
           this.checkSqlRefs(f, `${rp}.expr`, expr, this.model(source, name)!, "row filter");
         }
+        const textProblem = rowFilterTextProblem(expr);
+        if (textProblem) this.error(f, `${rp}.expr`, textProblem);
         for (const match of expr.matchAll(USER_PLACEHOLDER))
           if (!attrs.has(match[1]!)) this.error(f, `${rp}.expr`, `{{ user.${match[1]} }} names an undeclared user attribute`);
         const rest = expr.replace(USER_PLACEHOLDER, "");
@@ -2278,6 +2297,19 @@ function describeKeys(keys: JoinKey[]): string {
 
 function qualified(t: SnapshotTable): string {
   return t.schema ? `${t.schema}.${t.name}` : t.name;
+}
+
+// The once-per-file warning on approved items without a matching owner yes in the ledger, naming
+// the first few and the readback that records a yes for them.
+export function unansweredMessage(refs: string[]): string {
+  const n = refs.length;
+  const shown = refs.slice(0, 3);
+  const more = n > shown.length ? ` and ${n - shown.length} more` : "";
+  return (
+    `${n} approved item${n === 1 ? " has" : "s have"} no recorded owner yes in .sl/ledger.jsonl that matches ${n === 1 ? "it" : "them"} as ${n === 1 ? "it stands" : "they stand"} ` +
+    `(approved before sl approve required one): ${shown.join(", ")}${more}; ${n === 1 ? "it stays" : "they stay"} approved. To record a yes, ` +
+    `read ${n === 1 ? "it" : "them"} back with sl readback --targets ${shown.join(",")}, then record the owner's answer with sl reply`
+  );
 }
 
 // Validates every file under a semantic root: structure against the JSON Schemas, then references.

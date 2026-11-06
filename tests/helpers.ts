@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { runCli } from "../skills/semantic-layer/scripts/lib/cli.ts";
-import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
+import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 
 export const FIXED_NOW = "2026-01-15T12:00:00.000Z";
@@ -90,4 +90,46 @@ export function assertLocalPg(url: string | undefined, env: Record<string, strin
 // A schema name no other live test uses: the prefix, the process id and a random suffix.
 export function uniqueSchema(prefix: string): string {
   return `${prefix}_${process.pid}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export interface ReplyOptions {
+  // The owner who answers (default Dana).
+  by?: string;
+  // yes (the default), no, change, or null for words without a verdict.
+  verdict?: "yes" | "no" | "change" | null;
+  // The clock the readback and reply run with (default FIXED_NOW).
+  now?: string;
+}
+
+// Reads targets back and records the owner's answer to each item, as the skill does before
+// sl approve; returns the readback id.
+export async function recordReply(root: string, targets: string | string[], opts: ReplyOptions = {}): Promise<string> {
+  const env = opts.now ? { SL_NOW: opts.now } : {};
+  const rb = await sl(root, ["readback", "--targets", ([] as string[]).concat(targets).join(","), "--json"], env);
+  if (rb.code !== 0) throw new Error(rb.err);
+  const { readback_id, items } = rb.json<{ readback_id: string; items: { n: number }[] }>();
+  const verdict = opts.verdict === undefined ? "yes" : opts.verdict;
+  for (const item of items) {
+    const args = ["reply", "--readback", readback_id, "--item", String(item.n), "--text", "Yes, that's right.", "--by", opts.by ?? "Dana"];
+    if (verdict !== null) args.push("--verdict", verdict);
+    const r = await sl(root, args, env);
+    if (r.code !== 0) throw new Error(r.err);
+  }
+  return readback_id;
+}
+
+// A model ref and the refs of its dimensions, measures and joins, read from its file.
+export function refsUnder(root: string, ref: string): string[] {
+  const [source, model] = ref.split(".") as [string, string];
+  const m = readYaml<Record<string, { name: string }[] | undefined>>(join(root, "models", source, `${model}.yaml`));
+  return [ref, ...(["dimensions", "measures", "joins"] as const).flatMap((k) => (m[k] ?? []).map((f) => `${ref}.${f.name}`))];
+}
+
+// sl approve as the skill runs it: first the owner's yes to the target (and, with --recursive, to
+// every field of the model) is read back and recorded, by --by (default Dana).
+export async function approveWithYes(root: string, args: string[], opts: Omit<ReplyOptions, "verdict"> = {}): Promise<CliRun> {
+  const at = (flag: string) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined);
+  const target = at("--target");
+  if (target && !args.includes("--revoke")) await recordReply(root, args.includes("--recursive") ? refsUnder(root, target) : target, { by: at("--by")?.trim() || "Dana", ...opts });
+  return sl(root, ["approve", ...args]);
 }

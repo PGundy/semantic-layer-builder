@@ -5,7 +5,7 @@ import { needsOwnerYes, type ProjectStatus } from "../skills/semantic-layer/scri
 import { validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import type { Model, Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readJson, readYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { FIXED_NOW, sl, tempRoot } from "./helpers.ts";
+import { approveWithYes, FIXED_NOW, sl, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
@@ -1538,7 +1538,7 @@ describe("status reapprove phase", () => {
     expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().next_step.phase).toBe("interview");
     // Stamped first: once an item records a hash, --stamp-hashes refuses the approved items without one.
     expect((await sl(t.root, ["approve", "--stamp-hashes"])).code).toBe(0);
-    expect((await sl(t.root, ["approve", "--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
+    expect((await approveWithYes(t.root, ["--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
     // The analytics review's experiment: the approved measure now sums a thousand times the amount.
     editModel(t.root, "orders", (m) => (m.measures[0]!.expr = "amount * 1000"));
     const path = join(t.root, "access.yaml");
@@ -1558,7 +1558,7 @@ describe("status reapprove phase", () => {
     expect(human.out).toContain("changed since approval: wh.orders.total, access");
     expect(human.out).toContain("Next step (reapprove)");
     // Approving the measure again after the readback clears it from the list.
-    expect((await sl(t.root, ["approve", "--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
+    expect((await approveWithYes(t.root, ["--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
     expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().changed_since_approval).toEqual(["access"]);
   });
 
@@ -1584,7 +1584,7 @@ describe("status reapprove phase", () => {
       after_owner_yes: true,
     });
     expect((await sl(t.root, ["status"])).out).toContain("approved without approved_hash while others carry one: wh.orders.total");
-    expect((await sl(t.root, ["approve", "--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
+    expect((await approveWithYes(t.root, ["--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
     expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().hash_missing).toEqual([]);
   });
 
