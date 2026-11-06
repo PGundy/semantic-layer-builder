@@ -8,7 +8,7 @@ import { qualifiedName } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
 import { filterInScope } from "../lib/patterns.ts";
 import { emitPlan, executePlan, resultsInput } from "../lib/plan.ts";
-import { listModels, loadProject, loadSnapshot, loadSource, paths, projectSettings, saveSnapshot } from "../lib/project.ts";
+import { listModels, loadProject, loadSnapshot, loadSource, paths, projectSettings, saveSnapshot, sortTables } from "../lib/project.ts";
 import { changeLines, diffSnapshots, modeledTables, recordScope, scopeLines, selectionMatcher, type SnapshotDiff, tablesFlag } from "../lib/snapshot-diff.ts";
 import { profileState } from "../lib/status.ts";
 import { introspectionPlan, schemaMatcher } from "../lib/sql/introspection.ts";
@@ -193,7 +193,7 @@ const spec: CommandSpec = {
         const k = `${t.schema ?? ""}\u0000${t.name}`;
         if (!wanted(t.schema) && !fresh.has(k)) snapshot.tables.push(t);
       }
-      snapshot.tables.sort((a, b) => `${a.schema ?? ""}.${a.name}`.localeCompare(`${b.schema ?? ""}.${b.name}`));
+      snapshot.tables = sortTables(snapshot.tables);
     }
     const loadModels = () => listModels(ctx.root, source.source).map((l) => l.model);
     const scopeChanges = recordScope(previous, snapshot, selectionMatcher(source, scope), loadModels);

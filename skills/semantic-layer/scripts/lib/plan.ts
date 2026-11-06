@@ -134,7 +134,8 @@ export async function executePlan(plan: QueryPlan, opts: ExecuteOptions): Promis
       try {
         const result = await adapter.query(q.sql);
         assertDistinctColumns(result.columns, true);
-        out[q.id] = lowerKeys(result.rows);
+        // Adapter rows hold exactly the result's columns, so lowercase column names need no copy.
+        out[q.id] = result.columns.every((c) => c === c.toLowerCase()) ? result.rows : lowerKeys(result.rows);
       } catch (e) {
         throw new UserError(`Query failed: ${errorMessage(e, q.sql)}\nQuery "${q.id}" (${q.purpose}):\n${q.sql}`);
       }

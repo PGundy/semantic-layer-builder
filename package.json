@@ -12,7 +12,8 @@
     "fixtures": "bun fixtures/acme/generate.ts",
     "eval": "bun evals/runner/run.ts",
     "eval:smoke": "bun evals/smoke.ts",
-    "verify": "sh scripts/verify.sh"
+    "verify": "sh scripts/verify.sh",
+    "perf": "SL_PERF=1 bun test tests/perf --timeout 900000"
   },
   "devDependencies": {
     "@duckdb/node-api": "2.0.0-r.1",
