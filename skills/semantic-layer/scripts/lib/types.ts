@@ -379,6 +379,24 @@ export interface QueryPlan {
 export type ResultRows = Record<string, unknown>[];
 export type PlanResults = Record<string, ResultRows>;
 
+// Pending readbacks (.sl/pending/<readback_id>.json), written by sl readback.
+
+export interface ReadbackItem {
+  n: number;
+  // An approve target: source.model, source.model.field, metric:<name> or access.
+  target: string;
+  kind: "approve";
+  text: string;
+  // The target's content hash when it was read back: what sl approve records as approved_hash.
+  content_hash: string;
+}
+
+export interface PendingReadback {
+  readback_id: string; // rb_0001, rb_0002, ...
+  created_at: string;
+  items: ReadbackItem[];
+}
+
 // .sl/plans/<plan_id>.json: a plan written by --emit-sql, finished with --plan <plan_id>.
 export interface StoredPlan extends QueryPlan {
   version: 1;
@@ -387,3 +405,36 @@ export interface StoredPlan extends QueryPlan {
   finish: string;
   queries: (PlannedQuery & { max_rows: number })[];
 }
+
+// The answer ledger (.sl/ledger.jsonl), appended to by sl reply and sl question resolve: one JSON
+// object per line, holding the owner's words, never data values.
+
+export type ReplyVerdict = "yes" | "no" | "change";
+
+export interface LedgerReply {
+  id: string; // ans_0001, ans_0002, ...
+  kind: "reply";
+  readback_id: string;
+  item: number;
+  // The approve target the item read back.
+  target: string;
+  // The target's content hash when it was read back, copied from the pending readback.
+  content_hash: string;
+  text: string;
+  verdict: ReplyVerdict | null;
+  by: string;
+  at: string;
+}
+
+export interface LedgerQuestion {
+  id: string;
+  kind: "question";
+  // The ref the question was resolved on: source.model, source.model.field or access.
+  target: string;
+  question: string;
+  text: string;
+  by: string;
+  at: string;
+}
+
+export type LedgerEntry = LedgerReply | LedgerQuestion;

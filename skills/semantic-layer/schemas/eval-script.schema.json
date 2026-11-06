@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "evals/scenarios/<name>.script.json",
+  "description": "Canned turns the scripted driver replays in order.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["skill", "owner"],
+  "properties": {
+    "skill": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string" },
+          "tokens": { "type": "integer", "minimum": 0, "description": "Defaults to the text's length divided by 4, rounded up." },
+          "sl": {
+            "type": "array",
+            "description": "sl commands to run in the working root before the turn is recorded, each as its arguments without --root.",
+            "items": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+          },
+          "done": { "type": "boolean" }
+        }
+      }
+    },
+    "owner": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string" },
+          "tokens": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

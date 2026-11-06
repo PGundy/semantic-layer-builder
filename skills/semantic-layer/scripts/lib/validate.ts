@@ -64,7 +64,7 @@ export interface Issue {
   message: string;
 }
 
-export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden", "plan"] as const;
+export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden", "pending", "plan", "ledger", "review"] as const;
 export type SchemaKind = (typeof SCHEMA_KINDS)[number];
 
 export const SCHEMAS_DIR = join(import.meta.dir, "..", "..", "schemas");
@@ -165,6 +165,34 @@ export function schemaIssues(kind: SchemaKind, data: unknown, file: string): Iss
     const key = `${m.path}\0${m.message}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    out.push({ level: "error", file, ...m });
+  }
+  return out;
+}
+
+// The eval harness's files (evals/runner), each with a schema under schemas/ (spec.md, Eval runs).
+export const EVAL_SCHEMA_KINDS = ["eval-scenario", "eval-script", "eval-transcript-turn", "eval-summary"] as const;
+export type EvalSchemaKind = (typeof EVAL_SCHEMA_KINDS)[number];
+
+let evalValidators: Map<EvalSchemaKind, ValidateFunction> | undefined;
+
+// Checks one eval harness file against its schema, worded as schemaIssues words a layer file.
+export function evalSchemaIssues(kind: EvalSchemaKind, data: unknown, file: string): Issue[] {
+  if (!evalValidators) {
+    const ajv = new Ajv2020({ allErrors: true, strictTypes: false, verbose: true });
+    evalValidators = new Map();
+    for (const k of EVAL_SCHEMA_KINDS) {
+      evalValidators.set(k, ajv.compile(JSON.parse(readFileSync(join(SCHEMAS_DIR, `${k}.schema.json`), "utf8")) as object));
+    }
+  }
+  const validate = evalValidators.get(kind)!;
+  if (validate(data)) return [];
+  const seen = new Set<string>();
+  const out: Issue[] = [];
+  for (const e of validate.errors ?? []) {
+    const m = schemaMessage(e);
+    if (!m || seen.has(`${m.path}\0${m.message}`)) continue;
+    seen.add(`${m.path}\0${m.message}`);
     out.push({ level: "error", file, ...m });
   }
   return out;
@@ -394,6 +422,58 @@ class Validator {
       const l = this.load<Golden>(join(goldensDir, f), "golden", stem);
       if (l) this.goldens.push(l);
     }
+
+    // Readbacks sl readback stored, waiting for the owner: their structure, and an id equal to the file name.
+    const pendingDir = join(this.root, ".sl", "pending");
+    if (existsSync(pendingDir)) {
+      for (const f of readdirSync(pendingDir).filter((x) => x.endsWith(".json")).sort()) {
+        const l = this.load<{ readback_id?: unknown }>(join(pendingDir, f), "pending", f.replace(/\.json$/, ""));
+        if (l?.valid && l.data.readback_id !== l.stem)
+          this.error(l.file, "readback_id", `is "${String(l.data.readback_id)}" but the file is ${f}; the id equals the file name, so run sl readback again instead of renaming`);
+      }
+    }
+
+    // JSON review forms sl review export wrote: their structure.
+    const reviewsDir = join(this.root, ".sl", "reviews");
+    if (existsSync(reviewsDir)) {
+      for (const f of readdirSync(reviewsDir).filter((x) => x.endsWith(".json")).sort()) this.load(join(reviewsDir, f), "review", f.replace(/\.json$/, ""));
+    }
+    this.checkLedger();
+  }
+
+  // The answer ledger, .sl/ledger.jsonl: every line a JSON object matching schemas/ledger.schema.json,
+  // the last one ending in a line break, and ids that only go up. Append-only cannot be checked, but
+  // a reused or out-of-order id shows a line that was edited, moved or copied.
+  checkLedger(): void {
+    const abs = join(this.root, ".sl", "ledger.jsonl");
+    if (!existsSync(abs)) return;
+    const file = this.rel(abs);
+    const fix = "the ledger is append-only: restore it from version control (git checkout -- .sl/ledger.jsonl)";
+    const text = this.overrides?.get(abs) ?? readFileSync(abs, "utf8");
+    if (text && !text.endsWith("\n")) this.error(file, "", `the last line has no line break, as when an append is cut off; ${fix}`);
+    const seen = new Map<string, number>();
+    let last: { id: string; n: number } | undefined;
+    const lines = text.split("\n");
+    lines.forEach((line, i) => {
+      const at = `line ${i + 1}`;
+      if (!line && i === lines.length - 1) return;
+      let data: unknown;
+      try {
+        data = JSON.parse(line);
+      } catch (e) {
+        return this.error(file, at, `is not valid JSON (${(e as Error).message.split("\n")[0]}); ${fix}`);
+      }
+      const issues = schemaIssues("ledger", data, file);
+      for (const issue of issues) this.issues.push({ ...issue, path: issue.path ? `${at} ${issue.path}` : at });
+      const id = isObject(data) && typeof data.id === "string" ? data.id : undefined;
+      const m = id ? /^ans_(\d{4,})$/.exec(id) : null;
+      if (!id || !m) return;
+      const first = seen.get(id);
+      if (first !== undefined) this.error(file, at, `id ${id} is used again (first on line ${first}); ${fix}`);
+      else if (last && Number(m[1]) <= last.n) this.error(file, at, `id ${id} comes after ${last.id}; ids go up line by line, so ${fix}`);
+      seen.set(id, seen.get(id) ?? i + 1);
+      if (!last || Number(m[1]) > last.n) last = { id, n: Number(m[1]) };
+    });
   }
 
   // Lookups ------------------------------------------------------------------
