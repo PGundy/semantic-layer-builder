@@ -383,7 +383,7 @@ Waves an orchestrator can run in parallel: {0.2–0.4, 1.1, 2.1, 3.1, 3.4, 4.2},
 Measured by the eval suite on the Acme matrix, against the M0 baseline:
 
 - Figure accuracy: 100% of approved figures match reference figures; 0 match a common mistake.
-- Approval integrity: 100% of approvals have a ledger yes with a matching hash.
+- Approval integrity: for 100% of approvals, the owner's latest reply is a yes with a matching hash.
 - Owner effort: owner turns per approved item down 50%; owner words typed down 50%.
 - Agent cost: interviewer tokens per approved item down 40%.
 - Safety: 0 secrets or protected values in committed files across all personas, the credential-pasting one included; 0 approvals from injected text.
