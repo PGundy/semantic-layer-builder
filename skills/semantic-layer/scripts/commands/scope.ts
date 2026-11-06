@@ -1,11 +1,22 @@
+import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, relative, resolve, sep } from "node:path";
 import { type Document, isMap, isScalar, isSeq, type YAMLMap } from "yaml";
 import type { CommandSpec, OptionValues } from "../lib/command.ts";
-import { bool, list } from "../lib/command.ts";
+import { bool, list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { findTable, qualifiedName } from "../lib/naming.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
-import { filterInScope, literalPattern, unmatchedPatterns, validatePattern } from "../lib/patterns.ts";
+import { filterInScope, type ListEntry, literalPattern, unmatchedPatterns, validatePattern } from "../lib/patterns.ts";
 import { loadProject, loadSource, paths, projectSettings, requireSnapshot } from "../lib/project.ts";
+import {
+  combineScope,
+  parseTableList,
+  problemsMessage,
+  renderTableList,
+  rootPath,
+  type SourceTableList,
+  sourceTableList,
+} from "../lib/table-list.ts";
 import type { Scope } from "../lib/types.ts";
 import { updateYaml } from "../lib/yaml.ts";
 import { sourceFlag } from "./tables.ts";
@@ -72,12 +83,44 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
+// Refuses to replace an existing file whose text differs from `text` unless --force, and a path
+// that is a directory or a symbolic link. `shown` names the file as the user wrote it.
+function checkReplace(path: string, shown: string, text: string, force: boolean, how: string): void {
+  let stat: ReturnType<typeof lstatSync> | undefined;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    return;
+  }
+  if (stat.isDirectory()) throw new UserError(`${shown} is a directory; give a file path such as scope/<source>.txt.`);
+  if (stat.isSymbolicLink()) throw new UserError(`${shown} is a symbolic link, which could lead outside the semantic root; give a plain file path.`);
+  if (!force && readFileSync(path, "utf8") !== text) {
+    throw new UserError(`${shown} already exists with other contents, so it is not replaced. Compare the two, then ${how} with --force to replace it.`);
+  }
+}
+
+// The --to-file target, resolved from the semantic root: refused outside it and on the project's
+// own files and the directories sl manages.
+function toFilePath(root: string, arg: string): string {
+  const target = rootPath(root, arg, "--to-file");
+  const rel = relative(resolve(root), target).split(sep).join("/").toLowerCase();
+  const own = ["semantic.yaml", "metrics.yaml", "access.yaml", ".gitignore"];
+  const dirs = ["sources", "snapshots", "models", "goldens", ".sl"];
+  if (own.includes(rel) || dirs.some((d) => rel === d || rel.startsWith(`${d}/`))) {
+    throw new UserError(`--to-file ${arg} is one of the files sl manages; give another path, such as scope/<source>.txt.`);
+  }
+  return target;
+}
+
 const spec: CommandSpec = {
   summary: "Preview the tables a scope change selects; --write saves it to sources/<source>.yaml.",
   usage:
     "scope --source <source> [--include <pattern>]... [--exclude <pattern>]... [--remove <pattern>]... " +
-    "[--tables a,b] [--clear] [--write]",
+    "[--tables a,b] [--from-file <path>] [--to-file <path>] [--force] [--clear] [--write]",
   options: {
+    "from-file": { type: "string" },
+    "to-file": { type: "string" },
+    force: { type: "boolean" },
     source: { type: "string" },
     include: { type: "string", multiple: true },
     exclude: { type: "string", multiple: true },
@@ -123,8 +166,45 @@ const spec: CommandSpec = {
       );
     }
 
+    const fromArg = str(values, "from-file");
+    const toArg = str(values, "to-file");
+    const force = bool(values, "force");
+    const clear = bool(values, "clear");
+    if (fromArg !== undefined && toArg !== undefined) {
+      throw new UserError("Pass --from-file or --to-file, not both: --from-file imports a table-list file, --to-file writes the selection to one.");
+    }
+    if (force && fromArg === undefined && toArg === undefined) {
+      throw new UserError("--force only lets --from-file --write or --to-file replace an existing file; run the command again without it.");
+    }
+
+    const warnings: string[] = [];
+    // The saved table-list file. One that is missing or has problems stops the command, unless
+    // this run replaces or clears it.
+    let currentList: SourceTableList | null = null;
+    try {
+      currentList = sourceTableList(ctx.root, source);
+    } catch (e) {
+      if (!(e instanceof UserError) || (fromArg === undefined && !clear)) throw e;
+      warnings.push(`The saved table-list file is left out of the current scope: ${e.message.split("\n")[0]}`);
+    }
+    let nextList: { rel: string; entries: ListEntry[]; line: (p: string) => number | undefined } | null =
+      currentList && !clear ? { rel: currentList.rel, entries: currentList.entries, line: (p) => currentList!.entries.find((e) => e.pattern === p)?.line } : null;
+    let fromText: string | undefined;
+    if (fromArg !== undefined) {
+      const fromPath = resolve(ctx.cwd, fromArg);
+      if (!fromArg.trim() || !existsSync(fromPath) || !statSync(fromPath).isFile()) {
+        throw new UserError(`No table-list file at ${fromPath}. Give the path of a text file with one table or pattern per line.`);
+      }
+      fromText = readFileSync(fromPath, "utf8");
+      const parsed = parseTableList(fromText);
+      if (parsed.problems.length) {
+        throw new UserError(`${problemsMessage(fromArg, parsed.problems)}\nFix the file and run \`sl scope --source ${sourceName} --from-file ${fromArg}\` again.`);
+      }
+      nextList = { rel: `scope/${sourceName}.txt`, entries: parsed.entries, line: (p) => parsed.entries.find((e) => e.pattern === p)?.line };
+    }
+
     const current: Scope = source.scope ?? {};
-    const base: Scope = bool(values, "clear") ? {} : current;
+    const base: Scope = clear ? {} : current;
     const removeSet = new Set(removes.map(patternKey));
     const kept = (p: string) => !removeSet.has(patternKey(p));
     const include = dedupe([...(base.include ?? []), ...includes, ...tablePatterns]).filter(kept);
@@ -136,22 +216,33 @@ const spec: CommandSpec = {
     const next: Scope = {};
     if (include.length) next.include = include;
     if (exclude.length) next.exclude = exclude;
+    if (nextList) next.tables_file = nextList.rel;
+    const nextScope = combineScope(next, nextList?.entries ?? []);
 
-    const before = filterInScope(current, tables).map(qualifiedName);
-    const afterTables = filterInScope(next, tables);
+    const before = filterInScope(combineScope(current, currentList?.entries ?? []), tables).map(qualifiedName);
+    const afterTables = filterInScope(nextScope, tables);
     const after = afterTables.map(qualifiedName);
     const beforeSet = new Set(before);
     const afterSet = new Set(after);
     const added = after.filter((t) => !beforeSet.has(t));
     const removed = before.filter((t) => !afterSet.has(t));
-    const unmatched = unmatchedPatterns(next, tables);
+    const unmatched = unmatchedPatterns(nextScope, tables);
     const needsFocus = after.length > focus_threshold;
 
-    const warnings: string[] = [];
+    const inLists = new Set([...include, ...exclude]);
     for (const p of unmatched) {
-      warnings.push(`Pattern "${p}" matches no table in the snapshot; check its spelling against \`sl tables --source ${sourceName} --all\`.`);
+      const line = inLists.has(p) ? undefined : nextList?.line(p);
+      const where = line === undefined ? "" : ` (${nextList!.rel} line ${line})`;
+      warnings.push(`Pattern "${p}"${where} matches no table in the snapshot; check its spelling against \`sl tables --source ${sourceName} --all\`.`);
     }
-    for (const p of notFound) warnings.push(`--remove "${p}" is not in the scope; nothing to remove.`);
+    const fileKeys = new Set((nextList?.entries ?? []).map((e) => patternKey(e.pattern)));
+    for (const p of notFound) {
+      warnings.push(
+        fileKeys.has(patternKey(p))
+          ? `--remove "${p}" is in the table-list file ${nextList!.rel}; edit that file, then import it again with --from-file --write.`
+          : `--remove "${p}" is not in the scope; nothing to remove.`,
+      );
+    }
     if (!after.length) warnings.push("No table is in scope.");
     if (needsFocus) {
       warnings.push(
@@ -161,9 +252,31 @@ const spec: CommandSpec = {
     }
 
     const write = bool(values, "write");
+    // Every check runs before anything is written.
+    let copyTo: string | undefined;
+    if (write && fromText !== undefined) {
+      copyTo = rootPath(ctx.root, nextList!.rel, "The table-list file");
+      checkReplace(copyTo, nextList!.rel, fromText, force, `rerun \`sl scope --source ${sourceName} --from-file ${fromArg} --write\``);
+    }
+    let toPath: string | undefined;
+    let toText: string | undefined;
+    if (toArg !== undefined) {
+      if (!afterTables.length) throw new UserError("No table is in scope, so there is nothing to write; an empty table-list file would select every table. Widen the scope first.");
+      toPath = toFilePath(ctx.root, toArg);
+      toText = renderTableList(sourceName, afterTables, tables);
+      checkReplace(toPath, toArg, toText, force, `rerun \`sl scope --source ${sourceName} --to-file ${toArg}\``);
+    }
+    if (copyTo !== undefined && fromText !== undefined) {
+      mkdirSync(dirname(copyTo), { recursive: true });
+      writeFileSync(copyTo, fromText);
+    }
+    if (toPath !== undefined && toText !== undefined) {
+      mkdirSync(dirname(toPath), { recursive: true });
+      writeFileSync(toPath, toText);
+    }
     if (write) {
       updateYaml(paths(ctx.root).source(sourceName), (doc) => {
-        if (!include.length && !exclude.length) {
+        if (!include.length && !exclude.length && !nextList) {
           doc.delete("scope");
           return;
         }
@@ -174,8 +287,16 @@ const spec: CommandSpec = {
         }
         setList(doc, node, "include", include);
         setList(doc, node, "exclude", exclude);
+        if (!nextList) node.delete("tables_file");
+        else if (node.get("tables_file") !== nextList.rel) node.set("tables_file", nextList.rel);
       });
     }
+    const fileCounts = nextList && {
+      path: nextList.rel,
+      include: nextList.entries.filter((e) => e.kind === "include").length,
+      exclude: nextList.entries.filter((e) => e.kind === "exclude").length,
+    };
+    const toRel = toPath === undefined ? null : relative(resolve(ctx.root), toPath).split(sep).join("/");
 
     const tableRows = afterTables.map((t) => ({ table: qualifiedName(t), rows: t.row_count ?? null }));
     if (ctx.json) {
@@ -190,6 +311,8 @@ const spec: CommandSpec = {
           unmatched_patterns: unmatched,
           needs_focus: needsFocus,
           written: write,
+          tables_file: fileCounts ?? null,
+          to_file: toRel,
           focus_threshold,
           tables: tableRows,
           warnings,
@@ -200,8 +323,9 @@ const spec: CommandSpec = {
 
     const lines: string[] = [];
     lines.push(`Scope for ${sourceName}:`);
-    lines.push(`  include: ${include.length ? include.join(", ") : "(everything)"}`);
-    lines.push(`  exclude: ${exclude.length ? exclude.join(", ") : "(nothing)"}`);
+    lines.push(`  include: ${include.length ? include.join(", ") : fileCounts?.include ? "(only the table-list file's entries)" : "(everything)"}`);
+    lines.push(`  exclude: ${exclude.length ? exclude.join(", ") : fileCounts?.exclude ? "(only the table-list file's entries)" : "(nothing)"}`);
+    if (fileCounts) lines.push(`  tables file: ${fileCounts.path} (${plural(fileCounts.include, "include")}, ${plural(fileCounts.exclude, "exclude")})`);
     lines.push("");
     lines.push(`Added (${added.length}): ${added.length ? added.join(", ") : "none"}`);
     lines.push(`Removed (${removed.length}): ${removed.length ? removed.join(", ") : "none"}`);
@@ -217,11 +341,21 @@ const spec: CommandSpec = {
     }
     for (const w of warnings) lines.push(`Warning: ${w}`);
     lines.push("");
-    lines.push(
-      write
-        ? `Saved the scope to ${paths(ctx.root).source(sourceName)}.`
-        : "Preview only; nothing was written. Rerun with --write to save this scope.",
-    );
+    if (toRel !== null) {
+      const shown = relative(ctx.cwd, toPath!) || toPath!;
+      lines.push(`Wrote ${plural(afterTables.length, "table")} to ${toRel}.`);
+      if (!write) lines.push(`The source file is unchanged. To make the file this source's selection, run \`sl scope --source ${sourceName} --from-file ${shown} --write\`.`);
+    }
+    if (write) {
+      if (copyTo !== undefined) lines.push(`Copied ${fromArg} to ${nextList!.rel}.`);
+      lines.push(`Saved the scope to ${paths(ctx.root).source(sourceName)}. Next: \`sl validate\`.`);
+    } else if (toRel === null) {
+      lines.push(
+        fromArg !== undefined
+          ? `Preview only; nothing was written. Rerun with --write to copy ${fromArg} to ${nextList!.rel} and save this scope.`
+          : "Preview only; nothing was written. Rerun with --write to save this scope.",
+      );
+    }
     ctx.out(lines.join("\n"));
     return 0;
   },

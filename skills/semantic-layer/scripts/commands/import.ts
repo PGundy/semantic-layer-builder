@@ -9,6 +9,7 @@ import { formatJson } from "../lib/output.ts";
 import { filterInScope } from "../lib/patterns.ts";
 import { listModels, loadProject, loadSnapshot, loadSource, projectSettings, saveSnapshot } from "../lib/project.ts";
 import { changeLines, diffSnapshots, modeledTables } from "../lib/snapshot-diff.ts";
+import { effectiveScope } from "../lib/table-list.ts";
 import { RUNNABLE_DIALECTS, type Snapshot } from "../lib/types.ts";
 
 const normType = (t: string) => t.replace(/\s+/g, " ").trim().toLowerCase();
@@ -72,6 +73,7 @@ const spec: CommandSpec = {
     if (!fileArg) throw new UserError("--file is required.");
     const project = loadProject(ctx.root);
     const source = loadSource(ctx.root, sourceName);
+    const scope = effectiveScope(ctx.root, source);
     const file = resolve(ctx.cwd, fileArg);
     if (!existsSync(file)) throw new UserError(`No such file: ${file}`);
     const catalogArg = str(values, "catalog");
@@ -96,7 +98,7 @@ const spec: CommandSpec = {
     const columns = snapshot.tables.reduce((n, t) => n + t.columns.length, 0);
     const primaryKeys = snapshot.tables.filter((t) => (t.primary_key ?? []).length).length;
     const foreignKeys = snapshot.tables.reduce((n, t) => n + (t.foreign_keys ?? []).length, 0);
-    const inScope = filterInScope(source.scope, snapshot.tables).length;
+    const inScope = filterInScope(scope, snapshot.tables).length;
     const { focus_threshold } = projectSettings(project);
     const next =
       inScope > focus_threshold
@@ -128,7 +130,7 @@ const spec: CommandSpec = {
         `(${primaryKeys} with a primary key, ${foreignKeys} foreign key${foreignKeys === 1 ? "" : "s"}) from ${used}${detected ? " (read from the file)" : ""} into snapshots/${source.source}.json.`,
     ];
     if (warnings.length) lines.push("Warnings:", ...warnings.map((w) => `  - ${w}`));
-    const modeled = changes ? modeledTables(snapshot, () => listModels(ctx.root, source.source).map((l) => l.model), source.scope) : undefined;
+    const modeled = changes ? modeledTables(snapshot, () => listModels(ctx.root, source.source).map((l) => l.model), scope) : undefined;
     lines.push(...changeLines(changes, source.source, modeled));
     lines.push(
       inScope > focus_threshold

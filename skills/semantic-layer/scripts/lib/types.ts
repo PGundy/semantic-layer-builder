@@ -36,6 +36,8 @@ export const DEFAULT_BATCH_SIZE = 5;
 export interface Scope {
   include?: string[];
   exclude?: string[];
+  // A table-list file relative to the semantic root; lib/table-list.ts joins its entries to the lists.
+  tables_file?: string;
 }
 
 export interface SourceConnection {
