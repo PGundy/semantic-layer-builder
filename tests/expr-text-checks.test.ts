@@ -236,9 +236,10 @@ describe("sl sql", () => {
   test("refuses a request naming a metric whose expr cannot be placed in a query, as a layer error too", async () => {
     const { root } = await shop(undefined, "{orders.revenue} * $1");
     const r = compileRequest(root, { source: "shop", measures: ["double_revenue"] });
+    // The metric compiler reads only {model.measure} placeholders, numbers and + - * / ( ), so the
+    // marker never reaches the query.
     expect(refusals(r)).toEqual([
-      ["unsupported_metric", "double_revenue is a metric; a later version of sl sql adds ratio and derived metrics"],
-      ["invalid_layer", "metric double_revenue expr has the query parameter marker $1; a metric expr takes no values from outside, and only the compiler binds parameters"],
+      ["invalid_layer", "metric double_revenue has an expr sl sql cannot read: it combines {model.measure} placeholders with numbers and + - * / ( ) only; run sl validate"],
     ]);
   });
 });

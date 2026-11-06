@@ -130,13 +130,6 @@ export function compileLayer(input: CompileInput): CompileResult {
   const dimensions = request.dimensions ?? [];
   const filters = request.filters ?? [];
   const orderBy = request.order_by ?? [];
-  for (const ref of [...measures, ...dimensions, ...filters.map((f) => f.field), ...orderBy.map((o) => o.field)]) {
-    const m = NAME_PATTERN.test(ref) ? layer.metrics.find((x) => x.name === ref && (x.source ?? source.source) === source.source) : undefined;
-    if (!m) continue;
-    // A derived metric's expr is placed in the query as written around its measures.
-    const problem = m.type === "derived" && typeof m.expr === "string" ? sqlTextProblem(m.expr, "metric expr") : undefined;
-    if (problem) add("invalid_layer", `metric ${ref} expr ${problem}`, ref, "Fix the metric's expr in metrics.yaml, run sl validate, and run sl sql again.");
-  }
 
   const models = layer.models.filter((m) => m.source === source.source);
   const fieldRefs = [...measures, ...dimensions].filter((r) => !NAME_PATTERN.test(r));
