@@ -64,7 +64,7 @@ export interface Issue {
   message: string;
 }
 
-export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden", "pending", "plan"] as const;
+export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden", "pending", "plan", "ledger"] as const;
 export type SchemaKind = (typeof SCHEMA_KINDS)[number];
 
 export const SCHEMAS_DIR = join(import.meta.dir, "..", "..", "schemas");
@@ -404,6 +404,43 @@ class Validator {
           this.error(l.file, "readback_id", `is "${String(l.data.readback_id)}" but the file is ${f}; the id equals the file name, so run sl readback again instead of renaming`);
       }
     }
+
+    this.checkLedger();
+  }
+
+  // The answer ledger, .sl/ledger.jsonl: every line a JSON object matching schemas/ledger.schema.json,
+  // the last one ending in a line break, and ids that only go up. Append-only cannot be checked, but
+  // a reused or out-of-order id shows a line that was edited, moved or copied.
+  checkLedger(): void {
+    const abs = join(this.root, ".sl", "ledger.jsonl");
+    if (!existsSync(abs)) return;
+    const file = this.rel(abs);
+    const fix = "the ledger is append-only: restore it from version control (git checkout -- .sl/ledger.jsonl)";
+    const text = this.overrides?.get(abs) ?? readFileSync(abs, "utf8");
+    if (text && !text.endsWith("\n")) this.error(file, "", `the last line has no line break, as when an append is cut off; ${fix}`);
+    const seen = new Map<string, number>();
+    let last: { id: string; n: number } | undefined;
+    const lines = text.split("\n");
+    lines.forEach((line, i) => {
+      const at = `line ${i + 1}`;
+      if (!line && i === lines.length - 1) return;
+      let data: unknown;
+      try {
+        data = JSON.parse(line);
+      } catch (e) {
+        return this.error(file, at, `is not valid JSON (${(e as Error).message.split("\n")[0]}); ${fix}`);
+      }
+      const issues = schemaIssues("ledger", data, file);
+      for (const issue of issues) this.issues.push({ ...issue, path: issue.path ? `${at} ${issue.path}` : at });
+      const id = isObject(data) && typeof data.id === "string" ? data.id : undefined;
+      const m = id ? /^ans_(\d{4,})$/.exec(id) : null;
+      if (!id || !m) return;
+      const first = seen.get(id);
+      if (first !== undefined) this.error(file, at, `id ${id} is used again (first on line ${first}); ${fix}`);
+      else if (last && Number(m[1]) <= last.n) this.error(file, at, `id ${id} comes after ${last.id}; ids go up line by line, so ${fix}`);
+      seen.set(id, seen.get(id) ?? i + 1);
+      if (!last || Number(m[1]) > last.n) last = { id, n: Number(m[1]) };
+    });
   }
 
   // Lookups ------------------------------------------------------------------
