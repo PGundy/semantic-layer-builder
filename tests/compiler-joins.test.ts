@@ -1,3 +1,4 @@
+import { CHANGED_SINCE_APPROVAL } from "../skills/semantic-layer/scripts/lib/access.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { SQL } from "bun";
 import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -12,7 +13,7 @@ import { listGoldens } from "../skills/semantic-layer/scripts/lib/project.ts";
 import { sqlNames } from "../skills/semantic-layer/scripts/lib/sql-names.ts";
 import type { Golden, Model, QueryRequest } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, duckdbSource, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, duckdbSource, expectRefusedAsChanged, initProject, PG_URL, reapprove, sl, tempRoot, uniqueSchema } from "./helpers.ts";
 
 type Row = Record<string, unknown>;
 
@@ -487,8 +488,9 @@ describe("determinism and qualification", () => {
 const NEEDS_LATER = new Set(["unsupported_metric"]);
 const asUser = (g: Golden) => ({ ...(g.role ? { role: g.role } : {}), user: g.user ?? {} });
 
-// A copy of Acme whose warehouse models read the tables in schema, on dialect.
-function acmeCopy(dialect: "duckdb" | "postgres", schema: string, database?: string): string {
+// A copy of Acme whose warehouse models read the tables in schema, on dialect, each changed item
+// approved again by the copy's owner.
+async function acmeCopy(dialect: "duckdb" | "postgres", schema: string, database?: string): Promise<string> {
   const t = tempRoot();
   cleanup = t.cleanup;
   cpSync(ACME, t.root, { recursive: true });
@@ -502,6 +504,7 @@ function acmeCopy(dialect: "duckdb" | "postgres", schema: string, database?: str
   }
   const conn = dialect === "duckdb" ? `connection:\n  database: ${JSON.stringify(database)}\n` : "connection:\n  env: PG_URL\n";
   writeFileSync(join(t.root, "sources", "warehouse.yaml"), `source: warehouse\ndialect: ${dialect}\n${conn}`);
+  await reapprove(t.root);
   return t.root;
 }
 
@@ -532,13 +535,17 @@ async function checkGoldens(root: string, run: (c: Compiled) => Promise<Row[]>):
 }
 
 // The analytics reviewer's experiment: with orders.revenue counting cancelled orders, every
-// compiled golden that uses revenue gives a different result.
+// compiled golden that uses revenue, itself or through a metric, is refused until the owner
+// approves revenue again, and then gives a different result.
 async function revenueChanged(root: string, run: (c: Compiled) => Promise<Row[]>, compiledNames: string[]): Promise<void> {
   const using = listGoldens(root)
     .map((x) => x.golden)
-    .filter((g) => compiledNames.includes(g.name) && (g.request.measures ?? []).includes("orders.revenue"));
+    .filter((g) => compiledNames.includes(g.name) && (g.request.measures ?? []).some((m) => ["orders.revenue", "average_order_value", "net_revenue"].includes(m)));
   expect(using.map((g) => g.name)).toEqual([
     "analyst_rep_101_by_name_2025",
+    "finance_net_revenue_2025",
+    "net_revenue_2025",
+    "revenue_2025",
     "revenue_by_region_2025",
     "sales_head_301_2025",
     "sales_manager_201_2025",
@@ -548,17 +555,56 @@ async function revenueChanged(root: string, run: (c: Compiled) => Promise<Row[]>
   ]);
   withCancelled(root);
   for (const g of using) {
+    const r = compileRequest(root, g.request, asUser(g));
+    // Each golden is refused only on what it names: revenue itself, changed since approval, and any
+    // metric that reads it, hidden while a measure it reads is a draft.
+    expect(r.ok).toBe(false);
+    if (r.ok) continue;
+    const named = g.request.measures ?? [];
+    expect(r.refusals.every((x) => x.code === "not_visible" && named.includes(x.ref!))).toBe(true);
+    for (const x of r.refusals.filter((x) => x.ref === "orders.revenue")) expect(x.message).toContain(CHANGED_SINCE_APPROVAL);
+  }
+  await reapprove(root, ["warehouse.orders.revenue"]);
+  for (const g of using) {
     const c = compiled(compileRequest(root, g.request, asUser(g)));
     expect(c.sql).toContain("'cancelled'");
     expect(diffs(g.expected!.rows, await run(c), (g.request.order_by ?? []).length > 0).length).toBeGreaterThan(0);
   }
 }
 
+// Acme has no approved golden that asks a sales user for a metric, so each sales golden's request
+// is asked again for average_order_value: the user's hierarchy row filter applies inside its part,
+// and the figure is the golden's own revenue over its order count.
+async function salesAverageOrderValue(root: string, run: (c: Compiled) => Promise<Row[]>): Promise<void> {
+  const sales = listGoldens(root)
+    .map((x) => x.golden)
+    .filter((g) => g.status === "approved" && g.role === "sales");
+  expect(sales.length).toBeGreaterThan(0);
+  for (const g of sales) {
+    const c = compiled(compileRequest(root, { ...g.request, measures: ["average_order_value"] }, asUser(g)));
+    expect(c.row_filters).toEqual([{ model: "orders", alias: "orders", in: "where", roles: ["sales"], rows: "filtered", part: "orders" }]);
+    expect(c.params).toEqual([g.user!.employee_id, g.user!.employee_id, "2025-01-01", "2026-01-01"]);
+    const [want] = g.expected!.rows as { revenue: number; order_count: number }[];
+    const [got] = await run(c);
+    expect(Math.abs(Number(got!.average_order_value) - want!.revenue / want!.order_count)).toBeLessThan(1e-9);
+  }
+  // A hostile employee id is a bound parameter, never SQL text: the database reads it as one value
+  // and refuses it as an id rather than running it.
+  const id = "101) or (1=1";
+  const hostile = compiled(compileRequest(root, { ...sales[0]!.request, measures: ["average_order_value"] }, { role: "sales", user: { department: "sales", employee_id: id } }));
+  expect(hostile.sql).not.toContain("1=1");
+  expect(hostile.params.slice(0, 2)).toEqual([id, id]);
+  await expect(run(hostile)).rejects.toThrow(/convert|invalid input syntax/i);
+}
+
 const JOIN_GOLDENS = [
   "analyst_rep_101_by_name_2025",
   "discount_2025",
+  "finance_net_revenue_2025",
+  "net_revenue_2025",
   "order_count_by_region_2025",
   "refunds_2025",
+  "revenue_2025",
   "revenue_by_region_2025",
   "sales_head_301_2025",
   "sales_manager_201_2025",
@@ -568,7 +614,7 @@ const JOIN_GOLDENS = [
 ];
 
 describe("Acme's approved goldens that need joins", () => {
-  test("compile to their recorded rows on duckdb, and revenue counting cancelled orders changes every one using revenue", async () => {
+  test("compile to their recorded rows on duckdb; revenue counting cancelled orders is refused until approved again, then changes every one using revenue", async () => {
     const t = tempRoot();
     const file = join(t.dir, "warehouse.duckdb");
     const instance = await DuckDBInstance.create(file);
@@ -590,7 +636,7 @@ describe("Acme's approved goldens that need joins", () => {
     for (const stmt of evolve.split(/;\s*\n/).map((s) => s.trim()).filter(Boolean)) await cx.run(stmt);
     cx.closeSync();
     instance.closeSync();
-    const root = acmeCopy("duckdb", "acme", file);
+    const root = await acmeCopy("duckdb", "acme", file);
     const outer = cleanup;
     cleanup = () => {
       outer?.();
@@ -599,11 +645,12 @@ describe("Acme's approved goldens that need joins", () => {
     const run = (c: Compiled) => runDuckdb(file, c);
     const names = await checkGoldens(root, run);
     expect(names).toEqual(JOIN_GOLDENS);
+    await salesAverageOrderValue(root, run);
     await revenueChanged(root, run, names);
   }, 60_000);
 
   test.skipIf(!PG_URL)(
-    "compile to their recorded rows on postgres, and revenue counting cancelled orders changes every one using revenue",
+    "compile to their recorded rows on postgres; revenue counting cancelled orders is refused until approved again, then changes every one using revenue",
     async () => {
       assertLocalPg(PG_URL);
       const schema = uniqueSchema("sl_joins");
@@ -611,9 +658,10 @@ describe("Acme's approved goldens that need joins", () => {
       try {
         await loadPostgres(PG_URL!, DATA, schema);
         await db.unsafe(readFileSync(join(DATA, "..", "evolve.sql"), "utf8").replace(/(?<!@)\bacme\./g, `${schema}.`));
-        const root = acmeCopy("postgres", schema);
+        const root = await acmeCopy("postgres", schema);
         const names = await checkGoldens(root, runPg);
         expect(names).toEqual(JOIN_GOLDENS);
+        await salesAverageOrderValue(root, runPg);
         await revenueChanged(root, runPg, names);
       } finally {
         await db.unsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {});
