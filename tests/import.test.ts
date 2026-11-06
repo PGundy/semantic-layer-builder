@@ -1085,6 +1085,10 @@ describe("sl import", () => {
     expect(r.json<{ changes: unknown }>().changes).toEqual({
       tables_added: ["shop.products"],
       tables_removed: ["shop.old_table"],
+      // The previous import recorded shop.products in scope and never had shop.old_table.
+      new_in_scope: [],
+      left_scope: [],
+      left_scope_with_models: [],
       columns: [
         {
           table: "shop.orders",

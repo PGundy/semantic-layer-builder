@@ -9,7 +9,7 @@ import { formatJson } from "../lib/output.ts";
 import { filterInScope } from "../lib/patterns.ts";
 import { emitPlan, executePlan, resultsInput } from "../lib/plan.ts";
 import { listModels, loadProject, loadSnapshot, loadSource, paths, projectSettings, saveSnapshot } from "../lib/project.ts";
-import { changeLines, diffSnapshots, modeledTables, type SnapshotDiff } from "../lib/snapshot-diff.ts";
+import { changeLines, diffSnapshots, modeledTables, recordScope, scopeLines, selectionMatcher, type SnapshotDiff, tablesFlag } from "../lib/snapshot-diff.ts";
 import { profileState } from "../lib/status.ts";
 import { introspectionPlan, schemaMatcher } from "../lib/sql/introspection.ts";
 import { effectiveScope } from "../lib/table-list.ts";
@@ -85,10 +85,6 @@ function countByKind(tables: SnapshotTable[]): Map<TableKind, number> {
   return byKind;
 }
 
-// Names short and plain enough to pass to --tables unquoted.
-const PLAIN_NAME = /^[A-Za-z0-9_.]+$/;
-const MAX_NAMED = 8;
-
 // Counts the in-scope tables that have no row count, by kind, and says how they get one,
 // e.g. "3 views have no row count yet; sl profile measures them." A table profiled before
 // (a view whose row count a re-introspect cleared) is skipped by plain sl profile, so those
@@ -107,11 +103,9 @@ export function rowCountNote(snapshot: Snapshot, scope?: Scope): { count: number
   }
   if (profiled.length) {
     const one = profiled.length === 1;
-    const names = profiled.map(qualifiedName);
-    const tablesFlag = names.length <= MAX_NAMED && names.every((n) => PLAIN_NAME.test(n)) ? ` --tables ${names.join(",")}` : "";
     sentences.push(
       `${kindPhrase(countByKind(profiled))} profiled earlier ${one ? "has" : "have"} no row count; ` +
-        `sl profile --refresh${tablesFlag} measures ${one ? "it" : "them"}.`,
+        `sl profile --refresh${tablesFlag(profiled.map(qualifiedName))} measures ${one ? "it" : "them"}.`,
     );
   }
   return { count: missing.length, note: sentences.join(" ") };
@@ -134,13 +128,19 @@ function touchesModeledTables(diff: SnapshotDiff | null, previous: Snapshot | nu
   return diff.columns.some((c) => modeled.has(c.table)) || diff.tables_removed.some((t) => modeled.has(t));
 }
 
-// The hint introspect ends with once the snapshot holds tables and the scope is focused: sl profile
-// while an in-scope table's profile is not complete (profiled_at unset, partial ones included), else
-// sl validate when a modeled table changed, else sl status.
+// The hint introspect ends with once the snapshot holds tables and the scope is focused: sl status
+// while the snapshot records approved models that left scope (status's scope step comes before
+// profiling and names what to do), else sl profile while an in-scope table's profile is not
+// complete (profiled_at unset, partial ones included), else sl validate when a modeled table
+// changed, else sl draft for the tables new in scope with no model yet (this run's and earlier
+// ones'), else sl status.
 function nextHint(snapshot: Snapshot, scope: Scope | undefined, modeledChanged: boolean): string {
+  if (snapshot.scope_state?.left_scope.length) return "Next: sl status";
   const unprofiled = filterInScope(scope, snapshot.tables).filter((t) => profileState(t) !== "yes");
   if (unprofiled.length) return `Next: sl profile --source ${snapshot.source}`;
-  return modeledChanged ? "Next: sl validate" : "Next: sl status";
+  if (modeledChanged) return "Next: sl validate";
+  const fresh = snapshot.scope_state?.new_in_scope ?? [];
+  return fresh.length ? `Next: sl draft --source ${snapshot.source}${tablesFlag(fresh)}` : "Next: sl status";
 }
 
 const spec: CommandSpec = {
@@ -192,8 +192,11 @@ const spec: CommandSpec = {
       }
       snapshot.tables.sort((a, b) => `${a.schema ?? ""}.${a.name}`.localeCompare(`${b.schema ?? ""}.${b.name}`));
     }
+    const loadModels = () => listModels(ctx.root, source.source).map((l) => l.model);
+    const scopeChanges = recordScope(previous, snapshot, selectionMatcher(source, scope), loadModels);
     saveSnapshot(ctx.root, snapshot);
-    const changes = previous ? diffSnapshots(previous, snapshot) : null;
+    const diff = previous ? diffSnapshots(previous, snapshot) : null;
+    const changes = diff && scopeChanges ? { ...diff, ...scopeChanges } : null;
 
     const counts = snapshotCounts(snapshot);
     const inScope = filterInScope(scope, snapshot.tables).length;
@@ -205,11 +208,7 @@ const spec: CommandSpec = {
         ? `No tables found. Check that the connection can read the catalog${schemas.length ? ` and that ${schemas.join(", ")} exist` : ""}${from === "intake" ? " (intake.schemas in the source file)" : ""}, then rerun sl introspect --source ${source.source}.`
         : inScope > focus_threshold
           ? `${inScope} tables are in scope, more than the focus threshold of ${focus_threshold}. Run \`sl tables --source ${source.source} --groups\` to pick a focus.`
-          : nextHint(
-              snapshot,
-              scope,
-              touchesModeledTables(changes, previous, snapshot, () => listModels(ctx.root, source.source).map((l) => l.model)),
-            );
+          : nextHint(snapshot, scope, touchesModeledTables(diff, previous, snapshot, loadModels));
 
     if (ctx.json) {
       ctx.out(
@@ -236,8 +235,8 @@ const spec: CommandSpec = {
       ctx.out(`Wrote ${relative(ctx.cwd, snapshotPath) || snapshotPath}.`);
       if (note) ctx.out(note);
       if (leftNote) ctx.out(leftNote);
-      const modeled = changes ? modeledTables(snapshot, () => listModels(ctx.root, source.source).map((l) => l.model), scope) : undefined;
-      for (const line of changeLines(changes, source.source, modeled)) ctx.out(line);
+      const modeled = diff ? modeledTables(snapshot, loadModels, scope) : undefined;
+      for (const line of [...changeLines(diff, source.source, modeled), ...scopeLines(scopeChanges, source.source, diff?.tables_removed)]) ctx.out(line);
       if (unknownRows) ctx.out(unknownRows.note);
       ctx.out(next);
     }

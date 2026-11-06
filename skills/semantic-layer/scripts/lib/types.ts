@@ -123,6 +123,15 @@ export interface SnapshotTable {
   columns: SnapshotColumn[];
 }
 
+// The selection sl introspect or sl import recorded when it wrote the snapshot (spec: snapshots,
+// Scope changes): qualified names of the tables in it, those that entered it with no model yet,
+// and those that left it with an approved model.
+export interface SnapshotScopeState {
+  in_scope: string[];
+  new_in_scope: string[];
+  left_scope: string[];
+}
+
 export interface Snapshot {
   snapshot_version: 1;
   source: string;
@@ -130,6 +139,7 @@ export interface Snapshot {
   captured_at: string;
   method: SnapshotMethod;
   tables: SnapshotTable[];
+  scope_state?: SnapshotScopeState;
 }
 
 // Models
