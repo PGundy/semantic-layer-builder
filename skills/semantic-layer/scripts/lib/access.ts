@@ -2,7 +2,12 @@
 // It is the reference implementation a compiler reuses, and it never runs SQL.
 //
 // Layers, applied to every model, dimension, measure and metric:
-//   - status: a draft item is hidden (reason "draft").
+//   - status: a draft item is hidden (reason "draft"). An approved model, dimension, measure, join or
+//     metric whose approved_hash no longer matches its content (approval-hash.ts integrity()
+//     "changed") is a draft too, and so is an approved access.yaml that changed; each is listed in
+//     changed_since_approval. So is one without a hash while other items of the project record one
+//     ("missing": its hash may have been removed), listed in hash_missing. An approved item without a
+//     hash in a project where none records one ("unhashed") keeps applying as approved.
 //   - roles: in open mode every item is visible unless each held role denies it; in closed mode an
 //     item is visible when a held role's allow.models matches its model and that role does not deny
 //     it. A user holding no role sees everything in open mode and nothing in closed mode. Reasons:
@@ -36,6 +41,7 @@
 //     unknown default_role breaks a user holding no other role.
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { accessEntry, type ApprovalEntry, holdsHashes, integrity, metricEntries, modelEntries } from "./approval-hash.ts";
 import { type Condition, evaluateCondition, parseCondition } from "./conditions.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
 import { listSourceNames, loadSource, paths } from "./project.ts";
@@ -73,6 +79,12 @@ export interface FieldVisibility {
   tags: string[];
   visible: boolean;
   reasons: string[];
+  // Present on an approved item whose content no longer matches its approved_hash: it is treated as
+  // a draft (status "draft", reason "draft") until it is read back and approved again.
+  changed_since_approval?: true;
+  // Present on an approved item without approved_hash while other items of the project record one:
+  // treated as a draft in the same way.
+  hash_missing?: true;
 }
 
 // One hop of a join reference a row filter reads through: a many_to_one or one_to_one join of
@@ -145,6 +157,8 @@ export interface ModelVisibility {
   fields: FieldVisibility[];
   // Present on visible models.
   row_filters?: ModelRows;
+  changed_since_approval?: true; // as on FieldVisibility
+  hash_missing?: true; // as on FieldVisibility
 }
 
 export interface MetricVisibility {
@@ -155,6 +169,8 @@ export interface MetricVisibility {
   measures: string[]; // model.measure
   visible: boolean;
   reasons: string[];
+  changed_since_approval?: true; // as on FieldVisibility
+  hash_missing?: true; // as on FieldVisibility
 }
 
 export interface Counts {
@@ -190,6 +206,14 @@ export interface AccessVisibility {
   // Present while access_file is draft and access.yaml records the approval sl approve --revoke
   // set aside: that approved version keeps applying where it is deployed.
   last_approved?: LastApproval;
+  // The approved models, fields, joins and metrics, and access.yaml ("access"), whose content no
+  // longer matches their approved_hash, as approve targets, sorted. Each is treated as a draft: a
+  // changed access.yaml makes access_file "draft", with last_approved its recorded sign-off.
+  changed_since_approval: string[];
+  // The approved models, fields, joins and metrics, and access.yaml, that record no approved_hash
+  // while other items of the project record one, as approve targets, sorted; each is treated as a
+  // draft as above.
+  hash_missing: string[];
   user: { attributes: Record<string, unknown>; roles: string[]; default_audience: boolean };
   roles: HeldRole[];
   unknown_roles: string[];
@@ -221,6 +245,17 @@ export function lastApprovedNote(last: LastApproval): string {
   return `The version approved by ${last.by} on ${last.at} keeps applying where it is deployed; tools that load this draft serve nothing.`;
 }
 
+// How sl access and checkRequest name an approved item that changed since its approval.
+export const CHANGED_SINCE_APPROVAL = "changed since approval; treated as draft until it is read back and approved again";
+
+// How sl access and checkRequest name an approved item whose approved_hash is missing.
+export const HASH_MISSING = "approved, but its approved_hash is missing while other items carry one; treated as draft until it is read back and approved again";
+
+// The command that approves a changed item again, run only after the owner's yes to its readback.
+export function reapproveCommand(ref: string): string {
+  return `sl approve --target ${ref} --by "<owner>" after the owner's yes`;
+}
+
 // The layer the evaluator reads: models, metrics, and access.yaml as parsed (null when missing).
 export interface AccessLayer {
   models: Model[];
@@ -233,6 +268,10 @@ export interface AccessLayer {
   dialects?: Record<string, Dialect>;
   // The sources the project lists; each is reported, even with no models or metrics.
   sources?: string[];
+  // false skips the approved_hash comparison, so no item is treated as changed or missing: set by
+  // the golden checks of sl validate and sl status, which take every item as approved, and by the
+  // sensitivity checks of sl validate, which read what the layer exposes once approved again.
+  compare_hashes?: boolean;
 }
 
 // --- normalizing access.yaml -------------------------------------------------------------
@@ -560,7 +599,6 @@ export function loadAccessLayer(root: string): AccessLayer {
 const USER_PLACEHOLDER = /\{\{\s*user\.([A-Za-z0-9_]+)\s*\}\}/g;
 // An attribute counts as present when it has a value; an empty list is missing.
 const present = (v: unknown) => given(v) && !(Array.isArray(v) && !v.length);
-const statusOf = (x: { status?: unknown }): "draft" | "approved" => (x.status === "approved" ? "approved" : "draft");
 const tagsOf = (x: { tags?: unknown }): string[] => (Array.isArray(x.tags) ? x.tags.filter((t): t is string => typeof t === "string") : []);
 const list = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v.filter((x) => isObj(x)) as T[]) : []);
 const uniq = (xs: string[]) => [...new Set(xs)];
@@ -844,6 +882,43 @@ function rowFilterResult(
   return { filter: { kind: "expr", expr: raw.expr, params, missing, ...(read.refs.length ? { join_refs: read.refs } : {}) } };
 }
 
+// The approved models, fields, joins and metrics of a layer, and its access.yaml, whose content no
+// longer matches their approved_hash ("changed") or that record none while others do ("missing"):
+// the items themselves, to treat as drafts, and their approve targets, sorted. Each model is hashed
+// as sl approve hashes it, reading its second-hop joins from the models of its source and its SQL
+// in the source's dialect.
+function unapprovedApprovals(layer: AccessLayer): { items: Map<unknown, "changed" | "missing">; changed: string[]; missing: string[] } {
+  const items = new Map<unknown, "changed" | "missing">();
+  if (layer.compare_hashes === false) return { items, changed: [], missing: [] };
+  const bySource = new Map<string, Map<string, Model>>();
+  for (const m of layer.models) {
+    const models = bySource.get(m.source) ?? new Map<string, Model>();
+    if (!models.has(m.model)) models.set(m.model, m);
+    bySource.set(m.source, models);
+  }
+  const entries: ApprovalEntry[] = [
+    ...layer.models.flatMap((m) => modelEntries(m.source, m, (name) => bySource.get(m.source)?.get(name), layer.dialects?.[m.source])),
+    ...metricEntries(layer.metrics),
+  ];
+  const access = layer.access_present ? accessEntry(layer.access) : undefined;
+  if (access) entries.push(access);
+  const hashed = holdsHashes(entries);
+  const refs = { changed: new Set<string>(), missing: new Set<string>() };
+  for (const e of entries) {
+    const state = integrity(e, hashed);
+    if (state !== "changed" && state !== "missing") continue;
+    items.set(e.item, state);
+    refs[state].add(e.ref);
+  }
+  return { items, changed: [...refs.changed].sort(), missing: [...refs.missing].sort() };
+}
+
+// The sign-off an approved access.yaml records, reported as last_approved once it changed or lost
+// its hash.
+function signOff(access: unknown): LastApproval | undefined {
+  return isObj(access) ? lastApproval({ last_approved: { by: access.approved_by, at: access.approved_at } }) : undefined;
+}
+
 // Evaluates what one user sees, from an already loaded layer.
 export function evaluateLayer(layer: AccessLayer, user: AccessUser = {}): AccessVisibility {
   const skipped: SkippedEntry[] = [...(layer.skipped ?? [])];
@@ -861,6 +936,16 @@ export function evaluateLayer(layer: AccessLayer, user: AccessUser = {}): Access
       } satisfies NAccess)
     : normalizeAccess(layer.access, layer.access_present, skipped);
   if (invalidFile) skipped.push({ path: "access.yaml", message: "cannot be read; nothing in it applies and access is treated as closed" });
+  // An approved item that changed since its approval, or lost its hash, is a draft until the owner
+  // approves it again.
+  const changed = unapprovedApprovals(layer);
+  const accessChanged = changed.items.has(layer.access);
+  if (a.state === "approved" && accessChanged) a.state = "draft";
+  const statusOf = (x: object & { status?: unknown }): "draft" | "approved" => (x.status === "approved" && !changed.items.has(x) ? "approved" : "draft");
+  const changedFlag = (x: unknown): { changed_since_approval?: true; hash_missing?: true } => {
+    const state = changed.items.get(x);
+    return state === "changed" ? { changed_since_approval: true } : state === "missing" ? { hash_missing: true } : {};
+  };
 
   const modelRefs = new Set(layer.models.map((m) => `${m.source}.${m.model}`));
   const modelsByRef = new Map<string, Model>();
@@ -958,12 +1043,12 @@ export function evaluateLayer(layer: AccessLayer, user: AccessUser = {}): Access
           ...restrictionReasons(fref, false),
           ...(visible ? [] : ["model_hidden"]),
         ]);
-        fields.push({ name: f.name, kind, ref: fref, status: statusOf(f), tags: own, visible: !fr.length, reasons: fr });
+        fields.push({ name: f.name, kind, ref: fref, status: statusOf(f), tags: own, visible: !fr.length, reasons: fr, ...changedFlag(f) });
       }
     };
     addFields(m.dimensions, "dimension");
     addFields(m.measures, "measure");
-    const mv: ModelVisibility = { model: m.model, ref, status: statusOf(m), tags: mTags, visible, reasons, fields };
+    const mv: ModelVisibility = { model: m.model, ref, status: statusOf(m), tags: mTags, visible, reasons, fields, ...changedFlag(m) };
     if (visible) mv.row_filters = modelRows(ref, mTags);
     sourceOf(m.source).models.push(mv);
   }
@@ -1015,7 +1100,7 @@ export function evaluateLayer(layer: AccessLayer, user: AccessUser = {}): Access
       ...restrictionReasons(metric.name, true),
       ...measureReasons,
     ]);
-    sourceOf(source).metrics.push({ name: metric.name, ref, status: statusOf(metric), tags, measures, visible: !reasons.length, reasons });
+    sourceOf(source).metrics.push({ name: metric.name, ref, status: statusOf(metric), tags, measures, visible: !reasons.length, reasons, ...changedFlag(metric) });
   }
 
   // A restriction target that matches nothing protects nothing; it is likely a mistake.
@@ -1040,11 +1125,13 @@ export function evaluateLayer(layer: AccessLayer, user: AccessUser = {}): Access
   const allMetrics = sources.flatMap((s) => s.metrics);
   const byTag = (x: { status: string; reasons: string[] }) => x.status === "approved" && x.reasons.some((r) => r.startsWith("protected_tag:"));
   const assigned = Array.isArray(user.roles) ? user.roles.filter((r) => typeof r === "string") : [];
-  const last = a.state === "draft" ? lastApproval(layer.access) : undefined;
+  const last = a.state !== "draft" ? undefined : ((accessChanged ? signOff(layer.access) : undefined) ?? lastApproval(layer.access));
   return {
     mode: a.mode,
     access_file: a.state,
     ...(last ? { last_approved: last } : {}),
+    changed_since_approval: changed.changed,
+    hash_missing: changed.missing,
     user: { attributes: attrs, roles: uniq(assigned), default_audience: !Object.keys(attrs).length && !assigned.length },
     roles: held,
     unknown_roles: unknown,
@@ -1102,10 +1189,11 @@ export function lookup(visibility: AccessVisibility, source: string, ref: string
 export function checkRequest(visibility: AccessVisibility, request: QueryRequest): RequestCheck {
   // Tools serve nothing under an access.yaml awaiting sign-off (spec: Draft and approved access files).
   if (visibility.access_file === "draft") {
-    return {
-      ok: false,
-      problems: [{ position: "access", index: 0, ref: "access.yaml", reasons: ["access_draft"], message: "access.yaml is a draft awaiting sign-off; nothing is served until it is approved" }],
-    };
+    const why = visibility.changed_since_approval?.includes("access") ? CHANGED_SINCE_APPROVAL : visibility.hash_missing?.includes("access") ? HASH_MISSING : "";
+    const message = why
+      ? `access.yaml ${why} (${reapproveCommand("access")}); nothing is served until then`
+      : "access.yaml is a draft awaiting sign-off; nothing is served until it is approved";
+    return { ok: false, problems: [{ position: "access", index: 0, ref: "access.yaml", reasons: ["access_draft"], message }] };
   }
   const problems: RequestProblem[] = [];
   const source = typeof request?.source === "string" ? request.source : "";
@@ -1119,8 +1207,11 @@ export function checkRequest(visibility: AccessVisibility, request: QueryRequest
       problems.push({ position, index, ref, reasons: ["unknown"], message: `${position}[${index}] names ${ref}, which is not a field or metric of source ${source}` });
       return;
     }
-    if (!hit.visible)
-      problems.push({ position, index, ref, reasons: hit.reasons, message: `${position}[${index}] names ${ref}, which this user may not see (${hit.reasons.join(", ")})` });
+    if (!hit.visible) {
+      const why = hit.changed_since_approval ? CHANGED_SINCE_APPROVAL : hit.hash_missing ? HASH_MISSING : "";
+      const changed = why ? `; it ${why.startsWith("approved") ? "is " : ""}${why} (${reapproveCommand(hit.ref)})` : "";
+      problems.push({ position, index, ref, reasons: hit.reasons, message: `${position}[${index}] names ${ref}, which this user may not see (${hit.reasons.join(", ")})${changed}` });
+    }
   };
   const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
   arr(request?.measures).forEach((r, i) => check("measures", i, r));
