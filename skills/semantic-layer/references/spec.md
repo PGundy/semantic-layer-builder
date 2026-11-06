@@ -434,6 +434,12 @@ A `one_to_many` join fans out and multiplies the left model's measures. The comp
 
 Joins across sources are invalid in version 1. Federating sources is a separate source with its own engine.
 
+### Expression text
+
+A dimension `expr`, a measure `expr` and `filter`, a derived metric's `expr` and a row filter's `expr` are placed into compiled SQL as written, so each is one expression read the way Postgres and DuckDB read SQL (`scripts/lib/sql-text.ts`). It closes every string, quoted name, comment and parenthesis it opens, and holds no semicolon, no carriage return outside a string, and no query parameter marker (`$1`, `?`, `$name`): only the compiler binds parameters, so a request's filter values never reach a field's text. Postgres's jsonb `?`, `?|`, `?&` and `@?` operators read as markers; write `jsonb_exists(<column>, '<key>')`, `jsonb_exists_any`, `jsonb_exists_all` or `jsonb_path_exists` instead. A `{{ }}` placeholder is bound only in a row filter (see Row filters); anywhere else a `{{` is an error (a lone `}}`, as in a nested DuckDB struct literal, is not). Markers, parentheses and braces inside strings, quoted names and comments are text. Join keys are column names the compiler quotes, never free text.
+
+`sl validate` reports each problem as an error at the field's path (`dimensions[1].expr`, `measures[0].filter`, `metrics[2].expr`), for models of `postgres` and `duckdb` sources (and of a source whose dialect it cannot tell), the dialects whose quoting it reads; a derived metric's expr and a row filter are checked on every dialect. `sl sql` refuses a request that reads such a field or metric as `invalid_layer`, naming the model, the field's path and the problem.
+
 ## metrics.yaml
 
 ```yaml
@@ -803,7 +809,7 @@ The answer ledger: the owner's answers to readback items (`sl reply`) and to ope
 - A row filter's join references add definition joins. On the base model they are joins of the query, shared with fields that read the same chain. On a model a request path reaches they nest inside that path's join, `left join (<customers> as "orders.customer" left join <regions> as "orders.customer~row_filter~home" on ...) on <keys> and (<filter>)`, aliased by the path, `~row_filter~` and the chain, so the `ON` clause can read them and a `left` join still keeps the rows the filter leaves out.
 - The same request, layer and user always give the same SQL text, parameters and joins. The compiled SQL passes the read-only check `sl run` uses.
 
-It refuses, naming what is missing and that a later version adds it: a metric. It also refuses a source of another dialect (a later version adds other dialects) and a field whose expr or filter holds a subquery.
+It refuses, naming what is missing and that a later version adds it: a metric. It also refuses a source of another dialect (a later version adds other dialects), a field whose expr or filter holds a subquery, and a field or metric whose text is not one expression (see Expression text) as `invalid_layer`.
 
 `--json` prints `{ ok: true, source, dialect, model, sql, params, columns: [{ name, ref, kind }], joins: [{ alias, via, model, type, for }], row_filters: [{ model, alias, in, roles, rows }], session_time_zone }`, where each join names its alias, the declared join it follows as `model.join`, its target model, `left` or `inner`, and `for` `request` or `definition`, and each row filter applied, in the SQL's order, names its model, the alias it limits, `in` `on` or `where`, the held roles whose filters limit it and `rows` `filtered` or `none`; or `{ ok: false, source, reason, refusals: [{ code, ref?, message, next? }], next }`, where `code` is one of `invalid_request`, `unknown_role`, `not_visible`, `unsupported_dialect`, `unsupported_metric`, `invalid_layer`, `no_join_path`, `ambiguous_join_path` and `join_fans_out`, a refusal's `next` says what resolves that refusal when it is specific to it, and the top-level `next` names the command to run next.
 

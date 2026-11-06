@@ -11,6 +11,7 @@ import { parseRequestField } from "../refs.ts";
 import { globInsideViews } from "../source-safety.ts";
 import { assertReadOnly } from "../sql-guard.ts";
 import { sqlNames } from "../sql-names.ts";
+import { sqlTextProblem, type TextRole } from "../sql-text.ts";
 import type { Dimension, FilterOp, Measure, Model, QueryRequest, Snapshot, SourceConfig, TimeGrain } from "../types.ts";
 import { AGGREGATIONS, NAME_PATTERN, TIME_GRAINS } from "../types.ts";
 import { schemaIssues } from "../validate.ts";
@@ -123,9 +124,14 @@ export function compileLayer(input: CompileInput): CompileResult {
   const dimensions = request.dimensions ?? [];
   const filters = request.filters ?? [];
   const orderBy = request.order_by ?? [];
-  for (const ref of [...measures, ...dimensions, ...filters.map((f) => f.field), ...orderBy.map((o) => o.field)])
-    if (NAME_PATTERN.test(ref) && layer.metrics.some((m) => m.name === ref && (m.source ?? source.source) === source.source))
-      add("unsupported_metric", `${ref} is a metric; ${LATER} ratio and derived metrics`, ref);
+  for (const ref of [...measures, ...dimensions, ...filters.map((f) => f.field), ...orderBy.map((o) => o.field)]) {
+    const m = NAME_PATTERN.test(ref) ? layer.metrics.find((x) => x.name === ref && (x.source ?? source.source) === source.source) : undefined;
+    if (!m) continue;
+    add("unsupported_metric", `${ref} is a metric; ${LATER} ratio and derived metrics`, ref);
+    // A derived metric's expr is placed in the query as written around its measures.
+    const problem = m.type === "derived" && typeof m.expr === "string" ? sqlTextProblem(m.expr, "metric expr") : undefined;
+    if (problem) add("invalid_layer", `metric ${ref} expr ${problem}`, ref, "Fix the metric's expr in metrics.yaml, run sl validate, and run sl sql again.");
+  }
 
   const models = layer.models.filter((m) => m.source === source.source);
   const fieldRefs = [...measures, ...dimensions].filter((r) => !NAME_PATTERN.test(r));
@@ -155,9 +161,15 @@ export function compileLayer(input: CompileInput): CompileResult {
       else if (!(grains as readonly string[]).includes(p.grain))
         add("invalid_request", `${position} names ${ref}, but ${p.model}.${p.field} has the grains ${grains.join(", ")}`, ref);
     }
-    const texts = dim ? [dim.expr] : [(item as Measure).expr, (item as Measure).filter];
-    for (const t of texts) {
+    const at = dim ? `dimensions[${(model.dimensions ?? []).indexOf(dim)}]` : `measures[${(model.measures ?? []).indexOf(mea!)}]`;
+    const texts: [TextRole, string, unknown][] = dim ? [["dimension expr", "expr", dim.expr]] : [["measure expr", "expr", mea!.expr], ["measure filter", "filter", mea!.filter]];
+    for (const [role, key, t] of texts) {
       if (t === undefined && !dim) continue;
+      const problem = typeof t === "string" ? sqlTextProblem(t, role) : undefined;
+      if (problem) {
+        add("invalid_layer", `model ${p.model} ${at}.${key} (${p.field}) ${problem}`, ref, `Fix the ${role} of ${p.model}.${p.field} in its model file, run sl validate, and run sl sql again.`);
+        continue;
+      }
       if (typeof t !== "string" || !t.trim() || sqlNames(t, dialect).subquery) {
         add("invalid_layer", `${p.model}.${p.field} has an expr or filter the compiler cannot use; run sl validate`, ref);
         continue;
