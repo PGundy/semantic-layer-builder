@@ -294,11 +294,13 @@ describe("the role report on connect, live Postgres", () => {
   let writeAll = "";
   let admin: SQL | undefined;
 
-  // PG_URL with another user: the test cluster trusts its local socket.
+  // PG_URL with another user. Every test role gets the same throwaway password, so the
+  // connection works whether the test cluster trusts its socket or asks for a password (CI).
+  const TEST_PASSWORD = "test-only-password";
   const as = (role: string) => {
     const u = new URL(PG_URL!);
     u.username = role;
-    u.password = "";
+    u.password = TEST_PASSWORD;
     return u.toString();
   };
 
@@ -319,22 +321,22 @@ describe("the role report on connect, live Postgres", () => {
     await admin.unsafe(`create table ${other}.secrets (id int)`);
     // The SELECT-only role, created from exactly the statements --print-role-sql prints.
     const printed = await sl(fresh().root, ["setup", "--print-role-sql", "--dialect", "postgres", "--schemas", schema, "--role-name", reader, "--json"]);
-    for (const st of printed.json<{ statements: string[] }>().statements) await admin.unsafe(st.replace("<password>", "test-only-password"));
+    for (const st of printed.json<{ statements: string[] }>().statements) await admin.unsafe(st.replace("<password>", TEST_PASSWORD));
     // A role that can do more than read: write a table, create in a schema, read server files, read another schema.
-    await admin.unsafe(`create role ${wide} login`);
+    await admin.unsafe(`create role ${wide} login password '${TEST_PASSWORD}'`);
     await admin.unsafe(`grant usage, create on schema ${schema} to ${wide}`);
     await admin.unsafe(`grant select, insert on ${schema}.orders to ${wide}`);
     await admin.unsafe(`grant usage on schema ${other} to ${wide}`);
     await admin.unsafe(`grant select on ${other}.secrets to ${wide}`);
     await admin.unsafe(`grant pg_read_server_files to ${wide}`);
     // A role whose only grants beyond reading the intake schema are on single columns.
-    await admin.unsafe(`create role ${columns} login`);
+    await admin.unsafe(`create role ${columns} login password '${TEST_PASSWORD}'`);
     await admin.unsafe(`grant usage on schema ${schema}, ${other} to ${columns}`);
     await admin.unsafe(`grant select on ${schema}.orders to ${columns}`);
     await admin.unsafe(`grant update (amount_cents) on ${schema}.orders to ${columns}`);
     await admin.unsafe(`grant select (id) on ${other}.secrets to ${columns}`);
     // A member of pg_write_all_data, which writes every table without a grant on it.
-    await admin.unsafe(`create role ${writeAll} login`);
+    await admin.unsafe(`create role ${writeAll} login password '${TEST_PASSWORD}'`);
     await admin.unsafe(`grant pg_write_all_data to ${writeAll}`);
     await admin.unsafe(`grant usage on schema ${schema} to ${writeAll}`);
     await admin.unsafe(`grant select on ${schema}.orders to ${writeAll}`);
