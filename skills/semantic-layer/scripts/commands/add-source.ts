@@ -13,21 +13,49 @@ import { writeYaml } from "../lib/yaml.ts";
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const VIEW_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 // A database value with a scheme (md:, s3://) names no local file.
-const NOT_A_FILE = /^[A-Za-z][A-Za-z0-9+.-]+:/;
+export const NOT_A_FILE = /^[A-Za-z][A-Za-z0-9+.-]+:/;
 
 // Repeated string flags, kept whole: a relation or statement may contain commas.
-function many(values: Record<string, unknown>, key: string): string[] {
+export function many(values: Record<string, unknown>, key: string): string[] {
   const v = values[key];
   if (Array.isArray(v)) return v.map(String);
   return typeof v === "string" ? [v] : [];
 }
 
 // Values are never echoed: they may hold the secret.
-function refuseCredentials(flag: "--database" | "--setup" | "--view", value: string): void {
+export function refuseCredentials(flag: "--database" | "--setup" | "--view", value: string): void {
   const slot = flag === "--database" ? "database" : flag === "--setup" ? "setup" : "view";
   if (hasCredential(slot, value)) {
     throw new UserError(`${flag} contains a credential. Credentials never go in source files; ${credentialHint(slot)}`);
   }
+}
+
+// Refuses an --env value that is not the name of an environment variable (a URL or a credential
+// included), and --env on a duckdb source. The value is never echoed: it may be the secret itself.
+export function checkEnv(env: string, dialect: Dialect): void {
+  if (env.includes("://") || env.includes("@") || !ENV_NAME.test(env)) {
+    throw new UserError(
+      "--env takes the NAME of an environment variable, not a connection URL. Put the URL in an environment variable " +
+        "(for example export WAREHOUSE_URL=...) and pass --env WAREHOUSE_URL.",
+    );
+  }
+  if (dialect === "duckdb") throw new UserError("duckdb sources do not use --env; pass --database <path> and --view name=relation instead.");
+}
+
+// The --view name=relation flags as connection.views, refusing a malformed one, a repeat and a credential.
+export function parseViews(views: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const v of views) {
+    const eq = v.indexOf("=");
+    const viewName = eq < 0 ? "" : v.slice(0, eq).trim();
+    const relation = eq < 0 ? "" : v.slice(eq + 1).trim();
+    if (!viewName || !relation) throw new UserError(`--view must be name=relation, for example events=read_parquet('data/events/*.parquet'); got "${v}".`);
+    if (!VIEW_NAME.test(viewName)) throw new UserError(`View name "${viewName}" must be letters, digits and underscores, starting with a letter or underscore.`);
+    if (viewName in out) throw new UserError(`View "${viewName}" is given twice.`);
+    refuseCredentials("--view", relation);
+    out[viewName] = relation;
+  }
+  return out;
 }
 
 const spec: CommandSpec = {
@@ -69,16 +97,7 @@ const spec: CommandSpec = {
     const schemaError = schemaIssues.find((x) => x.level === "error");
     if (schemaError) throw new UserError(`--schemas: ${schemaError.path} ${schemaError.message}. Fix it and run sl add-source again.`);
 
-    if (env !== undefined) {
-      // The value is never echoed: it may be the secret itself.
-      if (env.includes("://") || env.includes("@") || !ENV_NAME.test(env)) {
-        throw new UserError(
-          "--env takes the NAME of an environment variable, not a connection URL. Put the URL in an environment variable " +
-            "(for example export WAREHOUSE_URL=...) and pass --env WAREHOUSE_URL.",
-        );
-      }
-      if (dialect === "duckdb") throw new UserError("duckdb sources do not use --env; pass --database <path> and --view name=relation instead.");
-    }
+    if (env !== undefined) checkEnv(env, dialect);
     if (dialect === "postgres" && !env) {
       throw new UserError("postgres sources need --env <VAR>: the name of the environment variable holding the connection URL.");
     }
@@ -97,20 +116,7 @@ const spec: CommandSpec = {
         for (const stmt of setup) refuseCredentials("--setup", stmt);
         connection.setup = setup;
       }
-      if (views.length) {
-        const out: Record<string, string> = {};
-        for (const v of views) {
-          const eq = v.indexOf("=");
-          const viewName = eq < 0 ? "" : v.slice(0, eq).trim();
-          const relation = eq < 0 ? "" : v.slice(eq + 1).trim();
-          if (!viewName || !relation) throw new UserError(`--view must be name=relation, for example events=read_parquet('data/events/*.parquet'); got "${v}".`);
-          if (!VIEW_NAME.test(viewName)) throw new UserError(`View name "${viewName}" must be letters, digits and underscores, starting with a letter or underscore.`);
-          if (viewName in out) throw new UserError(`View "${viewName}" is given twice.`);
-          refuseCredentials("--view", relation);
-          out[viewName] = relation;
-        }
-        connection.views = out;
-      }
+      if (views.length) connection.views = parseViews(views);
     }
 
     const source: SourceConfig = { source: name, dialect };
