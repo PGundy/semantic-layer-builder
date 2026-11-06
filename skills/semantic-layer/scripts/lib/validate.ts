@@ -64,7 +64,7 @@ export interface Issue {
   message: string;
 }
 
-export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden", "pending", "plan"] as const;
+export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden", "pending", "plan", "review"] as const;
 export type SchemaKind = (typeof SCHEMA_KINDS)[number];
 
 export const SCHEMAS_DIR = join(import.meta.dir, "..", "..", "schemas");
@@ -403,6 +403,12 @@ class Validator {
         if (l?.valid && l.data.readback_id !== l.stem)
           this.error(l.file, "readback_id", `is "${String(l.data.readback_id)}" but the file is ${f}; the id equals the file name, so run sl readback again instead of renaming`);
       }
+    }
+
+    // JSON review forms sl review export wrote: their structure.
+    const reviewsDir = join(this.root, ".sl", "reviews");
+    if (existsSync(reviewsDir)) {
+      for (const f of readdirSync(reviewsDir).filter((x) => x.endsWith(".json")).sort()) this.load(join(reviewsDir, f), "review", f.replace(/\.json$/, ""));
     }
   }
 
