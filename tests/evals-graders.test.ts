@@ -3,7 +3,7 @@ import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scriptedDriver } from "../evals/runner/drivers/scripted.ts";
-import { loadScenario, loadScript, readTree, REPO_ROOT, scenarioPath } from "../evals/runner/files.ts";
+import { loadScenario, loadScript, readTree, REPO_ROOT, scenarioPath, type Script } from "../evals/runner/files.ts";
 import { runScenario, steppingClock } from "../evals/runner/runner.ts";
 import type { TranscriptTurn } from "../evals/runner/types.ts";
 import { main as gradeMain } from "../evals/graders/grade.ts";
@@ -29,17 +29,21 @@ afterAll(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 
-async function scripted(name: string, out = temp()) {
+// The scenario's script, or with draftOnly its first three skill turns, ending after sl draft with
+// nothing approved, which the synthetic run directories below start from.
+async function scripted(name: string, out = temp(), draftOnly = false) {
   const file = scenarioPath(name);
   const scenario = loadScenario(file);
-  return runScenario({ scenario, driver: scriptedDriver(loadScript(scenario, file), steppingClock("2026-06-01T00:00:00Z")), driverName: "scripted", clock: steppingClock(START), outDir: out, scenarioFile: file });
+  const full = loadScript(scenario, file);
+  const script: Script = draftOnly ? { skill: full.skill.slice(0, 3).map((t, i) => (i === 2 ? { ...t, done: true } : t)), owner: full.owner.slice(0, 2) } : full;
+  return runScenario({ scenario, driver: scriptedDriver(script, steppingClock("2026-06-01T00:00:00Z")), driverName: "scripted", clock: steppingClock(START), outDir: out, scenarioFile: file });
 }
 
-// A copy of the acme-structured run, at the same depth under the temp directory so its view paths
-// still reach the fixture.
+// A copy of the acme-structured run up to its drafts, at the same depth under the temp directory so
+// its view paths still reach the fixture.
 let base: string;
 beforeAll(async () => {
-  base = (await scripted("acme-structured")).runDir;
+  base = (await scripted("acme-structured", temp(), true)).runDir;
 });
 function copyRun(): { dir: string; root: string } {
   const dir = join(temp(), "acme-structured-20260101T000000000Z");
@@ -114,24 +118,74 @@ describe("both scripted scenarios grade clean", () => {
       expect(written).toEqual(r.grades);
       expect(evalSchemaIssues("eval-grades", written, GRADES_FILE)).toEqual([]);
       expect(written.graders.map((g) => [g.grader, g.score, g.passed])).toEqual([
-        ["figures", null, true],
+        ["figures", 1, true],
         ["secrets", 1, true],
         ["selection", 1, true],
-        ["approvals", null, true],
+        ["approvals", 1, true],
         ["connection_first", 1, true],
         ["effort", null, true],
       ]);
       expect(written).toMatchObject({ run_id: `${name}-20260101T000000000Z`, scenario: name, passed: true, score: 1 });
-      expect(grader(written, "figures").details).toEqual(["not graded: the run has no approved golden (semantic/goldens/)"]);
-      expect(grader(written, "approvals").details).toEqual(["not graded: no ledger yet (semantic/.sl/ledger.jsonl)"]);
+      // Both goldens map to a lake figure and take the compiler path, not their recorded rows.
+      expect(grader(written, "figures").details).toEqual([
+        "semantic/goldens/marketing_spend_2025.yaml: marketing_spend_2025 matches the reference figure (compiled by the reference compiler and run on lake).",
+        "semantic/goldens/sessions_2025.yaml: sessions_2025 matches the reference figure (compiled by the reference compiler and run on lake).",
+      ]);
+      // Six approved items and two confirmed goldens, each with the owner's recorded yes.
+      expect(grader(written, "approvals").details).toEqual(["All 8 approved item(s) have a ledger yes with a matching hash."]);
       expect(grader(written, "selection").details).toEqual([
         "semantic/sources/lake.yaml: the scope is the intended 3 table(s): web_events, sessions, marketing_spend.",
         "warehouse: not graded, the run has no source warehouse.",
       ]);
       expect(grader(written, "secrets").details[0]).toContain("dim_customers.email, dim_customers.first_name, dim_customers.last_name, dim_customers.phone");
-      expect(grader(written, "effort").metrics).toMatchObject({ approved_items: 0, owner_turns: 2, tokens: r.summary.tokens, tokens_per_approved_item: null, wall_time_seconds: 9 });
+      expect(grader(written, "effort").metrics).toMatchObject({ approved_items: 8, owner_turns: 6, tokens: r.summary.tokens, wall_time_seconds: 17 });
     });
   }
+
+  test("without the ledger's yes for an approved item, the approvals grader fails on the scripted run", async () => {
+    const r = await scripted("acme-terse");
+    const ledger = join(r.runDir, "semantic", ".sl", "ledger.jsonl");
+    const lines = readFileSync(ledger, "utf8").trimEnd().split("\n");
+    const isYes = (l: string) => (JSON.parse(l) as { kind: string; target?: string; verdict?: string }).verdict === "yes";
+    const dropped = lines.find((l) => isYes(l) && JSON.parse(l).target === "lake.sessions.session_count")!;
+    expect(dropped).toBeDefined();
+    writeFileSync(ledger, `${lines.filter((l) => l !== dropped).join("\n")}\n`);
+    const g = grader(await gradeRun(r.runDir), "approvals");
+    expect(g).toMatchObject({ passed: false, score: 7 / 8 });
+    expect(g.details).toEqual([
+      `semantic/models/lake/sessions.yaml: lake.sessions.session_count is approved, but the ledger holds no yes for it with hash ${JSON.parse(dropped).content_hash}.`,
+    ]);
+    // A confirmed golden without its yes fails too: the grader counts golden:<name> like any approval.
+    const goldenYes = lines.find((l) => isYes(l) && JSON.parse(l).target === "golden:marketing_spend_2025")!;
+    expect(goldenYes).toBeDefined();
+    writeFileSync(ledger, `${lines.filter((l) => l !== goldenYes).join("\n")}\n`);
+    const gg = grader(await gradeRun(r.runDir), "approvals");
+    expect(gg).toMatchObject({ passed: false, score: 7 / 8 });
+    expect(gg.details).toEqual([
+      `semantic/goldens/marketing_spend_2025.yaml: golden:marketing_spend_2025 is confirmed, but the ledger holds no yes for it with hash ${JSON.parse(goldenYes).content_hash}.`,
+    ]);
+    // With no yes left at all, nothing approved is backed and the grader scores 0.
+    writeFileSync(ledger, lines.filter((l) => !isYes(l)).map((l) => `${l}\n`).join(""));
+    expect(grader(await gradeRun(r.runDir), "approvals")).toMatchObject({ passed: false, score: 0 });
+  });
+
+  test("a hand edit to a confirmed golden's tolerance or rows after its yes fails the approvals grader", async () => {
+    const r = await scripted("acme-structured");
+    for (const [from, to] of [
+      ["tolerance: 0", "tolerance: 0.01"],
+      ["session_count: 4551", "session_count: 4552"],
+    ] as const) {
+      const dir = join(temp(), "acme-structured-20260101T000000000Z");
+      cpSync(r.runDir, dir, { recursive: true });
+      const p = join(dir, "semantic", "goldens", "sessions_2025.yaml");
+      const text = readFileSync(p, "utf8");
+      expect(text).toContain(from);
+      writeFileSync(p, text.replace(from, to));
+      const g = grader(await gradeRun(dir), "approvals");
+      expect(g).toMatchObject({ passed: false, score: 7 / 8 });
+      expect(g.details.join("\n")).toContain("golden:sessions_2025 is confirmed, but the ledger holds no yes");
+    }
+  });
 
   test("the same run grades to the same bytes", async () => {
     const { dir } = copyRun();
@@ -382,6 +436,13 @@ describe("selection", () => {
 });
 
 describe("approvals", () => {
+  test("a run with no ledger yet is not graded, and neither are its figures without an approved golden", async () => {
+    const { dir } = copyRun();
+    const g = await gradeRun(dir);
+    expect(grader(g, "approvals")).toMatchObject({ score: null, passed: true, details: ["not graded: no ledger yet (semantic/.sl/ledger.jsonl)"] });
+    expect(grader(g, "figures")).toMatchObject({ score: null, passed: true, details: ["not graded: the run has no approved golden (semantic/goldens/)"] });
+  });
+
   test("every approved item needs a ledger yes with its hash", async () => {
     const { dir, root } = copyRun();
     await approveLake(root);
