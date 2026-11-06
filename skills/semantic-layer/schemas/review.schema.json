@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": ".sl/reviews/<readback_id>.json",
+  "description": "A review form written by sl review export --format json, or read back from the Markdown form: each item of a pending readback with an empty or filled verdict and answer, and the open questions of the models and access.yaml the items belong to.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "readback_id", "created_at", "items", "questions"],
+  "properties": {
+    "version": { "const": 1 },
+    "readback_id": {
+      "type": "string",
+      "pattern": "^rb_[0-9]{4,}$",
+      "description": "The readback the form was exported from, .sl/pending/<readback_id>.json."
+    },
+    "created_at": { "type": "string", "minLength": 1, "description": "When the form was exported, as an ISO timestamp." },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["n", "target", "content_hash", "text", "verdict", "answer"],
+        "properties": {
+          "n": { "type": "integer", "minimum": 1, "description": "The item's number in the readback." },
+          "target": {
+            "type": "string",
+            "pattern": "^(access|metric:[a-z][a-z0-9_]*|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)?)$",
+            "description": "The approve target: source.model, source.model.field, metric:<name> or access."
+          },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "description": "The target's content hash when it was read back, as the pending readback holds it."
+          },
+          "text": { "type": "string", "minLength": 1, "description": "The readback text exactly as the pending readback holds it." },
+          "verdict": {
+            "enum": ["yes", "no", "change", null],
+            "description": "The owner's verdict: yes (right as written), no (wrong), change (right once something changes), or null while unanswered."
+          },
+          "answer": { "type": "string", "description": "The owner's own words, empty while unanswered." }
+        }
+      }
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "key", "question", "answer"],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^(access(\\.roles\\.[a-z][a-z0-9_]*)?|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*)$",
+            "description": "Where the question is held: source.model (the model's open_questions), access (access.yaml's top-level open_questions) or access.roles.<role> (that role's open_questions)."
+          },
+          "key": {
+            "type": "string",
+            "pattern": "^q_[0-9a-f]{16}$",
+            "description": "q_ and the SHA-256 of the question text as stored, cut to 16 hex characters, so the question can be found again."
+          },
+          "question": { "type": "string", "minLength": 1, "description": "The open question as stored." },
+          "answer": { "type": "string", "description": "The owner's answer, empty while unanswered." }
+        }
+      }
+    }
+  }
+}

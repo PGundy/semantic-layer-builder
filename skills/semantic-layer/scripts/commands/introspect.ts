@@ -1,4 +1,4 @@
-import { relative, resolve } from "node:path";
+import { relative } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 import { bool, list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
@@ -6,7 +6,7 @@ import { buildSnapshot, snapshotCounts } from "../lib/introspect.ts";
 import { qualifiedName } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
 import { filterInScope } from "../lib/patterns.ts";
-import { executePlan } from "../lib/plan.ts";
+import { emitPlan, executePlan, resultsInput } from "../lib/plan.ts";
 import { listModels, loadProject, loadSnapshot, loadSource, paths, projectSettings, saveSnapshot } from "../lib/project.ts";
 import { changeLines, diffSnapshots, modeledTables, type SnapshotDiff } from "../lib/snapshot-diff.ts";
 import { profileState } from "../lib/status.ts";
@@ -109,12 +109,13 @@ function nextHint(snapshot: Snapshot, scope: Scope | undefined, modeledChanged: 
 
 const spec: CommandSpec = {
   summary: "Capture tables, columns, keys and row estimates into the source's snapshot.",
-  usage: "introspect --source <source> [--schemas a,b] [--emit-sql] [--results <file>]",
+  usage: "introspect --source <source> [--schemas a,b] [--emit-sql] [--results <file>] [--plan <plan_id>]",
   options: {
     source: { type: "string" },
     schemas: { type: "string", multiple: true },
     "emit-sql": { type: "boolean" },
     results: { type: "string" },
+    plan: { type: "string" },
   },
   async run({ values }, ctx) {
     const sourceName = str(values, "source");
@@ -125,17 +126,12 @@ const spec: CommandSpec = {
     if (!schemas.length && source.dialect === "bigquery") schemas = scopeSchemas(source);
     const plan = introspectionPlan(source, { schemas });
 
+    const input = resultsInput(ctx, values);
     if (bool(values, "emit-sql")) {
-      ctx.out(formatJson(plan));
+      ctx.out(formatJson(emitPlan(ctx, plan, { name: "introspect", values })));
       return 0;
     }
-    const resultsFile = str(values, "results");
-    const results = await executePlan(plan, {
-      root: ctx.root,
-      source,
-      env: ctx.env,
-      resultsFile: resultsFile ? resolve(ctx.cwd, resultsFile) : undefined,
-    });
+    const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input });
 
     const previous = loadSnapshot(ctx.root, source.source);
     const snapshot = buildSnapshot(source, results, ctx.now().toISOString(), previous);
