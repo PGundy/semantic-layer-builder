@@ -7,7 +7,7 @@ import { UserError } from "../lib/errors.ts";
 import { evaluateJoin, pct, type JoinFinding } from "../lib/joins.ts";
 import { findTable, splitQualified } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
-import { executePlan } from "../lib/plan.ts";
+import { emitPlan, executePlan, resultsInput } from "../lib/plan.ts";
 import { listModels, loadModel, loadSnapshot, loadSource, paths } from "../lib/project.ts";
 import { joinCheckPlan, joinQueryId, type JoinCheck, type TableRef } from "../lib/sql/join-check.ts";
 import { NAME_PATTERN, type Join, type JoinEvidence, type JoinKey, type Model, type Snapshot } from "../lib/types.ts";
@@ -167,7 +167,7 @@ function humanReport(r: CheckJoinResult, target: Target, measuredEvidence: JoinE
 
 const spec: CommandSpec = {
   summary: "Measure joins' match rate, key uniqueness and fan-out and write evidence.",
-  usage: "check-join --source <s> (--model <m> --join <j> | --model <m> --all | --all) [--emit-sql] [--results <file>] [--no-write]",
+  usage: "check-join --source <s> (--model <m> --join <j> | --model <m> --all | --all) [--emit-sql] [--results <file>] [--plan <plan_id>] [--no-write]",
   options: {
     source: { type: "string" },
     model: { type: "string" },
@@ -175,6 +175,7 @@ const spec: CommandSpec = {
     all: { type: "boolean" },
     "emit-sql": { type: "boolean" },
     results: { type: "string" },
+    plan: { type: "string" },
     "no-write": { type: "boolean" },
   },
   async run({ values }, ctx) {
@@ -188,8 +189,9 @@ const spec: CommandSpec = {
     const skippedLines = skipped.map((s) => `${s.model}.${s.join}: skipped: ${s.reason}`);
 
     const plan = joinCheckPlan(source, targets.map((t) => t.check));
+    const input = resultsInput(ctx, values);
     if (bool(values, "emit-sql")) {
-      ctx.out(formatJson(plan));
+      ctx.out(formatJson(emitPlan(ctx, plan, { name: "check-join", values })));
       return 0;
     }
     if (!targets.length) {
@@ -198,13 +200,7 @@ const spec: CommandSpec = {
       return 0;
     }
 
-    const resultsFile = str(values, "results");
-    const results = await executePlan(plan, {
-      root: ctx.root,
-      source,
-      env: ctx.env,
-      resultsFile: resultsFile ? resolve(ctx.cwd, resultsFile) : undefined,
-    });
+    const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input });
     const checkedAt = ctx.now().toISOString();
     const write = !bool(values, "no-write");
     const checks: CheckJoinResult[] = [];

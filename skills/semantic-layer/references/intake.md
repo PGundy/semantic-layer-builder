@@ -132,6 +132,16 @@ Use this whenever the CLI cannot run the queries itself. The same steps work for
    sl introspect --source wh --results <scratch>/introspect-results.json
    ```
 
+**Resuming a plan one result at a time.** `--emit-sql` also stores the plan under the semantic root and prints its `plan_id` and each query's `max_rows`. Instead of one results file, store each query's rows as you get them, a JSON array of row objects, then finish with `--plan`:
+
+```
+sl results add --plan <plan_id> --query columns --file <scratch>/columns.json
+sl results status --plan <plan_id>
+sl introspect --source wh --plan <plan_id>
+```
+
+`sl results status` lists what remains and, once every result is in, prints the command that finishes. Run each query with a row limit of its `max_rows`: a result of exactly that many rows is refused as possibly cut off. The stored plans and results live in `.sl/plans/`, which is gitignored; `sl profile --plan` removes its plan once the snapshot is written, and an abandoned profile plan is deleted by hand (`.sl/plans/<plan_id>.json` and `.sl/plans/<plan_id>/`). A golden result with a protected column is not stored: finish that golden with `--results <file>`. The finish command leaves out `--root`; add it back if you passed one. A plan that no longer matches what the command would run (the snapshot or flags changed) is refused: emit a new one.
+
 If a query fails because of a dialect detail (a function name, quoting, permissions on one schema), fix only that query, keep its `id` and the names of its output columns, and tell the owner what you changed. If the owner's user cannot read some schema, scope it out rather than guess.
 
 Profiles and join checks produce one query per table or join. For a large source, profile in batches (`sl profile --source wh --tables a,b,c --emit-sql`) so each results file stays small. A profile results file can hold raw sample values; the snapshot keeps none for a protected column: only its null fraction and distinct count, and a `min` and `max` only for a number or a date (`spec.md`, Profiles of protected columns). The plan does not select the top values of a column protected by its tag or name, so those never pass through your tool; a column that only its profile shows to be protected (near-unique text) is stripped after the results come back. Delete the results file once the command has finished, and never copy its values into the snapshot or any other file under the semantic root. A column tagged after it was profiled is redacted with `sl profile --source <s> --redact`, which queries nothing.

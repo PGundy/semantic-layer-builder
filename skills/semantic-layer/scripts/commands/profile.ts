@@ -1,14 +1,13 @@
-import { resolve } from "node:path";
 import type { CommandContext, CommandSpec } from "../lib/command.ts";
 import { bool, list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { findTable, qualifiedName } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
 import { inScope } from "../lib/patterns.ts";
-import { executePlan } from "../lib/plan.ts";
+import { emitPlan, executePlan, removePlan, resultsInput, withMaxRows } from "../lib/plan.ts";
 import { applyProfile, protectedColumns, redactSnapshot, summarizeTable } from "../lib/profile.ts";
 import { listModels, loadSource, paths, requireSnapshot, saveSnapshot } from "../lib/project.ts";
-import { buildProfilePlan, MAX_TOP_COLUMNS } from "../lib/sql/profile.ts";
+import { buildProfilePlan, MAX_TOP_COLUMNS, topQueryId } from "../lib/sql/profile.ts";
 import type { Snapshot, SnapshotTable, SourceConfig } from "../lib/types.ts";
 
 const DEFAULT_TOP_VALUES = 10;
@@ -23,13 +22,14 @@ interface Skipped {
 const spec: CommandSpec = {
   summary:
     "Profile in-scope tables (row counts, nulls, distinct counts, ranges, top values) into the snapshot; protected columns keep counts (and min and max for numbers and dates) and no top values. --redact rewrites the snapshot's protected profiles, and removes hashed values, without querying.",
-  usage: "profile --source <source> [--tables t1,t2] [--refresh] [--emit-sql] [--results <file>] [--redact]",
+  usage: "profile --source <source> [--tables t1,t2] [--refresh] [--emit-sql] [--results <file>] [--plan <plan_id>] [--redact]",
   options: {
     source: { type: "string" },
     tables: { type: "string", multiple: true },
     refresh: { type: "boolean" },
     "emit-sql": { type: "boolean" },
     results: { type: "string" },
+    plan: { type: "string" },
     redact: { type: "boolean" },
   },
   async run({ values }, ctx) {
@@ -41,12 +41,14 @@ const spec: CommandSpec = {
     const emitSql = bool(values, "emit-sql");
     const resultsFile = str(values, "results");
     if (emitSql && resultsFile) throw new UserError("Pass --emit-sql or --results, not both.");
+    const input = resultsInput(ctx, values);
     if (bool(values, "redact")) {
       const others = [
         list(values, "tables").length ? "--tables" : "",
         refresh ? "--refresh" : "",
         emitSql ? "--emit-sql" : "",
         resultsFile ? "--results" : "",
+        input.planId !== undefined ? "--plan" : "",
       ].filter(Boolean);
       if (others.length) throw new UserError(`--redact reads no database and takes no ${others.join(", ")}.`);
       return redactOnly(ctx, source, snapshot);
@@ -115,7 +117,17 @@ const spec: CommandSpec = {
       }
     }
     const details = buildProfilePlan(source, selected, { ...settings, protect });
-    const { plan, capped } = details;
+    const { capped } = details;
+    // A top-values query returns at most top_values rows per column it reads.
+    const plan = withMaxRows(
+      details.plan,
+      Object.fromEntries(
+        selected.flatMap((t) => {
+          const cols = details.top_columns.get(qualifiedName(t));
+          return cols ? [[topQueryId(t), cols.length * settings.top_values + 1] as const] : [];
+        }),
+      ),
+    );
     for (const q of details.sorted_samples) {
       warnings.push(
         `${q} is a view, an external table or has no row estimate (as a partitioned Postgres parent may not), so TABLESAMPLE cannot read it: ` +
@@ -129,7 +141,7 @@ const spec: CommandSpec = {
 
     if (emitSql) {
       if (!selected.length) ctx.err(nothingMessage(candidates.length, named.length > 0));
-      ctx.out(formatJson(plan));
+      ctx.out(formatJson(emitPlan(ctx, plan, { name: "profile", values })));
       return 0;
     }
 
@@ -139,12 +151,7 @@ const spec: CommandSpec = {
       return 0;
     }
 
-    const results = await executePlan(plan, {
-      root: ctx.root,
-      source,
-      env: ctx.env,
-      resultsFile: resultsFile ? resolve(ctx.cwd, resultsFile) : undefined,
-    });
+    const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input });
     const wanted = new Set(selected.map(qualifiedName));
     const { snapshot: measured, empty_samples } = applyProfile(snapshot, details, results, ctx.now().toISOString());
     for (const e of empty_samples) {
@@ -159,6 +166,9 @@ const spec: CommandSpec = {
     }
     const { snapshot: updated, redacted } = redactSnapshot(measured, protectedColumns(measured.tables, models, source.dialect), wanted);
     saveSnapshot(ctx.root, updated);
+    // Stored top values can hold raw values of columns this profile only now protects, so a plan
+    // finished here is removed.
+    if (input.planId !== undefined) removePlan(ctx.root, input.planId);
 
     const profiled = updated.tables
       .filter((t) => wanted.has(qualifiedName(t)))
@@ -185,6 +195,7 @@ const spec: CommandSpec = {
     const already = skipped.filter((x) => x.reason === "already profiled").length;
     if (already) lines.push(`Skipped ${already} already profiled table${already === 1 ? "" : "s"}; pass --refresh to re-profile.`);
     lines.push(`Profiled ${profiled.length} table${profiled.length === 1 ? "" : "s"} into ${paths(ctx.root).snapshot(sourceName)}.`);
+    if (input.planId !== undefined) lines.push(`Removed plan ${input.planId} and its stored results, which the snapshot now holds.`);
     lines.push(
       "Which columns are protected is a heuristic of names, tags and profiles: review the snapshot's top values before committing it, " +
         "and tag any personal column it missed, then run sl profile --redact. A protected number or date column keeps its min and max, " +

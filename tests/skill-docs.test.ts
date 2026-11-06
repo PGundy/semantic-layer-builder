@@ -199,7 +199,7 @@ function specCli(): Map<string, Set<string>> {
   return out;
 }
 
-// Commands that read a database take --emit-sql and --results (spec: CLI).
+// Commands that read a database take --emit-sql, --results and --plan (spec: CLI).
 const DB_COMMANDS = new Set(["introspect", "profile", "check-join", "goldens"]);
 
 describe("the docs agree with the spec's CLI table", () => {
@@ -221,7 +221,7 @@ describe("the docs agree with the spec's CLI table", () => {
         continue;
       }
       for (const flag of flagsOf(inv.text)) {
-        const db = DB_COMMANDS.has(name) && (flag === "emit-sql" || flag === "results");
+        const db = DB_COMMANDS.has(name) && (flag === "emit-sql" || flag === "results" || flag === "plan");
         if (!GLOBAL_FLAGS.has(flag) && !db && !flags.has(flag)) out.push(`${inv.doc}:${inv.line} the spec's ${name} row has no --${flag}`);
       }
     }
@@ -273,7 +273,7 @@ describe("the spec's CLI table agrees with the commands and their --help", () =>
     for (const [name, load] of Object.entries(COMMANDS)) {
       const flags = cli.get(name) ?? new Set<string>();
       for (const flag of Object.keys((await load()).default.options)) {
-        const db = DB_COMMANDS.has(name) && (flag === "emit-sql" || flag === "results");
+        const db = DB_COMMANDS.has(name) && (flag === "emit-sql" || flag === "results" || flag === "plan");
         if (!db && !flags.has(flag)) out.push(`sl ${name} takes --${flag}, which its spec row does not name`);
       }
     }
