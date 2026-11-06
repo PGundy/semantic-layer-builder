@@ -1549,7 +1549,7 @@ describe("status reapprove phase", () => {
       phase: "reapprove",
       message:
         "2 approved item(s) changed since they were approved: wh.orders.total, access. Read each back to the owner as it now stands and approve it again " +
-        "only after they confirm, or restore the approved definition; sl validate names each one.",
+        "only after they confirm, or restore the approved definition; sl validate names each one. Until then tools treat each one as a draft (sl access lists them).",
       command: 'sl approve --target wh.orders.total --by "<owner>"',
       after_owner_yes: true,
     });
@@ -1579,7 +1579,8 @@ describe("status reapprove phase", () => {
       phase: "reapprove",
       message:
         "1 approved item(s) have no approved_hash while other approved items carry one, so it may have been removed: wh.orders.total. " +
-        "Read each back to the owner as it now stands and approve it again only after they confirm, or restore the approved definition; sl validate names each one.",
+        "Read each back to the owner as it now stands and approve it again only after they confirm, or restore the approved definition; sl validate names each one. " +
+        "Until then tools treat each one as a draft (sl access lists them).",
       command: 'sl approve --target wh.orders.total --by "<owner>"',
       after_owner_yes: true,
     });

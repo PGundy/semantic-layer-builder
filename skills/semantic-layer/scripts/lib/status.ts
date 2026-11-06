@@ -635,7 +635,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       phase: "reapprove",
       message:
         `${parts.join(" ")} Read each back to the owner as it now stands and approve it again only after they confirm, or restore ` +
-        "the approved definition; sl validate names each one.",
+        "the approved definition; sl validate names each one. Until then tools treat each one as a draft (sl access lists them).",
       command: `sl approve --target ${changed[0] ?? missing[0]} --by "<owner>"`,
     };
   }
@@ -928,6 +928,7 @@ function approvedLayer(layer: AccessLayer): AccessLayer {
     models: layer.models.map((m) => ({ ...m, status: "approved", dimensions: approve(m.dimensions), measures: approve(m.measures) })),
     metrics: approve<Metric>(layer.metrics),
     access: isRecord(layer.access) ? { ...layer.access, status: "approved" } : layer.access,
+    compare_hashes: false,
   };
 }
 

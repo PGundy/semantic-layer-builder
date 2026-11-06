@@ -1359,6 +1359,9 @@ class Validator {
       metrics: named<Metric>(this.metrics?.data.metrics),
       access: this.accessPresent ? this.access?.data : null,
       access_present: this.accessPresent,
+      // Approval hashes are checked on their own (checkApprovals); these checks read what the
+      // layer exposes once each changed item is approved again.
+      compare_hashes: false,
     };
     return { layer, loaded };
   }
