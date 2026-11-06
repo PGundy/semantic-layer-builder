@@ -22,6 +22,7 @@ import { type Condition, conditionAttributes, type Literal, parseCondition } fro
 import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
 import { quoteIdent } from "./dialect.ts";
 import { UserError } from "./errors.ts";
+import { intakeIssues } from "./intake.ts";
 import { findTable } from "./naming.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
 import { isHashedValue, protectedColumns } from "./profile.ts";
@@ -603,6 +604,7 @@ class Validator {
       }
       // A tables_file that is not a string is already a schema error.
       if (typeof s.scope?.tables_file === "string") this.checkTablesFile(l.file, s.source, s.scope.tables_file);
+      for (const x of intakeIssues(s, this.root)) this.issues.push({ level: x.level, file: l.file, path: x.path, message: x.message });
       if (s.dialect !== "duckdb") {
         for (const key of ["database", "setup", "views"] as const)
           if (s.connection?.[key] !== undefined) this.warn(l.file, `connection.${key}`, `is used only by duckdb sources, not ${s.dialect}`);
