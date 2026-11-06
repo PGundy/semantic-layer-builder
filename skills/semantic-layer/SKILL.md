@@ -182,7 +182,7 @@ Compare the answer with a figure the owner trusts; agree any difference and writ
 
 **Checklist:** 1. `sl validate`. 2. `sl status --json`. 3. Tick the coverage checklist in `references/verification.md`. 4. Send the summary below.
 
-`sl validate`, `sl status --json`. `next_step` reaches `done` when the phases the CLI can measure are complete, even with draft metrics, goldens or fields the owner deferred, and its message names each; it does not tick the coverage checklist. Tick that checklist in `references/verification.md`, then give the owner a short summary, ending with the stop-or-continue line:
+`sl validate`, `sl status --json`. `next_step` reaches `done` when the phases the CLI can measure are complete, even with draft metrics, goldens or fields the owner deferred, and its message names each; it does not tick the coverage checklist. With an export source it stops at `connect` instead, since profiles, join evidence, goldens and drift from data wait on a connection (`intake.md`). Tick that checklist in `references/verification.md`, then give the owner a short summary, ending with the stop-or-continue line:
 
 - **Approved**: models, measures, metrics, joins, access roles and goldens, by source, and the access mode with what is hidden from the default audience, named rather than counted (`sl access`). Name exceptions rather than counts: "every detail except `products.launched_on`", not "11 of 12 details".
 - **Still draft**: deferred tables (now out of scope), every draft metric (`draft_metrics` in status), draft golden (`draft_goldens`) and draft field (`draft_fields`), and the draft fields a role or golden relies on, each with why (skipped, waiting on someone, deferred); a draft `access.yaml`, saying what applies until it is approved (the last approved version where one is deployed; otherwise tools reading it serve nothing; `access.md`, Draft and approved access). A draft measure known to give a wrong number is fixed or removed first; removing it also removes the draft metrics and goldens that use it (`sl validate` names them).
@@ -211,6 +211,10 @@ Then `sl validate`, `sl goldens check`, and the stop-or-continue line.
 - A metric spanning two sources (customer acquisition cost = lake spend / warehouse new customers) is two measures, one per source, each approved with its own golden. Record the formula, and any figure the owner gave, in both measures' descriptions and in the handoff, even when the owner keeps the metric in their own reports; do not write a metric. When one side cannot exist yet, record the formula on the measure that exists and an open question on the other model naming the missing column or view, or, when that model does not exist yet, on the existing measure's model and among the handoff's cross-source questions. A formula the owner never stated is an open question, not a description.
 - The same table name may appear in two sources; models are named per source (`warehouse.orders`, `lake.orders`). Ask which one is the trusted one for each figure and say so in the descriptions.
 - For a lake of files, one DuckDB source with a view per dataset, likely noise included, keeps scoping and profiling the same as a database.
+
+## Hand edits
+
+The plugin's hook refuses a hand edit (Edit, Write or a shell write) that touches an approval field, anything an approved item's approval covers, a confirmed golden's recorded rows, or `.sl/ledger.jsonl` and `.sl/pending/`. Do what its message says: a typed edit (`sl set`, `sl tag`, `sl rename` and the others), `sl approve --target <ref> --revoke` first, or the readback, reply and approve steps. Edit drafts, descriptions and open questions directly. Never work around a refusal with another tool or a script (`references/spec.md`, Hand edits).
 
 ## When to load which reference
 

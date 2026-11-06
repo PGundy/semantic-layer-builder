@@ -3,13 +3,14 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { canRun } from "./adapters/index.ts";
+import { intakeMode } from "./intake.ts";
 import { latestReply } from "./ledger.ts";
 import { plainText } from "./output.ts";
 import { PLAN_ID_PATTERN, planStatus, loadStoredPlan } from "./plan.ts";
 import { loadSource, paths } from "./project.ts";
 import { PENDING_DIR } from "./readback.ts";
 import { type ProjectStatus, type StatusDetail, statusDetail } from "./status.ts";
-import type { Golden, LedgerReply, PendingReadback, ReadbackItem } from "./types.ts";
+import type { Golden, LedgerReply, PendingReadback, ReadbackItem, SourceConfig } from "./types.ts";
 import { schemaIssues } from "./validate.ts";
 import { readYaml } from "./yaml.ts";
 
@@ -62,14 +63,20 @@ function answered(replies: LedgerReply[], target: string, hash: string | null): 
   return !!r && r.verdict !== null && r.content_hash === hash;
 }
 
-// Whether sl can run a golden's SQL itself; otherwise its readback and confirm take --plan or --results.
-function goldenRunnable(root: string, name: string): boolean {
+// A golden's source config, or undefined when the golden names none or it cannot be read.
+function goldenSource(root: string, name: string): SourceConfig | undefined {
   try {
     const source = readYaml<Golden>(paths(root).golden(name)).request?.source;
-    return !source || canRun(loadSource(root, source));
+    return source ? loadSource(root, source) : undefined;
   } catch {
-    return true;
+    return undefined;
   }
+}
+
+// Whether sl can run a golden's SQL itself; otherwise its readback and confirm take --plan or --results.
+function goldenRunnable(root: string, name: string): boolean {
+  const source = goldenSource(root, name);
+  return !source || (canRun(source) && intakeMode(source) !== "export");
 }
 
 // The phase an approve target belongs to.
@@ -93,6 +100,10 @@ function approvalReady(root: string, d: StatusDetail): NextAction | undefined {
     const golden = target.startsWith("golden:") ? target.slice(7) : undefined;
     if (golden !== undefined) {
       if (!existsSync(paths(root).golden(golden)) || t?.hash === r.content_hash) continue;
+      // An export source's golden confirm refuses (Decision D2): the yes stays in the ledger for after
+      // the upgrade, and sl status's connect step names that upgrade.
+      const source = goldenSource(root, golden);
+      if (source && intakeMode(source) === "export") continue;
       return {
         kind: "run",
         phase: targetPhase(d.status, target),

@@ -1,0 +1,11 @@
+-- A read-only group for the semantic layer CLI, limited to schemas analytics, marts.
+-- Run by an administrator. sl setup printed this and ran nothing.
+-- sl_reader is a group (or service principal) created in the account console; add the connector's service principal to it.
+-- SELECT on a schema covers its tables and views, including ones created later. Run as the catalog owner or a metastore admin.
+GRANT USE CATALOG ON CATALOG `main` TO `sl_reader`;
+GRANT USE SCHEMA ON SCHEMA `main`.`analytics` TO `sl_reader`;
+GRANT SELECT ON SCHEMA `main`.`analytics` TO `sl_reader`;
+GRANT USE SCHEMA ON SCHEMA `main`.`marts` TO `sl_reader`;
+GRANT SELECT ON SCHEMA `main`.`marts` TO `sl_reader`;
+
+Next: Give these statements to the database administrator. Once the role exists, your warehouse connector logs in with it and runs the CLI's query plans: sl setup --source <source> --dialect databricks --env <VAR> --schemas analytics,marts.

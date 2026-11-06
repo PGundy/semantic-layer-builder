@@ -228,3 +228,9 @@ export function droppedText(dropped: { tables: number; schemas: readonly (string
   if (!named) return `${tables} with no schema`;
   return `${tables} in ${named} schema${named === 1 ? "" : "s"}${none ? " or with no schema" : ""}`;
 }
+
+// The sl setup that upgrades an export source to a connection (spec: Setup, Upgrade from an export):
+// a duckdb source's connection is its database file, any other's an environment variable.
+export function upgradeCommand(source: string, dialect: Dialect): string {
+  return `sl setup --source ${source} --dialect ${dialect} ${dialect === "duckdb" ? "--database <path>" : "--env <VAR>"}`;
+}
