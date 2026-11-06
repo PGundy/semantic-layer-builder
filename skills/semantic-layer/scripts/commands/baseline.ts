@@ -6,6 +6,7 @@ import { list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
 import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot } from "../lib/project.ts";
+import { effectiveScope } from "../lib/table-list.ts";
 import type { SourceConfig } from "../lib/types.ts";
 import { sourceFlag } from "./tables.ts";
 
@@ -94,7 +95,7 @@ const spec: CommandSpec = {
     const target = out !== undefined ? outPath(ctx.root, out) : undefined;
     const report = buildBaseline(snapshot, {
       source: sourceName,
-      ...(source?.scope ? { scope: source.scope } : {}),
+      ...(source ? { scope: effectiveScope(ctx.root, source) } : {}),
       focusThreshold: focus_threshold,
       tables: list(values, "tables"),
       stripPrefixes: source?.draft?.strip_prefixes ?? [],

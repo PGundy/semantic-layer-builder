@@ -30,3 +30,19 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bash scripts/verify.sh
+
+  # The eval smoke subset (docs/PRD.md FR-6.4, decision D6): one fixture, two personas, with the
+  # scripted driver, compared with evals/baseline.json. It needs no database server, no key and no
+  # secret, so it runs whenever the workflow does. Non-blocking for now: continue-on-error keeps a
+  # regression from failing the workflow.
+  eval-smoke:
+    name: eval-smoke (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bun run eval:smoke

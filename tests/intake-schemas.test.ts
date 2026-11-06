@@ -70,10 +70,37 @@ describe("intake.schemas helpers", () => {
 
   test("--schemas naming the same schemas as the dialect compares names is no override", () => {
     const sf = { source: "wh", dialect: "snowflake", intake: { schemas: ["analytics"] } } as SourceConfig;
-    expect(schemasToRead(sf, ["ANALYTICS"], "sources/wh.yaml").note).toBeUndefined();
-    expect(schemasToRead(sf, ["ANALYTICS", "marts"], "sources/wh.yaml").note).toContain("differs from intake.schemas");
+    expect(schemasToRead(sf, ["ANALYTICS"], "sources/wh.yaml", {}).note).toBeUndefined();
+    expect(schemasToRead(sf, ["ANALYTICS", "marts"], "sources/wh.yaml", {}).note).toContain("differs from intake.schemas");
     const pg = { source: "wh", dialect: "postgres", intake: { schemas: ["analytics"] } } as SourceConfig;
-    expect(schemasToRead(pg, ["ANALYTICS"], "sources/wh.yaml").note).toContain("differs from intake.schemas");
+    expect(schemasToRead(pg, ["ANALYTICS"], "sources/wh.yaml", {}).note).toContain("differs from intake.schemas");
+  });
+
+  test("a BigQuery source reads intake.schemas first, else the datasets its effective scope names", () => {
+    const bq = { source: "bq", dialect: "bigquery", scope: { include: ["saved.*"] } } as SourceConfig;
+    // The effective scope (scope.include joined with the table-list file's entries) is passed in.
+    expect(schemasToRead(bq, [], "sources/bq.yaml", { include: ["saved.*", "listed.orders"] })).toEqual({ schemas: ["saved", "listed"], from: "scope" });
+    expect(schemasToRead(bq, [], "sources/bq.yaml", { include: ["saved.*"] })).toEqual({ schemas: ["saved"], from: "scope" });
+    expect(schemasToRead(bq, [], "sources/bq.yaml", {})).toEqual({ schemas: [], from: "all" });
+    const withIntake = { ...bq, intake: { schemas: ["analytics"] } } as SourceConfig;
+    expect(schemasToRead(withIntake, [], "sources/bq.yaml", { include: ["listed.orders"] })).toEqual({ schemas: ["analytics"], from: "intake" });
+  });
+
+  test("a BigQuery --emit-sql plan reads the table-list file's datasets unless intake.schemas lists some", async () => {
+    const t = await setup();
+    expect((await sl(t.root, ["add-source", "--name", "bq", "--dialect", "bigquery"])).code).toBe(0);
+    mkdirSync(join(t.root, "scope"), { recursive: true });
+    writeFileSync(join(t.root, "scope", "bq.txt"), "listed.orders\n");
+    patchSource(t.root, "bq", { scope: { include: ["saved.*"], tables_file: "scope/bq.txt" } });
+    const emit = await sl(t.root, ["introspect", "--source", "bq", "--emit-sql"]);
+    expect(emit.code).toBe(0);
+    expect(emit.out).toContain("`saved`");
+    expect(emit.out).toContain("`listed`");
+    patchSource(t.root, "bq", { intake: { schemas: ["analytics"] } });
+    const withIntake = await sl(t.root, ["introspect", "--source", "bq", "--emit-sql"]);
+    expect(withIntake.code).toBe(0);
+    expect(withIntake.out).toContain("`analytics`");
+    expect(withIntake.out).not.toContain("`listed`");
   });
 
   test("dropped counts name tables with no schema", () => {
@@ -388,6 +415,83 @@ describe("import keeps only intake.schemas", () => {
     writeFileSync(file, CSV.split("\n").filter((l) => !l.includes("customers")).join("\n"));
     const again = await sl(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
     expect(again.json<{ warnings: string[] }>().warnings.join(" ")).toContain("1 table in the previous snapshot is not in this import and was dropped: acme.customers.");
+  });
+
+  test("a previous table dropped by --include or --exclude is reported once, in the filter line", async () => {
+    const t = await setup();
+    await duckdbSource(t.root, t.dir, "wh", []);
+    const file = join(t.dir, "schema.csv");
+    writeFileSync(file, CSV);
+    expect((await sl(t.root, ["import", "--source", "wh", "--file", file])).code).toBe(0);
+    patchSource(t.root, "wh", { intake: { schemas: ["acme"] } });
+    const r = await sl(t.root, ["import", "--source", "wh", "--file", file, "--include", "orders"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Dropped 3 tables in 2 schemas not in intake.schemas: marts, raw.");
+    expect(r.out).toContain("Kept the 1 table matching --include and --exclude; dropped 1 other of the tables intake.schemas keeps.");
+    expect(r.out).not.toContain("in the previous snapshot");
+    // Without intake.schemas the same holds for a filter drop alone.
+    patchSource(t.root, "wh", { intake: { schemas: [] } });
+    expect((await sl(t.root, ["import", "--source", "wh", "--file", file])).code).toBe(0);
+    const ex = await sl(t.root, ["import", "--source", "wh", "--file", file, "--exclude", "marts.weekly", "--json"]);
+    const j = ex.json<{ dropped: unknown; filters: unknown; warnings: string[] }>();
+    expect(j.dropped).toEqual({ tables: 0, schemas: [] });
+    expect(j.filters).toEqual({ include: [], exclude: ["marts.weekly"], kept: 4, dropped: 1 });
+    expect(j.warnings.some((w) => w.includes("in the previous snapshot"))).toBe(false);
+    expect((await sl(t.root, ["import", "--source", "wh", "--file", file, "--exclude", "marts.weekly"])).out).toContain("dropped 1 other from the file.");
+  });
+
+  test("with scope.tables_file, the in-scope tables are those intake.schemas keeps and the file lists", async () => {
+    const t = await setup();
+    await duckdbSource(t.root, t.dir, "wh", []);
+    mkdirSync(join(t.root, "scope"), { recursive: true });
+    writeFileSync(join(t.root, "scope", "wh.txt"), "acme.orders\n");
+    patchSource(t.root, "wh", { intake: { schemas: ["acme"] }, scope: { tables_file: "scope/wh.txt" } });
+    const file = join(t.dir, "schema.csv");
+    writeFileSync(file, CSV);
+    const r = await sl(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json()).toMatchObject({ tables: 2, dropped: { tables: 3, schemas: ["marts", "raw"] } });
+    const tables = JSON.stringify((await sl(t.root, ["tables", "--source", "wh", "--json"])).json());
+    expect(tables).toContain("orders");
+    expect(tables).not.toContain("customers");
+  });
+
+  test("--include and --exclude apply to the tables intake.schemas keeps, and both drops are reported", async () => {
+    const t = await setup();
+    await duckdbSource(t.root, t.dir, "wh", []);
+    patchSource(t.root, "wh", { intake: { schemas: ["acme", "marts"] } });
+    const file = join(t.dir, "schema.csv");
+    writeFileSync(file, CSV);
+    const args = ["import", "--source", "wh", "--file", file, "--include", "orders,daily,events", "--exclude", "weekly"];
+    const text = await sl(t.root, args);
+    expect(text.code).toBe(0);
+    expect(text.out).toContain("Imported 2 tables");
+    expect(text.out).toContain("Dropped 1 table in 1 schema not in intake.schemas: raw.");
+    expect(text.out).toContain("Kept the 2 tables matching --include and --exclude; dropped 2 others of the tables intake.schemas keeps.");
+    // events is only in raw, which intake.schemas leaves out.
+    expect(text.out).toContain(`Pattern "events" matches no table in ${file} within intake.schemas.`);
+    expect(names(t.root, "wh")).toEqual(["acme.orders", "marts.daily"]);
+    const json = await sl(t.root, [...args, "--json"]);
+    expect(json.json()).toMatchObject({
+      tables: 2,
+      dropped: { tables: 1, schemas: ["raw"] },
+      filters: { include: ["orders", "daily", "events"], exclude: ["weekly"], kept: 2, dropped: 2 },
+    });
+    const none = await sl(t.root, ["import", "--source", "wh", "--file", file, "--include", "raw.*"]);
+    expect(none.code).toBe(1);
+    expect(none.err).toContain(`No table in ${file} within intake.schemas matches --include and --exclude, so nothing was imported.`);
+    expect(none.err).toContain("and the schemas in intake.schemas and run sl import again.");
+  });
+
+  test("an export source imports intake.export.file with --include", async () => {
+    const t = await setup();
+    await duckdbSource(t.root, t.dir, "wh", []);
+    writeFileSync(join(t.root, "schema.csv"), CSV);
+    patchSource(t.root, "wh", { intake: { mode: "export", reason: "No outside connections.", schemas: ["acme"], export: { file: "schema.csv" } } });
+    const r = await sl(t.root, ["import", "--source", "wh", "--include", "orders", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json()).toMatchObject({ tables: 1, dropped: { tables: 3, schemas: ["marts", "raw"] }, filters: { kept: 1, dropped: 1 } });
+    expect(names(t.root, "wh")).toEqual(["acme.orders"]);
   });
 
   test("a DuckDB export spanning databases matches the opened database's schemas by name", async () => {

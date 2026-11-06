@@ -12,13 +12,14 @@ import { listModels, loadProject, loadSnapshot, loadSource, paths, projectSettin
 import { changeLines, diffSnapshots, modeledTables, type SnapshotDiff } from "../lib/snapshot-diff.ts";
 import { profileState } from "../lib/status.ts";
 import { introspectionPlan, schemaMatcher } from "../lib/sql/introspection.ts";
+import { effectiveScope } from "../lib/table-list.ts";
 import type { Scope, Snapshot, SnapshotTable, SourceConfig, TableKind } from "../lib/types.ts";
 
-// Datasets named by scope.include patterns such as "analytics.*", for a BigQuery
-// source introspected without --schemas.
-function scopeSchemas(source: SourceConfig): string[] {
+// Datasets named by include patterns such as "analytics.*", those of the table-list file
+// included, for a BigQuery source introspected without --schemas.
+function scopeSchemas(scope: Scope): string[] {
   const out = new Set<string>();
-  for (const p of source.scope?.include ?? []) {
+  for (const p of scope.include ?? []) {
     if (p.startsWith("re:")) continue;
     const dot = p.lastIndexOf(".");
     if (dot <= 0) continue;
@@ -31,9 +32,15 @@ function scopeSchemas(source: SourceConfig): string[] {
 export type SchemasFrom = "flag" | "intake" | "scope" | "all";
 
 // The schemas a run reads: --schemas when given, else intake.schemas when it lists any, else (for
-// BigQuery) the datasets scope.include names, else every schema. A --schemas list that differs
-// from intake.schemas gets a note saying so and how to save it.
-export function schemasToRead(source: SourceConfig, given: string[], file: string): { schemas: string[]; from: SchemasFrom; note?: string } {
+// BigQuery) the datasets the effective scope's includes name (scope.include and the table-list
+// file's entries), else every schema. A --schemas list that differs from intake.schemas gets a
+// note saying so and how to save it.
+export function schemasToRead(
+  source: SourceConfig,
+  given: string[],
+  file: string,
+  scope: Scope,
+): { schemas: string[]; from: SchemasFrom; note?: string } {
   const saved = intakeSchemas(source);
   if (given.length) {
     // The same schemas, as the dialect compares names (Snowflake folds case), are no override.
@@ -50,7 +57,7 @@ export function schemasToRead(source: SourceConfig, given: string[], file: strin
   }
   if (saved.length) return { schemas: saved, from: "intake" };
   if (source.dialect === "bigquery") {
-    const fromScope = scopeSchemas(source);
+    const fromScope = scopeSchemas(scope);
     if (fromScope.length) return { schemas: fromScope, from: "scope" };
   }
   return { schemas: [], from: "all" };
@@ -153,8 +160,9 @@ const spec: CommandSpec = {
     if (!sourceName) throw new UserError("--source is required.");
     const project = loadProject(ctx.root);
     const source = loadSource(ctx.root, sourceName);
+    const scope = effectiveScope(ctx.root, source);
     const sourceFile = relative(ctx.cwd, paths(ctx.root).source(source.source));
-    const { schemas, from, note } = schemasToRead(source, list(values, "schemas"), sourceFile);
+    const { schemas, from, note } = schemasToRead(source, list(values, "schemas"), sourceFile, scope);
     const plan = introspectionPlan(source, { schemas });
 
     const input = resultsInput(ctx, values);
@@ -188,10 +196,10 @@ const spec: CommandSpec = {
     const changes = previous ? diffSnapshots(previous, snapshot) : null;
 
     const counts = snapshotCounts(snapshot);
-    const inScope = filterInScope(source.scope, snapshot.tables).length;
+    const inScope = filterInScope(scope, snapshot.tables).length;
     const { focus_threshold } = projectSettings(project);
     const snapshotPath = paths(ctx.root).snapshot(source.source);
-    const unknownRows = rowCountNote(snapshot, source.scope);
+    const unknownRows = rowCountNote(snapshot, scope);
     const next =
       counts.tables === 0
         ? `No tables found. Check that the connection can read the catalog${schemas.length ? ` and that ${schemas.join(", ")} exist` : ""}${from === "intake" ? " (intake.schemas in the source file)" : ""}, then rerun sl introspect --source ${source.source}.`
@@ -199,7 +207,7 @@ const spec: CommandSpec = {
           ? `${inScope} tables are in scope, more than the focus threshold of ${focus_threshold}. Run \`sl tables --source ${source.source} --groups\` to pick a focus.`
           : nextHint(
               snapshot,
-              source.scope,
+              scope,
               touchesModeledTables(changes, previous, snapshot, () => listModels(ctx.root, source.source).map((l) => l.model)),
             );
 
@@ -228,7 +236,7 @@ const spec: CommandSpec = {
       ctx.out(`Wrote ${relative(ctx.cwd, snapshotPath) || snapshotPath}.`);
       if (note) ctx.out(note);
       if (leftNote) ctx.out(leftNote);
-      const modeled = changes ? modeledTables(snapshot, () => listModels(ctx.root, source.source).map((l) => l.model), source.scope) : undefined;
+      const modeled = changes ? modeledTables(snapshot, () => listModels(ctx.root, source.source).map((l) => l.model), scope) : undefined;
       for (const line of changeLines(changes, source.source, modeled)) ctx.out(line);
       if (unknownRows) ctx.out(unknownRows.note);
       ctx.out(next);

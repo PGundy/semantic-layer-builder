@@ -107,6 +107,10 @@ sl validate
 
 `--write` saves the patterns, not a table list, so new tables that match a pattern later are picked up automatically; exact names match only those tables. Tell the owner which applies: "any new `fct_` table will be included too", or "a new table will need adding".
 
+### A list of tables from the owner
+
+When the owner hands over a list (a spreadsheet column, a file of names, hundreds of tables), save it as a table-list file instead of a long command: one name or pattern per line, `!<pattern>` to leave one out, `#` for comments. Preview it with `sl scope --source warehouse --from-file tables.txt`, read back the count and anything unmatched (each warning names the file's line), and on the owner's yes rerun it with `--write`: it copies the file to `scope/warehouse.txt` and sets `scope.tables_file`, keeping the source file's comments. To change the list later, edit that file and run `sl validate`. `sl scope --source warehouse --to-file scope/agreed.txt` writes the current selection as exact names, for the owner to review or edit.
+
 ## Expanding scope later
 
 - Add tables: `sl scope --source warehouse --include 'mkt_*'` to preview, then `--write`. Existing patterns stay.
