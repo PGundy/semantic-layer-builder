@@ -6,7 +6,7 @@ import { bool, list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { findTable, qualifiedName } from "../lib/naming.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
-import { filterInScope, type ListEntry, literalPattern, unmatchedPatterns, validatePattern } from "../lib/patterns.ts";
+import { checkPattern, filterInScope, literalPattern, matchesPattern, unmatchedPatterns, validatePattern } from "../lib/patterns.ts";
 import { loadProject, loadSource, paths, projectSettings, requireSnapshot } from "../lib/project.ts";
 import {
   combineScope,
@@ -16,8 +16,9 @@ import {
   rootPath,
   type SourceTableList,
   sourceTableList,
+  type TableListEntry,
 } from "../lib/table-list.ts";
-import type { Scope } from "../lib/types.ts";
+import type { Scope, SnapshotTable } from "../lib/types.ts";
 import { updateYaml } from "../lib/yaml.ts";
 import { sourceFlag } from "./tables.ts";
 
@@ -79,6 +80,9 @@ function setList(doc: Document, node: YAMLMap, key: "include" | "exclude", wante
   for (const v of wanted) if (!present.has(v)) seq.items.push(doc.createNode(v));
 }
 
+// Most entries the human preview lists one per line; --json lists them all.
+const ENTRY_LINES = 20;
+
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
@@ -112,11 +116,88 @@ function toFilePath(root: string, arg: string): string {
   return target;
 }
 
+// One entry of the previewed scope and where it comes from: "scope.include[i]" or "scope.exclude[i]"
+// (its index in the saved source file), "tables_file line n", or the flag that gives it now.
+interface ScopeEntry {
+  origin: string;
+  entry: string;
+  kind: "include" | "exclude";
+}
+
+// Quotes a value for a POSIX shell when it holds anything beyond plain name characters.
+function shellArg(s: string): string {
+  return /^[A-Za-z0-9_./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+// A flag value that patterns() reads back whole: a glob without a comma, or a re: pattern, with no
+// white space at either end.
+function flagSafe(p: string): boolean {
+  return p.trim() === p && (p.startsWith("re:") || !p.includes(","));
+}
+
+// A pattern that can be given as a flag value and selects exactly `t` of `tables`, or null.
+// literalPattern comes first; a name a flag would split at a comma gets an escaped re: pattern.
+function flagPatternFor(t: SnapshotTable, tables: SnapshotTable[]): string | null {
+  for (const p of [literalPattern(t), `re:${qualifiedName(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`]) {
+    if (!flagSafe(p) || checkPattern(p)) continue;
+    const hit = tables.filter((x) => matchesPattern(p, x));
+    if (hit.length === 1 && hit[0] === t) return p;
+  }
+  return null;
+}
+
+// The table-list line that names `t` exactly, case included: every part quoted.
+function fileLine(t: SnapshotTable): string {
+  const q = (s: string) => `"${s.replaceAll('"', '""')}"`;
+  return t.schema ? `${q(t.schema)}.${q(t.name)}` : q(t.name);
+}
+
+function editDistance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) row.push(Math.min(prev[j]! + 1, row[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1)));
+    prev = row;
+  }
+  return prev[b.length]!;
+}
+
+// The table --explain names: table, schema.table or catalog.schema.table, any case. An unknown
+// name is an error listing up to five close names; a bare name in several schemas lists them.
+function explainTable(tables: SnapshotTable[], ref: string, source: string): SnapshotTable {
+  const t = findTable(tables, ref);
+  if (t) return t;
+  const lower = ref.toLowerCase();
+  const same = ref.includes(".") ? [] : tables.filter((x) => x.name.toLowerCase() === lower);
+  if (same.length > 1) {
+    throw new UserError(`"${ref}" is in several schemas (${same.map(qualifiedName).join(", ")}); pass the qualified name to --explain.`);
+  }
+  const target = ref.includes(".") ? (x: SnapshotTable) => qualifiedName(x).toLowerCase() : (x: SnapshotTable) => x.name.toLowerCase();
+  const limit = Math.max(2, Math.floor(lower.length / 3));
+  const close = tables
+    .map((x) => {
+      const name = target(x);
+      // One name inside the other counts as close only when the shorter has 3 characters or more.
+      const inside = Math.min(name.length, lower.length) >= 3 && (name.includes(lower) || lower.includes(name));
+      return { name: qualifiedName(x), d: inside ? 0 : editDistance(lower, name) };
+    })
+    .filter((c) => c.d <= limit)
+    .sort((a, b) => a.d - b.d || compare(a.name, b.name))
+    .slice(0, 5);
+  const hint = close.length ? ` Close names: ${close.map((c) => c.name).join(", ")}.` : "";
+  throw new UserError(`No table named "${ref}" in the ${source} snapshot.${hint} Run \`sl tables --source ${source} --all\` for every name.`);
+}
+
+function entryText(e: ScopeEntry, file: string | undefined): string {
+  const where = e.origin.startsWith("tables_file line ") && file ? `${file} line ${e.origin.slice(17)}` : e.origin;
+  return `${e.kind} "${e.entry}" (${where})`;
+}
+
 const spec: CommandSpec = {
   summary: "Preview the tables a scope change selects; --write saves it to sources/<source>.yaml.",
   usage:
     "scope --source <source> [--include <pattern>]... [--exclude <pattern>]... [--remove <pattern>]... " +
-    "[--tables a,b] [--from-file <path>] [--to-file <path>] [--force] [--clear] [--write]",
+    "[--tables a,b] [--from-file <path>] [--to-file <path>] [--force] [--clear] [--write] [--explain <table>]",
   options: {
     "from-file": { type: "string" },
     "to-file": { type: "string" },
@@ -128,6 +209,7 @@ const spec: CommandSpec = {
     tables: { type: "string", multiple: true },
     clear: { type: "boolean" },
     write: { type: "boolean" },
+    explain: { type: "string" },
   },
   async run({ values }, ctx) {
     const project = loadProject(ctx.root);
@@ -187,7 +269,7 @@ const spec: CommandSpec = {
       if (!(e instanceof UserError) || (fromArg === undefined && !clear)) throw e;
       warnings.push(`The saved table-list file is left out of the current scope: ${e.message.split("\n")[0]}`);
     }
-    let nextList: { rel: string; entries: ListEntry[]; line: (p: string) => number | undefined } | null =
+    let nextList: { rel: string; entries: TableListEntry[]; line: (p: string) => number | undefined } | null =
       currentList && !clear ? { rel: currentList.rel, entries: currentList.entries, line: (p) => currentList!.entries.find((e) => e.pattern === p)?.line } : null;
     let fromText: string | undefined;
     if (fromArg !== undefined) {
@@ -228,6 +310,121 @@ const spec: CommandSpec = {
     const removed = before.filter((t) => !afterSet.has(t));
     const unmatched = unmatchedPatterns(nextScope, tables);
     const needsFocus = after.length > focus_threshold;
+
+    // Every entry of the previewed scope with its origin: the lists, then the file's lines.
+    const savedIndex = (list: string[] | undefined, p: string) => (list ?? []).findIndex((x) => patternKey(x) === patternKey(p));
+    const includeKeys = new Set(includes.map(patternKey));
+    const entries: ScopeEntry[] = [
+      ...include.map((p): ScopeEntry => {
+        const i = savedIndex(base.include, p);
+        return { origin: i >= 0 ? `scope.include[${i}]` : includeKeys.has(patternKey(p)) ? "--include" : "--tables", entry: p, kind: "include" };
+      }),
+      ...exclude.map((p): ScopeEntry => {
+        const i = savedIndex(base.exclude, p);
+        return { origin: i >= 0 ? `scope.exclude[${i}]` : "--exclude", entry: p, kind: "exclude" };
+      }),
+      ...(nextList?.entries ?? []).map((e): ScopeEntry => ({ origin: `tables_file line ${e.line}`, entry: e.pattern, kind: e.kind })),
+    ];
+    const fileShown = fromArg ?? nextList?.rel;
+
+    const explainArg = str(values, "explain");
+    if (explainArg !== undefined) {
+      if (bool(values, "write") || toArg !== undefined) {
+        throw new UserError(`--explain only reads; run \`sl scope --source ${sourceName} --explain ${shellArg(explainArg)}\` without --write or --to-file.`);
+      }
+      if (!explainArg.trim()) {
+        throw new UserError(`--explain needs a table name, such as \`sl scope --source ${sourceName} --explain orders\`; run \`sl tables --source ${sourceName} --all\` for the names.`);
+      }
+      const t = explainTable(tables, explainArg, sourceName);
+      const name = qualifiedName(t);
+      const hits = entries.filter((e) => matchesPattern(e.entry, t));
+      const hitExclude = hits.find((e) => e.kind === "exclude");
+      const hitInclude = hits.find((e) => e.kind === "include");
+      const noInclude = !entries.some((e) => e.kind === "include");
+      const decider = hitExclude ?? (noInclude ? undefined : hitInclude);
+      const inScopeNow = !hitExclude && (noInclude || hitInclude !== undefined);
+      const kind = decider?.kind ?? (noInclude ? "empty_include" : "no_match");
+      const rule =
+        kind === "exclude"
+          ? "Exclude wins: a table an exclude entry matches is out of scope, whatever include entries match it."
+          : kind === "include"
+            ? "A table is in scope when an include entry matches it and no exclude entry does."
+            : kind === "empty_include"
+              ? "The include list is empty, so every table no exclude entry matches is in scope."
+              : "No entry matches it, and the include list is not empty, so only tables an include entry matches are in scope.";
+      const also = hits.filter((e) => e !== decider);
+      if (ctx.json) {
+        ctx.out(
+          formatJson({
+            source: sourceName,
+            table: name,
+            in_scope: inScopeNow,
+            decided_by: { origin: decider?.origin ?? null, entry: decider?.entry ?? null, kind },
+            also_matched: also,
+            rule,
+          }),
+        );
+        return 0;
+      }
+      const cmd = `sl scope --source ${sourceName}`;
+      // The table-list file a fix goes in, as --from-file reads it from the working directory.
+      const listFile = fileShown ?? `scope/${sourceName}.txt`;
+      const listArg = shellArg(fromArg ?? (relative(ctx.cwd, resolve(ctx.root, nextList?.rel ?? listFile)) || listFile));
+      const viaFile = (line: string) => `add the line \`${line}\` to ${listFile} and run \`${cmd} --from-file ${listArg} --write\``;
+      const exact = flagPatternFor(t, tables);
+      let next: string;
+      if (inScopeNow) {
+        next = exact
+          ? `To leave it out, run \`${cmd} --exclude ${shellArg(exact)}\`, then add --write to save it.`
+          : `To leave it out, ${viaFile(`!${fileLine(t)}`)}.`;
+      } else {
+        // Every exclude entry that matches the table has to go, and with a non-empty include list
+        // an include has to match it.
+        const steps: string[] = [];
+        const saved = hits.filter((e) => e.origin.startsWith("scope.exclude"));
+        const removable = saved.filter((e) => flagSafe(e.entry));
+        if (removable.length) {
+          const count = tables.filter((x) => removable.some((e) => matchesPattern(e.entry, x))).length;
+          const flags = removable.map((e) => `--remove ${shellArg(e.entry)}`).join(" ");
+          const what = removable.length === 1 ? "the entry, which matches" : "the entries, which match";
+          steps.push(`preview \`${cmd} ${flags}\` (it removes ${what} ${plural(count, "table")}), then add --write`);
+        }
+        for (const e of saved.filter((x) => !removable.includes(x))) steps.push(`delete ${e.origin} ("${e.entry}") from sources/${sourceName}.yaml`);
+        const given = hits.filter((e) => e.origin === "--exclude");
+        if (given.length) steps.push(`drop ${given.map((e) => `--exclude ${shellArg(e.entry)}`).join(" and ")} from the command`);
+        const fileHits = hits.filter((e) => e.kind === "exclude" && e.origin.startsWith("tables_file line "));
+        if (fileHits.length) {
+          const nums = fileHits.map((e) => e.origin.slice(17));
+          steps.push(`delete or narrow line${nums.length === 1 ? "" : "s"} ${nums.join(", ")} of ${listFile}, then run \`${cmd} --from-file ${listArg} --write\``);
+        }
+        if (!noInclude && !hitInclude) {
+          const plainName = !name.includes(",") && name.trim() === name;
+          steps.push(
+            plainName
+              ? `bring it in with \`${cmd} --tables ${shellArg(name)}\`, then add --write`
+              : exact
+                ? `bring it in with \`${cmd} --include ${shellArg(exact)}\`, then add --write`
+                : viaFile(fileLine(t)),
+          );
+        }
+        const lead = hits.filter((e) => e.kind === "exclude").length > 1 ? "Every exclude entry that matches it has to go. " : "";
+        next = `${lead}To bring it ${kind === "no_match" ? "in" : "back"}, ${steps.join("; ")}.`;
+      }
+      const lines = [`${name} is ${inScopeNow ? "in" : "out of"} scope for ${sourceName}.`];
+      if (decider) lines.push(`Decided by: ${entryText(decider, fileShown)}.`);
+      lines.push(rule);
+      if (also.length) lines.push(`Also matched: ${also.map((e) => entryText(e, fileShown)).join("; ")}.`);
+      lines.push(next);
+      ctx.out(lines.join("\n"));
+      return 0;
+    }
+    const entryCounts = entries.map((e) => {
+      const matches = tables.filter((t) => matchesPattern(e.entry, t)).length;
+      return { ...e, matches, unmatched: matches === 0 };
+    });
+    const bySchema = new Map<string, number>();
+    for (const t of afterTables) bySchema.set(t.schema ?? "", (bySchema.get(t.schema ?? "") ?? 0) + 1);
+    const schemaCounts = [...bySchema].sort((a, b) => compare(a[0], b[0])).map(([schema, n]) => ({ schema: schema || null, tables: n }));
 
     const inLists = new Set([...include, ...exclude]);
     for (const p of unmatched) {
@@ -315,6 +512,8 @@ const spec: CommandSpec = {
           to_file: toRel,
           focus_threshold,
           tables: tableRows,
+          entries: entryCounts,
+          by_schema: schemaCounts,
           warnings,
         }),
       );
@@ -331,6 +530,14 @@ const spec: CommandSpec = {
     lines.push(`Removed (${removed.length}): ${removed.length ? removed.join(", ") : "none"}`);
     lines.push("");
     lines.push(`In scope: ${plural(after.length, "table")} of ${tables.length} (was ${before.length}).`);
+    if (schemaCounts.length > 1) lines.push(`By schema: ${schemaCounts.map((c) => `${c.schema ?? "(none)"} ${c.tables}`).join(", ")}`);
+    if (entryCounts.length) {
+      lines.push("Matches per entry:");
+      for (const e of entryCounts.slice(0, ENTRY_LINES)) lines.push(`  ${entryText(e, fileShown)}: ${plural(e.matches, "table")}`);
+      if (entryCounts.length > ENTRY_LINES) {
+        lines.push(`  ... and ${entryCounts.length - ENTRY_LINES} more; rerun with --json to list every entry.`);
+      }
+    }
     if (tableRows.length) {
       lines.push(
         formatTable(
