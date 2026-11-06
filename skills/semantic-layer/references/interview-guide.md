@@ -258,19 +258,21 @@ Access is open by default (`access.md`), so in open mode, or before `access.yaml
 
 Render the sign-off items with `sl readback --targets warehouse.orders.revenue,warehouse.orders` and read them to the owner as written: each states the definition from the YAML, who sees it under the current `access.yaml`, and the measured facts, with text from the data quoted as evidence. It stores the numbered items with their content hashes in `.sl/pending/` (`spec.md`); after a change to an item, render it again. Record the owner's answer to each item, in their words, before acting on it: `sl reply --readback rb_0001 --item 1 --text "<their words>" --verdict yes --by "<owner>"` (`--verdict no` or `change` for a no or a correction; leave `--verdict` out only when the words are not yet a yes, a no or a change). It appends to `.sl/ledger.jsonl`, redacting anything that looks like a credential, and names the next command.
 
-Put the sign-offs of one round trip in their own numbered block, separate from the open questions, so a "yes to 1 to 4" is unambiguous. Then run, only after an explicit yes to each:
+Put the sign-offs of one round trip in their own numbered block, separate from the open questions, so a "yes to 1 to 4" is unambiguous. Record a reply per item, then approve each item with a recorded yes:
 
 ```
-sl approve --target warehouse.orders.revenue --by "Dana Ruiz"
-sl approve --target warehouse.orders.order_date --by "Dana Ruiz"
-sl approve --target warehouse.orders --by "Dana Ruiz"
+sl approve --target warehouse.orders.revenue
+sl approve --target warehouse.orders.order_date
+sl approve --target warehouse.orders
 ```
+
+`sl approve` refuses an item unless the owner's latest reply to it in `.sl/ledger.jsonl` is a yes to it as it now stands: a later no or change, or an edit after the yes, means reading it back again. It records the owner and the day from that reply; `--by "<owner>"` may still be given, and must name the same owner. When it refuses, it names the `sl readback` to run.
 
 | What was agreed | `--target` |
 |---|---|
 | One dimension, measure or join | `source.model.field` |
 | The table as a whole (needs `grain` and `primary_key`) | `source.model` |
-| The table and every item in it, after the owner said yes to a readback that covered each item, and every join in the model already has evidence from `sl check-join` and was read back (`joins.md`); otherwise approve fields one by one | `source.model` with `--recursive` |
+| The table and every item in it that has its own recorded yes (the others are listed with their readback and stay draft), when every join in the model already has evidence from `sl check-join` and was read back (`joins.md`); otherwise approve fields one by one | `source.model` with `--recursive` |
 | A metric in `metrics.yaml` | `metric:<name>` |
 | The access file | `access` |
 | A golden | use `sl goldens confirm`, see `verification.md` |

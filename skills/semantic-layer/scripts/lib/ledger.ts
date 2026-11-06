@@ -113,3 +113,71 @@ export function openLedger(root: string): LedgerAppender {
 export function shellQuote(s: string): string {
   return `"${s.replace(/(["\\$`])/g, "\\$1")}"`;
 }
+
+// Lookups ------------------------------------------------------------------------------------------
+
+// A reply line as approval reads it: kind reply, with the fields an approval needs in their shape.
+function isReply(data: unknown): data is LedgerReply {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return false;
+  const d = data as Record<string, unknown>;
+  return (
+    d.kind === "reply" &&
+    typeof d.id === "string" &&
+    typeof d.target === "string" &&
+    typeof d.content_hash === "string" &&
+    typeof d.by === "string" &&
+    d.by.trim() !== "" &&
+    typeof d.at === "string" &&
+    d.at.trim() !== "" &&
+    (d.verdict === null || d.verdict === "yes" || d.verdict === "no" || d.verdict === "change")
+  );
+}
+
+// The kind: reply lines of ledger text, in file order. Strict, as sl approve reads it, a line that is
+// not JSON, a reply line without the fields an approval needs, or a last line without a line break
+// is an error, since skipping it could let an earlier yes stand over a later no. Otherwise such lines
+// are skipped (sl validate reports them on its own).
+export function ledgerReplies(text: string, strict = false): LedgerReply[] {
+  const fail = (why: string) => {
+    throw new UserError(`${LEDGER_FILE} cannot be read: ${why}, so no approval can rely on it; nothing was approved. ${RESTORE[0]!.toUpperCase()}${RESTORE.slice(1)}.`);
+  };
+  if (strict && text && !text.endsWith("\n")) fail("its last line has no line break (an append was cut off)");
+  const out: LedgerReply[] = [];
+  text.split("\n").forEach((line, i) => {
+    if (!line.trim()) return;
+    let data: unknown;
+    try {
+      data = JSON.parse(line);
+    } catch {
+      if (strict) fail(`line ${i + 1} is not JSON`);
+      return;
+    }
+    const kind = typeof data === "object" && data !== null ? (data as { kind?: unknown }).kind : undefined;
+    if (isReply(data)) out.push(data);
+    else if (strict && kind === "reply") fail(`line ${i + 1} is a reply line without the fields an approval needs (a non-empty by and at, a target, a content_hash, a verdict)`);
+    else if (strict && kind !== "question") fail(`line ${i + 1} is not a reply or question line`);
+  });
+  return out;
+}
+
+// The kind: reply lines of the semantic root's ledger (none when it has no ledger), read strictly.
+export function readReplies(root: string): LedgerReply[] {
+  const file = join(root, LEDGER_FILE);
+  if (!existsSync(file)) return [];
+  // The ledger, and the .sl directory holding it, must lie inside the semantic root, not behind a link.
+  if (!lstatSync(dirname(file)).isDirectory() || !lstatSync(file).isFile()) throw new UserError(`${LEDGER_FILE} is not a plain file inside the semantic root (the ledger or its .sl directory is a link, or the ledger is not a file), so no approval can rely on it; nothing was approved. ${RESTORE[0]!.toUpperCase()}${RESTORE.slice(1)}.`);
+  return ledgerReplies(readFileSync(file, "utf8"), true);
+}
+
+// The owner's latest reply to a target: the last reply line for it, whatever its verdict, so a later
+// no, change or reply without a verdict overrides an earlier yes.
+export function latestReply(replies: LedgerReply[], target: string): LedgerReply | undefined {
+  for (let i = replies.length - 1; i >= 0; i--) if (replies[i]!.target === target) return replies[i];
+  return undefined;
+}
+
+// Whether the owner's latest reply to a target is a yes to the content it has as it stands.
+export function currentYes(replies: LedgerReply[], target: string, hash: string): LedgerReply | undefined {
+  const r = latestReply(replies, target);
+  return r && r.verdict === "yes" && r.content_hash === hash ? r : undefined;
+}
