@@ -34,7 +34,17 @@ sl setup --source warehouse --dialect postgres --export schema.csv --reason "The
 - Run it again with the same arguments and nothing changes; with new ones it updates the source and reports the schemas and patterns added and removed. Leaving out a group of flags (`--schemas`; `--include`, `--exclude` and `--tables-file`) leaves that part of the source as it is. A scope change alone does not read the catalog again.
 - Its next action for a connection source with in-scope tables not yet profiled is `sl profile --source <s>`; `sl baseline` follows once they are.
 - Snowflake, BigQuery and Databricks: the CLI does not connect, so the next action is `sl introspect --source <s> --emit-sql` (The query-plan protocol).
-- It does not switch an export source to a connection yet; its message names the steps to do it by hand.
+- When a connection becomes available for an export source, the same command with the connection upgrades it (below).
+
+### Upgrade from an export to a connection
+
+Once the owner can give a connection, run `sl setup` for the export source again with the connection instead of `--export`; the schemas and the scope stay, and so does every answer already recorded:
+
+```
+sl setup --source warehouse --dialect postgres --env WAREHOUSE_URL
+```
+
+It switches `intake.mode` to `connection` (removing `intake.reason` and `intake.export`; the export copy stays under `exports/`), introspects the same schemas and reports what differs from the export, profiles the in-scope tables, runs `sl check-join --all`, and lists the drafted and approved items the data contradicts: a primary key that is not unique, a to-one join that repeats rows, a status value no filter or description names, a column the export did not show. Nothing is approved or revoked. Its next action reads the contradicted items back: `sl readback --targets <refs>`. Read each to the owner with its evidence in plain words ("the export said customer_id identifies an order, but the data has 4,980 values in 5,000 orders"); a change they agree goes into the YAML, which makes an approved item a draft again until they approve it. Only the upgrade run prints the list, so read back the refs from that run's output; a rerun is an ordinary connection setup. The rules each kind follows are in `spec.md` (Setup, Upgrade from an export).
 
 ## Connections without secrets
 
