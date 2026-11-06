@@ -8,7 +8,7 @@ request:
     - { field: marketing_spend.spend_date, op: gte, value: "2025-01-01" }
     - { field: marketing_spend.spend_date, op: lt, value: "2026-01-01" }
   order_by: [{ field: marketing_spend.channel, direction: asc }]
-sql: |
+cross_check_sql: |
   select channel, sum(spend_cents * 0.01) as spend
   from marketing_spend
   where spend_date >= '2025-01-01' and spend_date < '2026-01-01'

@@ -212,6 +212,10 @@ Then `sl validate`, `sl goldens check`, and the stop-or-continue line.
 - The same table name may appear in two sources; models are named per source (`warehouse.orders`, `lake.orders`). Ask which one is the trusted one for each figure and say so in the descriptions.
 - For a lake of files, one DuckDB source with a view per dataset, likely noise included, keeps scoping and profiling the same as a database.
 
+## Hand edits
+
+The plugin's hook refuses a hand edit (Edit, Write or a shell write) that touches an approval field, anything an approved item's approval covers, a confirmed golden's recorded rows, or `.sl/ledger.jsonl` and `.sl/pending/`. Do what its message says: a typed edit (`sl set`, `sl tag`, `sl rename` and the others), `sl approve --target <ref> --revoke` first, or the readback, reply and approve steps. Edit drafts, descriptions and open questions directly. Never work around a refusal with another tool or a script (`references/spec.md`, Hand edits).
+
 ## When to load which reference
 
 | Moment | Load |
