@@ -16,6 +16,9 @@
 -- Restrict schemas: uncomment the line marked sl:schema-filter below and list the schemas,
 -- or print this query with the filter applied: sl export-sql --dialect redshift --schemas a,b
 --
+-- Restrict tables: sl export-sql --include/--exclude prints this query with a table filter at the
+-- line marked sl:table-filter (a pattern the dialect cannot express is applied by sl import).
+--
 -- row_count is pg_class.reltuples, the planner's estimate (svv_table_info.tbl_rows has exact
 -- counts). Late-binding views (WITH NO SCHEMA BINDING) and Spectrum external tables keep their
 -- columns elsewhere (pg_get_late_binding_view_cols(), svv_external_columns) and are not listed.
@@ -36,6 +39,7 @@ with rel as (
     and n.nspname not in ('information_schema', 'catalog_history')
     and left(n.nspname, 3) <> 'pg_'
     -- and n.nspname in ('public')  -- sl:schema-filter: uncomment and list the schemas to export
+    -- sl:table-filter: sl export-sql --include/--exclude writes the table filter here
 ),
 -- Positions 1 to 32 (the most columns a key holds), to index a constraint's key arrays; the
 -- leader node has no unnest.
