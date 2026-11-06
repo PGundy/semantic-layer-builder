@@ -256,6 +256,8 @@ Read back every synonym you will write ("People also call it sales or GMV"), and
 
 Access is open by default (`access.md`), so in open mode, or before `access.yaml` exists, every table readback says "everyone will be able to see this once approved; is that right?", and so does the readback of a field approved into a table already signed off. Name what stays hidden when the table holds some ("everyone except the email and phone columns, which are tagged personal"). A no is an access exception: write it down before you approve the table (a tag in the model file, or a restriction or denial in `access.yaml`), and check with `sl access` that it is hidden for a reason other than `draft`. In `mode: closed`, say instead which roles will see it. While `access.yaml` is being rewritten (revoked to edit, or a first draft), say who will see the table under the draft file once it is approved ("under the new access rules, everyone except sales reps will see this; is that right?"), in the same sign-off item as the table.
 
+Render the sign-off items with `sl readback --targets warehouse.orders.revenue,warehouse.orders` and read them to the owner as written: each states the definition from the YAML, who sees it under the current `access.yaml`, and the measured facts, with text from the data quoted as evidence. It stores the numbered items with their content hashes in `.sl/pending/` (`spec.md`); after a change to an item, render it again.
+
 Put the sign-offs of one round trip in their own numbered block, separate from the open questions, so a "yes to 1 to 4" is unambiguous. Then run, only after an explicit yes to each:
 
 ```

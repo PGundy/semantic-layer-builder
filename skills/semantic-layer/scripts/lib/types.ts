@@ -375,3 +375,21 @@ export interface QueryPlan {
 
 export type ResultRows = Record<string, unknown>[];
 export type PlanResults = Record<string, ResultRows>;
+
+// Pending readbacks (.sl/pending/<readback_id>.json), written by sl readback.
+
+export interface ReadbackItem {
+  n: number;
+  // An approve target: source.model, source.model.field, metric:<name> or access.
+  target: string;
+  kind: "approve";
+  text: string;
+  // The target's content hash when it was read back: what sl approve records as approved_hash.
+  content_hash: string;
+}
+
+export interface PendingReadback {
+  readback_id: string; // rb_0001, rb_0002, ...
+  created_at: string;
+  items: ReadbackItem[];
+}
