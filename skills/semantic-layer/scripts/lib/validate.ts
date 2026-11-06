@@ -64,7 +64,7 @@ export interface Issue {
   message: string;
 }
 
-export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden"] as const;
+export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden", "pending", "plan"] as const;
 export type SchemaKind = (typeof SCHEMA_KINDS)[number];
 
 export const SCHEMAS_DIR = join(import.meta.dir, "..", "..", "schemas");
@@ -279,7 +279,12 @@ class Validator {
   // The join references of each dimension expr, by source.model.dimension, as checkModels resolved them.
   dimensionRefs = new Map<string, JoinRef[]>();
 
-  constructor(readonly root: string) {}
+  // overrides maps an absolute file path to text read in place of the file's, so an edit can be
+  // validated before it is written.
+  constructor(
+    readonly root: string,
+    readonly overrides?: ReadonlyMap<string, string>,
+  ) {}
 
   error(file: string, path: string, message: string): void {
     this.issues.push({ level: "error", file, path, message });
@@ -316,7 +321,7 @@ class Validator {
   // Reads and schema-checks one file; returns undefined when it cannot be parsed into an object.
   load<T>(abs: string, kind: SchemaKind, stem: string): Loaded<T> | undefined {
     const file = this.rel(abs);
-    const text = readFileSync(abs, "utf8");
+    const text = this.overrides?.get(abs) ?? readFileSync(abs, "utf8");
     let data: unknown;
     if (abs.endsWith(".json")) {
       try {
@@ -388,6 +393,16 @@ class Validator {
     for (const { file: f, stem } of this.yamlEntries(goldensDir)) {
       const l = this.load<Golden>(join(goldensDir, f), "golden", stem);
       if (l) this.goldens.push(l);
+    }
+
+    // Readbacks sl readback stored, waiting for the owner: their structure, and an id equal to the file name.
+    const pendingDir = join(this.root, ".sl", "pending");
+    if (existsSync(pendingDir)) {
+      for (const f of readdirSync(pendingDir).filter((x) => x.endsWith(".json")).sort()) {
+        const l = this.load<{ readback_id?: unknown }>(join(pendingDir, f), "pending", f.replace(/\.json$/, ""));
+        if (l?.valid && l.data.readback_id !== l.stem)
+          this.error(l.file, "readback_id", `is "${String(l.data.readback_id)}" but the file is ${f}; the id equals the file name, so run sl readback again instead of renaming`);
+      }
     }
   }
 
@@ -2098,7 +2113,7 @@ function isBareColumn(expr: string, column: string): boolean {
 // or a min or max of a column that is not a number or a date), hashed (only values an earlier sl
 // profile stored hashed), or nothing (null). A profile keeps counts only, with min and max for
 // numbers and dates.
-function heldValues(profile: unknown, type: string): "raw" | "hashed" | null {
+export function heldValues(profile: unknown, type: string): "raw" | "hashed" | null {
   if (!isObject(profile)) return null;
   const held = (v: unknown) => v !== null && v !== undefined;
   const c = classifyType(type);
@@ -2169,7 +2184,8 @@ function qualified(t: SnapshotTable): string {
 
 // Validates every file under a semantic root: structure against the JSON Schemas, then references.
 // A file with structural errors gets no semantic checks of its own, but other files still resolve
-// references into the parts of it that have the expected shape.
-export function validateProject(root: string): Issue[] {
-  return new Validator(root).run();
+// references into the parts of it that have the expected shape. `overrides` holds the text of files
+// as an edit would write them, by absolute path; each must be an existing file.
+export function validateProject(root: string, overrides?: ReadonlyMap<string, string>): Issue[] {
+  return new Validator(root, overrides).run();
 }
