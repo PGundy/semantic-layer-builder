@@ -234,7 +234,11 @@ describe("figures", () => {
     const g = grader(await gradeRun(dir), "figures");
     // Three checks: the two mapped goldens and the unmapped one that equals a common mistake.
     expect(g).toMatchObject({ score: 1 / 3, passed: false });
-    const refused = "from the golden's recorded rows, since sl sql refuses it: measures[0] names orders.revenue, which this user may not see (draft, model_hidden)";
+    // A draft measure of a draft model is held back for approval, not by an access rule, so the
+    // refusal says so in plain words and names the readback instead of the codes draft and model_hidden.
+    const refused =
+      "from the golden's recorded rows, since sl sql refuses it: measures[0] names orders.revenue, which is held back because it is a draft and model orders is a draft; " +
+      'it is served once orders.revenue and model orders are read back and approved: sl readback --targets warehouse.orders.revenue,warehouse.orders, then sl approve --target warehouse.orders.revenue --by "<owner>" and sl approve --target warehouse.orders --by "<owner>" after the owner\'s yes';
     expect(g.details).toEqual([
       `semantic/goldens/gross_revenue_2025.yaml: revenue_2025 matches the reference figure (${refused}).`,
       `semantic/goldens/revenue_2025.yaml: revenue_2025 does not match the reference figure: it is 323286.12, not 301050.82 (${refused}).`,

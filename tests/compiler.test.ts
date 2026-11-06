@@ -400,7 +400,12 @@ describe("refusals", () => {
       ["not_visible", "orders.nope"],
     ]);
     expect(hidden.refusals[0]!.message).toBe("dimensions[0] names orders.email, which this user may not see (protected_tag:pii)");
-    expect(hidden.refusals[1]!.message).toContain("(draft)");
+    expect(hidden.refusals[1]!.message).toBe(
+      'dimensions[1] names orders.note, which is a draft until it is read back and approved: sl readback --targets shop.orders.note, then sl approve --target shop.orders.note --by "<owner>" after the owner\'s yes',
+    );
+    expect(hidden.refusals[1]).toMatchObject({ reasons: ["draft"], awaits: ["shop.orders.note"] });
+    expect(hidden.refusals[0]).toMatchObject({ reasons: ["protected_tag:pii"] });
+    expect(hidden.refusals[0]).not.toHaveProperty("awaits");
 
     writeYaml(join(root, "access.yaml"), { ...ok, mode: "open", roles: [{ name: "hr", allow: { tags: ["pii"] } }] });
     expect(compiled(compileRequest(root, req({ measures: ["orders.all_orders"], dimensions: ["orders.email"] }), { role: "hr" })).columns.map((c) => c.name)).toEqual(["email", "all_orders"]);

@@ -1,4 +1,4 @@
-import { type AccessLayer, CHANGED_SINCE_APPROVAL, loadAccessLayer } from "./access.ts";
+import { type AccessLayer, andList, CHANGED_SINCE_APPROVAL, loadAccessLayer } from "./access.ts";
 import { type CompileResult, compileLayer, compileRequest, type Refused } from "./compiler/index.ts";
 import { UserError } from "./errors.ts";
 import { PROTECTED_VALUE } from "./output.ts";
@@ -361,19 +361,21 @@ export function onlyUnsupportedDialect(r: CompileResult): boolean {
   return !r.ok && r.refusals.every((x) => x.code === "unsupported_dialect");
 }
 
-// The approve target a refusal waits on: an item changed since its approval, a draft field or
-// metric the request names, or a draft or changed measure that hides a metric.
-function awaitedTarget(r: Refused): string | undefined {
+// The approve targets a refusal waits on: those the first hidden reference awaits (an item changed
+// since its approval or a draft, its model, or a measure that hides a metric), a draft access.yaml,
+// or, when an access rule hides the reference too, the draft or changed item its message names.
+function awaitedTargets(r: Refused): string[] {
   for (const x of r.refusals) {
     if (x.code !== "not_visible") continue;
-    if (x.ref === "access.yaml") return "access";
+    if (x.awaits?.length) return x.awaits;
+    if (x.ref === "access.yaml") return ["access"];
     const changed = x.message.includes(CHANGED_SINCE_APPROVAL) ? /sl approve --target (\S+)/.exec(x.message)?.[1] : undefined;
-    if (changed) return changed;
+    if (changed) return [changed];
     const hidden = /measure_hidden:([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)/.exec(x.message)?.[1];
-    if (hidden) return `${r.source}.${hidden}`;
-    if (/\((draft|draft, [^)]*)\)/.test(x.message) && x.ref) return x.ref.includes(".") ? `${r.source}.${x.ref.split(":")[0]}` : `metric:${x.ref}`;
+    if (hidden) return [`${r.source}.${hidden}`];
+    if (/\((draft|draft, [^)]*)\)/.test(x.message) && x.ref) return [x.ref.includes(".") ? `${r.source}.${x.ref.split(":")[0]}` : `metric:${x.ref}`];
   }
-  return undefined;
+  return [];
 }
 
 // The step that resolves a golden's refusal: the refusal's own, approving the item it waits on
@@ -382,12 +384,13 @@ function awaitedTarget(r: Refused): string | undefined {
 export function refusalNext(golden: Golden, r: Refused): string {
   const own = r.refusals.find((x) => x.next)?.next;
   if (own) return own;
-  const target = awaitedTarget(r);
+  const targets = awaitedTargets(r);
   const confirmed = (golden.expected?.rows?.length ?? 0) > 0;
   const recheck = confirmed ? `sl goldens check --name ${golden.name}` : `sl goldens run --name ${golden.name}`;
-  if (target) {
+  if (targets.length) {
     const after = confirmed ? `; if its rows changed, confirm again only on the owner's yes` : "";
-    return `Read ${target} back to the owner with sl readback --targets ${target} and approve it on their yes, then run ${recheck}${after}.`;
+    const it = targets.length > 1 ? "them" : "it";
+    return `Read ${andList(targets)} back to the owner with sl readback --targets ${targets.join(",")} and approve ${it} on their yes, then run ${recheck}${after}.`;
   }
   if (r.refusals.some((x) => x.code === "invalid_layer")) return `Run sl validate and fix what it reports, then run ${recheck}.`;
   if (onlyUnsupportedDialect(r)) {

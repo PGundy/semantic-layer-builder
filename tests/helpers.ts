@@ -59,12 +59,17 @@ export async function reapprove(root: string, refs: string[] = evaluateAccess(ro
 }
 
 // Asserts that a compile was refused only because the measure or dimension `field` (model.field)
-// of `source` changed since its approval, naming the command that approves it again.
+// of `source` changed since its approval, in plain words naming its readback and the command that
+// approves it again, with the target in awaits.
 export function expectRefusedAsChanged(r: CompileResult, source: string, field: string): void {
   expect(r.ok).toBe(false);
   if (r.ok) return;
   expect([...new Set(r.refusals.map((x) => `${x.code} ${x.ref}`))]).toEqual([`not_visible ${field}`]);
-  for (const x of r.refusals) expect(x.message).toContain(`${CHANGED_SINCE_APPROVAL} (sl approve --target ${source}.${field} --by "<owner>" after the owner's yes)`);
+  for (const x of r.refusals) {
+    expect(x.message).toContain(`${CHANGED_SINCE_APPROVAL}: sl readback --targets ${source}.${field}, then sl approve --target ${source}.${field} --by "<owner>" after the owner's yes`);
+    expect(x.message).not.toContain("may not see");
+    expect(x).toMatchObject({ reasons: ["draft"], awaits: [`${source}.${field}`] });
+  }
 }
 
 // Writes a DuckDB database file built from SQL statements and a source pointing at it.
