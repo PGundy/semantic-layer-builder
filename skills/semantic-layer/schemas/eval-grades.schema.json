@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "evals/runs/<run_id>/grades.json",
+  "description": "What the deterministic graders found in a finished run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "scenario", "persona", "passed", "score", "graders"],
+  "properties": {
+    "run_id": { "type": "string" },
+    "scenario": { "type": "string" },
+    "persona": { "type": "string" },
+    "passed": { "type": "boolean", "description": "Every grader passed." },
+    "score": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "The mean of the graders' scores that are not null." },
+    "graders": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["grader", "score", "passed", "details"],
+        "properties": {
+          "grader": { "enum": ["figures", "secrets", "selection", "approvals", "connection_first", "effort"] },
+          "score": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "null when there was nothing to grade, and for effort." },
+          "passed": { "type": "boolean" },
+          "details": { "type": "array", "items": { "type": "string" } },
+          "metrics": { "type": "object", "additionalProperties": { "type": ["number", "null"] }, "description": "Measurements that are not pass or fail." }
+        }
+      }
+    }
+  }
+}
