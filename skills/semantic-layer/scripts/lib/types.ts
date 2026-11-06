@@ -407,3 +407,36 @@ export interface StoredPlan extends QueryPlan {
   finish: string;
   queries: (PlannedQuery & { max_rows: number })[];
 }
+
+// The answer ledger (.sl/ledger.jsonl), appended to by sl reply and sl question resolve: one JSON
+// object per line, holding the owner's words, never data values.
+
+export type ReplyVerdict = "yes" | "no" | "change";
+
+export interface LedgerReply {
+  id: string; // ans_0001, ans_0002, ...
+  kind: "reply";
+  readback_id: string;
+  item: number;
+  // The approve target the item read back.
+  target: string;
+  // The target's content hash when it was read back, copied from the pending readback.
+  content_hash: string;
+  text: string;
+  verdict: ReplyVerdict | null;
+  by: string;
+  at: string;
+}
+
+export interface LedgerQuestion {
+  id: string;
+  kind: "question";
+  // The ref the question was resolved on: source.model, source.model.field or access.
+  target: string;
+  question: string;
+  text: string;
+  by: string;
+  at: string;
+}
+
+export type LedgerEntry = LedgerReply | LedgerQuestion;
