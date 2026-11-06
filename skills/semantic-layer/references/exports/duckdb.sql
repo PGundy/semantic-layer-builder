@@ -14,6 +14,9 @@
 -- Restrict schemas: uncomment the line marked sl:schema-filter below and list the schemas,
 -- or print this query with the filter applied: sl export-sql --dialect duckdb --schemas a,b
 --
+-- Restrict tables: sl export-sql --include/--exclude prints this query with a table filter at the
+-- line marked sl:table-filter (a pattern the dialect cannot express is applied by sl import).
+--
 -- row_count is duckdb_tables().estimated_size; it is empty for views.
 with rel as (
   select database_name, schema_name, table_name, 'BASE TABLE' as table_type, comment as table_comment,
@@ -73,4 +76,5 @@ left join pk
 left join fk
   on fk.database_name = r.database_name and fk.schema_name = r.schema_name and fk.table_name = r.table_name
   and fk.column_name = c.column_name
+-- sl:table-filter: sl export-sql --include/--exclude writes the table filter here
 order by r.table_schema, r.table_name, c.column_index, fk.fk_name;

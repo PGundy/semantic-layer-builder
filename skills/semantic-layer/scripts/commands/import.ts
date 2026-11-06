@@ -3,10 +3,11 @@ import { resolve } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
+import { patternFlags } from "../lib/export-filters.ts";
 import { IMPORT_FORMATS, type ImportFormat, importSnapshot } from "../lib/importers/index.ts";
 import { qualifiedName } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
-import { filterInScope } from "../lib/patterns.ts";
+import { filterInScope, unmatchedPatterns } from "../lib/patterns.ts";
 import { listModels, loadProject, loadSnapshot, loadSource, projectSettings, saveSnapshot } from "../lib/project.ts";
 import { changeLines, diffSnapshots, modeledTables } from "../lib/snapshot-diff.ts";
 import { RUNNABLE_DIALECTS, type Snapshot } from "../lib/types.ts";
@@ -45,7 +46,8 @@ function carryOver(next: Snapshot, prev: Snapshot | null): { kept: number; dropp
 const spec: CommandSpec = {
   summary: "Build the snapshot from a schema export, a dbt manifest or DDL.",
   usage:
-    "import --source <source> --file <path> [--format information_schema|dbt_manifest|ddl] [--catalog <catalog.json>]\n\n" +
+    "import --source <source> --file <path> [--format information_schema|dbt_manifest|ddl] [--catalog <catalog.json>]\n" +
+    "       [--include <pattern>]... [--exclude <pattern>]...\n\n" +
     "  --format is read from the file when left out: a .sql file is ddl, a JSON object with nodes is dbt_manifest,\n" +
     "  a CSV or JSON array is information_schema.\n\n" +
     "  information_schema  CSV or JSON rows of information_schema.columns: table_schema, table_name, column_name,\n" +
@@ -54,12 +56,16 @@ const spec: CommandSpec = {
     "                      references_schema, references_table, references_column. `sl export-sql --dialect <d>`\n" +
     "                      prints a query that returns exactly these columns.\n" +
     "  dbt_manifest        target/manifest.json; add --catalog target/catalog.json for column types and row counts\n" +
-    "  ddl                 a .sql file of CREATE TABLE / CREATE VIEW / COMMENT ON statements (pg_dump, get_ddl, SHOW CREATE TABLE)",
+    "  ddl                 a .sql file of CREATE TABLE / CREATE VIEW / COMMENT ON statements (pg_dump, get_ddl, SHOW CREATE TABLE)\n\n" +
+    "  --include, --exclude  keep only the tables that match an include and no exclude (the scope pattern grammar),\n" +
+    "                      such as the patterns sl export-sql lists for its query to leave to sl import.",
   options: {
     source: { type: "string" },
     format: { type: "string" },
     file: { type: "string" },
     catalog: { type: "string" },
+    include: { type: "string", multiple: true },
+    exclude: { type: "string", multiple: true },
   },
   async run({ values }, ctx) {
     const sourceName = str(values, "source");
@@ -77,10 +83,27 @@ const spec: CommandSpec = {
     const catalogArg = str(values, "catalog");
     const catalog = catalogArg ? resolve(ctx.cwd, catalogArg) : undefined;
     if (catalog && !existsSync(catalog)) throw new UserError(`No such file: ${catalog}`);
+    const include = patternFlags(values, "include");
+    const exclude = patternFlags(values, "exclude");
 
     const { snapshot, warnings, format: used, detected } = await importSnapshot(source, format as ImportFormat | undefined, { file, catalog }, ctx.now().toISOString());
     if (!snapshot.tables.length) {
       throw new UserError(`No tables found in ${file}.${warnings.length ? ` ${warnings.join(" ")}` : ""}`);
+    }
+    // --include and --exclude keep the selected tables, before the snapshot is compared or saved.
+    let filters: { include: string[]; exclude: string[]; kept: number; dropped: number } | null = null;
+    if (include.length || exclude.length) {
+      const selection = { include, exclude };
+      const read = snapshot.tables.length;
+      for (const p of unmatchedPatterns(selection, snapshot.tables)) warnings.push(`Pattern "${p}" matches no table in ${fileArg}.`);
+      snapshot.tables = filterInScope(selection, snapshot.tables);
+      if (!snapshot.tables.length) {
+        throw new UserError(
+          `No table in ${fileArg} matches --include and --exclude, so nothing was imported. ` +
+            `Check the patterns against the table names in the file and run sl import again.`,
+        );
+      }
+      filters = { include, exclude, kept: snapshot.tables.length, dropped: read - snapshot.tables.length };
     }
     const previous = loadSnapshot(ctx.root, source.source);
     const changes = previous ? diffSnapshots(previous, snapshot) : null;
@@ -119,6 +142,7 @@ const spec: CommandSpec = {
           warnings,
           changes,
           next,
+          ...(filters ? { filters } : {}),
         }),
       );
       return 0;
@@ -127,6 +151,11 @@ const spec: CommandSpec = {
       `Imported ${snapshot.tables.length} table${snapshot.tables.length === 1 ? "" : "s"} and ${columns} column${columns === 1 ? "" : "s"} ` +
         `(${primaryKeys} with a primary key, ${foreignKeys} foreign key${foreignKeys === 1 ? "" : "s"}) from ${used}${detected ? " (read from the file)" : ""} into snapshots/${source.source}.json.`,
     ];
+    if (filters) {
+      lines.push(
+        `Kept the ${filters.kept} table${filters.kept === 1 ? "" : "s"} matching --include and --exclude; dropped ${filters.dropped} other${filters.dropped === 1 ? "" : "s"} from the file.`,
+      );
+    }
     if (warnings.length) lines.push("Warnings:", ...warnings.map((w) => `  - ${w}`));
     const modeled = changes ? modeledTables(snapshot, () => listModels(ctx.root, source.source).map((l) => l.model), source.scope) : undefined;
     lines.push(...changeLines(changes, source.source, modeled));
