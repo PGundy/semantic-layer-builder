@@ -831,7 +831,7 @@ A pattern the query cannot hold is deferred to `sl import` (the export then read
 
 ## Eval runs
 
-The eval harness (`evals/runner/`, docs/PRD.md FR-6.1) plays a skill agent against a simulated data owner and writes one directory per run. Its files have schemas under `../schemas/eval-*.schema.json`; `evalSchemaIssues` in `scripts/lib/validate.ts` checks them, and the runner refuses a scenario or script that fails its schema.
+The eval harness (`evals/runner/`, docs/PRD.md FR-6.1) plays a skill agent against a simulated data owner and writes one directory per run. Its files, and the smoke baseline `evals/baseline.json`, have schemas under `../schemas/eval-*.schema.json`; `evalSchemaIssues` in `scripts/lib/validate.ts` checks them, and the runner refuses a scenario or script that fails its schema.
 
 A scenario, `evals/scenarios/<name>.json` (or `.yaml`), names a fixture under `fixtures/` (its `owner-brief.md` is the owner's private brief), an intake path, a persona (`evals/runner/personas/<persona>.md`) and the budgets. A `connection` intake starts the working root with `semantic.yaml` and one source, written by `sl init` and `sl add-source`; `{fixture}` in a view is replaced by the fixture directory, relative to the root. `opening` is the owner's first message, and `script` the scripted driver's canned turns, relative to the scenario file. `grading` says what the graders compare the run with (see Grades below).
 
@@ -915,6 +915,14 @@ A scenario's `grading` block says what to compare with: `figures`, a figure mapp
 - **effort.** Never fails and scores null; its `metrics` are `approved_items` (approved models, fields, joins, metrics, access file and goldens), `owner_turns` and `owner_words` (the owner's answers, the opening left out), each per approved item, `tokens`, `tokens_per_approved_item`, `skill_tokens_per_approved_item` and `wall_time_seconds` from `summary.json`'s `started_at` and `finished_at`. A per-item metric is null while nothing is approved. When it cannot read the root, it says "could not measure: <reason>", still passes and scores null.
 
 A grader that throws fails with "could not grade: <reason>", and the others still run. The reason is the error's first line only, with paths relative to the run directory, credentials replaced by `[redacted]` and protected values and emails masked, so `grades.json` never quotes the file that failed.
+
+### Smoke baseline
+
+`bun evals/smoke.ts` (`bun run eval:smoke`, docs/PRD.md FR-6.4) runs the smoke subset, `acme-structured` and `acme-terse`, with the scripted driver (clock fixed at `2026-01-01T00:00:00Z`), into a temporary directory unless `--out <dir>` keeps the runs, grades each run and compares every grader's score with `evals/baseline.json`. It prints a table of scenario, grader, baseline, score, band and status, and exits 1 on a regression unless `--report-only`, 0 otherwise, and 2 when it cannot run. A regression is a score below the baseline's `score` minus its `band`, a grader the baseline scores that the run does not (score null or the grader missing), a run that does not stop `done` when the baseline's did, or a scenario the baseline lacks; a score above `score` plus `band` is `improved`, a grader the baseline lacks or did not score is `new`, and a baseline scenario the smoke does not run is `not run`. Graders that never fail (`effort`) are recorded under `effort` and printed beside the current values, never compared.
+
+`--update-baseline` rewrites the file from the current scores, keys sorted, so the same runs write the same bytes. `--runs <n>` runs each scenario n times: a grader's `score` is the mean of the scores that are not null (null when none is), rounded to 4 places, an effort metric the mean rounded to 2, and `stop_reason` the first that is not `done`. With n above 1 a grader's `band` is the spread between its highest and lowest score; with one run it keeps the band the previous baseline of the same `driver` gave the grader, else 0. The scripted driver's runs are identical, so its bands are 0. `driver` names the driver the scores came from, and smoke refuses to compare a run of another; `--update-baseline` refuses to replace a baseline of another driver unless `--baseline` names the file, and sets aside, with a warning, a previous file that is not valid JSON or fails its schema. Schema: `../schemas/eval-baseline.schema.json`.
+
+The file has `version` (1), `driver`, `runs` and `scenarios`, which holds per scenario its `stop_reason`, its `graders`, each a `{ "score": number | null, "band": number }`, and its `effort` metrics; the committed `evals/baseline.json` is the example.
 
 ## Baseline brief
 
