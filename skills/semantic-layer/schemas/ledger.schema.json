@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": ".sl/ledger.jsonl (one line)",
+  "description": "One line of the answer ledger, appended by sl reply (kind reply: the owner's answer to an item of a readback) or sl question resolve (kind question: the owner's answer to an open question). It holds the owner's words, never data values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "kind", "target", "text", "by", "at"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^ans_[0-9]{4,}$",
+      "description": "ans_ and at least four digits, one more than the line before: ans_0001, ans_0002, ..."
+    },
+    "kind": { "enum": ["reply", "question"], "description": "reply: an answer to a readback item; question: an answer to an open question." },
+    "readback_id": { "type": "string", "pattern": "^rb_[0-9]{4,}$", "description": "kind reply: the readback in .sl/pending/ the owner answered." },
+    "item": { "type": "integer", "minimum": 1, "description": "kind reply: the item number in that readback." },
+    "target": {
+      "type": "string",
+      "pattern": "^(access|metric:[a-z][a-z0-9_]*|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)?)$",
+      "description": "kind reply: the item's approve target; kind question: the ref the question was resolved on (source.model, source.model.field or access)."
+    },
+    "content_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "kind reply: the target's content hash stored in the readback item when it was read back."
+    },
+    "question": { "type": "string", "minLength": 1, "description": "kind question: the open question as the file held it." },
+    "text": { "type": "string", "minLength": 1, "description": "The owner's words, with credentials redacted and control characters removed." },
+    "verdict": { "enum": ["yes", "no", "change", null], "description": "kind reply: yes, no or change, or null when the words were recorded without one." },
+    "by": { "type": "string", "minLength": 1, "description": "The owner who answered." },
+    "at": { "type": "string", "minLength": 1, "description": "When the answer was recorded, as an ISO timestamp from the command's clock." }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "reply" } }, "required": ["kind"] },
+      "then": { "required": ["readback_id", "item", "content_hash", "verdict"], "properties": { "question": false } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "question" } }, "required": ["kind"] },
+      "then": { "required": ["question"], "properties": { "readback_id": false, "item": false, "content_hash": false, "verdict": false } }
+    }
+  ]
+}
