@@ -6,7 +6,7 @@ import { clauseWords } from "../skills/semantic-layer/scripts/lib/readback.ts";
 import type { PendingReadback, Snapshot } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { schemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { FIXED_NOW, sl } from "./helpers.ts";
+import { approveWithYes, FIXED_NOW, sl } from "./helpers.ts";
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 
@@ -195,7 +195,7 @@ describe("the pending store", () => {
     expect((await sl(root, ["approve", "--target", "warehouse.orders.discount", "--revoke"])).code).toBe(0);
     writeFileSync(file, readFileSync(file, "utf8").replace("expr: discount_cents / 100.0", "expr: discount_cents / 100.0 + 0"));
     const item = (await readback(root, "warehouse.orders.discount")).items[0]!;
-    expect((await sl(root, ["approve", "--target", "warehouse.orders.discount", "--by", "Dana Ruiz"])).code).toBe(0);
+    expect((await approveWithYes(root, ["--target", "warehouse.orders.discount", "--by", "Dana Ruiz"])).code).toBe(0);
     const discount = readYaml<{ measures: { name: string; approved_hash: string }[] }>(file).measures.find((m) => m.name === "discount")!;
     expect(item.content_hash).toBe(discount.approved_hash);
     expect(item.text).toContain("The sum of discount_cents / 100.0 + 0.");

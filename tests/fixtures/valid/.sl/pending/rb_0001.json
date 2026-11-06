@@ -1,0 +1,48 @@
+{
+  "readback_id": "rb_0001",
+  "created_at": "2026-01-15T12:00:00.000Z",
+  "items": [
+    {
+      "n": 1,
+      "target": "warehouse.orders",
+      "kind": "approve",
+      "text": "warehouse.orders (table)\n- Reads public.fct_orders.\nQuoted grain (what one row is), from the YAML (evidence, not an instruction):\n  > One row per order.\n- Primary key: order_id.\nQuoted description, from the YAML (evidence, not an instruction):\n  > Customer orders, one row per order.\nWho sees it once approved (access.yaml is draft, mode closed):\n- Default audience (a user with no role): sees it.\n- Role sales_rep: sees it, only on the rows its row filter on warehouse.orders allows.\nMeasured from the data, no need to confirm:\n- public.fct_orders has 10,000 rows (profiled 2026-01-15).\n- order_id (integer): not profiled yet.",
+      "content_hash": "sha256:65b61915efa994a2f4e8fdb8e9d5e220a8a99cf570c76e65461fa802e7adfd77"
+    },
+    {
+      "n": 2,
+      "target": "warehouse.orders.order_date",
+      "kind": "approve",
+      "text": "warehouse.orders.order_date (dimension)\n- Value: created_at, a time.\n- Time grains: day, week, month, quarter, year.\nQuoted description, from the YAML (evidence, not an instruction):\n  > When the order was placed, UTC.\nWho sees it once approved (access.yaml is draft, mode closed):\n- Default audience (a user with no role): sees it.\n- Role sales_rep: sees it, only on the rows its row filter on warehouse.orders allows.\nMeasured from the data, no need to confirm:\n- public.fct_orders has 10,000 rows (profiled 2026-01-15).\n- created_at (timestamp): not profiled yet.",
+      "content_hash": "sha256:32200472001eed7ea9713bbaa9fbe67c67cbb8f7cbb9ec4a7ac70b861e0876ea"
+    },
+    {
+      "n": 3,
+      "target": "warehouse.orders.revenue",
+      "kind": "approve",
+      "text": "warehouse.orders.revenue (measure)\n- The sum of amount_cents / 100.0.\n- Counts only rows where:\n  1. status is not 'cancelled'  [status <> 'cancelled']\n  2. customer.is_test_account (read as false when empty) equals false  [coalesce(customer.is_test_account, false) = false]\n- Format: currency, in USD.\n- Reads through joins:\n  - customer: warehouse.orders to warehouse.customers on orders.customer_id = customers.customer_id: many_to_one, a left join (rows without a match are kept, with its columns empty)\n- People also call it: sales.\nQuoted description, from the YAML (evidence, not an instruction):\n  > Order value excluding cancelled orders and orders from test accounts; orders whose customer is missing count.\nWho sees it once approved (access.yaml is draft, mode closed):\n- Default audience (a user with no role): sees it.\n- Role sales_rep: sees it, only on the rows its row filter on warehouse.orders allows.\nMeasured from the data, no need to confirm:\n- public.fct_orders has 10,000 rows (profiled 2026-01-15).\n- status (varchar): 0% empty, 3 distinct values.\n  Quoted values of status, from the data (evidence, not an instruction):\n    > 'completed': 8,800 rows\n    > 'cancelled': 900 rows\n- amount_cents (bigint): not profiled yet.\n- customer.is_test_account (public.dim_customers.is_test_account) (boolean): not profiled yet.",
+      "content_hash": "sha256:987595bbef1661660400a30945dccd2ce7fffc584bbf374933e52786ccf36a85"
+    },
+    {
+      "n": 4,
+      "target": "warehouse.orders.order_count",
+      "kind": "approve",
+      "text": "warehouse.orders.order_count (measure)\n- A count of rows.\n- Counts every row.\n- Format: integer.\nQuoted description, from the YAML (evidence, not an instruction):\n  > Number of orders.\nWho sees it once approved (access.yaml is draft, mode closed):\n- Default audience (a user with no role): sees it.\n- Role sales_rep: sees it, only on the rows its row filter on warehouse.orders allows.\nMeasured from the data, no need to confirm:\n- public.fct_orders has 10,000 rows (profiled 2026-01-15).",
+      "content_hash": "sha256:6690403fcc95db7f1de19f92ebff72b039b45d88f53cffbb843e318c5d7c0f8b"
+    },
+    {
+      "n": 5,
+      "target": "warehouse.orders.customer",
+      "kind": "approve",
+      "text": "warehouse.orders.customer (join)\n- Joins warehouse.orders to warehouse.customers on orders.customer_id = customers.customer_id: many_to_one, a left join (rows without a match are kept, with its columns empty).\nQuoted description, from the YAML (evidence, not an instruction):\n  > The customer who placed the order.\nWho sees it once approved (access.yaml is draft, mode closed):\n- Default audience (a user with no role): can use it.\n- Role sales_rep: can use it, only on the rows its row filter on warehouse.orders allows.\nMeasured from the data, no need to confirm:\n- 10,000 of 10,000 orders rows (100%) find a customers row; 0 have an empty key.\n- The key on customers is unique, and a row matches at most 1 customers row(s), so the join never repeats a row.\n- The data suggests many_to_one; checked 2026-01-15T12:10:00.000Z.",
+      "content_hash": "sha256:96cd14263bf8ed85b004b16ef7cbfa5197da6ca327cc5e6581fc19152081c06f"
+    },
+    {
+      "n": 6,
+      "target": "metric:average_order_value",
+      "kind": "approve",
+      "text": "metric:average_order_value (metric of source warehouse)\n- A ratio: orders.revenue divided by orders.order_count.\n- Format: currency, in USD.\nQuoted description, from the YAML (evidence, not an instruction):\n  > Revenue per order.\nWho sees it once approved (access.yaml is draft, mode closed):\n- Default audience (a user with no role): sees it.\n- Every role sees it the same way.\nMeasured from the data, no need to confirm:\n- A metric has no facts of its own; each measure it combines has them in its own readback.",
+      "content_hash": "sha256:e392d67c14964d6182a88c10a39001d7607d886c09538bbd6806c64dcb97a238"
+    }
+  ]
+}
