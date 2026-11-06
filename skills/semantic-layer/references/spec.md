@@ -133,6 +133,9 @@ dialect: postgres            # duckdb | postgres | snowflake | bigquery | databr
 description: Production replica of the order system.
 connection:
   env: WAREHOUSE_URL         # name of the env var holding the connection URL; never the URL itself
+intake:
+  mode: connection           # connection (the default when absent) | export
+  schemas: [public]          # the only schemas read
 scope:
   include: ["public.fct_*", "public.dim_*"]
   exclude: ["*_tmp", "*_backup"]
@@ -142,6 +145,35 @@ profile:
 draft:
   strip_prefixes: [fct_, dim_]   # written by sl draft --strip-prefix; model names drop these prefixes
 ```
+
+### Intake
+
+`intake` says how the catalog reaches the layer and which schemas are read. Every key is optional, and a source file without `intake` means mode `connection` with no schema limit.
+
+| Key | Meaning |
+|---|---|
+| `mode` | `connection` (the default): the tools read the catalog through `connection`. `export`: the owner shared a catalog export because a connection was not possible. The skill asks for a connection first and takes an export only after the owner says one is not possible. |
+| `reason` | Export mode: why a connection was not possible, in the owner's words, as the source's `description` also says. |
+| `schemas` | The only schemas read, such as `[analytics, marts]`; an empty list reads every schema, as an absent one does. Each is a plain identifier (ASCII letters, digits, `_` and `$`, not starting with a digit). A BigQuery dataset or `project.dataset` is a schema (a project id may hold hyphens, `my-project.analytics`; a dataset holds no `$`). A DuckDB schema of an attached database is written `database.schema`, as introspect reports it; a schema of the database the source opens is written alone (`main`, not `memory.main`). Postgres, Snowflake and Databricks read only the schemas of the database the connection opens, so a dotted name is refused there. `sl add-source --schemas a,b` writes this list with mode `connection`. |
+| `export.file` | Export mode only: the export file the source was imported from, such as `exports/warehouse.csv`, relative to the semantic root and inside it. |
+
+An export source's block (the rest of the file is as above):
+
+```text
+intake:
+  mode: export
+  reason: The warehouse accepts no connections from outside the office network.
+  schemas: [acme]
+  export:
+    file: exports/warehouse.csv   # relative to the semantic root
+```
+
+`sl validate` checks the block:
+
+- an error on a `schemas` entry that is not a schema name for the source's dialect, and on one that repeats an earlier entry; a warning on two entries that differ only in case, on a DuckDB `database.schema` that names the database the source opens, and on an empty list;
+- an error on `export` while the mode is `connection`;
+- an error when `export.file` is absolute or resolves outside the semantic root (symlinks followed, a dangling one too), and a warning when it names a file that does not exist or a directory;
+- a warning when the mode is `export` and `reason` is empty, blank (`reason:`) or absent, saying that the skill asks for a connection first.
 
 A DuckDB source, typically a lake over files:
 
@@ -809,7 +841,7 @@ For `duckdb` and `postgres` sources the command runs the plan itself. For any so
 | Command | Does |
 |---|---|
 | `init --name <name> [--description <text>] [--default-source <s>]` | Writes `semantic.yaml` and the directory layout. |
-| `add-source --name <s> --dialect <d> [--env VAR] [--database <path>] [--view name=relation]... [--setup <statement>]... [--description <text>]` | Writes `sources/<s>.yaml`. `--env` is required for postgres and refuses anything that looks like a URL or a credential. |
+| `add-source --name <s> --dialect <d> [--env VAR] [--database <path>] [--view name=relation]... [--setup <statement>]... [--schemas a,b] [--description <text>]` | Writes `sources/<s>.yaml`. `--env` is required for postgres and refuses anything that looks like a URL or a credential. `--schemas` writes `intake.schemas` with `intake.mode: connection`, refusing a name that is not a schema name or repeats one; its next hint passes them on, single-quoted when one holds `$`, and `--json` lists them as `schemas`. |
 | `introspect --source <s> [--schemas a,b]` | Captures tables, columns, keys and row estimates into the snapshot. `--schemas` limits it to those schemas, or BigQuery datasets. Prints what changed since the previous snapshot; `--json` adds it as `changes` (see snapshots). Its next hint is `sl profile --source <s>` only when some in-scope table is not profiled; otherwise `sl validate` when modeled tables changed, or `sl status`. |
 | `import --source <s> [--format information_schema\|dbt_manifest\|ddl] --file <path> [--catalog <catalog.json>]` | Builds the snapshot from shared context instead of a live connection: an information_schema.columns export or a schema export (see Schema exports) as CSV or a JSON array, a dbt `manifest.json` with an optional `catalog.json`, or a `.sql` file of DDL. `--format` is optional: a `.sql` file is `ddl`, a JSON object with `nodes` is `dbt_manifest`, and a CSV or a JSON array is `information_schema`; an explicit `--format` overrides, and a file that fits none is an error naming the formats. A DDL file is untrusted input: it is read in a DuckDB with external access off, extension autoinstall and autoload off and its configuration locked, and its `CREATE TABLE ... AS` and views get their columns without reading any data (`LIMIT 0` or the declared types). Prints and reports `changes` as `introspect` does. |
 | `export-sql --dialect postgres\|redshift\|mysql\|sqlserver\|snowflake\|bigquery\|databricks\|duckdb [--schemas a,b]` | Prints that dialect's schema export query (see Schema exports), with its schema filter applied when `--schemas` is given, each name written as a SQL string literal with its quotes escaped (BigQuery: each dataset as a backtick-quoted identifier in its per-dataset block, and a name holding a backtick is refused); then, on stderr, one line saying how to run it and import the result (`sl import --source <s> --file schema.csv`, or `schema.tsv` for mysql). `--json`: `{ dialect, sql, run_hint }`. Reads no database and needs no project. |
