@@ -364,6 +364,9 @@ export interface PlannedQuery {
   id: string;
   purpose: string;
   sql: string;
+  // The most rows a connector fetches for this query; a stored result of exactly this many rows
+  // is refused as possibly cut off (spec: Query-plan protocol).
+  max_rows?: number;
 }
 
 export interface QueryPlan {
@@ -375,3 +378,12 @@ export interface QueryPlan {
 
 export type ResultRows = Record<string, unknown>[];
 export type PlanResults = Record<string, ResultRows>;
+
+// .sl/plans/<plan_id>.json: a plan written by --emit-sql, finished with --plan <plan_id>.
+export interface StoredPlan extends QueryPlan {
+  version: 1;
+  plan_id: string;
+  // The command that finishes the plan from its stored results.
+  finish: string;
+  queries: (PlannedQuery & { max_rows: number })[];
+}

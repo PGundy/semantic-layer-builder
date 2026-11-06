@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
@@ -24,9 +25,23 @@ const spec: CommandSpec = {
     project.settings = { focus_threshold: DEFAULT_FOCUS_THRESHOLD, batch_size: DEFAULT_BATCH_SIZE };
     writeYaml(p.project, project);
     for (const dir of [p.sourcesDir, p.snapshotsDir, `${ctx.root}/models`, p.goldensDir]) mkdirSync(dir, { recursive: true });
+    ignorePlans(ctx.root);
     if (ctx.json) ctx.out(JSON.stringify({ root: ctx.root, project }));
     else ctx.out(`Created ${p.project}. Next: sl add-source --name <source> --dialect <dialect>.`);
     return 0;
   },
 };
+// Query plans and their results (.sl/plans/) are working files, never committed: init adds them
+// to the root's .gitignore, appending to one that exists.
+const PLANS_IGNORE = ".sl/plans/";
+function ignorePlans(root: string): void {
+  const file = join(root, ".gitignore");
+  if (!existsSync(file)) {
+    writeFileSync(file, `# Query plans and their results, written by --emit-sql and sl results add.\n${PLANS_IGNORE}\n`);
+    return;
+  }
+  const text = readFileSync(file, "utf8");
+  if (!text.split(/\r?\n/).some((l) => l.trim() === PLANS_IGNORE)) appendFileSync(file, `${text.endsWith("\n") || !text ? "" : "\n"}${PLANS_IGNORE}\n`);
+}
+
 export default spec;
