@@ -6,5 +6,19 @@
   "homepage": "https://github.com/PGundy/semantic-layer-builder",
   "repository": "https://github.com/PGundy/semantic-layer-builder",
   "license": "MIT",
-  "keywords": ["semantic-layer", "metrics", "data", "duckdb", "postgres", "text-to-sql"]
+  "keywords": ["semantic-layer", "metrics", "data", "duckdb", "postgres", "text-to-sql"],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/hooks/guard-edits.ts\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
 }
