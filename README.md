@@ -35,6 +35,17 @@ cd skills/semantic-layer && bun install
 
 Then ask the agent something like "help me build a semantic layer for our warehouse".
 
+### As an MCP server
+
+Any MCP client can call the same commands as tools (`sl_status`, `sl_readback`, `sl_approve` and the rest). The server needs no extra install; point it at a semantic directory:
+
+```sh
+bun skills/semantic-layer/scripts/mcp/server.ts --root /path/to/semantic        # or: bun run mcp -- --root /path/to/semantic
+claude mcp add semantic-layer -- bun "$PWD/skills/semantic-layer/scripts/mcp/server.ts" --root "$PWD/semantic"   # Claude Code
+```
+
+A client configured by JSON takes `{"command": "bun", "args": ["<path to>/skills/semantic-layer/scripts/mcp/server.ts", "--root", "<path to>/semantic"]}`. Each call runs one command with `--json` in that directory only. [`spec.md`](skills/semantic-layer/references/spec.md) (MCP server) has the protocol details.
+
 ## Run the CLI
 
 The agent calls the CLI for you, but you can run it yourself. From the repository root:

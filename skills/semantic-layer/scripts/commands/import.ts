@@ -10,7 +10,7 @@ import { qualifiedName } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
 import { filterInScope, unmatchedPatterns } from "../lib/patterns.ts";
 import { listModels, loadProject, loadSnapshot, loadSource, projectSettings, saveSnapshot } from "../lib/project.ts";
-import { changeLines, diffSnapshots, modeledTables } from "../lib/snapshot-diff.ts";
+import { changeLines, diffSnapshots, modeledTables, recordScope, scopeLines, selectionMatcher, tablesFlag } from "../lib/snapshot-diff.ts";
 import { effectiveScope } from "../lib/table-list.ts";
 import { RUNNABLE_DIALECTS, type Snapshot, type SnapshotTable, type SourceConfig } from "../lib/types.ts";
 
@@ -161,7 +161,10 @@ const spec: CommandSpec = {
       filters = { include, exclude, kept: snapshot.tables.length, dropped: read - snapshot.tables.length };
     }
     const previous = loadSnapshot(ctx.root, source.source);
-    const changes = previous ? diffSnapshots(previous, snapshot) : null;
+    const diff = previous ? diffSnapshots(previous, snapshot) : null;
+    const loadModels = () => listModels(ctx.root, source.source).map((l) => l.model);
+    const scopeChanges = recordScope(previous, snapshot, selectionMatcher(source, scope), loadModels);
+    const changes = diff && scopeChanges ? { ...diff, ...scopeChanges } : null;
     const { kept: profiles, dropped: missing } = carryOver(snapshot, previous);
     const dropped = missing.map((t) => qualifiedName(t)).filter((q) => !counted.has(q.toLowerCase()));
     if (profiles) warnings.push(`Kept the profiles of ${profiles} unchanged column${profiles === 1 ? "" : "s"} from the previous snapshot.`);
@@ -180,9 +183,11 @@ const spec: CommandSpec = {
     const next =
       inScope > focus_threshold
         ? `sl tables --source ${source.source} --groups`
-        : RUNNABLE_DIALECTS.includes(source.dialect)
-          ? `sl profile --source ${source.source}`
-          : `sl draft --source ${source.source}`;
+        : snapshot.scope_state?.left_scope.length
+          ? "sl status"
+          : RUNNABLE_DIALECTS.includes(source.dialect)
+            ? `sl profile --source ${source.source}`
+            : `sl draft --source ${source.source}${tablesFlag(snapshot.scope_state?.new_in_scope ?? [])}`;
 
     if (ctx.json) {
       ctx.out(
@@ -214,8 +219,8 @@ const spec: CommandSpec = {
       );
     }
     if (warnings.length) lines.push("Warnings:", ...warnings.map((w) => `  - ${w}`));
-    const modeled = changes ? modeledTables(snapshot, () => listModels(ctx.root, source.source).map((l) => l.model), scope) : undefined;
-    lines.push(...changeLines(changes, source.source, modeled));
+    const modeled = diff ? modeledTables(snapshot, loadModels, scope) : undefined;
+    lines.push(...changeLines(diff, source.source, modeled), ...scopeLines(scopeChanges, source.source, diff?.tables_removed));
     lines.push(
       inScope > focus_threshold
         ? `Next: ${inScope} tables are in scope, more than the focus threshold of ${focus_threshold}. Run \`${next}\` and choose which tables to focus on.`

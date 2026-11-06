@@ -417,7 +417,11 @@ describe("goldens new", () => {
     const sql = await sl(t.root, ["sql", "--request", path, "--json"]);
     const compiled = sql.json<{ sql: string }>().sql;
     expect(r.out).toContain(compiled);
-    expect(r.out).toContain("Run sl goldens run --name revenue_by_ship_region and read its rows back to the owner");
+    // The next step is the confirm flow, which needs the owner's recorded yes (3.3a): readback, reply, then confirm.
+    expect(r.out).toContain(
+      "Run sl goldens run --name revenue_by_ship_region to see its rows; once its measures are approved, confirm it on the owner's yes: " +
+        "sl readback --targets golden:revenue_by_ship_region --tolerance <agreed tolerance>, read it to the owner, record their answer with sl reply",
+    );
     const g = readYaml<Golden>(path);
     expect(g).toEqual({
       name: "revenue_by_ship_region",

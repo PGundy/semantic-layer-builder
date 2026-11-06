@@ -9,6 +9,8 @@ import type { Dialect, Golden, Metric, Model, QueryPlan, ResultRows, SourceConfi
 import { NAME_PATTERN } from "./types.ts";
 
 export const MAX_DIFFS = 10;
+// The relative tolerance a golden records when none is agreed (--tolerance) or kept in its file.
+export const DEFAULT_TOLERANCE = 0.005;
 
 export interface CompareOptions {
   ordered: boolean;

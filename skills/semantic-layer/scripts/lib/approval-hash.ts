@@ -186,6 +186,29 @@ export function itemHash(kind: ItemKind, item: Obj, scope: HashScope = {}): stri
   return digest(itemContent(kind, item, scope));
 }
 
+// A golden target's content hash (golden:<name>): what the owner says yes to before sl goldens
+// confirm records it. It covers the golden's question, request, cross_check_sql (or the older key
+// sql, read as it, so renaming the key keeps the hash), role and user, the tolerance it would
+// record and the rows it would record: the rows its request compiles to. Rows keep their order
+// when the request orders them; otherwise they are sorted, so a database returning the same rows
+// in another order gives the same hash. Its reference and description are not part of it.
+export function goldenHash(golden: Obj, rows: unknown[], tolerance: number): string {
+  const ordered = isObject(golden.request) && Array.isArray(golden.request.order_by) && golden.request.order_by.length > 0;
+  const each = rows.map(canonical);
+  return digest({
+    kind: "golden",
+    name: text(golden.name),
+    question: text(golden.question),
+    request: golden.request,
+    cross_check_sql: text(typeof golden.cross_check_sql === "string" ? golden.cross_check_sql : golden.sql),
+    role: text(golden.role),
+    // No user and an empty user are the same.
+    user: isObject(golden.user) && Object.keys(golden.user).length ? golden.user : undefined,
+    tolerance,
+    rows: ordered ? each : each.sort(byCodePoint),
+  });
+}
+
 // One item that carries an approval, located in its file.
 export interface ApprovalEntry {
   kind: ItemKind;

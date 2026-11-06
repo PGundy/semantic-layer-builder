@@ -272,7 +272,7 @@ function refuse(what: string, problems: string[]): never {
   throw new UserError(`Cannot ${what}:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
 }
 
-function validDate(s: string): boolean {
+export function validDate(s: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
   const d = new Date(`${s}T00:00:00.000Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
@@ -486,8 +486,8 @@ const spec: CommandSpec = {
     switch (target.kind) {
       case "golden":
         throw new UserError(
-          `Goldens are confirmed against their rows, not approved here. Run sl goldens run --name ${target.name}, read the rows ` +
-            `back to the owner, then sl goldens confirm --name ${target.name} --by "<owner>" --tolerance <t>.`,
+          `Goldens are confirmed against their rows, not approved here. Read it back with sl readback --targets golden:${target.name} ` +
+            `--tolerance <t>, record the owner's answer with sl reply, then sl goldens confirm --name ${target.name}.`,
         );
 
       case "access": {

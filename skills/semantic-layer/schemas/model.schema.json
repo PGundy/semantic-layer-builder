@@ -156,7 +156,7 @@
         "expr": {
           "type": "string",
           "minLength": 1,
-          "description": "SQL expression over this table's columns, and join references through this model's many_to_one or one_to_one joins: <join>.<column>, or <join>.<join>.<column> through a to-one join of the joined model. No other table, schema-qualified name or subquery."
+          "description": "SQL expression over this table's columns, and join references through this model's many_to_one or one_to_one joins: <join>.<column>, or <join>.<join>.<column> through a to-one join of the joined model. No other table, schema-qualified name or subquery. One expression: balanced parentheses, closed strings and comments, no semicolon, parameter marker ($1, ?, $name) or {{ }} placeholder (spec.md, Expression text)."
         },
         "type": {
           "enum": [
@@ -272,7 +272,7 @@
         "expr": {
           "type": "string",
           "minLength": 1,
-          "description": "SQL expression aggregated, over this table's columns only. Optional only for count, which then counts rows."
+          "description": "SQL expression aggregated, over this table's columns only. Optional only for count, which then counts rows. One expression: balanced parentheses, closed strings and comments, no semicolon, parameter marker ($1, ?, $name) or {{ }} placeholder (spec.md, Expression text)."
         },
         "agg": {
           "enum": [
@@ -288,7 +288,7 @@
         "filter": {
           "type": "string",
           "minLength": 1,
-          "description": "Optional SQL predicate over this table's columns, and join references through this model's many_to_one or one_to_one joins: <join>.<column>, or <join>.<join>.<column> through a to-one join of the joined model. No other table, schema-qualified name or subquery."
+          "description": "Optional SQL predicate over this table's columns, and join references through this model's many_to_one or one_to_one joins: <join>.<column>, or <join>.<join>.<column> through a to-one join of the joined model. No other table, schema-qualified name or subquery. One expression: balanced parentheses, closed strings and comments, no semicolon, parameter marker ($1, ?, $name) or {{ }} placeholder (spec.md, Expression text)."
         },
         "format": {
           "enum": [

@@ -2,8 +2,10 @@ import { validateProject } from "../lib/validate.ts";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { canRun } from "../lib/adapters/index.ts";
+import { validDate } from "./approve.ts";
 import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.ts";
-import { bool, str, today } from "../lib/command.ts";
+import { bool, str } from "../lib/command.ts";
+import { goldenHash } from "../lib/approval-hash.ts";
 import { UserError } from "../lib/errors.ts";
 import type { CompileResult } from "../lib/compiler/index.ts";
 import {
@@ -12,6 +14,7 @@ import {
   crossCheckQueryId,
   crossCheckSql,
   currencyColumns,
+  DEFAULT_TOLERANCE,
   displayRows,
   goldenDraftFields,
   goldenPlan,
@@ -21,16 +24,18 @@ import {
   refusalNext,
   resultColumns,
 } from "../lib/goldens.ts";
+import { LEDGER_FILE, latestReply, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
 import { formatJson, formatTable, maskRows, plainText, protectedNames, protectedNote, protectedResultColumns } from "../lib/output.ts";
 import { emitPlan, executePlan, planResults, resultsInput } from "../lib/plan.ts";
+import type { GoldenRun } from "../lib/readback.ts";
 import { listGoldens, loadAccess, loadMetrics, loadSource, paths, stem, type LoadedGolden } from "../lib/project.ts";
-import type { Golden, GoldenRunAs, Metric, Model, PlanResults, QueryPlan, ResultRows, SourceConfig } from "../lib/types.ts";
+import type { Golden, GoldenRunAs, LedgerReply, Metric, Model, PlanResults, QueryPlan, ResultRows, SourceConfig } from "../lib/types.ts";
 import { NAME_PATTERN } from "../lib/types.ts";
 import { schemaIssues } from "../lib/validate.ts";
 import { parseYamlText, readJson, readYaml, updateYaml, writeYaml } from "../lib/yaml.ts";
 
 export const MAX_CONFIRM_ROWS = 200;
-export const DEFAULT_TOLERANCE = 0.005;
+export { DEFAULT_TOLERANCE };
 
 const SUBCOMMANDS = ["run", "confirm", "check", "new"] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
@@ -127,26 +132,31 @@ function notCompiledNote(g: Golden, compiled: CompileResult): string {
   );
 }
 
-// The rows a golden records: the rows compiled from the YAML, or its cross_check_sql's when its
-// request does not compile. Refused when both ran and disagree.
+// The rows a golden records, from one run of its queries: the rows compiled from the YAML, or its
+// cross_check_sql's when its request does not compile. Refused when both ran and disagree at
+// `tolerance`, the tolerance the readback states and confirm records, so a yes is never to rows its
+// first goldens check would fail. sl readback reads back, and goldenHash covers, the rows of such a
+// run, and sl goldens confirm records the rows of its own run only when their hash matches the
+// owner's yes.
 async function runGolden(
   ctx: CommandContext,
   g: Golden,
   source: SourceConfig,
   input: { resultsFile?: string; planId?: string },
-): Promise<ResultRows> {
+  tolerance: number,
+): Promise<{ rows: ResultRows; from: GoldenRun["from_query"]; cross_checked: boolean }> {
   const { compiled, rows, cross } = await runGoldenQueries(ctx, g, source, input);
   if (rows && cross) {
-    const cmp = compareRows(rows, cross, { ordered: orderedGolden(g), tolerance: g.expected?.tolerance ?? DEFAULT_TOLERANCE, protectedColumns: protectedColumnsOf(ctx, source, [rows, cross]) });
+    const cmp = compareRows(rows, cross, { ordered: orderedGolden(g), tolerance, protectedColumns: protectedColumnsOf(ctx, source, [rows, cross]) });
     if (!cmp.ok) {
       throw new UserError(
-        `Golden "${g.name}": cross_check_sql gives other rows than the request compiled from the YAML (expected is the compiled, got is cross_check_sql): ` +
+        `Golden "${g.name}": cross_check_sql gives other rows than the request compiled from the YAML at tolerance ${tolerance} (expected is the compiled, got is cross_check_sql): ` +
           `${cmp.diffs.join(" ")} Fix cross_check_sql or the layer, then run sl goldens run --name ${g.name}.`,
       );
     }
   }
   if (!rows) ctx.err(notCompiledNote(g, compiled));
-  return rows ?? cross ?? [];
+  return { rows: rows ?? cross ?? [], from: rows ? "compiled" : "cross_check_sql", cross_checked: !!(rows && cross) };
 }
 
 const orderedGolden = (g: Golden): boolean => (g.request?.order_by ?? []).length > 0;
@@ -262,9 +272,87 @@ export function runHint(golden: Golden): string {
     return `Already confirmed; sl goldens check --name ${golden.name} compares these rows with the recorded ones.`;
   }
   return (
-    "Read these rows back to the owner. Confirm only once its measures are approved and the owner says these rows match " +
-    `a figure they trust: sl goldens confirm --name ${golden.name} --by "<owner>" --tolerance <agreed tolerance>.`
+    "Confirm only once its measures are approved and the owner says these rows match a figure they trust: " +
+    `${confirmSteps(golden.name, " --tolerance <agreed tolerance>")}.`
   );
+}
+
+// The steps to a confirm: the readback, the owner's recorded yes, then sl goldens confirm with the
+// same flags (the tolerance and where the rows come from).
+function confirmSteps(name: string, flags: string): string {
+  return (
+    `sl readback --targets golden:${name}${flags}, read it to the owner, record their answer with ` +
+    `sl reply --readback <readback_id> --item <n> --text "<owner's words>" --verdict yes --by "<owner>", then sl goldens confirm --name ${name}${flags}`
+  );
+}
+
+// The given flags as they are passed on to the next command, quoted for the shell: by default the
+// ones a confirm passes on to the readback it needs, --tolerance, --results and --plan.
+export function passedFlags(values: OptionValues, flags: readonly string[] = ["tolerance", "results", "plan"]): string {
+  return flags
+    .map((f) => [f, str(values, f)] as const)
+    .filter(([, v]) => v !== undefined)
+    .map(([f, v]) => ` --${f} ${/^[A-Za-z0-9_.\/:=@%+-]+$/.test(v!) ? v : shellQuote(v!)}`)
+    .join("");
+}
+
+// A golden's rows for sl readback --targets golden:<name>: run as goldens run runs them (live, or
+// from --results or --plan), with the tolerance confirm would record and its protected result
+// columns, which a readback always masks.
+export async function goldenRun(ctx: CommandContext, values: OptionValues, name: string): Promise<GoldenRun> {
+  const { golden } = loadGolden(ctx, name);
+  const source = goldenSource(ctx, golden);
+  const { tolerance, from } = parseTolerance(values, golden);
+  const input = resultsInput(ctx, values);
+  if (!canRun(source) && input.planId === undefined && !input.resultsFile) {
+    throw new UserError(
+      `golden:${name} runs on source "${source.source}", which is ${source.dialect}, so sl cannot run its queries; nothing was written. ` +
+        `Write its plan with sl goldens run --name ${name} --emit-sql, run the query with your own tool, store the rows with ` +
+        `sl results add --plan <plan_id> --query <query id> --file <rows.json>, then sl readback --targets golden:${name}${passedFlags(values, ["tolerance"])} --plan <plan_id> ` +
+        `(or save {"<query id>": [rows...]} to a JSON file and pass --results <file>).`,
+    );
+  }
+  const { rows, from: fromQuery, cross_checked } = await runGolden(ctx, golden, source, input, tolerance);
+  return { rows, tolerance, from, from_query: fromQuery, cross_checked, masked: protectedResultColumns(resultColumns(rows), protectedNames(ctx.root, source)) };
+}
+
+// The tolerance the readback item a reply answers stated, when that readback is still stored.
+function readbackTolerance(root: string, reply: LedgerReply | undefined): number | undefined {
+  if (!reply) return undefined;
+  try {
+    const item = readPending(root, reply.readback_id).items.find((i) => i.n === reply.item && i.target === reply.target);
+    return typeof item?.tolerance === "number" ? item.tolerance : undefined;
+  } catch (e) {
+    if (!(e instanceof UserError)) throw e;
+    return undefined;
+  }
+}
+
+// The owner's recorded yes a confirm rests on: their latest reply to golden:<name> must be a yes to
+// the golden with these rows and this tolerance, and --by, when given, must name them. Otherwise
+// the confirm is refused, writing nothing, with the steps to a yes.
+function confirmGate(r: LedgerReply | undefined, values: OptionValues, golden: Golden, hash: string, by: string | undefined): { by: string; at: string; ledger: string } {
+  const target = `golden:${golden.name}`;
+  const ref = r ? `${r.id}, to item ${r.item} of ${r.readback_id}` : "";
+  const flags = passedFlags(values);
+  let reason: string | undefined;
+  if (!r) reason = "no owner reply to its readback is recorded";
+  else if (r.verdict !== "yes") reason = `the owner's latest reply (${ref}) is ${r.verdict === null ? "recorded without a verdict" : `"${r.verdict}", not yes`}`;
+  else if (r.content_hash !== hash)
+    reason = `the golden, the rows its request compiles to now or the tolerance changed since the owner said yes (${ref}), so that yes is to figures it no longer has`;
+  else if (by !== undefined && by.toLowerCase() !== r.by.trim().toLowerCase()) {
+    throw new UserError(
+      `Cannot confirm ${target}: --by ${shellQuote(by)} is not the owner who said yes (${ref}), ${shellQuote(r.by)}; nothing was recorded. ` +
+        `Leave --by out to record the owner who said yes: sl goldens confirm --name ${golden.name}${flags}.`,
+    );
+  } else if (!validDate(r.at.slice(0, 10))) reason = `the owner's yes (${ref}) has no ISO date in its at, ${JSON.stringify(r.at)}; run sl validate`;
+  if (reason) {
+    throw new UserError(
+      `Cannot confirm ${target}: ${reason}; nothing was recorded. sl goldens confirm needs the owner's yes in ${LEDGER_FILE} to the golden ` +
+        `with the rows its request compiles to now. Next: ${confirmSteps(golden.name, flags)}.`,
+    );
+  }
+  return { by: r!.by, at: r!.at.slice(0, 10), ledger: r!.id };
 }
 
 async function runCommand(ctx: CommandContext, values: OptionValues): Promise<number> {
@@ -279,12 +367,13 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
   const rows = compiledRows ?? cross ?? [];
   const columns = resultColumns(rows);
   const masked = maskedColumns(ctx, values, source, columns);
-  // cross_check_sql against the compiled rows: expected is the compiled, got is cross_check_sql.
+  // cross_check_sql against the compiled rows at the tolerance a confirm would record: expected is
+  // the compiled, got is cross_check_sql.
   const crossCheck =
     compiledRows && cross
       ? compareRows(compiledRows, cross, {
           ordered: orderedGolden(golden),
-          tolerance: golden.expected?.tolerance ?? DEFAULT_TOLERANCE,
+          tolerance: parseTolerance(values, golden).tolerance,
           protectedColumns: maskedColumns(ctx, values, source, resultColumns([...compiledRows, ...cross])),
         })
       : undefined;
@@ -320,14 +409,31 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
 async function confirmCommand(ctx: CommandContext, values: OptionValues): Promise<number> {
   const { path, golden } = loadGolden(ctx, requireName(values, "confirm"));
   const by = str(values, "by")?.trim();
-  if (!by) throw new UserError('goldens confirm needs --by "<name of the owner who confirmed the rows>".');
-  const { tolerance, from: toleranceFrom } = parseTolerance(values, golden);
+  if (by === "") {
+    throw new UserError(
+      `--by is empty. Leave it out to record the owner whose yes is in ${LEDGER_FILE}, or give that owner's name: sl goldens confirm --name ${golden.name} --by "<owner>".`,
+    );
+  }
+  const parsed = parseTolerance(values, golden);
   const source = goldenSource(ctx, golden);
   const input = resultsInput(ctx, values);
   if (bool(values, "emit-sql")) {
     ctx.out(formatJson(emitPlan(ctx, planGolden(ctx, golden, source).plan, { name: "goldens", positionals: ["confirm"], values })));
     return 0;
   }
+  // Without --tolerance, the tolerance the owner's latest reply heard in its readback.
+  const reply = latestReply(readReplies(ctx.root), `golden:${golden.name}`);
+  const heard = parsed.from === "flag" ? undefined : readbackTolerance(ctx.root, reply);
+  const { tolerance, from: toleranceFrom } = heard === undefined || heard === parsed.tolerance ? parsed : { tolerance: heard, from: "readback" as const };
+  const { rows } = await runGolden(ctx, golden, source, input, tolerance);
+  if (!rows.length) throw new UserError(`Golden "${golden.name}" returned no rows; a golden needs at least one expected row.`);
+  if (rows.length > MAX_CONFIRM_ROWS && !bool(values, "force")) {
+    throw new UserError(
+      `Golden "${golden.name}" returned ${rows.length} rows, more than ${MAX_CONFIRM_ROWS}. A golden should be an aggregate the ` +
+        "owner can check by eye; aggregate further or add a limit, or pass --force to record every row.",
+    );
+  }
+  const yes = confirmGate(reply, values, golden, goldenHash(golden as unknown as Record<string, unknown>, rows, tolerance), by);
   const layer = readLayer(ctx, source, "list draft fields");
   const draftFields = goldenDraftFields(golden, layer.models, layer.metrics);
   if (draftFields.length && !ctx.json) {
@@ -335,14 +441,6 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
       `This golden's request uses draft field(s): ${draftFields.join(", ")}. A golden is confirmed after its measures are ` +
         `approved. Approve each field after its readback, then run sl goldens check --name ${golden.name}; if it passes the ` +
         "recorded rows stand, and only changed rows need a new confirm. sl validate warns until then.",
-    );
-  }
-  const rows = await runGolden(ctx, golden, source, input);
-  if (!rows.length) throw new UserError(`Golden "${golden.name}" returned no rows; a golden needs at least one expected row.`);
-  if (rows.length > MAX_CONFIRM_ROWS && !bool(values, "force")) {
-    throw new UserError(
-      `Golden "${golden.name}" returned ${rows.length} rows, more than ${MAX_CONFIRM_ROWS}. A golden should be an aggregate the ` +
-        "owner can check by eye; aggregate further or add a limit, or pass --force to record every row.",
     );
   }
   // A request naming a field that does not exist yet makes the approved golden invalid; say so before recording.
@@ -357,12 +455,12 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   }
   const warnings = [draftRoleWarning(ctx, golden)].filter((w): w is string => w !== undefined);
   if (!ctx.json) for (const w of warnings) ctx.err(w);
-  const confirmedAt = today(ctx);
+  const confirmedAt = yes.at;
   const confirmedAs = runAs(golden);
   updateYaml(path, (doc) => {
     doc.set("expected", doc.createNode({ tolerance, rows }));
     doc.set("status", "approved");
-    doc.set("confirmed_by", by);
+    doc.set("confirmed_by", yes.by);
     doc.set("confirmed_at", confirmedAt);
     doc.set("confirmed_as", doc.createNode(confirmedAs));
   });
@@ -378,17 +476,26 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
         tolerance,
         draft_fields: draftFields,
         confirmed_as: confirmedAs,
+        confirmed_by: yes.by,
+        confirmed_at: confirmedAt,
+        ledger: yes.ledger,
         warnings,
       }),
     );
   } else {
     const toleranceNote =
-      toleranceFrom === "flag" ? "" : toleranceFrom === "file" ? ", kept from the file" : ", the default; agree one with the owner and pass --tolerance";
+      toleranceFrom === "flag"
+        ? ""
+        : toleranceFrom === "readback"
+          ? ", as read back to the owner"
+          : toleranceFrom === "file"
+            ? ", kept from the file"
+            : ", the default; agree one with the owner and pass --tolerance";
     ctx.out(formatTable(maskRows(shownRows(golden, layer, rows, columns), masked), columns));
     if (masked.length) ctx.out(protectedNote(masked));
     ctx.out(
       `Recorded ${rows.length} expected row${rows.length === 1 ? "" : "s"} in ${relative(ctx.root, path)} (tolerance ${tolerance}${toleranceNote}), ` +
-        `confirmed by ${by} on ${confirmedAt}.`,
+        `confirmed by ${yes.by} on ${confirmedAt} (reply ${yes.ledger}).`,
     );
   }
   return 0;
@@ -401,7 +508,7 @@ function selectForCheck(ctx: CommandContext, values: OptionValues): LoadedGolden
     if (sourceFilter) throw new UserError("Pass --name <g> or --source <s> to goldens check, not both.");
     const loaded = loadGolden(ctx, name);
     if (!loaded.golden.expected?.rows?.length) {
-      throw new UserError(`Golden "${name}" has no expected rows yet. Run sl goldens confirm --name ${name} --by "<owner>" --tolerance <t> first.`);
+      throw new UserError(`Golden "${name}" has no expected rows yet. Confirm it first: ${confirmSteps(name, " --tolerance <agreed tolerance>")}.`);
     }
     return [loaded];
   }
@@ -552,8 +659,8 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
     const changed = checks.find((c) => !c.ok && !c.next);
     if (changed) {
       lines.push(
-        `Next: sl goldens run --name ${changed.name} shows its rows; read any change back to the owner, and confirm again only on their yes ` +
-          `(sl goldens confirm --name ${changed.name} --by "<owner>").`,
+        `Next: sl goldens run --name ${changed.name} shows its rows; read any change back to the owner, and confirm again only on their yes: ` +
+          `${confirmSteps(changed.name, "")}.`,
       );
     }
     ctx.out(lines.join("\n"));
@@ -653,8 +760,8 @@ async function newCommand(ctx: CommandContext, values: OptionValues): Promise<nu
   const compiled = compileGolden(ctx.root, golden);
   writeYaml(path, golden);
   const next =
-    `Run sl goldens run --name ${name} and read its rows back to the owner; once its measures are approved and the owner says the rows match ` +
-    `a figure they trust, confirm it with sl goldens confirm --name ${name} --by "<owner>" --tolerance <agreed tolerance>.`;
+    `Run sl goldens run --name ${name} to see its rows; once its measures are approved, confirm it on the owner's yes: ` +
+    `${confirmSteps(name, " --tolerance <agreed tolerance>")}.`;
   const refused = compiled.ok ? undefined : { reason: compiled.reason, refusals: compiled.refusals, next: refusalNext(golden, compiled) };
   if (ctx.json) {
     ctx.out(
@@ -682,12 +789,15 @@ async function newCommand(ctx: CommandContext, values: OptionValues): Promise<nu
 }
 
 const spec: CommandSpec = {
-  summary: "Compile and run a golden's request, record the owner-confirmed rows, recheck approved goldens, or write a draft golden.",
+  summary: "Compile and run a golden's request, record its rows on the owner's recorded yes, recheck approved goldens, or write a draft golden.",
   usage:
-    "goldens run --name <g> | goldens confirm --name <g> --by <name> [--tolerance <t>] [--force] | " +
+    "goldens run --name <g> | goldens confirm --name <g> [--by <name>] [--tolerance <t>] [--force] | " +
     "goldens check [--name <g>] [--source <s>]   (each takes --emit-sql, --results <file>, --plan <plan_id> and --show-protected; values of protected " +
     "columns show as [protected] unless --show-protected) | " +
-    'goldens new --name <g> --question "<question>" --request <json|file> [--source <s>] [--role <role>] [--user <json>]',
+    'goldens new --name <g> --question "<question>" --request <json|file> [--source <s>] [--role <role>] [--user <json>]\n\n' +
+    "confirm records the rows the request compiles to now only when the owner's latest reply to golden:<g> in .sl/ledger.jsonl\n" +
+    "is a yes to the golden with these rows and this tolerance (sl readback --targets golden:<g>, then sl reply --verdict yes);\n" +
+    "confirmed_by and confirmed_at come from that reply, and --by, when given, must name the same owner.",
   options: {
     name: { type: "string" },
     by: { type: "string" },

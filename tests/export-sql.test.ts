@@ -321,7 +321,14 @@ describe("export-sql: postgres, live", () => {
     const imported = shape(s);
     const live = await sl(t.root, ["introspect", "--source", "pg", "--schemas", schema, "--json"], { SL_TEST_PG: PG_URL });
     expect(live.code).toBe(0);
-    expect(live.json<{ changes: { tables_added: string[]; tables_removed: string[]; columns: unknown[] } }>().changes).toEqual({ tables_added: [], tables_removed: [], columns: [] });
+    expect(live.json<{ changes: unknown }>().changes).toEqual({
+      tables_added: [],
+      tables_removed: [],
+      columns: [],
+      new_in_scope: [],
+      left_scope: [],
+      left_scope_with_models: [],
+    });
     expect(shape(snapshotOf(t.root, "pg"))).toEqual(imported);
   });
 });

@@ -53,6 +53,39 @@
       "items": {
         "$ref": "#/$defs/table"
       }
+    },
+    "scope_state": {
+      "type": "object",
+      "description": "The selection sl introspect or sl import recorded when it wrote the snapshot, as qualified table names (see Scope changes).",
+      "additionalProperties": false,
+      "required": [
+        "in_scope",
+        "new_in_scope",
+        "left_scope"
+      ],
+      "properties": {
+        "in_scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tables in the selection (scope and intake.schemas)."
+        },
+        "new_in_scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tables that entered the selection and have no model yet."
+        },
+        "left_scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tables that left the selection and have an approved model."
+        }
+      }
     }
   },
   "$defs": {
