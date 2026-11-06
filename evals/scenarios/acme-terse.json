@@ -1,0 +1,21 @@
+{
+  "name": "acme-terse",
+  "description": "The Acme lake over a DuckDB connection (no external service), with the terse owner persona.",
+  "fixture": "acme",
+  "intake": {
+    "path": "connection",
+    "source": "lake",
+    "dialect": "duckdb",
+    "views": {
+      "web_events": "read_parquet('{fixture}/data/lake/web_events/*.parquet')",
+      "sessions": "read_parquet('{fixture}/data/lake/sessions.parquet')",
+      "marketing_spend": "read_parquet('{fixture}/data/lake/marketing_spend.parquet')",
+      "web_events_2024_archive": "read_parquet('{fixture}/data/lake/web_events_2024_archive.parquet')",
+      "tmp_session_dedupe": "read_parquet('{fixture}/data/lake/tmp_session_dedupe.parquet')"
+    }
+  },
+  "persona": "terse",
+  "budgets": { "max_turns": 40, "max_tokens": 400000 },
+  "opening": "lake is hooked up. build the layer pls",
+  "script": "acme-terse.script.json"
+}
