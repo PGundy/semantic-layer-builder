@@ -556,6 +556,133 @@ describe("a yes to an export source's golden names the upgrade, not a confirm th
     expect(c.out).not.toContain("sl setup");
   });
 
+  // PR 3.1a: one wording for an export source's golden, from every command that names its steps.
+  const NEXT = `${UPGRADE}, then sl goldens confirm --name orders_total`;
+  const STEP = `golden:orders_total cannot be confirmed until source warehouse has a connection: ${NEXT}`;
+
+  // The golden orders_total on the export source with its rows stored under a plan, before any readback.
+  async function planned(): Promise<{ root: string; plan: string }> {
+    const { root, measure } = await exportCopy(["orders_total"]);
+    const plan = (await sl(root, ["goldens", "run", "--name", "orders_total", "--emit-sql", "--json"])).json<{ plan_id: string; queries: { id: string }[] }>();
+    writeFileSync(join(root, "rows.json"), JSON.stringify([{ [measure]: 5 }]));
+    expect((await sl(root, ["results", "add", "--plan", plan.plan_id, "--query", plan.queries[0]!.id, "--file", join(root, "rows.json")])).code).toBe(0);
+    return { root, plan: plan.plan_id };
+  }
+
+  // Every message each command gives along readback, yes, review apply and goldens, for one copy.
+  async function walk(root: string, plan: string): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    const say = async (key: string, args: string[]) => {
+      const r = await sl(root, args);
+      out[key] = `${r.code}\n${r.out}${r.err}`;
+      return r;
+    };
+    await say("run_before", ["goldens", "run", "--name", "orders_total", "--plan", plan]);
+    await say("confirm_before", ["goldens", "confirm", "--name", "orders_total", "--plan", plan]);
+    await say("readback", ["readback", "--targets", "golden:orders_total", "--plan", plan]);
+    await say("readback_json", ["readback", "--targets", "golden:orders_total", "--plan", plan, "--json"]);
+    await say("reply", ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Yes, 5 orders.", "--verdict", "yes", "--by", OWNER]);
+    await say("reply_json", ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Yes.", "--verdict", "yes", "--by", OWNER, "--json"]);
+    expect((await sl(root, ["review", "export", "--readback", "rb_0001", "--format", "json"])).code).toBe(0);
+    const form = readJsonForm(root);
+    for (const it of form.items) it.verdict = "yes";
+    writeJsonForm(root, form);
+    await say("apply", ["review", "apply", jsonPath(root), "--by", OWNER, "--json"]);
+    await say("run_after", ["goldens", "run", "--name", "orders_total", "--plan", plan]);
+    await say("run_live_after", ["goldens", "run", "--name", "orders_total"]);
+    await say("confirm_after", ["goldens", "confirm", "--name", "orders_total", "--plan", plan]);
+    return out;
+  }
+
+  test("readback, reply, review apply and goldens name the same upgrade, then confirm", async () => {
+    const { root, plan } = await planned();
+    const o = await walk(root, plan);
+    // Before the owner's yes, goldens names the upgrade, then the run that shows the rows to read back.
+    expect(o.run_before).toContain(`Once a connection exists: ${UPGRADE}, then sl goldens run --name orders_total.`);
+    expect(o.confirm_before).toContain(`Once a connection exists: ${UPGRADE}, then sl goldens run --name orders_total.`);
+    // The readback names the upgrade, then the confirm, never a confirm from the plan that would refuse.
+    expect(o.readback).toContain(`Only after the owner says yes to an item, approve it: ${STEP}. A no or a change`);
+    expect(o.readback).not.toContain(`sl goldens confirm --name orders_total --plan`);
+    const rb = JSON.parse(o.readback_json!.slice(2)) as { next: string; next_steps: string[] };
+    expect(rb.next_steps).toEqual([STEP]);
+    expect(rb.next).toBe(`sl reply --readback rb_0002 --item <n> --text "<owner's words>" --verdict yes|no|change --by "<owner>"`);
+    expect(o.reply).toContain(`Next: ${NEXT}.`);
+    expect(JSON.parse(o.reply_json!.slice(2)).next).toBe(NEXT);
+    expect(JSON.parse(o.apply!.slice(2)).next_steps).toEqual([STEP]);
+    // Once the yes is recorded, goldens names the upgrade, then the confirm; each still refuses or only shows rows.
+    for (const k of ["run_after", "run_live_after", "confirm_after"]) expect(o[k]).toContain(`Once a connection exists: ${NEXT}.`);
+    expect(o.run_after!.startsWith("0\n")).toBe(true);
+    expect(o.run_live_after!.startsWith("1\n")).toBe(true);
+    expect(o.confirm_after!.startsWith("1\n")).toBe(true);
+    // One wording: the step and the command after the upgrade come from the same place in each.
+    for (const k of ["readback", "readback_json", "apply"]) expect(o[k]).toContain(STEP);
+    for (const k of ["readback", "readback_json", "reply", "reply_json", "apply", "run_after", "run_live_after", "confirm_after"]) expect(o[k]).toContain(NEXT);
+    expect(entries(root).filter((e) => e.kind === "reply").length).toBe(3);
+  });
+
+  test("the readback names the upgrade once per export source, in the items' order; a connection source's golden its confirm", async () => {
+    const { root, measure } = await exportCopy(["orders_total", "orders_again"]);
+    writeFileSync(join(root, "res.json"), JSON.stringify({ "golden:orders_total": [{ [measure]: 5 }], "golden:orders_again": [{ [measure]: 5 }] }));
+    const targets = "golden:orders_total,warehouse.fct_orders,golden:orders_again";
+    const r = (await sl(root, ["readback", "--targets", targets, "--results", join(root, "res.json"), "--json"])).json<{ next_steps: string[] }>();
+    const steps = [
+      `golden:orders_total and golden:orders_again cannot be confirmed until source warehouse has a connection: ${UPGRADE}, then sl goldens confirm --name orders_total and sl goldens confirm --name orders_again`,
+      `sl approve --target warehouse.fct_orders --by "<owner>"`,
+    ];
+    expect(r.next_steps).toEqual(steps);
+    expect((await sl(root, ["readback", "--targets", targets, "--results", join(root, "res.json")])).out).toContain(`approve it: ${steps.join("; ")}. A no or a change`);
+    // A connection source's golden keeps its confirm, with the rows from where the readback took them.
+    const { root: other, plan } = await planned();
+    connect(other);
+    const text = await sl(other, ["readback", "--targets", "golden:orders_total", "--plan", plan]);
+    expect(text.code).toBe(0);
+    expect(text.out).toContain(`Only after the owner says yes to an item, approve it: sl goldens confirm --name orders_total --plan ${plan}. A no or a change`);
+    expect(text.out).not.toContain("sl setup");
+    const json = (await sl(other, ["readback", "--targets", "golden:orders_total", "--plan", plan, "--json"])).json<{ next_steps: string[] }>();
+    expect(json.next_steps).toEqual([`sl goldens confirm --name orders_total --plan ${plan}`]);
+  });
+
+  test("the steps for an export source's golden are deterministic: two copies give the same messages", async () => {
+    const runs: Record<string, string>[] = [];
+    for (let i = 0; i < 2; i++) {
+      const { root, plan } = await planned();
+      runs.push(Object.fromEntries(Object.entries(await walk(root, plan)).map(([k, v]) => [k, v.replaceAll(root, "<root>")])));
+    }
+    expect(runs[1]).toEqual(runs[0]!);
+  });
+
+  test("goldens names confirm only while the latest reply to that golden is a yes", async () => {
+    const { root, plan } = await planned();
+    const answer = (verdict: string) => sl(root, ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Words.", "--verdict", verdict, "--by", OWNER]);
+    const hints = async () => [(await sl(root, ["goldens", "run", "--name", "orders_total", "--plan", plan])).out, (await sl(root, ["goldens", "confirm", "--name", "orders_total"])).err];
+    expect((await sl(root, ["readback", "--targets", "golden:orders_total", "--plan", plan])).code).toBe(0);
+    expect((await answer("yes")).code).toBe(0);
+    for (const h of await hints()) expect(h).toContain(`Once a connection exists: ${NEXT}.`);
+    // A later no or change replaces the yes, so the hint goes back to the run.
+    for (const verdict of ["no", "change"]) {
+      expect((await answer(verdict)).code).toBe(0);
+      for (const h of await hints()) expect(h).toContain(`Once a connection exists: ${UPGRADE}, then sl goldens run --name orders_total.`);
+    }
+  });
+
+  test("a yes to one golden leaves another golden's hint on run; an unreadable ledger falls back to run", async () => {
+    const { root, measure } = await exportCopy(["orders_total", "orders_again"]);
+    writeFileSync(join(root, "res.json"), JSON.stringify({ "golden:orders_total": [{ [measure]: 5 }] }));
+    expect((await sl(root, ["readback", "--targets", "golden:orders_total", "--results", join(root, "res.json")])).code).toBe(0);
+    expect((await sl(root, ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Yes.", "--verdict", "yes", "--by", OWNER])).code).toBe(0);
+    const again = await sl(root, ["goldens", "confirm", "--name", "orders_again"]);
+    expect(again.code).toBe(1);
+    expect(again.err).toContain(`Once a connection exists: ${UPGRADE}, then sl goldens run --name orders_again.`);
+    // A ledger that is a link is refused by the ledger reader; the hint still prints, naming the run.
+    const ledgerFile = join(root, ".sl", "ledger.jsonl");
+    rmSync(ledgerFile);
+    writeFileSync(join(root, "..", "elsewhere.jsonl"), "");
+    symlinkSync(join(root, "..", "elsewhere.jsonl"), ledgerFile);
+    const linked = await sl(root, ["goldens", "confirm", "--name", "orders_total"]);
+    expect(linked.code).toBe(1);
+    expect(linked.err).toContain(`Once a connection exists: ${UPGRADE}, then sl goldens run --name orders_total.`);
+  });
+
   test("is deterministic: two copies give the same ledger and output", async () => {
     const runs: string[][] = [];
     for (let i = 0; i < 2; i++) {

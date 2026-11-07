@@ -267,7 +267,11 @@ describe("an export source waits on a connection (the Acme export)", () => {
     // The yes stays in the ledger for after the upgrade; sl next names the upgrade.
     const next = (await sl(root, ["next", "--json"])).json<NextAction>();
     expect(next).toMatchObject({ kind: "run", phase: "connect", run: { command: UPGRADE } });
-    expect((await sl(root, ["goldens", "confirm", "--name", "orders_total", "--plan", plan.plan_id])).code).toBe(1);
+    // The refusal and the run hint now name the upgrade, then the confirm the yes waits for.
+    const confirm = await sl(root, ["goldens", "confirm", "--name", "orders_total", "--plan", plan.plan_id]);
+    expect(confirm.code).toBe(1);
+    expect(confirm.err).toContain(`Once a connection exists: ${UPGRADE}, then sl goldens confirm --name orders_total.`);
+    expect((await sl(root, ["goldens", "run", "--name", "orders_total", "--plan", plan.plan_id])).out).toContain(`Once a connection exists: ${UPGRADE}, then sl goldens confirm --name orders_total.`);
   });
 
   test("a connection source next to an export source: only the export source waits", async () => {
