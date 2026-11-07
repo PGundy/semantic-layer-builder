@@ -19,6 +19,17 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/hooks/check-install.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

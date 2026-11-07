@@ -70,6 +70,19 @@ A change should:
 
 A semantic directory is executable configuration: its `sources/` run setup statements and views on every connection, and its `goldens/` run SQL. Review changes to them, in this repository's examples or anywhere else, as you would review code.
 
+## The plugin and its version
+
+The repository root is the Claude Code plugin (`.claude-plugin/plugin.json`, listed by `.claude-plugin/marketplace.json`); [`docs/plugin.md`](docs/plugin.md) says what it ships and how users install it. Claude Code keeps a user on the installed version until `version` in `plugin.json` changes, so a release that users should get raises it, and with it the `version` of the root `package.json`, of `skills/semantic-layer/package.json` and of `SERVER_INFO` in `scripts/mcp/server.ts`; `tests/plugin-package.test.ts` fails when they differ. Each version installs to a new directory, and its users run `bun install --frozen-lockfile --production` there once more; the `SessionStart` hook prints that command for them.
+
+`tests/plugin-package.test.ts` also checks the manifests, the paths and hook commands they name, the agents, and that the hooks and the MCP server run from a copy of the plugin's files. With the `claude` CLI on `PATH` it runs `claude plugin validate --strict` and `claude plugin details`; CI has no `claude`, so there those two tests skip. To run them yourself:
+
+```sh
+claude plugin validate --strict .
+claude --plugin-dir . plugin details semantic-layer-builder
+```
+
+The plugin ships without an icon, so `validate --strict` prints an `ICON_MISSING` warning for the plugin listing and then passes.
+
 ## Branches and pull requests
 
 v1 is built on `release/v1` (docs/PRD.md, decision D8). Branch from it as `v1/<pr-id>-<slug>`, for example `v1/1.4-table-list-files`, and open the pull request against `release/v1`. Each pull request implements one PR of the PRD's plan (section 9), cites its requirement IDs, and fills in `.github/pull_request_template.md`. Spec, schemas, validation and docs change in the same pull request as the behaviour. A pull request merges when `scripts/verify.sh` passes in CI and its review is done; one that touches a file listed in `.github/CODEOWNERS` also needs the owner's review.
