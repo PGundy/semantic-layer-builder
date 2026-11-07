@@ -43,7 +43,7 @@ export function locate(root: string, ref: string): Located {
     case "access": {
       const file = paths(root).access;
       const access = readYamlIfExists<Record<string, unknown>>(file);
-      if (!access) throw new UserError(`No access.yaml at ${file}. Ask the owner the exceptions question first (sl status names it).`);
+      if (!access) throw new UserError(`No access.yaml at ${file}. Ask the owner the exceptions question first (sl status names it), then create it with sl set access mode open (or closed for an allowlist).`);
       return { ref, kind: "access", file, path: [], item: access };
     }
     case "metric": {

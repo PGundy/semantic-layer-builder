@@ -422,7 +422,8 @@ class Validator {
     const metricsPath = join(this.root, "metrics.yaml");
     if (existsSync(metricsPath)) this.metrics = this.load<MetricsFile>(metricsPath, "metrics", "metrics");
     const accessPath = join(this.root, "access.yaml");
-    this.accessPresent = existsSync(accessPath);
+    // An access.yaml only in overrides is read as if it were written (sl set access mode creates one).
+    this.accessPresent = existsSync(accessPath) || !!this.overrides?.has(accessPath);
     if (this.accessPresent) this.access = this.load<AccessFile>(accessPath, "access", "access");
 
     const goldensDir = join(this.root, "goldens");

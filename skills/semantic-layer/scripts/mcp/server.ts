@@ -3,6 +3,7 @@
 // Each CLI command is one tool; a call runs the command in-process with --json in the server's
 // semantic root. stdout carries protocol messages only; logs go to stderr. When the client declares
 // elicitation, approve, goldens confirm and reply with verdict yes ask the owner in the client (elicit.ts).
+// No tool takes --show-protected, and --role limits the tools to one role's commands (limits.ts).
 import { existsSync, realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
@@ -12,7 +13,9 @@ import { COMMANDS } from "../commands/index.ts";
 import { runCli } from "../lib/cli.ts";
 import type { CommandSpec } from "../lib/command.ts";
 import { resolveRoot } from "../lib/project.ts";
+import { commandList, ROLE_NAMES, ROLES, type Role, type RoleName } from "../lib/roles.ts";
 import { ELICIT_TIMEOUT_MS, Elicitor, elicitationNote, ownerGate, type Run, toolResult } from "./elicit.ts";
+import { deniedArgument, deniedMessage, roleCallRefusal, roleListsCommand } from "./limits.ts";
 import { argvOf, ROOT_ARG, schemaValidator, toolOf, type Tool } from "./schema.ts";
 
 export const PROTOCOL_VERSION = "2025-06-18";
@@ -38,6 +41,8 @@ export interface ServerOptions {
   send?: (msg: Message) => void;
   // How long to wait for the owner's answer to an elicitation (default ELICIT_TIMEOUT_MS).
   elicitTimeoutMs?: number;
+  // The role whose commands the server lists and runs (default interviewer: every command).
+  role?: RoleName;
 }
 
 class RpcError extends Error {
@@ -79,9 +84,11 @@ export class Server {
   private clientElicits = false;
   private readonly elicitor: Elicitor | undefined;
   readonly root: string;
+  readonly role: Role;
 
   constructor(private readonly opts: ServerOptions) {
     this.root = resolve(opts.root);
+    this.role = ROLES[opts.role ?? "interviewer"];
     if (opts.send) this.elicitor = new Elicitor(opts.send, opts.elicitTimeoutMs ?? ELICIT_TIMEOUT_MS);
   }
 
@@ -92,6 +99,12 @@ export class Server {
 
   private get elicits(): boolean {
     return this.clientElicits && this.elicitor !== undefined;
+  }
+
+  // What every tool description adds for a role that runs only some commands.
+  private get roleNote(): string {
+    if (this.role.commands === "every") return "";
+    return `\n\nThis server runs as the ${this.role.title.toLowerCase()} (--role ${this.role.name}) and accepts only ${commandList(this.role)}.`;
   }
 
   // Every discovered command, by tool name. A command that fails to load is logged and left out.
@@ -154,13 +167,17 @@ export class Server {
           protocolVersion: typeof asked === "string" && SUPPORTED_VERSIONS.has(asked) ? asked : PROTOCOL_VERSION,
           capabilities: { tools: {} },
           serverInfo: SERVER_INFO,
-          instructions: `Each tool runs one sl command with --json in the semantic root ${this.root}. Start with sl_status, which names the next step. A call cannot name another root: to work in one, start the server again with --root <dir>. Pass absolute paths for file flags; relative ones resolve from the server's working directory.`,
+          instructions: `Each tool runs one sl command with --json in the semantic root ${this.root}. ${this.role.commands === "every" ? "Start with sl_status, which names the next step." : `This server runs as the ${this.role.title.toLowerCase()} and serves only ${commandList(this.role)}.`} A call cannot name another root: to work in one, start the server again with --root <dir>. Pass absolute paths for file flags; relative ones resolve from the server's working directory.`,
         };
       }
       case "ping":
         return {};
       case "tools/list":
-        return { tools: [...(await this.tools()).values()].map((e) => ({ ...e.tool, description: e.tool.description + elicitationNote(e.command, this.elicits) })) };
+        return {
+          tools: [...(await this.tools()).values()]
+            .filter((e) => roleListsCommand(this.role, e.command))
+            .map((e) => ({ ...e.tool, description: e.tool.description + elicitationNote(e.command, this.elicits) + this.roleNote })),
+        };
       case "tools/call": {
         const run = this.queue.then(() => this.call(params));
         this.queue = run.catch(() => undefined);
@@ -177,6 +194,16 @@ export class Server {
     const entry = (await this.tools()).get(name);
     if (!entry) throw new RpcError(INVALID_PARAMS, `Unknown tool "${name}". Call tools/list for the tools.`);
     const args = params.arguments ?? {};
+    // Refused before the role and argument checks: no tool passes --show-protected (invariant 3).
+    const denied = deniedArgument(args);
+    if (denied !== undefined) throw new RpcError(INVALID_PARAMS, deniedMessage(name, denied));
+    const outside = roleCallRefusal(this.role, entry.command, args);
+    if (outside) {
+      throw new RpcError(
+        INVALID_PARAMS,
+        `${name} refused: this server runs as the ${this.role.title.toLowerCase()} (--role ${this.role.name}), and ${outside} Call tools/list for the tools it serves; for another role, start the server again with --role <role>.`,
+      );
+    }
     if (!entry.validate(args)) {
       throw new RpcError(INVALID_PARAMS, `Invalid arguments for ${name}: ${plainErrors(entry.validate.errors)}. Call tools/list for the arguments it takes.`);
     }
@@ -215,20 +242,22 @@ function failure(id: Id, code: number, message: string): Message {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
-const USAGE = `Usage: bun skills/semantic-layer/scripts/mcp/server.ts [--root <dir>] [--elicit-timeout <seconds>]
+const USAGE = `Usage: bun skills/semantic-layer/scripts/mcp/server.ts [--root <dir>] [--role <role>] [--elicit-timeout <seconds>]
 
 Serves every sl command as an MCP tool over stdio. The semantic root is --root, else SEMANTIC_ROOT,
-else ./semantic; a tool call cannot name another root. When the client declares elicitation, the owner
-answers approvals in the client; --elicit-timeout is how long to wait for that answer (default ${ELICIT_TIMEOUT_MS / 1000}).`;
+else ./semantic; a tool call cannot name another root. --role (${ROLE_NAMES.join(", ")}; default
+interviewer) limits the tools to that role's commands. No tool takes --show-protected. When the client
+declares elicitation, the owner answers approvals in the client; --elicit-timeout is how long to wait
+for that answer (default ${ELICIT_TIMEOUT_MS / 1000}).`;
 
 // Reads one JSON-RPC message per line from stdin and writes each response as one line to stdout.
 async function main(): Promise<number> {
   const log = (t: string) => process.stderr.write(`${t}\n`);
-  let flags: { root?: string; help?: boolean; "elicit-timeout"?: string };
+  let flags: { root?: string; role?: string; help?: boolean; "elicit-timeout"?: string };
   try {
     flags = parseArgs({
       args: process.argv.slice(2),
-      options: { root: { type: "string" }, help: { type: "boolean", short: "h" }, "elicit-timeout": { type: "string" } },
+      options: { root: { type: "string" }, role: { type: "string" }, help: { type: "boolean", short: "h" }, "elicit-timeout": { type: "string" } },
       strict: true,
     }).values;
   } catch (e) {
@@ -240,6 +269,11 @@ async function main(): Promise<number> {
     log(`sl mcp: --elicit-timeout is a number of seconds above 0, not ${JSON.stringify(flags["elicit-timeout"])}.\n\n${USAGE}`);
     return 1;
   }
+  const role = flags.role ?? "interviewer";
+  if (!(ROLE_NAMES as readonly string[]).includes(role)) {
+    log(`sl mcp: --role is one of ${ROLE_NAMES.join(", ")}, not ${JSON.stringify(flags.role)}.\n\n${USAGE}`);
+    return 1;
+  }
   if (flags.help) {
     process.stdout.write(`${USAGE}\n`);
     return 0;
@@ -248,8 +282,8 @@ async function main(): Promise<number> {
   const write = process.stdout.write.bind(process.stdout);
   console.log = console.info = console.debug = (...a: unknown[]) => console.error(...a);
   const send = (msg: Message) => void write(`${JSON.stringify(msg)}\n`);
-  const server = new Server({ root: resolveRoot(flags.root, process.env, process.cwd()), cwd: process.cwd(), env: process.env, log, send, elicitTimeoutMs: seconds * 1000 });
-  log(`sl mcp: serving the semantic root ${server.root} over stdio`);
+  const server = new Server({ root: resolveRoot(flags.root, process.env, process.cwd()), cwd: process.cwd(), env: process.env, log, send, elicitTimeoutMs: seconds * 1000, role: role as RoleName });
+  log(`sl mcp: serving the semantic root ${server.root} over stdio as the ${server.role.title.toLowerCase()}`);
   const pending = new Set<Promise<void>>();
   for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
     if (!line.trim()) continue;
