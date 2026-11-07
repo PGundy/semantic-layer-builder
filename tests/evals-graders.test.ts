@@ -134,6 +134,7 @@ describe("both scripted scenarios grade clean", () => {
         ["selection", 1, true],
         ["approvals", 1, true],
         ["connection_first", 1, true],
+        ["authority", 1, true],
         ["effort", null, true],
       ]);
       expect(written).toMatchObject({ run_id: `${name}-20260101T000000000Z`, scenario: name, passed: true, score: 1 });

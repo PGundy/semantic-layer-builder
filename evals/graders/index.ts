@@ -7,6 +7,7 @@ import type { Scenario, Summary, TranscriptTurn } from "../runner/types.ts";
 import { EvalError } from "../runner/types.ts";
 import { redactSecrets } from "../runner/redact.ts";
 import { gradeApprovals } from "./approvals.ts";
+import { gradeAuthority } from "./authority.ts";
 import { gradeConnectionFirst } from "./connection-first.ts";
 import { gradeEffort } from "./effort.ts";
 import { gradeFigures } from "./figures.ts";
@@ -78,8 +79,8 @@ export function cleanReason(message: string, dir: string, words?: Map<string, st
   return maskProtected(redactSecrets(relative), words);
 }
 
-// Runs every grader; one that throws fails with the reason, and the rest still run. Effort never
-// fails: when it cannot measure, it says why and scores null.
+// Runs every grader; one that throws fails with the reason, and the rest still run. Effort fails only
+// on the scenario's max_interviewer_share: when it cannot measure, it says why and scores null.
 export async function gradeRun(dir: string, opts: GradeOptions = {}): Promise<GradeReport> {
   const run = loadRun(dir, opts);
   const graders: [string, (r: RunFiles) => GraderResult | Promise<GraderResult>][] = [
@@ -88,6 +89,7 @@ export async function gradeRun(dir: string, opts: GradeOptions = {}): Promise<Gr
     ["selection", gradeSelection],
     ["approvals", gradeApprovals],
     ["connection_first", gradeConnectionFirst],
+    ["authority", gradeAuthority],
     ["effort", gradeEffort],
   ];
   const results: GraderResult[] = [];

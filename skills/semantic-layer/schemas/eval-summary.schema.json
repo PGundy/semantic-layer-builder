@@ -28,6 +28,21 @@
       "required": ["skill", "owner"],
       "properties": { "skill": { "type": "integer" }, "owner": { "type": "integer" } }
     },
+    "agents": { "const": "multi", "description": "Present on a multi-agent run, with role_turns, tokens_by_role and interviewer_token_share." },
+    "role_turns": { "type": "integer", "minimum": 0 },
+    "tokens_by_role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interviewer", "connector_runner", "batch_analyst", "readback_verifier", "golden_builder"],
+      "properties": {
+        "interviewer": { "type": "integer" },
+        "connector_runner": { "type": "integer" },
+        "batch_analyst": { "type": "integer" },
+        "readback_verifier": { "type": "integer" },
+        "golden_builder": { "type": "integer" }
+      }
+    },
+    "interviewer_token_share": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "The interviewer's tokens over all agents' tokens, the owner's left out." },
     "stop_reason": { "enum": ["done", "turn_budget", "token_budget", "error"] },
     "error": { "type": "string", "description": "Present when stop_reason is error." },
     "started_at": { "type": "string" },

@@ -25,7 +25,11 @@
             "description": "Files the skill writes by hand before its sl commands run, by path relative to the working root (such as goldens/<name>.yaml) to their text. Never under .sl/, never outside the root or through a link, always valid YAML, and never with status: approved or an approval field.",
             "additionalProperties": { "type": "string" }
           },
-          "done": { "type": "boolean" }
+          "done": { "type": "boolean" },
+          "agent": {
+            "enum": ["connector_runner", "batch_analyst", "readback_verifier", "golden_builder"],
+            "description": "A task the interviewer turn before it dispatched to this role agent (multi-agent scenarios): its sl commands run through the role guard, it writes nothing and never ends the session."
+          }
         }
       }
     },

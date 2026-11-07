@@ -18,7 +18,7 @@
         "additionalProperties": false,
         "required": ["grader", "score", "passed", "details"],
         "properties": {
-          "grader": { "enum": ["figures", "secrets", "selection", "approvals", "connection_first", "effort"] },
+          "grader": { "enum": ["figures", "secrets", "selection", "approvals", "connection_first", "authority", "effort"] },
           "score": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "null when there was nothing to grade, and for effort." },
           "passed": { "type": "boolean" },
           "details": { "type": "array", "items": { "type": "string" } },
