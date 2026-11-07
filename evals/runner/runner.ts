@@ -3,6 +3,7 @@
 // graders, grades.json.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { DuckDBInstance } from "@duckdb/node-api";
 import { runCli } from "../../skills/semantic-layer/scripts/lib/cli.ts";
 import { gradeRun, writeGrades } from "../graders/index.ts";
 import type { GradeReport } from "../graders/types.ts";
@@ -58,35 +59,63 @@ export async function slIn(root: string, args: string[], clock: Clock): Promise<
   return { code, out: out.join("\n"), err: err.join("\n") };
 }
 
-// Writes the starting root for the scenario's intake: a project and one source, as a setup
-// engineer leaves it. View paths are relative to the root, so the run directory stays readable.
+// Where an export intake puts the schema export the owner shares, relative to the working root.
+export const sharedExportPath = (source: string) => `shared/${source}-schema.csv`;
+
+// The schema export an owner would share for the scenario's views: sl export-sql's duckdb catalog
+// query, run over an in-memory database holding the views, saved as CSV. It reads no table data.
+async function writeSchemaExport(root: string, scenario: Scenario, clock: Clock): Promise<void> {
+  const q = await slIn(root, ["export-sql", "--dialect", "duckdb", "--schemas", "main", "--json"], clock);
+  if (q.code !== 0) throw new EvalError(`Writing the schema export failed at sl export-sql: ${q.err || q.out}`);
+  const query = (JSON.parse(q.out) as { sql: string }).sql.trim().replace(/;\s*$/, "");
+  const fixtureDir = join(REPO_ROOT, "fixtures", scenario.fixture).split("\\").join("/");
+  const file = join(root, sharedExportPath(scenario.intake.source));
+  mkdirSync(join(file, ".."), { recursive: true });
+  const db = await DuckDBInstance.create(":memory:");
+  const c = await db.connect();
+  try {
+    for (const [name, rel] of Object.entries(scenario.intake.views)) await c.run(`create view "${name}" as select * from ${rel.replaceAll("{fixture}", fixtureDir)}`);
+    await c.run(`copy (${query}) to '${file.replaceAll("'", "''")}' (header)`);
+  } catch (e) {
+    throw new EvalError(`Writing the schema export of fixture ${scenario.fixture} failed: ${(e as Error).message}`);
+  } finally {
+    c.closeSync();
+    db.closeSync();
+  }
+}
+
+// Writes the starting root for the scenario's intake. A connection intake gets a project and one
+// source, as a setup engineer leaves it; view paths are relative to the root, so the run directory
+// stays readable. An export intake gets the project and the owner's schema export, not yet imported.
 async function prepareRoot(scenario: Scenario, root: string, clock: Clock): Promise<void> {
   const fixtureDir = relative(root, join(REPO_ROOT, "fixtures", scenario.fixture)).split("\\").join("/");
-  const steps: string[][] = [
-    ["init", "--name", scenario.fixture.replace(/[^a-z0-9_]/g, "_")],
-    [
+  const steps: string[][] = [["init", "--name", scenario.fixture.replace(/[^a-z0-9_]/g, "_")]];
+  if (scenario.intake.path === "connection") {
+    steps.push([
       "add-source",
       "--name",
       scenario.intake.source,
       "--dialect",
       scenario.intake.dialect,
       ...Object.entries(scenario.intake.views).flatMap(([name, rel]) => ["--view", `${name}=${rel.replaceAll("{fixture}", fixtureDir)}`]),
-    ],
-  ];
+    ]);
+  }
   for (const args of steps) {
     const r = await slIn(root, args, clock);
     if (r.code !== 0) throw new EvalError(`Setting up the working root failed at sl ${args[0]}: ${r.err || r.out}`);
   }
+  if (scenario.intake.path !== "connection") await writeSchemaExport(root, scenario, clock);
 }
 
 // The owner's brief, with the fixture's reference figures appended when it has them, since the
 // simulated owner has no tools to open the file the brief points at.
-function ownerBrief(fixture: string): string {
+// The scenario's brief_note goes last, under its own heading.
+function ownerBrief(fixture: string, note?: string): string {
   const dir = join(REPO_ROOT, "fixtures", fixture);
-  const brief = readFileSync(join(dir, "owner-brief.md"), "utf8");
+  let brief = readFileSync(join(dir, "owner-brief.md"), "utf8");
   const figures = join(dir, "reference-figures.json");
-  if (!existsSync(figures)) return brief;
-  return `${brief}\n\n## fixtures/${fixture}/reference-figures.json\n\n${readFileSync(figures, "utf8")}`;
+  if (existsSync(figures)) brief = `${brief}\n\n## fixtures/${fixture}/reference-figures.json\n\n${readFileSync(figures, "utf8")}`;
+  return note ? `${brief}\n\n## In this scenario\n\n${note}\n` : brief;
 }
 
 export async function runScenario(opts: RunOptions): Promise<RunResult> {
@@ -112,7 +141,7 @@ export async function runScenario(opts: RunOptions): Promise<RunResult> {
   let error: string | undefined;
   try {
     await prepareRoot(scenario, root, clock);
-    const brief = ownerBrief(scenario.fixture);
+    const brief = ownerBrief(scenario.fixture, scenario.brief_note);
     const personaPrompt = readFileSync(join(PERSONAS_DIR, `${scenario.persona}.md`), "utf8");
     record("owner", scenario.opening, 0);
     let ownerMessage = scenario.opening;

@@ -45,7 +45,7 @@ const keySignature = (keys: JoinKey[]) =>
     .join(",");
 
 // Whether a join's evidence was measured for its current target and keys.
-const evidenceCurrent = (j: Join, ev: JoinEvidence) =>
+export const evidenceCurrent = (j: Join, ev: JoinEvidence) =>
   (ev.to === undefined || ev.to === j.to) && !(Array.isArray(ev.keys) && Array.isArray(j.keys) && keySignature(ev.keys) !== keySignature(j.keys));
 
 // The single-quoted literals `sql` compares the bare column `name` with: name = 'v', name <> 'v',

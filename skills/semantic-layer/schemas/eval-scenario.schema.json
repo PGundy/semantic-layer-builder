@@ -15,7 +15,10 @@
       "required": ["path", "source", "dialect", "views"],
       "description": "How the working semantic root starts.",
       "properties": {
-        "path": { "enum": ["connection"], "description": "connection: the project and one source exist; the skill agent carries on from sl status." },
+        "path": {
+          "enum": ["connection", "export", "export_upgrade"],
+          "description": "connection: the project and one source exist; the skill agent carries on from sl status. export: the project exists and the owner's schema export of the views sits at shared/<source>-schema.csv, not yet imported. export_upgrade: as export, and the script later upgrades the source to the views as its connection."
+        },
         "source": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
         "dialect": { "enum": ["duckdb"] },
         "views": {
@@ -23,10 +26,11 @@
           "minProperties": 1,
           "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
           "additionalProperties": { "type": "string", "minLength": 1 },
-          "description": "View name -> relation; {fixture} is replaced by the fixture directory, relative to the semantic root."
+          "description": "View name -> relation; {fixture} is replaced by the fixture directory, relative to the semantic root. An export intake's schema export is read from these views."
         }
       }
     },
+    "brief_note": { "type": "string", "minLength": 1, "description": "Appended to the owner's brief: what this scenario changes about the owner's situation." },
     "persona": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "A persona prompt in evals/runner/personas/<persona>.md." },
     "budgets": {
       "type": "object",

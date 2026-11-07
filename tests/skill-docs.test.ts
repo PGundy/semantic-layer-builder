@@ -163,7 +163,7 @@ describe("SKILL.md", () => {
 
   test("starts the files in the first turn, before scoping questions", () => {
     expect(skill).toContain("propose a default project name");
-    expect(skill).toMatch(/run `sl init --name <default>`, then `sl add-source` and `sl introspect`/);
+    expect(skill).toMatch(/run `sl setup --source <s> --dialect <d> --env <VAR> --name <default>` \(Phase 1\)[^.]*, which runs `sl init --name <default>`, then writes the source as `sl add-source` would and reads it as `sl introspect` would/);
   });
 });
 
@@ -437,7 +437,7 @@ describe("the baseline in the procedure", () => {
   test("SKILL.md runs the baseline after intake and opens with it", () => {
     expect(skill).toContain("## After intake: the baseline");
     expect(skill).toContain('"here is what I think your tables are; correct me"');
-    expect(skill).toMatch(/run `sl init --name <default>`, then `sl add-source` and `sl introspect` \(Phase 1\)[^.]*`sl baseline` for each/);
+    expect(skill).toMatch(/`sl setup --source <s> --dialect <d> --env <VAR> --name <default>` \(Phase 1\)[^.]*; for a source whose connection is not possible, the export path of Phase 1\. Then `sl baseline` for each/);
     expect(skill.indexOf("## After intake: the baseline")).toBeLessThan(skill.indexOf("## Phase 2: scope and focus"));
     expect(skill).toContain("| Presenting `sl baseline`, turning its candidate measures and splits into fields, what must be confirmed | `references/baseline.md` |");
   });
@@ -1027,7 +1027,7 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["access.md", "row filters always printed", '"row filters: none (every row of every visible model)"'],
   ["access.md", "assigned roles only with --roles", "names assigned roles only when `--roles` was given"],
   // Schema exports and the baseline.
-  ["SKILL.md", "the export path in intake", "`sl export-sql --dialect <d> [--schemas a,b]` prints the read-only catalog query for their database"],
+  ["SKILL.md", "the export path in intake", "`sl export-sql --dialect <d> [--schemas a,b] [--include <p>]... [--exclude <p>]...` prints the read-only catalog query for their database"],
   ["SKILL.md", "the export reads no table data", "it reads only the catalog, never table data"],
   ["SKILL.md", "import detects the format", "The format is detected from the file"],
   ["SKILL.md", "the baseline is worded as guesses", "every heuristic worded as a guess with its reason, never as fact"],
@@ -1058,7 +1058,27 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["interview-guide.md", "the splits question", "Keep only the splits the owner names as dimensions to read back"],
   ["SKILL.md", "scope before following the baseline's profile hint", "scope first (Phase 2) and ignore its closing `sl profile` and `sl draft` hint until the scope is written"],
   ["SKILL.md", "baseline only for sources with a snapshot", "`sl baseline` for each source that now has a snapshot"],
-  ["SKILL.md", "import names the saved file", "`sl import --source <s> --file <the saved file>` (`schema.csv`, or `schema.tsv` from MySQL)"],
+  ["SKILL.md", "import names the saved file", "`sl setup --source <s> --dialect <d> --export <the saved file> --reason \"<why>\"` (`schema.csv`, or `schema.tsv` from MySQL) imports it"],
+  // Connection first (docs/PRD.md FR-1.0).
+  ["SKILL.md", "the first message asks for a connection", "your first message asks for a read-only connection to each source, with one plain sentence of why (Phase 1, Connection first), before anything about an export"],
+  ["SKILL.md", "a connection first, with its reason", "Ask for a read-only connection to each source before anything else, with one plain sentence of why: profiles, join evidence and goldens need the data"],
+  ["SKILL.md", "the role only reads", "and the role only reads"],
+  ["SKILL.md", "the export only after the owner says no, with the reason recorded", "Offer the schema export only after the owner says so, and record why in their words: `sl setup --source <s> --dialect <d> --export <file> --reason \"<why>\"` writes it to `intake.reason`, and you add it to the source's `description`"],
+  ["SKILL.md", "the role SQL is for the owner's administrator", "`sl setup --print-role-sql --dialect <d> --schemas a,b` prints the statements for a least-privilege, read-only role on those schemas. Hand them to the owner for their database administrator to run; never run them for them"],
+  ["SKILL.md", "the role report's warning goes to the owner", "pass any warning it prints (a superuser, write privileges, schemas beyond `intake.schemas`) to the owner in plain words"],
+  ["SKILL.md", "an export source approves definitions", "An export source may approve definitions with the owner, but profiles, join evidence, goldens and drift from data wait on a connection"],
+  ["SKILL.md", "no golden is confirmed on an export source", "no golden can be confirmed (`sl goldens run` and `confirm` refuse)"],
+  ["SKILL.md", "approved joins warn on an export source", "an approved join warns until its evidence exists"],
+  ["SKILL.md", "an export source is never done", "`sl status` never reports `done` (its last phase is `connect`)"],
+  ["SKILL.md", "the upgrade is offered at each session start", "`sl status` names the upgrade on every session start (`next_step.connection_upgrade`), and `sl next` names it (kind `run`) as the `connect` step once every other step is done; at each session start ask the owner once whether a connection is possible now"],
+  ["SKILL.md", "the upgrade's contradictions go back to the owner", "it profiles, checks every join and lists the items the data contradicts, and its next step reads them back (`sl readback --targets <refs>`) for the owner to answer"],
+  ["SKILL.md", "export-sql patterns beside --schemas", "`--include` and `--exclude` take the scope patterns of Phase 2 and are written into the query"],
+  ["intake.md", "connection first, export after", "A schema export or other shared context comes only after the owner says a connection is not possible"],
+  ["intake.md", "the role only reads", "table definitions alone cannot, and the role only reads"],
+  ["intake.md", "the export's reason goes in intake and the description", "the reason recorded in `intake.reason`; write the same reason into the source's `description`"],
+  ["intake.md", "export-sql patterns beside --schemas", 'sl export-sql --dialect postgres --schemas acme --include "fct_*" --include "dim_*" --exclude "*_tmp"'],
+  ["intake.md", "export-sql pushes patterns into the query", "are written into the query at its `sl:table-filter` line, so the export lists only those tables"],
+  ["intake.md", "status names the upgrade every session", "`sl status` names that upgrade on every session start (`next_step.connection_upgrade` in `--json`), and `sl next` names it (kind `run`) as the `connect` step once every other step is done"],
   ["SKILL.md", "MySQL and SQL Server stop at the baseline", "for MySQL and SQL Server only the export and the baseline are supported"],
   ["baseline.md", "focus before profiling", "Ignore the brief's closing `sl profile` and `sl draft` hint until then"],
   ["baseline.md", "the first message shares the item budget", "the baseline items share that budget with the items Phase 0 adds"],

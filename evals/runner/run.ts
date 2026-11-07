@@ -49,7 +49,7 @@ export async function main(argv: string[], io: MainIO): Promise<number> {
     const driver: Driver =
       driverName === "sdk"
         ? await sdkDriver({ model: values.model, env: io.env })
-        : scriptedDriver(loadScript(scenario, file, values.script), clock);
+        : scriptedDriver(loadScript(scenario, file, values.script), clock, scenario.fixture);
     const outDir = resolve(values.out ?? resolve(REPO_ROOT, "evals", "runs"));
     const { runDir, summary, replaced, grades } = await runScenario({ scenario, driver, driverName, clock, outDir, scenarioFile: file });
     const rel = relative(process.cwd(), runDir);
