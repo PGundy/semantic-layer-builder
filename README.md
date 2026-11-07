@@ -33,9 +33,9 @@ The plugin needs [Bun](https://bun.sh) 1.4 or later on `PATH` and one dependency
 cd "<plugin root>" && bun install --frozen-lockfile --production
 ```
 
-Run it again after each plugin update. The plugin ships the `semantic-layer` skill, five agents (`sl-interviewer`, `sl-connector-runner`, `sl-batch-analyst`, `sl-readback-verifier`, `sl-golden-builder`), a `PreToolUse` hook that refuses hand edits to approved items and holds each agent to its role, and a `SessionStart` hook that checks the install. Check it with `claude plugin details semantic-layer-builder`, which lists one skill, five agents and both hooks.
+Run it again after each plugin update. The plugin ships the `semantic-layer` skill, five agents (`sl-interviewer`, `sl-connector-runner`, `sl-batch-analyst`, `sl-readback-verifier`, `sl-golden-builder`), the MCP server below (as the interviewer), `PreToolUse` hooks that refuse hand edits to approved items and hold each agent to its role, and a `SessionStart` hook that checks the install. Check it with `claude plugin details semantic-layer-builder`, which lists one skill, five agents, both hook events and one MCP server.
 
-Then ask the agent something like "help me build a semantic layer for our warehouse". For a multi-agent build, run the interviewer as the main session: `claude --agent semantic-layer-builder:sl-interviewer`. [`docs/plugin.md`](docs/plugin.md) has the details, how to check the install, and why the plugin does not start the MCP server.
+Then ask the agent something like "help me build a semantic layer for our warehouse". For a multi-agent build, run the interviewer as the main session: `claude --agent semantic-layer-builder:sl-interviewer`. [`docs/plugin.md`](docs/plugin.md) has the details, how to check the install, and how the plugin runs the MCP server.
 
 Without the plugin, copy `skills/semantic-layer/` into a project's `.claude/skills/`; the CLI needs Bun and one install in the skill directory:
 
@@ -52,7 +52,7 @@ bun skills/semantic-layer/scripts/mcp/server.ts --root /path/to/semantic        
 claude mcp add semantic-layer -- bun "$PWD/skills/semantic-layer/scripts/mcp/server.ts" --root "$PWD/semantic"   # Claude Code, from a clone
 ```
 
-A client configured by JSON takes `{"command": "bun", "args": ["<path to>/skills/semantic-layer/scripts/mcp/server.ts", "--root", "<path to>/semantic"]}`. Each call runs one command with `--json` in that directory only. [`spec.md`](skills/semantic-layer/references/spec.md) (MCP server) has the protocol details. In Claude Code the plugin's hook does not check MCP tool calls, so the plugin leaves the server off ([`docs/plugin.md`](docs/plugin.md)).
+A client configured by JSON takes `{"command": "bun", "args": ["<path to>/skills/semantic-layer/scripts/mcp/server.ts", "--root", "<path to>/semantic"]}`. Each call runs one command with `--json` in that directory only. [`spec.md`](skills/semantic-layer/references/spec.md) (MCP server) has the protocol details. No tool takes `--show-protected`, and `--role <role>` limits the tools to one agent role's commands (default `interviewer`, every command). The Claude Code plugin starts the server for you ([`docs/plugin.md`](docs/plugin.md)).
 
 ## Run the CLI
 

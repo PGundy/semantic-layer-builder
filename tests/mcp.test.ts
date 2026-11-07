@@ -404,7 +404,7 @@ describe("the docs", () => {
     const spec = flat("skills/semantic-layer/references/spec.md");
     const section = spec.slice(spec.indexOf("## MCP server"), spec.indexOf("## CLI"));
     expect(section.length).toBeGreaterThan(500);
-    expect(section).toContain("`bun skills/semantic-layer/scripts/mcp/server.ts [--root <dir>]`");
+    expect(section).toContain("`bun skills/semantic-layer/scripts/mcp/server.ts [--root <dir>] [--role <role>]`");
     expect(section).toContain(`\`protocolVersion\` \`${PROTOCOL_VERSION}\``);
     expect(section).toContain("named `sl_<command>` with `-` as `_`");
     expect(section).toContain("any other is refused with an invalid-params error naming the server's root, and nothing runs");

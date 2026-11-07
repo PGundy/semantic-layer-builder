@@ -175,6 +175,19 @@ describe("the hook holds each role agent to its role", () => {
     refused(bash(who, `echo x > ${join(root, "models", "wh", "orders.yaml")}`), "refused this shell command");
   });
 
+  test("the interviewer creates access.yaml and sets a golden's and a source's keys with sl set, which it may not write by hand", () => {
+    const who = "semantic-layer-builder:sl-interviewer";
+    allowed(bash(who, run("set access mode open")));
+    allowed(bash(who, run(`set golden:revenue_2025 user '{"department": "finance"}'`)));
+    allowed(bash(who, run("set golden:revenue_2025 tolerance 0")));
+    allowed(bash(who, run('set golden:revenue_2025 reference "Finance close, 2025."')));
+    allowed(bash(who, run('set source:wh description "Read replica of the order system."')));
+    refused(call(who, "Write", { file_path: join(root, "access.yaml"), content: "mode: open\nstatus: draft\n" }), "never edits by hand");
+    refused(call(who, "Write", { file_path: join(root, "goldens", "revenue_2025.yaml"), content: "name: revenue_2025\n" }), "never edits by hand");
+    // Every other role is held to its own commands.
+    refused(bash("sl-golden-builder", run("set golden:revenue_2025 role finance")), "may not run sl set");
+  });
+
   test("the main agent (no agent_type) and other agents are checked as before", () => {
     for (const agent of [undefined, "Explore", "general-purpose", "other-plugin:sl-helper"]) {
       allowed(bash(agent, "ls"));

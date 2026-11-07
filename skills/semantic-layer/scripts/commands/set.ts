@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { isMap, isScalar, isSeq, type Node } from "yaml";
 import type { CommandSpec } from "../lib/command.ts";
@@ -17,7 +18,8 @@ import {
 } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
-import { loadProject } from "../lib/project.ts";
+import { loadProject, paths } from "../lib/project.ts";
+import { createAccess, GOLDEN_KEYS, setGolden, setSource, type SetOutcome, SOURCE_KEYS } from "../lib/set-targets.ts";
 
 // Keys another command owns, with the command to use instead.
 const FIELDS = "fields are added and removed one at a time with sl add-field <source.model> and sl remove-field <source.model.field>";
@@ -39,9 +41,25 @@ function scalarsOnly(v: unknown): boolean {
   return Array.isArray(v) && v.every((x) => x === null || typeof x !== "object");
 }
 
+// Prints the outcome of a golden, source or new access.yaml edit as the other sl set calls print theirs.
+function report(ctx: Parameters<CommandSpec["run"]>[1], ref: string, key: string, unset: boolean, o: SetOutcome): number {
+  const { notes, value, ...rest } = o;
+  if (ctx.json) {
+    ctx.out(formatJson({ ...rest, ref, key, value }));
+    return 0;
+  }
+  if (!o.changed) ctx.out(`${ref} already has ${unset ? `no ${key}` : `that ${key}`}; nothing changed. Next: sl status.`);
+  else ctx.out([...(o.created ? [] : [unset ? `Removed ${key} from ${ref} in ${o.file}.` : `Set ${key} on ${ref} in ${o.file}.`]), ...notes].join("\n"));
+  return 0;
+}
+
 const spec: CommandSpec = {
-  summary: "Set one key of a model, field, metric or the access file, validating before it writes.",
-  usage: "set <source.model | source.model.field | metric:<name> | access> <key> (<value> | --unset)",
+  summary: "Set one key of a model, field, metric, golden, source or the access file, validating before it writes.",
+  usage:
+    "set <source.model | source.model.field | metric:<name> | access> <key> (<value> | --unset)\n" +
+    `       sl set golden:<name> (${GOLDEN_KEYS.join(" | ")}) (<value> | --unset)\n` +
+    `       sl set source:<name> ${SOURCE_KEYS.join(" | ")} (<value> | --unset)\n\n` +
+    "With no access.yaml, sl set access mode open|closed creates a draft one holding that mode.",
   options: { unset: { type: "boolean" } },
   positionals: true,
   async run({ values, positionals }, ctx) {
@@ -52,6 +70,19 @@ const spec: CommandSpec = {
       throw new UserError(
         'Usage: sl set <ref> <key> <value>, or sl set <ref> <key> --unset. Quote a value with spaces: sl set warehouse.orders.revenue description "Order value."',
       );
+    }
+    const named = /^(golden|source):(.*)$/s.exec(ref);
+    if (named) {
+      const [, kind, name] = named as unknown as [string, "golden" | "source", string];
+      if (!/^[a-z][a-z0-9_]*$/.test(name))
+        throw new UserError(`${kind} names are lower-case letters, digits and _, starting with a letter, not ${JSON.stringify(name)}; sl status lists them.`);
+      const set = kind === "golden" ? setGolden : setSource;
+      return report(ctx, ref, key, unset, set(ctx.root, name, key, unset ? undefined : raw));
+    }
+    if (ref === "access" && !existsSync(paths(ctx.root).access)) {
+      if (key !== "mode" || unset)
+        throw new UserError(`No access.yaml yet. Ask the owner the exceptions question first (sl status names it), then create it with sl set access mode open (or closed for an allowlist).`);
+      return report(ctx, ref, key, unset, createAccess(ctx.root, raw!.trim()));
     }
     const loc = locate(ctx.root, ref);
     if (APPROVAL_FIELDS.includes(key)) {

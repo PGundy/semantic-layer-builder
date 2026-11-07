@@ -68,7 +68,7 @@ The CLI reads a connection URL from an environment variable whose name the sourc
 sl add-source --name warehouse --dialect postgres --env WAREHOUSE_URL
 ```
 
-Add a one-line `description` to `sources/warehouse.yaml`, in the owner's words ("Read replica of the order system"); no typed command writes it yet (`SKILL.md`, Hand edits).
+Add a one-line `description` to `sources/warehouse.yaml`, in the owner's words: `sl set source:warehouse description "Read replica of the order system"`.
 
 Then ask the owner to set the variable themselves in the shell that runs the CLI, for example `export WAREHOUSE_URL=postgres://readonly_user:...@host:5432/db`, or in a `.env` file that is outside the semantic root and ignored by version control. Recommend a SELECT-only database role (below). If the owner pastes a URL or password into the chat, do not repeat it or write it to a file, and suggest they rotate it.
 

@@ -7,6 +7,12 @@
   "repository": "https://github.com/PGundy/semantic-layer-builder",
   "license": "MIT",
   "keywords": ["semantic-layer", "metrics", "data", "duckdb", "postgres", "text-to-sql"],
+  "mcpServers": {
+    "semantic-layer": {
+      "command": "bun",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/mcp/server.ts", "--role", "interviewer"]
+    }
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -15,6 +21,16 @@
           {
             "type": "command",
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/hooks/guard-edits.ts\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*semantic-layer.*__sl_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/mcp/guard.ts\"",
             "timeout": 10
           }
         ]

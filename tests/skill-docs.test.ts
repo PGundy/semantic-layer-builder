@@ -12,6 +12,7 @@ import { conditionAttributes, parseCondition } from "../skills/semantic-layer/sc
 import { computeStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
 import { schemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { type ItemKind, schemaProperties } from "../skills/semantic-layer/scripts/lib/edit.ts";
+import { GOLDEN_KEYS, SOURCE_KEYS } from "../skills/semantic-layer/scripts/lib/set-targets.ts";
 import { parseYamlText, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { Snapshot } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { assertLocalPg, FIXED_NOW, initProject, isLocalPg, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
@@ -279,18 +280,24 @@ describe("the router and its phase cards", () => {
     expect(flat).toContain("**Writes without a typed command.**");
   });
 
-  test("creating access.yaml is listed as a write without a typed command, since the typed access edits refuse until it exists", async () => {
+  test("sl set access mode creates access.yaml, so creating it, a golden's role, user, reference and tolerance and a source's description are no longer hand writes", async () => {
     const hand = flat.slice(flat.indexOf("**Writes without a typed command.**"), flat.indexOf("## Topic references"));
-    expect(hand).toContain("Creating `access.yaml`");
-    expect(hand).toContain("on `access` once `access.yaml` exists (until then, on a model the rule concerns)");
-    expect(read("references/phases/access.md")).toContain("no typed command creates it: `SKILL.md`, Hand edits");
+    for (const gone of ["Creating `access.yaml`", "a golden's `reference`", "`tolerance`", "changing its `role` or `user`", "a source file's `description`"]) expect(hand).not.toContain(gone);
+    expect(hand).toContain("or on `access` (create a draft `access.yaml` first with `sl set access mode open|closed` when there is none)");
+    expect(flat).toContain("`sl set` (also `sl set access mode open|closed`, which creates a draft `access.yaml` when there is none, `sl set golden:<g> role|user|reference|tolerance` and `sl set source:<s> description`)");
+    const card = read("references/phases/access.md");
+    expect(card).toContain("create `access.yaml` as a draft with `sl set access mode open` (or `closed` for an allowlist)");
+    expect(card).not.toContain("no typed command creates it");
+    expect(read("references/phases/verify.md")).toContain("`sl set golden:<g> reference");
+    expect(read("references/intake.md")).toContain('`sl set source:warehouse description "Read replica of the order system"`');
     const t = tempRoot();
     try {
       expect((await sl(t.root, ["init", "--name", "t"])).code).toBe(0);
       const q = await sl(t.root, ["question", "add", "access", "--text", "Who may see refunds?"]);
-      const set = await sl(t.root, ["set", "access", "mode", "open"]);
-      expect(`question add access: ${q.code}; set access: ${set.code}`).toBe("question add access: 1; set access: 1");
+      expect(q.code).toBe(1);
       expect(existsSync(join(t.root, "access.yaml"))).toBe(false);
+      expect((await sl(t.root, ["set", "access", "mode", "open"])).code).toBe(0);
+      expect((await sl(t.root, ["question", "add", "access", "--text", "Who may see refunds?"])).code).toBe(0);
     } finally {
       t.cleanup();
     }
@@ -308,6 +315,11 @@ describe("the router and its phase cards", () => {
       if (!m) continue;
       keys++;
       const ref = m[1]!;
+      if (ref.startsWith("golden:") || ref.startsWith("source:")) {
+        const takes = ref.startsWith("golden:") ? GOLDEN_KEYS : SOURCE_KEYS;
+        if (!inv.text.split(/\s+/)[3]!.split("|").every((k) => takes.includes(k))) bad.push(`${inv.doc}:${inv.line} ${inv.text}`);
+        continue;
+      }
       const kinds = ref === "access" ? ["access"] : ref.startsWith("metric:") ? ["metric"] : ref.split(".").length === 2 ? ["model"] : ["dimension", "measure", "join"];
       if (!kinds.some((k) => m[2]! in schemaProperties(k as ItemKind))) bad.push(`${inv.doc}:${inv.line} ${inv.text}`);
     }
