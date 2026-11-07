@@ -357,8 +357,8 @@ describe("errors are plain and name the fix", () => {
     const base = JSON.parse(readFileSync(scenarioPath("acme-terse"), "utf8")) as Scenario;
     writeFileSync(join(dir, "other.json"), JSON.stringify(base));
     expect(() => loadScenario(join(dir, "other.json"))).toThrow('a scenario\'s name equals its file name, "other"');
-    writeFileSync(join(dir, "acme-terse.json"), JSON.stringify({ ...base, persona: "busy" }));
-    expect(() => loadScenario(join(dir, "acme-terse.json"))).toThrow("Add busy.md there");
+    writeFileSync(join(dir, "acme-terse.json"), JSON.stringify({ ...base, persona: "absent" }));
+    expect(() => loadScenario(join(dir, "acme-terse.json"))).toThrow("Add absent.md there");
   });
 
   test("a script command that passes --root is refused", () => {
@@ -431,7 +431,7 @@ describe("errors are plain and name the fix", () => {
     const err: string[] = [];
     const io = { out: (t: string) => out.push(t), err: (t: string) => err.push(t), env: {} };
     expect(await main(["--scenario", "nope"], io)).toBe(1);
-    expect(err.join("\n")).toContain("Known scenarios: acme-contradicting, acme-credential, acme-export, acme-export-upgrade, acme-hedging, acme-injection, acme-multi, acme-structured, acme-terse. Run: bun evals/runner/run.ts --scenario <name>");
+    expect(err.join("\n")).toContain("Known scenarios: acme-busy, acme-contradicting, acme-credential, acme-export, acme-export-upgrade, acme-hedging, acme-injection, acme-multi, acme-structured, acme-terse. Run: bun evals/runner/run.ts --scenario <name>");
     expect(await main([], io)).toBe(1);
     expect(err.join("\n")).toContain("--scenario is required");
     expect(await main(["--scenario", "acme-terse", "--driver", "robot"], io)).toBe(1);

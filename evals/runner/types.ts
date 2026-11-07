@@ -90,6 +90,9 @@ export interface TranscriptTurn {
   tokens: number;
   timestamp: string;
   commands?: CommandRun[];
+  // Files the owner handed back in this turn (a filled review form), by path in the working root
+  // (under shared/), with their text.
+  files?: Record<string, string>;
 }
 
 // Everything a skill turn starts from, and nothing else: a fresh context per owner turn.
@@ -120,11 +123,16 @@ export interface OwnerTurnInput {
   persona_prompt: string;
   skill_message: string;
   history: { speaker: Speaker; text: string }[];
+  // The review forms the skill has written for the owner (.sl/reviews/), by path in the working
+  // root, as they stand: what the owner can open and fill in.
+  forms?: Record<string, string>;
 }
 
 export interface OwnerTurnOutput {
   text: string;
   tokens: number;
+  // Files the owner hands back, by path under shared/ in the working root: a filled review form.
+  files?: Record<string, string>;
 }
 
 export interface Driver {

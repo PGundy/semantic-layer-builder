@@ -108,6 +108,7 @@ const scenarios = readdirSync(SCENARIOS_DIR)
 describe("scripted token counts", () => {
   test("every scenario with a script is counted", () => {
     expect(scenarios.map((f) => f.slice(SCENARIOS_DIR.length + 1))).toEqual([
+      "acme-busy.json",
       "acme-contradicting.json",
       "acme-credential.json",
       "acme-export-upgrade.json",

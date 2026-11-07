@@ -2,12 +2,12 @@
 // budget, and writes the run: transcript.jsonl, summary.json, the final semantic root and, from the
 // graders, grades.json.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { runCli } from "../../skills/semantic-layer/scripts/lib/cli.ts";
 import { gradeRun, writeGrades } from "../graders/index.ts";
 import type { GradeReport } from "../graders/types.ts";
-import { PERSONAS_DIR, readTree, REPO_ROOT, stableJson } from "./files.ts";
+import { ownerFilePath, PERSONAS_DIR, readTree, REPO_ROOT, stableJson } from "./files.ts";
 import { redactSecrets } from "./redact.ts";
 import { ROLE_NAMES, type RoleName } from "../../skills/semantic-layer/scripts/lib/roles.ts";
 import type { Clock, Driver, Scenario, Speaker, StopReason, Summary, TranscriptTurn } from "./types.ts";
@@ -134,6 +134,11 @@ async function prepareRoot(scenario: Scenario, root: string, clock: Clock): Prom
   if (scenario.intake.path !== "connection") await writeSchemaExport(root, scenario, clock);
 }
 
+// The review forms sl review export wrote in the root, by path: what the owner has been handed.
+function reviewForms(root: string): Record<string, string> {
+  return Object.fromEntries(Object.entries(readTree(join(root, ".sl", "reviews"))).map(([f, text]) => [`.sl/reviews/${f}`, text]));
+}
+
 // The owner's brief, with the fixture's reference figures appended when it has them, since the
 // simulated owner has no tools to open the file the brief points at.
 // The scenario's brief_note goes last, under its own heading.
@@ -206,9 +211,20 @@ export async function runScenario(opts: RunOptions): Promise<RunResult> {
         skill_message: skill.text,
         // The owner hears only the interviewer; role agents never talk to the owner.
         history: turns.filter((t) => t.speaker === "skill" || t.speaker === "owner").map((t) => ({ speaker: t.speaker, text: t.text })),
+        forms: reviewForms(root),
       });
-      record("owner", owner.text, owner.tokens);
-      ownerMessage = owner.text;
+      // A file the owner hands back (a filled review form) lands under shared/ before the next skill
+      // turn, with any credential the owner pasted into it redacted, as the transcript copy is: no
+      // file in the root holds a secret, whoever wrote it.
+      const handed = Object.entries(owner.files ?? {}).map(([file, text]) => [file, redactSecrets(text)] as const);
+      for (const [file, text] of handed) {
+        const path = ownerFilePath(root, file);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, text);
+      }
+      record("owner", owner.text, owner.tokens, handed.length ? { files: Object.fromEntries(handed) } : {});
+      // The skill hears which files came back, even when the owner's message says nothing else.
+      ownerMessage = handed.length ? `${owner.text}\n\n(handed back: ${handed.map(([f]) => f).join(", ")})`.trim() : owner.text;
       if (overTokens()) stop = "token_budget";
     }
   } catch (e) {
@@ -237,7 +253,12 @@ export async function runScenario(opts: RunOptions): Promise<RunResult> {
   };
   // Written once the run stops, so a skill turn cannot read earlier turns from the run directory.
   const lines = turns.map((t) =>
-    stableJson({ ...t, text: redactSecrets(t.text), commands: t.commands?.map((c) => ({ ...c, command: redactSecrets(c.command) })) }),
+    stableJson({
+      ...t,
+      text: redactSecrets(t.text),
+      commands: t.commands?.map((c) => ({ ...c, command: redactSecrets(c.command) })),
+      files: t.files && Object.fromEntries(Object.entries(t.files).map(([f, text]) => [f, redactSecrets(text)])),
+    }),
   );
   writeFileSync(join(runDir, "transcript.jsonl"), lines.map((l) => `${l}\n`).join(""));
   writeFileSync(join(runDir, "summary.json"), `${stableJson(summary, 2)}\n`);

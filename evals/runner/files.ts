@@ -20,9 +20,26 @@ export interface ScriptTurn {
   agent?: AgentRole;
 }
 
+// A review form the scripted owner fills in: the form the skill wrote (.sl/reviews/<id>.md or .json),
+// the path under shared/ the owner hands it back at, and the owner's verdict and words per item, by
+// target, and to the open questions, by text the question holds. An item or question left out stays
+// empty, as a person leaves a box unmarked.
+export interface FormFill {
+  form: string;
+  as: string;
+  items?: Record<string, { verdict?: "yes" | "no" | "change"; answer?: string }>;
+  questions?: Record<string, string>;
+}
+
+export interface OwnerScriptTurn {
+  text: string;
+  tokens?: number;
+  fill?: FormFill[];
+}
+
 export interface Script {
   skill: ScriptTurn[];
-  owner: { text: string; tokens?: number }[];
+  owner: OwnerScriptTurn[];
 }
 
 function readStructured(path: string): unknown {
@@ -97,7 +114,33 @@ export function loadScript(scenario: Scenario, scenarioFile: string, override?: 
       }
     }
   }
+  for (const turn of script.owner) {
+    for (const f of turn.fill ?? []) {
+      const problem = fillProblem(f);
+      if (problem) throw new EvalError(`${relative(REPO_ROOT, path)}: ${problem}`);
+    }
+  }
   return script;
+}
+
+const plainPath = (file: string) => {
+  const parts = file.split(/[\\/]/);
+  return !isAbsolute(file) && !!file.trim() && !parts.some((p) => p === ".." || p === "." || p === "");
+};
+
+// Why the owner may not hand back a file at this path, or undefined: what the owner shares lands
+// under shared/ in the working root, as a review form (.md or .json), never in the files sl manages.
+export function ownerFileProblem(file: string): string | undefined {
+  if (!plainPath(file) || !/^shared\/[^\\/]+\.(md|json)$/.test(file))
+    return `the owner hands back "${file}"; a file the owner shares goes at shared/<name>.md or shared/<name>.json in the semantic root, such as shared/rb_0001.md.`;
+  return undefined;
+}
+
+// Why a scripted form fill cannot happen, or undefined (the schema holds the form under .sl/reviews/
+// and the copy under shared/): the owner hands the form back in its own format.
+function fillProblem(f: FormFill): string | undefined {
+  if (extname(f.form) !== extname(f.as)) return `an owner turn fills ${f.form} and hands it back as ${f.as}; keep the form's format (${extname(f.form)}).`;
+  return undefined;
 }
 
 // Why a script's role-agent turns cannot run, or undefined: they need a multi-agent scenario, follow
@@ -135,7 +178,7 @@ function approves(value: unknown): boolean {
 // parse is refused, since the CLI could not read it either.
 export function scriptWriteProblem(file: string, text: string): string | undefined {
   const parts = file.split(/[\\/]/);
-  if (isAbsolute(file) || !file.trim() || parts.some((p) => p === ".." || p === "." || p === "")) {
+  if (!plainPath(file)) {
     return `a scripted write names "${file}"; name a file by its plain path inside the semantic root, such as goldens/<name>.yaml.`;
   }
   if (parts[0]!.toLowerCase() === ".sl") return `a scripted write names "${file}"; .sl/ holds the readbacks and the owner's answers, which only sl readback, sl reply and sl question write. Record an answer with sl reply instead.`;
@@ -153,6 +196,18 @@ export function scriptWriteProblem(file: string, text: string): string | undefin
 export function scriptWritePath(root: string, file: string, text: string): string {
   const problem = scriptWriteProblem(file, text);
   if (problem) throw new EvalError(problem);
+  return linkFreePath(root, file, "a scripted write");
+}
+
+// The absolute path of a file the owner hands back, refusing a path ownerFileProblem refuses and
+// one that leaves the root through a link.
+export function ownerFilePath(root: string, file: string): string {
+  const problem = ownerFileProblem(file);
+  if (problem) throw new EvalError(problem);
+  return linkFreePath(root, file, "the owner's file");
+}
+
+function linkFreePath(root: string, file: string, what: string): string {
   const base = resolve(root);
   const target = join(base, file);
   // Every path from the target up to the root must be absent or a plain file or directory: a link at
@@ -164,7 +219,7 @@ export function scriptWritePath(root: string, file: string, text: string): strin
     } catch {
       linked = false;
     }
-    if (linked) throw new EvalError(`a scripted write of "${file}" would leave the semantic root through a link; write inside the root.`);
+    if (linked) throw new EvalError(`${what} of "${file}" would leave the semantic root through a link; write inside the root.`);
   }
   return target;
 }

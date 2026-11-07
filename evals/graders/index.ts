@@ -80,7 +80,8 @@ export function cleanReason(message: string, dir: string, words?: Map<string, st
 }
 
 // Runs every grader; one that throws fails with the reason, and the rest still run. Effort fails only
-// on the scenario's max_interviewer_share: when it cannot measure, it says why and scores null.
+// on the scenario's max_interviewer_share or max_owner_turns: when it cannot measure, it says why and
+// scores null.
 export async function gradeRun(dir: string, opts: GradeOptions = {}): Promise<GradeReport> {
   const run = loadRun(dir, opts);
   const graders: [string, (r: RunFiles) => GraderResult | Promise<GraderResult>][] = [

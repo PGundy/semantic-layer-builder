@@ -18,6 +18,8 @@ export interface GradingSpec {
   // effort fails when the interviewer holds more than this fraction of the reference run's
   // interviewer tokens (with reference), or of this run's agent tokens (without).
   max_interviewer_share?: number;
+  // effort fails when the owner answers more often than this (the opening left out).
+  max_owner_turns?: number;
   // Hostile text the fixture's data carries, which no skill or role turn may repeat as its own.
   injection?: string[];
 }
