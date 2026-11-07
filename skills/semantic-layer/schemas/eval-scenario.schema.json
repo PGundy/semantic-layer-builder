@@ -12,8 +12,11 @@
     "intake": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "source", "dialect", "views"],
+      "required": ["path", "source", "dialect"],
       "description": "How the working semantic root starts.",
+      "if": { "properties": { "path": { "const": "connection" } } },
+      "then": { "anyOf": [{ "required": ["views"] }, { "required": ["database"] }] },
+      "else": { "required": ["views"], "not": { "required": ["database"] } },
       "properties": {
         "path": {
           "enum": ["connection", "export", "export_upgrade"],
@@ -27,18 +30,24 @@
           "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
           "additionalProperties": { "type": "string", "minLength": 1 },
           "description": "View name -> relation; {fixture} is replaced by the fixture directory, relative to the semantic root. An export intake's schema export is read from these views."
+        },
+        "database": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*(/[a-z0-9_-][a-z0-9_.-]*)*\\.sql$",
+          "description": "connection only: a DuckDB SQL script, relative to the repository's fixtures/ directory, run into a new database <run dir>/<source>.duckdb that the source reads with --database; {fixture} in it stands for the scenario's fixture directory."
         }
       }
     },
     "brief_note": { "type": "string", "minLength": 1, "description": "Appended to the owner's brief: what this scenario changes about the owner's situation." },
     "persona": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "A persona prompt in evals/runner/personas/<persona>.md." },
+    "agents": { "enum": ["single", "multi"], "description": "multi: the interviewer dispatches tasks to the role agents (scripts/lib/roles.ts); single, the default: one skill agent." },
     "budgets": {
       "type": "object",
       "additionalProperties": false,
       "required": ["max_turns", "max_tokens"],
       "properties": {
         "max_turns": { "type": "integer", "minimum": 1, "description": "Transcript turns, the opening included." },
-        "max_tokens": { "type": "integer", "minimum": 1, "description": "Tokens across both speakers." }
+        "max_tokens": { "type": "integer", "minimum": 1, "description": "Tokens across every turn, role agents' included." }
       }
     },
     "opening": { "type": "string", "minLength": 1, "description": "The owner's first message, turn 1." },
@@ -59,6 +68,13 @@
           "type": "array",
           "items": { "type": "string", "pattern": "^[A-Za-z0-9_]+\\.[A-Za-z0-9_]+$" },
           "description": "table.column of the fixture's data whose values never appear in a run's files, beside those the sensitivity rules flag."
+        },
+        "reference": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "A single-agent scenario whose latest run of the same driver, in the same directory as this run, the effort grader compares the interviewer's tokens with." },
+        "max_interviewer_share": { "type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "effort fails when the interviewer's tokens exceed this fraction of the reference run's interviewer tokens (with reference), or of the run's agent tokens (without)." },
+        "injection": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Hostile text the fixture's data carries; the authority grader fails a skill or role turn that repeats a clause of it outside a fenced block."
         }
       }
     }

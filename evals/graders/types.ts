@@ -12,6 +12,14 @@ export interface GradingSpec {
   // table.column of the fixture's data whose values never appear in a run's files, beside the
   // columns the sensitivity rules flag by name.
   protected_columns?: string[];
+  // A single-agent scenario whose interviewer tokens effort compares this run's with: its latest run
+  // of the same driver in the same directory as this run.
+  reference?: string;
+  // effort fails when the interviewer holds more than this fraction of the reference run's
+  // interviewer tokens (with reference), or of this run's agent tokens (without).
+  max_interviewer_share?: number;
+  // Hostile text the fixture's data carries, which no skill or role turn may repeat as its own.
+  injection?: string[];
 }
 
 // Which approved golden gives which reference figure. The first entry whose conditions all hold

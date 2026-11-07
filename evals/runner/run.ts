@@ -48,7 +48,7 @@ export async function main(argv: string[], io: MainIO): Promise<number> {
     const clock: Clock = values.now ? steppingClock(values.now) : () => new Date();
     const driver: Driver =
       driverName === "sdk"
-        ? await sdkDriver({ model: values.model, env: io.env })
+        ? await sdkDriver({ model: values.model, env: io.env, agents: scenario.agents })
         : scriptedDriver(loadScript(scenario, file, values.script), clock, scenario.fixture);
     const outDir = resolve(values.out ?? resolve(REPO_ROOT, "evals", "runs"));
     const { runDir, summary, replaced, grades } = await runScenario({ scenario, driver, driverName, clock, outDir, scenarioFile: file });

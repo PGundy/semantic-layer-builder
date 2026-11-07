@@ -1,4 +1,5 @@
 import type { GradingSpec } from "../graders/types.ts";
+import type { RoleName } from "../../skills/semantic-layer/scripts/lib/roles.ts";
 
 // The eval harness's data: scenarios, the driver contract, transcript turns and run summaries.
 // The JSON Schemas under skills/semantic-layer/schemas/eval-*.schema.json encode the same shapes,
@@ -7,7 +8,7 @@ import type { GradingSpec } from "../graders/types.ts";
 export interface Budgets {
   // Transcript turns, the owner's opening included, after which the run stops.
   max_turns: number;
-  // Tokens across both speakers; the run stops on the turn that goes past it.
+  // Tokens across every turn, role agents' included; the run stops on the turn that goes past it.
   max_tokens: number;
 }
 
@@ -18,7 +19,11 @@ export interface ConnectionIntake {
   source: string;
   dialect: "duckdb";
   // View name -> relation. `{fixture}` is replaced by the fixture directory, relative to the root.
-  views: Record<string, string>;
+  views?: Record<string, string>;
+  // A DuckDB SQL script, relative to the repository's fixtures/ directory, that the runner runs
+  // into a new database, <run dir>/<source>.duckdb, beside the root; the source reads it with
+  // --database. `{fixture}` in the script stands for the scenario's fixture directory (absolute).
+  database?: string;
 }
 
 // An export intake starts the working root with the project only and, at shared/<source>-schema.csv,
@@ -43,6 +48,9 @@ export interface Scenario {
   // Appended to the owner's brief: what this scenario changes about the owner's situation.
   brief_note?: string;
   persona: string;
+  // "multi": the interviewer dispatches tasks to the role agents of lib/roles.ts; "single" (the
+  // default): one skill agent does everything.
+  agents?: "single" | "multi";
   budgets: Budgets;
   // The owner's first message, turn 1 of every transcript.
   opening: string;
@@ -52,13 +60,27 @@ export interface Scenario {
   grading?: GradingSpec;
 }
 
-export type Speaker = "skill" | "owner";
+// The role agents an interviewer dispatches tasks to in a multi-agent run.
+export type AgentRole = Exclude<RoleName, "interviewer">;
+export const AGENT_ROLES: readonly AgentRole[] = ["connector_runner", "batch_analyst", "readback_verifier", "golden_builder"];
+// skill is the interviewer, the one agent that talks to the owner.
+export type Speaker = "skill" | "owner" | AgentRole;
 export type StopReason = "done" | "turn_budget" | "token_budget" | "error";
 
 // One sl command a skill turn ran, as written, without --root.
 export interface CommandRun {
   command: string;
   exit_code: number;
+  // Why the role guard (lib/roles.ts) refused the command; a refused command did not run.
+  refused?: string;
+}
+
+// The task a role agent did inside an interviewer turn, recorded as its own transcript turn.
+export interface RoleTurn {
+  agent: AgentRole;
+  text: string;
+  tokens: number;
+  commands?: CommandRun[];
 }
 
 export interface TranscriptTurn {
@@ -86,6 +108,8 @@ export interface SkillTurnOutput {
   // The skill agent says the session is over.
   done?: boolean;
   commands?: CommandRun[];
+  // The tasks the interviewer dispatched in this turn, in order (multi-agent runs).
+  dispatches?: RoleTurn[];
 }
 
 // The simulated owner answers from a private brief and a persona; like a person, it remembers
@@ -121,6 +145,12 @@ export interface Summary {
   owner_turns: number;
   tokens: number;
   tokens_by_speaker: { skill: number; owner: number };
+  // Multi-agent runs only: "multi", the role agents' turns, the tokens of each role (the interviewer's
+  // are the skill turns') and the interviewer's share of the agents' tokens, owner left out.
+  agents?: "multi";
+  role_turns?: number;
+  tokens_by_role?: Record<RoleName, number>;
+  interviewer_token_share?: number | null;
   stop_reason: StopReason;
   error?: string;
   started_at: string;

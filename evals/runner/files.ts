@@ -3,7 +3,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { evalSchemaIssues, type EvalSchemaKind } from "../../skills/semantic-layer/scripts/lib/validate.ts";
 import { parseYamlText } from "../../skills/semantic-layer/scripts/lib/yaml.ts";
-import { EvalError, type Scenario } from "./types.ts";
+import { AGENT_ROLES, type AgentRole, EvalError, type Scenario } from "./types.ts";
 
 export const REPO_ROOT = resolve(import.meta.dir, "..", "..");
 export const SCENARIOS_DIR = join(REPO_ROOT, "evals", "scenarios");
@@ -16,6 +16,8 @@ export interface ScriptTurn {
   // Files the skill writes by hand, by path relative to the working root, before its sl commands run.
   write?: Record<string, string>;
   done?: boolean;
+  // A task the interviewer turn before it dispatched to this role agent (multi-agent scenarios).
+  agent?: AgentRole;
 }
 
 export interface Script {
@@ -82,6 +84,8 @@ export function loadScript(scenario: Scenario, scenarioFile: string, override?: 
   const path = override ? resolve(override) : isAbsolute(ref) ? ref : join(dirname(scenarioFile), ref);
   if (!existsSync(path)) throw new EvalError(`No script file at ${relative(REPO_ROOT, path)}. Pass --script <file> with one that exists.`);
   const script = checked<Script>("eval-script", path);
+  const problem = agentTurnProblem(scenario, script);
+  if (problem) throw new EvalError(`${relative(REPO_ROOT, path)}: ${problem}`);
   for (const turn of script.skill) {
     for (const [file, text] of Object.entries(turn.write ?? {})) {
       const problem = scriptWriteProblem(file, text);
@@ -94,6 +98,22 @@ export function loadScript(scenario: Scenario, scenarioFile: string, override?: 
     }
   }
   return script;
+}
+
+// Why a script's role-agent turns cannot run, or undefined: they need a multi-agent scenario, follow
+// the interviewer turn that dispatched them, write no file (role agents edit none) and never end the session.
+export function agentTurnProblem(scenario: Scenario, script: Script): string | undefined {
+  const at = script.skill.findIndex((t) => t.agent !== undefined);
+  if (at < 0) return undefined;
+  if (scenario.agents !== "multi") return `skill turn ${at + 1} is a ${script.skill[at]!.agent} task, but scenario ${scenario.name} is not multi-agent; set "agents": "multi" in it or remove the agent turns.`;
+  if (at === 0) return `skill turn 1 is a ${script.skill[0]!.agent} task, but no interviewer turn before it dispatched it; start with an interviewer turn.`;
+  for (const [i, t] of script.skill.entries()) {
+    if (t.agent === undefined) continue;
+    if (!AGENT_ROLES.includes(t.agent)) return `skill turn ${i + 1} names agent "${t.agent}"; use one of ${AGENT_ROLES.join(", ")}.`;
+    if (t.write) return `skill turn ${i + 1} is a ${t.agent} task that writes files; role agents edit no files, so move the write to the interviewer's turn.`;
+    if (t.done !== undefined) return `skill turn ${i + 1} is a ${t.agent} task with "done"; only the interviewer ends the session, so move it to an interviewer turn.`;
+  }
+  return undefined;
 }
 
 // Keys only sl approve and sl goldens confirm write; a hand write that holds one would pose as an approval.

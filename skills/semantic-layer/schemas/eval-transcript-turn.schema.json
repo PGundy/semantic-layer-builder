@@ -7,7 +7,7 @@
   "required": ["turn", "speaker", "text", "tokens", "timestamp"],
   "properties": {
     "turn": { "type": "integer", "minimum": 1 },
-    "speaker": { "enum": ["skill", "owner"] },
+    "speaker": { "enum": ["skill", "owner", "connector_runner", "batch_analyst", "readback_verifier", "golden_builder"], "description": "skill is the interviewer; a role agent's turn is a task the interviewer dispatched." },
     "text": { "type": "string", "description": "Redacted of anything the credential rules flag." },
     "tokens": { "type": "integer", "minimum": 0 },
     "timestamp": { "type": "string", "description": "ISO 8601, from the run's clock." },
@@ -17,7 +17,11 @@
         "type": "object",
         "additionalProperties": false,
         "required": ["command", "exit_code"],
-        "properties": { "command": { "type": "string" }, "exit_code": { "type": "integer" } }
+        "properties": {
+          "command": { "type": "string" },
+          "exit_code": { "type": "integer" },
+          "refused": { "type": "string", "description": "Why the role guard refused the command, which did not run." }
+        }
       }
     }
   }

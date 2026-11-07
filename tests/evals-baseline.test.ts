@@ -92,7 +92,7 @@ describe("the committed baseline", () => {
       // The scripted driver is deterministic, so every band is 0; effort is not a compared grader.
       for (const g of Object.values(s.graders)) expect(g.band).toBe(0);
       expect(s.graders.effort).toBeUndefined();
-      expect(Object.keys(s.graders).sort()).toEqual(["approvals", "connection_first", "figures", "secrets", "selection"]);
+      expect(Object.keys(s.graders).sort()).toEqual(["approvals", "authority", "connection_first", "figures", "secrets", "selection"]);
       expect(s.effort.tokens).toBeGreaterThan(0);
       expect(s.graders.figures!.score).toBe(1);
       expect(s.graders.approvals!.score).toBe(1);
@@ -119,7 +119,7 @@ describe("the committed baseline", () => {
     expect(text.split("\n")[0]).toMatch(/^scenario\s+grader\s+baseline\s+score\s+band\s+status$/);
     for (const s of SMOKE_SCENARIOS) {
       // The scripted runs reach approvals and goldens, so every grader is scored, and scores 1.
-      for (const g of ["figures", "secrets", "selection", "approvals", "connection_first"]) expect(tableRow(text, s, g)).toMatch(/\s1\s+1\s+0\s+ok$/);
+      for (const g of ["figures", "secrets", "selection", "approvals", "connection_first", "authority"]) expect(tableRow(text, s, g)).toMatch(/\s1\s+1\s+0\s+ok$/);
     }
     expect(text).not.toContain("REGRESSION");
     expect(text).toContain("Effort (report only; it never fails the smoke):");
