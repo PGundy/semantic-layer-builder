@@ -34,6 +34,9 @@ const ENTRY_FIELDS = [
 ];
 const COMPONENT_KEYS = ["skills", "commands", "agents", "outputStyles", "workflows", "lspServers", "mcpServers"];
 const HOOK_TOOLS = ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"];
+// The PreToolUse matcher of the MCP hook, and the names Claude Code gives the plugin server's tools.
+const MCP_MATCHER = "mcp__.*semantic-layer.*__sl_.*";
+const MCP_TOOL = (tool: string) => `mcp__plugin_semantic-layer-builder_semantic-layer__${tool}`;
 const INSTALL = "bun install --frozen-lockfile --production";
 const PLUGIN_ID = `${String(entries[0]?.name)}@${String(market.name)}`;
 
@@ -157,10 +160,18 @@ describe("what Claude Code discovers", () => {
     for (const f of files) expect(frontmatter(join(REPO, "agents", f)).name).toBe(f.replace(/\.md$/, ""));
   });
 
-  test("the PreToolUse hook covers the edit tools and Bash, and the SessionStart hook has no matcher", () => {
+  test("the PreToolUse hooks cover the edit tools and Bash, and the MCP server's tools; the SessionStart hook has no matcher", () => {
     const pre = hookFor("PreToolUse");
     expect(new Set(String(pre.matcher).split("|"))).toEqual(new Set(HOOK_TOOLS));
     expect(hookScript(pre.command)).toBe("skills/semantic-layer/scripts/hooks/guard-edits.ts");
+    const pres = hookCommands().filter((h) => h.event === "PreToolUse");
+    expect(pres.length).toBe(2);
+    expect(pres[1]!.matcher).toBe(MCP_MATCHER);
+    expect(hookScript(pres[1]!.command)).toBe("skills/semantic-layer/scripts/mcp/guard.ts");
+    const matches = (name: string) => new RegExp(`^(?:${MCP_MATCHER})$`).test(name);
+    expect(matches(MCP_TOOL("sl_reply"))).toBe(true);
+    expect(matches("mcp__semantic-layer__sl_status")).toBe(true); // the server added by hand as docs/plugin.md shows
+    for (const t of [...HOOK_TOOLS, "mcp__warehouse__query", "mcp__semantic-layer__other"]) expect(matches(t)).toBe(false);
     const start = hookFor("SessionStart");
     expect(start.matcher).toBeUndefined();
     expect(hookScript(start.command)).toBe("skills/semantic-layer/scripts/hooks/check-install.sh");
@@ -172,8 +183,10 @@ describe("what Claude Code discovers", () => {
     }
   });
 
-  test("no MCP server is registered: no .mcp.json and no mcpServers, since the hook does not check MCP tool calls", () => {
-    expect(plugin.mcpServers).toBeUndefined();
+  test("one MCP server is registered in plugin.json, the server as the interviewer, and no .mcp.json", () => {
+    expect(plugin.mcpServers).toEqual({
+      "semantic-layer": { command: "bun", args: [`${ROOT_VAR}/skills/semantic-layer/scripts/mcp/server.ts`, "--role", ROLES.interviewer.name] },
+    });
     expect(existsSync(join(REPO, ".mcp.json"))).toBe(false);
     expect(entries[0]!.mcpServers).toBeUndefined();
   });
@@ -347,6 +360,44 @@ describe("an installed copy of the plugin", () => {
     expect(allowed).toEqual({ code: 0, out: "", err: "" });
   }, 30_000);
 
+  test("the MCP server plugin.json registers starts in the project, serves ./semantic as the interviewer, and refuses --show-protected", async () => {
+    const def = (plugin.mcpServers as Record<string, { command: string; args: string[] }>)["semantic-layer"]!;
+    const server = Bun.spawn([def.command, ...def.args.map((a) => a.replaceAll(ROOT_VAR, copy))], {
+      cwd: project,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, CLAUDE_PLUGIN_ROOT: copy, CLAUDE_PROJECT_DIR: project, SEMANTIC_ROOT: undefined },
+    });
+    const send = (m: Json) => server.stdin.write(`${JSON.stringify(m)}\n`);
+    send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "plugin-test", version: "1" } } });
+    send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+    send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "sl_run", arguments: { source: "x", sql: "select 1", "show-protected": true } } });
+    await server.stdin.end();
+    const out = await new Response(server.stdout).text();
+    expect(await server.exited).toBe(0);
+    const byId = new Map((out.trim().split("\n").map((l) => JSON.parse(l)) as Json[]).map((m) => [m.id, m]));
+    expect(String((byId.get(1)!.result as Json).instructions)).toContain(join(project, "semantic"));
+    const tools = (byId.get(2)!.result as Json).tools as Json[];
+    expect(tools.map((t) => t.name)).toContain("sl_approve");
+    for (const t of tools) expect(Object.keys((t.inputSchema as Json).properties as Json)).not.toContain("show-protected");
+    expect(String((byId.get(3)!.error as Json).message)).toContain("invariant 3");
+    expect(await new Response(server.stderr).text()).toContain("as the interviewer");
+  }, 60_000);
+
+  test("its MCP hook refuses a role agent's call outside its role and allows the interviewer's", () => {
+    const mcpHook = hookCommands().find((h) => h.event === "PreToolUse" && h.matcher === MCP_MATCHER)!.command;
+    const call = (tool: string, agent?: string, input: Json = {}) =>
+      JSON.stringify({ hook_event_name: "PreToolUse", tool_name: MCP_TOOL(tool), tool_input: input, cwd: project, ...(agent ? { agent_type: agent } : {}) });
+    const runner = `${String(plugin.name)}:${ROLES.connector_runner.agent}`;
+    const refused = runHook(mcpHook, call("sl_reply", runner, { readback: "rb", item: "1", verdict: "yes" }));
+    expect(refused.code).toBe(2);
+    expect(refused.err).toContain("only the interviewer");
+    expect(runHook(mcpHook, call("sl_results", runner, { positionals: ["status"], plan: "abc" })).code).toBe(0);
+    expect(runHook(mcpHook, call("sl_reply", `${String(plugin.name)}:${ROLES.interviewer.agent}`))).toEqual({ code: 0, out: "", err: "" });
+    expect(runHook(mcpHook, call("sl_run", undefined, { show_protected: true })).code).toBe(2);
+  }, 30_000);
+
   test("the MCP server the docs name starts from it and answers initialize, tools/list and a call", async () => {
     const server = Bun.spawn(["bun", join(copy, "skills", "semantic-layer", "scripts", "mcp", "server.ts"), "--root", join(project, "semantic")], {
       cwd: project,
@@ -458,7 +509,7 @@ describe(`Claude Code's checks${why}`, () => {
     }
   }, 120_000);
 
-  test.skipIf(!claude)("claude plugin details lists the skill, the five agents, both hooks and no MCP server", () => {
+  test.skipIf(!claude)("claude plugin details lists the skill, the five agents, both hooks and the MCP server", () => {
     const r = runClaude(["--plugin-dir", copy, "plugin", "details", String(plugin.name)]);
     expect(r.code).toBe(0);
     const flat = r.out.replace(/[ \t]+/g, " ");
@@ -467,7 +518,7 @@ describe(`Claude Code's checks${why}`, () => {
     const agents = /Agents \(5\) ([^\n]+)/.exec(flat)?.[1]?.split(", ").map((a) => a.trim()).sort();
     expect(agents).toEqual(Object.values(ROLES).map((x) => x.agent).sort());
     expect(flat).toMatch(/Hooks \(2\) PreToolUse, SessionStart/);
-    expect(flat).toContain("MCP servers (0)");
+    expect(flat).toContain("MCP servers (1) semantic-layer");
   }, 120_000);
 
   test.skipIf(!claude)("every claude command the docs show exists", () => {
