@@ -284,6 +284,10 @@ describe("the pending store", () => {
     expect(r.out).toContain("\n1. warehouse.orders.revenue (measure)\n   - The sum of amount_cents / 100.0.");
     expect(r.out).toContain("\n2. access (access.yaml as a whole)\n");
     expect(r.out).toContain('Only after the owner says yes to an item, approve it: sl approve --target warehouse.orders.revenue --by "<owner>"; sl approve --target access --by "<owner>".');
+    // --json names the same steps, and the sl reply that records the owner's answer first.
+    const j = (await sl(root, ["readback", "--targets", "warehouse.orders.revenue,access", "--json"])).json<{ next: string; next_steps: string[] }>();
+    expect(j.next).toBe('sl reply --readback rb_0002 --item <n> --text "<owner\'s words>" --verdict yes|no|change --by "<owner>"');
+    expect(j.next_steps).toEqual(['sl approve --target warehouse.orders.revenue --by "<owner>"', 'sl approve --target access --by "<owner>"']);
   });
 });
 

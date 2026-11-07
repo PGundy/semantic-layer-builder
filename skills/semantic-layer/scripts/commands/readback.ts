@@ -1,6 +1,7 @@
 import type { CommandSpec } from "../lib/command.ts";
 import { list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
+import { afterYesSteps } from "../lib/export-goldens.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
 import { type GoldenRun, nextReadbackId, renderReadbacks, writePending } from "../lib/readback.ts";
@@ -45,8 +46,18 @@ const spec: CommandSpec = {
       }),
     };
     const path = writePending(ctx.root, pending);
+    // What runs once the owner says yes to an item: its sl approve, or for a golden its sl goldens
+    // confirm, reading the rows from where the readback did; an export source's goldens wait on the
+    // upgrade to a connection, named once per source (decision D2).
+    const rowsFrom = passedFlags(values, ["results", "plan"]);
+    const nextSteps = afterYesSteps(
+      ctx.root,
+      pending.items.map((i) => i.target),
+      (t) => (t.startsWith("golden:") ? `sl goldens confirm --name ${t.slice(7)}${rowsFrom}` : `sl approve --target ${t} --by "<owner>"`),
+    );
+    const next = `sl reply --readback ${pending.readback_id} --item <n> --text "<owner's words>" --verdict yes|no|change --by "<owner>"`;
     if (ctx.json) {
-      ctx.out(formatJson({ readback_id: pending.readback_id, path, items: pending.items }));
+      ctx.out(formatJson({ readback_id: pending.readback_id, path, items: pending.items, next, next_steps: nextSteps }));
       return 0;
     }
     const lines = [`Readback ${pending.readback_id}, stored in ${path}. Read each item to the owner as written, ending with "Approve?".`, ""];
@@ -54,15 +65,7 @@ const spec: CommandSpec = {
       const [head, ...rest] = item.text.split("\n");
       lines.push(`${item.n}. ${head}`, ...rest.map((l) => `   ${l}`), "");
     }
-    // Where confirm reads the rows from, as the readback did.
-    const rowsFrom = passedFlags(values, ["results", "plan"]);
-    lines.push(
-      "Only after the owner says yes to an item, approve it: " +
-        pending.items
-          .map((i) => (i.target.startsWith("golden:") ? `sl goldens confirm --name ${i.target.slice(7)}${rowsFrom}` : `sl approve --target ${i.target} --by "<owner>"`))
-          .join("; ") +
-        ". A no or a change goes into the YAML, then run sl readback again.",
-    );
+    lines.push(`Only after the owner says yes to an item, approve it: ${nextSteps.join("; ")}. A no or a change goes into the YAML, then run sl readback again.`);
     ctx.out(lines.join("\n"));
     return 0;
   },

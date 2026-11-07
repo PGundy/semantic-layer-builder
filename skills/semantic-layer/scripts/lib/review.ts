@@ -10,13 +10,13 @@ import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node
 import { isScalar, isSeq } from "yaml";
 import { commitEdit, type EditOutcome, itemMap, relFile } from "./edit.ts";
 import { UserError } from "./errors.ts";
-import { intakeMode, upgradeCommand } from "./intake.ts";
+import { afterYesSteps } from "./export-goldens.ts";
 import { LEDGER_FILE, type NewLedgerEntry, openLedger, ownerText, shellQuote } from "./ledger.ts";
 import { plainText } from "./output.ts";
 import { loadAccess, loadMetrics, paths } from "./project.ts";
 import { currentHash, PENDING_DIR } from "./readback.ts";
 import { parseTarget } from "./refs.ts";
-import type { Dialect, LedgerEntry, LedgerQuestion, LedgerReply, PendingReadback, SourceConfig } from "./types.ts";
+import type { LedgerEntry, LedgerQuestion, LedgerReply, PendingReadback } from "./types.ts";
 import { schemaIssues } from "./validate.ts";
 import { readYamlIfExists } from "./yaml.ts";
 
@@ -569,23 +569,11 @@ export function applyReview(root: string, form: ReviewForm, by: string, at: stri
   const replied = [...out.recorded.filter((e): e is LedgerReply => e.kind === "reply"), ...out.already_recorded];
   // A yes to an export source's golden waits on that source's upgrade, named once per source at the
   // place of its first golden; every other yes names its own command.
-  const yesSteps: (string | { source: string; dialect: Dialect; goldens: string[] })[] = [];
-  for (const r of replied) {
+  const yeses = replied.filter((r) => {
     const read = pending.items.find((x) => x.n === r.item)?.content_hash;
-    if (r.verdict !== "yes" || read === undefined || currentHash(root, r.target, read) !== read) continue;
-    if (!r.target.startsWith("golden:")) {
-      yesSteps.push(`sl approve --target ${r.target} --by ${owner}`);
-      continue;
-    }
-    const golden = r.target.slice(7);
-    const waits = goldenExportSource(root, golden);
-    const group = waits && yesSteps.find((x) => typeof x !== "string" && x.source === waits.source);
-    if (!waits) yesSteps.push(`sl goldens confirm --name ${golden}`);
-    else if (typeof group === "object") {
-      if (!group.goldens.includes(golden)) group.goldens.push(golden);
-    } else yesSteps.push({ ...waits, goldens: [golden] });
-  }
-  for (const x of yesSteps) steps.push(typeof x === "string" ? x : goldenUpgradeStep(x.source, x.dialect, x.goldens));
+    return r.verdict === "yes" && read !== undefined && currentHash(root, r.target, read) === read;
+  });
+  steps.push(...afterYesSteps(root, yeses.map((r) => r.target), (t) => (t.startsWith("golden:") ? `sl goldens confirm --name ${t.slice(7)}` : `sl approve --target ${t} --by ${owner}`)));
   const edits = [...new Set(replied.filter((r) => r.verdict === "no" || r.verdict === "change").map((r) => r.target))];
   if (edits.length) steps.push(`make the corrections and changes the owner asked for with typed edits (sl set, sl tag, sl ignore-column or sl question add), then sl readback --targets ${edits.join(",")}`);
   for (const r of replied.filter((x) => x.verdict === null))
@@ -595,26 +583,4 @@ export function applyReview(root: string, form: ReviewForm, by: string, at: stri
   if (out.questions_not_found.length) steps.push("sl status lists the open questions that remain");
   if (!steps.length) steps.push("sl status");
   return out;
-}
-
-// The export source a golden reads from (its request.source, when sources/<source>.yaml has intake
-// mode export), or undefined for a connection source or a golden or source that cannot be read, whose
-// own command then says what is wrong. Decision D2: such a golden is confirmed only after the upgrade.
-export function goldenExportSource(root: string, golden: string): { source: string; dialect: Dialect } | undefined {
-  try {
-    const g = readYamlIfExists<{ request?: { source?: unknown } }>(paths(root).golden(golden));
-    const name = g?.request?.source;
-    if (typeof name !== "string" || !name) return undefined;
-    const source = readYamlIfExists<SourceConfig>(paths(root).source(name));
-    if (!source || typeof source !== "object" || intakeMode(source) !== "export") return undefined;
-    return { source: name, dialect: source.dialect };
-  } catch {
-    return undefined;
-  }
-}
-
-// The step for yeses to goldens of one export source: the upgrade, then each confirm.
-export function goldenUpgradeStep(source: string, dialect: Dialect, goldens: readonly string[]): string {
-  const list = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
-  return `${list(goldens.map((g) => `golden:${g}`))} cannot be confirmed until source ${source} has a connection: ${upgradeCommand(source, dialect)}, then ${list(goldens.map((g) => `sl goldens confirm --name ${g}`))}`;
 }

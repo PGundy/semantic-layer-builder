@@ -7,7 +7,8 @@ import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.t
 import { bool, str } from "../lib/command.ts";
 import { goldenHash } from "../lib/approval-hash.ts";
 import { UserError } from "../lib/errors.ts";
-import { intakeMode, upgradeCommand } from "../lib/intake.ts";
+import { goldenUpgradeNext } from "../lib/export-goldens.ts";
+import { intakeMode } from "../lib/intake.ts";
 import type { CompileResult } from "../lib/compiler/index.ts";
 import {
   compareRows,
@@ -95,13 +96,25 @@ function goldenSource(ctx: CommandContext, g: Golden): SourceConfig {
 }
 
 // Decision D2: an export source has no connection, so a golden's rows cannot come from the data.
-function exportRefusal(sub: "run" | "confirm", g: Golden, source: SourceConfig): UserError {
+function exportRefusal(ctx: CommandContext, sub: "run" | "confirm", g: Golden, source: SourceConfig): UserError {
   const what = sub === "confirm" ? "it cannot be confirmed without a connection; nothing was recorded" : "there is no connection to run it on";
   return new UserError(
     `Cannot ${sub} ${g.name}: source "${source.source}" was set up from a schema export, and a golden's rows come from the data, ` +
-      `so ${what}. Keep it as a draft and name it in the handoff. ` +
-      `Once a connection exists: ${upgradeCommand(source.source, source.dialect)}, then sl goldens run --name ${g.name}.`,
+      `so ${what}. Keep it as a draft and name it in the handoff. ${afterUpgrade(ctx, g, source)}`,
   );
+}
+
+// The steps once an export source has a connection: the upgrade, then the confirm when the owner's
+// latest reply to the golden is a yes (the yes stays recorded through the upgrade, and confirm
+// rechecks it against the rows), else the run that shows its rows for a readback.
+function afterUpgrade(ctx: CommandContext, g: Golden, source: SourceConfig): string {
+  let said = false;
+  try {
+    said = latestReply(readReplies(ctx.root), `golden:${g.name}`)?.verdict === "yes";
+  } catch (e) {
+    if (!(e instanceof UserError)) throw e;
+  }
+  return `Once a connection exists: ${goldenUpgradeNext(source.source, source.dialect, [g.name], said ? "confirm" : "run")}.`;
 }
 
 function requireName(values: OptionValues, sub: Subcommand): string {
@@ -374,7 +387,7 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
     ctx.out(formatJson(emitPlan(ctx, planGolden(ctx, golden, source).plan, { name: "goldens", positionals: ["run"], values })));
     return 0;
   }
-  if (intakeMode(source) === "export" && !input.resultsFile && !input.planId) throw exportRefusal("run", golden, source);
+  if (intakeMode(source) === "export" && !input.resultsFile && !input.planId) throw exportRefusal(ctx, "run", golden, source);
   const { compiled, rows: compiledRows, cross } = await runGoldenQueries(ctx, golden, source, input);
   const rows = compiledRows ?? cross ?? [];
   const columns = resultColumns(rows);
@@ -416,8 +429,7 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
     // Decision D2: an export source's golden is confirmed only after the upgrade, so its hint names that.
     ctx.out(
       intakeMode(source) === "export"
-        ? `Source "${source.source}" was set up from a schema export, so ${golden.name} cannot be confirmed yet. ` +
-            `Once a connection exists: ${upgradeCommand(source.source, source.dialect)}, then sl goldens run --name ${golden.name}.`
+        ? `Source "${source.source}" was set up from a schema export, so ${golden.name} cannot be confirmed yet. ${afterUpgrade(ctx, golden, source)}`
         : runHint(golden),
     );
   }
@@ -435,7 +447,7 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   const parsed = parseTolerance(values, golden);
   const source = goldenSource(ctx, golden);
   // Decision D2: a golden's rows come from the data, so an export source cannot confirm one.
-  if (intakeMode(source) === "export") throw exportRefusal("confirm", golden, source);
+  if (intakeMode(source) === "export") throw exportRefusal(ctx, "confirm", golden, source);
   const input = resultsInput(ctx, values);
   if (bool(values, "emit-sql")) {
     ctx.out(formatJson(emitPlan(ctx, planGolden(ctx, golden, source).plan, { name: "goldens", positionals: ["confirm"], values })));
