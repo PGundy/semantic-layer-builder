@@ -1,11 +1,13 @@
 {
   "name": "semantic-layer-builder",
-  "owner": { "name": "semantic-layer-builder contributors" },
+  "description": "The semantic-layer-builder plugin: a skill, five agents and two hooks that build a governed semantic layer with a data owner.",
+  "owner": { "name": "semantic-layer-builder contributors", "url": "https://github.com/PGundy/semantic-layer-builder" },
   "plugins": [
     {
       "name": "semantic-layer-builder",
       "source": "./",
-      "description": "Interview a data owner and build a governed semantic layer across many data sources."
+      "description": "Interview a data owner and build a governed semantic layer across many data sources.",
+      "category": "data"
     }
   ]
 }

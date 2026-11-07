@@ -20,20 +20,28 @@ The output is plain YAML under version control, meant to be read by a chat-with-
 
 ## Install
 
-As a Claude Code plugin:
+As a Claude Code plugin, from your shell (or in a session, `/plugin marketplace add PGundy/semantic-layer-builder`, then `/plugin install semantic-layer-builder@semantic-layer-builder`):
 
-```
-/plugin marketplace add PGundy/semantic-layer-builder
-/plugin install semantic-layer-builder@semantic-layer-builder
+```sh
+claude plugin marketplace add PGundy/semantic-layer-builder
+claude plugin install semantic-layer-builder@semantic-layer-builder
 ```
 
-Or copy `skills/semantic-layer/` into a project's `.claude/skills/`. Either way the CLI needs [Bun](https://bun.sh) 1.4 or later, and one install in the skill directory:
+The plugin needs [Bun](https://bun.sh) 1.4 or later on `PATH` and one dependency install in the plugin root, the directory Claude Code runs the plugin from. When the dependencies are missing, a new session starts with a message that names the command with that directory filled in (usually the `installPath` that `claude plugin list --json` prints):
+
+```sh
+cd "<plugin root>" && bun install --frozen-lockfile --production
+```
+
+Run it again after each plugin update. The plugin ships the `semantic-layer` skill, five agents (`sl-interviewer`, `sl-connector-runner`, `sl-batch-analyst`, `sl-readback-verifier`, `sl-golden-builder`), a `PreToolUse` hook that refuses hand edits to approved items and holds each agent to its role, and a `SessionStart` hook that checks the install. Check it with `claude plugin details semantic-layer-builder`, which lists one skill, five agents and both hooks.
+
+Then ask the agent something like "help me build a semantic layer for our warehouse". For a multi-agent build, run the interviewer as the main session: `claude --agent semantic-layer-builder:sl-interviewer`. [`docs/plugin.md`](docs/plugin.md) has the details, how to check the install, and why the plugin does not start the MCP server.
+
+Without the plugin, copy `skills/semantic-layer/` into a project's `.claude/skills/`; the CLI needs Bun and one install in the skill directory:
 
 ```sh
 cd skills/semantic-layer && bun install
 ```
-
-Then ask the agent something like "help me build a semantic layer for our warehouse".
 
 ### As an MCP server
 
@@ -41,10 +49,10 @@ Any MCP client can call the same commands as tools (`sl_status`, `sl_readback`, 
 
 ```sh
 bun skills/semantic-layer/scripts/mcp/server.ts --root /path/to/semantic        # or: bun run mcp -- --root /path/to/semantic
-claude mcp add semantic-layer -- bun "$PWD/skills/semantic-layer/scripts/mcp/server.ts" --root "$PWD/semantic"   # Claude Code
+claude mcp add semantic-layer -- bun "$PWD/skills/semantic-layer/scripts/mcp/server.ts" --root "$PWD/semantic"   # Claude Code, from a clone
 ```
 
-A client configured by JSON takes `{"command": "bun", "args": ["<path to>/skills/semantic-layer/scripts/mcp/server.ts", "--root", "<path to>/semantic"]}`. Each call runs one command with `--json` in that directory only. [`spec.md`](skills/semantic-layer/references/spec.md) (MCP server) has the protocol details.
+A client configured by JSON takes `{"command": "bun", "args": ["<path to>/skills/semantic-layer/scripts/mcp/server.ts", "--root", "<path to>/semantic"]}`. Each call runs one command with `--json` in that directory only. [`spec.md`](skills/semantic-layer/references/spec.md) (MCP server) has the protocol details. In Claude Code the plugin's hook does not check MCP tool calls, so the plugin leaves the server off ([`docs/plugin.md`](docs/plugin.md)).
 
 ## Run the CLI
 
