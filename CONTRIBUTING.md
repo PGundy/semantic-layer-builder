@@ -15,7 +15,7 @@ The root install also installs the skill's own dependencies (`skills/semantic-la
 
 ## Layout
 
-- `skills/semantic-layer/SKILL.md`: the procedure the agent follows; `references/` holds the phase guides and `references/spec.md` the file formats and the CLI table.
+- `skills/semantic-layer/SKILL.md`: the router the agent starts from (principles, how to read `sl next`, and which phase card to load); `references/phases/` holds one card per phase, the other files in `references/` the topic guides, and `references/spec.md` the file formats and the CLI table.
 - `skills/semantic-layer/scripts/`: the CLI (`sl.ts`, `commands/`, `lib/`), in strict TypeScript.
 - `skills/semantic-layer/schemas/`: JSON Schemas for the YAML files.
 - `tests/`: the test suites; `tests/skill-docs.test.ts` checks the docs against the CLI.
@@ -65,7 +65,7 @@ A change should:
 
 - add or update tests for what it changes; a fix comes with a test that reproduces the problem;
 - update `references/spec.md` and the JSON Schemas when it changes a file format, and the CLI table in `spec.md` when it adds or changes a command or flag (`tests/skill-docs.test.ts` fails when a doc shows a command or flag the CLI lacks, or the table and `--help` disagree);
-- keep `SKILL.md` under about 265 lines: move detail into the reference that owns the topic;
+- keep `SKILL.md` under 120 lines and each phase card under 150: a phase's steps go in its card, detail in the topic reference, and a new phase `sl next` can name gets a row in `SKILL.md`'s router table and a card (`tests/skill-docs.test.ts` checks the caps, the table and every card's commands against `--help`);
 - write docs and comments in the present tense, describing what the code does.
 
 A semantic directory is executable configuration: its `sources/` run setup statements and views on every connection, and its `goldens/` run SQL. Review changes to them, in this repository's examples or anywhere else, as you would review code.

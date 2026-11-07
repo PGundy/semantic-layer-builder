@@ -12,20 +12,20 @@ sl baseline --source warehouse --out notes/baseline-warehouse.md
 
 - Plain output is markdown suited to paste to the owner; `--json` carries the same structure for you to read.
 - `--out` writes the markdown to a path resolved from the semantic root, never outside it. Keep it as a working note: nothing in the layer reads it, and a rerun replaces it.
-- With no `--tables` it covers the in-scope tables (every table while no scope is set). When more than `focus_threshold` are in scope, it covers the top `focus_threshold` by the ranking `sl status` and `sl tables` use, skipping the tables it classifies as noise, and says so in words such as "covers 12 of the 22 in-scope tables", pointing at `sl scope`: that note is the scoping question (Phase 2). Its noise and staging judgement is the same one `sl tables --groups` uses for `suggested_scope`, so the two agree on which tables look like noise.
+- With no `--tables` it covers the in-scope tables (every table while no scope is set). When more than `focus_threshold` are in scope, it covers the top `focus_threshold` by the ranking `sl status` and `sl tables` use, skipping the tables it classifies as noise, and says so in words such as "covers 12 of the 22 in-scope tables", pointing at `sl scope`: that note is the scoping question (`phases/scope.md`). Its noise and staging judgement is the same one `sl tables --groups` uses for `suggested_scope`, so the two agree on which tables look like noise.
 - The brief names sensitive columns but never quotes their values (`SKILL.md`, Principle 8).
 
 ## When to run it
 
-- Right after the first intake of a source, by any path (live, the agent's own SQL tool, an import): its short version is the "what you found" of the first message (`SKILL.md`, Phase 0).
-- Before profiling, when the brief has a left-out note or more tables are in scope than `focus_threshold`: agree the focus first (`sl tables --source <s> --groups`, then `sl scope ... --write`, Phase 2), as `sl status` asks. Ignore the brief's closing `sl profile` and `sl draft` hint until then: it lists every unprofiled table the brief covered, staging tables included, and `sl draft` refuses while the source needs focus. Profile only the tables the owner scoped.
+- Right after the first intake of a source, by any path (live, the agent's own SQL tool, an import): its short version is the "what you found" of the first message (`phases/intake.md`, First turn).
+- Before profiling, when the brief has a left-out note or more tables are in scope than `focus_threshold`: agree the focus first (`sl tables --source <s> --groups`, then `sl scope ... --write`, `phases/scope.md`), as `sl status` asks. Ignore the brief's closing `sl profile` and `sl draft` hint until then: it lists every unprofiled table the brief covered, staging tables included, and `sl draft` refuses while the source needs focus. Profile only the tables the owner scoped.
 - After `sl profile`: keys, low-cardinality columns and near-unique strings are then measured rather than guessed from names. Rerun it before the first interview batch.
 - After a rerun of `sl introspect` or `sl import` that added tables, for the new tables (`--tables`).
 - When the owner widens scope, for the tables added.
 
 ## The opening message
 
-Send a short plain-English version, not the whole brief: "Here is what I think your tables are; correct me." Keep to Principle 6: at most three lines of status, then numbered items, one topic each, up to about 8, each guess labelled as a guess with its reason, and the stop-or-continue line at the end. In the first message of a project the baseline items share that budget with the items Phase 0 adds: that the project name can be changed, the approver's name, and the scoping question, so keep the baseline to about five items there.
+Send a short plain-English version, not the whole brief: "Here is what I think your tables are; correct me." Keep to Principle 6: at most three lines of status, then numbered items, one topic each, up to about 8, each guess labelled as a guess with its reason, and the stop-or-continue line at the end. In the first message of a project the baseline items share that budget with the items the first turn adds: that the project name can be changed, the approver's name, and the scoping question, so keep the baseline to about five items there.
 
 > Here is what I think your tables are, from the table and column names and the keys the database declares; correct me.
 >
@@ -68,7 +68,7 @@ A declared key comes from the catalog; a likely key comes from names (`order_id`
 
 ### Relationships
 
-Declared relationships come from foreign keys; inferred ones from matching names (`customer_id` on orders and on customers). Each carries a probable relationship (many orders to one customer) and, when a table is the many side of another fact (order lines under orders, refunds under orders), a fan-out warning. The warning is a guess like the rest: say "probably several lines per order, to be checked with `sl check-join`". Every relationship the owner keeps becomes a join in the draft model, and `sl check-join` measures it before its readback (Phase 6); the brief's relationship is never the evidence.
+Declared relationships come from foreign keys; inferred ones from matching names (`customer_id` on orders and on customers). Each carries a probable relationship (many orders to one customer) and, when a table is the many side of another fact (order lines under orders, refunds under orders), a fan-out warning. The warning is a guess like the rest: say "probably several lines per order, to be checked with `sl check-join`". Every relationship the owner keeps becomes a join in the draft model, and `sl check-join` measures it before its readback (`phases/joins.md`); the brief's relationship is never the evidence.
 
 ### The star-schema sketch
 
@@ -83,9 +83,9 @@ The source-level section lists the likely facts and the dimensions each joins. U
 | Sum of a quantity (`quantity`) | a `sum` measure with `format: integer` |
 | Distinct count of a foreign key (`customer_id`) | a `count_distinct` measure, named after its join (`customer_count`); say what it counts ("customers who ordered") |
 | Share of a boolean flag (`is_gift`) | a `ratio` metric in `metrics.yaml`: a `count` measure filtered on the flag over the row count |
-| Suggested ratio (a money sum over a row count: average order value) | a `ratio` metric, written once both measures are approved (Phase 7) |
+| Suggested ratio (a money sum over a row count: average order value) | a `ratio` metric, written once both measures are approved (`phases/metrics.md`) |
 
-`sl draft` writes most of the measures itself (sums, counts, distinct counts per join). Compare the brief with the draft: add what the draft left out, such as a filtered count for a share, as a draft measure by hand, and leave the metrics for Phase 7. The list is a menu for "which of these does the business report?", never a list to approve: each measure still needs its rule (which rows, which date, which unit) before its readback.
+`sl draft` writes most of the measures itself (sums, counts, distinct counts per join). Compare the brief with the draft: add what the draft left out, such as a filtered count for a share, as a draft measure with `sl add-field`, and leave the metrics for `phases/metrics.md`. The list is a menu for "which of these does the business report?", never a list to approve: each measure still needs its rule (which rows, which date, which unit) before its readback.
 
 ### Candidate splits
 
@@ -112,9 +112,9 @@ The brief says which facts `sl profile` would measure (key uniqueness, the value
 ## From the baseline to the layer
 
 1. **The opening message**: roles, grains, the sketch and the top questions, as above.
-2. **Scoping** (Phase 2): `noise` and `staging` tables are the exclusions to propose; the left-out note is the focus question. Preview with `sl scope`, then write on the owner's yes.
-3. **Table structure** (Phase 5, step 1): the grain, key and relationship guesses become the first question for each table; the fan-out warnings become the join readbacks.
-4. **Metric definitions**: candidate measures become the menu of measures to define; suggested ratios and shares become metrics in Phase 7.
+2. **Scoping** (`phases/scope.md`): `noise` and `staging` tables are the exclusions to propose; the left-out note is the focus question. Preview with `sl scope`, then write on the owner's yes.
+3. **Table structure** (`phases/interview.md`, step 1): the grain, key and relationship guesses become the first question for each table; the fan-out warnings become the join readbacks.
+4. **Metric definitions**: candidate measures become the menu of measures to define; suggested ratios and shares become metrics in `phases/metrics.md`.
 5. **Splits**: candidate splits become dimensions, named in the business's words; the columns that should not be splits stay out.
 
 Answers given before a table has a model go into its model as soon as `sl draft` writes it, in the same turn: scope the tables the owner answered about, profile them where the source allows it, draft them, then write each answer (`description`, `grain`, `primary_key`, `filter`, `open_questions`). A scoping answer goes straight into `sl scope ... --write` after its preview.

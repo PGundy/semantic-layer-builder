@@ -1,0 +1,27 @@
+# Phase card: verify with goldens
+
+Load this card when `sl next` names phase `verify`, or when the owner gives a figure they trust. It holds writing, running, reading back and confirming goldens. Load `references/verification.md` with it.
+
+**Checklist:** 1. `sl goldens new --name <g> --question "<question>" --request <json>` writes `goldens/<name>.yaml` as a draft. 2. `sl goldens run --name <g>` and compare with the owner's figure. 3. `sl readback --targets golden:<g> --tolerance <t>`, `sl reply`, then `sl goldens confirm --name <g>` on the owner's yes. 4. `sl goldens check`.
+
+## Writing goldens
+
+Pick about ten questions the owner already knows the answer to that together cover the approved measures and metrics. Write each with `sl goldens new --name <g> --question "<question>" --request <json>`, which writes a draft and prints the SQL its request compiles to (`measures` lists measures as `model.measure` and metrics by bare name; there is no `metrics` key), adding optional hand-written `cross_check_sql` taken from the model YAML (a write without a typed command, as are `reference` and `tolerance`: `SKILL.md`, Hand edits); leave `role` and `user` out until `access.yaml` exists. A request's measures share one model, or are one metric (`sl validate` errors otherwise), and validate warns when `cross_check_sql` never names a column a requested measure's `expr` or `filter` reads: write that rule into the SQL. Coverage is a checklist checked at handoff: every approved measure and metric in at least one approved golden, an approved golden that runs as each role in `access.yaml`, restricted or not (a golden with no `role` runs as `default_role`), one crossing a row-filtered join (N/A when no join the role may use reaches its filtered model; `row_filter_joins_without_goldens` in status lists the gaps, and a golden may have no measures, starting from its first dimension, which covers a row-filtered child model with no measures), a golden for every figure the owner gave (`verification.md`). Then:
+
+```
+sl goldens run --name <g>
+```
+
+## Comparing with the owner's figure
+
+Compare the answer with a figure the owner trusts; agree any difference and write it in `reference`, then agree a tolerance for drift between runs (0 for figures finance signs off). A golden may pin a rule rather than a figure (a restricted role's revenue without test accounts): confirm its measured rows only when its `reference` says which rows were checked against a report; otherwise request only the trusted grain (the year's total, not each month). `cross_check_sql` applies each measure exactly as written, with no `round()` (`sl validate` warns). For a ratio compared with a report figure rounded to cents (AOV $134.46), show the unrounded value next to the report figure, agree with the owner that they match, and write the rounding in `reference` ("report shows $134.46; the layer gives 134.4577, the same figure before rounding"); `tolerance` guards drift between runs, not rounding.
+
+## Confirming
+
+Only when the measures it uses are approved, read it back with `sl readback --targets golden:<g> --tolerance <t>` (the rows its request compiles to, `reference` and tolerance), record the owner's answer with `sl reply`, and only on their yes run `sl goldens confirm --name <g>`; it records the rows its request compiles to and refuses without a recorded yes to exactly those rows and that tolerance. It prints any draft fields the request uses; approve them after a readback first. For an approved golden that uses a draft field (`sl validate` warns), approve the field after its readback, then run `sl goldens check --name <g>`: if it passes, the recorded rows stand, and only changed rows need a new confirm. `sl validate` checks every golden's request against access as the user it runs as (an error for an approved golden, a warning for a draft one). Confirm a golden that runs as a role after `access.yaml` is approved, or recheck it and read it back after every change to that role; one confirmed under a draft stays valid once access is approved when its role and user are unchanged and `sl goldens check` passes; `confirm` warns when the role is defined only in a draft `access.yaml` and records `confirmed_as`, and changing `role` or `user` on an approved golden means confirming again on the owner's yes (`sl validate` warns until then). A role in `roles_without_goldens` keeps `next_step` at verify until a golden that runs as that role is written and confirmed. A mismatch sends you back to the interview for that measure.
+
+## Checking
+
+`sl goldens check` compiles every approved golden's request from the current YAML, runs it (and its `cross_check_sql`) and reports drift from the recorded rows; run it after any change. A golden pins a figure the layer computes to a figure the owner trusts: an edit to an approved measure, metric or row filter that changes the figure fails every golden that uses it once the edit is approved again, and until then those goldens fail as refused. Tell the owner so when you describe goldens.
+
+On an export source no golden can be confirmed until the source has a connection (`references/intake.md`): write and read back the definitions, record the owner's yes, and confirm after the upgrade.

@@ -149,7 +149,7 @@ bun test tests/scope.test.ts         # one suite
 eval "$(bash scripts/pg-local.sh)"   # a local Postgres for the live tests, no Docker; stop it with --stop
 ```
 
-All test and fixture data is synthetic. [`CONTRIBUTING.md`](CONTRIBUTING.md) covers setup, the live Postgres tests and the checks a change must pass. The skill's procedure is [`skills/semantic-layer/SKILL.md`](skills/semantic-layer/SKILL.md), with its phase guides under [`references/`](skills/semantic-layer/references/).
+All test and fixture data is synthetic. [`CONTRIBUTING.md`](CONTRIBUTING.md) covers setup, the live Postgres tests and the checks a change must pass. The skill's procedure starts at [`skills/semantic-layer/SKILL.md`](skills/semantic-layer/SKILL.md), a short router that maps each phase `sl next` names to one phase card under [`references/phases/`](skills/semantic-layer/references/phases/); the topic references beside them hold the detail.
 
 ## License
 

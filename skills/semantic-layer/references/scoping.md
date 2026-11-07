@@ -6,7 +6,7 @@ A real database holds staging copies, backups, dated snapshots, migration bookke
 
 Rule: when a source has more in-scope tables than `settings.focus_threshold` in `semantic.yaml` (12 as `sl init` writes it), always ask the owner whether to focus before profiling. Below the threshold, still check that obvious noise is excluded.
 
-Run `sl init`, `sl add-source` and `sl introspect` before the first scoping question (SKILL.md Phase 0), so the next turn can resume from the files.
+Run `sl init`, `sl add-source` and `sl introspect` before the first scoping question (`phases/intake.md`, First turn), so the next turn can resume from the files.
 
 ## Pattern syntax
 

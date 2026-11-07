@@ -6,10 +6,10 @@ Goldens run the reference compiler (`spec.md`, Reference compiler): an edit to a
 
 ## When to write them
 
-Draft goldens may be written at any phase. Write one as soon as the owner offers a trusted figure, or ties a sign-off to matching one ("I'll approve revenue once 2025 matches the close"), and `sl goldens run` it during the interview. Phase 9 rounds the set out to about ten.
+Draft goldens may be written at any phase. Write one as soon as the owner offers a trusted figure, or ties a sign-off to matching one ("I'll approve revenue once 2025 matches the close"), and `sl goldens run` it during the interview. The verify phase (`phases/verify.md`) rounds the set out to about ten.
 
-- Until `access.yaml` exists, leave `role` and `user` out; `sl validate` warns about a golden that names a role with no access file. Add them in Phase 9, so each role in `access.yaml` has a golden that runs as it.
-- A draft golden may name a measure, dimension or metric that does not exist yet; `sl validate` warns rather than errors, so the owner's figure is recorded as soon as they give it, before its measure is written. Add an open question on the model that measure belongs to, naming the golden, so the warning stands with its reason (`SKILL.md`, Phase 10). An approved golden naming an unknown field is an error.
+- Until `access.yaml` exists, leave `role` and `user` out; `sl validate` warns about a golden that names a role with no access file. Add them in the verify phase, so each role in `access.yaml` has a golden that runs as it.
+- A draft golden may name a measure, dimension or metric that does not exist yet; `sl validate` warns rather than errors, so the owner's figure is recorded as soon as they give it, before its measure is written. Add an open question on the model that measure belongs to, naming the golden, so the warning stands with its reason (`phases/handoff.md`). An approved golden naming an unknown field is an error.
 - Confirm a golden only after the measures, dimensions and metrics its request uses are approved.
 - Confirm a golden that runs as a role after `access.yaml` is approved. One confirmed while access is still a draft is rechecked with `sl goldens check --name <g>` and read back to the owner after every change to that role; `sl goldens confirm` warns when the golden's role is defined only in a draft `access.yaml`. Once access is approved, such a golden stays valid, with no new confirm, when its `role` and `user` are unchanged and `sl goldens check` passes.
 

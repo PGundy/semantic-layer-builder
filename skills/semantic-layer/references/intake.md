@@ -68,7 +68,7 @@ The CLI reads a connection URL from an environment variable whose name the sourc
 sl add-source --name warehouse --dialect postgres --env WAREHOUSE_URL
 ```
 
-Add a one-line `description` to `sources/warehouse.yaml` by hand, in the owner's words ("Read replica of the order system").
+Add a one-line `description` to `sources/warehouse.yaml`, in the owner's words ("Read replica of the order system"); no typed command writes it yet (`SKILL.md`, Hand edits).
 
 Then ask the owner to set the variable themselves in the shell that runs the CLI, for example `export WAREHOUSE_URL=postgres://readonly_user:...@host:5432/db`, or in a `.env` file that is outside the semantic root and ignored by version control. Recommend a SELECT-only database role (below). If the owner pastes a URL or password into the chat, do not repeat it or write it to a file, and suggest they rotate it.
 
@@ -123,7 +123,7 @@ sl add-source --name lake --dialect duckdb --view "web_events=read_parquet('../d
 
 Run `find` from the semantic root, so its paths are the ones a view uses. Read the listing for datasets: a folder of yearly or dated Parquet files is one dataset, so its view reads them all with a glob (`read_parquet('../data/lake/web_events/*.parquet')`); a single file is one view. Make one view per dataset, including the ones that look like noise (archives, `tmp` copies, dated exports), so `sl tables --groups` flags them and the owner excludes them in scoping. Show the owner the dataset names, not the file list.
 
-**Adding or changing a view later.** Edit `connection.views` in `sources/<source>.yaml` in place, one `name: relation` line per dataset, then rerun `sl introspect --source <source>`. There is no need to delete the source file or rerun `add-source`. A view for a dataset the owner rules out can simply be removed from the list. `sl validate` reports an error, naming the key and never the value, when `connection.database`, `connection.setup` or `connection.views` holds something that looks like a credential, so a hand edit cannot put a key in the repo unnoticed.
+**Adding or changing a view later.** Rerun `sl setup --source <source> --dialect duckdb` with one `--view name=relation` per dataset the source keeps, old and new: `--view` replaces `connection.views` in `sources/<source>.yaml`, editing it in place, and reads the catalog again (or rerun `sl introspect --source <source>` after the owner edits the file). There is no need to delete the source file or rerun `add-source`. A view for a dataset the owner rules out can simply be removed from the list. `sl validate` reports an error, naming the key and never the value, when `connection.database`, `connection.setup` or `connection.views` holds something that looks like a credential, so a hand edit cannot put a key in the repo unnoticed.
 
 The views of an in-memory DuckDB source live in schema `main`: `sl tables` prints `main.web_events`. A scope pattern without a dot (`web_*`) matches the view name, and `main.*` matches them all; the source name (`lake.*`) matches nothing.
 
@@ -138,7 +138,7 @@ sl tables --source warehouse
 
 `introspect` captures schemas, tables, columns, types, declared keys and row estimates. Rerun it when the owner adds tables or says tables changed, and on the schedule the owner agreed. A rerun prints what changed since the previous snapshot, tables added and removed and columns added, removed and retyped, and `--json` carries it as `changes`; `sl import` does the same when a source already has a snapshot. What to do with each change is in `interview-guide.md` (Keeping the layer current). Views, including every view of a DuckDB lake, have no row count yet; introspect says so ("5 views have no row count yet; sl profile measures them.") and `sl tables` shows `?` until `sl profile` runs. When the owner needs sizes to choose a focus, profile the candidate tables first or count one with `sl run --source <s> --sql "select count(*) from <view>"`. Then go to scoping. Introspect ends with a `Next:` hint: `sl profile --source <s>` only while some in-scope table is not profiled, otherwise `sl status` (or `sl validate` when a modeled table changed). `sl tables` shows each table's profile as `yes`, `partial` (some columns profiled, but columns a rerun added or retyped not) or `no`, as `profile_state` in `--json`; `sl status` uses the same rule.
 
-Do this in the first turn of a new project, right after `sl init` and `sl add-source` and before asking any scoping question (SKILL.md Phase 0): a later turn resumes only from what is written under the semantic root.
+Do this in the first turn of a new project, right after `sl init` and `sl add-source` and before asking any scoping question (`phases/intake.md`, First turn): a later turn resumes only from what is written under the semantic root.
 
 ## The query-plan protocol
 
