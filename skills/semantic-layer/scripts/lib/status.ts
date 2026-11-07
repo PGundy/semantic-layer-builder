@@ -898,7 +898,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       message:
         status.metrics.draft > 0
           ? `${status.metrics.draft} metric(s) in metrics.yaml are drafts. Read them back to the owner and approve what they confirm.`
-          : "No metrics yet. Ask the owner which ratios and derived figures they report, and write them to metrics.yaml as drafts.",
+          : "No metrics yet. Ask the owner which ratios and derived figures they report, and add each as a draft with sl add-metric (sl add-metric --help lists its flags).",
       command: status.metrics.draft > 0 ? ctx.signOff(draftMetricTargets(status.draft_metrics)) : "sl validate",
     };
   }

@@ -425,7 +425,7 @@ describe("sl rename", () => {
   test("refuses taken names, models, access and bad names", async () => {
     expect((await sl(root, ["rename", "warehouse.orders.revenue", "customer"])).err).toContain('warehouse.orders already has a join "customer"');
     expect((await sl(root, ["rename", "metric:net_revenue", "average_order_value"])).err).toContain('already has a metric "average_order_value"');
-    expect((await sl(root, ["rename", "warehouse.orders", "sales"])).err).toContain("A model's name is its file name");
+    expect((await sl(root, ["rename", "warehouse.orders", "customers"])).err).toContain('Source warehouse already has a model "customers"');
     expect((await sl(root, ["rename", "access", "x"])).err).toContain("access.yaml has no name to rename");
     expect((await sl(root, ["rename", "warehouse.orders.revenue", "Gross"])).err).toContain("is not a name");
     expect((await sl(root, ["rename", "warehouse.orders.nope", "x"])).err).toContain('No dimension, measure or join "nope"');

@@ -314,11 +314,12 @@ class Validator {
   // The join references of each dimension expr, by source.model.dimension, as checkModels resolved them.
   dimensionRefs = new Map<string, JoinRef[]>();
 
-  // overrides maps an absolute file path to text read in place of the file's, so an edit can be
-  // validated before it is written.
+  // overrides maps an absolute file path to text read in place of the file's, and removed lists
+  // files read as if they were gone, so an edit can be validated before it is written.
   constructor(
     readonly root: string,
     readonly overrides?: ReadonlyMap<string, string>,
+    readonly removed?: ReadonlySet<string>,
   ) {}
 
   error(file: string, path: string, message: string): void {
@@ -338,7 +339,7 @@ class Validator {
   // other sl commands open <stem>.yaml. A file only in overrides is read as if it were written.
   yamlEntries(dir: string): { file: string; stem: string }[] {
     const added = [...(this.overrides?.keys() ?? [])].filter((p) => dirname(p) === dir && /\.ya?ml$/.test(p)).map((p) => basename(p));
-    const files = [...new Set([...yamlFiles(dir), ...added])].sort();
+    const files = [...new Set([...yamlFiles(dir), ...added])].filter((f) => !this.removed?.has(join(dir, f))).sort();
     const out: { file: string; stem: string }[] = [];
     for (const f of files) {
       const stem = f.replace(/\.ya?ml$/, "");
@@ -420,7 +421,8 @@ class Validator {
     }
 
     const metricsPath = join(this.root, "metrics.yaml");
-    if (existsSync(metricsPath)) this.metrics = this.load<MetricsFile>(metricsPath, "metrics", "metrics");
+    // A metrics.yaml only in overrides is read as if it were written (sl add-metric creates one).
+    if (existsSync(metricsPath) || this.overrides?.has(metricsPath)) this.metrics = this.load<MetricsFile>(metricsPath, "metrics", "metrics");
     const accessPath = join(this.root, "access.yaml");
     // An access.yaml only in overrides is read as if it were written (sl set access mode creates one).
     this.accessPresent = existsSync(accessPath) || !!this.overrides?.has(accessPath);
@@ -2363,9 +2365,10 @@ export function unconfirmedGoldenMessage(name: string): string {
 // Validates every file under a semantic root: structure against the JSON Schemas, then references.
 // A file with structural errors gets no semantic checks of its own, but other files still resolve
 // references into the parts of it that have the expected shape. `overrides` holds the text of files
-// as an edit would write them, by absolute path; each must be an existing file.
-export function validateProject(root: string, overrides?: ReadonlyMap<string, string>): Issue[] {
-  return new Validator(root, overrides).run();
+// as an edit would write them, by absolute path (a model, golden, metrics or access file may be new),
+// and `removed` the files the edit removes.
+export function validateProject(root: string, overrides?: ReadonlyMap<string, string>, removed?: ReadonlySet<string>): Issue[] {
+  return new Validator(root, overrides, removed).run();
 }
 
 // The key holding a golden's hand-written cross-check query: cross_check_sql, else its older name sql.

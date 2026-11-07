@@ -45,7 +45,7 @@ export interface NextAction {
 }
 
 const REPLY = (id: string) => `sl reply --readback ${id} --item <n> --text "<owner's words>" --verdict yes|no|change --by "<owner>"`;
-const EDITS = "a typed edit (sl set, sl tag, sl ignore-column, sl question add, sl add-field, sl remove-field or sl rename)";
+const EDITS = "a typed edit (sl set, sl tag, sl ignore-column, sl question add, sl add-field, sl remove-field, sl add-metric, sl remove-metric or sl rename)";
 
 // A target's content hash as it now stands, or null when it no longer exists. A golden's hash covers
 // rows only a run gives, so while its file exists the hash a readback stored stands, as sl reply reads it.
