@@ -1,9 +1,9 @@
 // Typed edits: the shared steps of sl set, sl tag, sl ignore-column, sl question, sl add-field,
-// sl remove-field and sl rename. An edit changes YAML files through editYamlText, so the owner's
+// sl remove-field, sl add-metric, sl remove-metric and sl rename. An edit changes YAML files through editYamlText, so the owner's
 // comments and every untouched byte survive; the result is validated as the project would read it,
 // and it is written only when it adds no error.
-import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import { accessEntry, carriesHash, metricEntries, modelEntries, type ApprovalEntry } from "./approval-hash.ts";
 import { UserError } from "./errors.ts";
@@ -126,9 +126,10 @@ function sourceDialect(root: string, source: string): Dialect | undefined {
   }
 }
 
-// Every approval entry of the project, reading each file in `overrides` as its text there; files
-// that cannot be read are skipped.
-function projectEntries(root: string, overrides: ReadonlyMap<string, string>): ApprovalEntry[] {
+// Every approval entry of the project, reading each file in `overrides` as its text there (a model
+// file only there counts as written) and leaving out the files in `removed`; files that cannot be
+// read are skipped.
+function projectEntries(root: string, overrides: ReadonlyMap<string, string>, removed: ReadonlySet<string> = new Set()): ApprovalEntry[] {
   const read = (p: string): unknown => {
     try {
       const text = overrides.get(p);
@@ -142,7 +143,8 @@ function projectEntries(root: string, overrides: ReadonlyMap<string, string>): A
     const dir = paths(root).modelsDir(source);
     if (!existsSync(dir)) continue;
     const models = new Map<string, Model>();
-    for (const f of readdirSync(dir).filter((x) => x.endsWith(".yaml")).sort()) {
+    const added = [...overrides.keys()].filter((p) => dirname(p) === dir).map((p) => basename(p));
+    for (const f of [...new Set([...readdirSync(dir), ...added])].filter((x) => x.endsWith(".yaml") && !removed.has(join(dir, x))).sort()) {
       const m = read(join(dir, f));
       if (m && typeof m === "object") models.set(stem(f), m as Model);
     }
@@ -159,10 +161,10 @@ function projectEntries(root: string, overrides: ReadonlyMap<string, string>): A
 // The approved items whose content an edit changes, unless it restores the content their
 // approved_hash records: each now needs a readback and a new approval. `renamed` maps an item's
 // ref after the edit to its ref before, for an item the edit renames.
-function changedApprovals(root: string, after: ReadonlyMap<string, string>, renamed?: ReadonlyMap<string, string>): string[] {
+function changedApprovals(root: string, after: ReadonlyMap<string, string>, renamed?: ReadonlyMap<string, string>, removed?: ReadonlySet<string>): string[] {
   const was = new Map(projectEntries(root, new Map()).map((e) => [e.ref, e]));
   const out: string[] = [];
-  for (const e of projectEntries(root, after)) {
+  for (const e of projectEntries(root, after, removed)) {
     const old = was.get(renamed?.get(e.ref) ?? e.ref);
     if (!old || old.hash === e.hash || e.item.status !== "approved") continue;
     if (!carriesHash(e.item) || String(e.item.approved_hash).trim() !== e.hash) out.push(e.ref);
@@ -184,6 +186,24 @@ export interface FileEdit {
   edit: (doc: Document) => void;
 }
 
+// A file the edits create or move. `create` maps a file that must not exist yet to the text its
+// edits start from. `move` writes the edited text of `from` to `to`, which must not exist yet, and
+// removes `from`.
+export interface CommitOptions {
+  create?: ReadonlyMap<string, string>;
+  move?: { from: string; to: string };
+}
+
+// Refuses a path where something already is: a file, or a link, even one to nothing.
+function assertFree(root: string, file: string): void {
+  try {
+    lstatSync(file);
+  } catch {
+    return;
+  }
+  throw new UserError(`Refusing to write ${relFile(root, file)}: something is already there (a file, or a link). Nothing was written. Run sl validate.`);
+}
+
 export interface EditsOutcome {
   changed: boolean;
   // The files the edits changed, relative to the semantic root, sorted.
@@ -202,23 +222,36 @@ export function commitEdits(
   what: string,
   guard?: (reapprove: string[]) => void,
   renamed?: ReadonlyMap<string, string>,
+  opts: CommitOptions = {},
 ): EditsOutcome {
   const byFile = new Map<string, FileEdit["edit"][]>();
   for (const e of edits) byFile.set(e.file, [...(byFile.get(e.file) ?? []), e.edit]);
+  const { create, move } = opts;
+  if (move && !byFile.has(move.from)) byFile.set(move.from, []);
   const after = new Map<string, string>();
+  const removed = new Set<string>();
   for (const [file, fns] of byFile) {
     const rel = relFile(root, file);
     assertInside(root, file);
-    const before = readFileSync(file, "utf8");
+    const seed = create?.get(file);
+    if (seed !== undefined) assertFree(root, file);
+    const before = seed ?? readFileSync(file, "utf8");
     const text = editYamlText(before, (doc) => fns.forEach((fn) => fn(doc)), rel);
-    if (text !== before) after.set(file, text);
+    if (move?.from === file) {
+      assertInside(root, move.to);
+      assertFree(root, move.to);
+      after.set(move.to, text);
+      removed.add(file);
+    } else if (text !== before || seed !== undefined) after.set(file, text);
   }
   if (!after.size) return { changed: false, files: [], reapprove: [] };
-  const reapprove = changedApprovals(root, after, renamed);
+  const reapprove = changedApprovals(root, after, renamed, removed);
   guard?.(reapprove);
-  const key = (i: { file: string; path: string; message: string }) => `${i.file}\0${i.path}\0${i.message}`;
+  // An error the project already has in a moved file counts as known in the file it moves to.
+  const moved = move ? [relFile(root, move.from), relFile(root, move.to)] : undefined;
+  const key = (i: { file: string; path: string; message: string }) => `${moved && i.file === moved[0] ? moved[1] : i.file}\0${i.path}\0${i.message}`;
   const known = new Set(validateProject(root).filter((i) => i.level === "error").map(key));
-  const added = validateProject(root, after).filter(
+  const added = validateProject(root, after, removed).filter(
     (i) => i.level === "error" && !known.has(key(i)) && !reapprove.some((r) => i.message.startsWith(`${r} changed since it was approved`)),
   );
   if (added.length) {
@@ -227,8 +260,10 @@ export function commitEdits(
       `Cannot ${what}: the result would not validate, so nothing was written:\n${lines.join("\n")}\nFix the value and run it again; sl validate lists the project's errors.`,
     );
   }
-  for (const [file, text] of after) writeFileSync(file, text);
-  return { changed: true, files: [...after.keys()].map((f) => relFile(root, f)).sort(), reapprove };
+  // A created or moved file is written only where nothing is, and the moved file is removed last.
+  for (const [file, text] of after) writeFileSync(file, text, create?.has(file) || move?.to === file ? { flag: "wx" } : undefined);
+  for (const file of removed) unlinkSync(file);
+  return { changed: true, files: [...after.keys(), ...removed].map((f) => relFile(root, f)).sort(), reapprove };
 }
 
 // commitEdits for one file.

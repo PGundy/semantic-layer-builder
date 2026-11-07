@@ -59,7 +59,7 @@
     },
     {
       "text": "Approved all seven on your yes. Profiles, the check of the join from events to sessions, goldens and drift from data wait on a connection, so the layer is not done. Is a read-only connection to the lake possible yet? With one I upgrade the lake in place; your answers and approvals stay.\n\nStop here or continue?",
-      "tokens": 1277,
+      "tokens": 1288,
       "sl": [
         ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Yes, all seven are right. Approve them.", "--verdict", "yes", "--by", "Dana Ruiz"],
         ["reply", "--readback", "rb_0001", "--item", "2", "--text", "Yes, all seven are right. Approve them.", "--verdict", "yes", "--by", "Dana Ruiz"],
@@ -81,7 +81,7 @@
     },
     {
       "text": "I upgraded the lake to the connection: your answers and approvals stayed, the three tables are profiled and the join from events to sessions is checked: every event matches one session, and each session appears once, so the join repeats no rows. The data contradicts one draft:\n\n1. lake.web_events.event_type (dimension): page views count only page_view, but the data also holds search (2,542 rows), add_to_cart (2,231), checkout_start (1,736) and purchase (1,736), and no description names them. Are those the other event types, and does any of them count as a page view?\n\nStop here or continue?",
-      "tokens": 1648,
+      "tokens": 1668,
       "sl": [
         ["status"],
         ["next"],
@@ -99,7 +99,7 @@
     },
     {
       "text": "Approved on your yes. Where things stand: the lake reads through a connection now, its three tables are profiled and every join has evidence. Signed off: sessions, marketing spend, page views, event types and the join from events to sessions. Next time I draft goldens for 2025 sessions and spend and run them against the data for you to confirm.\n\nStop here or continue?",
-      "tokens": 907,
+      "tokens": 917,
       "done": true,
       "sl": [
         ["reply", "--readback", "rb_0003", "--item", "1", "--text", "Yes, that's right. Approve it.", "--verdict", "yes", "--by", "Dana Ruiz"],

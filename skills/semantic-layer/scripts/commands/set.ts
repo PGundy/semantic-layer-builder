@@ -25,7 +25,7 @@ import { createAccess, GOLDEN_KEYS, setGolden, setSource, type SetOutcome, SOURC
 const FIELDS = "fields are added and removed one at a time with sl add-field <source.model> and sl remove-field <source.model.field>";
 const OWNED: Record<string, string> = {
   name: "renaming changes every reference to the item, which sl rename <ref> <new_name> updates in one write",
-  model: "a model's name is its file name, and sl rename does not rename models: rename the file and its model key together, update every reference, and run sl validate",
+  model: "a model's name is its file name, and renaming it moves the file and updates every reference, which sl rename <source.model> <new_name> does in one write",
   dimensions: FIELDS,
   measures: FIELDS,
   joins: FIELDS,

@@ -73,7 +73,7 @@ Always quote real values and counts; never ask an abstract question when the pro
 
 ## Recording answers in model YAML
 
-Write each answer with a typed edit, which keeps the file's comments and order and leaves `status` as it is: `sl set` (a model's or field's keys), `sl tag`, `sl add-field`, `sl remove-field`, `sl rename` and `sl question add|resolve`. A write no typed command covers follows `SKILL.md` (Hand edits). The YAML below shows what the edits write; field formats are in `spec.md`.
+Write each answer with a typed edit, which keeps the file's comments and order and leaves `status` as it is: `sl set` (a model's or field's keys), `sl tag`, `sl add-field`, `sl remove-field`, `sl add-metric`, `sl remove-metric`, `sl rename` and `sl question add|resolve`. A write no typed command covers follows `SKILL.md` (Hand edits). The YAML below shows what the edits write; field formats are in `spec.md`.
 
 What one row is, and the key:
 

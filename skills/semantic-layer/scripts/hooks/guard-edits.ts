@@ -37,7 +37,7 @@ const LEDGER =
   "is written only by the CLI, so it records exactly what the owner heard and said: sl readback writes .sl/pending/, and sl reply, " +
   `sl question resolve and sl review apply append to .sl/ledger.jsonl. Record an owner's answer with ${REPLY.replace("yes", "yes|no|change")}.`;
 const MAX_LINES = 5;
-const TYPED = "sl set, sl tag, sl ignore-column, sl question add, sl add-field, sl remove-field or sl rename";
+const TYPED = "sl set, sl tag, sl ignore-column, sl question add, sl add-field, sl remove-field, sl add-metric, sl remove-metric or sl rename";
 
 // A stable JSON text: object keys sorted.
 function canonical(v: unknown): string {
@@ -294,13 +294,14 @@ function message(v: Violation): string {
       const head = `this edit removes or renames approved ${v.ref}.`;
       const revoke = `make it a draft first with sl approve --target ${v.ref} --revoke`;
       if (!v.ref.includes(":") && v.ref.split(".").length === 3) return `${head} Rename it with sl rename ${v.ref} <new_name> or remove it with sl remove-field ${v.ref}, or ${revoke}.`;
-      if (v.ref.startsWith("metric:")) return `${head} Rename it with sl rename ${v.ref} <new_name>, or ${revoke}.`;
+      if (v.ref.startsWith("metric:")) return `${head} Rename it with sl rename ${v.ref} <new_name> or remove it with sl remove-metric ${v.ref.slice(7)} --force (on the owner's yes), or ${revoke}.`;
       return `${head} To remove it, ${revoke} --recursive, then remove it.`;
     }
     case "renamed":
       return (
         `this edit changes the model or source key of ${v.ref}, which holds approved items, and an approval covers the model's source and name. ` +
-        `Make them drafts first with sl approve --target ${v.ref} --revoke --recursive, then rename the file and its model key together and read them back (sl readback --targets ${v.ref}).`
+        `Rename a model with sl rename ${v.ref} <new_name>, which moves its file, renames every reference and sends the approved items back for re-approval; ` +
+        `otherwise make them drafts first with sl approve --target ${v.ref} --revoke --recursive and read them back (sl readback --targets ${v.ref}).`
       );
     case "via_join":
       return (
