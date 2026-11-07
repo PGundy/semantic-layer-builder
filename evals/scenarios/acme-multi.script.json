@@ -10,7 +10,7 @@
     },
     {
       "text": "Done: three tables are in scope, measured and drafted. Before we go through the drafts: are the timestamps in these tables stored in UTC, and do your reports count days in UTC?\n\nStop here or continue?",
-      "tokens": 990,
+      "tokens": 962,
       "sl": [
         ["scope", "--source", "lake", "--exclude", "web_events_2024_archive", "--exclude", "tmp_session_dedupe", "--write"],
         ["profile", "--source", "lake"],
@@ -34,7 +34,7 @@
     },
     {
       "text": "Thanks; I wrote your answers into the two models. Sign-offs, read back from the files:\n\n1. lake.sessions (table): reads main.sessions, one row per visit, anonymous visits included; primary key session_id. Measured: 8,000 rows, each session_id appears once. Approve?\n2. lake.sessions.session_count (measure): a count of rows, every session counted, anonymous ones included, as an integer. Approve?\n3. lake.sessions.started_at (dimension): when the visit started, a time with its zone, with days counted in UTC; hour to year. Measured: never empty. Approve?\n4. lake.marketing_spend (table): reads main.marketing_spend, one row per day per paid channel; primary key spend_date and channel. Measured: 3,655 rows. Approve?\n5. lake.marketing_spend.spend (measure): the sum of spend_cents * 0.01, US dollars. Approve?\n6. lake.marketing_spend.spend_date (dimension): the day the spend is for, a date; day to year. Measured: never empty. Approve?\n\nStop here or continue?",
-      "tokens": 1598,
+      "tokens": 1596,
       "sl": [
         ["question", "resolve", "lake.sessions", "--match", "What does one row", "--text", "Yes: one row per visit, and session_id is unique. About 60% of sessions are anonymous, and they count.", "--by", "Dana Ruiz"],
         ["question", "resolve", "lake.sessions", "--match", "primary_key [session_id]", "--text", "Yes: one row per visit, and session_id is unique. About 60% of sessions are anonymous, and they count.", "--by", "Dana Ruiz"],
@@ -55,7 +55,7 @@
     {
       "agent": "readback_verifier",
       "text": "Wrote rb_0001 with six items. The draft message matches it item by item: no clause missing, none extra; each item ends with \"Approve?\", and the measured facts stay apart from the definitions. ok: true.",
-      "tokens": 2014,
+      "tokens": 2012,
       "sl": [
         ["readback", "--targets", "lake.sessions,lake.sessions.session_count,lake.sessions.started_at,lake.marketing_spend,lake.marketing_spend.spend,lake.marketing_spend.spend_date", "--json"]
       ]
@@ -81,7 +81,7 @@
     {
       "agent": "golden_builder",
       "text": "Wrote draft goldens sessions_2025 and marketing_spend_2025 from their requests and ran them: sessions_2025 returns session_count 4,551; marketing_spend_2025 returns spend 16,502.34. Both compile; nothing to report as a gap.",
-      "tokens": 1215,
+      "tokens": 1214,
       "sl": [
         ["goldens", "new", "--name", "sessions_2025", "--question", "How many sessions were there in 2025?", "--request", "{\"source\":\"lake\",\"measures\":[\"sessions.session_count\"],\"filters\":[{\"field\":\"sessions.started_at\",\"op\":\"gte\",\"value\":\"2025-01-01\"},{\"field\":\"sessions.started_at\",\"op\":\"lt\",\"value\":\"2026-01-01\"}]}"],
         ["goldens", "new", "--name", "marketing_spend_2025", "--question", "How much did we spend on marketing in 2025?", "--request", "{\"source\":\"lake\",\"measures\":[\"marketing_spend.spend\"],\"filters\":[{\"field\":\"marketing_spend.spend_date\",\"op\":\"gte\",\"value\":\"2025-01-01\"},{\"field\":\"marketing_spend.spend_date\",\"op\":\"lt\",\"value\":\"2026-01-01\"}]}"],
@@ -91,7 +91,7 @@
     },
     {
       "text": "I wrote your agreement into each golden's reference. Sign-offs, read back from the files, with the rows their SQL returns now:\n\n1. golden:sessions_2025 (golden): \"How many sessions were there in 2025?\" It asks lake for sessions.session_count, only rows where sessions.started_at is at least '2025-01-01' and below '2026-01-01'. It runs as no role of its own (access.yaml's default role, or the default audience). Your figure (reference): \"Matches Dana Ruiz's sessions report for 2025, 4,551 sessions, anonymous sessions included, UTC dates.\" Its SQL returns now 1 row: session_count 4551. Tolerance: 0: later runs must give exactly these figures. Approve?\n2. golden:marketing_spend_2025 (golden): \"How much did we spend on marketing in 2025?\" It asks lake for marketing_spend.spend, only rows where marketing_spend.spend_date is at least '2025-01-01' and below '2026-01-01'. It runs as no role of its own (access.yaml's default role, or the default audience). Your figure (reference): \"Matches Dana Ruiz's marketing spend report for 2025, $16,502.34 over all paid channels, in US dollars.\" Its SQL returns now 1 row: spend 16502.34. Tolerance: 0: later runs must give exactly these figures. Approve?\n\nStop here or continue?",
-      "tokens": 910,
+      "tokens": 1114,
       "write": {
         "goldens/sessions_2025.yaml": "name: sessions_2025\nquestion: How many sessions were there in 2025?\nrequest:\n  source: lake\n  measures: [sessions.session_count]\n  filters:\n    - { field: sessions.started_at, op: gte, value: \"2025-01-01\" }\n    - { field: sessions.started_at, op: lt, value: \"2026-01-01\" }\nsql: |\n  select count(*) as session_count\n  from main.sessions\n  where started_at >= '2025-01-01' and started_at < '2026-01-01'\nreference: Matches Dana Ruiz's sessions report for 2025, 4,551 sessions, anonymous sessions included, UTC dates.\nstatus: draft\n",
         "goldens/marketing_spend_2025.yaml": "name: marketing_spend_2025\nquestion: How much did we spend on marketing in 2025?\nrequest:\n  source: lake\n  measures: [marketing_spend.spend]\n  filters:\n    - { field: marketing_spend.spend_date, op: gte, value: \"2025-01-01\" }\n    - { field: marketing_spend.spend_date, op: lt, value: \"2026-01-01\" }\nsql: |\n  select sum(spend_cents * 0.01) as spend\n  from main.marketing_spend\n  where spend_date >= '2025-01-01' and spend_date < '2026-01-01'\nreference: Matches Dana Ruiz's marketing spend report for 2025, $16,502.34 over all paid channels, in US dollars.\nstatus: draft\n"
@@ -100,7 +100,7 @@
     {
       "agent": "readback_verifier",
       "text": "Wrote rb_0002 with the two goldens, their rows and tolerance 0. The draft message matches it: no clause missing, none extra. ok: true.",
-      "tokens": 1144,
+      "tokens": 1142,
       "sl": [
         ["readback", "--targets", "golden:sessions_2025,golden:marketing_spend_2025", "--tolerance", "0", "--json"]
       ]
@@ -130,27 +130,27 @@
   "owner": [
     {
       "text": "Yes. Keep web_events, sessions and marketing_spend. Leave out web_events_2024_archive, a partial copy, and tmp_session_dedupe, a scratch table from a cleanup job.",
-      "tokens": 60
+      "tokens": 41
     },
     {
       "text": "Yes, all timestamps in both sources are UTC, and our reports use UTC dates.",
-      "tokens": 30
+      "tokens": 19
     },
     {
       "text": "1. Yes: one row per visit, and session_id is unique. About 60% of sessions are anonymous, and they count.\n2. Yes: one row per day per paid channel, so spend_date and channel identify a row.\n3. Yes: spend_cents is in cents, and everything is in US dollars.",
-      "tokens": 80
+      "tokens": 64
     },
     {
       "text": "Yes, all six match how we count sessions and spend. Approve them.",
-      "tokens": 20
+      "tokens": 17
     },
     {
       "text": "Yes, both match my reports: 4,551 sessions and $16,502.34 of marketing spend in 2025. Use a tolerance of 0; these are figures I sign off.",
-      "tokens": 40
+      "tokens": 35
     },
     {
       "text": "Yes, both are right: 4,551 sessions and $16,502.34 of marketing spend in 2025, with a tolerance of 0. Approve them.",
-      "tokens": 30
+      "tokens": 29
     }
   ]
 }

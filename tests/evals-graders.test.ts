@@ -689,9 +689,9 @@ describe("effort", () => {
       owner_words: 35,
       owner_turns_per_approved_item: 0.25,
       owner_words_per_approved_item: 4.38,
-      tokens: 8490,
-      tokens_per_approved_item: 1061.25,
-      skill_tokens_per_approved_item: 1050,
+      tokens: 2648,
+      tokens_per_approved_item: 331,
+      skill_tokens_per_approved_item: 323.5,
       wall_time_seconds: 9,
     });
   });
