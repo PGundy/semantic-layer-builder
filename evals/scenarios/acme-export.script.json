@@ -59,7 +59,7 @@
     },
     {
       "text": "Approved all seven on your yes. Where things stand: sessions, marketing spend and page views are signed off from their definitions, and the join from events to sessions too, with a warning until a connection checks it. Waiting on a connection, so the layer is not done: profiles (which values each column holds and whether the keys are unique), the check of that join, goldens (figures confirmed against your reports, which need the data), and drift from data. When a connection is possible, I upgrade the lake with sl setup --source lake --dialect duckdb and the connection; your answers and approvals stay, and the waiting steps run. Is a read-only connection possible yet? If not, that is all for this session.\n\nStop here or continue?",
-      "tokens": 1819,
+      "tokens": 1839,
       "done": true,
       "sl": [
         ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Yes, all seven are right. Approve them.", "--verdict", "yes", "--by", "Dana Ruiz"],
