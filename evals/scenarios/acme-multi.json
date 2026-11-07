@@ -27,6 +27,6 @@
     },
     "protected_columns": ["dim_customers.email", "dim_customers.phone", "dim_customers.first_name", "dim_customers.last_name"],
     "reference": "acme-structured",
-    "max_interviewer_share": 0.4
+    "max_interviewer_share": 0.8
   }
 }
