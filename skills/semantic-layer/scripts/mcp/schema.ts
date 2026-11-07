@@ -1,5 +1,6 @@
 import Ajv2020 from "ajv/dist/2020.js";
 import type { CommandSpec, OptionSpec } from "../lib/command.ts";
+import { DENIED_FLAGS } from "../lib/roles.ts";
 
 // The MCP tool for one CLI command: its name, its description and the JSON Schema of its arguments.
 export interface Tool {
@@ -19,6 +20,8 @@ export interface JsonSchema {
 // The tool arguments a command's flags do not provide.
 export const ROOT_ARG = "root";
 export const POSITIONALS_ARG = "positionals";
+// The command options no tool takes: --show-protected is for the owner, run by hand (invariant 3).
+export const DENIED_OPTIONS: readonly string[] = DENIED_FLAGS.map((f) => f.slice(2));
 
 // The validator the server checks tool arguments with: JSON Schema 2020-12, strict about unknown keywords.
 export function schemaValidator(): Ajv2020 {
@@ -38,7 +41,7 @@ function optionSchema(name: string, o: OptionSpec): JsonSchema {
 
 export function inputSchema(spec: CommandSpec): JsonSchema {
   const properties: Record<string, JsonSchema> = {};
-  for (const [name, o] of Object.entries(spec.options)) properties[name] = optionSchema(name, o);
+  for (const [name, o] of Object.entries(spec.options)) if (!DENIED_OPTIONS.includes(name)) properties[name] = optionSchema(name, o);
   if (spec.positionals) {
     properties[POSITIONALS_ARG] = {
       type: "array",
@@ -54,9 +57,11 @@ export function inputSchema(spec: CommandSpec): JsonSchema {
 }
 
 export function toolOf(command: string, spec: CommandSpec): Tool {
+  const denied = DENIED_OPTIONS.filter((o) => o in spec.options).map((o) => `--${o}`);
+  const masked = denied.length ? ` This server never passes ${denied.join(" or ")}: protected values stay masked (invariant 3).` : "";
   return {
     name: toolName(command),
-    description: `${spec.summary}\n\nUsage: sl ${spec.usage}\n\nRuns as \`sl ${command} --json\` in the server's semantic root and returns its JSON output.`,
+    description: `${spec.summary}\n\nUsage: sl ${spec.usage}\n\nRuns as \`sl ${command} --json\` in the server's semantic root and returns its JSON output.${masked}`,
     inputSchema: inputSchema(spec),
   };
 }
@@ -66,6 +71,7 @@ export function toolOf(command: string, spec: CommandSpec): Tool {
 export function argvOf(command: string, spec: CommandSpec, args: Record<string, unknown>, root: string): string[] {
   const out = [command];
   for (const name of Object.keys(spec.options)) {
+    if (DENIED_OPTIONS.includes(name)) continue;
     const v = args[name];
     for (const one of Array.isArray(v) ? v : [v]) {
       if (one === true) out.push(`--${name}`);

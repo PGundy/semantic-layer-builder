@@ -8,10 +8,9 @@ The `semantic-layer-builder` plugin packages this repository for Claude Code. Th
 |---|---|---|
 | The `semantic-layer` skill | `skills/semantic-layer/` | The procedure, the references and the `sl` CLI. Claude loads it when you ask for a semantic layer. |
 | Five agents | `agents/sl-*.md` | `sl-interviewer`, `sl-connector-runner`, `sl-batch-analyst`, `sl-readback-verifier` and `sl-golden-builder`, the roles of a multi-agent build (spec: Agent roles). Claude Code names them `semantic-layer-builder:<agent>`. |
-| A `PreToolUse` hook | `skills/semantic-layer/scripts/hooks/guard-edits.ts` | Refuses hand edits to approval fields, approved items, the ledger and pending readbacks, and holds each role agent to the commands its role runs (spec: Hand edits). |
+| The MCP server `semantic-layer` | `skills/semantic-layer/scripts/mcp/server.ts --role interviewer` | Every `sl` command as an MCP tool, in `./semantic` under the directory you start Claude Code in (or `SEMANTIC_ROOT`). No tool takes `--show-protected`. When Claude Code supports MCP elicitation, the owner answers approvals in its dialog. |
+| Two `PreToolUse` hooks | `skills/semantic-layer/scripts/hooks/guard-edits.ts`, `skills/semantic-layer/scripts/mcp/guard.ts` | Refuse hand edits to approval fields, approved items, the ledger and pending readbacks, and hold each role agent to the commands its role runs, through `Bash` and through the MCP server's tools alike (spec: Hand edits, Agent roles). |
 | A `SessionStart` hook | `skills/semantic-layer/scripts/hooks/check-install.sh` | Checks that Bun and the plugin's dependencies are installed and, when one is missing, prints the command that installs it. It installs nothing. |
-
-The MCP server (`skills/semantic-layer/scripts/mcp/server.ts`) is in the plugin's files, but the plugin does not start it: see [The MCP server in Claude Code](#the-mcp-server-in-claude-code).
 
 ## Install
 
@@ -36,11 +35,11 @@ Claude Code's own dependency install skips a plugin whose `package.json` uses wo
 
 ```sh
 claude plugin list                                  # semantic-layer-builder@semantic-layer-builder, enabled
-claude plugin details semantic-layer-builder        # Skills (1), Agents (5), Hooks (2) PreToolUse, SessionStart
+claude plugin details semantic-layer-builder        # Skills (1), Agents (5), Hooks (2) PreToolUse, SessionStart, MCP servers (1) semantic-layer
 bun "<plugin root>/skills/semantic-layer/scripts/sl.ts" --help
 ```
 
-In a session, `/agents` lists the five `sl-` agents, and a new session shows no message from `semantic-layer-builder`.
+In a session, `/agents` lists the five `sl-` agents, `/mcp` lists `plugin:semantic-layer-builder:semantic-layer` as connected, and a new session shows no message from `semantic-layer-builder`.
 
 ## Use it
 
@@ -56,15 +55,19 @@ It is the one role that talks to the owner, and it hands the other agents their 
 
 ## The MCP server in Claude Code
 
-The plugin registers no MCP server: the hook checks `Bash` and the edit tools, not MCP tool calls, so the server's tools would let any agent in the session, a role agent included, run every command, with `--show-protected` too. Other MCP clients use the server as the README says.
+The plugin starts the MCP server as the interviewer, the role that talks to the owner, so the session gets every `sl` command as a tool, `mcp__plugin_semantic-layer-builder_semantic-layer__sl_<command>`. Its semantic root is `./semantic` under the directory you start Claude Code in, or `SEMANTIC_ROOT` when that is set; start Claude Code in the directory that holds `semantic/`.
 
-To use it in Claude Code all the same, for instance so that the owner answers approvals in Claude Code's dialog (MCP elicitation), add it yourself in the project:
+- No tool takes `--show-protected`, and a call that names it anyway is refused (invariant 3: protected values stay masked). The owner prints them by hand, in a terminal.
+- `approve` and `goldens confirm` approve nothing without the owner's yes. When Claude Code declares MCP elicitation, the server asks the owner in Claude Code's dialog and records their answer; otherwise the yes must already be recorded with `sl reply`.
+- The server cannot tell which agent calls it, so the plugin's second `PreToolUse` hook holds each role agent's calls to these tools to its role, as the first does for `Bash`. For the connector runner it would allow only `sl_results` `add` and `status`; its agent definition tells it to run `sl` through `Bash` and keep MCP tools for the warehouse connector.
+
+To serve one role only, for another MCP client or a second server, start it with `--role <role>` (`interviewer`, `connector_runner`, `batch_analyst`, `readback_verifier` or `golden_builder`). It then lists and runs only that role's commands:
 
 ```sh
-claude mcp add semantic-layer -- bun "<plugin root>/skills/semantic-layer/scripts/mcp/server.ts" --root "$PWD/semantic"
+claude mcp add semantic-layer-golden -- bun "<plugin root>/skills/semantic-layer/scripts/mcp/server.ts" --root "$PWD/semantic" --role golden_builder
 ```
 
-The role limits and the `--show-protected` refusal then hold only for `Bash`. `approve` and `goldens confirm` still approve nothing without the owner's recorded yes. Update the path after a plugin update, or remove the server with `claude mcp remove semantic-layer`.
+Keep `semantic-layer` in the name of a server you add by hand: the plugin's role hook checks only tools whose server name contains it. The server's own `--role` limit and its `--show-protected` refusal apply under any name. Update the path after a plugin update, or remove the server with `claude mcp remove semantic-layer-golden`. To turn the plugin's own server off, disable it in `/mcp`.
 
 ## Without the plugin
 
