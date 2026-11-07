@@ -2,7 +2,7 @@
 
 Load this card when `sl next` names phase `access`. It holds the access interview, `sl access` in the readback and the sign-off of `access.yaml`. Load `references/access.md` with it.
 
-**Checklist:** 1. Ask the exceptions question; write `access.yaml` as a draft (no typed command creates it: `SKILL.md`, Hand edits). 2. `sl access` for the default audience, then `sl access --roles <role> --user '<json>'` per role. 3. Read back each role, then the whole file. 4. `sl reply` with each answer; `sl approve --target access` on a recorded yes to the whole file.
+**Checklist:** 1. Ask the exceptions question; create `access.yaml` as a draft with `sl set access mode open` (or `closed` for an allowlist). 2. `sl access` for the default audience, then `sl access --roles <role> --user '<json>'` per role. 3. Read back each role, then the whole file. 4. `sl reply` with each answer; `sl approve --target access` on a recorded yes to the whole file.
 
 While a draft `access.yaml` holds open questions, `next_step` is `{ phase: access, blocked_on: open_questions, command: sl access, after_owner_yes: false }`: the step waits on the owner's answers, its message names the first question, and you raise it and never push the approval.
 
@@ -19,7 +19,7 @@ Access is open by default: with `mode: open`, or no `access.yaml`, everyone sees
 
 ## Writing the file
 
-Tools serve only an approved `access.yaml`: one that loads a draft serves nothing and says access is awaiting sign-off, so a change is edited as a draft in version control while the deployed approved version keeps applying; when you revoke to edit, tell the owner that the last approved version keeps applying where it is deployed until the new one is approved (the revoke keeps its sign-off as `last_approved`, and `sl access` names it). Write `access.yaml` as a draft, with `open_questions` for anything unsettled; with no exceptions it is `mode: open` with no roles, and it is still read back and approved. `sl set access mode <value>`, `sl set access default_role <value>` and `sl question add access --text "<question>"` are typed edits of an existing file and refuse while there is none; creating the file, and its roles, restrictions and row filters, are writes without a typed command (`SKILL.md`, Hand edits). `deny.fields` names dimensions and measures only; a join is hidden when its target model is hidden.
+Tools serve only an approved `access.yaml`: one that loads a draft serves nothing and says access is awaiting sign-off, so a change is edited as a draft in version control while the deployed approved version keeps applying; when you revoke to edit, tell the owner that the last approved version keeps applying where it is deployed until the new one is approved (the revoke keeps its sign-off as `last_approved`, and `sl access` names it). Write `access.yaml` as a draft, with `open_questions` for anything unsettled; with no exceptions it is `mode: open` with no roles, and it is still read back and approved. `sl set access mode open|closed` creates a draft file holding only the mode when there is none, and changes the mode of one that exists; `sl set access default_role <value>` and `sl question add access --text "<question>"` refuse until it exists. Its roles, restrictions and row filters are writes without a typed command (`SKILL.md`, Hand edits). `deny.fields` names dimensions and measures only; a join is hidden when its target model is hidden.
 
 ## What people see
 
