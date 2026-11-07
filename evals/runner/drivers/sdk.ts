@@ -163,9 +163,29 @@ function skillPrompt(input: SkillTurnInput): string {
   ].join("\n");
 }
 
+// The block an owner reply hands a file back in: a line <<<file shared/<name>, the file, a line >>>.
+const FILE_BLOCK = /^<<<file (\S+)\n([\s\S]*?)\n>>>[ \t]*$/gm;
+
 function ownerPrompt(input: OwnerTurnInput): string {
   const lines = input.history.map((t) => `${t.speaker === "owner" ? "You" : "Agent"}: ${t.text}`);
-  return ["The conversation so far:", ...lines, "", "Reply to the agent's last message as the owner. Write only your reply."].join("\n");
+  const forms = Object.entries(input.forms ?? {});
+  const handed = forms.length
+    ? [
+        "",
+        "The review forms the agent has written for you, each between its <<<form and >>> lines:",
+        ...forms.flatMap(([path, text]) => [`<<<form ${path}`, text.trimEnd(), ">>>"]),
+        "",
+        "To hand a form back filled in, copy it whole, mark the boxes and write your answers as it says, and put it in your reply between a line `<<<file shared/<name>.md` (`.json` for a JSON form) and a line `>>>`. Change nothing else in it.",
+      ]
+    : [];
+  return ["The conversation so far:", ...lines, ...handed, "", "Reply to the agent's last message as the owner. Write only your reply."].join("\n");
+}
+
+// An owner reply split into its text and the files it hands back (FILE_BLOCK).
+export function ownerReply(reply: string): { text: string; files?: Record<string, string> } {
+  const files: Record<string, string> = {};
+  const text = reply.replace(FILE_BLOCK, (_, path: string, body: string) => ((files[path] = `${body}\n`), "")).trim();
+  return Object.keys(files).length ? { text, files } : { text };
 }
 
 // Why a role agent's call is refused, or undefined: it edits no files and dispatches nothing, and runs
@@ -251,7 +271,7 @@ function makeDriver(query: QueryFn, model: string | undefined, multi = false): D
         disallowedTools: [...SKILL_TOOLS, ...OTHER_TOOLS],
         maxTurns: 1,
       });
-      return { text: r.text, tokens: r.tokens };
+      return { ...ownerReply(r.text), tokens: r.tokens };
     },
   };
 }

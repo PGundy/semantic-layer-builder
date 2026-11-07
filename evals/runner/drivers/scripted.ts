@@ -5,14 +5,36 @@
 // its connection (the upgrade from an export); the transcript keeps the argument as written.
 // In a multi-agent script, the turns with "agent" after an interviewer turn are the tasks it
 // dispatched: each runs its sl commands through the role guard of lib/roles.ts, which refuses a
-// command the role may not run, and comes back to the interviewer as that role's turn.
+// command the role may not run, and comes back to the interviewer as that role's turn. An owner
+// turn with "fill" fills in a review form the skill wrote and hands it back under shared/.
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, extname, join, relative, sep } from "node:path";
+import { parseReviewJson, parseReviewMarkdown, renderReviewJson, renderReviewMarkdown } from "../../../skills/semantic-layer/scripts/lib/review.ts";
 import { type Role, ROLES, slRefusal } from "../../../skills/semantic-layer/scripts/lib/roles.ts";
-import { estimateTokens, REPO_ROOT, type Script, type ScriptTurn, scriptWritePath } from "../files.ts";
+import { estimateTokens, type FormFill, REPO_ROOT, type Script, type ScriptTurn, scriptWritePath } from "../files.ts";
 import { slIn } from "../runner.ts";
 import type { Clock, CommandRun, Driver, RoleTurn } from "../types.ts";
 import { EvalError } from "../types.ts";
+
+// The owner's copy of a review form the skill wrote, with the owner's verdicts and words written in
+// as a person fills in the form: only the items' verdicts and answers and the questions' answers change.
+export function fillForm(fill: FormFill, forms: Record<string, string>, turn: number): string {
+  const text = forms[fill.form];
+  if (text === undefined) throw new EvalError(`Owner turn ${turn} fills ${fill.form}, which the skill has not written; export it first with sl review export --readback <id> --format ${extname(fill.form).slice(1)}.`);
+  const form = extname(fill.form) === ".json" ? parseReviewJson(text, fill.form) : parseReviewMarkdown(text, fill.form);
+  for (const [target, answer] of Object.entries(fill.items ?? {})) {
+    const item = form.items.find((i) => i.target === target);
+    if (!item) throw new EvalError(`Owner turn ${turn} answers ${target}, which is not an item of ${fill.form} (${form.items.map((i) => i.target).join(", ")}); fix the script.`);
+    item.verdict = answer.verdict ?? null;
+    item.answer = answer.answer ?? "";
+  }
+  for (const [match, answer] of Object.entries(fill.questions ?? {})) {
+    const question = form.questions.find((q) => q.question.includes(match));
+    if (!question) throw new EvalError(`Owner turn ${turn} answers a question holding "${match}", which ${fill.form} does not ask; fix the script.`);
+    question.answer = answer;
+  }
+  return extname(fill.form) === ".json" ? renderReviewJson(form) : renderReviewMarkdown(form);
+}
 
 export function scriptedDriver(script: Script, clock: Clock, fixture?: string): Driver {
   let skillAt = 0;
@@ -58,10 +80,11 @@ export function scriptedDriver(script: Script, clock: Clock, fixture?: string): 
         ...(dispatches.length ? { dispatches } : {}),
       };
     },
-    async ownerTurn() {
+    async ownerTurn(input) {
       const turn = script.owner[ownerAt++];
       if (!turn) throw new EvalError(`The script has ${script.owner.length} owner turn(s) and the run asked for another; add owner turns or end the skill turns with "done": true.`);
-      return { text: turn.text, tokens: turn.tokens ?? estimateTokens(turn.text) };
+      const files = Object.fromEntries((turn.fill ?? []).map((f) => [f.as, fillForm(f, input.forms ?? {}, ownerAt)]));
+      return { text: turn.text, tokens: turn.tokens ?? estimateTokens(turn.text), ...(turn.fill?.length ? { files } : {}) };
     },
   };
 }

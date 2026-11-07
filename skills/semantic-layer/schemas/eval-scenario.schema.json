@@ -71,6 +71,7 @@
         },
         "reference": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "A single-agent scenario whose latest run of the same driver, in the same directory as this run, the effort grader compares the interviewer's tokens with." },
         "max_interviewer_share": { "type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "effort fails when the interviewer's tokens exceed this fraction of the reference run's interviewer tokens (with reference), or of the run's agent tokens (without)." },
+        "max_owner_turns": { "type": "integer", "minimum": 1, "description": "effort fails when the owner answers more often than this, the opening left out." },
         "injection": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 },

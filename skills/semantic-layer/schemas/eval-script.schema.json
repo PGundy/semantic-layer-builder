@@ -41,7 +41,34 @@
         "required": ["text"],
         "properties": {
           "text": { "type": "string" },
-          "tokens": { "type": "integer", "minimum": 0 }
+          "tokens": { "type": "integer", "minimum": 0 },
+          "fill": {
+            "type": "array",
+            "description": "Review forms the owner fills in and hands back with this turn: each form sl review export wrote, with the owner's verdict and words per item, written in as a person fills in the form.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["form", "as"],
+              "properties": {
+                "form": { "type": "string", "pattern": "^\\.sl/reviews/[^/\\\\]+\\.(md|json)$", "description": "The form the skill wrote, such as .sl/reviews/rb_0001.md." },
+                "as": { "type": "string", "pattern": "^shared/[^/\\\\]+\\.(md|json)$", "description": "Where the owner hands it back, under shared/ in the working root, in the form's format." },
+                "items": {
+                  "type": "object",
+                  "description": "The item's target -> the owner's verdict and words; an item left out stays unanswered.",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "verdict": { "enum": ["yes", "no", "change"] }, "answer": { "type": "string" } }
+                  }
+                },
+                "questions": {
+                  "type": "object",
+                  "description": "Text an open question of the form holds -> the owner's answer; a question left out stays unanswered.",
+                  "additionalProperties": { "type": "string" }
+                }
+              }
+            }
+          }
         }
       }
     }

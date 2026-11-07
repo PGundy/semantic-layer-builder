@@ -1,11 +1,12 @@
 // effort: owner turns, owner words and tokens per approved item, and wall time, for comparing runs
 // against a baseline. On a multi-agent run it also reports the interviewer's tokens and share and,
 // when the scenario names a single-agent reference, the interviewer's tokens relative to that run's.
-// It fails only when the scenario's max_interviewer_share is exceeded.
+// It fails only when the scenario's max_interviewer_share or max_owner_turns is exceeded.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Summary } from "../runner/types.ts";
 import { approvedCount } from "./approvals.ts";
+import { ownerAnswers, ownerTurnCheck, ownerWords } from "./owner-turns.ts";
 import type { GraderResult, RunFiles } from "./types.ts";
 
 const per = (n: number, d: number) => (d ? Math.round((n / d) * 100) / 100 : null);
@@ -36,8 +37,8 @@ export function gradeEffort(run: RunFiles): GraderResult {
   const s = run.summary;
   const approved = approvedCount(run.root);
   // The opening is the scenario's, not the owner's answer to the skill.
-  const answers = run.transcript.filter((t) => t.speaker === "owner" && t.turn > 1);
-  const words = answers.reduce((n, t) => n + (t.text.trim() ? t.text.trim().split(/\s+/).length : 0), 0);
+  const answers = ownerAnswers(run);
+  const words = answers.reduce((n, t) => n + ownerWords(t), 0);
   const wall = (Date.parse(s.finished_at) - Date.parse(s.started_at)) / 1000;
   const metrics: Record<string, number | null> = {
     approved_items: approved,
@@ -77,12 +78,16 @@ export function gradeEffort(run: RunFiles): GraderResult {
       details.push(`${ref.run_id}/summary.json: the interviewer used ${mine} tokens, ${measured === null ? "not comparable (the reference used none)" : pct(measured)} of the ${theirs} the single-agent run ${ref.run_id} used.`);
     }
   }
-  let passed = true;
+  const turns = ownerTurnCheck(run, approved);
+  if (run.grading.max_owner_turns !== undefined) metrics.max_owner_turns = run.grading.max_owner_turns;
+  if (turns.detail) details.push(turns.detail);
+  let passed = turns.passed;
   if (max !== undefined && measured !== null) {
-    passed = measured <= max;
+    const within = measured <= max;
+    passed &&= within;
     const of = reference ? `of ${reference}'s interviewer tokens` : "of the agents' tokens";
     details.push(
-      passed
+      within
         ? `The interviewer holds ${pct(measured)} ${of}, within the scenario's max_interviewer_share of ${pct(max)}.`
         : `The interviewer holds ${pct(measured)} ${of}, above the scenario's max_interviewer_share of ${pct(max)}; dispatch more of the reading to the role agents (agents/sl-*.md).`,
     );

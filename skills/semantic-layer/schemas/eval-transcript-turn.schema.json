@@ -23,6 +23,12 @@
           "refused": { "type": "string", "description": "Why the role guard refused the command, which did not run." }
         }
       }
+    },
+    "files": {
+      "type": "object",
+      "description": "Files the owner handed back in this turn (a filled review form), by path under shared/ in the working root, to their text, redacted as the turn's text is.",
+      "propertyNames": { "pattern": "^shared/[^/\\\\]+\\.(md|json)$" },
+      "additionalProperties": { "type": "string" }
     }
   }
 }
