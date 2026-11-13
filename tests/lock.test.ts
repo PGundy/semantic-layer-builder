@@ -2,9 +2,8 @@
 // writes). The acceptance tests spawn real sl processes in parallel; the rest hold the lock from a
 // live helper process, or leave the lock a dead one would, and run commands against it.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, cpSync, existsSync, lstatSync, lutimesSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, lutimesSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { COMMANDS } from "../skills/semantic-layer/scripts/commands/index.ts";
@@ -12,7 +11,7 @@ import { acquireLock, DEFAULT_LOCK_WAIT_MS, lockWaitMs, tempPath, writeFileAtomi
 import type { Golden, LedgerEntry, Model, QueryPlan, Snapshot } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readJson, readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { Server } from "../skills/semantic-layer/scripts/mcp/server.ts";
-import { duckdbSource, FIXED_NOW, initProject, sl } from "./helpers.ts";
+import { duckdbSource, FIXED_NOW, initProject, sl, tempDir as sharedTempDir } from "./helpers.ts";
 
 const SCRIPTS = join(import.meta.dir, "..", "skills", "semantic-layer", "scripts");
 const SL = join(SCRIPTS, "sl.ts");
@@ -25,7 +24,7 @@ const procs: { kill(signal?: number | NodeJS.Signals): void; exited: Promise<num
 let helpers = "";
 
 beforeAll(() => {
-  helpers = mkdtempSync(join(tmpdir(), "sl-lock-helpers-"));
+  helpers = sharedTempDir("lock-helpers");
   temps.push(helpers);
   const lib = JSON.stringify(join(SCRIPTS, "lib", "lock.ts"));
   // Takes the lock as a command named by argv[3] would, says so, then stays alive or exits (argv[4]).
@@ -68,7 +67,7 @@ afterAll(() => {
 });
 
 function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "sl-lock-"));
+  const dir = sharedTempDir("lock");
   temps.push(dir);
   return dir;
 }
