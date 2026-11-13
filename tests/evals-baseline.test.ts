@@ -1,6 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
@@ -20,20 +19,12 @@ import {
   type RunOneOptions,
   type SmokeIO,
 } from "../evals/smoke.ts";
+import { tempDir } from "./helpers.ts";
 
 // The smoke run and evals/baseline.json (FR-6.4, D6): the committed baseline passes, a lowered score
 // is a regression with exit 1, --report-only exits 0, --update-baseline writes the same bytes every
 // time, the baseline matches its schema, and the CI job is non-blocking and uses no secret.
 
-const dirs: string[] = [];
-afterEach(() => {
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-});
-function tempDir(): string {
-  const d = mkdtempSync(join(tmpdir(), "sl-smoke-test-"));
-  dirs.push(d);
-  return d;
-}
 
 const committed = () => JSON.parse(readFileSync(BASELINE_FILE, "utf8")) as Baseline;
 

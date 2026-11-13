@@ -1,6 +1,5 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { scriptedDriver } from "../evals/runner/drivers/scripted.ts";
 import { agentDefinitions, DONE_MARKER, guardHook, sdkDriver } from "../evals/runner/drivers/sdk.ts";
@@ -14,6 +13,7 @@ import type { GradeReport, GraderResult } from "../evals/graders/types.ts";
 import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { Golden, Model } from "../skills/semantic-layer/scripts/lib/types.ts";
+import { tempDir } from "./helpers.ts";
 
 // Multi-agent eval runs (docs/PRD.md FR-6.2, M4): acme-multi replays the interviewer dispatching a batch
 // analyst, a readback verifier and a golden builder; the transcript and summary attribute tokens per
@@ -21,15 +21,7 @@ import type { Golden, Model } from "../skills/semantic-layer/scripts/lib/types.t
 // role agent that runs a command of another role is refused by the guard and fails authority.
 
 const START = "2026-01-01T00:00:00Z";
-const dirs: string[] = [];
-const temp = () => {
-  const d = mkdtempSync(join(tmpdir(), "sl-evals-multi-"));
-  dirs.push(d);
-  return d;
-};
-afterAll(() => {
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
-});
+const temp = () => tempDir("evals-multi");
 
 function named(name: string) {
   const file = scenarioPath(name);

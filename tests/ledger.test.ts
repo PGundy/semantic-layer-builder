@@ -1,11 +1,10 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hasCredential, redactCredentials } from "../skills/semantic-layer/scripts/lib/credentials.ts";
 import type { LedgerEntry, LedgerQuestion, PendingReadback } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { schemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
-import { FIXED_NOW, sl } from "./helpers.ts";
+import { FIXED_NOW, sl, tempDir } from "./helpers.ts";
 
 // The answer ledger (.sl/ledger.jsonl): sl reply and sl question resolve on a copy of examples/acme,
 // with the fixed clock of the test helpers.
@@ -14,14 +13,8 @@ const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 const LEDGER = join(".sl", "ledger.jsonl");
 const PRODUCTS = join("models", "warehouse", "products.yaml");
 
-const temps: string[] = [];
-afterAll(() => {
-  for (const t of temps) rmSync(t, { recursive: true, force: true });
-});
-
 function acme(): string {
-  const dir = mkdtempSync(join(tmpdir(), "sl-ledger-"));
-  temps.push(dir);
+  const dir = tempDir("ledger");
   const root = join(dir, "semantic");
   cpSync(ACME, root, { recursive: true });
   return root;
@@ -165,8 +158,7 @@ describe("sl reply", () => {
   test("writes only inside the semantic root: a .sl linked outside it is refused", async () => {
     const root = acme();
     await readback(root, "warehouse.orders.revenue");
-    const outside = mkdtempSync(join(tmpdir(), "sl-ledger-outside-"));
-    temps.push(outside);
+    const outside = tempDir("ledger-outside");
     rmSync(join(root, ".sl", "pending"), { recursive: true });
     cpSync(join(root, ".sl"), join(outside, "sl"), { recursive: true });
     rmSync(join(root, ".sl"), { recursive: true });
@@ -183,8 +175,7 @@ describe("sl reply", () => {
     const root = acme();
     await readback(root, "warehouse.orders.revenue");
     const before = read(root, PRODUCTS);
-    const outside = mkdtempSync(join(tmpdir(), "sl-ledger-outside-"));
-    temps.push(outside);
+    const outside = tempDir("ledger-outside");
     const yes = ["--readback", "rb_0001", "--item", "1", "--text", "yes", "--verdict", "yes", "--by", "Dana Ruiz"];
     const resolve = ["question", "resolve", "warehouse.products", "--index", "1", "--text", "Yes.", "--by", "Dana Ruiz"];
 

@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { beforeAll, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMANDS } from "../skills/semantic-layer/scripts/commands/index.ts";
 import { checkToolUse, type Verdict } from "../skills/semantic-layer/scripts/hooks/guard-edits.ts";
@@ -8,7 +7,7 @@ import { openQueryAdapter } from "../skills/semantic-layer/scripts/lib/plan.ts";
 import { loadSource } from "../skills/semantic-layer/scripts/lib/project.ts";
 import { commandList, DENIED_FLAGS, OWNER_COMMANDS, ROLE_NAMES, ROLES, roleOf, slRefusal, type Role } from "../skills/semantic-layer/scripts/lib/roles.ts";
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { duckdbSource, initProject, sl, tempRoot } from "./helpers.ts";
+import { duckdbSource, initProject, sl, tempDir, tempRoot } from "./helpers.ts";
 
 // The roles of a multi-agent run (spec: Agent roles): lib/roles.ts, the plugin's agents/*.md, the
 // spec's table, and the hook's role check on payloads that carry each role's agent_type. All data is synthetic.
@@ -21,13 +20,12 @@ const EDIT_TOOLS = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
 let dir: string;
 let root: string;
 beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), "sl-roles-"));
+  dir = tempDir("roles");
   root = join(dir, "semantic");
   mkdirSync(join(root, "models", "wh"), { recursive: true });
   writeFileSync(join(root, "semantic.yaml"), "name: rolestest\n");
   writeFileSync(join(root, "models", "wh", "orders.yaml"), "model: orders\ntable: main.orders\nstatus: draft\n");
 });
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 function call(agent: string | undefined, tool: string, input: Record<string, unknown>, cwd = dir): Verdict {
   const payload: Record<string, unknown> = { tool_name: tool, tool_input: input, cwd, hook_event_name: "PreToolUse" };

@@ -1,13 +1,12 @@
 // The intake block of sources/<source>.yaml (docs/PRD.md FR-1.1, FR-1.0): its schema, the checks
 // sl validate makes and sl add-source --schemas.
-import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { intakeMode, isSchemaName } from "../skills/semantic-layer/scripts/lib/intake.ts";
 import { type Issue, schemaIssues, validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { parseYamlText, readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { initProject, sl, tempRoot } from "./helpers.ts";
+import { initProject, sl, tempDir, tempRoot } from "./helpers.ts";
 
 const REPO = join(import.meta.dir, "..");
 const FIXTURE = join(import.meta.dir, "fixtures", "valid");
@@ -15,14 +14,8 @@ const SPEC = join(REPO, "skills", "semantic-layer", "references", "spec.md");
 const SCHEMA = join(REPO, "skills", "semantic-layer", "schemas", "source.schema.json");
 const FILE = "sources/warehouse.yaml";
 
-const temps: string[] = [];
-afterAll(() => {
-  for (const t of temps) rmSync(t, { recursive: true, force: true });
-});
-
 function copyFixture(): { root: string; dir: string } {
-  const dir = mkdtempSync(join(tmpdir(), "sl-intake-"));
-  temps.push(dir);
+  const dir = tempDir("intake");
   const root = join(dir, "semantic");
   cpSync(FIXTURE, root, { recursive: true });
   return { root, dir };
