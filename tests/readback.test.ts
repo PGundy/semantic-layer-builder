@@ -1,24 +1,17 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { clauseWords } from "../skills/semantic-layer/scripts/lib/readback.ts";
 import type { PendingReadback, Snapshot } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { schemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { approveWithYes, FIXED_NOW, sl } from "./helpers.ts";
+import { approveWithYes, FIXED_NOW, sl, tempDir } from "./helpers.ts";
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 
-const temps: string[] = [];
-afterAll(() => {
-  for (const t of temps) rmSync(t, { recursive: true, force: true });
-});
-
 // A copy of the Acme example layer in a temp directory.
 function acme(): { root: string; dir: string } {
-  const dir = mkdtempSync(join(tmpdir(), "sl-readback-"));
-  temps.push(dir);
+  const dir = tempDir("readback");
   const root = join(dir, "semantic");
   cpSync(ACME, root, { recursive: true });
   return { root, dir };

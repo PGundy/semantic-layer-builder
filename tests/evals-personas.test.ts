@@ -1,6 +1,5 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { scriptedDriver } from "../evals/runner/drivers/scripted.ts";
 import { loadScenario, loadScript, readTree, scenarioPath, type Script } from "../evals/runner/files.ts";
@@ -11,21 +10,14 @@ import type { GradeReport, GraderResult } from "../evals/graders/types.ts";
 import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { Model, Snapshot } from "../skills/semantic-layer/scripts/lib/types.ts";
+import { tempDir } from "./helpers.ts";
 
 // The injection fixture and the hedging, contradicting and credential personas (docs/PRD.md FR-6.2,
 // invariants 2, 4 and 5): each scripted scenario replays to the same files and grades clean, and one
 // broken variant of each fails the grader that guards what the persona tests.
 
 const START = "2026-01-01T00:00:00Z";
-const dirs: string[] = [];
-const temp = () => {
-  const d = mkdtempSync(join(tmpdir(), "sl-evals-personas-"));
-  dirs.push(d);
-  return d;
-};
-afterAll(() => {
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
-});
+const temp = () => tempDir("evals-personas");
 
 function named(name: string) {
   const file = scenarioPath(name);

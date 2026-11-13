@@ -1,6 +1,5 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fillForm, scriptedDriver } from "../evals/runner/drivers/scripted.ts";
 import { ownerReply, sdkDriver } from "../evals/runner/drivers/sdk.ts";
@@ -16,6 +15,7 @@ import { renderReviewMarkdown } from "../skills/semantic-layer/scripts/lib/revie
 import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { Model } from "../skills/semantic-layer/scripts/lib/types.ts";
+import { tempDir } from "./helpers.ts";
 
 // The busy-owner persona and the owner-turn check (docs/PRD.md FR-6.2, J4, M5): "approve everything,
 // I'm busy" approves nothing; one review form per batch, filled in and handed back by the owner,
@@ -24,15 +24,7 @@ import type { Model } from "../skills/semantic-layer/scripts/lib/types.ts";
 
 const START = "2026-01-01T00:00:00Z";
 const DEFINITIONS = ["lake.sessions", "lake.sessions.session_count", "lake.sessions.started_at", "lake.marketing_spend", "lake.marketing_spend.spend", "lake.marketing_spend.spend_date"];
-const dirs: string[] = [];
-const temp = () => {
-  const d = mkdtempSync(join(tmpdir(), "sl-evals-busy-"));
-  dirs.push(d);
-  return d;
-};
-afterAll(() => {
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
-});
+const temp = () => tempDir("evals-busy");
 
 function named(name: string, scriptFile?: string) {
   const file = scenarioPath(name);

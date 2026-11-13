@@ -1,11 +1,11 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { type Role, ROLES, slRefusal } from "../skills/semantic-layer/scripts/lib/roles.ts";
 import { loadScenario, loadScript, REPO_ROOT, SCENARIOS_DIR, type Script, type ScriptTurn, scriptWritePath } from "../evals/runner/files.ts";
 import { runScenario, slIn, steppingClock } from "../evals/runner/runner.ts";
 import type { Driver, RoleTurn, Summary, Scenario } from "../evals/runner/types.ts";
+import { tempDir } from "./helpers.ts";
 
 // The counting rule of evals/README.md, Token counts: every scripted scenario's canned tokens are
 // recomputed by replaying its script with a driver that counts each turn by the rule instead of
@@ -22,10 +22,6 @@ const chars = (text: string) => {
 const SPEC = join(REPO_ROOT, "skills", "semantic-layer", "references", "spec.md");
 const agentDefinition = (role: Role) => chars(readFileSync(join(REPO_ROOT, "agents", `${role.agent}.md`), "utf8"));
 
-const dirs: string[] = [];
-afterAll(() => {
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
-});
 
 interface Recount {
   skill: number[];
@@ -124,8 +120,7 @@ describe("scripted token counts", () => {
   for (const file of scenarios) {
     const name = loadScenario(file).name;
     test(`${name}: every turn's tokens recompute from the counting rule`, async () => {
-      const out = mkdtempSync(join(tmpdir(), "sl-evals-tokens-"));
-      dirs.push(out);
+      const out = tempDir("evals-tokens");
       const scenario = loadScenario(file);
       const script = loadScript(scenario, file);
       const got = await recount(file, out);
@@ -137,8 +132,7 @@ describe("scripted token counts", () => {
   }
 
   test("the spec's summary example is acme-terse's scripted run", async () => {
-    const out = mkdtempSync(join(tmpdir(), "sl-evals-tokens-"));
-    dirs.push(out);
+    const out = tempDir("evals-tokens");
     const block = readFileSync(SPEC, "utf8").split("```json\n").map((b) => b.split("\n```")[0]!).find((b) => b.includes('"run_id": "acme-terse-'));
     const example = JSON.parse(block!) as Summary;
     const { summary } = await recount(join(SCENARIOS_DIR, "acme-terse.json"), out);
@@ -146,9 +140,8 @@ describe("scripted token counts", () => {
   }, 60_000);
 
   test("a count does not depend on where the run is written", async () => {
-    const shallow = mkdtempSync(join(tmpdir(), "sl-t-"));
-    const deep = join(mkdtempSync(join(tmpdir(), "sl-evals-tokens-deeper-")), "one", "two", "three");
-    dirs.push(shallow, dirname(dirname(dirname(deep))));
+    const shallow = tempDir("t");
+    const deep = join(tempDir("evals-tokens-deeper"), "one", "two", "three");
     for (const name of ["acme-structured", "acme-export-upgrade"]) {
       const file = join(SCENARIOS_DIR, `${name}.json`);
       const { summary: _d, ...d } = await recount(file, deep);

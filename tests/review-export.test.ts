@@ -1,27 +1,20 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseReviewJson, parseReviewMarkdown, questionKey, renderReviewMarkdown, type ReviewForm } from "../skills/semantic-layer/scripts/lib/review.ts";
 import type { PendingReadback } from "../skills/semantic-layer/scripts/lib/types.ts";
 import type { MetricsFile, Model } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { schemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { FIXED_NOW, sl } from "./helpers.ts";
+import { FIXED_NOW, sl, tempDir } from "./helpers.ts";
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 const TARGETS = "warehouse.customers.email,metric:average_order_value,access";
 const ACCESS_QUESTION = "Should finance see refunds by region?";
 
-const temps: string[] = [];
-afterAll(() => {
-  for (const t of temps) rmSync(t, { recursive: true, force: true });
-});
-
 // A copy of the Acme example layer, with an access question and a readback rb_0001 of TARGETS.
 async function setup(): Promise<{ root: string; dir: string; pending: PendingReadback }> {
-  const dir = mkdtempSync(join(tmpdir(), "sl-review-"));
-  temps.push(dir);
+  const dir = tempDir("review");
   const root = join(dir, "semantic");
   cpSync(ACME, root, { recursive: true });
   expect((await sl(root, ["question", "add", "access", "--text", ACCESS_QUESTION])).code).toBe(0);
