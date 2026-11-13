@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, extname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { CommandContext, CommandSpec } from "../lib/command.ts";
 import { bool, list, str } from "../lib/command.ts";
 import { redactCredentials } from "../lib/credentials.ts";
 import { UserError } from "../lib/errors.ts";
+import { writeFileAtomic } from "../lib/lock.ts";
 import { patternFlags } from "../lib/export-filters.ts";
 import { intakeMode, intakeSchemas, SCHEMA_NAME_HINT, schemaListIssues } from "../lib/intake.ts";
 import { qualifiedName } from "../lib/naming.ts";
@@ -148,6 +149,7 @@ const spec: CommandSpec = {
     catalog: { type: "string" },
     project: { type: "string" },
   },
+  writes: ({ values }) => (values["print-role-sql"] ? false : "late"),
   async run({ values }, ctx) {
     if (bool(values, "print-role-sql")) return printRoleSql(values, ctx);
     for (const f of ["role-name", "warehouse", "catalog", "project"]) {
@@ -297,7 +299,10 @@ const spec: CommandSpec = {
       }
     }
 
-    // The writes, undone together when reading the catalog fails.
+    // The writes, undone together when reading the catalog fails. The project, the source file and
+    // the copies are written under the lock, which is released while the catalog is read.
+    const unlock = await ctx.lock();
+    if ((existsSync(file) ? readFileSync(file, "utf8") : null) !== oldText) throw new UserError(`${rel} changed while sl setup read it; nothing was written. Run the same sl setup command again.`);
     let projectCreated = false;
     if (!existsSync(p.project)) {
       await runQuiet(initCommand, { name: projectArg ?? projectName(ctx.root) }, ctx);
@@ -310,13 +315,15 @@ const spec: CommandSpec = {
     const write = (path: string, data: string | Buffer) => {
       if (!backups.has(path)) backups.set(path, existsSync(path) ? readFileSync(path) : null);
       mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, data);
+      writeFileAtomic(path, data);
     };
     let result: Record<string, unknown> | null = null;
     let upgrade: UpgradeReport | null = null;
     try {
       if (created || updated) write(file, newText);
       for (const c of [tablesCopy, exportCopy]) if (c?.status) write(c.to, c.data);
+      // sl import queries nothing and writes under this lock; sl introspect takes it again for its write.
+      if (mode !== "export") unlock();
       if (read) {
         const snap = p.snapshot(name);
         backups.set(snap, existsSync(snap) ? readFileSync(snap) : null);
@@ -324,9 +331,11 @@ const spec: CommandSpec = {
         if (upgrading) upgrade = await upgradeSteps(ctx, name, oldSnapshot, (path) => backups.has(path) || backups.set(path, readFileSync(path)));
       }
     } catch (e) {
+      // The files go back under the lock; when another command still holds it after the wait, they go back all the same.
+      await ctx.lock().catch(() => undefined);
       for (const [path, data] of backups) {
         if (data === null) rmSync(path, { force: true });
-        else writeFileSync(path, data);
+        else writeFileAtomic(path, data);
       }
       if (!(e instanceof UserError)) throw e;
       const kept = projectCreated ? " (the project it created stays)" : "";

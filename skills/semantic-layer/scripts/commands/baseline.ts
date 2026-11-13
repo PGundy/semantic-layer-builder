@@ -1,9 +1,10 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { buildBaseline, renderBaseline } from "../lib/baseline.ts";
 import type { CommandSpec } from "../lib/command.ts";
 import { list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
+import { writeFileAtomic } from "../lib/lock.ts";
 import { formatJson } from "../lib/output.ts";
 import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot } from "../lib/project.ts";
 import { effectiveScope } from "../lib/table-list.ts";
@@ -83,6 +84,7 @@ const spec: CommandSpec = {
     tables: { type: "string", multiple: true },
     out: { type: "string" },
   },
+  writes: ({ values }) => (values.out !== undefined ? "whole" : false),
   async run({ values }, ctx) {
     const project = loadProject(ctx.root);
     const sourceName = sourceFlag(values, project);
@@ -105,7 +107,7 @@ const spec: CommandSpec = {
     const markdown = renderBaseline(report);
     if (target) {
       mkdirSync(dirname(target), { recursive: true });
-      writeFileSync(target, markdown);
+      writeFileAtomic(target, markdown);
     }
     if (ctx.json) {
       ctx.out(formatJson({ ...report, ...(target ? { written_to: target } : {}) }));

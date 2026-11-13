@@ -26,6 +26,7 @@ const spec: CommandSpec = {
     "Reads sl status, the answer ledger, .sl/pending/ and .sl/plans/, and writes nothing. --json prints\n" +
     "{ kind, phase, why, run?, ask_owner?, dispatch?, blocked_on } with kind run, ask_owner, dispatch or done.",
   options: {},
+  writes: false,
   async run(_input, ctx) {
     const action = nextAction(ctx.root);
     ctx.out(ctx.json ? formatJson(action) : render(action));

@@ -25,6 +25,7 @@ const spec: CommandSpec = {
     verdict: { type: "string" },
     by: { type: "string" },
   },
+  writes: "whole",
   async run({ values }, ctx) {
     loadProject(ctx.root);
     const [rb, itemRaw, raw, byRaw] = [str(values, "readback"), str(values, "item"), str(values, "text"), str(values, "by")];

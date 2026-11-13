@@ -14,6 +14,7 @@ const spec: CommandSpec = {
   usage: "tag <source.model | source.model.field | metric:<name>> <tag>[,<tag>...] [--remove]",
   options: { remove: { type: "boolean" } },
   positionals: true,
+  writes: "whole",
   async run({ values, positionals }, ctx) {
     loadProject(ctx.root);
     const remove = bool(values, "remove");

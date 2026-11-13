@@ -73,6 +73,7 @@ const spec: CommandSpec = {
     schemas: { type: "string", multiple: true },
     description: { type: "string" },
   },
+  writes: "whole",
   async run({ values }, ctx) {
     loadProject(ctx.root);
     const name = str(values, "name");

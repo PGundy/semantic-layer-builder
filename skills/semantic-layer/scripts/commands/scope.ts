@@ -1,9 +1,10 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import { type Document, isMap, isScalar, isSeq, type YAMLMap } from "yaml";
 import type { CommandSpec, OptionValues } from "../lib/command.ts";
 import { bool, list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
+import { writeFileAtomic } from "../lib/lock.ts";
 import { findTable, qualifiedName } from "../lib/naming.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
 import { checkPattern, literalPattern, matchesPattern, matchIndex, validatePattern } from "../lib/patterns.ts";
@@ -211,6 +212,7 @@ const spec: CommandSpec = {
     write: { type: "boolean" },
     explain: { type: "string" },
   },
+  writes: ({ values }) => (values.write || values["to-file"] !== undefined ? "whole" : false),
   async run({ values }, ctx) {
     const project = loadProject(ctx.root);
     const sourceName = sourceFlag(values, project);
@@ -468,11 +470,11 @@ const spec: CommandSpec = {
     }
     if (copyTo !== undefined && fromText !== undefined) {
       mkdirSync(dirname(copyTo), { recursive: true });
-      writeFileSync(copyTo, fromText);
+      writeFileAtomic(copyTo, fromText);
     }
     if (toPath !== undefined && toText !== undefined) {
       mkdirSync(dirname(toPath), { recursive: true });
-      writeFileSync(toPath, toText);
+      writeFileAtomic(toPath, toText);
     }
     if (write) {
       updateYaml(paths(ctx.root).source(sourceName), (doc) => {

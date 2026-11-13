@@ -2,11 +2,12 @@
 // sl remove-field, sl add-metric, sl remove-metric and sl rename. An edit changes YAML files through editYamlText, so the owner's
 // comments and every untouched byte survive; the result is validated as the project would read it,
 // and it is written only when it adds no error.
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import { accessEntry, carriesHash, metricEntries, modelEntries, type ApprovalEntry } from "./approval-hash.ts";
 import { UserError } from "./errors.ts";
+import { writeFileAtomic } from "./lock.ts";
 import { plainText } from "./output.ts";
 import { listSourceNames, paths, stem } from "./project.ts";
 import { findField, type FieldMatch, parseTarget } from "./refs.ts";
@@ -261,7 +262,7 @@ export function commitEdits(
     );
   }
   // A created or moved file is written only where nothing is, and the moved file is removed last.
-  for (const [file, text] of after) writeFileSync(file, text, create?.has(file) || move?.to === file ? { flag: "wx" } : undefined);
+  for (const [file, text] of after) writeFileAtomic(file, text, { exclusive: create?.has(file) || move?.to === file });
   for (const file of removed) unlinkSync(file);
   return { changed: true, files: [...after.keys(), ...removed].map((f) => relFile(root, f)).sort(), reapprove };
 }

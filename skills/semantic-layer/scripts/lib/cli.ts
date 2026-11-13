@@ -1,8 +1,10 @@
+import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { COMMANDS } from "../commands/index.ts";
 import type { CommandContext } from "./command.ts";
 import { UserError } from "./errors.ts";
-import { resolveRoot } from "./project.ts";
+import { acquireLock, lockWaitMs } from "./lock.ts";
+import { paths, resolveRoot } from "./project.ts";
 
 export interface CliIO {
   cwd: string;
@@ -56,6 +58,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     io.err(`Unknown command "${name}". Run \`sl help\` for the list.`);
     return 1;
   }
+  const releases: (() => void)[] = [];
   try {
     const spec = (await load()).default;
     const parsed = parseArgs({
@@ -69,16 +72,20 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
       io.out(`${spec.summary}\n\nUsage: sl ${spec.usage}\n\n${GLOBAL_HELP}`);
       return 0;
     }
-    const ctx: CommandContext = {
-      root: resolveRoot(values.root as string | undefined, io.env, io.cwd),
-      cwd: io.cwd,
-      env: io.env,
-      json: values.json === true,
-      now: clock(io.env),
-      out: io.out,
-      err: io.err,
+    const root = resolveRoot(values.root as string | undefined, io.env, io.cwd);
+    const now = clock(io.env);
+    const lock = async () => {
+      const release = await acquireLock(root, { command: name, started: now().toISOString() }, lockWaitMs(io.env));
+      releases.push(release);
+      return release;
     };
-    return await spec.run({ values, positionals: parsed.positionals }, ctx);
+    const ctx: CommandContext = { root, cwd: io.cwd, env: io.env, json: values.json === true, now, out: io.out, err: io.err, lock };
+    const input = { values, positionals: parsed.positionals };
+    // A command that reads, changes and writes holds the root's lock from before its first read.
+    // Outside a semantic root there is nothing to guard, and no .sl directory is made for a lock.
+    const writes = typeof spec.writes === "function" ? spec.writes(input) : spec.writes;
+    if (writes === "whole" && existsSync(paths(root).project)) await lock();
+    return await spec.run(input, ctx);
   } catch (e) {
     if (e instanceof UserError || (e as { code?: string }).code?.startsWith("ERR_PARSE_ARGS")) {
       io.err(`sl ${name}: ${(e as Error).message}`);
@@ -86,5 +93,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     }
     io.err(`sl ${name}: unexpected error: ${(e as Error).stack ?? e}`);
     return 2;
+  } finally {
+    for (const release of releases.reverse()) release();
   }
 }
