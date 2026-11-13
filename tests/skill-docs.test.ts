@@ -1047,7 +1047,9 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["phases/verify.md", "tolerance guards drift, not rounding", "`tolerance` guards drift between runs, not rounding"],
   ["verification.md", "rounded ratios are agreed and written in reference", "show the unrounded value next to the report figure, agree with the owner that they match, and write the rounding in `reference`"],
   ["verification.md", "tolerance guards drift, not rounding", "the tolerance guards drift between runs, not rounding"],
-  ["verification.md", "tolerance covers every column", "The tolerance covers every column of the golden"],
+  ["verification.md", "tolerance covers figures with decimals", "The tolerance covers the golden's figures with decimals"],
+  ["verification.md", "whole numbers and grouped-by columns compare exactly", "the columns the golden is grouped by always compare exactly, whatever the tolerance"],
+  ["phases/verify.md", "whole numbers and grouped-by columns compare exactly", "whole numbers (counts, years) and the grouped-by columns always compare exactly"],
   ["verification.md", "currency shows two decimals, display only", "shows measures with `format: currency` to two decimals; the recorded rows keep the full value"],
   ["verification.md", "fixing a warning on an approved item rechecks goldens", "After fixing a `sl validate` warning on an approved measure or golden"],
   // Open access: exceptions first, protected tags, roles by attribute, restrictions, span of control.
