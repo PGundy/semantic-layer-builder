@@ -94,6 +94,7 @@ const spec: CommandSpec = {
   summary: "List a source's tables with size, scope and modeling state; --groups suggests scope patterns.",
   usage: "tables --source <source> [--groups] [--all]",
   options: { source: { type: "string" }, groups: { type: "boolean" }, all: { type: "boolean" } },
+  writes: false,
   async run({ values }, ctx) {
     const project = loadProject(ctx.root);
     const sourceName = sourceFlag(values, project);

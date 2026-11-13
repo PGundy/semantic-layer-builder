@@ -1,6 +1,7 @@
 import { validateProject } from "../lib/validate.ts";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { canRun } from "../lib/adapters/index.ts";
 import { validDate } from "./approve.ts";
 import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.ts";
@@ -496,6 +497,15 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   if (!ctx.json) for (const w of warnings) ctx.err(w);
   const confirmedAt = yes.at;
   const confirmedAs = runAs(golden);
+  // The query ran without the lock. Under it the golden and the owner's latest reply are read again:
+  // the yes is recorded only when neither changed while the query ran (invariant 5).
+  const unlock = await ctx.lock();
+  if (!isDeepStrictEqual(readYaml<Golden>(path), golden) || latestReply(readReplies(ctx.root), `golden:${golden.name}`)?.id !== yes.ledger) {
+    throw new UserError(
+      `Golden "${golden.name}" or the owner's reply to it changed while its query ran, so nothing was recorded. ` +
+        `Run sl goldens confirm --name ${golden.name}${passedFlags(values)} again.`,
+    );
+  }
   updateYaml(path, (doc) => {
     doc.set("expected", doc.createNode({ tolerance, rows }));
     doc.set("status", "approved");
@@ -503,6 +513,7 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
     doc.set("confirmed_at", confirmedAt);
     doc.set("confirmed_as", doc.createNode(confirmedAs));
   });
+  unlock();
   const columns = resultColumns(rows);
   const masked = maskedColumns(ctx, values, source, columns);
   if (ctx.json) {
@@ -856,6 +867,7 @@ const spec: CommandSpec = {
     user: { type: "string" },
   },
   positionals: true,
+  writes: ({ values, positionals }) => (positionals[0] === "new" || values["emit-sql"] ? "whole" : positionals[0] === "confirm" ? "late" : false),
   async run({ values, positionals }, ctx) {
     const [sub, ...rest] = positionals;
     if (!sub || !(SUBCOMMANDS as readonly string[]).includes(sub)) {

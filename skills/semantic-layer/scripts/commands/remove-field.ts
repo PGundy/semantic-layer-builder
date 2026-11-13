@@ -22,6 +22,7 @@ const spec: CommandSpec = {
   usage: "remove-field <source.model.field> [--keep-column] [--force]",
   options: { "keep-column": { type: "boolean" }, force: { type: "boolean" } },
   positionals: true,
+  writes: "whole",
   async run({ values, positionals }, ctx) {
     loadProject(ctx.root);
     const [ref, ...extra] = positionals;

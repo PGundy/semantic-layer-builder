@@ -1,9 +1,10 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { isSeq } from "yaml";
 import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { commitEdit, itemMap, locate, oneLine, placeKey, relFile } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
+import { writeFileAtomic } from "../lib/lock.ts";
 import { LEDGER_FILE, openLedger, ownerText } from "../lib/ledger.ts";
 import { formatJson, plainText } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
@@ -93,7 +94,7 @@ async function resolveQuestion(ref: string | undefined, values: OptionValues, ct
   try {
     entry = ledger.append({ kind: "question", target: ref, question, text, by, at: ctx.now().toISOString() });
   } catch (e) {
-    writeFileSync(loc.file, before);
+    writeFileAtomic(loc.file, before);
     throw new UserError(`Could not append to ${LEDGER_FILE} (${(e as Error).message}), so ${outcome.file} was put back as it was; nothing changed. Fix the ledger file and run this again.`);
   }
   const remaining = current.filter((_, i) => i !== pos);
@@ -118,6 +119,7 @@ const spec: CommandSpec = {
     "resolve removes the question from the file and appends it, with the owner's answer, to .sl/ledger.jsonl.",
   options: { text: { type: "string" }, index: { type: "string" }, match: { type: "string" }, by: { type: "string" } },
   positionals: true,
+  writes: "whole",
   async run({ values, positionals }, ctx) {
     loadProject(ctx.root);
     const [sub, ref, ...extra] = positionals;
