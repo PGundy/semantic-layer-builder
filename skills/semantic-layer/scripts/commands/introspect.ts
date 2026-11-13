@@ -157,6 +157,7 @@ const spec: CommandSpec = {
     results: { type: "string" },
     plan: { type: "string" },
   },
+  writes: ({ values }) => (values["emit-sql"] ? "whole" : "late"),
   async run({ values }, ctx) {
     const sourceName = str(values, "source");
     if (!sourceName) throw new UserError("--source is required.");
@@ -176,6 +177,8 @@ const spec: CommandSpec = {
     let roleReport: RoleReport | undefined;
     const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input, onRoleReport: (r) => (roleReport = r) });
 
+    // The queries ran without the lock: the snapshot is read and written under it.
+    const unlock = await ctx.lock();
     const previous = loadSnapshot(ctx.root, source.source);
     const snapshot = buildSnapshot(source, results, ctx.now().toISOString(), previous);
     // A results file can hold more schemas than this run reads; only theirs are kept.
@@ -198,6 +201,7 @@ const spec: CommandSpec = {
     const loadModels = () => listModels(ctx.root, source.source).map((l) => l.model);
     const scopeChanges = recordScope(previous, snapshot, selectionMatcher(source, scope), loadModels);
     saveSnapshot(ctx.root, snapshot);
+    unlock();
     const diff = previous ? diffSnapshots(previous, snapshot) : null;
     const changes = diff && scopeChanges ? { ...diff, ...scopeChanges } : null;
 

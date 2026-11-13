@@ -45,6 +45,7 @@ const spec: CommandSpec = {
     unignore: { type: "boolean" },
   },
   positionals: true,
+  writes: "whole",
   async run({ values, positionals }, ctx) {
     loadProject(ctx.root);
     const [ref, ...extra] = positionals;

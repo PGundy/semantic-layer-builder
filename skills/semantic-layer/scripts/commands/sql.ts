@@ -84,6 +84,7 @@ const spec: CommandSpec = {
     role: { type: "string" },
     user: { type: "string" },
   },
+  writes: false,
   async run({ values }, ctx) {
     const text = str(values, "request");
     if (!text) throw new UserError("--request is required: a JSON object or a file holding a request.");

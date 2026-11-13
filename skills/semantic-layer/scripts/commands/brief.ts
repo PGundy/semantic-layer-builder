@@ -59,6 +59,7 @@ const spec: CommandSpec = {
     tables: { type: "string", multiple: true },
     budget: { type: "string" },
   },
+  writes: false,
   async run({ values }, ctx) {
     const source = sourceFlag(values, loadProject(ctx.root));
     const batch = positiveInt("batch", str(values, "batch"));
