@@ -1,0 +1,3 @@
+[test]
+# tests/temp-dirs.ts removes the temp directories the tests make (CONTRIBUTING.md, Tests).
+preload = ["./tests/temp-dirs.ts"]

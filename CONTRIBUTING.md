@@ -41,6 +41,8 @@ bash scripts/pg-local.sh --stop      # stops it
 
 The live tests create and drop schemas, each test in its own uniquely named schema, in the database `PG_URL` names. They refuse to run unless its host is `localhost`, `127.0.0.1`, `::1` or a socket path, or `SL_TEST_ALLOW_REMOTE=1` is set. Never point `PG_URL` at a database whose data you care about.
 
+A test makes its temp directories with `tempDir()` or `tempRoot()` from `tests/helpers.ts`, never with `mkdtemp`. `bunfig.toml` preloads `tests/temp-dirs.ts`, which removes a test file's directories when the next file starts and the last file's when the run ends, whether the tests pass or fail, and whatever is left when a signal stops the run or a test exits the process. Run `bun test` from the repository root, where `bunfig.toml` is: from another directory only the first file's directories are removed. `bun test --bail` stops before the cleanup and leaves the failing file's directories.
+
 ### Performance suite
 
 `tests/perf/` checks the large-catalog targets (docs/PRD.md FR-1.7) on a seeded synthetic catalog of 50,000 tables and 1,000,000 columns:
@@ -59,7 +61,7 @@ All test and fixture data is synthetic. Never add real data, real names or real 
 bash scripts/verify.sh
 ```
 
-It installs from the lockfile, typechecks, runs every test (starting `scripts/pg-local.sh` when `PG_URL` is unset and Postgres binaries exist) and validates the example layer. CI runs the same script.
+It installs from the lockfile, typechecks, runs every test and validates the example layer. When `PG_URL` is unset and Postgres binaries exist, it starts a cluster of its own with `scripts/pg-local.sh` in a fresh `sl-pg-verify.*` directory, and stops the cluster and removes the directory when it exits, also when a step fails. A cluster that does not start stops the run with `pg-local.sh`'s message. A cluster that `PG_URL` names is left running. It fails, and lists them, when the run leaves an `sl-test-*` or `sl-pg-*` entry in `${TMPDIR:-/tmp}` that was not there when it started; two runs at once in the same temp directory see each other's. CI runs the same script on every pull request and on pushes to `main` and `release/**`.
 
 A change should:
 

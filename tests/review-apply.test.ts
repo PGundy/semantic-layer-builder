@@ -1,13 +1,12 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { cpSync, existsSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runCli } from "../skills/semantic-layer/scripts/lib/cli.ts";
 import { openLedger } from "../skills/semantic-layer/scripts/lib/ledger.ts";
 import { applyReview, parseReviewMarkdown, questionKey, type ReviewForm } from "../skills/semantic-layer/scripts/lib/review.ts";
 import type { LedgerEntry, Model, PendingReadback } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { FIXED_NOW, sl } from "./helpers.ts";
+import { FIXED_NOW, sl, tempDir } from "./helpers.ts";
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 const TARGETS = "warehouse.customers.email,metric:average_order_value,access";
@@ -16,16 +15,10 @@ const OWNER = "Dana Ruiz";
 const EMPTY_VERDICT = "Verdict: [ ] yes  [ ] no  [ ] change";
 const EMPTY_ANSWER = "Answer:\n\n```\n```";
 
-const temps: string[] = [];
-afterAll(() => {
-  for (const t of temps) rmSync(t, { recursive: true, force: true });
-});
-
 // A copy of the Acme example layer with an access question, a readback rb_0001 of TARGETS and both
 // forms exported from it.
 async function setup(): Promise<{ root: string; dir: string; pending: PendingReadback }> {
-  const dir = mkdtempSync(join(tmpdir(), "sl-review-apply-"));
-  temps.push(dir);
+  const dir = tempDir("review-apply");
   const root = join(dir, "semantic");
   cpSync(ACME, root, { recursive: true });
   expect((await sl(root, ["question", "add", "access", "--text", ACCESS_QUESTION])).code).toBe(0);
@@ -456,8 +449,7 @@ describe("a yes to an export source's golden names the upgrade, not a confirm th
 
   // The Acme export set up as an export source, with its layer approved and the draft goldens `names` on it.
   async function exportCopy(names: string[]): Promise<{ root: string; measure: string }> {
-    const dir = mkdtempSync(join(tmpdir(), "sl-review-export-"));
-    temps.push(dir);
+    const dir = tempDir("review-export");
     const root = join(dir, "semantic");
     const setup = ["setup", "--source", "warehouse", "--dialect", "postgres", "--export", EXPORT_CSV, "--reason", "The warehouse accepts no outside connections."];
     expect((await sl(root, [...setup, "--schemas", "acme", "--include", "fct_orders,dim_customers,dim_regions"])).code).toBe(0);

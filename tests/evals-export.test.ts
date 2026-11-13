@@ -1,6 +1,5 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { scriptedDriver } from "../evals/runner/drivers/scripted.ts";
 import { loadScenario, loadScript, readTree, REPO_ROOT, scenarioPath, type Script } from "../evals/runner/files.ts";
@@ -13,7 +12,7 @@ import type { GradeReport, GraderResult } from "../evals/graders/types.ts";
 import { computeStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
 import type { Model, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { sl } from "./helpers.ts";
+import { sl, tempDir } from "./helpers.ts";
 
 // The export intake paths of the eval harness (docs/PRD.md FR-6.2) and the connection_first rows
 // for them (FR-6.3): acme-export ends waiting on a connection with no golden confirmed, and
@@ -21,15 +20,7 @@ import { sl } from "./helpers.ts";
 // back to the owner. Each replays to the same bytes, grades clean, and a broken copy fails the rows.
 
 const START = "2026-01-01T00:00:00Z";
-const dirs: string[] = [];
-const temp = () => {
-  const d = mkdtempSync(join(tmpdir(), "sl-evals-export-"));
-  dirs.push(d);
-  return d;
-};
-afterAll(() => {
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
-});
+const temp = () => tempDir("evals-export");
 
 // The items both scripts read back and approve from the export, in readback order.
 const APPROVED = ["lake.sessions", "lake.sessions.session_count", "lake.marketing_spend", "lake.marketing_spend.spend", "lake.web_events", "lake.web_events.page_views", "lake.web_events.session"];
