@@ -488,11 +488,14 @@ describe("the prefix form", () => {
   });
 
   async function live(p: ReturnType<typeof project>, url: URL, schema: string): Promise<void> {
-    // The private cluster listens on a unix socket: the host is its directory. Its local auth is trust,
-    // so the password is sent as written but cannot be proven right here.
+    // The private cluster listens on a unix socket: the host is its directory, and its local auth is
+    // trust, so the password is sent as written but cannot be proven right there. A server reached
+    // over TCP (CI's) checks the password, so the URL's own is used.
+    const host = url.searchParams.get("host") ?? url.hostname;
+    const password = url.password ? decodeURIComponent(url.password) : PASSWORD;
     writeFileSync(
       join(p.dir, ".env"),
-      `H4_HOST=${url.searchParams.get("host")}\nH4_PORT=${url.port}\nH4_USER=${decodeURIComponent(url.username)}\nH4_PASSWORD='${PASSWORD}'\nH4_DATABASE=${url.pathname.slice(1)}\nLAKE_URL=${PG_URL}\n`,
+      `H4_HOST=${host}\nH4_PORT=${url.port || "5432"}\nH4_USER=${decodeURIComponent(url.username)}\nH4_PASSWORD='${password}'\nH4_DATABASE=${url.pathname.slice(1)}\nLAKE_URL=${PG_URL}\n`,
     );
     const setup = await cli(p.elsewhere, ["setup", "--source", "lake", "--dialect", "postgres", "--env-prefix", "H4_", "--schemas", schema, "--root", p.root, "--json"]);
     // With --json the place is in the output, and stderr holds only the warning about the test server's superuser.
@@ -530,6 +533,8 @@ describe("the prefix form", () => {
     expect((JSON.parse(fromProcess.out) as { connection_from: unknown }).connection_from).toEqual({ kind: "environment" });
 
     // The libpq form of a socket URL, with no host before the path, connects: the driver reads the URL.
+    // Only a server reached through a socket has one.
+    if (!url.searchParams.get("host")) return;
     const socketUrl = `postgres://${url.username}@/${url.pathname.slice(1)}?host=${url.searchParams.get("host")}&port=${url.port}`;
     expect(URL.canParse(socketUrl)).toBe(false);
     const socket = await cli(p.elsewhere, ["run", "--source", "lake", "--sql", "select 1 as one", "--root", p.root, "--json"], { LAKE_URL: socketUrl });
