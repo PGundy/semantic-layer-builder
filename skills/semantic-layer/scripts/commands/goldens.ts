@@ -21,6 +21,7 @@ import {
   goldenDraftFields,
   goldenPlan,
   goldenQueryId,
+  groupingColumns,
   judgeGolden,
   onlyUnsupportedDialect,
   refusalNext,
@@ -171,7 +172,12 @@ async function runGolden(
 ): Promise<{ rows: ResultRows; from: GoldenRun["from_query"]; cross_checked: boolean }> {
   const { compiled, rows, cross } = await runGoldenQueries(ctx, g, source, input);
   if (rows && cross) {
-    const cmp = compareRows(rows, cross, { ordered: orderedGolden(g), tolerance, protectedColumns: protectedColumnsOf(ctx, source, [rows, cross]) });
+    const cmp = compareRows(rows, cross, {
+      ordered: orderedGolden(g),
+      tolerance,
+      protectedColumns: protectedColumnsOf(ctx, source, [rows, cross]),
+      groupingColumns: groupingColumns(compiled),
+    });
     if (!cmp.ok) {
       throw new UserError(
         `Golden "${g.name}": cross_check_sql gives other rows than the request compiled from the YAML at tolerance ${tolerance} (expected is the compiled, got is cross_check_sql): ` +
@@ -400,6 +406,7 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
           ordered: orderedGolden(golden),
           tolerance: parseTolerance(values, golden).tolerance,
           protectedColumns: maskedColumns(ctx, values, source, resultColumns([...compiledRows, ...cross])),
+          groupingColumns: groupingColumns(compiled),
         })
       : undefined;
   if (ctx.json) {
@@ -669,6 +676,7 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
         ordered: orderedGolden(g),
         tolerance: g.expected?.tolerance ?? DEFAULT_TOLERANCE,
         protectedColumns: maskedColumns(ctx, values, source, resultColumns([...expected, ...(compiledRows ?? []), ...(crossRows ?? [])])),
+        groupingColumns: groupingColumns(compiled),
       });
       checks.push({ name: g.name, ...judged, ...(compiled.ok ? {} : { compiled: "unsupported" as const }) });
     }
@@ -829,7 +837,9 @@ const spec: CommandSpec = {
     'goldens new --name <g> --question "<question>" --request <json|file> [--source <s>] [--role <role>] [--user <json>]\n\n' +
     "confirm records the rows the request compiles to now only when the owner's latest reply to golden:<g> in .sl/ledger.jsonl\n" +
     "is a yes to the golden with these rows and this tolerance (sl readback --targets golden:<g>, then sl reply --verdict yes);\n" +
-    "confirmed_by and confirmed_at come from that reply, and --by, when given, must name the same owner.",
+    "confirmed_by and confirmed_at come from that reply, and --by, when given, must name the same owner.\n" +
+    "The tolerance is relative and applies to figures with decimals: the columns a golden is grouped by and whole numbers\n" +
+    "(counts, years) always compare exactly, and a failed check says so on the line.",
   options: {
     name: { type: "string" },
     by: { type: "string" },

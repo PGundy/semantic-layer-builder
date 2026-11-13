@@ -123,7 +123,7 @@
         "tolerance": {
           "type": "number",
           "minimum": 0,
-          "description": "Relative tolerance for numbers, agreed with the owner and passed to sl goldens confirm --tolerance; 0 for figures finance signs off."
+          "description": "Relative tolerance for figures with decimals, agreed with the owner and passed to sl goldens confirm --tolerance; 0 for figures finance signs off. The request's grouping columns and whole numbers always compare exactly."
         },
         "rows": {
           "type": "array",
