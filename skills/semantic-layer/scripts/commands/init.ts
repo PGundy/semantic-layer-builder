@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { join } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
+import { ignoreEnvFiles } from "../lib/env-file.ts";
 import { UserError } from "../lib/errors.ts";
 import { paths } from "../lib/project.ts";
 import { DEFAULT_BATCH_SIZE, DEFAULT_FOCUS_THRESHOLD, NAME_PATTERN, type Project } from "../lib/types.ts";
@@ -26,6 +27,7 @@ const spec: CommandSpec = {
     writeYaml(p.project, project);
     for (const dir of [p.sourcesDir, p.snapshotsDir, `${ctx.root}/models`, p.goldensDir]) mkdirSync(dir, { recursive: true });
     ignorePlans(ctx.root);
+    ignoreEnvFiles(ctx.root);
     if (ctx.json) ctx.out(JSON.stringify({ root: ctx.root, project }));
     else ctx.out(`Created ${p.project}. Next: sl add-source --name <source> --dialect <dialect>.`);
     return 0;

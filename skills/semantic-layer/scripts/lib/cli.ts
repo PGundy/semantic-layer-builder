@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { COMMANDS } from "../commands/index.ts";
 import type { CommandContext } from "./command.ts";
+import { checkEnvFileFlag, commandEnv, type ConnectionUse } from "./env-file.ts";
 import { UserError } from "./errors.ts";
 import { resolveRoot } from "./project.ts";
 
@@ -13,12 +14,26 @@ export interface CliIO {
 
 const GLOBAL_OPTIONS = {
   root: { type: "string" },
+  "env-file": { type: "string" },
   json: { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } as const;
 
 // The line every command's --help ends with.
-export const GLOBAL_HELP = "Every command also takes --root <dir> (or SEMANTIC_ROOT) and --json.";
+export const GLOBAL_HELP = "Every command also takes --root <dir> (or SEMANTIC_ROOT), --env-file <path> (or SL_ENV_FILE) and --json.";
+
+// A command's --json object with connection_from added: where the first connection it opened came from.
+function withConnectionFrom(text: string, uses: ConnectionUse[]): string {
+  if (!uses.length) return text;
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return text;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value) || "connection_from" in value) return text;
+  return JSON.stringify({ ...value, connection_from: uses[0]!.from }, null, text.includes("\n") ? 2 : undefined);
+}
 
 function clock(env: Record<string, string | undefined>): () => Date {
   const fixed = env.SL_NOW;
@@ -69,13 +84,26 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
       io.out(`${spec.summary}\n\nUsage: sl ${spec.usage}\n\n${GLOBAL_HELP}`);
       return 0;
     }
+    // Each connection a command opens is said once on stderr; with --json the output carries the first as connection_from instead.
+    const json = values.json === true;
+    const uses: ConnectionUse[] = [];
+    const lookup = {
+      cwd: io.cwd,
+      envFile: values["env-file"] as string | undefined,
+      onConnection: (use: ConnectionUse) => {
+        if (uses.some((u) => u.source === use.source)) return;
+        uses.push(use);
+        if (!json) io.err(use.line);
+      },
+    };
+    checkEnvFileFlag(io.env, lookup);
     const ctx: CommandContext = {
       root: resolveRoot(values.root as string | undefined, io.env, io.cwd),
       cwd: io.cwd,
-      env: io.env,
-      json: values.json === true,
+      env: commandEnv(io.env, lookup),
+      json,
       now: clock(io.env),
-      out: io.out,
+      out: json ? (text) => io.out(withConnectionFrom(text, uses)) : io.out,
       err: io.err,
     };
     return await spec.run({ values, positionals: parsed.positionals }, ctx);

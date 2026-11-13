@@ -37,7 +37,7 @@ const DOCS = [
   "references/verification.md",
   "references/baseline.md",
 ];
-const GLOBAL_FLAGS = new Set(["root", "json", "help"]);
+const GLOBAL_FLAGS = new Set(["root", "env-file", "json", "help"]);
 const GOLDENS_SUBCOMMANDS = new Set(["run", "confirm", "check", "new"]);
 
 function read(doc: string): string {
