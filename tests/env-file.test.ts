@@ -2,7 +2,7 @@
 // the prefix form, the messages, the .gitignore lines, the validate errors and the MCP server.
 import { SQL } from "bun";
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connectFailure, type DriverConnection, driverConnection } from "../skills/semantic-layer/scripts/lib/adapters/postgres.ts";
@@ -23,7 +23,7 @@ import { validateProject } from "../skills/semantic-layer/scripts/lib/validate.t
 import { applySourceState } from "../skills/semantic-layer/scripts/lib/setup.ts";
 import { editYamlText, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { Server } from "../skills/semantic-layer/scripts/mcp/server.ts";
-import { assertLocalPg, FIXED_NOW, PG_URL, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, FIXED_NOW, PG_URL, tempDir, uniqueSchema } from "./helpers.ts";
 
 const SCRIPTS = join(import.meta.dir, "..", "skills", "semantic-layer", "scripts");
 const SL = join(SCRIPTS, "sl.ts");
@@ -40,7 +40,7 @@ afterAll(() => {
 
 // A project directory with a semantic root in it and a second directory to run from.
 function project(): { dir: string; root: string; elsewhere: string } {
-  const base = mkdtempSync(join(tmpdir(), "sl-env-"));
+  const base = tempDir("env");
   dirs.push(base);
   const dir = join(base, "proj");
   const elsewhere = join(base, "elsewhere");
