@@ -107,8 +107,9 @@ describe("database errors are user errors", () => {
     writeYaml(join(t.root, "sources", "pg.yaml"), { source: "pg", dialect: "postgres", connection: { env: "PG_URL" } });
     const r = await sl(t.root, ["run", "--source", "pg", "--sql", "select to_char(now(), 'YYYY') month from"], { PG_URL });
     expect(r.code).toBe(1);
-    // The test server's role is a superuser, so the connection warning comes first.
-    const [warning, error] = r.err.split("\n");
+    // Where the connection came from comes first; the test server's role is a superuser, so its warning is next.
+    const [from, warning, error] = r.err.split("\n");
+    expect(from).toBe('Connection for source "pg": PG_URL from the environment');
     expect(warning).toBe('Warning: source "pg" connects as a superuser. Queries run read-only, but connect with a SELECT-only role.');
     expect(error).toStartWith("sl run: Query failed: ");
     expect(r.err).toContain("syntax error");

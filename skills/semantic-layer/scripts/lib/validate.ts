@@ -22,6 +22,7 @@ import { classifyType, isNumeric, isTemporal } from "./column-types.ts";
 import { type Condition, conditionAttributes, type Literal, parseCondition } from "./conditions.ts";
 import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
 import { quoteIdent } from "./dialect.ts";
+import { type Env, envFilesInRoot, rootEnvFile, trackedEnvFiles } from "./env-file.ts";
 import { UserError } from "./errors.ts";
 import { intakeIssues, intakeMode, upgradeCommand } from "./intake.ts";
 import { DEFAULT_TOLERANCE } from "./goldens.ts";
@@ -613,6 +614,10 @@ class Validator {
       // A tables_file that is not a string is already a schema error.
       if (typeof s.scope?.tables_file === "string") this.checkTablesFile(l.file, s.source, s.scope.tables_file);
       for (const x of intakeIssues(s, this.root)) this.issues.push({ level: x.level, file: l.file, path: x.path, message: x.message });
+      if (s.connection?.env !== undefined && s.connection.env_prefix !== undefined) {
+        this.error(l.file, "connection", `has both env and env_prefix; a source names one variable that holds the URL or a prefix for the parts, not both: keep one (sl setup --source ${s.source} --dialect ${s.dialect} --env <VAR> or --env-prefix <PREFIX> writes it)`);
+      }
+      if (s.connection?.env_prefix !== undefined && s.dialect !== "postgres") this.warn(l.file, "connection.env_prefix", `is used only by postgres sources, not ${s.dialect}`);
       if (s.dialect !== "duckdb") {
         for (const key of ["database", "setup", "views"] as const)
           if (s.connection?.[key] !== undefined) this.warn(l.file, `connection.${key}`, `is used only by duckdb sources, not ${s.dialect}`);
@@ -2180,8 +2185,16 @@ class Validator {
     }
   }
 
+  // Errors on each env file under the root: a secret is never kept inside it.
+  checkEnvFiles(): void {
+    for (const file of envFilesInRoot(this.root)) {
+      this.error(file, "", `an env file inside the semantic root, where no secret is kept: move it to ${rootEnvFile(this.root)} (sl reads it there and keeps it out of version control), then run sl validate again`);
+    }
+  }
+
   run(): Issue[] {
     this.loadAll();
+    this.checkEnvFiles();
     this.checkProject();
     this.checkSources();
     this.checkModels();
@@ -2369,6 +2382,17 @@ export function unconfirmedGoldenMessage(name: string): string {
 // and `removed` the files the edit removes.
 export function validateProject(root: string, overrides?: ReadonlyMap<string, string>, removed?: ReadonlySet<string>): Issue[] {
   return new Validator(root, overrides, removed).run();
+}
+
+// An error for each env file the connection lookup reads (lib/env-file.ts) that git tracks. sl
+// validate adds these; they depend on the environment and the working directory, not on the root alone.
+export function trackedEnvFileIssues(root: string, env: Env): Issue[] {
+  return trackedEnvFiles(root, env).map((path) => ({
+    level: "error" as const,
+    file: relative(root, path).split("\\").join("/"),
+    path: "",
+    message: `git tracks this env file, so the secrets in it are in the repository: run git -C ${dirname(path)} rm --cached ${basename(path)} and commit, have the owner rotate the credentials it held, then run sl validate again (sl setup keeps .env out of version control)`,
+  }));
 }
 
 // The key holding a golden's hand-written cross-check query: cross_check_sql, else its older name sql.

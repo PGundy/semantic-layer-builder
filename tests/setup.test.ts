@@ -116,7 +116,8 @@ describe("connection first", () => {
     const reason = await sl(root, ["setup", "--source", "wh", "--dialect", "postgres", "--env", "WAREHOUSE_URL", "--reason", "x"]);
     expect(reason.err).toContain("--reason records why a connection is not possible, so it goes with --export");
     const pgEnv = await sl(root, ["setup", "--source", "wh", "--dialect", "postgres", "--env", "WAREHOUSE_URL"], { WAREHOUSE_URL: undefined });
-    expect(pgEnv.err).toContain("Environment variable WAREHOUSE_URL is not set in this shell, so sl setup cannot read the catalog, and nothing was written.");
+    expect(pgEnv.err).toContain('Source "wh": WAREHOUSE_URL is not set. Looked in the environment, then in');
+    expect(pgEnv.err).toContain("sl setup reads the catalog through that connection, so nothing was written under the semantic root.");
     expect(existsSync(root)).toBe(false);
   });
 });

@@ -1,4 +1,7 @@
 import { SQL } from "bun";
+import { dirname } from "node:path";
+import { redactCredentials, REDACTED } from "../credentials.ts";
+import { noteConnection, readConnection, URL_PLACEHOLDER } from "../env-file.ts";
 import { UserError } from "../errors.ts";
 import type { SourceConfig } from "../types.ts";
 import { formatDate, formatTimestamp, normalizeDecimal, normalizeInteger } from "./normalize.ts";
@@ -148,25 +151,145 @@ function warnOnce(warn: (m: string) => void, key: string, message: string): void
   warn(message);
 }
 
+// What the driver is given for a source: the URL of connection.env as it is, or the parts of
+// connection.env_prefix as options, so a password is used as written and never put in a URL.
+// `sql` is the driver's client built from `options`, not yet connected. `target` is the host and
+// port a message names; no message may hold one of `secrets`, or one of `users` as a word.
+export interface DriverConnection {
+  options: Record<string, unknown>;
+  sql: SQL;
+  target: { host: string; port: string };
+  secrets: string[];
+  users: string[];
+  // How to turn TLS on, for a server that requires it, and off, for one that has none.
+  sslHint: string;
+  noSslHint: string;
+}
+
+const SSL_MODES = ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"];
+
+export function driverConnection(source: SourceConfig, values: Record<string, string>, timeoutMs: number): DriverConnection {
+  const base = { adapter: "postgres", max: 1, prepare: false, connection: startupSettings(timeoutMs) };
+  const refuse = (what: string) => new UserError(`Source "${source.source}": ${what}; ask the owner to correct it, then run the same command again.`);
+  const variable = source.connection?.env;
+  if (variable) {
+    const url = values[variable]!;
+    const invalid = () => refuse(`${variable} does not hold a valid Postgres connection URL. It reads like ${URL_PLACEHOLDER}, with any @, / or # of the password percent-encoded (sl setup --env-prefix takes a password as written)`);
+    // The driver judges the URL, so every form it takes works, a unix socket's among them. A blank
+    // one it would replace with DATABASE_URL.
+    if (!url.trim()) throw invalid();
+    const options = { ...base, url };
+    let sql: SQL;
+    try {
+      sql = new SQL(options as SQL.Options);
+    } catch {
+      throw invalid();
+    }
+    // The driver's own reading says which server, user and password it uses. Its host and port
+    // are named only for a value that starts as a Postgres URL: of anything else (a password
+    // pasted alone) the driver makes a host.
+    const read = sql.options as { hostname?: unknown; port?: unknown; path?: unknown; username?: unknown; password?: unknown };
+    const written = URL.canParse(url) ? new URL(url) : null;
+    const text = (v: unknown) => (typeof v === "string" || typeof v === "number" ? String(v) : "");
+    return {
+      options,
+      sql,
+      target: /^postgres(ql)?:\/\//i.test(url) ? { host: read.path ? dirname(text(read.path)) : text(read.hostname), port: text(read.port) } : { host: `the host ${variable} names`, port: "" },
+      secrets: [url, text(read.password), written?.password ?? ""],
+      users: [text(read.username), written?.username ?? ""],
+      sslHint: `add sslmode=require to the URL in ${variable} (it then ends ?sslmode=require)`,
+      noSslHint: `take sslmode out of the URL in ${variable}`,
+    };
+  }
+  const prefix = source.connection?.env_prefix ?? "";
+  const part = (name: string) => values[`${prefix}${name}`];
+  const port = part("PORT") ?? "5432";
+  if (!/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw refuse(`${prefix}PORT must be a port number such as 5432`);
+  const sslmode = part("SSLMODE");
+  if (sslmode !== undefined && !SSL_MODES.includes(sslmode)) throw refuse(`${prefix}SSLMODE must be one of ${SSL_MODES.join(", ")}`);
+  const password = part("PASSWORD") ?? "";
+  // Every field is given, so the driver takes none from DATABASE_URL or the PG* variables. The
+  // password is a function because the driver replaces an empty one with PGPASSWORD or the
+  // password of DATABASE_URL, which would send another server's password to this one.
+  const options = { ...base, hostname: part("HOST"), port: Number(port), username: part("USER"), password: () => password, database: part("DATABASE"), tls: sslmode ?? "disable" };
+  let sql: SQL;
+  try {
+    sql = new SQL(options as SQL.Options);
+  } catch {
+    throw refuse(`${prefix}HOST, or a variable beside it, does not hold a value a Postgres connection takes`);
+  }
+  return {
+    options,
+    sql,
+    target: { host: part("HOST")!, port },
+    secrets: [password],
+    users: [part("USER")!],
+    sslHint: `add the line ${prefix}SSLMODE=require beside ${prefix}HOST`,
+    noSslHint: `set ${prefix}SSLMODE=disable, or take that line out`,
+  };
+}
+
+// A driver message with the connection's secrets, its user name where it stands as a word, and
+// anything else that reads like a credential replaced by [redacted].
+function scrub(text: string, conn: DriverConnection): string {
+  let out = text;
+  for (const s of new Set(conn.secrets)) if (s) out = out.split(s).join(REDACTED);
+  for (const u of new Set(conn.users)) {
+    if (u) out = out.replace(new RegExp(`(?<![A-Za-z0-9_])${u.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_])`, "g"), REDACTED);
+  }
+  return redactCredentials(out).text;
+}
+
+const UNREACHABLE = /^ERR_POSTGRES_CONNECTION_(REFUSED|TIMEOUT)$/;
+const NEEDS_SSL = /no encryption|SSL off|SSL connection is required|sslmode=require|connection is insecure/i;
+const NO_SSL = /does not support SSL/i;
+
+// The message for a connection that failed to open: an unreachable server by host and port, a
+// server that accepts only encrypted connections with how to turn TLS on, one that has no TLS
+// with how to turn it off, anything else with the driver's words scrubbed. `described` says where
+// the variables came from; no message names a value but the host and the port.
+export function connectFailure(source: string, e: unknown, conn: DriverConnection, described: string): UserError {
+  const code = String((e as { code?: unknown }).code ?? "");
+  const text = e instanceof Error ? e.message : String(e);
+  const at = `${conn.target.host}${conn.target.port ? ` port ${conn.target.port}` : ""} (${described})`;
+  if (UNREACHABLE.test(code)) {
+    return new UserError(
+      `Source "${source}": cannot reach the database at ${at}. Check the host and port with the owner, and the network path from this machine: ` +
+        "a VPN that must be on, or an allowlist that must include this machine's address. Then run the same command again.",
+    );
+  }
+  if (NEEDS_SSL.test(text)) {
+    return new UserError(
+      `Source "${source}": the database at ${at} accepts only encrypted connections. Ask the owner to ${conn.sslHint}, then run the same command again.`,
+    );
+  }
+  if (NO_SSL.test(text)) {
+    return new UserError(`Source "${source}": the database at ${at} does not take encrypted connections. Ask the owner to ${conn.noSslHint}, then run the same command again.`);
+  }
+  return new UserError(
+    `Source "${source}": cannot connect to the database at ${at}: ${scrub(text, conn).replace(/\.$/, "")}. Ask the owner to check the values of those variables, then run the same command again.`,
+  );
+}
+
 // Opens a Postgres source read-only by construction. Every connection starts with
 // default_transaction_read_only=on, the statement timeout and TimeZone=UTC as startup settings,
 // so a reconnect keeps them. Each query runs alone over the extended protocol, which refuses
 // several statements in one call, inside BEGIN TRANSACTION READ ONLY and is always rolled back,
-// so nothing it sets outlives it. On connect it measures what the role can do (buildRoleReport) and
-// warns once, without refusing, when the role is a superuser, can write, is a member of a
-// server-file role or reads schemas outside intake.schemas.
-export async function openPostgres(_root: string, source: SourceConfig, env: Record<string, string | undefined>, opts: AdapterOptions = {}): Promise<Adapter> {
-  const varName = source.connection?.env;
-  if (!varName) throw new UserError(`Source "${source.source}": set connection.env to the name of the env var holding its connection URL.`);
-  const url = env[varName];
-  if (!url) throw new UserError(`Source "${source.source}": env var ${varName} is not set.`);
-  const timeout = statementTimeout(env.SL_STATEMENT_TIMEOUT_MS);
-  let sql: SQL;
-  try {
-    sql = new SQL({ url, max: 1, prepare: false, connection: startupSettings(timeout) });
-  } catch {
-    throw new UserError(`Source "${source.source}": ${varName} does not hold a valid Postgres connection URL.`);
+// so nothing it sets outlives it. The connection variables come from the environment or an env
+// file (lib/env-file.ts), and the command is told which. On connect it measures what the role can
+// do (buildRoleReport) and warns once, without refusing, when the role is a superuser, can write,
+// is a member of a server-file role or reads schemas outside intake.schemas.
+export async function openPostgres(root: string, source: SourceConfig, env: Record<string, string | undefined>, opts: AdapterOptions = {}): Promise<Adapter> {
+  if (!source.connection?.env && source.connection?.env_prefix === undefined) {
+    throw new UserError(
+      `Source "${source.source}" names no connection variable. Run sl setup --source ${source.source} --dialect postgres --env <VAR> (the variable that holds its connection URL) or --env-prefix <PREFIX> (for <PREFIX>HOST, <PREFIX>USER and the rest).`,
+    );
   }
+  const { resolution, values } = readConnection(root, source, env);
+  if (resolution.status === "unset") throw new UserError(resolution.message);
+  const conn = driverConnection(source, values, statementTimeout(env.SL_STATEMENT_TIMEOUT_MS));
+  noteConnection(source.source, resolution, env);
+  const sql = conn.sql;
 
   async function run(text: string): Promise<QueryResult> {
     const conn = await sql.reserve();
@@ -199,7 +322,7 @@ export async function openPostgres(_root: string, source: SourceConfig, env: Rec
     role = (await run(ROLE_SQL)).rows[0] ?? {};
   } catch (e) {
     await sql.close().catch(() => {});
-    throw new UserError(`Source "${source.source}": cannot connect using ${varName}: ${(e as Error).message}`);
+    throw connectFailure(source.source, e, conn, resolution.described);
   }
   const measured = await run(SCHEMAS_SQL).then(
     (r) => r.rows,
