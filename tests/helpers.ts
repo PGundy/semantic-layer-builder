@@ -1,5 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { expect } from "bun:test";
 import { DuckDBInstance } from "@duckdb/node-api";
@@ -8,6 +7,9 @@ import { runCli } from "../skills/semantic-layer/scripts/lib/cli.ts";
 import type { CompileResult } from "../skills/semantic-layer/scripts/lib/compiler/index.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
+import { tempDir } from "./temp-dirs.ts";
+
+export { tempDir };
 
 export const FIXED_NOW = "2026-01-15T12:00:00.000Z";
 
@@ -32,9 +34,10 @@ export async function sl(root: string, args: string[], env: Record<string, strin
   return { code, out: o, err: err.join("\n"), json: <T,>() => JSON.parse(o) as T };
 }
 
-// A fresh semantic root in a temp directory, removed by the returned cleanup.
+// A fresh semantic root in a temp directory. The directory is removed when its test file finishes
+// (tests/temp-dirs.ts); the returned cleanup removes it sooner.
 export function tempRoot(): { root: string; dir: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "sl-test-"));
+  const dir = tempDir();
   const root = join(dir, "semantic");
   return { root, dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }

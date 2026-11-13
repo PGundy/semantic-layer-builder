@@ -1,13 +1,12 @@
 // sl approve requires the owner's recorded yes (PRD FR-3.4, invariant 5): an approval rests on the
 // owner's latest reply in .sl/ledger.jsonl being a yes to the item as it now stands.
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { Model } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { initProject, recordReply, sl, tempRoot } from "./helpers.ts";
+import { initProject, recordReply, sl, tempDir, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
@@ -168,7 +167,7 @@ describe("approve without a matching yes", () => {
   test("a yes in a ledger behind a linked .sl directory outside the root approves nothing", async () => {
     const root = await project();
     await recordReply(root, "wh.orders.revenue");
-    const outside = mkdtempSync(join(tmpdir(), "sl-outside-"));
+    const outside = tempDir("outside");
     try {
       cpSync(join(root, ".sl"), outside, { recursive: true });
       rmSync(join(root, ".sl"), { recursive: true });

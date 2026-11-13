@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { SQL } from "bun";
 import { createHash } from "node:crypto";
-import { cpSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,20 +16,14 @@ import {
 } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { conditionAttributes, parseCondition } from "../skills/semantic-layer/scripts/lib/conditions.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { approveWithYes, recordReply, sl } from "./helpers.ts";
+import { approveWithYes, recordReply, sl, tempDir } from "./helpers.ts";
 
 const FIXTURE = join(import.meta.dir, "fixtures", "valid");
 const SPEC = join(import.meta.dir, "..", "skills", "semantic-layer", "references", "spec.md");
 
-const temps: string[] = [];
-afterAll(() => {
-  for (const t of temps) rmSync(t, { recursive: true, force: true });
-});
-
 // A copy of the valid fixture in a temp directory.
 function copyFixture(): string {
-  const dir = mkdtempSync(join(tmpdir(), "sl-validate-"));
-  temps.push(dir);
+  const dir = tempDir("validate");
   const root = join(dir, "semantic");
   cpSync(FIXTURE, root, { recursive: true });
   return root;
@@ -58,8 +52,7 @@ function expectIssue(issues: Issue[], level: Issue["level"], file: string, path:
 
 // Parses YAML text through the project's reader, which takes a path.
 function parseYamlText(text: string): unknown {
-  const dir = mkdtempSync(join(tmpdir(), "sl-spec-"));
-  temps.push(dir);
+  const dir = tempDir("spec");
   const p = join(dir, "block.yaml");
   writeFileSync(p, text);
   return readYaml<unknown>(p);

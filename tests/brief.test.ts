@@ -1,14 +1,13 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { BriefPacket, BriefTable } from "../skills/semantic-layer/scripts/lib/brief.ts";
 import { schemaValidator } from "../skills/semantic-layer/scripts/mcp/schema.ts";
 import type { ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
 import type { Snapshot, SnapshotColumn, SnapshotTable } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readJson, readYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { initProject, sl } from "./helpers.ts";
+import { initProject, sl, tempDir } from "./helpers.ts";
 
 // sl brief (FR-4.2), on copies of the Acme example layer and a 200-table synthetic snapshot. All data is synthetic.
 
@@ -16,17 +15,6 @@ const REPO = join(import.meta.dir, "..");
 const ACME = join(REPO, "examples", "acme", "semantic");
 const SCHEMA = JSON.parse(readFileSync(join(REPO, "skills", "semantic-layer", "schemas", "brief.schema.json"), "utf8")) as object;
 const validate = schemaValidator().compile(SCHEMA);
-
-const temps: string[] = [];
-afterAll(() => {
-  for (const t of temps) rmSync(t, { recursive: true, force: true });
-});
-
-function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "sl-brief-"));
-  temps.push(dir);
-  return dir;
-}
 
 // A copy of the Acme layer in which the warehouse is back in the interview: every warehouse model
 // is a draft, and orders and customers have no model, so eight tables make two batches of five.

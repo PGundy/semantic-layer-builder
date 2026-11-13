@@ -1,9 +1,8 @@
 // Runs the CLI as its own process, the way an agent does, and records the wall time and the
 // process's peak resident memory.
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { FIXED_NOW } from "../helpers.ts";
+import { FIXED_NOW, tempDir } from "../helpers.ts";
 
 // SL_PERF_CLI points the suite at another copy of sl.ts, such as the base branch's, to compare.
 export const SL = process.env.SL_PERF_CLI ?? join(import.meta.dir, "..", "..", "skills", "semantic-layer", "scripts", "sl.ts");
@@ -22,7 +21,7 @@ const PRELOAD = join(import.meta.dir, "rss-preload.ts");
 // The process reports its own peak memory (rss-preload.ts); what the parent reads for the child
 // is the fallback when that report is missing.
 export async function timedSl(root: string, args: string[], env: Record<string, string> = {}): Promise<Timed> {
-  const rssFile = join(mkdtempSync(join(tmpdir(), "sl-perf-rss-")), "rss");
+  const rssFile = join(tempDir("perf-rss"), "rss");
   const start = performance.now();
   const proc = Bun.spawn(["bun", "--preload", PRELOAD, SL, ...args, "--root", root], {
     cwd: root,
