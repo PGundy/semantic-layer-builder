@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { hasCredential } from "../skills/semantic-layer/scripts/lib/credentials.ts";
 import { join } from "node:path";
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
@@ -15,7 +14,7 @@ import { runIdFor, runScenario, steppingClock } from "../evals/runner/runner.ts"
 import type { Driver, Scenario, SkillTurnInput, Summary, TranscriptTurn } from "../evals/runner/types.ts";
 import { goldenHash } from "../skills/semantic-layer/scripts/lib/approval-hash.ts";
 import type { Golden } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { sl } from "./helpers.ts";
+import { sl, tempDir } from "./helpers.ts";
 
 // The eval runner (evals/runner, FR-6.1) with the scripted driver: transcript and summary shape,
 // budget stops, fresh context per skill turn, redaction of credentials and deterministic output.
@@ -26,7 +25,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 function outDir(): string {
-  const d = mkdtempSync(join(tmpdir(), "sl-evals-"));
+  const d = tempDir("evals");
   dirs.push(d);
   return d;
 }

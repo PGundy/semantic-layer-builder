@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { metricEntries, accessEntry, modelEntries } from "../skills/semantic-layer/scripts/lib/approval-hash.ts";
 import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { Model } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { checkToolUse, type Verdict } from "../skills/semantic-layer/scripts/hooks/guard-edits.ts";
 import { shellWrites } from "../skills/semantic-layer/scripts/hooks/shell-writes.ts";
+import { tempDir } from "./helpers.ts";
 
 // The plugin's PreToolUse hook (spec: Hand edits): hook payloads for each tool, against a synthetic
 // semantic root whose approved items carry real content hashes.
@@ -106,7 +106,7 @@ function tree(d: string): Record<string, string> {
 let before: Record<string, string>;
 
 beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), "sl-hook-"));
+  dir = tempDir("hook");
   root = join(dir, "semantic");
   outside = join(dir, "elsewhere");
   mkdirSync(outside);
@@ -503,10 +503,9 @@ describe("the plugin registers the hook", () => {
 describe("on the Acme example", () => {
   let acme: string;
   beforeAll(() => {
-    acme = mkdtempSync(join(tmpdir(), "sl-hook-acme-"));
+    acme = tempDir("hook-acme");
     cpSync(join(REPO, "examples", "acme", "semantic"), acme, { recursive: true });
   });
-  afterAll(() => rmSync(acme, { recursive: true, force: true }));
 
   test("an approved measure is guarded and checking it is fast", () => {
     const f = join(acme, "models", "warehouse", "orders.yaml");

@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { beforeAll, describe, expect, test } from "bun:test";
+import { appendFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { scriptedDriver } from "../evals/runner/drivers/scripted.ts";
 import { loadScenario, loadScript, readTree, REPO_ROOT, scenarioPath, type Script } from "../evals/runner/files.ts";
@@ -13,21 +12,13 @@ import { protectedValues } from "../evals/graders/secrets.ts";
 import type { GradeReport, GraderResult } from "../evals/graders/types.ts";
 import type { Golden, Metric } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
-import { approveWithYes, duckdbSource, sl } from "./helpers.ts";
+import { approveWithYes, duckdbSource, sl, tempDir } from "./helpers.ts";
 
 // The deterministic graders (evals/graders, FR-6.3): both scripted scenarios grade clean, and
 // synthetic run directories built from a scripted run fail each grader the way the spec says.
 
 const START = "2026-01-01T00:00:00.000Z";
-const dirs: string[] = [];
-const temp = () => {
-  const d = mkdtempSync(join(tmpdir(), "sl-grades-"));
-  dirs.push(d);
-  return d;
-};
-afterAll(() => {
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
-});
+const temp = () => tempDir("grades");
 
 // The scenario's script, or with draftOnly its first three skill turns, ending after sl draft with
 // nothing approved, which the synthetic run directories below start from.

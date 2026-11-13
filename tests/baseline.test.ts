@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildBaseline, INCOMING_READ_MAX, QUESTION_TOPICS, renderBaseline, type BaselineReport, type TableBaseline } from "../skills/semantic-layer/scripts/lib/baseline.ts";
 import { draftModels } from "../skills/semantic-layer/scripts/lib/draft.ts";
@@ -10,7 +9,7 @@ import type { ColumnProfile, Model, Snapshot, SnapshotColumn, SnapshotTable } fr
 import { updateYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { SQL } from "bun";
 import { loadPostgres } from "../fixtures/acme/load-postgres.ts";
-import { assertLocalPg, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, initProject, PG_URL, sl, tempDir, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -689,7 +688,7 @@ describe("sl baseline", () => {
     expect(underFile.code).toBe(1);
     expect(underFile.err).toContain("is a file, not a directory");
 
-    const elsewhere = mkdtempSync(join(tmpdir(), "sl-elsewhere-"));
+    const elsewhere = tempDir("elsewhere");
     try {
       symlinkSync(elsewhere, join(root, "linked"));
       const viaLink = await sl(root, ["baseline", "--source", "shop", "--out", "linked/brief.md"]);

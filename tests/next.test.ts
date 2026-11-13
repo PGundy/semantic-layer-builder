@@ -1,7 +1,6 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, cpSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { goldenHash } from "../skills/semantic-layer/scripts/lib/approval-hash.ts";
 import { DEFAULT_TOLERANCE } from "../skills/semantic-layer/scripts/lib/goldens.ts";
@@ -12,23 +11,12 @@ import type { ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.
 import type { Golden, LedgerEntry, Snapshot } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { duckdbSource, initProject, sl, tempRoot } from "./helpers.ts";
+import { duckdbSource, initProject, sl, tempDir, tempRoot } from "./helpers.ts";
 
 // sl next (FR-3.1), walked through copies of the Acme example layer. All data is synthetic.
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 const ORDERS = "warehouse.orders";
-
-const temps: string[] = [];
-afterAll(() => {
-  for (const t of temps) rmSync(t, { recursive: true, force: true });
-});
-
-function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "sl-next-"));
-  temps.push(dir);
-  return dir;
-}
 
 // A copy of the Acme example layer.
 function acme(): string {

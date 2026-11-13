@@ -1,9 +1,10 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { beforeAll, describe, expect, test } from "bun:test";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { ROLES } from "../skills/semantic-layer/scripts/lib/roles.ts";
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
+import { tempDir } from "./helpers.ts";
 
 // The Claude Code plugin as a package (spec: Claude Code plugin; docs/plugin.md): its manifests, the
 // paths and hook commands they name, the agents, the hooks and the MCP server run from a copy of the
@@ -272,7 +273,7 @@ let dir: string;
 let copy: string;
 let project: string;
 beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), "sl-plugin-"));
+  dir = tempDir("plugin");
   copy = join(dir, "plugin root");
   project = join(dir, "project");
   for (const f of packageFiles()) {
@@ -282,7 +283,6 @@ beforeAll(() => {
   mkdirSync(join(project, "semantic"), { recursive: true });
   writeFileSync(join(project, "semantic", "semantic.yaml"), "name: plugintest\n");
 });
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 interface Ran {
   code: number;
