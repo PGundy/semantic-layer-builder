@@ -1,6 +1,6 @@
 # Phase card: metrics
 
-Load this card when `sl next` names phase `metrics`. It holds ratios and combined figures, and figures that span sources. Load `references/spec.md` (metrics.yaml) with it.
+Load this card when `sl next` names phase `metrics`. It holds ratios and combined figures, and figures that span sources. `sl add-metric --help` prints the syntax of a ratio, a derived formula and the other keys.
 
 **Checklist:** 1. Add each metric as a draft with `sl add-metric`. 2. Read back its formula in words (`sl readback --targets metric:<name>`). 3. `sl reply` with the answer; `sl approve --target metric:<name>` on a recorded yes.
 

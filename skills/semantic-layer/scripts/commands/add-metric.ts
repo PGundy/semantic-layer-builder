@@ -18,7 +18,10 @@ const spec: CommandSpec = {
   summary: "Add a draft ratio or derived metric to metrics.yaml, checked as sl validate and the compiler read it.",
   usage:
     "add-metric --name <n> --type ratio|derived [--source <s>] [--numerator <model.measure> --denominator <model.measure>] [--expr <e>] " +
-    "[--format number|integer|currency|percent] [--currency <code>] [--description <text>] [--set key=value]...",
+    "[--format number|integer|currency|percent] [--currency <code>] [--description <text>] [--set key=value]...\n\n" +
+    "A ratio divides --numerator by --denominator, each a measure as model.measure: --numerator orders.revenue --denominator orders.order_count.\n" +
+    'A derived metric\'s --expr combines measures in braces with + - * / and numbers: --expr "{orders.revenue} - {refunds.refund_amount}".\n' +
+    "--set writes any other key of the metric (--set synonyms=\"[aov]\"). The metric is a draft; an approved metric uses approved measures only.",
   options: {
     name: { type: "string" },
     type: { type: "string" },

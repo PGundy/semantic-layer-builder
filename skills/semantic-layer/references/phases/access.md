@@ -1,6 +1,6 @@
 # Phase card: access
 
-Load this card when `sl next` names phase `access`. It holds the access interview, `sl access` in the readback and the sign-off of `access.yaml`. Load `references/access.md` with it.
+Load this card when `sl next` names phase `access`. It holds the access interview, `sl access` in the readback and the sign-off of `access.yaml`. Load `references/access.md` only when access goes past this card: a span of control over a closure model, closed mode, the child tables of a row filter, "totals only", or a definition join.
 
 **Checklist:** 1. Ask the exceptions question; create `access.yaml` as a draft with `sl set access mode open` (or `closed` for an allowlist). 2. Write each answer with its command (below). 3. `sl access`, default audience and per role. 4. Read back each role, then the file: `sl readback --targets access`. 5. `sl reply` each answer; `sl approve --target access` on a yes to the whole file.
 

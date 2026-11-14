@@ -886,7 +886,15 @@ const spec: CommandSpec = {
     "is a yes to the golden with these rows and this tolerance (sl readback --targets golden:<g>, then sl reply --verdict yes);\n" +
     "confirmed_by and confirmed_at come from that reply, and --by, when given, must name the same owner.\n" +
     "The tolerance is relative and applies to figures with decimals: the columns a golden is grouped by and whole numbers\n" +
-    "(counts, years) always compare exactly, and a failed check says so on the line.",
+    "(counts, years) always compare exactly, and a failed check says so on the line.\n\n" +
+    "new --request is JSON (or a file holding it), fields named relative to its source:\n" +
+    '  {"source": "warehouse", "measures": ["orders.revenue"], "dimensions": ["orders.order_date:month"],\n' +
+    '   "filters": [{"field": "orders.order_date", "op": "gte", "value": "2025-01-01"},\n' +
+    '               {"field": "orders.status", "op": "in", "value": ["completed", "shipped"]}],\n' +
+    '   "order_by": [{"field": "orders.order_date:month", "direction": "asc"}], "limit": 100}\n' +
+    "measures lists model.measure or a metric's bare name (there is no metrics key); they share one model or are one metric.\n" +
+    "A time dimension takes a grain as model.field:grain. Filter ops: eq, neq, in, not_in, gt, gte, lt, lte, between\n" +
+    "(value [low, high]), is_null, not_null (no value). A request with no measures starts from its first dimension's model.",
   options: {
     name: { type: "string" },
     by: { type: "string" },

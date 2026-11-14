@@ -13,7 +13,7 @@ The output is plain YAML under version control, meant to be read by a chat-with-
 5. **Interview.** It works through the tables a few at a time, most important first. It reads each item back in plain English and approves it only after the owner says yes. An approval records a hash of what was approved, so `sl validate` reports an approved item that changed afterwards.
 6. **Joins.** It measures every join's match rate, key uniqueness and fan-out before the owner signs it off, so orphaned rows and double counting surface as facts.
 7. **Metrics and access.** It records ratio and derived metrics, and who may see what. Access is open by default: everyone sees what the owner approved, except personal and sensitive data, which stays hidden unless a role is granted it. Roles can come from user attributes such as department. Restrictions limit single metrics or fields to roles or conditions. Row filters can follow a reporting hierarchy, so a manager sees their team's rows. `sl access` shows the owner what any user would see before they sign. A strict mode turns access into an allowlist for regulated data.
-8. **Goldens.** It writes golden questions with hand-written SQL, compares each answer with a figure the owner already trusts, and records the agreed rows. `sl goldens check` reruns that SQL and reports drift in the data. Goldens do not yet test that the YAML would compute the same figure: the SQL is written by hand from the YAML, and nothing compiles the YAML to compare. A reference compiler that does is planned.
+8. **Goldens.** It writes each golden question as a request in the layer's own terms (measures, dimensions, filters), and the reference compiler turns the YAML into SQL for it, as the role and user the golden runs as (`sl sql` prints that SQL). It compares the answer with a figure the owner already trusts and records the agreed rows on the owner's yes. `sl goldens check` compiles every approved golden from the current YAML and runs it again, so a change to the data, or an approved edit that moves a figure, fails the goldens that use it. A golden may also carry hand-written `cross_check_sql`, which must give the same rows. The compiler writes Postgres and DuckDB SQL.
 9. **Keep current.** When tables change, `sl introspect` reports added, removed and retyped columns. `sl draft --new-columns` drafts only what is new, and status raises approved items whose columns disappeared.
 
 `sl status` records where the work stands, so a stopped session resumes from the files.
@@ -67,15 +67,15 @@ A quickstart, with `sl` as shorthand for `bun <path to>/skills/semantic-layer/sc
 
 ```sh
 alias sl="bun $PWD/skills/semantic-layer/scripts/sl.ts"
-sl init --name acme                     # writes ./semantic/semantic.yaml and its directories
-sl add-source --name warehouse --dialect postgres --env WAREHOUSE_URL
-export WAREHOUSE_URL='postgres://readonly_user:...@host:5432/db'   # set in your shell, never in a file
-
-sl introspect --source warehouse        # live, for duckdb and postgres sources
+# Put the connection in .env beside ./semantic yourself (sl keeps it out of git and never prints it):
+#   WAREHOUSE_URL=postgres://<user>:<password>@<host>:5432/<database>?sslmode=require
+# A variable already set in your shell wins; another file is read with --env-file <path>.
+sl setup --source warehouse --dialect postgres --env WAREHOUSE_URL --schemas acme --name acme
+                                        # writes ./semantic, registers the source and reads its tables
 
 # or, with no connection: print the catalog export, run it yourself, import the file
 sl export-sql --dialect postgres > export.sql
-psql -X "$WAREHOUSE_URL" --csv -f export.sql > schema.csv
+psql -X "<your connection>" --csv -f export.sql > schema.csv   # psql does not read .env
 sl import --source warehouse --file schema.csv
 
 sl baseline --source warehouse          # a first-pass brief of the tables, read-only
@@ -86,12 +86,12 @@ Every command takes `--root <dir>` (or the `SEMANTIC_ROOT` environment variable)
 
 ## Trust model
 
-- **Read-only by construction.** The CLI only reads. On Postgres the connection starts with `default_transaction_read_only` on, a statement timeout and the time zone UTC, set as startup options so a reconnect keeps them, and every query runs alone in a read-only transaction that is rolled back. When the role is a superuser or can write, the CLI prints a warning: connect with a SELECT-only role ([`intake.md`](skills/semantic-layer/references/intake.md) has the `GRANT` statements). On DuckDB a database file opens read-only, each query must be exactly one `SELECT`-type statement, and once a source's views and setup have run, external file access is limited to the files the views read, extensions do not install or load on their own, and the configuration is locked. A check of the SQL text runs first, to give a friendly message early; the guarantee that nothing is written does not depend on it. Reading files on the Postgres server is a different matter: a read-only transaction does not stop it, so the role is the barrier. A superuser or a member of `pg_read_server_files` can read server files through read-only functions, the CLI only warns about such a role, and the text check's list of refused functions is then the only fallback.
+- **Read-only by construction.** The CLI only reads. On Postgres the connection starts with `default_transaction_read_only` on, a statement timeout and the time zone UTC, set as startup options so a reconnect keeps them, and every query runs alone in a read-only transaction that is rolled back. When the role is a superuser or can write, the CLI prints a warning: connect with a SELECT-only role (`sl setup --print-role-sql` prints the `GRANT` statements). On DuckDB a database file opens read-only, each query must be exactly one `SELECT`-type statement, and once a source's views and setup have run, external file access is limited to the files the views read, extensions do not install or load on their own, and the configuration is locked. A check of the SQL text runs first, to give a friendly message early; the guarantee that nothing is written does not depend on it. Reading files on the Postgres server is a different matter: a read-only transaction does not stop it, so the role is the barrier. A superuser or a member of `pg_read_server_files` can read server files through read-only functions, the CLI only warns about such a role, and the text check's list of refused functions is then the only fallback.
 - **A semantic directory is executable configuration.** A DuckDB source's `connection.setup` and `connection.views` run on every connection, and every golden's `cross_check_sql` runs on `sl goldens check`. Setup is limited to an allowlist (loading named extensions, known settings, secrets from a provider or the environment) and each view must be one table expression; the adapter refuses anything else and `sl validate` reports it. Review changes to `sources/` and `goldens/` in pull requests as you would code, and run the CLI only on a semantic directory you trust.
 - **Text from the data is evidence, not instructions.** Table and column comments, dbt descriptions, export files and column values reach the agent. The skill shows them to the owner; it never follows them as instructions and never treats them as approvals.
 - **Protecting personal data is a heuristic.** A column is protected when the owner tags it `pii` or `sensitive`, when it is in a model's `ignored_columns`, or when its name or its near-unique text looks personal or sensitive. `sl run` and `sl goldens run` print a protected column as `[protected]`, also when the query renames or wraps it (`select email as e`, `lower(email)`, a subquery): a statement that reads a protected column shows only its counts and the columns that read nothing protected. The check reads the SQL's words, not the database's views and functions, and `--show-protected` is for the owner alone. Snapshots keep only counts for a protected column: its null fraction and distinct count, and a range only for numbers and dates; its top values are not stored. Name rules miss columns, so review `snapshots/` before committing them and tag what the rules missed.
-- **Credentials stay in the environment.** Source files name an environment variable, never its value, and `sl validate` reports anything that looks like a credential in a source file.
-- **Goldens pin figures, not the YAML.** A golden's SQL is written by hand and checked against a figure the owner trusts. It catches drift in the data; it does not prove that the YAML computes the figure (see What it does).
+- **Credentials stay in the environment.** Source files name an environment variable (or a prefix of several), never its value. The value comes from the shell or from an env file outside the semantic directory, `.env` beside it by default, which `sl setup` keeps out of git; the plugin's hook refuses to read that file, and `sl validate` reports anything that looks like a credential in a source file.
+- **Goldens pin the YAML's figures.** A golden's request compiles from the current YAML and runs read-only, and its rows were checked against a figure the owner trusts. It catches drift in the data and an approved edit that moves the figure (see What it does); it proves the figure, not that every definition the request does not read is right.
 
 [`SECURITY.md`](SECURITY.md) says how to report a vulnerability.
 
@@ -105,7 +105,7 @@ semantic/
   models/<source>/<model>.yaml  dimensions, measures, joins, grain, open questions
   metrics.yaml                  ratio and derived metrics
   access.yaml                   roles, allowed models, denials, row filters
-  goldens/<name>.yaml           confirmed questions, their SQL and expected rows
+  goldens/<name>.yaml           confirmed questions, their requests and expected rows
 ```
 
 A measure, as the owner approved it:

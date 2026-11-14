@@ -1,7 +1,20 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildBaseline, INCOMING_READ_MAX, QUESTION_TOPICS, renderBaseline, type BaselineReport, type TableBaseline } from "../skills/semantic-layer/scripts/lib/baseline.ts";
+import {
+  baselineView,
+  buildBaseline,
+  formatScopedJson,
+  INCOMING_READ_MAX,
+  OVERVIEW_QUESTIONS,
+  QUESTION_TOPICS,
+  renderBaseline,
+  scopeBaseline,
+  VIEW_GIVES,
+  type BaselineReport,
+  type ScopedBaseline,
+  type TableBaseline,
+} from "../skills/semantic-layer/scripts/lib/baseline.ts";
 import { draftModels } from "../skills/semantic-layer/scripts/lib/draft.ts";
 import { groupTables, suggestScope } from "../skills/semantic-layer/scripts/lib/groups.ts";
 import { classifyTable } from "../skills/semantic-layer/scripts/lib/rank.ts";
@@ -599,9 +612,9 @@ describe("sl baseline", () => {
     expect(r.err).toContain("sl profile --source shop --tables");
   });
 
-  test("--json carries the same structure", async () => {
+  test("--json --full carries the same structure", async () => {
     const { root } = await project(starTables());
-    const r = await sl(root, ["baseline", "--source", "shop", "--json"]);
+    const r = await sl(root, ["baseline", "--source", "shop", "--json", "--full"]);
     expect(r.code).toBe(0);
     const j = r.json<BaselineReport>();
     expect(j.source).toBe("shop");
@@ -613,9 +626,86 @@ describe("sl baseline", () => {
     expect(typeof j.next).toBe("string");
   });
 
+  // docs/PRD-hardening.md HR-14: --json is scoped to the phase sl next names; --full gives everything.
+  test("--json without --full gives the phase's view: the same tables and source fields, each table trimmed", async () => {
+    const { root } = await project(starTables());
+    const full = (await sl(root, ["baseline", "--source", "shop", "--json", "--full"])).json<BaselineReport>();
+    const r = await sl(root, ["baseline", "--source", "shop", "--json"]);
+    expect(r.code).toBe(0);
+    const j = r.json<ScopedBaseline>();
+    expect(j.view).toEqual({ name: "tables", phase: expect.any(String), gives: VIEW_GIVES.tables, full: "sl baseline --source shop --full --json" });
+    const { tables: _t, ...source } = full;
+    expect(j).toMatchObject(source);
+    expect(j.tables.map((t) => t.table)).toEqual(full.tables.map((t) => t.table));
+    for (const [i, t] of j.tables.entries()) {
+      const whole = full.tables[i]!;
+      expect(Object.keys(t).sort()).toEqual(["grain", "in_scope", "model", "primary_key", "profile_state", "question_count", "questions", "role", "role_reasons", "rows", "table"]);
+      expect(t.grain.guess).toBe(whole.grain.guess);
+      expect(t.primary_key?.columns).toEqual(whole.primary_key?.columns);
+      expect(t.questions).toEqual(whole.questions.slice(0, OVERVIEW_QUESTIONS).map((q) => ({ topic: q.topic, question: q.question })));
+      expect(t.question_count).toBe(whole.questions.length);
+    }
+    expect(r.out.length).toBeLessThan(JSON.stringify(full, null, 2).length / 3);
+    const named = (await sl(root, ["baseline", "--source", "shop", "--tables", "orders", "--json"])).json<ScopedBaseline>();
+    expect(named.view.full).toBe("sl baseline --source shop --tables orders --full --json");
+  });
+
+  test("the scoped --json is deterministic and keeps written_to with --out; the plain brief is whole with or without --full", async () => {
+    const { root } = await project(starTables());
+    const a = await sl(root, ["baseline", "--source", "shop", "--json"]);
+    expect((await sl(root, ["baseline", "--source", "shop", "--json"])).out).toBe(a.out);
+    const o = await sl(root, ["baseline", "--source", "shop", "--json", "--out", "notes/b.md"]);
+    expect(o.code).toBe(0);
+    const oj = o.json<ScopedBaseline & { written_to?: string }>();
+    expect(oj.written_to).toBeDefined();
+    expect(oj.view.name).toBe("tables");
+    expect(readFileSync(join(root, "notes", "b.md"), "utf8")).toStartWith("# Baseline brief: shop");
+    const plain = await sl(root, ["baseline", "--source", "shop"]);
+    expect((await sl(root, ["baseline", "--source", "shop", "--full"])).out).toBe(plain.out);
+  });
+
+  test("the metrics view adds each table's candidate ratios and shares, whole", () => {
+    const report = buildBaseline(snapshot(starTables()), OPTS);
+    const scoped = scopeBaseline(report, "metrics", "sl baseline --source shop --full --json");
+    expect(scoped.view.name).toBe("metrics");
+    expect(baselineView("interview")).toBe("tables");
+    expect(baselineView(null)).toBe("tables");
+    let ratios = 0;
+    for (const [i, t] of scoped.tables.entries()) {
+      const want = report.tables[i]!.measures.filter((m) => m.kind === "ratio" || m.kind === "share");
+      expect(t.measures).toEqual(want);
+      ratios += want.length;
+    }
+    expect(ratios).toBeGreaterThan(0);
+    expect(JSON.parse(formatScopedJson(scoped))).toEqual(JSON.parse(JSON.stringify(scoped)));
+    expect(scopeBaseline(report, "scope", "x").tables.every((t) => t.measures === undefined)).toBe(true);
+  });
+
+  // The walkthrough's Acme warehouse before scoping (22 tables, the top 12 in the brief), from the
+  // example layer's snapshot with its scope and models left out.
+  test("on Acme before scoping, the default --json is under 10 KB and --full holds the rest", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    const example = join(import.meta.dir, "..", "examples", "acme", "semantic");
+    mkdirSync(join(t.root, "sources"), { recursive: true });
+    mkdirSync(join(t.root, "snapshots"), { recursive: true });
+    writeFileSync(join(t.root, "semantic.yaml"), readFileSync(join(example, "semantic.yaml"), "utf8"));
+    writeFileSync(join(t.root, "snapshots", "warehouse.json"), readFileSync(join(example, "snapshots", "warehouse.json"), "utf8"));
+    writeYaml(join(t.root, "sources", "warehouse.yaml"), { source: "warehouse", dialect: "postgres", connection: { env: "WAREHOUSE_URL" } });
+    const r = await sl(t.root, ["baseline", "--source", "warehouse", "--json"], { WAREHOUSE_URL: "" });
+    expect(r.code).toBe(0);
+    const j = r.json<ScopedBaseline>();
+    expect(j.selection).toBe("focus");
+    expect(j.tables).toHaveLength(12);
+    expect(j.view.phase).toBe("scope");
+    expect(r.out.length).toBeLessThan(10_000);
+    const full = await sl(t.root, ["baseline", "--source", "warehouse", "--json", "--full"], { WAREHOUSE_URL: "" });
+    expect(full.out.length).toBeGreaterThan(50_000);
+  });
+
   test("--tables limits the brief to the named tables, globs included", async () => {
     const { root } = await project(starTables());
-    const r = await sl(root, ["baseline", "--source", "shop", "--tables", "orders,order_*", "--json"]);
+    const r = await sl(root, ["baseline", "--source", "shop", "--tables", "orders,order_*", "--json", "--full"]);
     expect(r.code).toBe(0);
     const j = r.json<BaselineReport>();
     expect(j.selection).toBe("tables");
@@ -1007,7 +1097,7 @@ describe("sl baseline on the live Acme warehouse", () => {
         expect((await sl(t.root, ["add-source", "--name", "wh", "--dialect", "postgres", "--env", "BASELINE_PG_URL"], env)).code).toBe(0);
         const intro = await sl(t.root, ["introspect", "--source", "wh", "--schemas", schema], env);
         expect(intro.code).toBe(0);
-        const r = await sl(t.root, ["baseline", "--source", "wh", "--tables", "fct_*,dim_*,audit_log,sales_team_closure", "--json"], env);
+        const r = await sl(t.root, ["baseline", "--source", "wh", "--tables", "fct_*,dim_*,audit_log,sales_team_closure", "--json", "--full"], env);
         expect(r.code).toBe(0);
         const j = r.json<BaselineReport>();
         const get = (name: string) => j.tables.find((x) => x.table === `${schema}.${name}`)!;

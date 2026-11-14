@@ -9,10 +9,10 @@
         "owner_turns_per_approved_item": 0.75,
         "owner_words": 139,
         "owner_words_per_approved_item": 17.38,
-        "skill_tokens_per_approved_item": 1260.25,
-        "tokens": 10287,
-        "tokens_per_approved_item": 1285.88,
-        "wall_time_seconds": 60
+        "skill_tokens_per_approved_item": 1283.38,
+        "tokens": 10472,
+        "tokens_per_approved_item": 1309,
+        "wall_time_seconds": 53
       },
       "graders": {
         "approvals": {
@@ -49,10 +49,10 @@
         "owner_turns_per_approved_item": 0.75,
         "owner_words": 13,
         "owner_words_per_approved_item": 1.63,
-        "skill_tokens_per_approved_item": 1255.75,
-        "tokens": 10062,
-        "tokens_per_approved_item": 1257.75,
-        "wall_time_seconds": 60
+        "skill_tokens_per_approved_item": 1278.88,
+        "tokens": 10247,
+        "tokens_per_approved_item": 1280.88,
+        "wall_time_seconds": 53
       },
       "graders": {
         "approvals": {

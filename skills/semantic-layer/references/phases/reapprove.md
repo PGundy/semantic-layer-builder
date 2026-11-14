@@ -1,6 +1,6 @@
 # Phase card: reapprove
 
-Load this card when `sl next` names phase `reapprove`. It holds approved items whose content changed since the owner approved them, and approvals that predate content hashes. Load `references/interview-guide.md` (readbacks) with it.
+Load this card when `sl next` names phase `reapprove`. It holds approved items whose content changed since the owner approved them, and approvals that predate content hashes.
 
 **Checklist:** 1. `sl validate` lists each `changed since it was approved` item. 2. Read each back with what changed, or restore its approved text. 3. `sl reply`, then `sl approve --target <ref>` on a recorded yes. 4. `sl goldens check`.
 

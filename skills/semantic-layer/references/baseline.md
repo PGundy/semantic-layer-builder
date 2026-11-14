@@ -6,11 +6,11 @@ Every line of the brief is a guess from names, declared keys and, when present, 
 
 ```
 sl baseline --source warehouse
-sl baseline --source warehouse --tables fct_orders,dim_customers --json
+sl baseline --source warehouse --tables fct_orders,dim_customers --full --json
 sl baseline --source warehouse --out notes/baseline-warehouse.md
 ```
 
-- Plain output is markdown suited to paste to the owner; `--json` carries the same structure for you to read.
+- Plain output is markdown suited to paste to the owner. `--json` gives what the current phase reads (`view` names it: each table's role, grain guess, key and first question); `--full --json` carries the whole structure of the markdown for you to read, and `--full` changes nothing without `--json`.
 - `--out` writes the markdown to a path resolved from the semantic root, never outside it. Keep it as a working note: nothing in the layer reads it, and a rerun replaces it.
 - With no `--tables` it covers the in-scope tables (every table while no scope is set). When more than `focus_threshold` are in scope, it covers the top `focus_threshold` by the ranking `sl status` and `sl tables` use, skipping the tables it classifies as noise, and says so in words such as "covers 12 of the 22 in-scope tables", pointing at `sl scope`: that note is the scoping question (`phases/scope.md`). Its noise and staging judgement is the same one `sl tables --groups` uses for `suggested_scope`, so the two agree on which tables look like noise.
 - The brief names sensitive columns but never quotes their values (`SKILL.md`, Principle 8).

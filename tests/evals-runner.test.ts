@@ -66,7 +66,7 @@ describe("both shipped scenarios run with the scripted driver", () => {
       expect(r.summary.skill_turns + r.summary.owner_turns).toBe(r.summary.turns);
       expect(r.summary.tokens).toBe(r.transcript.reduce((n, t) => n + t.tokens, 0));
       // The scripts' counts follow evals/README.md, Token counts (tests/evals-tokens.test.ts recomputes them).
-      expect(r.summary.tokens_by_speaker.skill).toBe(name === "acme-structured" ? 10082 : 10046);
+      expect(r.summary.tokens_by_speaker.skill).toBe(name === "acme-structured" ? 10267 : 10231);
 
       for (const t of r.transcript) expect(evalSchemaIssues("eval-transcript-turn", t, "transcript.jsonl")).toEqual([]);
       expect(r.transcript.map((t) => t.turn)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
@@ -90,6 +90,8 @@ describe("both shipped scenarios run with the scripted driver", () => {
         ".sl/ledger.jsonl",
         ".sl/pending/rb_0001.json",
         ".sl/pending/rb_0002.json",
+        // The interview turn's edits, written for one sl apply (references/phases/interview.md).
+        "edits/interview-1.json",
         "goldens/marketing_spend_2025.yaml",
         "goldens/sessions_2025.yaml",
         "models/lake/marketing_spend.yaml",
@@ -444,7 +446,7 @@ describe("errors are plain and name the fix", () => {
     const dir = outDir();
     const io = { out: (t: string) => out.push(t), err: (t: string) => out.push(t), env: {} };
     expect(await main(["--scenario", "acme-terse", "--now", START, "--out", dir], io)).toBe(0);
-    expect(out[0]).toBe("Run acme-terse-20260101T000000000Z: 14 turns (7 owner), 10062 tokens, stopped: done.");
+    expect(out[0]).toBe("Run acme-terse-20260101T000000000Z: 14 turns (7 owner), 10247 tokens, stopped: done.");
     expect(out.at(-1)).toContain("Next: read");
     expect(existsSync(join(dir, "acme-terse-20260101T000000000Z", "summary.json"))).toBe(true);
   });
