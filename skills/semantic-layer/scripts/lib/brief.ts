@@ -15,6 +15,7 @@ import { rankTables } from "./rank.ts";
 import { incomingKeyColumns, referencedColumns } from "./snapshot-diff.ts";
 import { effectiveScope } from "./table-list.ts";
 import type { Model, Scalar, Snapshot, SnapshotColumn, SnapshotTable } from "./types.ts";
+import { loadUsage, namesFor, usageBlock, type UsageBlock } from "./usage.ts";
 
 export const DEFAULT_BRIEF_BUDGET = 6000;
 // Characters per token in the estimate: tokens = ceil(characters of the printed JSON / 4).
@@ -82,9 +83,11 @@ export interface BriefTable {
   joins: BriefJoin[];
   open_questions: string[];
   baseline_guesses?: BaselineGuesses;
+  // Only when the source has usage evidence (sl usage add).
+  usage?: UsageBlock;
 }
 
-export type DroppedKind = "top_values" | "column_details" | "baseline_guesses";
+export type DroppedKind = "top_values" | "column_details" | "usage" | "baseline_guesses";
 
 export interface BriefPacket {
   source: string;
@@ -278,6 +281,8 @@ export function buildBrief(root: string, opts: BriefOptions): BriefPacket {
     models,
   });
   const baselineOf = new Map(report.tables.map((b) => [b.table.toLowerCase(), b]));
+  const usage = loadUsage(root, opts.source);
+  const names = usage ? namesFor(root, opts.source, snapshot) : undefined;
 
   const read = new Map<string, Set<string>>();
   const tables: BriefTable[] = picked.map((t) => {
@@ -299,6 +304,7 @@ export function buildBrief(root: string, opts: BriefOptions): BriefPacket {
       joins: m ? joins(m) : [],
       open_questions: m && Array.isArray(m.open_questions) ? m.open_questions.filter(str) : [],
       ...(b ? { baseline_guesses: guesses(b) } : {}),
+      ...(usage && names ? { usage: usageBlock(q, usage, names) } : {}),
     };
   });
 
@@ -364,6 +370,9 @@ function fit(packet: BriefPacket, read: Map<string, Set<string>>): void {
         return saved;
       });
     }
+  }
+  for (const t of backwards(packet.tables)) {
+    if (t.usage && t.usage.statements > 0) steps.push(() => (note(t.table, "usage", false), cut(t, ["usage"])));
   }
   for (const t of backwards(packet.tables)) {
     if (t.baseline_guesses) steps.push(() => (note(t.table, "baseline_guesses", false), cut(t, ["baseline_guesses"])));

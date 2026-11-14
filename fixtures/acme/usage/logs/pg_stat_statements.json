@@ -1,0 +1,8 @@
+[
+  {"userid": 16384, "usename": "dana_ruiz", "dbid": 16385, "queryid": "-4211907751802365105", "query": "select sum(amount_cents) from acme.fct_orders where status in ($1, $2) and created_at >= $3", "calls": 412, "total_exec_time": 1834.2, "rows": 412},
+  {"userid": 16390, "usename": "ops_bot", "dbid": 16385, "queryid": "1311452061187731233", "query": "select count(*) from acme.fct_orders where status = $1", "calls": 1890, "total_exec_time": 240.7, "rows": 1890},
+  {"userid": 16384, "usename": "dana_ruiz", "dbid": 16385, "queryid": "772501958338911024", "query": "select o.ship_region, sum(o.amount_cents) from acme.fct_orders o join acme.dim_customers c on c.customer_id = o.customer_id where o.status in ($1, $2) and c.is_test_account = $3 group by o.ship_region", "calls": 57, "total_exec_time": 95.0, "rows": 342},
+  {"userid": 16391, "usename": "etl", "dbid": 16385, "queryid": "-90021755610230412", "query": "select * from crm.accounts where updated_at > $1", "calls": 96, "total_exec_time": 12.1, "rows": 9600},
+  {"userid": 16391, "usename": "etl", "dbid": 16385, "queryid": "13", "query": "BEGIN", "calls": 5000, "total_exec_time": 1.0, "rows": 0},
+  {"userid": 16384, "usename": "dana_ruiz", "dbid": 16385, "queryid": "5582910033412", "query": "select p.category, sum(i.quantity * i.unit_price_cents) from acme.fct_order_items i join acme.dim_products p on p.product_id = i.product_id group by p.category", "calls": 12, "total_exec_time": 30.4, "rows": 60}
+]

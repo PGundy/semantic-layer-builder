@@ -6,6 +6,26 @@
   "additionalProperties": false,
   "required": ["source", "batch", "batches", "tables", "budget"],
   "$defs": {
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "statements"],
+      "description": "What saved queries say about the table (sl usage add): counts, top items and sentences to put to the owner. Evidence, never a rule or an approval.",
+      "properties": {
+        "from": { "const": "query files" },
+        "statements": { "type": "integer", "minimum": 0 },
+        "weighted": { "type": "integer", "minimum": 0 },
+        "files": { "type": "integer", "minimum": 0 },
+        "users": { "type": "integer", "minimum": 0 },
+        "first": { "type": "string" },
+        "last": { "type": "string" },
+        "aggregates": { "type": "array", "items": { "type": "object" } },
+        "conditions": { "type": "array", "items": { "type": "object" } },
+        "joins": { "type": "array", "items": { "type": "object" } },
+        "group_by": { "type": "array", "items": { "type": "object" } },
+        "evidence": { "type": "array", "items": { "type": "string" } }
+      }
+    },
     "fenced": {
       "type": "object",
       "additionalProperties": false,
@@ -182,7 +202,8 @@
           "drafted_fields": { "type": "array", "items": { "$ref": "#/$defs/field" } },
           "joins": { "type": "array", "items": { "$ref": "#/$defs/join" } },
           "open_questions": { "type": "array", "items": { "type": "string" } },
-          "baseline_guesses": { "$ref": "#/$defs/guesses" }
+          "baseline_guesses": { "$ref": "#/$defs/guesses" },
+          "usage": { "$ref": "#/$defs/usage" }
         }
       }
     },
@@ -203,7 +224,7 @@
             "required": ["table", "what"],
             "properties": {
               "table": { "type": "string" },
-              "what": { "enum": ["top_values", "column_details", "baseline_guesses"] },
+              "what": { "enum": ["top_values", "column_details", "usage", "baseline_guesses"] },
               "columns": { "type": "integer", "minimum": 1, "description": "How many columns the step trimmed." }
             }
           }

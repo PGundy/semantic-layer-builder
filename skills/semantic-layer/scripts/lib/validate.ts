@@ -272,6 +272,13 @@ class Validator {
     const snapshotsDir = join(this.root, "snapshots");
     if (existsSync(snapshotsDir)) {
       for (const f of readdirSync(snapshotsDir).filter((x) => x.endsWith(".json")).sort()) {
+        // snapshots/<source>.usage.json is the usage evidence sl usage add writes (spec: Usage evidence).
+        if (f.endsWith(".usage.json")) {
+          const stem = f.replace(/\.usage\.json$/, "");
+          const l = this.load<{ source?: unknown }>(join(snapshotsDir, f), "usage", stem);
+          if (l && l.data.source !== stem) this.error(l.file, "source", `is "${String(l.data.source)}" but the file is ${f}; run sl usage clear --source ${stem} and add the files again`);
+          continue;
+        }
         const stem = f.replace(/\.json$/, "");
         const l = this.load<Snapshot>(join(snapshotsDir, f), "snapshot", stem);
         if (l) this.snapshots.set(stem, l);

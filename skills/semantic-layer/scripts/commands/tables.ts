@@ -9,6 +9,7 @@ import { listModels, loadProject, loadSource, projectSettings, requireSnapshot }
 import { rankTables } from "../lib/rank.ts";
 import { profileState, type ProfileState } from "../lib/status.ts";
 import { effectiveScope } from "../lib/table-list.ts";
+import { loadUsage } from "../lib/usage.ts";
 import { NAME_PATTERN, type Project, type SnapshotTable, type Status } from "../lib/types.ts";
 
 export interface TableRow {
@@ -23,6 +24,8 @@ export interface TableRow {
   profile_state: ProfileState;
   score: number;
   reasons: string[];
+  // Statements of the saved queries that read the table (sl usage add); only when there are any.
+  usage?: number;
 }
 
 // The --source flag, or the project's default source. The name must be a spec
@@ -104,6 +107,7 @@ const spec: CommandSpec = {
     const { focus_threshold } = projectSettings(project);
     const all = bool(values, "all");
     const models = modelsByTable(ctx, sourceName, snapshot.tables);
+    const usage = loadUsage(ctx.root, sourceName);
 
     const ranked = rankTables(snapshot.tables);
     const rows: TableRow[] = [];
@@ -124,6 +128,7 @@ const spec: CommandSpec = {
         profile_state: profileState(r.table),
         score: r.score,
         reasons: r.reasons,
+        ...(usage ? { usage: usage.tables[r.qualified]?.statements ?? 0 } : {}),
       });
     }
     const needsFocus = inScopeCount > focus_threshold;
@@ -139,6 +144,7 @@ const spec: CommandSpec = {
           focus_threshold,
           needs_focus: needsFocus,
           tables: rows,
+          ...(usage ? { unused: rows.filter((r) => r.in_scope && !r.usage).map((r) => r.table) } : {}),
           ...(groups ? { groups, suggested_scope: suggested } : {}),
         }),
       );
@@ -155,12 +161,22 @@ const spec: CommandSpec = {
           in_scope: r.in_scope ? "yes" : "no",
           model: r.model ? `${r.model} (${r.model_status})` : "",
           profiled: r.profile_state,
+          ...(usage ? { used: r.usage ?? 0 } : {}),
         })),
-        ["table", "rows", "columns", "in_scope", "model", "profiled"],
+        ["table", "rows", "columns", "in_scope", "model", "profiled", ...(usage ? ["used"] : [])],
       ),
     );
     lines.push("");
     lines.push(`${snapshot.tables.length} tables in ${sourceName}, ${inScopeCount} in scope.${all || inScopeCount === snapshot.tables.length ? "" : " Pass --all to list every table."}`);
+    if (usage) {
+      const unused = rows.filter((r) => r.in_scope && !r.usage).map((r) => r.table);
+      lines.push(
+        `used: statements of the saved queries that read each table (sl usage show --source ${sourceName} for what they do). ` +
+          (unused.length
+            ? `${unused.length} in-scope table${unused.length === 1 ? " appears" : "s appear"} in no saved query: ${unused.slice(0, 12).join(", ")}${unused.length > 12 ? ", …" : ""}. Ask the owner whether to leave ${unused.length === 1 ? "it" : "them"} out.`
+            : "Every in-scope table appears in a saved query."),
+      );
+    }
     if (needsFocus) {
       lines.push(
         `${inScopeCount} in-scope tables is more than the focus threshold of ${focus_threshold}. ` +

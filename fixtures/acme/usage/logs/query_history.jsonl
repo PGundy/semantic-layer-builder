@@ -1,0 +1,6 @@
+{"QUERY_ID": "01b2c3d4-0001", "QUERY_TEXT": "select sum(amount_cents) from acme.fct_orders where status in ('completed', 'shipped')", "USER_NAME": "DANA.RUIZ@ACME.EXAMPLE", "START_TIME": "2025-03-04T10:15:00.000-08:00", "EXECUTION_STATUS": "SUCCESS"}
+{"QUERY_ID": "01b2c3d4-0002", "QUERY_TEXT": "select date_trunc('month', created_at)::date as month, sum(amount_cents) from acme.fct_orders where status in ('completed', 'shipped') group by 1", "USER_NAME": "SAM.OKAFOR@ACME.EXAMPLE", "START_TIME": "2025-06-11T08:02:00.000-07:00", "EXECUTION_STATUS": "SUCCESS"}
+"{\"query_text\": \"select c.acquisition_channel, count(distinct o.customer_id) from acme.fct_orders o join acme.dim_customers c on c.customer_id = o.customer_id where o.status in ('completed', 'shipped') group by c.acquisition_channel\", \"user_name\": \"DANA.RUIZ@ACME.EXAMPLE\", \"start_time\": \"2024-11-02T09:00:00Z\"}"
+{"QUERY_ID": "01b2c3d4-0004", "QUERY_TEXT": "select count(*) from analytics.sessions where device = 'mobile'", "USER_NAME": "MARKETING_BOT", "START_TIME": "2025-01-20T00:00:00Z", "EXECUTION_STATUS": "SUCCESS"}
+{"QUERY_ID": "01b2c3d4-0005", "EXECUTION_STATUS": "FAILED"}
+this line is not JSON

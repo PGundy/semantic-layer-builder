@@ -13,7 +13,7 @@ export interface Issue {
   message: string;
 }
 
-export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden", "pending", "plan", "ledger", "review"] as const;
+export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden", "pending", "plan", "ledger", "review", "usage"] as const;
 export type SchemaKind = (typeof SCHEMA_KINDS)[number];
 
 export const SCHEMAS_DIR = join(import.meta.dir, "..", "..", "schemas");
@@ -278,7 +278,7 @@ function missing(c: Check, key: string): Found {
 }
 
 // The first shape problem in a parsed layer file, or null: what a loader refuses the file for.
-// A snapshot, which only sl writes, also has every key its schema requires. Of the files people
+// A snapshot or a usage file, which only sl writes, also has every key its schema requires. Of the files people
 // edit, commands read around a missing key (sl validate lists it), except a model's table, which
 // every command that reads the model looks up. access.yaml is checked no further than being a
 // map, because lib/access.ts reads each of its parts closed (a part it cannot read hides
@@ -291,7 +291,7 @@ export function shapeIssue(kind: SchemaKind, data: unknown): ShapeIssue | null {
   if (kind === "metrics" && check.properties.metrics) check.properties.metrics.gaps = true;
   let found: Found | null;
   if (kind === "access") found = shapeOf(data) === MAP ? null : { at: [], expected: "a map", found: foundWord(data) };
-  else found = firstWrong(check, data, kind === "snapshot");
+  else found = firstWrong(check, data, kind === "snapshot" || kind === "usage");
   if (!found && kind === "model" && absent((data as { table?: unknown }).table, check.properties.table)) found = missing(check, "table");
   if (!found) return null;
   let path = "";

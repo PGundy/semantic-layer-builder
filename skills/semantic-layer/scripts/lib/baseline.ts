@@ -5,6 +5,7 @@
 // counts, time, currency, time zones, sensitivity, keys) comes from lib/draft.ts and lib/sensitivity.ts,
 // so the brief and sl draft read a column the same way, and noise and staging from classifyTable in
 // lib/rank.ts, as sl tables --groups reads a table. Every statement is a guess for the owner to confirm.
+import type { UsageBlock } from "./usage.ts";
 import { classifyType, isNumeric } from "./column-types.ts";
 import {
   centsExpr,
@@ -1696,6 +1697,8 @@ export interface TableOverview {
   question_count: number;
   // metrics view only: the candidate measures of kind ratio or share.
   measures?: CandidateMeasure[];
+  // Only when the source has usage evidence (sl usage add): what saved queries say about the table.
+  usage?: UsageBlock;
 }
 
 export interface ScopedBaseline extends Omit<BaselineReport, "tables"> {
@@ -1709,7 +1712,7 @@ export function baselineView(phase: string | null): BaselineView {
   return phase === "metrics" ? "metrics" : "tables";
 }
 
-export function scopeBaseline(report: BaselineReport, phase: string | null, fullCommand: string): ScopedBaseline {
+export function scopeBaseline(report: BaselineReport, phase: string | null, fullCommand: string, usage?: (table: string) => UsageBlock): ScopedBaseline {
   const name = baselineView(phase);
   return {
     ...report,
@@ -1727,6 +1730,7 @@ export function scopeBaseline(report: BaselineReport, phase: string | null, full
       questions: t.questions.slice(0, OVERVIEW_QUESTIONS).map((q) => ({ topic: q.topic, question: q.question })),
       question_count: t.questions.length,
       ...(name === "metrics" ? { measures: t.measures.filter((m) => m.kind === "ratio" || m.kind === "share") } : {}),
+      ...(usage ? { usage: usage(t.table) } : {}),
     })),
   };
 }

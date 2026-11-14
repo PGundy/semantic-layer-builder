@@ -19,6 +19,7 @@ function arg(word: string): string {
 const KIND_WORDS: Record<DroppedKind, string> = {
   top_values: "top values",
   column_details: "column details",
+  usage: "usage evidence",
   baseline_guesses: "baseline guesses",
 };
 
@@ -34,7 +35,10 @@ function trimmed(p: BriefPacket): string {
 function render(p: BriefPacket, again: string): string {
   const head = p.batch === null ? `Packet for ${p.source}` : `Batch ${p.batch} of ${p.batches} for ${p.source}`;
   const lines = [`${head}: ${p.tables.length} table${p.tables.length === 1 ? "" : "s"}.`];
-  for (const t of p.tables) lines.push(`  ${t.table}  ${t.model ? `${t.model_status} model ${t.model}` : "no model"}, ${t.columns.length} columns, ${t.drafted_fields.length} fields, ${t.open_questions.length} open questions`);
+  for (const t of p.tables) {
+    const used = t.usage ? `, read by ${t.usage.statements} saved statement${t.usage.statements === 1 ? "" : "s"}` : "";
+    lines.push(`  ${t.table}  ${t.model ? `${t.model_status} model ${t.model}` : "no model"}, ${t.columns.length} columns, ${t.drafted_fields.length} fields, ${t.open_questions.length} open questions${used}`);
+  }
   const b = p.budget;
   lines.push(`About ${b.used.toLocaleString("en-US")} of ${b.limit.toLocaleString("en-US")} tokens${b.truncated ? `; ${b.within_limit ? "trimmed to fit" : "trimmed"} (${trimmed(p)})` : ""}.`);
   if (!b.within_limit) lines.push(`Still over the budget: drafted fields and open questions are never trimmed. Name fewer tables with --tables, or pass a larger --budget.`);
@@ -52,7 +56,8 @@ const spec: CommandSpec = {
     "Batch n is the nth batch_size tables of the order sl status takes next_batch from (batch 1 is next_batch); --tables names the tables instead.\n" +
     `--budget is the token budget (default ${DEFAULT_BRIEF_BUDGET}; tokens are estimated as the printed JSON's characters / 4, rounded up).\n` +
     "--json prints { source, batch, batches, tables: [{ table, model, model_status, grain?, row_count, description?, columns, drafted_fields, joins,\n" +
-    "open_questions, baseline_guesses? }], budget: { limit, used, truncated, within_limit, dropped } }.",
+    "open_questions, baseline_guesses?, usage? }], budget: { limit, used, truncated, within_limit, dropped } }.\n" +
+    "usage is there when the source has usage evidence (sl usage add): the table's counts in saved queries, its top items, and evidence sentences to ask the owner about.",
   options: {
     source: { type: "string" },
     batch: { type: "string" },
