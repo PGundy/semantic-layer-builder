@@ -35,13 +35,13 @@ export function toolName(command: string): string {
 
 function optionSchema(name: string, o: OptionSpec): JsonSchema {
   const one: JsonSchema = { type: o.type };
-  if (!o.multiple) return { ...one, description: `--${name}` };
+  if (!o.multiple || o.mcp === "single") return { ...one, description: `--${name}` };
   return { type: "array", items: one, description: `--${name}, once per item` };
 }
 
 export function inputSchema(spec: CommandSpec): JsonSchema {
   const properties: Record<string, JsonSchema> = {};
-  for (const [name, o] of Object.entries(spec.options)) if (!DENIED_OPTIONS.includes(name)) properties[name] = optionSchema(name, o);
+  for (const [name, o] of Object.entries(spec.options)) if (!DENIED_OPTIONS.includes(name) && o.mcp !== "omit") properties[name] = optionSchema(name, o);
   if (spec.positionals) {
     properties[POSITIONALS_ARG] = {
       type: "array",
@@ -58,7 +58,10 @@ export function inputSchema(spec: CommandSpec): JsonSchema {
 
 export function toolOf(command: string, spec: CommandSpec): Tool {
   const denied = DENIED_OPTIONS.filter((o) => o in spec.options).map((o) => `--${o}`);
-  const masked = denied.length ? ` This server never passes ${denied.join(" or ")}: protected values stay masked (invariant 3).` : "";
+  const omitted = Object.entries(spec.options).filter(([, o]) => o.mcp === "omit").map(([n]) => `--${n}`);
+  const masked =
+    (denied.length ? ` This server never passes ${denied.join(" or ")}: protected values stay masked (invariant 3).` : "") +
+    (omitted.length ? ` The batched form${omitted.length === 1 ? "" : "s"} (${omitted.join(", ")}) ${omitted.length === 1 ? "is" : "are"} CLI only: here each answer and approval is its own call, which the server can ask the owner about.` : "");
   return {
     name: toolName(command),
     description: `${spec.summary}\n\nUsage: sl ${spec.usage}\n\nRuns as \`sl ${command} --json\` in the server's semantic root and returns its JSON output.${masked}`,
@@ -71,7 +74,7 @@ export function toolOf(command: string, spec: CommandSpec): Tool {
 export function argvOf(command: string, spec: CommandSpec, args: Record<string, unknown>, root: string): string[] {
   const out = [command];
   for (const name of Object.keys(spec.options)) {
-    if (DENIED_OPTIONS.includes(name)) continue;
+    if (DENIED_OPTIONS.includes(name) || spec.options[name]!.mcp === "omit") continue;
     const v = args[name];
     for (const one of Array.isArray(v) ? v : [v]) {
       if (one === true) out.push(`--${name}`);

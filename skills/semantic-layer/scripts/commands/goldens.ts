@@ -875,16 +875,98 @@ async function newCommand(ctx: CommandContext, values: OptionValues): Promise<nu
   return 0;
 }
 
+// sl goldens confirm --readback <id>: each golden of the readback confirmed as --name confirms it,
+// only on the owner's latest reply to it being a yes to it with these rows and this tolerance. Exits
+// 0 when every golden the owner said yes to was confirmed, 1 when one was not.
+async function confirmReadback(ctx: CommandContext, values: OptionValues, rb: string): Promise<number> {
+  for (const flag of ["name", "tolerance", "results", "plan"] as const)
+    if (str(values, flag) !== undefined) throw new UserError(`--readback takes no --${flag}: each golden is confirmed with the tolerance its readback stated. Run sl goldens confirm --name <g> --${flag} ... for one golden.`);
+  if (bool(values, "emit-sql")) throw new UserError("--readback takes no --emit-sql; write one golden's plan with sl goldens confirm --name <g> --emit-sql.");
+  const by = str(values, "by")?.trim();
+  if (by === "") throw new UserError(`--by is empty. Leave it out to record the owner whose yes is in ${LEDGER_FILE}, or give that owner's name.`);
+  const pending = readPending(ctx.root, rb.trim());
+  const items = pending.items.filter((i) => i.target.startsWith("golden:"));
+  if (!items.length) throw new UserError(`Readback ${pending.readback_id} reads back no golden, so there is nothing to confirm. Approve its items with sl approve --readback ${pending.readback_id}.`);
+  const replies = readReplies(ctx.root);
+  type Result = { name: string; item: number; confirmed: boolean; said_yes: boolean; reason?: string; next?: string; result?: Record<string, unknown> };
+  const results: Result[] = [];
+  for (const it of items) {
+    const name = it.target.slice("golden:".length);
+    const r = latestReply(replies, it.target);
+    const ref = r ? `${r.id}, to item ${r.item} of ${r.readback_id}` : "";
+    const base = { name, item: it.n, confirmed: false, said_yes: false };
+    if (!r || r.verdict !== "yes") {
+      const reason = !r ? "no owner reply to it is recorded" : r.verdict === null ? `the owner's latest reply (${ref}) has no verdict` : `the owner's latest reply (${ref}) is "${r.verdict}", not yes`;
+      const next = !r || r.verdict === null
+        ? `sl reply --readback ${pending.readback_id} --item ${it.n} --text "<owner's words>" --verdict yes|no|change --by "<owner>"`
+        : `make the ${r.verdict === "no" ? "correction" : "change"} the owner asked for (sl set golden:${name} ..., or the measure it reads), then sl goldens run --name ${name} and sl readback --targets golden:${name}`;
+      results.push({ ...base, reason, next });
+      continue;
+    }
+    const out: string[] = [];
+    try {
+      await confirmCommand({ ...ctx, json: true, out: (x) => out.push(x) }, { name, ...(by ? { by } : {}), ...(bool(values, "force") ? { force: true } : {}) });
+      results.push({ ...base, confirmed: true, said_yes: true, result: JSON.parse(out.join("\n")) as Record<string, unknown> });
+    } catch (e) {
+      if (!(e instanceof UserError)) throw e;
+      const head = `Cannot confirm golden:${name}: `;
+      const text = e.message.startsWith(head) ? e.message.slice(head.length) : e.message;
+      const at = text.lastIndexOf("Next: ");
+      results.push({
+        ...base,
+        said_yes: true,
+        reason: (at >= 0 ? text.slice(0, at) : text).replace(/; nothing was recorded\..*$/s, "").trim().replace(/[.;:]$/, ""),
+        next: at >= 0 ? text.slice(at + 6).replace(/\.$/, "").trim() : `sl goldens confirm --name ${name}`,
+      });
+    }
+  }
+  const done = results.filter((r) => r.confirmed);
+  const not = results.filter((r) => !r.confirmed);
+  const failed = not.filter((r) => r.said_yes);
+  const code = failed.length ? 1 : 0;
+  if (ctx.json) {
+    ctx.out(
+      formatJson({
+        readback_id: pending.readback_id,
+        confirmed: done.map((r) => ({ name: r.name, item: r.item, ...r.result })),
+        not_confirmed: not.map(({ confirmed: _, result: _r, ...r }) => r),
+        all_yes_confirmed: !failed.length,
+      }),
+    );
+    return code;
+  }
+  const lines = [`Confirmed ${done.length} of the ${results.length} goldens of ${pending.readback_id}, each on the owner's own yes to its rows and tolerance${done.length ? ":" : "."}`];
+  for (const r of done) {
+    const x = r.result as { rows?: unknown[]; tolerance?: number; confirmed_by?: string; confirmed_at?: string; ledger?: string };
+    lines.push(`  - golden:${r.name} (item ${r.item}): ${x.rows?.length ?? 0} expected row(s), tolerance ${x.tolerance}, confirmed by ${x.confirmed_by} on ${x.confirmed_at} (reply ${x.ledger})`);
+  }
+  if (not.length) {
+    lines.push(`Not confirmed (${not.length}):`);
+    for (const r of not) lines.push(`  - golden:${r.name} (item ${r.item}): ${r.reason}. Next: ${r.next}.`);
+  }
+  lines.push(
+    failed.length
+      ? `${failed.length} golden(s) the owner said yes to were not confirmed (listed above with why); fix each as its line says.`
+      : !done.length
+        ? `The owner has said yes to none of these goldens yet; record their answers first: sl reply --readback ${pending.readback_id} --answers -.`
+        : `Every golden the owner said yes to is confirmed. Next: ${not.length ? "the steps above" : "sl goldens check"}.`,
+  );
+  ctx.out(lines.join("\n"));
+  return code;
+}
+
 const spec: CommandSpec = {
   summary: "Compile and run a golden's request, record its rows on the owner's recorded yes, recheck approved goldens, or write a draft golden.",
   usage:
-    "goldens run --name <g> | goldens confirm --name <g> [--by <name>] [--tolerance <t>] [--force] | " +
+    "goldens run --name <g> | goldens confirm --name <g> [--by <name>] [--tolerance <t>] [--force] | goldens confirm --readback <readback_id> [--by <name>] [--force] | " +
     "goldens check [--name <g>] [--source <s>]   (each takes --emit-sql, --results <file>, --plan <plan_id> and --show-protected; values of protected " +
     "columns show as [protected] unless --show-protected) | " +
     'goldens new --name <g> --question "<question>" --request <json|file> [--source <s>] [--role <role>] [--user <json>]\n\n' +
     "confirm records the rows the request compiles to now only when the owner's latest reply to golden:<g> in .sl/ledger.jsonl\n" +
     "is a yes to the golden with these rows and this tolerance (sl readback --targets golden:<g>, then sl reply --verdict yes);\n" +
     "confirmed_by and confirmed_at come from that reply, and --by, when given, must name the same owner.\n" +
+    "confirm --readback confirms each golden of that readback as --name would, at the tolerance read back, and lists every\n" +
+    "other with why (a change, a no, no reply, changed since the yes); it exits 1 only when a golden the owner said yes to was not confirmed.\n" +
     "The tolerance is relative and applies to figures with decimals: the columns a golden is grouped by and whole numbers\n" +
     "(counts, years) always compare exactly, and a failed check says so on the line.\n\n" +
     "new --request is JSON (or a file holding it), fields named relative to its source:\n" +
@@ -909,6 +991,7 @@ const spec: CommandSpec = {
     request: { type: "string" },
     role: { type: "string" },
     user: { type: "string" },
+    readback: { type: "string", mcp: "omit" },
   },
   positionals: true,
   writes: ({ values, positionals }) => (positionals[0] === "new" || values["emit-sql"] ? "whole" : positionals[0] === "confirm" ? "late" : false),
@@ -918,6 +1001,9 @@ const spec: CommandSpec = {
       throw new UserError(`Pass a subcommand: ${SUBCOMMANDS.join(", ")}.`);
     }
     if (rest.length) throw new UserError(`Unexpected argument "${rest[0]}".`);
+    const rb = str(values, "readback");
+    if (rb !== undefined && sub !== "confirm") throw new UserError(`--readback goes with sl goldens confirm only (sl goldens confirm --readback <readback_id>), not sl goldens ${sub}.`);
+    if (rb !== undefined) return confirmReadback(ctx, values, rb);
     switch (sub as Subcommand) {
       case "run":
         return runCommand(ctx, values);
