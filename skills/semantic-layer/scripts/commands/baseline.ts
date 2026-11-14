@@ -1,12 +1,13 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { buildBaseline, renderBaseline } from "../lib/baseline.ts";
+import { buildBaseline, formatScopedJson, renderBaseline, scopeBaseline, VIEW_GIVES } from "../lib/baseline.ts";
 import type { CommandSpec } from "../lib/command.ts";
 import { list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { writeFileAtomic } from "../lib/lock.ts";
 import { formatJson } from "../lib/output.ts";
 import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot } from "../lib/project.ts";
+import { computeStatus } from "../lib/status.ts";
 import { effectiveScope } from "../lib/table-list.ts";
 import type { SourceConfig } from "../lib/types.ts";
 import { sourceFlag } from "./tables.ts";
@@ -74,15 +75,27 @@ function outPath(root: string, out: string): string {
   return target;
 }
 
+// The phase sl next names, or null when the project's status cannot be read (the brief needs only the snapshot).
+function currentPhase(root: string): string | null {
+  try {
+    return computeStatus(root).next_step.phase;
+  } catch {
+    return null;
+  }
+}
+
 const spec: CommandSpec = {
   summary:
     "Write a read-only baseline brief from the snapshot: per table its likely role, grain, keys, relationships, candidate measures and splits, " +
-    "and the questions to ask the owner, plus a star-schema sketch. Reads no database.",
-  usage: "baseline --source <source> [--tables t,...] [--out <file>]",
+    "and the questions to ask the owner, plus a star-schema sketch. Reads no database. " +
+    "--json is scoped to the phase sl next names: in the metrics phase " + VIEW_GIVES.metrics + "; in every other phase " + VIEW_GIVES.tables + ". " +
+    "--full --json gives every table's whole reading; the plain brief is always whole, so --full applies only with --json.",
+  usage: "baseline --source <source> [--tables t,...] [--out <file>] [--full]",
   options: {
     source: { type: "string" },
     tables: { type: "string", multiple: true },
     out: { type: "string" },
+    full: { type: "boolean" },
   },
   writes: ({ values }) => (values.out !== undefined ? "whole" : false),
   async run({ values }, ctx) {
@@ -110,7 +123,14 @@ const spec: CommandSpec = {
       writeFileAtomic(target, markdown);
     }
     if (ctx.json) {
-      ctx.out(formatJson({ ...report, ...(target ? { written_to: target } : {}) }));
+      const written = target ? { written_to: target } : {};
+      if (values.full === true) {
+        ctx.out(formatJson({ ...report, ...written }));
+        return 0;
+      }
+      const tablesFlag = list(values, "tables");
+      const full = `sl baseline --source ${sourceName}${tablesFlag.length ? ` --tables ${tablesFlag.join(",")}` : ""} --full --json`;
+      ctx.out(formatScopedJson({ ...scopeBaseline(report, currentPhase(ctx.root), full), ...written }));
       return 0;
     }
     if (target) {

@@ -1,6 +1,6 @@
 # Phase card: scope and focus
 
-Load this card when `sl next` names phase `scope`. It holds focusing a large source, widening scope, and a model whose table left scope. Load `references/scoping.md` with it.
+Load this card when `sl next` names phase `scope`. It holds focusing a large source, widening scope, and a model whose table left scope. Load `references/scoping.md` only when the owner widens scope later, defers a table, hands over a list of tables or scopes a lake per source.
 
 **Checklist:** 1. `sl tables --source <s> --groups`. 2. Preview with `sl scope --source <s> --include <p>`. 3. After the owner confirms, the same command with `--write`. 4. `sl validate`.
 

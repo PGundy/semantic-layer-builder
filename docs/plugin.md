@@ -46,6 +46,8 @@ In a session, `/agents` lists the five `sl-` agents, `/mcp` lists `plugin:semant
 
 Start Claude Code in the directory that holds, or will hold, the `semantic/` directory, and ask something like "help me build a semantic layer for our warehouse". The skill loads and runs the CLI for you.
 
+The agent asks which database it is and where the connection lives. Put it in `.env` in that same directory, one line you write yourself, such as `WAREHOUSE_URL=postgres://<user>:<password>@<host>:5432/<database>?sslmode=require` for a SELECT-only role, or set the variable in the shell you start Claude Code from (it wins over the file); a file elsewhere is passed with `--env-file <path>` or `SL_ENV_FILE`. `sl` reads the file itself and keeps it out of git, the hook refuses to read it, and you never paste the secret into the chat.
+
 For a multi-agent build, run the interviewer as the main session:
 
 ```sh

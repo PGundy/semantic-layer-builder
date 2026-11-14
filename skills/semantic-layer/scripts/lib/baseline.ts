@@ -1669,3 +1669,80 @@ export function renderBaseline(report: BaselineReport): string {
   }
   return `${L.join("\n")}\n`;
 }
+
+// What sl baseline --json gives by default: the brief scoped to the phase sl next names, so the
+// agent reads what that phase uses. The source-level fields stay whole; each table keeps its role,
+// grain guess, key columns and first questions, and the metrics phase adds the candidate ratios and
+// shares. sl brief gives an interview batch its guesses in full, and --full gives the whole report.
+export type BaselineView = "tables" | "metrics";
+
+export const VIEW_GIVES: Record<BaselineView, string> = {
+  tables: "each table's role and reasons, grain guess, key and first question, and the source's star sketch, notes and left-out tables; sl brief gives a batch the rest",
+  metrics: "the tables view plus each table's candidate ratios and shares in full",
+};
+
+export interface TableOverview {
+  table: string;
+  rows: number | null;
+  in_scope: boolean;
+  model: { name: string; status: Status } | null;
+  profile_state: ProfileState;
+  role: TableRole;
+  role_reasons: string[];
+  grain: { guess: string };
+  primary_key: { columns: string[]; how: BaselineKey["how"] } | null;
+  questions: { topic: QuestionTopic; question: string }[];
+  // How many questions the full brief asks about this table.
+  question_count: number;
+  // metrics view only: the candidate measures of kind ratio or share.
+  measures?: CandidateMeasure[];
+}
+
+export interface ScopedBaseline extends Omit<BaselineReport, "tables"> {
+  view: { name: BaselineView; phase: string | null; gives: string; full: string };
+  tables: TableOverview[];
+}
+
+export const OVERVIEW_QUESTIONS = 1;
+
+export function baselineView(phase: string | null): BaselineView {
+  return phase === "metrics" ? "metrics" : "tables";
+}
+
+export function scopeBaseline(report: BaselineReport, phase: string | null, fullCommand: string): ScopedBaseline {
+  const name = baselineView(phase);
+  return {
+    ...report,
+    view: { name, phase, gives: VIEW_GIVES[name], full: fullCommand },
+    tables: report.tables.map((t) => ({
+      table: t.table,
+      rows: t.rows,
+      in_scope: t.in_scope,
+      model: t.model,
+      profile_state: t.profile_state,
+      role: t.role,
+      role_reasons: t.role_reasons,
+      grain: { guess: t.grain.guess },
+      primary_key: t.primary_key ? { columns: t.primary_key.columns, how: t.primary_key.how } : null,
+      questions: t.questions.slice(0, OVERVIEW_QUESTIONS).map((q) => ({ topic: q.topic, question: q.question })),
+      question_count: t.questions.length,
+      ...(name === "metrics" ? { measures: t.measures.filter((m) => m.kind === "ratio" || m.kind === "share") } : {}),
+    })),
+  };
+}
+
+// The scoped brief as JSON with one table, and one star entry, per line: the same value as
+// JSON.stringify gives, laid out so a short brief stays short.
+export function formatScopedJson(scoped: ScopedBaseline): string {
+  const line = (v: unknown) => JSON.stringify(v);
+  const block = (entries: [string, string][], indent: string) => `{\n${entries.map(([k, v]) => `${indent}  ${line(k)}: ${v}`).join(",\n")}\n${indent}}`;
+  const list = (items: unknown[], indent: string) => (items.length ? `[\n${items.map((i) => `${indent}  ${line(i)}`).join(",\n")}\n${indent}]` : "[]");
+  return block(
+    Object.entries(scoped).map(([k, v]): [string, string] => {
+      if (k === "tables") return [k, list(v as unknown[], "  ")];
+      if (k === "star") return [k, block(Object.entries(v as object).map(([a, b]): [string, string] => [a, line(b)]), "  ")];
+      return [k, line(v)];
+    }),
+    "",
+  );
+}

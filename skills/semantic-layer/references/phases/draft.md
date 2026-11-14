@@ -1,6 +1,6 @@
 # Phase card: draft
 
-Load this card when `sl next` names phase `draft`. It holds drafting models for in-scope tables, tables new in scope, and columns without a field. Load `references/interview-guide.md` (Keeping the layer current) for new columns.
+Load this card when `sl next` names phase `draft`. It holds drafting models for in-scope tables, tables new in scope, and columns without a field. Load `references/interview-guide.md` (Keeping the layer current) only when columns arrive in a layer the owner already approved and this card's steps do not settle them.
 
 **Checklist:** 1. `sl draft --source <s>` (`--tables a,b,c` for one batch; `--new-columns` for columns without a field). 2. `sl validate`. 3. Skim the drafts and their open questions.
 
