@@ -1,13 +1,14 @@
 // sl set on the targets the approve-style refs do not cover: creating a draft access.yaml, a
 // golden's role, user, reference and tolerance, and a source's description. Each write keeps the
 // file's comments and every untouched byte, and is validated before it is written (lib/edit.ts).
-import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { isMap, type Document, type YAMLMap } from "yaml";
 import { goldenHash } from "./approval-hash.ts";
 import { commitEdit, itemMap, oneLine, placeKey, relFile } from "./edit.ts";
 import { UserError } from "./errors.ts";
+import { writeFileAtomic } from "./lock.ts";
 import { DEFAULT_TOLERANCE } from "./goldens.ts";
 import { currentYes, LEDGER_FILE, ledgerReplies } from "./ledger.ts";
 import { paths } from "./project.ts";
@@ -56,7 +57,7 @@ export function createAccess(root: string, mode: string): SetOutcome {
   } catch {}
   // A link at the path, even one to nothing, could point outside the semantic root.
   if (exists) throw new UserError(`Refusing to create access.yaml: something is already at ${file} (a link, or a file written meanwhile). Nothing was written. Remove it or run sl validate.`);
-  writeFileSync(file, text, { flag: "wx" });
+  writeFileAtomic(file, text, { exclusive: true });
   const notes = [
     `Created access.yaml as a draft with mode ${mode}${mode === "open" ? ": everyone sees every approved item, minus protected tags, restrictions and role denials" : ": a user sees only what a role's allow.models grants, and it has no roles yet, so nobody sees anything until roles are added"}.`,
     "Tools serve nothing under a draft access.yaml until it is approved.",

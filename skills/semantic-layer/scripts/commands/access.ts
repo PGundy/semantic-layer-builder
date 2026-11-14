@@ -180,6 +180,7 @@ const spec: CommandSpec = {
     roles: { type: "string", multiple: true },
     show: { type: "string" },
   },
+  writes: false,
   async run({ values }, ctx) {
     loadProject(ctx.root);
     const inline = str(values, "user");

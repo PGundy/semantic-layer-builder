@@ -80,6 +80,7 @@ const spec: CommandSpec = {
   usage: "rename <source.model | source.model.field | metric:<name>> <new_name>",
   options: {},
   positionals: true,
+  writes: "whole",
   async run({ positionals }, ctx) {
     loadProject(ctx.root);
     const [ref, raw, ...extra] = positionals;

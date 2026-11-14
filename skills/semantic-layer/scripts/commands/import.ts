@@ -99,6 +99,7 @@ const spec: CommandSpec = {
     include: { type: "string", multiple: true },
     exclude: { type: "string", multiple: true },
   },
+  writes: "whole",
   async run({ values }, ctx) {
     const sourceName = str(values, "source");
     if (!sourceName) throw new UserError("--source is required.");

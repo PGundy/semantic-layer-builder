@@ -24,6 +24,7 @@ const spec: CommandSpec = {
     results: { type: "string" },
     plan: { type: "string" },
   },
+  writes: "late",
   async run({ values }, ctx) {
     loadProject(ctx.root);
     const refs = list(values, "targets");
@@ -36,6 +37,8 @@ const spec: CommandSpec = {
     // A golden's rows come from compiling and running its request, before anything is written.
     const goldens = new Map<string, GoldenRun>();
     for (const name of names) if (!goldens.has(name)) goldens.set(name, await goldenRun(ctx, values, name));
+    // The items are rendered, numbered and stored under the lock, so two readbacks never share an id.
+    await ctx.lock();
     const rendered = renderReadbacks(ctx.root, refs, goldens);
     const pending: PendingReadback = {
       readback_id: nextReadbackId(ctx.root),

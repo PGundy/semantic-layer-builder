@@ -1102,7 +1102,7 @@ export function buildBaseline(snapshot: Snapshot, opts: BaselineOptions): Baseli
   // profile needs one: one to configure when the source has none, or one that reaches the database.
   const imported = snapshot.method !== "live";
   const conn = opts.connection;
-  const connected = !!(conn?.env || conn?.database || (conn?.views && Object.keys(conn.views).length));
+  const connected = !!(conn?.env || conn?.env_prefix !== undefined || conn?.database || (conn?.views && Object.keys(conn.views).length));
   const how = article(snapshot.method.replace(/_/g, " "));
   if (imported && profileCommand) {
     notes.push(

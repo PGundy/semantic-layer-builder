@@ -1,10 +1,12 @@
-// The answer ledger, .sl/ledger.jsonl under the semantic root: one JSON object per line, appended by
-// sl reply and sl question resolve and never rewritten. Each line holds the owner's words, with
-// credentials redacted, never data values.
-import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeSync } from "node:fs";
+// The answer ledger, .sl/ledger.jsonl under the semantic root: one JSON object per line, added by
+// sl reply and sl question resolve, whose earlier lines never change. Each line holds the owner's
+// words, with credentials redacted, never data values. The commands that add a line hold the root's
+// lock (lib/lock.ts) from reading the ledger for the next id to writing the line.
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { redactCredentials } from "./credentials.ts";
 import { UserError } from "./errors.ts";
+import { writeFileAtomic } from "./lock.ts";
 import { plainText } from "./output.ts";
 import { PENDING_DIR } from "./readback.ts";
 import type { LedgerEntry, LedgerQuestion, LedgerReply, PendingReadback } from "./types.ts";
@@ -52,10 +54,6 @@ function assertInside(root: string, path: string): void {
   if (p !== r && !p.startsWith(r + sep)) throw new UserError(`Refusing to write ${LEDGER_FILE}: ${path} resolves outside the semantic root ${resolve(root)}. Nothing was written.`);
 }
 
-// Append without following a link at the file, so a link put there after openLedger's check still
-// cannot send the line elsewhere.
-const APPEND_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0);
-
 // An entry before the ledger gives it an id.
 export type NewLedgerEntry = Omit<LedgerReply, "id"> | Omit<LedgerQuestion, "id">;
 
@@ -98,12 +96,12 @@ export function openLedger(root: string): LedgerAppender {
     append(entry) {
       const full = { ...entry, id } as LedgerEntry;
       mkdirSync(dirname(file), { recursive: true });
-      const fd = openSync(file, APPEND_FLAGS, 0o644);
-      try {
-        writeSync(fd, ledgerLine(full));
-      } finally {
-        closeSync(fd);
-      }
+      // The ledger with the new line replaces the file in one rename, so a cut-off write leaves it
+      // whole. A link put at the path after openLedger's check is refused here, and one put there
+      // after this check is replaced by the rename, never followed.
+      const stat = lstatSync(file, { throwIfNoEntry: false });
+      if (stat && !stat.isFile()) throw new UserError(`${LEDGER_FILE} is no longer a plain file inside the semantic root, so the answer was not recorded; nothing was written. Run sl validate, then run this again.`);
+      writeFileAtomic(file, (stat ? readFileSync(file, "utf8") : "") + ledgerLine(full), { replaceLink: true });
       return full;
     },
   };

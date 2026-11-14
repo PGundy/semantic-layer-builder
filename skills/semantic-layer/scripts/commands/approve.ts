@@ -402,6 +402,7 @@ const spec: CommandSpec = {
     "stamp-hashes": { type: "boolean" },
     "confirm-unchanged": { type: "boolean" },
   },
+  writes: "whole",
   async run({ values }, ctx) {
     loadProject(ctx.root);
     if (bool(values, "stamp-hashes")) {

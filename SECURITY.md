@@ -28,7 +28,7 @@ The CLI's promises, as the README's Trust model states them:
 - **Source files.** A DuckDB `connection.setup` statement or `connection.views` relation that passes the source checks (`sl validate` and the adapter) but runs something other than what they allow.
 - **Protected values.** A value of a protected column (tagged `pii` or `sensitive`, in `ignored_columns`, or flagged by the sensitivity rules) that `sl run` or `sl goldens run` prints without `--show-protected` in a result column of that column's own name, or that `sl profile` writes into a snapshot as a top value.
 - **Credentials.** A connection URL, password or key that any command prints, writes to a file or includes in an error message.
-- **Paths.** A command that writes outside the semantic root.
+- **Paths.** A command that writes outside the semantic root, other than the env-file lines `sl init` and `sl setup` add to the `.gitignore` of the directory that holds it.
 - **The test cluster.** `scripts/pg-local.sh` letting another local user connect to the cluster it starts.
 
 ## Out of scope
