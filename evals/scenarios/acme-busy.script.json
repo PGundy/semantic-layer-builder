@@ -45,7 +45,7 @@
     },
     {
       "text": "Thanks; I wrote your answers into the models and read back eight definitions: the two tables, session_count, started_at, spend and spend_date, and two more, marketing_spend.channel and web_events.event_type, which I drafted as the kind of event, a purchase being an order (my guess). The open questions about web_events are in the form too.\n\nThe form is .sl/reviews/rb_0001.md. For each item put an x in yes, no or change, and write what is wrong or what to change under it; answer the questions you can. Send it back whenever you have a moment, and I will apply it in one step.",
-      "tokens": 3133,
+      "tokens": 3164,
       "sl": [
         [
           "question",

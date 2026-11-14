@@ -2,7 +2,7 @@ import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { oneLine } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
-import { LEDGER_FILE, openLedger, ownerText, readPending, shellQuote } from "../lib/ledger.ts";
+import { LEDGER_FILE, latestReply, openLedger, ownerText, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
 import { currentHash } from "../lib/readback.ts";
@@ -10,19 +10,22 @@ import { goldenExportSource, goldenUpgradeNext } from "../lib/export-goldens.ts"
 import type { LedgerReply, ReplyVerdict } from "../lib/types.ts";
 
 const VERDICTS: readonly ReplyVerdict[] = ["yes", "no", "change"];
-const USAGE = 'sl reply --readback <readback_id> --item <n> --text "<owner\'s words>" [--verdict yes|no|change] --by "<owner>"';
+const USAGE = 'sl reply --readback <readback_id> --item <n> --text "<owner\'s words>" [--verdict yes|no|change] [--about access] --by "<owner>"';
 
 const spec: CommandSpec = {
   summary: "Record the owner's answer to one item of a readback in the answer ledger, .sl/ledger.jsonl.",
   usage:
-    'reply --readback <readback_id> --item <n> --text "<owner\'s words>" [--verdict yes|no|change] --by "<owner>"\n\n' +
+    'reply --readback <readback_id> --item <n> --text "<owner\'s words>" [--verdict yes|no|change] [--about access] --by "<owner>"\n\n' +
     "Appends one line to .sl/ledger.jsonl with the item's target and the content hash it had when it was read\n" +
-    "back, the owner's words (credentials redacted), the verdict and the time. Never rewrites earlier lines.",
+    "back, the owner's words (credentials redacted), the verdict and the time. Never rewrites earlier lines.\n" +
+    "--about access records a change to who sees the item, not to the item: it is settled in the access phase\n" +
+    "(sl next brings it up there) and does not hold the item's sign-off, which still takes its own yes.",
   options: {
     readback: { type: "string" },
     item: { type: "string" },
     text: { type: "string" },
     verdict: { type: "string" },
+    about: { type: "string" },
     by: { type: "string" },
   },
   writes: "whole",
@@ -31,8 +34,14 @@ const spec: CommandSpec = {
     const [rb, itemRaw, raw, byRaw] = [str(values, "readback"), str(values, "item"), str(values, "text"), str(values, "by")];
     if (rb === undefined || itemRaw === undefined || raw === undefined || byRaw === undefined) throw new UserError(`Usage: ${USAGE}.`);
     const verdictRaw = str(values, "verdict");
-    const verdict = verdictRaw === undefined ? null : (verdictRaw.trim().toLowerCase() as ReplyVerdict);
+    const aboutRaw = str(values, "about");
+    const about = aboutRaw === undefined ? undefined : aboutRaw.trim().toLowerCase();
+    if (about !== undefined && about !== "access") throw new UserError(`--about is access (a change to who sees the item), not ${JSON.stringify(aboutRaw)}. Usage: ${USAGE}.`);
+    // A change to who sees an item is a change, whatever else the owner says about the item itself.
+    const verdict = verdictRaw === undefined ? (about ? "change" : null) : (verdictRaw.trim().toLowerCase() as ReplyVerdict);
     if (verdict !== null && !VERDICTS.includes(verdict)) throw new UserError(`--verdict is yes, no or change, not ${JSON.stringify(verdictRaw)}. Usage: ${USAGE}.`);
+    if (about && verdict !== "change")
+      throw new UserError(`--about access records a change to who sees the item, so it goes with --verdict change. Record the owner's ${verdict} to the item itself in its own sl reply, without --about.`);
     const by = ownerText(oneLine(byRaw)).text;
     if (!by) throw new UserError('--by is empty; give the name of the owner who answered (--by "<owner>").');
     const { text, redacted } = ownerText(raw);
@@ -44,6 +53,8 @@ const spec: CommandSpec = {
       const items = pending.items.map((i) => `${i.n} (${i.target})`).join(", ");
       throw new UserError(`Readback ${pending.readback_id} has no item ${JSON.stringify(itemRaw)}; its items are ${items}. To ask about something else, read it back first with sl readback --targets <ref>.`);
     }
+    if (about && item.target === "access")
+      throw new UserError("This item is access.yaml itself, so a change to who sees what is a change to it: record it with --verdict change, without --about.");
     const ledger = openLedger(ctx.root);
     const now = currentHash(ctx.root, item.target, item.content_hash);
     const changed = now !== item.content_hash;
@@ -55,6 +66,7 @@ const spec: CommandSpec = {
       content_hash: item.content_hash,
       text,
       verdict,
+      ...(about ? { about } : {}),
       by,
       at: ctx.now().toISOString(),
     } satisfies Omit<LedgerReply, "id">);
@@ -66,7 +78,17 @@ const spec: CommandSpec = {
     else if (changed) warnings.push(`${t} changed since it was read back; read it back again with ${again}, and record the owner's answer to the new readback.`);
     let next: string;
     let advice: string;
-    if (verdict === null) {
+    if (about) {
+      // The item's own sign-off stands where it stood: approved on a recorded yes, else still to be answered.
+      const own = latestReply(readReplies(ctx.root), t);
+      const yes = !changed && own?.verdict === "yes" && own.content_hash === item.content_hash;
+      next = yes
+        ? t.startsWith("golden:") ? `sl goldens confirm --name ${t.slice(7)}` : `sl approve --target ${t} --by ${shellQuote(by)}`
+        : `sl reply --readback ${pending.readback_id} --item ${item.n} --text "<owner's words>" --verdict yes|no|change --by ${shellQuote(by)}`;
+      advice =
+        `Recorded as a change to who sees ${t}. Who sees what is decided once, in the access phase: sl next brings this change up there, and it does not hold ${t}'s sign-off. ` +
+        (yes ? `The owner's yes to ${t} itself stands. Next: ${next}.` : `Ask the owner whether the rest of the item is right as read back, and record that answer: ${next}.`);
+    } else if (verdict === null) {
       next = `sl reply --readback ${pending.readback_id} --item ${item.n} --text "<owner's words>" --verdict yes|no|change --by ${shellQuote(by)}`;
       advice = `The reply has no verdict, so no approval can use it. Ask the owner whether that is a yes, a no or a change, then record it: ${next}.`;
     } else if (changed) {
@@ -83,12 +105,15 @@ const spec: CommandSpec = {
     } else {
       next = again;
       advice = `Make the ${verdict === "no" ? "correction" : "change"} the owner asked for with a typed edit (sl set, sl tag, sl ignore-column or sl question add), then read it back again: ${next}.`;
+      // Who sees an item is not part of the item: such a change waits for the access phase and the item goes on.
+      if (t !== "access" && !t.startsWith("golden:"))
+        advice += ` If the change is only to who sees ${t}, record that as well with --verdict change --about access, then the owner's answer to the item itself: who sees what is decided in the access phase and does not hold this item.`;
     }
     if (ctx.json) {
       ctx.out(formatJson({ id: entry.id, path: LEDGER_FILE, entry, current_hash: now, hash_changed: changed, redacted, warnings, next }));
       return 0;
     }
-    const head = `Recorded ${entry.id} in ${LEDGER_FILE}: ${by}'s reply to item ${item.n} of ${pending.readback_id} (${t}), ${verdict === null ? "no verdict yet" : `verdict ${verdict}`}.`;
+    const head = `Recorded ${entry.id} in ${LEDGER_FILE}: ${by}'s reply to item ${item.n} of ${pending.readback_id} (${t}), ${verdict === null ? "no verdict yet" : about ? "a change to who sees it" : `verdict ${verdict}`}.`;
     ctx.out([head, ...warnings.map((w) => `Warning: ${w}`), advice].join("\n"));
     return 0;
   },

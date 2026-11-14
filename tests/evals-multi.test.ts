@@ -137,7 +137,7 @@ describe("acme-multi", () => {
     const { reference: _r, ...noRef } = s.scenario.grading!;
     const share = await replay("acme-multi", temp(), undefined, { ...s.scenario, grading: { ...noRef, max_interviewer_share: 0.4 } });
     expect(grader(share.grades, "effort")).toMatchObject({ passed: false });
-    expect(grader(share.grades, "effort").details.at(-1)).toStartWith("The interviewer holds 47.9% of the agents' tokens, above the scenario's max_interviewer_share of 40%");
+    expect(grader(share.grades, "effort").details.at(-1)).toStartWith("The interviewer holds 47.4% of the agents' tokens, above the scenario's max_interviewer_share of 40%");
   }, 90_000);
 
   test("a role agent that runs sl approve or sl reply is refused by the guard, approves nothing and fails authority", async () => {

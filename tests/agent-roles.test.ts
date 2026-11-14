@@ -186,6 +186,46 @@ describe("the hook holds each role agent to its role", () => {
     refused(bash("sl-golden-builder", run("set golden:revenue_2025 role finance")), "may not run sl set");
   });
 
+  // docs/PRD-hardening.md HR-9: every access rule has a typed command, so the interviewer, whose
+  // hand edit of access.yaml is refused, has one to run for each.
+  test("the interviewer runs every access command, and may still not write access.yaml by hand", async () => {
+    const who = "semantic-layer-builder:sl-interviewer";
+    const commands = [
+      "add-attribute --name department --type string",
+      "remove-attribute department",
+      `add-role --name finance --assign-when "user.department == 'finance'" --allow-tags pii`,
+      "remove-role finance",
+      `set access role:finance assign_when "user.department in ['finance', 'audit']"`,
+      "set access role:finance allow.tags --unset",
+      "set access restriction:refunds targets warehouse.refunds,metric:net_revenue",
+      "set access attribute:department description 'The department in the login system.'",
+      "add-restriction --name refunds --targets warehouse.refunds --roles finance",
+      "remove-restriction refunds",
+      `add-row-filter --role sales --model wh.orders --expr "region = {{ user.region }}"`,
+      "add-row-filter --role sales --model wh.orders --column rep_id --via wh.team_closure --manager manager_id --member member_id --user employee_id",
+      "remove-row-filter --role sales --model wh.orders --index 1",
+      'question add access.roles.sales --text "Do reps see refunds?"',
+      'reply --readback rb_0001 --item 1 --text "Hide it from marketing." --verdict change --about access --by "Owner"',
+    ];
+    for (const c of commands) {
+      allowed(bash(who, run(c)));
+      // Each is a command the CLI has; only the interviewer, who makes the layer's changes, runs it.
+      expect(Object.keys(COMMANDS)).toContain(c.split(" ")[0]!);
+      refused(bash("sl-golden-builder", run(c)), c.startsWith("reply") ? "only the interviewer" : `may not run sl ${c.split(" ")[0]}`);
+    }
+    for (const tool of ["Write", "Edit"])
+      refused(call(who, tool, { file_path: join(root, "access.yaml"), content: "mode: open\nstatus: draft\n", old_string: "a", new_string: "b" }), "never edits by hand");
+    refused(bash(who, `printf 'roles: []\n' >> ${join(root, "access.yaml")}`), "never edits the semantic layer by hand");
+    // And they do what the hand edit would have: the access file is built with them, in a root the hook guards.
+    const t = tempRoot();
+    await initProject(t.root);
+    for (const c of ["set access mode open", "add-attribute --name department --type string", "add-role --name finance", "set access role:finance assign_when user.department=='finance'", "remove-role finance", "remove-attribute department"]) {
+      allowed(bash(who, run(`${c} --root ${t.root}`)));
+      expect({ c, code: (await sl(t.root, c.split(" "))).code }).toEqual({ c, code: 0 });
+    }
+    expect(readFileSync(join(t.root, "access.yaml"), "utf8")).toBe("mode: open\nstatus: draft\n");
+  });
+
   test("the main agent (no agent_type) and other agents are checked as before", () => {
     for (const agent of [undefined, "Explore", "general-purpose", "other-plugin:sl-helper"]) {
       allowed(bash(agent, "ls"));

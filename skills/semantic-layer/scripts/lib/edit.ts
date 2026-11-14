@@ -1,10 +1,12 @@
 // Typed edits: the shared steps of sl set, sl tag, sl ignore-column, sl question, sl add-field,
-// sl remove-field, sl add-metric, sl remove-metric and sl rename. An edit changes YAML files through editYamlText, so the owner's
+// sl remove-field, sl add-metric, sl remove-metric, sl rename and the access edits (lib/access-edit.ts).
+// An edit changes YAML files through editYamlText, so the owner's
 // comments and every untouched byte survive; the result is validated as the project would read it,
 // and it is written only when it adds no error.
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
+import type { LastApproval } from "./access.ts";
 import { accessEntry, carriesHash, metricEntries, modelEntries, type ApprovalEntry } from "./approval-hash.ts";
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
@@ -15,7 +17,7 @@ import { DIALECTS, type Dialect, type Model, PROTECTED_TAGS, PUBLIC_TAG, type Sn
 import { matchesDotted } from "./patterns.ts";
 import { incomingKeyColumns, referencedColumns } from "./snapshot-diff.ts";
 import { sqlNames } from "./sql-names.ts";
-import { SCHEMAS_DIR, validateProject } from "./validate.ts";
+import { type Issue, SCHEMAS_DIR, validateProject } from "./validate.ts";
 import { editYamlText, parseYamlText, readYamlIfExists } from "./yaml.ts";
 
 // Keys only sl approve writes.
@@ -190,9 +192,14 @@ export interface FileEdit {
 // A file the edits create or move. `create` maps a file that must not exist yet to the text its
 // edits start from. `move` writes the edited text of `from` to `to`, which must not exist yet, and
 // removes `from`.
+// `warnings` collects the warnings the edits add (a file holding more of one than before, wherever
+// it sits, since removing a list entry moves the paths after it); one that `refuse` matches stops
+// the edit as an error does.
 export interface CommitOptions {
   create?: ReadonlyMap<string, string>;
   move?: { from: string; to: string };
+  warnings?: Issue[];
+  refuse?: (warning: Issue) => boolean;
 }
 
 // Refuses a path where something already is: a file, or a link, even one to nothing.
@@ -251,10 +258,25 @@ export function commitEdits(
   // An error the project already has in a moved file counts as known in the file it moves to.
   const moved = move ? [relFile(root, move.from), relFile(root, move.to)] : undefined;
   const key = (i: { file: string; path: string; message: string }) => `${moved && i.file === moved[0] ? moved[1] : i.file}\0${i.path}\0${i.message}`;
-  const known = new Set(validateProject(root).filter((i) => i.level === "error").map(key));
-  const added = validateProject(root, after, removed).filter(
+  const was = validateProject(root);
+  const now = validateProject(root, after, removed);
+  const known = new Set(was.filter((i) => i.level === "error").map(key));
+  const added = now.filter(
     (i) => i.level === "error" && !known.has(key(i)) && !reapprove.some((r) => i.message.startsWith(`${r} changed since it was approved`)),
   );
+  if (opts.warnings) {
+    const left = new Map<string, number>();
+    const same = (i: Issue) => `${i.file}\0${i.message}`;
+    for (const i of was) if (i.level === "warning") left.set(same(i), (left.get(same(i)) ?? 0) + 1);
+    for (const i of now) {
+      if (i.level !== "warning") continue;
+      const n = left.get(same(i)) ?? 0;
+      left.set(same(i), n - 1);
+      if (n > 0) continue;
+      if (opts.refuse?.(i)) added.push(i);
+      else opts.warnings.push(i);
+    }
+  }
   if (added.length) {
     const lines = added.map((i) => `  - ${i.file}${i.path ? ` ${i.path}` : ""}: ${i.message}`);
     throw new UserError(
@@ -308,17 +330,35 @@ export function protectionGuard(ref: string, before: string[], after: string[]):
   };
 }
 
-// Refuses an edit to an approved access.yaml: tools apply it as it stands, so access.yaml is edited
-// as a draft (see Draft and approved access files).
-export function accessGuard(what: string): (reapprove: string[]) => void {
-  return (reapprove) => {
-    if (!reapprove.includes("access")) return;
-    throw new UserError(
-      `Cannot ${what} while access.yaml is approved: tools apply the approved file, so the change would take effect before the owner reads it back. ` +
-        `Nothing was written. Revoke it first (sl approve --target access --revoke; the approved version keeps applying where it is deployed), ` +
-        `run this again, read it back with sl access and approve it again only on the owner's yes.`,
-    );
-  };
+// Makes an approved access.yaml a draft in the edited document, as sl approve --target access
+// --revoke writes it: status draft, approved_by and approved_at kept as last_approved where
+// approved_by stood, approved_hash removed. Tools apply an approved file as it stands, so a typed
+// edit of its rules is written as a draft and takes effect only once the owner approves it again.
+// Returns undefined when the file is not approved, else the approval set aside (when it names both).
+export function accessToDraft(doc: Document): { last_approved?: LastApproval } | undefined {
+  const map = itemMap(doc, []);
+  if (map.get("status") !== "approved") return undefined;
+  const [by, at] = [map.get("approved_by"), map.get("approved_at")];
+  const last = typeof by === "string" && by.trim() && typeof at === "string" && at.trim() ? { by, at } : undefined;
+  const status = map.get("status", true);
+  if (isScalar(status)) status.value = "draft";
+  else map.set("status", "draft");
+  if (last) {
+    const node = doc.createNode(last);
+    const existing = keyIndex(map, "last_approved");
+    if (existing >= 0) map.items[existing]!.value = node;
+    else map.items.splice(Math.max(keyIndex(map, "approved_by"), 0), 0, doc.createPair("last_approved", node));
+  }
+  for (const key of ["approved_by", "approved_at", "approved_hash"]) map.delete(key);
+  return last ? { last_approved: last } : {};
+}
+
+// The lines that tell the agent a typed edit made an approved access.yaml a draft again.
+export function accessDraftLines(set: { last_approved?: LastApproval }): string[] {
+  const kept = set.last_approved
+    ? `the version approved by ${set.last_approved.by} on ${set.last_approved.at} keeps applying where it is deployed (kept as last_approved); tell the owner so`
+    : "tools serve nothing under it until it is approved";
+  return [`access.yaml was approved, so this edit made it a draft again: ${kept}. Read it back with sl readback --targets access and approve it again only on the owner's yes.`];
 }
 
 export interface Prop {

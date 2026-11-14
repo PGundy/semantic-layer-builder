@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// The plugin's before-and-after comparison of the answer ledger, and its refusal to read a
+// The plugin's before-and-after comparison of the answer ledger, and its refusal to read or search a
 // connection's env file (spec: Hand edits). guard-edits.ts calls runBefore from its PreToolUse run;
 // plugin.json runs this file after a Bash call or one of the MCP server's sl tools (PostToolUse and
 // PostToolUseFailure) and before one of those MCP tools.
@@ -14,8 +14,8 @@
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { commandStart, SHELLS, tokenize } from "./shell-writes.ts";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { nameAt, SHELLS, tokenize } from "./shell-writes.ts";
 
 type Obj = Record<string, unknown>;
 type Env = Record<string, string | undefined>;
@@ -112,9 +112,10 @@ function follow(args: Word[], dirs: string[]): boolean {
 const SECRET = "This file holds the connection secret. sl reads it itself, and you never need its contents. To check the connection, run sl setup --source <s>.";
 const READERS = new Set(["cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "sed", "awk", "gawk", "source", ".", "tac", "nl", "od", "xxd", "strings", "base64", "bat"]);
 const GREPS = new Set(["grep", "egrep", "fgrep", "rg"]);
-// Shell words that stand before a command's name: `if [ -f .env ]; then cat .env; fi`, `{ cat .env; }`.
-const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "coproc"]);
 const SCAN_HINT = "To search the other files, name a subdirectory or add --exclude='.env*'.";
+const grepHint = (file: string) => `To search the other files, give a subdirectory as path, or a glob that leaves this file out (glob: "!${basename(file)}").`;
+// The directories a Grep's search is followed into.
+const GREP_DIRS = 1000;
 const isEnvName = (name: string) => /^\.env(\..+)?$/.test(name) && name !== ".env.example";
 
 // A directory's first 500 entries by name. The order a filesystem lists them in differs from one
@@ -154,18 +155,6 @@ function envFilesIn(dir: string, cwd: string, env: Env, pattern?: string, skip?:
   }
   const glob = pattern === undefined ? undefined : new Bun.Glob(pattern);
   return names.filter((n) => isEnvName(n) && (!glob || glob.match(n)) && !skip?.(n)).map((n) => join(dir, n)).filter((p) => isEnvFile(p, cwd, env));
-}
-
-// Where a simple command's name sits: past its assignments and prefixes (commandStart) and past the
-// shell keywords before it (`then`, `do`, `{`, `!`, `function <name>`).
-function nameAt(words: Word[]): number {
-  for (let k = 0; ; k++) {
-    k += commandStart(words.slice(k));
-    const w = words[k];
-    if (!w || w.dynamic) return k;
-    if (w.word === "function") k++;
-    else if (!KEYWORDS.has(w.word)) return k;
-  }
 }
 
 // The files a grep is given: not its options, the values of -e, -f, -A, -B, -C and -m, or the
@@ -240,18 +229,71 @@ function envFilesRead(command: string, cwd: string, env: Env, depth = 0, bases: 
   return out;
 }
 
-// The refusal for a Read call or a shell command that reads an env file, or undefined.
+// The env files the Grep tool reaches from a directory. It searches every file below it, dot files
+// too, and follows no link (ripgrep --hidden): the env files in the directory's first 1,000
+// directories, nearest first, and the file SL_ENV_FILE names when it lies below.
+function envFilesUnder(dir: string, cwd: string, env: Env): string[] {
+  const out: string[] = [];
+  const queue = [dir];
+  for (let n = 0; n < queue.length; n++) {
+    let entries: ReturnType<typeof listDirs>;
+    try {
+      entries = listDirs(queue[n]!);
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const p = join(queue[n]!, e.name);
+      if (e.isDirectory()) {
+        if (queue.length < GREP_DIRS && e.name !== ".git" && e.name !== "node_modules") queue.push(p);
+      } else if (isEnvName(e.name) && isEnvFile(p, cwd, env)) out.push(p);
+    }
+  }
+  const named = env.SL_ENV_FILE ? realPath(resolve(cwd, expandHome(env.SL_ENV_FILE))) : undefined;
+  if (named && existsSync(named) && named.startsWith(realPath(dir) + sep) && !out.some((p) => realPath(p) === named)) out.push(named);
+  return out;
+}
+
+// Whether a Grep's glob or type leaves a file out of its search. The glob is split as the tool
+// splits it (at spaces, and at commas outside braces). A glob without "!" that matches the file's
+// name or path keeps it in, whatever else is given; otherwise such a glob, or a "!" glob that
+// matches its name, leaves it out. A type leaves out only a file named .env, which no ripgrep type
+// matches: .env.<name> may end in an extension one does.
+function grepSkips(file: string, input: Obj, bases: string[]): boolean {
+  const name = basename(file);
+  const globs = typeof input.glob === "string" ? input.glob.split(/\s+/).flatMap((g) => (g.includes("{") && g.includes("}") ? [g] : g.split(","))) : [];
+  const matches = (glob: string, path: string) => new Bun.Glob(glob).match(path);
+  const wanted = globs.filter((g) => g && !g.startsWith("!")).map((g) => g.replace(/^\//, ""));
+  const paths = [name, file, ...bases.map((b) => relative(b, file))];
+  if (wanted.some((g) => paths.some((p) => matches(g, p)) || matches(`**/${g}`, file))) return false;
+  const unwanted = globs.filter((g) => g.startsWith("!")).map((g) => g.slice(1).replace(/^\*\*\//, ""));
+  if (wanted.length || unwanted.some((g) => !g.includes("/") && matches(g, name))) return true;
+  return typeof input.type === "string" && input.type !== "" && name === ".env";
+}
+
+// The env files a Grep call searches: the file its path names, whatever its glob and type say, or
+// those below the directory it names (the working directory when it names none) that they keep in.
+function envFilesSearched(input: Obj, cwd: string, env: Env): EnvRead[] {
+  const abs = resolve(cwd, expandHome(typeof input.path === "string" && input.path ? input.path : "."));
+  if (isEnvFile(abs, cwd, env)) return [{ file: abs, scan: false }];
+  if (!existsSync(abs) || !statSync(abs).isDirectory()) return [];
+  return envFilesUnder(abs, cwd, env).filter((f) => !grepSkips(f, input, [abs, cwd])).map((file) => ({ file, scan: true }));
+}
+
+// The refusal for a Read call, a Grep call or a shell command that reads an env file, or undefined.
 export function envFileRefusal(tool: string, input: Obj, cwd: string, env: Env = process.env): string | undefined {
   let reads: EnvRead[] = [];
   if (tool === "Read" && typeof input.file_path === "string" && input.file_path) {
     const abs = resolve(cwd, expandHome(input.file_path));
     if (isEnvFile(abs, cwd, env)) reads = [{ file: abs, scan: false }];
-  } else if (tool === "Bash" && typeof input.command === "string") reads = envFilesRead(input.command, cwd, env);
+  } else if (tool === "Grep") reads = envFilesSearched(input, cwd, env);
+  else if (tool === "Bash" && typeof input.command === "string") reads = envFilesRead(input.command, cwd, env);
   // One line per file; a file the command names is not also reported as found by a search.
   const files = [...new Set(reads.map((r) => r.file))].slice(0, 5);
   if (!files.length) return undefined;
-  const line = (f: string) => `- it reads ${f}. ${SECRET}${reads.some((r) => r.file === f && !r.scan) ? "" : ` ${SCAN_HINT}`}`;
-  return [`semantic-layer: refused ${tool === "Read" ? "Read" : "this shell command"}:`, ...files.map(line)].join("\n");
+  const hint = (f: string) => (tool === "Grep" ? grepHint(f) : SCAN_HINT);
+  const line = (f: string) => `- it reads ${f}. ${SECRET}${reads.some((r) => r.file === f && !r.scan) ? "" : ` ${hint(f)}`}`;
+  return [`semantic-layer: refused ${tool === "Bash" ? "this shell command" : tool}:`, ...files.map(line)].join("\n");
 }
 
 // --- What a Bash call is -----------------------------------------------------------------------

@@ -480,6 +480,9 @@ export interface LedgerReply {
   content_hash: string;
   text: string;
   verdict: ReplyVerdict | null;
+  // "access" on a change to who sees the item (sl reply --about access): it is settled in the access
+  // phase and is not a verdict on the item's content.
+  about?: "access";
   by: string;
   at: string;
 }

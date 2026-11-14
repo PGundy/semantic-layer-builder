@@ -2,7 +2,9 @@
 
 Load this card when `sl next` names phase `access`. It holds the access interview, `sl access` in the readback and the sign-off of `access.yaml`. Load `references/access.md` with it.
 
-**Checklist:** 1. Ask the exceptions question; create `access.yaml` as a draft with `sl set access mode open` (or `closed` for an allowlist). 2. `sl access` for the default audience, then `sl access --roles <role> --user '<json>'` per role. 3. Read back each role, then the whole file. 4. `sl reply` with each answer; `sl approve --target access` on a recorded yes to the whole file.
+**Checklist:** 1. Ask the exceptions question; create `access.yaml` as a draft with `sl set access mode open` (or `closed` for an allowlist). 2. Write each answer with its command (below). 3. `sl access`, default audience and per role. 4. Read back each role, then the file: `sl readback --targets access`. 5. `sl reply` each answer; `sl approve --target access` on a yes to the whole file.
+
+Who sees what is decided once, here. A table, field or metric readback states who will see the item and does not ask, and a change the owner asked for there was recorded with `sl reply ... --verdict change --about access`, which did not hold that item. `sl next` lists those changes in this phase (`access_changes`, and in `why` with the owner's words): make each one with a command below, and the owner's yes to the whole-file readback settles them. When `access.yaml` is already approved, they reopen this phase.
 
 While a draft `access.yaml` holds open questions, `next_step` is `{ phase: access, blocked_on: open_questions, command: sl access, after_owner_yes: false }`: the step waits on the owner's answers, its message names the first question, and you raise it and never push the approval.
 
@@ -19,7 +21,25 @@ Access is open by default: with `mode: open`, or no `access.yaml`, everyone sees
 
 ## Writing the file
 
-Tools serve only an approved `access.yaml`: one that loads a draft serves nothing and says access is awaiting sign-off, so a change is edited as a draft in version control while the deployed approved version keeps applying; when you revoke to edit, tell the owner that the last approved version keeps applying where it is deployed until the new one is approved (the revoke keeps its sign-off as `last_approved`, and `sl access` names it). Write `access.yaml` as a draft, with `open_questions` for anything unsettled; with no exceptions it is `mode: open` with no roles, and it is still read back and approved. `sl set access mode open|closed` creates a draft file holding only the mode when there is none, and changes the mode of one that exists; `sl set access default_role <value>` and `sl question add access --text "<question>"` refuse until it exists. Its roles, restrictions and row filters are writes without a typed command (`SKILL.md`, Hand edits). `deny.fields` names dimensions and measures only; a join is hidden when its target model is hidden.
+Every rule has a command; never edit `access.yaml` by hand. Each validates the project with the edit and writes nothing when it adds an error, keeps the file's comments, and prints the warnings `sl validate` would add (rows of a child table a row filter does not limit, a tag nothing carries).
+
+| The owner says | Command |
+|---|---|
+| open, or an allowlist | `sl set access mode open` (or `closed`) |
+| the tool knows a user's department, region, id | `sl add-attribute --name department --type string` (`number`, `string_list`, `number_list`); `sl set access attribute:<name> description "<text>"` |
+| a group that sees more, less or fewer rows | `sl add-role --name finance --assign-when "user.department == 'finance'"`, with `--allow-tags pii,sensitive`, `--deny-models <pattern>,...`, `--deny-fields <source.model.field>,...`, `--deny-tags <tag>,...`, and in closed mode `--allow-models <pattern>,...` |
+| change one thing about a role | `sl set access role:<name> <key> <value>` (keys `description`, `assign_when`, `allow.models`, `allow.tags`, `deny.models`, `deny.fields`, `deny.tags`; a list is `a,b`; `--unset` removes the key) |
+| a figure, table or field only some may see | `sl add-restriction --name <n> --targets metric:<name>,<source.model>,<source.model.field> --roles <role>,...` or `--when "<condition>"`; change it with `sl set access restriction:<name> <key> <value>` (keys `description`, `targets`, `allow.roles`, `allow.when`) |
+| a role sees only some rows | `sl add-row-filter --role <r> --model <source.model> --expr "region = {{ user.region }}"` |
+| a manager sees their team's rows | `sl add-row-filter --role <r> --model <source.model> --column <id column> --via <closure model> --manager <column> --member <column> --user <attribute>` (`--exclude-self` leaves out the manager's own rows) |
+| who holds no other role | `sl set access default_role <role>` |
+| a column is personal or sensitive | `sl tag <source.model.field> pii` (or `sensitive`) |
+| not settled yet | `sl question add access --text "<question>"`, or on one role `sl question add access.roles.<role> --text "<question>"` |
+| take one back | `sl remove-role <name>`, `sl remove-restriction <name>`, `sl remove-attribute <name>`, `sl remove-row-filter --role <r> --model <source.model>` (`--index <n>` when the role has several there) |
+
+A condition (`--assign-when`, `--when`) tests user attributes, never SQL: `user.department == 'finance'`, `user.level >= 3`, `user.region in ['emea', 'apac']`, `user.teams contains 'sales'`, `user.employee_id is set`, joined with `and`, `or`, `not` and parentheses. Declare each attribute first. A row filter's `--expr` is SQL over the model's columns and `<join>.<column>` through its to-one joins, with `{{ user.<attribute> }}` for the user's value. `sl remove-role` and `sl remove-attribute` refuse while a restriction, a condition, a row filter, `default_role` or a golden names what they remove, and say which command changes each; `sl add-restriction` refuses a target that matches nothing.
+
+Tools serve only an approved `access.yaml`: one that loads a draft serves nothing and says access is awaiting sign-off. An edit to an approved file makes it a draft again in the same write and keeps its sign-off as `last_approved`; tell the owner that the last approved version keeps applying where it is deployed until the new one is approved (`sl access` names it). With no exceptions the file is `mode: open` with no roles, and it is still read back and approved. Until `sl set access mode open|closed` creates the file, every other access command refuses and names it. `deny.fields` names dimensions and measures only; a join is hidden when its target model is hidden.
 
 ## What people see
 
