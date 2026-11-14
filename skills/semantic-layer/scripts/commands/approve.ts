@@ -372,8 +372,9 @@ interface ItemResult {
 const rank = (t: string) => (t === "access" ? 2 : t.startsWith("metric:") ? 1 : 0);
 
 // sl approve --readback <id>, or --target given more than once: each item on its own, as --target
-// approves it, only on the owner's latest reply being a yes to it as it stands.
-async function approveMany(ctx: CommandContext, values: OptionValues, refs: string[], rb: string | undefined): Promise<number> {
+// approves it, only on the owner's latest reply being a yes to it as it stands. `only`, when given,
+// keeps the readback's items with those targets (sl reply --answers --approve: the items it answered).
+export async function approveMany(ctx: CommandContext, values: OptionValues, refs: string[], rb: string | undefined, only?: ReadonlySet<string>): Promise<number> {
   for (const flag of ["revoke", "recursive"] as const)
     if (bool(values, flag)) throw new UserError(`--${flag} takes one --target and no --readback; run sl approve --target <ref> --${flag} for each.`);
   if (str(values, "date") !== undefined) throw new UserError(`--date is no longer taken: an approval's date comes from the owner's recorded reply in ${LEDGER_FILE}. Run the same command without --date.`);
@@ -390,7 +391,7 @@ async function approveMany(ctx: CommandContext, values: OptionValues, refs: stri
     seen.add(target);
     items.push({ target, ...(item ? { item } : {}) });
   };
-  for (const i of pending?.items ?? []) take(i.target, i.n);
+  for (const i of pending?.items ?? []) if (!only || only.has(i.target)) take(i.target, i.n);
   for (const r of refs) take(r);
   const replies = readReplies(ctx.root);
   const owner = by ? shellQuote(by) : '"<owner>"';
@@ -454,7 +455,7 @@ async function approveMany(ctx: CommandContext, values: OptionValues, refs: stri
     );
     return code;
   }
-  const what = pending ? `the ${all.length} items of ${pending.readback_id}` : `the ${all.length} targets`;
+  const what = pending ? `the ${all.length} items of ${pending.readback_id}${only ? " answered now" : ""}` : `the ${all.length} targets`;
   const lines = [`Approved ${approved.length} of ${what}, each on the owner's own yes to it as it stands${approved.length ? ":" : "."}`];
   for (const r of approved) {
     const no = r.item ? `item ${r.item}, ` : "";

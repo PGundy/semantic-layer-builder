@@ -449,11 +449,11 @@ describe("the walkthrough's worst turn", () => {
 // so the batched forms are CLI only and sl_approve keeps its one target (invariant 5).
 describe("the MCP tools", () => {
   test("offer no batched form, and sl_approve takes one target", async () => {
-    for (const [command, flag] of [["reply", "answers"], ["question", "answers"], ["goldens", "readback"], ["approve", "readback"]] as const) {
+    for (const [command, flag] of [["reply", "answers"], ["reply", "approve"], ["question", "answers"], ["goldens", "readback"], ["approve", "readback"]] as const) {
       const spec = (await COMMANDS[command]!()).default;
       const tool = toolOf(command, spec);
       expect(Object.keys(tool.inputSchema.properties!)).not.toContain(flag);
-      expect(tool.description).toContain(`--${flag}) is CLI only`);
+      expect(tool.description).toMatch(new RegExp(`\\((--[a-z-]+, )*--${flag}(, --[a-z-]+)*\\) (is|are) CLI only`));
       expect(argvOf(command, spec, { [flag]: "x" }, "/r")).not.toContain(`--${flag}=x`);
     }
     const approve = (await COMMANDS.approve!()).default;

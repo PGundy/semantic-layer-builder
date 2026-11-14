@@ -403,6 +403,8 @@ interface Batch {
   refuse: ((warning: Issue) => boolean)[];
   // In the check pass: whether an error an edit adds is one the batch ends with.
   blame?: (issue: Issue) => boolean;
+  // In the check pass: the keys (endKey) of the errors an edit was blamed for.
+  named?: Set<string>;
   // In the pass that finds which entry added each warning the batch ends with: their keys (endKey),
   // and the list the running entry's go to (batchEntry starts a new one).
   endWarnings: Set<string>;
@@ -427,7 +429,10 @@ export function deferValidation(): boolean {
 // The errors an edit adds that count against it: inside a batch's check pass, only those the batch
 // ends with, so an entry whose error a later entry fixes runs on.
 export function blamed(added: Issue[]): Issue[] {
-  return batch?.blame ? added.filter(batch.blame) : added;
+  if (!batch?.blame) return added;
+  const out = added.filter(batch.blame);
+  for (const i of out) batch.named?.add(endKey(batch, i));
+  return out;
 }
 
 // Records a file a writer is about to create, change or remove inside a batch.
@@ -467,8 +472,11 @@ export function batchEntry(i: number): void {
 // finds an error, the edits run once more, each validated as on its own, so the error thrown is the
 // first edit that adds an error the batch ends with (`edits` names its entry); an edit whose error a
 // later one fixes runs on. The files are put back after that pass too.
-// `what` names the batch in an error no single edit explains.
-export async function runBatch(root: string, what: string, edits: () => Promise<void>): Promise<BatchOutcome> {
+// `what` names the batch in an error no single edit explains. `refused`, when given, is the error
+// for the edits the run itself refused and stepped over (sl apply checks every entry), read after
+// each run: the batch fails with it, and on the run that names the edits behind the end's errors it
+// holds those too, with any end error no edit is blamed for listed under it.
+export async function runBatch(root: string, what: string, edits: () => Promise<void>, refused?: () => UserError | undefined): Promise<BatchOutcome> {
   const open = openBatch(true);
   let added: Issue[];
   const warnings: Issue[] = [];
@@ -488,6 +496,11 @@ export async function runBatch(root: string, what: string, edits: () => Promise<
   } finally {
     batch = undefined;
   }
+  const firstStepped = refused?.();
+  if (!added.length && firstStepped) {
+    restore(open.originals);
+    throw firstStepped;
+  }
   if (!added.length) {
     const byEntry = warnings.length ? await attribute(open, warnings, edits) : new Map<number, Issue[]>();
     const access_draft = accessDrafted(root, open.originals);
@@ -498,13 +511,19 @@ export async function runBatch(root: string, what: string, edits: () => Promise<
   const ends = new Set(added.map((i) => endKey(open, i)));
   const check = openBatch(false, (i) => ends.has(endKey(open, i)));
   check.endMoves = open.moves;
+  check.named = new Set();
   try {
     await edits();
   } finally {
     batch = undefined;
     restore(check.originals);
   }
-  throw invalid(what, added);
+  const stepped = refused?.();
+  if (!stepped) throw invalid(what, added);
+  // An error no refused entry accounts for is named under the refusal, so one run shows them all.
+  const rest = added.filter((i) => !check.named!.has(endKey(open, i)));
+  if (!rest.length) throw stepped;
+  throw new UserError(`${stepped.message}\nThe batch would also end with errors no single entry adds:\n${rest.map((i) => `  - ${issueLine(i)}`).join("\n")}`, stepped.next);
 }
 
 // Which entry added each warning a batch that succeeded ends with: the files are put back and the
@@ -638,6 +657,7 @@ export function accessDraftLines(set: { last_approved?: LastApproval }): string[
 export interface Prop {
   type?: string;
   enum?: unknown[];
+  items?: { type?: string };
 }
 
 // The keys the JSON Schema allows on an item of this kind.
@@ -656,7 +676,14 @@ export function parseValue(key: string, raw: string, prop: Prop): unknown {
   const words = Array.isArray(prop.enum) && prop.enum.every((v) => typeof v === "string");
   if (prop.type === "string" || words) return raw.trim();
   const value = parseYamlText(raw, `the value of ${key}`);
-  if (prop.type === "array" && !Array.isArray(value)) throw new UserError(`${key} is a list: write it as [a, b], for example [${raw.trim()}].`);
+  // A list of names is also written a,b (as sl set access takes one); a single name stays [a].
+  if (prop.type === "array" && prop.items?.type === "string" && typeof value === "string" && value.includes(",")) {
+    const items = value.split(",").map((x) => x.trim());
+    if (items.some((x) => !x)) throw new UserError(`${key} has an empty name in ${JSON.stringify(raw.trim())}: write it as a,b or [a, b].`);
+    return items;
+  }
+  if (prop.type === "array" && !Array.isArray(value))
+    throw new UserError(`${key} is a list: write it as [a, b]${prop.items?.type === "string" ? " or a,b" : ""}, for example [${raw.trim()}].`);
   return value;
 }
 

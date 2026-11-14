@@ -45,6 +45,16 @@ function discard(ctx: CommandContext, values: OptionValues, id: string): number 
   return 0;
 }
 
+// What sl reply --answers --approve does for a readback after recording the answers.
+function batchedDoes(b: { approve: string[] }): string {
+  const approves = b.approve.some((a) => a.startsWith("sl approve "));
+  const confirms = b.approve.some((a) => a.startsWith("sl goldens confirm "));
+  if (approves && confirms) return "approves every item and confirms every golden they said yes to as it stands";
+  if (approves) return "approves every item they said yes to as it stands";
+  if (confirms) return "confirms every golden they said yes to as it stands";
+  return "records the answers";
+}
+
 const spec: CommandSpec = {
   summary: "Render a plain-English readback of approve targets and store it in .sl/pending/ for the owner's answer.",
   usage:
@@ -86,20 +96,21 @@ const spec: CommandSpec = {
     // The items are rendered, numbered and stored under the lock, so two readbacks never share an id.
     await ctx.lock();
     const rendered = renderReadbacks(ctx.root, refs, goldens, figures);
+    // Where a golden's rows came from when not from a live run, for the confirm that records them.
+    const rowsFrom = passedFlags(values, ["results", "plan"]);
     const pending: PendingReadback = {
       readback_id: freshReadbackId(ctx.root),
       created_at: ctx.now().toISOString(),
       items: rendered.map((r, i) => {
         const run = r.target.startsWith("golden:") ? goldens.get(r.target.slice(7)) : undefined;
         const evidence = figures.get(r.target);
-        return { n: i + 1, target: r.target, kind: "approve" as const, text: r.text, content_hash: r.content_hash, ...(run ? { tolerance: run.tolerance } : {}), ...(evidence ? { evidence } : {}) };
+        return { n: i + 1, target: r.target, kind: "approve" as const, text: r.text, content_hash: r.content_hash, ...(run ? { tolerance: run.tolerance } : {}), ...(run && rowsFrom ? { rows_from: rowsFrom.trim() } : {}), ...(evidence ? { evidence } : {}) };
       }),
     };
     const path = writePending(ctx.root, pending);
     // What runs once the owner says yes to an item: its sl approve, or for a golden its sl goldens
     // confirm, reading the rows from where the readback did; an export source's goldens wait on the
     // upgrade to a connection, named once per source (decision D2).
-    const rowsFrom = passedFlags(values, ["results", "plan"]);
     const nextSteps = afterYesSteps(
       ctx.root,
       pending.items.map((i) => i.target),
@@ -117,6 +128,7 @@ const spec: CommandSpec = {
       targets.length > 1 && !waits
         ? {
             reply: `sl reply --readback ${pending.readback_id} --answers -`,
+            reply_approve: `sl reply --readback ${pending.readback_id} --answers - --approve`,
             approve: [
               ...(targets.some((t) => !t.startsWith("golden:")) ? [`sl approve --readback ${pending.readback_id}`] : []),
               ...(hasGolden && !rowsFrom ? [`sl goldens confirm --readback ${pending.readback_id}`] : []),
@@ -137,11 +149,8 @@ const spec: CommandSpec = {
     }
     lines.push(
       batched
-        ? `Record the owner's answers in one ${batched.reply}, each item with its own verdict and their words; then ` +
-            [
-              ...(batched.approve.length ? [`approve every item they said yes to in one ${batched.approve.join(" and one ")}`] : []),
-              ...(batched.confirm_each.length ? [`confirm each golden they said yes to: ${batched.confirm_each.join("; ")}`] : []),
-            ].join(", and ") +
+        ? `Record the owner's answers in one ${batched.reply_approve}, each item with its own verdict and their words: it ${batchedDoes(batched)}` +
+            (batched.confirm_each.length ? `; then confirm each golden they said yes to: ${batched.confirm_each.join("; ")}` : "") +
             ". A no or a change goes into the YAML, then run sl readback again."
         : `Only after the owner says yes to an item, approve it: ${nextSteps.join("; ")}. A no or a change goes into the YAML, then run sl readback again.`,
     );
