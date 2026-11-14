@@ -39,6 +39,8 @@ export interface Adapter {
   roleReport?: RoleReport;
   // Runs one read-only statement; anything else is refused with a UserError or fails in the database.
   query(sql: string): Promise<QueryResult>;
+  // DuckDB: stops the statement running on the connection, which then fails.
+  interrupt?(): void;
   close(): Promise<void>;
 }
 

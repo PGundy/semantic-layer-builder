@@ -15,8 +15,9 @@ import { listModels, loadAccess, loadFile, loadMetrics, loadSnapshot, paths } fr
 import { parseTarget } from "./refs.ts";
 import { referencedColumns } from "./snapshot-diff.ts";
 import { sqlNames } from "./sql-names.ts";
-import type { Dialect, Golden, Join, Metric, Model, PendingReadback, ResultRows, Snapshot, SnapshotTable } from "./types.ts";
+import type { Dialect, FigureEvidence, Golden, Join, Metric, Model, PendingReadback, ResultRows, Snapshot, SnapshotTable } from "./types.ts";
 import { DIALECTS, NAME_PATTERN, PROTECTED_TAGS } from "./types.ts";
+import { conditionWords, parseCondition } from "./conditions.ts";
 import { readYamlIfExists } from "./yaml.ts";
 
 export const PENDING_DIR = join(".sl", "pending");
@@ -121,10 +122,12 @@ function unwrap(s: string): string | undefined {
   return s.slice(1, -1).trim();
 }
 
+// A coalesce(x, d) operand as x with what an empty value counts as.
 function operand(s: string): string {
-  const m = /^coalesce\(\s*([^,]+?)\s*,\s*(.+?)\s*\)$/i.exec(s.trim());
-  return m ? `${m[1]} (read as ${m[2]} when empty)` : s.trim();
+  const m = COALESCE.exec(s.trim());
+  return m ? `${m[1]} (empty counts as ${m[2]})` : s.trim();
 }
+const COALESCE = /^coalesce\(\s*([^,]+?)\s*,\s*(.+?)\s*\)$/i;
 
 // The top-level clauses of a filter: its and-parts, or the whole filter when it has a top-level or
 // (and binds tighter than or, so splitting on and would change its meaning).
@@ -132,19 +135,37 @@ function filterClauses(filter: string): string[] {
   return splitTop(filter, "or").length > 1 ? [filter.trim()] : splitTop(filter, "and");
 }
 
-const RULES: [RegExp, (m: RegExpExecArray) => string][] = [
+// A LIKE pattern in words: starts with, ends with or contains a plain text, else the pattern.
+function pattern(p: string, not: boolean, ignoreCase: boolean): string {
+  const m = /^'(%?)((?:[^%_']|'')*)(%?)'$/.exec(p.trim());
+  const verb = !m || (!m[1] && !m[3]) ? ["matches", "does not match"] : m[1] && m[3] ? ["contains", "does not contain"] : m[1] ? ["ends with", "does not end with"] : ["starts with", "does not start with"];
+  const how = `${verb[not ? 1 : 0]} ${!m || (!m[1] && !m[3]) ? p.trim() : `'${m[2]}'`}`;
+  return ignoreCase ? `${how}, ignoring case` : how;
+}
+
+// x = v in words: a boolean as "is true", a coalesce whose default is the value as "is v or empty".
+function equals(left: string, right: string): string {
+  const r = right.trim();
+  const c = COALESCE.exec(left.trim());
+  if (c && c[2]!.toLowerCase() === r.toLowerCase()) return `${c[1]} is ${r} or empty`;
+  return /^(true|false)$/i.test(r) ? `${operand(left)} is ${r.toLowerCase()}` : `${operand(left)} equals ${operand(r)}`;
+}
+
+type Rule = [RegExp, (m: RegExpExecArray, lit: (t: string) => string) => string];
+const RULES: Rule[] = [
   [/^(.+?)\s+not\s+in\s*\((.*)\)$/is, (m) => `${operand(m[1]!)} is not one of ${m[2]!.trim()}`],
   [/^(.+?)\s+in\s*\((.*)\)$/is, (m) => `${operand(m[1]!)} is one of ${m[2]!.trim()}`],
   [/^(.+?)\s+is\s+not\s+null$/is, (m) => `${operand(m[1]!)} is not empty`],
   [/^(.+?)\s+is\s+null$/is, (m) => `${operand(m[1]!)} is empty`],
-  [/^(.+?)\s+not\s+ilike\s+(.+)$/is, (m) => `${operand(m[1]!)} does not match ${m[2]!.trim()}, ignoring case`],
-  [/^(.+?)\s+ilike\s+(.+)$/is, (m) => `${operand(m[1]!)} matches ${m[2]!.trim()}, ignoring case`],
-  [/^(.+?)\s+not\s+like\s+(.+)$/is, (m) => `${operand(m[1]!)} does not match ${m[2]!.trim()}`],
-  [/^(.+?)\s+like\s+(.+)$/is, (m) => `${operand(m[1]!)} matches ${m[2]!.trim()}`],
+  [/^(.+?)\s+not\s+ilike\s+(.+)$/is, (m, lit) => `${operand(m[1]!)} ${pattern(lit(m[2]!), true, true)}`],
+  [/^(.+?)\s+ilike\s+(.+)$/is, (m, lit) => `${operand(m[1]!)} ${pattern(lit(m[2]!), false, true)}`],
+  [/^(.+?)\s+not\s+like\s+(.+)$/is, (m, lit) => `${operand(m[1]!)} ${pattern(lit(m[2]!), true, false)}`],
+  [/^(.+?)\s+like\s+(.+)$/is, (m, lit) => `${operand(m[1]!)} ${pattern(lit(m[2]!), false, false)}`],
   [/^(.+?)\s+not\s+between\s+(.+?)\s+and\s+(.+)$/is, (m) => `${operand(m[1]!)} is outside ${m[2]!.trim()} to ${m[3]!.trim()}`],
   [/^(.+?)\s+between\s+(.+?)\s+and\s+(.+)$/is, (m) => `${operand(m[1]!)} is from ${m[2]!.trim()} to ${m[3]!.trim()}`],
   [/^(.+?)\s*(<>|!=)\s*(.+)$/s, (m) => `${operand(m[1]!)} is not ${operand(m[3]!)}`],
-  [/^(.+?)\s*(>=|<=|>|<|=)\s*(.+)$/s, (m) => `${operand(m[1]!)} ${{ ">=": "is at least", "<=": "is at most", ">": "is above", "<": "is below", "=": "equals" }[m[2]!]} ${operand(m[3]!)}`],
+  [/^(.+?)\s*(>=|<=|>|<)\s*(.+)$/s, (m) => `${operand(m[1]!)} ${{ ">=": "is at least", "<=": "is at most", ">": "is above", "<": "is below" }[m[2]!]} ${operand(m[3]!)}`],
+  [/^(.+?)\s*=\s*(.+)$/s, (m) => equals(m[1]!, m[2]!)],
   [/^not\s+([a-z_][a-z0-9_.]*)$/is, (m) => `${m[1]} is false`],
   [/^([a-z_][a-z0-9_.]*)$/is, (m) => `${m[1]} is true`],
 ];
@@ -166,10 +187,10 @@ export function clauseWords(clause: string, nested = false): string {
   if (all.length > 1) return group("all of", all, "; ");
   const literals: string[] = [];
   const masked = s.replace(/'(?:[^']|'')*'/g, (lit) => `\u0001${literals.push(lit) - 1}\u0001`);
-  const unmask = (t: string) => t.replace(/\u0001(\d+)\u0001/g, (all, i: string) => literals[Number(i)] ?? all);
+  const unmask = (t: string) => t.replace(/\u0001(\d+)\u0001/g, (all, i: string) => literals[Number(i)] ?? all).replace("(empty counts as '')", "(empty counts as blank)");
   for (const [re, words] of RULES) {
     const m = re.exec(masked);
-    if (m) return unmask(words(m));
+    if (m) return unmask(words(m, unmask));
   }
   return `the condition holds: ${s}`;
 }
@@ -196,13 +217,6 @@ function joinReads(model: Model, sql: unknown[], lookup: (m: string) => Model | 
     }
   }
   return [...out.keys()].sort().map((k) => out.get(k)!);
-}
-
-function joinDefinition(source: string, from: string, j: Join): string {
-  const keys = objs<{ from: string; to: string }>(j.keys).map((k) => `${from}.${k.from} = ${j.to}.${k.to}`);
-  const type = j.type ?? "left";
-  const kept = type === "left" ? "rows without a match are kept, with its columns empty" : "rows without a match are dropped";
-  return `${source}.${from} to ${source}.${j.to} on ${keys.join(" and ")}: ${j.relationship}, a ${type} join (${kept})`;
 }
 
 // Per-source context --------------------------------------------------------------------------
@@ -376,6 +390,13 @@ function whoSees(aud: Audiences, refs: string[]): string[] {
 
 // Rendering per target ---------------------------------------------------------------------------
 
+// Where an item's who-sees block goes in its lines; renderReadbacks prints a block once per batch.
+const WHO = "\u0000who";
+interface Rendered {
+  lines: string[];
+  who?: string[];
+}
+
 function description(item: { description?: unknown }, comment: string | null | undefined, where: string): string[] {
   if (typeof item.description !== "string" || !item.description.trim()) return ["- No description yet."];
   const fromComment = typeof comment === "string" && comment.trim() === item.description.trim();
@@ -389,6 +410,11 @@ function common(item: { synonyms?: unknown; tags?: unknown }): string[] {
   return out;
 }
 
+// The SQL behind an item, once and last.
+function technical(lines: string[]): string[] {
+  return lines.length ? ["Technical definition (the SQL, for the record):", ...lines.map((l) => `  ${flat(l)}`)] : [];
+}
+
 // The grain is free text, and sl draft may have copied it from the table comment, so it is quoted.
 function grainLines(model: Model, table: SnapshotTable | undefined): string[] {
   if (typeof model.grain !== "string" || !model.grain.trim()) return ["- One row is: not written yet."];
@@ -397,36 +423,90 @@ function grainLines(model: Model, table: SnapshotTable | undefined): string[] {
   return quoted("", fromComment ? `grain (what one row is), copied from the database comment on ${model.table}` : "grain (what one row is), from the YAML", model.grain);
 }
 
-function renderModel(aud: Audiences, source: string, model: Model, info: SourceInfo): string[] {
+function renderModel(source: string, model: Model, info: SourceInfo): Rendered {
   const table = tableOf(info, model);
   const pk = strs(model.primary_key);
   const out = [
     `${source}.${model.model} (table)`,
+    ...description(model, table?.description, model.table),
     `- Reads ${model.table}.`,
     ...grainLines(model, table),
     `- Primary key: ${listText(pk)}.`,
     ...common(model),
-    ...description(model, table?.description, model.table),
-    ...whoSees(aud, [`${source}.${model.model}`]),
+    WHO,
   ];
-  if (!table) return [...out, ...noFacts(source, `${model.table} is not in the snapshot`)];
+  const who = [`${source}.${model.model}`];
+  if (!table) return { lines: [...out, ...noFacts(source, `${model.table} is not in the snapshot`)], who };
   out.push(MEASURED, tableFacts(info, table));
   for (const k of pk) out.push(...columnFacts(info, table, k, k, false));
   const p = pk.length === 1 ? table.columns.find((c) => c.name === pk[0])?.profile : undefined;
   if (p && !p.sampled && typeof p.distinct_count === "number" && typeof table.row_count === "number")
     out.push(p.distinct_count === table.row_count && !p.null_fraction ? `- Each ${pk[0]} appears once.` : `- ${pk[0]} repeats: ${num(p.distinct_count)} distinct values over ${num(table.row_count)} rows.`);
-  return out;
+  return { lines: out, who };
 }
 
-function renderField(aud: Audiences, ref: string, source: string, model: Model, e: ApprovalEntry, info: SourceInfo): string[] {
+// A figure as the owner reads it: whole numbers with separators, others to two decimals (four
+// significant digits below 1), with the currency.
+function amount(v: number | string | null | undefined, currency?: unknown): string {
+  if (v === null || v === undefined) return "empty, as no row counts";
+  const n = typeof v === "number" ? v : Number(v);
+  const text =
+    typeof v === "string" || !Number.isFinite(n)
+      ? String(v)
+      : Number.isInteger(n)
+        ? num(n)
+        : Math.abs(n) >= 1
+          ? `${num(Math.trunc(Math.round(n * 100) / 100))}.${String(Math.round(Math.abs(n) * 100) % 100).padStart(2, "0")}`
+          : String(Number(n.toPrecision(4)));
+  return typeof currency === "string" ? `${text} ${currency}` : text;
+}
+const rowsText = (n: number | string | null | undefined) => (n === null || n === undefined ? "an unknown number of rows" : `${typeof n === "number" ? num(n) : n} row${n === 1 ? "" : "s"}`);
+
+// The figure line of a measure or metric, or nothing when the readback computed none.
+function figureLines(ev: FigureEvidence | undefined, currency: unknown): string[] {
+  if (!ev) return [];
+  if (ev.not_shown !== undefined) return [`- Figure not shown: ${flat(ev.not_shown).replace(/\.+$/, "")}.`];
+  if (ev.parts) {
+    const each = ev.parts.map((p) => `${p.ref} ${amount(p.figure)} over ${rowsText(p.row_count)}`).join("; ");
+    return [`- On today's data it comes to ${amount(ev.figure, currency)}, before any role's row filter: ${each}.`];
+  }
+  return [`- On today's data it comes to ${amount(ev.figure, currency)}, over the ${rowsText(ev.row_count)} it counts, before any role's row filter.`];
+}
+
+const RELATIONSHIP: Record<string, (from: string, to: string) => string> = {
+  many_to_one: (f, t) => `each row of ${f} matches at most one row of ${t}`,
+  one_to_one: (f, t) => `each row of ${f} matches at most one row of ${t}, and the other way round`,
+  one_to_many: (f, t) => `a row of ${f} can match many rows of ${t}`,
+  many_to_many: (f, t) => `a row of ${f} can match many rows of ${t}, and the other way round`,
+};
+
+// A join in words: what it links, by which columns, how rows match and what happens to a row
+// without a match.
+function joinWords(from: string, j: Join): string {
+  const keys = objs<{ from: string; to: string }>(j.keys).map((k) => (k.from === k.to ? k.from : `${from}.${k.from} = ${j.to}.${k.to}`));
+  const rel = RELATIONSHIP[String(j.relationship)]?.(from, j.to) ?? `relationship ${flat(j.relationship)}`;
+  const kept = (j.type ?? "left") === "left" ? `a row of ${from} without a match is kept, with the ${j.to} columns empty` : `a row of ${from} without a match is left out`;
+  return `${from} to ${j.to} by ${keys.length ? keys.join(" and ") : "no keys yet"}: ${rel}; ${kept}`;
+}
+
+function joinSql(from: string, j: Join): string {
+  const keys = objs<{ from: string; to: string }>(j.keys).map((k) => `${from}.${k.from} = ${j.to}.${k.to}`);
+  return `join ${j.name}: ${keys.join(" and ")} (${j.relationship}, ${j.type ?? "left"} join)`;
+}
+
+const BARE = /^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$/i;
+
+function renderField(ref: string, source: string, model: Model, e: ApprovalEntry, info: SourceInfo, figure: FigureEvidence | undefined): Rendered {
   const f = e.item as Obj;
   const table = tableOf(info, model);
   const out = [`${ref} (${e.kind})`];
   if (e.kind === "join") {
     const j = f as unknown as Join;
-    out.push(`- Joins ${joinDefinition(source, model.model, j)}.`, ...description(j, null, ""), ...whoSees(aud, [`${source}.${model.model}`, `${source}.${j.to}`]));
+    out.push(...description(j, null, ""), `- Links ${joinWords(model.model, j)}.`, WHO);
+    const who = [`${source}.${model.model}`, `${source}.${j.to}`];
+    const sql = technical([joinSql(model.model, j)]);
     const ev = j.evidence;
-    if (!ev) return [...out, MEASURED, `- No join evidence yet: run sl check-join --source ${source} --model ${model.model} --join ${j.name}.`];
+    if (!ev) return { lines: [...out, MEASURED, `- No join evidence yet: run sl check-join --source ${source} --model ${model.model} --join ${j.name}.`, ...sql], who };
     const sameKeys = !ev.keys || JSON.stringify(ev.keys.map((k) => [k.from, k.to])) === JSON.stringify(objs<{ from: string; to: string }>(j.keys).map((k) => [k.from, k.to]));
     out.push(
       MEASURED,
@@ -435,38 +515,44 @@ function renderField(aud: Audiences, ref: string, source: string, model: Model, 
       `- The data suggests ${ev.suggested_relationship}; checked ${ev.checked_at}.`,
     );
     if ((ev.to && ev.to !== j.to) || !sameKeys) out.push(`- This evidence measured another target or other keys; rerun sl check-join --source ${source} --model ${model.model} --join ${j.name}.`);
-    return out;
+    return { lines: [...out, ...sql], who };
   }
-  const sql = e.kind === "measure" ? [f.expr, f.filter] : [f.expr];
-  const reads = joinReads(model, sql, info.lookup, info.dialect);
+  const reads = joinReads(model, e.kind === "measure" ? [f.expr, f.filter] : [f.expr], info.lookup, info.dialect);
+  const alone = { ...model, dimensions: e.kind === "dimension" ? [f] : [], measures: e.kind === "measure" ? [f] : [], primary_key: [], joins: objs<Join>(model.joins).map((j) => ({ ...j, keys: [] })) } as unknown as Model;
+  const own = table ? referencedColumns(alone, table, info.dialect) : [];
+  // A field over one column may carry the description sl draft copied from that column's comment.
+  const comment = own.length === 1 ? table?.columns.find((c) => c.name === own[0])?.description : undefined;
+  out.push(...description(f, comment, `${model.table}.${own[0]}`));
+  const sql: string[] = [];
   if (e.kind === "dimension") {
-    out.push(`- Value: ${String(f.expr)}, a ${String(f.type)}.`);
+    const bare = typeof f.expr === "string" && BARE.test(f.expr.trim());
+    out.push(bare ? `- Value: ${String(f.expr)}, a ${String(f.type)}.` : `- Value: a ${String(f.type)} worked out from ${listText(own)} (the technical definition below has the formula).`);
+    if (!bare) sql.push(String(f.expr));
     if (strs(f.time_grains).length) out.push(`- Time grains: ${strs(f.time_grains).join(", ")}.`);
     if (typeof f.time_zone === "string") out.push(`- Stored in time zone ${f.time_zone}.`);
   } else {
     out.push(`- ${f.agg === "count" && !f.expr ? "A count of rows" : `${AGG_WORDS[String(f.agg)] ?? `The ${String(f.agg)} of`} ${String(f.expr)}`}.`);
     const clauses = typeof f.filter === "string" ? filterClauses(f.filter) : [];
-    if (clauses.length) out.push("- Counts only rows where:", ...clauses.map((c, i) => `  ${i + 1}. ${clauseWords(c)}  [${c}]`));
-    else out.push("- Counts every row.");
+    if (clauses.length) out.push("- It counts only rows where:", ...clauses.map((c, i) => `  ${i + 1}. ${clauseWords(c)}`));
+    else out.push("- It counts every row.");
     const fmt = typeof f.format === "string" ? f.format : "not set";
     out.push(`- Format: ${fmt}${typeof f.currency === "string" ? `, in ${f.currency}` : ""}.`);
+    sql.push(`${String(f.agg)}(${f.expr === undefined ? "*" : String(f.expr)})${typeof f.filter === "string" ? ` where ${f.filter}` : ""}`);
   }
-  const hops = new Map<string, string>();
+  const hops = new Map<string, Join & { from: string }>();
   for (const r of reads) {
     let path = "";
     for (const h of r.hops) {
       path = path ? `${path}.${h.join.name}` : h.join.name;
-      hops.set(path, joinDefinition(source, h.from, h.join));
+      hops.set(path, { ...h.join, from: h.from });
     }
   }
-  if (hops.size) out.push("- Reads through joins:", ...[...hops].map(([p, d]) => `  - ${p}: ${d}`));
-  const alone = { ...model, dimensions: e.kind === "dimension" ? [f] : [], measures: e.kind === "measure" ? [f] : [], primary_key: [], joins: objs<Join>(model.joins).map((j) => ({ ...j, keys: [] })) } as unknown as Model;
-  const own = table ? referencedColumns(alone, table, info.dialect) : [];
-  // A field over one column may carry the description sl draft copied from that column's comment.
-  const comment = own.length === 1 ? table?.columns.find((c) => c.name === own[0])?.description : undefined;
-  out.push(...common(f), ...description(f, comment, `${model.table}.${own[0]}`), ...whoSees(aud, [ref]));
-  if (!table) return [...out, ...noFacts(source, `${model.table} is not in the snapshot`)];
-  out.push(MEASURED, tableFacts(info, table));
+  for (const [p, j] of hops) out.push(`- Through the ${p} join, ${joinWords(j.from, j)}.`);
+  sql.push(...[...hops.values()].map((j) => joinSql(j.from, j)));
+  out.push(...common(f), WHO);
+  const fig = e.kind === "measure" ? figureLines(figure, f.currency) : [];
+  if (!table) return { lines: [...out, ...noFacts(source, `${model.table} is not in the snapshot`), ...fig, ...technical(sql)], who: [ref] };
+  out.push(MEASURED, ...fig, tableFacts(info, table));
   const tagged = [...strs(f.tags), ...strs(model.tags)].some((t) => (PROTECTED_TAGS as readonly string[]).includes(t.toLowerCase()));
   for (const c of own) out.push(...columnFacts(info, table, c, c, tagged));
   for (const r of reads) {
@@ -476,19 +562,74 @@ function renderField(aud: Audiences, ref: string, source: string, model: Model, 
     if (t) out.push(...columnFacts(info, t, r.column, `${label} (${qualifiedName(t)}.${r.column})`, tagged));
     else out.push(`- ${label}: ${last.to} has no table in the snapshot.`);
   }
-  return out;
+  return { lines: [...out, ...technical(sql)], who: [ref] };
 }
 
-function renderMetric(aud: Audiences, m: Metric): string[] {
-  const out = [`metric:${m.name} (metric of source ${m.source})`];
+const OPERATOR_WORDS: Record<string, string> = { "+": "plus", "-": "minus", "*": "times", "/": "divided by" };
+
+function renderMetric(m: Metric, figure: FigureEvidence | undefined): Rendered {
+  const out = [`metric:${m.name} (metric of source ${m.source})`, ...description(m, null, "")];
   if (m.type === "ratio") out.push(`- A ratio: ${m.numerator} divided by ${m.denominator}.`);
-  else out.push(`- Derived: ${m.expr}, where each {model.measure} is that measure's total on its own.`);
-  out.push(`- Format: ${m.format ?? "not set"}${m.currency ? `, in ${m.currency}` : ""}.`, ...common(m), ...description(m, null, ""), ...whoSees(aud, [`metric:${m.name}`]));
-  out.push(MEASURED, "- A metric has no facts of its own; each measure it combines has them in its own readback.");
+  else {
+    const words = String(m.expr).replace(/\{\s*([^}]*?)\s*\}/g, "$1").replace(/\s*([-+*/])\s*/g, (_, op: string) => ` ${OPERATOR_WORDS[op]} `);
+    out.push(`- ${words}, each measure totalled on its own first.`);
+  }
+  out.push(`- Format: ${m.format ?? "not set"}${m.currency ? `, in ${m.currency}` : ""}.`, ...common(m), WHO);
+  const fig = figureLines(figure, m.currency);
+  if (fig.length) out.push(MEASURED, ...fig);
+  if (m.type !== "ratio") out.push(...technical([String(m.expr)]));
+  return { lines: out, who: [`metric:${m.name}`] };
+}
+
+// The models, fields and metrics an audience sees, by ref.
+function visibleRefs(vis: AccessVisibility): Set<string> {
+  const out = new Set<string>();
+  for (const s of vis.sources) {
+    for (const m of s.models) {
+      if (m.visible) out.add(m.ref);
+      for (const f of m.fields) if (f.visible) out.add(f.ref);
+    }
+    for (const m of s.metrics) if (m.visible) out.add(m.ref);
+  }
   return out;
 }
 
-function renderAccess(aud: Audiences, access: Obj): string[] {
+// Items in words, a model's fields under it: "the table warehouse.refunds", "warehouse.customers
+// fields email and phone", "metric net_revenue". A field of a listed table is left out.
+function itemsText(refs: string[]): string {
+  const tables = refs.filter((r) => !r.startsWith("metric:") && r.split(".").length === 2);
+  const byModel = new Map<string, string[]>();
+  for (const r of refs) {
+    const p = r.split(".");
+    if (r.startsWith("metric:") || p.length !== 3 || tables.includes(`${p[0]}.${p[1]}`)) continue;
+    byModel.set(`${p[0]}.${p[1]}`, [...(byModel.get(`${p[0]}.${p[1]}`) ?? []), p[2]!]);
+  }
+  const and = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}` : (xs[0] ?? ""));
+  return [
+    ...tables.map((t) => `the table ${t}`),
+    ...[...byModel].map(([m, fs]) => `${m} field${fs.length === 1 ? "" : "s"} ${and(fs)}`),
+    ...refs.filter((r) => r.startsWith("metric:")).map((r) => `metric ${r.slice(7)}`),
+  ].join("; ");
+}
+
+// A role's or restriction's condition in words, or as written when it cannot be read.
+function condition(text: string): string {
+  try {
+    return conditionWords(parseCondition(text));
+  } catch {
+    return flat(text);
+  }
+}
+
+// A row filter's rule in words.
+function rowRule(rf: Obj): string {
+  const h = isObj(rf.hierarchy) ? rf.hierarchy : undefined;
+  if (!h) return clauseWords(String(rf.expr));
+  const user = String(h.user).replace(/^user\.([a-z0-9_]+)$/i, "the user's $1");
+  return `${String(h.column)} is ${h.include_self === false ? `anyone under ${user}` : `${user} or anyone under them`} in ${String(h.via)}`;
+}
+
+function renderAccess(aud: Audiences, access: Obj): Rendered {
   const mode = access.mode === "closed" ? "closed" : "open";
   const out = [
     "access (access.yaml as a whole)",
@@ -499,37 +640,40 @@ function renderAccess(aud: Audiences, access: Obj): string[] {
   if (typeof access.default_role === "string") out.push(`- A user with no other role holds ${access.default_role}.`);
   const attrs = objs<{ name: string; type: string }>(access.user_attributes).map((a) => `${a.name} (${a.type})`);
   out.push(`- User attributes: ${listText(attrs)}.`);
-  for (const r of objs<Obj>(access.roles)) {
-    const allow = isObj(r.allow) ? r.allow : {};
-    const deny = isObj(r.deny) ? r.deny : {};
-    const bits = [
-      typeof r.assign_when === "string" ? `held when ${r.assign_when}` : "held when assigned by name",
-      ...(strs(allow.models).length ? [`allows models ${strs(allow.models).join(", ")}`] : []),
-      ...(strs(allow.tags).length ? [`allows tags ${strs(allow.tags).join(", ")}`] : []),
-      ...(["models", "fields", "tags"] as const).flatMap((k) => (strs(deny[k]).length ? [`denies ${k} ${strs(deny[k]).join(", ")}`] : [])),
-    ];
-    out.push(`- Role ${String(r.name)}: ${bits.join("; ")}.`);
-    for (const rf of objs<Obj>(r.row_filters)) {
-      const h = isObj(rf.hierarchy) ? rf.hierarchy : undefined;
-      const rule = h
-        ? `${String(h.column)} is ${h.include_self === false ? `anyone under ${String(h.user)}` : `${String(h.user)} or anyone under them`} in ${String(h.via)}`
-        : `${String(rf.expr)}`;
-      out.push(`  - On ${String(rf.model)} it sees only rows where ${rule}.`);
+  const { list } = aud();
+  const base = visibleRefs(list[0]!.vis);
+  const all = new Set<string>();
+  for (const a of list) for (const s of a.vis.sources) for (const m of s.models) [m.ref, ...m.fields.map((f) => f.ref)].forEach((r) => all.add(r));
+  for (const a of list) for (const s of a.vis.sources) for (const m of s.metrics) all.add(m.ref);
+  const hidden = [...all].filter((r) => !base.has(r)).sort();
+  // The shorter list: what a user with no role sees, or what it does not.
+  const seen = [...base].sort();
+  const none = !seen.length ? "nothing" : hidden.length > seen.length ? `only ${itemsText(seen)}` : hidden.length ? `every approved item except: ${itemsText(hidden)}` : "every approved item";
+  out.push(`- A user with no role sees ${none}.`);
+  for (const [i, r] of (Array.isArray(access.roles) ? (access.roles as unknown[]) : []).entries()) {
+    if (!isObj(r) || typeof r.name !== "string") {
+      out.push(`- Role at roles[${i}]: cannot be read, so nobody holds it (sl validate says why).`);
+      continue;
     }
+    const held = typeof r.assign_when === "string" ? `held when ${condition(r.assign_when)}` : "held when assigned by name";
+    const vis = list.find((a) => a.label === `Role ${r.name}`)?.vis;
+    const sees = vis ? visibleRefs(vis) : new Set<string>();
+    const adds = [...sees].filter((x) => !base.has(x)).sort();
+    const takes = [...base].filter((x) => !sees.has(x)).sort();
+    const filters = objs<Obj>(r.row_filters);
+    out.push(`- Role ${r.name}, ${held}. Compared with a user with no role:`);
+    if (typeof r.description === "string" && r.description.trim()) out.push(...quoted("  ", `description of role ${r.name}, from the YAML`, r.description));
+    out.push(`  - It adds: ${adds.length ? itemsText(adds) : "nothing"}.`, `  - It takes away: ${takes.length ? itemsText(takes) : "nothing"}.`);
+    if (!filters.length) out.push("  - It sees every row.");
+    for (const rf of filters) out.push(`  - On ${String(rf.model)} it sees only rows where ${rowRule(rf)}.`);
   }
   for (const r of objs<Obj>(access.restrictions)) {
     const allow = isObj(r.allow) ? r.allow : {};
-    const who = [...(strs(allow.roles).length ? [`roles ${strs(allow.roles).join(", ")}`] : []), ...(typeof allow.when === "string" ? [`users where ${allow.when}`] : [])];
+    const who = [...(strs(allow.roles).length ? [`roles ${strs(allow.roles).join(", ")}`] : []), ...(typeof allow.when === "string" ? [`users where ${condition(allow.when)}`] : [])];
     out.push(`- Restriction ${String(r.name)}: ${strs(r.targets).join(", ")} only for ${listText(who)}.`);
+    if (typeof r.description === "string" && r.description.trim()) out.push(...quoted("  ", `description of restriction ${String(r.name)}, from the YAML`, r.description));
   }
-  const { list } = aud();
-  out.push("Who sees what once every item is approved:");
-  for (const a of list) {
-    const s = a.vis.summary;
-    const n = (c: number, w: string) => `${num(c)} ${w}${c === 1 ? "" : "s"}`;
-    out.push(`- ${a.label}: ${n(s.models.visible, "model")}, ${n(s.fields.visible, "field")} and ${n(s.metrics.visible, "metric")}.`);
-  }
-  return out;
+  return { lines: out };
 }
 
 // A golden's rows as sl readback ran them, with the tolerance the readback states.
@@ -588,10 +732,10 @@ function renderGolden(g: Golden, run: GoldenRun): string[] {
   const user = isObj(g.user) && Object.keys(g.user).length ? ` with user attributes ${flat(JSON.stringify(g.user))}` : "";
   const role = typeof g.role === "string" ? `role ${g.role}` : "no role of its own (access.yaml's default role, or the default audience)";
   const n = run.rows.length;
-  const tol =
+  const rule =
     run.tolerance === 0
-      ? "0: later runs must give exactly these figures"
-      : `${run.tolerance} (${Math.round(run.tolerance * 10000) / 100}% either way on later runs)`;
+      ? "later runs must give exactly these figures"
+      : `on later runs a figure with decimals may move up to ${Math.round(run.tolerance * 10000) / 100}% either way; whole numbers and grouping columns must match exactly`;
   const out = [
     `golden:${g.name} (golden)`,
     ...quoted("", "question, from the YAML", String(g.question ?? "")),
@@ -606,7 +750,7 @@ function renderGolden(g: Golden, run: GoldenRun): string[] {
   if (run.cross_checked) out.push("- Its cross_check_sql gives the same rows.");
   if (run.masked.length) out.push(`- Protected columns shown as ${PROTECTED_VALUE}: ${run.masked.map(flat).join(", ")}.`);
   out.push(
-    `- Tolerance: ${tol}${run.from === "default" ? ", the default; agree one with the owner and read it back with --tolerance <t>" : ""}.`,
+    `- Tolerance: ${run.tolerance}${run.from === "default" ? " (the default; agree one with the owner and read it back with --tolerance <t>)" : ""}: ${rule}.`,
     "- Say yes only when these rows match the figure the owner trusts; sl goldens confirm then records exactly them.",
   );
   return out;
@@ -629,11 +773,14 @@ export function currentHash(root: string, target: string, stored: string): strin
 
 // Renders each target's readback with the content hash sl approve would record for it. A golden
 // target (golden:<name>) needs its rows in `goldens`, keyed by name: sl readback runs the golden first.
-// An unknown target is an error naming it, before anything is written.
+// A measure or metric shows its figure from `figures` (readbackFigures), which never changes the
+// hash. A who-sees block the same as an earlier item's is printed once and named by that item's
+// number. An unknown target is an error naming it, before anything is written.
 export function renderReadbacks(
   root: string,
   refs: string[],
   goldens: ReadonlyMap<string, GoldenRun> = new Map(),
+  figures: ReadonlyMap<string, FigureEvidence> = new Map(),
 ): { target: string; text: string; content_hash: string }[] {
   const infos = new Map<string, SourceInfo>();
   const info = (s: string) => infos.get(s) ?? infos.set(s, sourceInfo(root, s)).get(s)!;
@@ -641,9 +788,10 @@ export function renderReadbacks(
   const aud: Audiences = () => (evaluated ??= audiences(root));
   const unknown = (ref: string, why: string) =>
     new UserError(`Unknown target "${ref}": ${why}. Run sl status to see the models, fields, metrics and goldens; targets are source.model, source.model.field, metric:<name>, golden:<name> or access.`);
-  return [...new Set(refs)].map((ref) => {
+  const blocks = new Map<string, number>();
+  return [...new Set(refs)].map((ref, index) => {
     const t = parseTarget(ref);
-    let lines: string[];
+    let r: Rendered;
     let entry: ApprovalEntry | undefined;
     switch (t.kind) {
       case "golden": {
@@ -659,13 +807,13 @@ export function renderReadbacks(
         const access = loadAccess(root);
         entry = accessEntry(access);
         if (!entry) throw unknown(ref, "there is no access.yaml; write it as a draft first");
-        lines = renderAccess(aud, entry.item);
+        r = renderAccess(aud, entry.item);
         break;
       }
       case "metric": {
         entry = metricEntries(loadMetrics(root).metrics).find((e) => e.ref === ref);
         if (!entry) throw unknown(ref, "metrics.yaml has no such metric");
-        lines = renderMetric(aud, entry.item as unknown as Metric);
+        r = renderMetric(entry.item as unknown as Metric, figures.get(ref));
         break;
       }
       default: {
@@ -679,9 +827,15 @@ export function renderReadbacks(
         const field = t.kind === "field" ? t.field : undefined;
         entry = field === undefined ? entries[0] : entries.find((e) => e.kind !== "model" && e.item.name === field);
         if (!entry) throw unknown(ref, `${t.source}.${t.model} has no dimension, measure or join "${field}"`);
-        lines = field === undefined ? renderModel(aud, t.source, model, i) : renderField(aud, ref, t.source, model, entry, i);
+        r = field === undefined ? renderModel(t.source, model, i) : renderField(ref, t.source, model, entry, i, figures.get(ref));
       }
     }
+    const who = r.who ? whoSees(aud, r.who) : [];
+    const key = who.join("\n");
+    const earlier = blocks.get(key);
+    if (earlier === undefined && who.length) blocks.set(key, index + 1);
+    const block = earlier === undefined ? who : [`Who sees it once approved: the same as item ${earlier}.`];
+    const lines = r.lines.flatMap((l) => (l === WHO ? block : [l]));
     return { target: ref, text: lines.join("\n"), content_hash: entry.hash };
   });
 }
