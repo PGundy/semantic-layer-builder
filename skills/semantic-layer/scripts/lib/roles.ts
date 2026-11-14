@@ -101,10 +101,12 @@ export const ROLES: Record<RoleName, Role> = {
   },
 };
 
-// The typed edits sl apply runs as its entries: each changes layer files only, through lib/edit.ts.
+// The typed edits sl apply runs as its entries: each changes layer files only, through lib/edit.ts
+// (sl goldens new writes a draft golden and compiles its request, querying nothing).
 export const APPLY_COMMANDS = [
-  "set", "add-field", "remove-field", "rename", "tag", "ignore-column", "question add", "add-metric", "remove-metric",
+  "set", "add-field", "remove-field", "rename", "tag", "ignore-column", "question add", "add-metric", "remove-metric", "add-join", "remove-join",
   "add-role", "remove-role", "add-restriction", "remove-restriction", "add-row-filter", "remove-row-filter", "add-attribute", "remove-attribute",
+  "goldens new",
 ] as const;
 // The flags sl apply gives every entry itself, which an entry does not pass.
 const APPLY_OWN_FLAGS = ["--root", "--env-file", "--json", "--help", "-h"];

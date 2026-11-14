@@ -1,6 +1,6 @@
 import { isSeq, Scalar, type YAMLSeq } from "yaml";
-import type { CommandSpec } from "../lib/command.ts";
-import { str } from "../lib/command.ts";
+import type { CommandContext, CommandSpec } from "../lib/command.ts";
+import { bool, str } from "../lib/command.ts";
 import { commitEdit, itemMap, oneLine, placeKey, readers, relFile } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
@@ -14,10 +14,42 @@ function sortedIndex(items: string[], value: string): number {
   return i < 0 ? items.length : i;
 }
 
+// --remove: takes the column out of ignored_columns (the key goes with its last entry), so a field,
+// a filter or a join may read it; it adds no field. A column not listed changes nothing.
+function unignore(ctx: CommandContext, path: string, ref: string, column: string, ignored: string[]): number {
+  const listed = ignored.find((c) => c.toLowerCase() === column.toLowerCase());
+  if (listed === undefined) {
+    if (ctx.json) ctx.out(formatJson({ changed: false, file: relFile(ctx.root, path), reapprove: [], ref, column, ignored_columns: ignored, removed: true }));
+    else ctx.out(`${column} is not in ${ref}'s ignored_columns; nothing changed. Next: sl status.`);
+    return 0;
+  }
+  const outcome = commitEdit(ctx.root, path, `take ${listed} out of ${ref}'s ignored_columns`, (doc) => {
+    const map = itemMap(doc, []);
+    const node = map.get("ignored_columns", true);
+    if (!isSeq(node)) return;
+    node.items = node.items.filter((i) => String((i as { value?: unknown }).value ?? i) !== listed);
+    if (!node.items.length) map.delete("ignored_columns");
+  });
+  const after = ignored.filter((c) => c !== listed);
+  if (ctx.json) {
+    ctx.out(formatJson({ ...outcome, ref, column: listed, ignored_columns: after, removed: true }));
+    return 0;
+  }
+  ctx.out(
+    [
+      `Took ${listed} out of ${ref}'s ignored_columns in ${outcome.file}; no field was added.`,
+      "Next: run the edit the owner asked for that reads it (sl set, sl add-field, sl add-join or sl check-rule), then sl validate.",
+    ].join("\n"),
+  );
+  return 0;
+}
+
 const spec: CommandSpec = {
-  summary: "Add a column to a model's ignored_columns: left out on purpose, so no field is drafted for it.",
-  usage: "ignore-column --source <s> --model <m> --column <c> [--reason <text>]",
-  options: { source: { type: "string" }, model: { type: "string" }, column: { type: "string" }, reason: { type: "string" } },
+  summary: "Add a column to a model's ignored_columns (left out on purpose, so no field is drafted for it), or take it back out with --remove.",
+  usage:
+    "ignore-column --source <s> --model <m> --column <c> [--reason <text>]\n" +
+    "       sl ignore-column --source <s> --model <m> --column <c> --remove   (takes the column out of ignored_columns, adding no field)",
+  options: { source: { type: "string" }, model: { type: "string" }, column: { type: "string" }, reason: { type: "string" }, remove: { type: "boolean" } },
   writes: "whole",
   async run({ values }, ctx) {
     loadProject(ctx.root);
@@ -29,6 +61,10 @@ const spec: CommandSpec = {
     const config = loadSource(ctx.root, source);
     const { path, model } = loadModel(ctx.root, source, modelName);
     const ref = `${source}.${modelName}`;
+    if (bool(values, "remove")) {
+      if (reason !== undefined) throw new UserError(`--reason records why a column is left out; --remove takes ${column} back in, so run it without --reason.`);
+      return unignore(ctx, path, ref, column, (model.ignored_columns ?? []).map(String));
+    }
     const snapshot = loadSnapshot(ctx.root, source);
     const table = Array.isArray(snapshot?.tables) ? findTable(snapshot.tables, String(model.table)) : undefined;
     // An ignored column is protected, so sample values the snapshot holds for it are redacted.

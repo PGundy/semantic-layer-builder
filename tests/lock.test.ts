@@ -281,6 +281,7 @@ describe("a lock held by a live process", () => {
     // The lock is taken before the arguments are read, so the bare command is enough.
     const writers = [
       ["add-field"],
+      ["add-join"],
       ["add-metric"],
       ["add-source"],
       ["approve"],
@@ -300,6 +301,7 @@ describe("a lock held by a live process", () => {
       ["profile", "--redact"],
       ["question", "add"],
       ["remove-field"],
+      ["remove-join"],
       ["remove-metric"],
       ["rename"],
       ["reply"],

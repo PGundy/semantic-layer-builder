@@ -1,6 +1,7 @@
 import type { CommandSpec } from "../lib/command.ts";
 import { bool, str } from "../lib/command.ts";
 import { checkRule, type Expressible, type RuleKind, ruleCounts } from "../lib/compiler/check-rule.ts";
+import { ignoredReads, ignoredRefusal } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { pct } from "../lib/joins.ts";
 import { columnRefs } from "../lib/compiler/qualify.ts";
@@ -50,17 +51,21 @@ const spec: CommandSpec = {
     const source = loadSource(ctx.root, sourceName);
     const model = loadModel(ctx.root, sourceName, modelName).model;
     if (typeof model.table !== "string" || !model.table) throw new UserError(`Model "${modelName}" has no table; run sl validate.`);
+    const what = kind === "filter" ? "filter" : "dimension expr";
+    const models = listModels(ctx.root, sourceName).map((l) => l.model);
+    // A rule reading an ignored column is refused, as the typed edits that would write it refuse it.
+    const ignored = ignoredReads(model, models, [text]);
+    if (ignored.length) throw ignoredRefusal(sourceName, `The ${what}`, ignored, false);
     const input = resultsInput(ctx, values);
     const check = checkRule({
       source,
       snapshot: loadSnapshot(ctx.root, sourceName),
-      models: listModels(ctx.root, sourceName).map((l) => l.model),
+      models,
       model,
       kind,
       text,
       root: ctx.root,
     });
-    const what = kind === "filter" ? "filter" : "dimension expr";
 
     if (!check.expressible) {
       if (ctx.json) ctx.out(formatJson(check));

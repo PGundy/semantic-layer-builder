@@ -251,6 +251,25 @@ describe("the hook holds each role agent to its role", () => {
     expect(readFileSync(join(t.root, "access.yaml"), "utf8")).toBe("mode: open\nstatus: draft\n");
   });
 
+  // docs/PRD-hardening.md HR-15: the walkthrough's owner answers that had no typed command now have one.
+  test("the interviewer runs add-join, remove-join, ignore-column --remove and goldens new in sl apply; other roles may not", () => {
+    const who = "semantic-layer-builder:sl-interviewer";
+    const commands = [
+      "add-join --source wh --model orders --name ship_to_region --to regions --keys ship_region=region_code",
+      "remove-join --source wh --model orders --name ship_to_region",
+      "ignore-column --source wh --model customers --column email --remove",
+    ];
+    for (const c of commands) {
+      allowed(bash(who, run(c)));
+      expect(Object.keys(COMMANDS)).toContain(c.split(" ")[0]!);
+      refused(bash("sl-golden-builder", run(c)), `may not run sl ${c.split(" ")[0]}`);
+    }
+    const file = join(dir, "walkthrough-edits.json");
+    writeFileSync(file, JSON.stringify({ edits: [commands[0]!.split(" "), ["goldens", "new", "--name", "g", "--question", "Q?", "--request", "{}"]] }));
+    allowed(bash(who, run(`apply --file ${file}`)));
+    refused(bash("sl-golden-builder", run(`apply --file ${file}`)), "may not run sl apply");
+  });
+
   test("the main agent (no agent_type) and other agents are checked as before", () => {
     for (const agent of [undefined, "Explore", "general-purpose", "other-plugin:sl-helper"]) {
       allowed(bash(agent, "ls"));

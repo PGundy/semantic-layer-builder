@@ -8,12 +8,13 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import type { LastApproval } from "./access.ts";
 import { type ApprovalEntry, carriesHash, itemApprovals, type LayerModel, listApprovals } from "./approval-hash.ts";
+import { columnRefs } from "./compiler/qualify.ts";
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { plainText } from "./output.ts";
 import { listSourceNames, paths, stem } from "./project.ts";
 import { findField, type FieldMatch, parseTarget } from "./refs.ts";
-import { DIALECTS, type Dialect, type Model, PROTECTED_TAGS, PUBLIC_TAG, type SnapshotTable } from "./types.ts";
+import { DIALECTS, type Dialect, type Join, type Model, PROTECTED_TAGS, PUBLIC_TAG, type SnapshotTable } from "./types.ts";
 import { matchesDotted } from "./patterns.ts";
 import { incomingKeyColumns, referencedColumns } from "./snapshot-diff.ts";
 import { sqlNames } from "./sql-names.ts";
@@ -559,6 +560,47 @@ export function readers(model: Model, column: string, others: Model[], dialect: 
   if (reads({ joins: joinNames, primary_key: model.primary_key })) out.push("the primary key");
   if (reads({ joins: joinNames }, incomingKeyColumns(model, others))) out.push("a join from another model");
   return out;
+}
+
+// A column an expression reads that a model lists in ignored_columns: on the model itself, or on a
+// model it reaches through its joins (<join>.<column>, <join>.<join>.<column>).
+export interface IgnoredRead {
+  model: string;
+  column: string;
+}
+
+// The ignored columns the SQL texts on `model` read, as the compiler qualifies them (qualify.ts);
+// `models` are the source's models, for following joins. Each column once, in reading order.
+export function ignoredReads(model: Model, models: readonly Model[], texts: readonly string[]): IgnoredRead[] {
+  const out: IgnoredRead[] = [];
+  const same = (a: string, b: string, quoted: boolean) => (quoted ? a === b : a.toLowerCase() === b.toLowerCase());
+  for (const text of texts) {
+    for (const ref of columnRefs(text)) {
+      let at: Model | undefined = model;
+      let i = 0;
+      for (; i < ref.parts.length - 1 && at; i++) {
+        const join: Join | undefined = (at.joins ?? []).find((j) => typeof j?.name === "string" && same(j.name, ref.parts[i]!, ref.quoted[i]!));
+        if (!join) break;
+        at = models.find((m) => m.model === join.to);
+      }
+      if (!at) continue;
+      const column = ref.parts[i]!;
+      const listed = (Array.isArray(at.ignored_columns) ? at.ignored_columns : []).map(String).find((c) => same(c, column, ref.quoted[i]!));
+      if (listed && !out.some((o) => o.model === at!.model && o.column === listed)) out.push({ model: at.model, column: listed });
+    }
+  }
+  return out;
+}
+
+// The refusal of a typed edit, or of sl check-rule, whose expression reads ignored columns: each was
+// left out of the layer on purpose, so the owner confirms first and sl ignore-column --remove takes it back.
+export function ignoredRefusal(source: string, what: string, reads: readonly IgnoredRead[], written = true): UserError {
+  const names = reads.map((r) => `${r.model}.${r.column}`);
+  const steps = reads.map((r) => `sl ignore-column --source ${source} --model ${r.model} --column ${r.column} --remove`);
+  return new UserError(
+    `${what} reads ${names.join(", ")}, which ${reads.length === 1 ? "is" : "are"} in ignored_columns: left out of the layer on purpose.${written ? " Nothing was written." : ""} ` +
+      `Confirm with the owner, then run ${steps.join(", then ")} and run this again.`,
+  );
 }
 
 // The columns of the model's own table one field reads: a join's key columns, or the columns of a

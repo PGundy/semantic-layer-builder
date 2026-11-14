@@ -7,6 +7,7 @@ import { validDate } from "./approve.ts";
 import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.ts";
 import { bool, str } from "../lib/command.ts";
 import { goldenHash } from "../lib/approval-hash.ts";
+import { batchWrite, blamed, deferValidation } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { goldenUpgradeNext } from "../lib/export-goldens.ts";
 import { intakeMode } from "../lib/intake.ts";
@@ -847,8 +848,11 @@ async function newCommand(ctx: CommandContext, values: OptionValues): Promise<nu
   const source = goldenSource(ctx, golden);
   const problem = accessProblem(ctx, role, user);
   if (problem) throw new UserError(`${problem} Nothing was written.`);
-  // The whole project as sl validate would read it with this golden written (JSON is YAML).
-  const errors = validateProject(ctx.root, new Map([[paths(ctx.root).golden(name), JSON.stringify(golden)]])).filter((i) => i.level === "error" && i.file === file.split(sep).join("/"));
+  // The whole project as sl validate would read it with this golden written (JSON is YAML). Inside
+  // sl apply the batch validates once, at its end, and counts only the errors it ends with.
+  const errors = deferValidation()
+    ? []
+    : blamed(validateProject(ctx.root, new Map([[paths(ctx.root).golden(name), JSON.stringify(golden)]])).filter((i) => i.level === "error" && i.file === file.split(sep).join("/")));
   if (errors.length) {
     throw new UserError(
       `sl validate would report errors on the golden, so nothing was written:\n${errors.map((i) => `  ${i.path || "golden"}: ${i.message}`).join("\n")}\n` +
@@ -856,6 +860,7 @@ async function newCommand(ctx: CommandContext, values: OptionValues): Promise<nu
     );
   }
   const compiled = compileGolden(ctx.root, golden);
+  batchWrite(path);
   writeYaml(path, golden);
   const next =
     `Run sl goldens run --name ${name} to see its rows; once its measures are approved, confirm it on the owner's yes: ` +

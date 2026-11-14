@@ -9,6 +9,9 @@ import {
   accessToDraft,
   APPROVAL_FIELDS,
   commitEdit,
+  type IgnoredRead,
+  ignoredReads,
+  ignoredRefusal,
   itemMap,
   locate,
   parseValue,
@@ -20,7 +23,7 @@ import {
 } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
-import { loadProject, paths } from "../lib/project.ts";
+import { listModels, loadProject, paths } from "../lib/project.ts";
 import { createAccess, GOLDEN_KEYS, setGolden, setSource, type SetOutcome, SOURCE_KEYS } from "../lib/set-targets.ts";
 
 // Keys another command owns, with the command to use instead.
@@ -128,6 +131,32 @@ const spec: CommandSpec = {
       if (ctx.json) ctx.out(formatJson({ changed: false, file: relFile(ctx.root, loc.file), reapprove: [], ...result }));
       else ctx.out(`${ref} already has ${unset ? `no ${key}` : `that ${key}`}; nothing changed. Next: sl status.`);
       return 0;
+    }
+    // An expr or filter that newly reads an ignored column is refused, as sl add-field refuses it.
+    if ((loc.kind === "dimension" || loc.kind === "measure") && (key === "expr" || key === "filter") && typeof value === "string") {
+      const models = listModels(ctx.root, loc.source).map((l) => l.model);
+      const had = ignoredReads(loc.model!, models, [loc.item[key]].filter((t): t is string => typeof t === "string"));
+      const reads = ignoredReads(loc.model!, models, [value]).filter((r) => !had.some((h) => h.model === r.model && h.column === r.column));
+      if (reads.length) throw ignoredRefusal(loc.source!, `The ${key} of ${ref}`, reads);
+    }
+    // So is a join's keys or target that newly reads one, as sl add-join refuses it.
+    if (loc.kind === "join" && (key === "keys" || key === "to") && value !== undefined) {
+      const models = listModels(ctx.root, loc.source).map((l) => l.model);
+      const keyReads = (keys: unknown, to: unknown): IgnoredRead[] => {
+        const target = models.find((m) => m.model === to);
+        const out: IgnoredRead[] = [];
+        for (const k of Array.isArray(keys) ? keys : []) {
+          for (const [m, c] of [[loc.model, k?.from], [target, k?.to]] as const) {
+            const listed = m && typeof c === "string" ? (m.ignored_columns ?? []).map(String).find((x) => x.toLowerCase() === c.toLowerCase()) : undefined;
+            if (listed && !out.some((r) => r.model === m!.model && r.column === listed)) out.push({ model: m!.model, column: listed });
+          }
+        }
+        return out;
+      };
+      const had = keyReads(loc.item.keys, loc.item.to);
+      const now = keyReads(key === "keys" ? value : loc.item.keys, key === "to" ? value : loc.item.to);
+      const reads = now.filter((r) => !had.some((h) => h.model === r.model && h.column === r.column));
+      if (reads.length) throw ignoredRefusal(loc.source!, `The ${key} of ${ref}`, reads);
     }
     const what = `${unset ? "remove" : "set"} ${key} on ${ref}`;
     const tagsOf = (v: unknown) => (Array.isArray(v) ? v.map(String) : []);
