@@ -2,7 +2,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import type { LastApproval } from "../lib/access.ts";
-import { accessEntry, type ApprovalEntry, carriesHash, holdsHashes, integrity, itemHash, metricEntries, modelEntries } from "../lib/approval-hash.ts";
+import { type ApprovalEntry, carriesHash, holdsHashes, integrity, itemApprovals, itemHash, type LayerModel, listApprovals } from "../lib/approval-hash.ts";
 import type { CommandSpec } from "../lib/command.ts";
 import { bool, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
@@ -331,18 +331,21 @@ function underTarget(e: ApprovalEntry, target: Target | undefined): boolean {
 
 // The approval entries of every model file, metrics.yaml and access.yaml, by file.
 function projectEntries(root: string): { file: string; entries: ApprovalEntry[] }[] {
-  const files: { file: string; entries: ApprovalEntry[] }[] = [];
+  const models: LayerModel[] = [];
   for (const [source, name] of modelFiles(root)) {
     const file = paths(root).model(source, name);
     const model = readYaml<Model>(file);
     if (!model || typeof model !== "object") continue;
-    files.push({ file, entries: modelEntries(source, { ...model, model: name }, modelLookup(root, source), sourceDialect(root, source)) });
+    models.push({ source, model: { ...model, model: name }, file, lookup: modelLookup(root, source), dialect: sourceDialect(root, source) });
   }
   const metricsFile = paths(root).metrics;
-  if (existsSync(metricsFile)) files.push({ file: metricsFile, entries: metricEntries(loadMetrics(root)?.metrics) });
-  const access = accessEntry(loadAccess(root));
-  if (access) files.push({ file: paths(root).access, entries: [access] });
-  return files;
+  const metrics = existsSync(metricsFile) ? loadMetrics(root)?.metrics : undefined;
+  const files = new Map<string, ApprovalEntry[]>();
+  for (const e of itemApprovals(listApprovals({ models, metrics, metricsFile, access: loadAccess(root), accessFile: paths(root).access }))) {
+    const list = files.get(e.file!) ?? files.set(e.file!, []).get(e.file!)!;
+    list.push(e);
+  }
+  return [...files].map(([file, entries]) => ({ file, entries }));
 }
 
 // Whether any approved model, field, join, metric or access.yaml of the project records approved_hash.

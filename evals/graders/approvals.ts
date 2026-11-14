@@ -6,38 +6,24 @@
 // ledger (it arrives with sl reply) nothing is graded yet.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { accessEntry, type ApprovalEntry, goldenHash, metricEntries, modelEntries } from "../../skills/semantic-layer/scripts/lib/approval-hash.ts";
-import { DEFAULT_TOLERANCE } from "../../skills/semantic-layer/scripts/lib/goldens.ts";
+import { type ApprovalEntry, itemApprovals } from "../../skills/semantic-layer/scripts/lib/approval-hash.ts";
+import { projectApprovals } from "../../skills/semantic-layer/scripts/lib/approvals.ts";
 import { currentYes, latestReply, ledgerReplies } from "../../skills/semantic-layer/scripts/lib/ledger.ts";
-import { listGoldens, listModels, loadAccess, loadMetrics, loadSource } from "../../skills/semantic-layer/scripts/lib/project.ts";
-import type { Dialect, LedgerReply } from "../../skills/semantic-layer/scripts/lib/types.ts";
+import type { LedgerReply } from "../../skills/semantic-layer/scripts/lib/types.ts";
 import type { GraderResult, RunFiles } from "./types.ts";
 
 export const LEDGER = ".sl/ledger.jsonl";
 
 // The approved models, fields, joins, metrics and access file of a root, with the file each sits in.
 export function approvedEntries(root: string): { entry: ApprovalEntry; file: string }[] {
-  const models = listModels(root);
-  const out: { entry: ApprovalEntry; file: string }[] = [];
-  for (const { path, model } of models) {
-    let dialect: Dialect | undefined;
-    try {
-      dialect = loadSource(root, model.source).dialect;
-    } catch {
-      dialect = undefined;
-    }
-    const lookup = (name: string) => models.find((m) => m.model.source === model.source && m.model.model === name)?.model;
-    for (const entry of modelEntries(model.source, model, lookup, dialect)) out.push({ entry, file: relative(root, path) });
-  }
-  for (const entry of metricEntries(loadMetrics(root).metrics)) out.push({ entry, file: "semantic/metrics.yaml" });
-  const access = accessEntry(loadAccess(root));
-  if (access) out.push({ entry: access, file: "semantic/access.yaml" });
-  return out.filter((x) => x.entry.item.status === "approved");
+  return itemApprovals(projectApprovals(root, false))
+    .filter((e) => e.status === "approved")
+    .map((entry) => ({ entry, file: relative(root, entry.file!) }));
 }
 
 // Approved items and confirmed goldens: the denominator of the effort metrics.
 export function approvedCount(root: string): number {
-  return approvedEntries(root).length + listGoldens(root).filter((g) => g.golden.status === "approved").length;
+  return projectApprovals(root).filter((e) => e.status === "approved").length;
 }
 
 function relative(root: string, path: string): string {
@@ -99,18 +85,13 @@ export function gradeApprovals(run: RunFiles): GraderResult {
     details.push(`The last line of semantic/${LEDGER} has no line break (an append was cut off); ${restore}.`);
   }
   // Each approved item and confirmed golden as its target, the hash its yes must carry, and its file.
-  const approved = approvedEntries(run.root).map(({ entry, file }) => ({
-    ref: entry.ref,
-    hash: typeof entry.item.approved_hash === "string" ? entry.item.approved_hash.trim() : "",
-    file,
-    what: "approved",
-  }));
-  for (const { path, golden } of listGoldens(run.root)) {
-    if (golden.status !== "approved") continue;
-    const rows = Array.isArray(golden.expected?.rows) ? golden.expected!.rows : [];
-    const hash = goldenHash(golden as unknown as Record<string, unknown>, rows, golden.expected?.tolerance ?? DEFAULT_TOLERANCE);
-    approved.push({ ref: `golden:${golden.name}`, hash, file: relative(run.root, path), what: "confirmed" });
-  }
+  const approved = projectApprovals(run.root)
+    .filter((e) => e.status === "approved")
+    .map((e) =>
+      e.kind === "golden"
+        ? { ref: e.ref, hash: e.hash, file: relative(run.root, e.file!), what: "confirmed" }
+        : { ref: e.ref, hash: typeof e.item.approved_hash === "string" ? e.item.approved_hash.trim() : "", file: relative(run.root, e.file!), what: "approved" },
+    );
   if (!approved.length) return { grader: "approvals", score: null, passed: !unreadable, details: [...details, "not graded: nothing is approved"] };
   let ok = 0;
   for (const { ref, hash, file, what } of approved) {

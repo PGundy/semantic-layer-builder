@@ -13,7 +13,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { accessEntry, carriesHash, metricEntries, modelEntries, type ApprovalEntry } from "../lib/approval-hash.ts";
+import { type ApprovalEntry, carriesHash, itemApprovals, listApprovals } from "../lib/approval-hash.ts";
 import { applyFileRefusals, commandList, DENIED_FLAGS, roleOf, slRefusal, type Role } from "../lib/roles.ts";
 import { DIALECTS, type Dialect, type Model } from "../lib/types.ts";
 import { parseYamlText } from "../lib/yaml.ts";
@@ -173,7 +173,7 @@ function modelScope(root: string, k: { source: string; name: string }) {
     const source = typeof value.source === "string" ? value.source : k.source;
     if (!dialects.has(source)) dialects.set(source, sourceDialect(root, source));
     const lookup = (n: string) => (n === k.name ? (isObject(self) ? (self as unknown as Model) : undefined) : others().get(n));
-    return modelEntries(source, { ...(value as unknown as Model), model: typeof value.model === "string" ? value.model : of }, lookup, dialects.get(source));
+    return itemApprovals(listApprovals({ models: [{ source, model: { ...(value as unknown as Model), model: typeof value.model === "string" ? value.model : of }, lookup, dialect: dialects.get(source) }] }));
   };
   return { entries, others };
 }
@@ -205,9 +205,9 @@ function repairProblem(root: string, kind: FileKind, before: string, after: stri
     scope
       ? scope.entries(value)
       : kind.kind === "metrics"
-        ? metricEntries(isObject(value) ? value.metrics : undefined)
+        ? itemApprovals(listApprovals({ metrics: isObject(value) ? value.metrics : undefined }))
         : kind.kind === "access"
-          ? [accessEntry(value)].filter((e): e is ApprovalEntry => e !== undefined)
+          ? itemApprovals(listApprovals({ access: value }))
           : undefined;
   if (!own) return marked ? `the hook cannot match its approval fields to ${kind.kind === "golden" ? "the rows a confirmed golden records" : "items"}` : undefined;
   // Fields of the source's other models that read through this model's joins count too; their
@@ -329,12 +329,9 @@ export function layerViolations(root: string, rel: string, before: string | null
   }
   const out: Violation[] = [];
   if (kind.kind === "model") out.push(...modelViolations(root, kind, b.value, a.value));
-  if (kind.kind === "metrics") out.push(...contentViolations(metricEntries(isObject(b.value) ? b.value.metrics : undefined), metricEntries(isObject(a.value) ? a.value.metrics : undefined), "changed"));
-  if (kind.kind === "access") {
-    const was = accessEntry(b.value);
-    const now = accessEntry(a.value);
-    out.push(...contentViolations(was ? [was] : [], now ? [now] : [], "changed"));
-  }
+  const entries = (value: unknown) =>
+    itemApprovals(listApprovals(kind.kind === "metrics" ? { metrics: isObject(value) ? value.metrics : undefined } : kind.kind === "access" ? { access: value } : {}));
+  if (kind.kind === "metrics" || kind.kind === "access") out.push(...contentViolations(entries(b.value), entries(a.value), "changed"));
   if (kind.kind === "golden" && isObject(b.value) && b.value.status === "approved") {
     if (canonical(b.value.expected) !== canonical(isObject(a.value) ? a.value.expected : undefined)) out.push({ ref: `golden:${kind.name}`, what: "expected" });
   }

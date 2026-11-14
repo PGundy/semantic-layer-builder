@@ -7,7 +7,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, unlinkS
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import type { LastApproval } from "./access.ts";
-import { accessEntry, carriesHash, metricEntries, modelEntries, type ApprovalEntry } from "./approval-hash.ts";
+import { type ApprovalEntry, carriesHash, itemApprovals, type LayerModel, listApprovals } from "./approval-hash.ts";
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { plainText } from "./output.ts";
@@ -141,7 +141,7 @@ function projectEntries(root: string, overrides: ReadonlyMap<string, string>, re
       return null;
     }
   };
-  const out: ApprovalEntry[] = [];
+  const layer: LayerModel[] = [];
   for (const source of listSourceNames(root)) {
     const dir = paths(root).modelsDir(source);
     if (!existsSync(dir)) continue;
@@ -152,13 +152,10 @@ function projectEntries(root: string, overrides: ReadonlyMap<string, string>, re
       if (m && typeof m === "object") models.set(stem(f), m as Model);
     }
     const dialect = sourceDialect(root, source);
-    for (const [name, m] of models) out.push(...modelEntries(source, { ...m, model: name }, (n) => models.get(n), dialect));
+    for (const [name, m] of models) layer.push({ source, model: { ...m, model: name }, lookup: (n) => models.get(n), dialect });
   }
   const metrics = read(paths(root).metrics) as { metrics?: unknown } | null;
-  out.push(...metricEntries(metrics?.metrics));
-  const access = accessEntry(read(paths(root).access));
-  if (access) out.push(access);
-  return out;
+  return itemApprovals(listApprovals({ models: layer, metrics: metrics?.metrics, access: read(paths(root).access) }));
 }
 
 // The approved items whose content an edit changes, unless it restores the content their
