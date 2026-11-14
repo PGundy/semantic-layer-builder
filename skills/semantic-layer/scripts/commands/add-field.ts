@@ -1,11 +1,11 @@
 import { isMap, isSeq, type Node, type YAMLMap, type YAMLSeq } from "yaml";
 import type { CommandSpec } from "../lib/command.ts";
 import { bool, str } from "../lib/command.ts";
-import { APPROVAL_FIELDS, commitEdit, fieldColumns, itemMap, locate, oneLine, parseValue, placeKey, reapproveLines, schemaProperties } from "../lib/edit.ts";
+import { APPROVAL_FIELDS, commitEdit, fieldColumns, ignoredReads, ignoredRefusal, itemMap, locate, oneLine, parseValue, placeKey, reapproveLines, schemaProperties } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { findTable } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
-import { loadProject, loadSnapshot, loadSource } from "../lib/project.ts";
+import { listModels, loadProject, loadSnapshot, loadSource } from "../lib/project.ts";
 import { findField } from "../lib/refs.ts";
 import { sqlIdentifiers } from "../lib/snapshot-diff.ts";
 import { NAME_PATTERN, PROTECTED_TAGS } from "../lib/types.ts";
@@ -120,11 +120,19 @@ const spec: CommandSpec = {
     }
     const ignored = (model.ignored_columns ?? []).map(String);
     const reads = fieldColumns(model, kind, field, table, config.dialect).map((c) => c.toLowerCase());
-    const unignored = ignored.filter((c) => reads.includes(c.toLowerCase()));
+    // Ignored columns the field reads: its own model's, which --unignore takes back in the same edit,
+    // and those of models its join references reach, which sl ignore-column --remove takes back.
+    const texts = [expr, field.filter].filter((t): t is string => typeof t === "string");
+    const through = ignoredReads(model, listModels(ctx.root, source).map((l) => l.model), texts);
+    const own = new Set(through.filter((r) => r.model === model.model).map((r) => r.column.toLowerCase()));
+    const unignored = ignored.filter((c) => reads.includes(c.toLowerCase()) || own.has(c.toLowerCase()));
+    const elsewhere = through.filter((r) => r.model !== model.model);
+    if (elsewhere.length) throw ignoredRefusal(source, `${ref}.${name}`, elsewhere);
     if (unignored.length && !bool(values, "unignore")) {
+      const steps = unignored.map((c) => `sl ignore-column --source ${source} --model ${model.model} --column ${c} --remove`).join(", then ");
       throw new UserError(
         `${unignored.join(", ")} ${unignored.length === 1 ? "is" : "are"} in ${ref}'s ignored_columns: left out of the layer on purpose. Nothing was written. ` +
-          `Confirm with the owner, then run this again with --unignore, which also removes ${unignored.length === 1 ? "it" : "them"} from ignored_columns.`,
+          `Confirm with the owner, then run ${steps} and run this again, or run this again with --unignore, which also removes ${unignored.length === 1 ? "it" : "them"} from ignored_columns.`,
       );
     }
 

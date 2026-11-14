@@ -220,6 +220,8 @@ const spec: CommandSpec = {
   usage:
     "scope --source <source> [--include <pattern>]... [--exclude <pattern>]... [--remove <pattern>]... " +
     "[--tables a,b] [--from-file <path>] [--to-file <path>] [--force] [--clear] [--write] [--explain <table>] [--reason <text>]\n\n" +
+    "--include, --exclude and --tables add to the saved scope, whose entries stay: leaving one more table out is\n" +
+    "sl scope --source <s> --exclude <table> --write. --remove takes an entry out; --clear starts over.\n" +
     "--reason records why the --exclude patterns of this command leave tables out (the owner's words), in\n" +
     "scope.exclude_reasons with --write; sl scope --explain shows it for a table such a pattern excludes.",
   options: {
@@ -370,6 +372,8 @@ const spec: CommandSpec = {
       ...(nextList?.entries ?? []).map((e): ScopeEntry => ({ origin: `tables_file line ${e.line}`, entry: e.pattern, kind: e.kind })),
     ];
     const fileShown = fromArg ?? nextList?.rel;
+    // The saved scope's entries this command keeps, which the flags add to.
+    const keptSaved = entries.filter((e) => e.origin.startsWith("scope.")).length;
 
     const explainArg = str(values, "explain");
     if (explainArg !== undefined) {
@@ -561,6 +565,7 @@ const spec: CommandSpec = {
           focus_threshold,
           tables: tableRows,
           entries: entryCounts,
+          kept_entries: keptSaved,
           by_schema: schemaCounts,
           warnings,
         }),
@@ -573,6 +578,8 @@ const spec: CommandSpec = {
     lines.push(`  include: ${include.length ? include.join(", ") : fileCounts?.include ? "(only the table-list file's entries)" : "(everything)"}`);
     lines.push(`  exclude: ${exclude.length ? exclude.map((p) => (reasons[p] ? `${p} (${reasons[p]})` : p)).join(", ") : fileCounts?.exclude ? "(only the table-list file's entries)" : "(nothing)"}`);
     if (fileCounts) lines.push(`  tables file: ${fileCounts.path} (${plural(fileCounts.include, "include")}, ${plural(fileCounts.exclude, "exclude")})`);
+    if (keptSaved && (includes.length || excludes.length || tablePatterns.length))
+      lines.push(`  This adds to the saved scope, whose ${keptSaved} ${keptSaved === 1 ? "entry stays" : "entries stay"}; --remove <pattern> takes one out, --clear starts over.`);
     lines.push("");
     lines.push(`Added (${added.length}): ${added.length ? added.join(", ") : "none"}`);
     lines.push(`Removed (${removed.length}): ${removed.length ? removed.join(", ") : "none"}`);

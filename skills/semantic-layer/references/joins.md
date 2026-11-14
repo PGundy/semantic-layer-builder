@@ -7,8 +7,8 @@ A join says how two tables in the same source connect, for example each order to
 `sl draft` writes joins with an `origin`:
 
 - `declared`: the database has a foreign key between the columns. Usually right, still checked.
-- `inferred`: guessed by a tool or by you, from names (`orders.customer_id` and `customers.customer_id`) or from matching values (every `orders.ship_region` value is a `regions.region_code`). Often right, sometimes not (`created_by_id` is not a customer). `sl draft` also infers a join when a column's name equals another in-scope table's single-column primary key of a compatible type, text keys included (`order_lines.sku` to `products.sku`). A join you find yourself and add to the model's `joins` list gets `origin: inferred` and `status: draft`.
-- `owner`: the owner told you, for example "`shipments.order_ref` is the order number". Write it yourself in the model's `joins` list with `origin: owner` and `status: draft`.
+- `inferred`: guessed by a tool or by you, from names (`orders.customer_id` and `customers.customer_id`) or from matching values (every `orders.ship_region` value is a `regions.region_code`). Often right, sometimes not (`created_by_id` is not a customer). `sl draft` also infers a join when a column's name equals another in-scope table's single-column primary key of a compatible type, text keys included (`order_lines.sku` to `products.sku`). A join you find yourself is added with `sl add-join ... --origin inferred` (`phases/joins.md`), as a draft.
+- `owner`: the owner told you, for example "`shipments.order_ref` is the order number". Add it with `sl add-join --source <s> --model <m> --name <join> --to <model> --keys <left>=<right>`, which writes `origin: owner` and `status: draft`.
 
 Name a join after the role its target plays for this model (`customer`, `ship_to_region`, `home_region`), never after a column or a dimension of the model (`ship_region`, `region`): joins share one namespace with the model's dimensions and measures, and a role name says which region a reader gets.
 
