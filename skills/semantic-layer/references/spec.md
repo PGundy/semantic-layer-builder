@@ -1027,8 +1027,8 @@ A run's directory is `evals/runs/<run_id>/` (gitignored), or `<out>/<run_id>/`, 
   "skill_turns": 7,
   "started_at": "2026-01-01T00:00:00.000Z",
   "stop_reason": "done",
-  "tokens": 9978,
-  "tokens_by_speaker": { "owner": 16, "skill": 9962 },
+  "tokens": 10009,
+  "tokens_by_speaker": { "owner": 16, "skill": 9993 },
   "turns": 14
 }
 ```

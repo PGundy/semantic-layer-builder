@@ -150,7 +150,7 @@ describe("regressions", () => {
   test("effort metrics never fail the smoke, however far they move", async () => {
     const f = fakeIO({ "acme-terse": report("acme-terse", {}, [], { tokens: 999999, owner_turns: 40 }) });
     expect(await main([], f.io)).toBe(0);
-    expect(f.text()).toContain("tokens 999999 (baseline 9978)");
+    expect(f.text()).toContain("tokens 999999 (baseline 10009)");
     expect(f.text()).not.toContain("REGRESSION");
   });
 
