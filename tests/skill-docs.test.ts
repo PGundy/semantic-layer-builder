@@ -1372,7 +1372,7 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["joins.md", "a pre-aggregated model comes from engineering on DuckDB too", "which the owner's engineers create on every dialect"],
   // Protected values.
   ["SKILL.md", "the skill never shows protected values", "Never pass `--show-protected`: it exists for the owner, run by hand."],
-  ["SKILL.md", "masking goes by name, so no aliases or SUMMARIZE", "never alias or transform a protected column (`select email as e`) and never `SUMMARIZE` a table that has one"],
+  ["SKILL.md", "masking holds under an alias or a function", "Renaming or wrapping a protected column (`select email as e`, `lower(email)`) does not show it: a statement that reads one shows its counts and the columns that read nothing protected"],
   // The SELECT-only role.
   ["intake.md", "a superuser reads server files despite read-only", "a read-only transaction does not stop a superuser or a member of `pg_read_server_files`"],
   ["intake.md", "public's CREATE is revoked on old Postgres", "revoke create on schema public from public;"],
@@ -1721,8 +1721,9 @@ describe("the README", () => {
     expect(flat).not.toContain("Snapshots never store sample values");
   });
 
-  test("says masking goes by the output column's name, and the role guards server files", () => {
-    expect(flat).toContain("going by the output column's name, so a query that renames a protected column (`select email as e`)");
+  test("says masking holds when a query renames or wraps a protected column, and the role guards server files", () => {
+    expect(flat).toContain("also when the query renames or wraps it (`select email as e`, `lower(email)`, a subquery)");
+    expect(flat).not.toContain("going by the output column's name");
     expect(flat).toContain("the guarantee that nothing is written does not depend on it");
     expect(flat).toContain("A superuser or a member of `pg_read_server_files` can read server files through read-only functions");
     expect(flat).not.toContain("the guarantees above do not depend on it");
@@ -1764,9 +1765,10 @@ describe("repository readiness", () => {
     expect(flat).toContain("If that link says private reporting is not enabled");
     const inScope = flat.slice(flat.indexOf("## In scope"), flat.indexOf("## Out of scope"));
     const outScope = flat.slice(flat.indexOf("## Out of scope"));
-    expect(inScope).toContain("in a result column of that column's own name");
+    expect(inScope).toContain("in a result column of that column's own name or one the statement renamed or computed from it (`select email as e`, `lower(email)`)");
     expect(inScope).not.toMatch(/read files or URLs beyond the source's own tables and views, on Postgres or DuckDB/);
-    expect(outScope).toContain("Values printed through a renamed or computed result column");
+    expect(outScope).toContain("Values that reach a result through a view or a function defined in the database");
+    expect(outScope).not.toContain("renamed or computed result column");
     expect(outScope).toContain("Server files read on Postgres by a superuser or a member of `pg_read_server_files`");
   });
 

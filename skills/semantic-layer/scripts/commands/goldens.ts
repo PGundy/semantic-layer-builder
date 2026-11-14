@@ -27,7 +27,7 @@ import {
   resultColumns,
 } from "../lib/goldens.ts";
 import { LEDGER_FILE, latestReply, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
-import { formatJson, formatTable, maskRows, plainText, protectedNames, protectedNote, protectedResultColumns } from "../lib/output.ts";
+import { formatJson, formatTable, maskNote, maskRows, plainText, protectedNames, protectedResultColumns, type SqlMask, sqlMask } from "../lib/output.ts";
 import { emitPlan, executePlan, planResults, resultsInput } from "../lib/plan.ts";
 import type { GoldenRun } from "../lib/readback.ts";
 import { listGoldens, loadAccess, loadMetrics, loadSource, paths, stem, type LoadedGolden } from "../lib/project.ts";
@@ -137,10 +137,36 @@ interface GoldenRows {
   cross?: ResultRows;
 }
 
+// Whether rows come from a query run here, so their columns are in the statement's order.
+const isLive = (input: { resultsFile?: string; planId?: string }): boolean => !input.resultsFile && input.planId === undefined;
+
+const NO_MASK: SqlMask = { columns: [], reads: [], extra: false };
+
+// How the rows of a golden's cross_check_sql are masked. It is SQL the compiler did not write, so
+// its columns are masked by what the statement reads (sqlMask), not by their names alone.
+function crossMask(ctx: CommandContext, source: SourceConfig, g: Golden, rows: ResultRows | undefined, live: boolean): SqlMask {
+  const sql = crossCheckSql(g);
+  if (sql === undefined || !rows) return NO_MASK;
+  return sqlMask(sql, resultColumns(rows), protectedNames(ctx.root, source), { ordered: live });
+}
+
+// A failed cross_check_sql that reads protected values, said without the database's message, which
+// can quote a value it read (invariant 3); undefined for any other failure.
+function guardedFailure(ctx: CommandContext, source: SourceConfig, g: Golden, e: unknown): string | undefined {
+  if (!(e instanceof UserError) || !e.message.startsWith("Query failed:") || !e.message.includes(`\nQuery "${crossCheckQueryId(g.name)}" `)) return undefined;
+  const guard = crossMask(ctx, source, g, [], true).guard;
+  if (guard === undefined) return undefined;
+  return `cross_check_sql of golden "${g.name}" failed. The database's message can quote a value, and ${guard}, so it is not shown.`;
+}
+
 // Runs a golden's queries, live, from a results file or from a stored plan.
 async function runGoldenQueries(ctx: CommandContext, g: Golden, source: SourceConfig, input: { resultsFile?: string; planId?: string }): Promise<GoldenRows> {
   const { plan, compiled } = planGolden(ctx, g, source);
-  const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input, warn: ctx.err });
+  const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input, warn: ctx.err }).catch((e: unknown) => {
+    const guarded = guardedFailure(ctx, source, g, e);
+    if (guarded === undefined) throw e;
+    throw new UserError(`${guarded}\nCheck its casts and comparisons against each column's type, then run sl goldens run --name ${g.name}.`);
+  });
   return {
     compiled,
     ...(compiled.ok ? { rows: results[goldenQueryId(g.name)] ?? [] } : {}),
@@ -168,10 +194,11 @@ async function runGolden(
   source: SourceConfig,
   input: { resultsFile?: string; planId?: string },
   tolerance: number,
-): Promise<{ rows: ResultRows; from: GoldenRun["from_query"]; cross_checked: boolean }> {
+): Promise<{ rows: ResultRows; from: GoldenRun["from_query"]; cross_checked: boolean; mask: SqlMask }> {
   const { compiled, rows, cross } = await runGoldenQueries(ctx, g, source, input);
+  const crossed = crossMask(ctx, source, g, cross, isLive(input));
   if (rows && cross) {
-    const cmp = compareRows(rows, cross, { ordered: orderedGolden(g), tolerance, protectedColumns: protectedColumnsOf(ctx, source, [rows, cross]) });
+    const cmp = compareRows(rows, cross, { ordered: orderedGolden(g), tolerance, protectedColumns: [...protectedColumnsOf(ctx, source, [rows, cross]), ...crossed.columns] });
     if (!cmp.ok) {
       throw new UserError(
         `Golden "${g.name}": cross_check_sql gives other rows than the request compiled from the YAML at tolerance ${tolerance} (expected is the compiled, got is cross_check_sql): ` +
@@ -180,7 +207,9 @@ async function runGolden(
     }
   }
   if (!rows) ctx.err(notCompiledNote(g, compiled));
-  return { rows: rows ?? cross ?? [], from: rows ? "compiled" : "cross_check_sql", cross_checked: !!(rows && cross) };
+  // The mask of the rows returned: by name for the compiled query's, by its statement for cross_check_sql's.
+  const mask = rows ? { ...NO_MASK, columns: protectedColumnsOf(ctx, source, [rows]) } : crossed;
+  return { rows: rows ?? cross ?? [], from: rows ? "compiled" : "cross_check_sql", cross_checked: !!(rows && cross), mask };
 }
 
 const orderedGolden = (g: Golden): boolean => (g.request?.order_by ?? []).length > 0;
@@ -336,8 +365,8 @@ export async function goldenRun(ctx: CommandContext, values: OptionValues, name:
         `(or save {"<query id>": [rows...]} to a JSON file and pass --results <file>).`,
     );
   }
-  const { rows, from: fromQuery, cross_checked } = await runGolden(ctx, golden, source, input, tolerance);
-  return { rows, tolerance, from, from_query: fromQuery, cross_checked, masked: protectedResultColumns(resultColumns(rows), protectedNames(ctx.root, source)) };
+  const { rows, from: fromQuery, cross_checked, mask } = await runGolden(ctx, golden, source, input, tolerance);
+  return { rows, tolerance, from, from_query: fromQuery, cross_checked, masked: mask.columns };
 }
 
 // The tolerance the readback item a reply answers stated, when that readback is still stored.
@@ -391,7 +420,9 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
   const { compiled, rows: compiledRows, cross } = await runGoldenQueries(ctx, golden, source, input);
   const rows = compiledRows ?? cross ?? [];
   const columns = resultColumns(rows);
-  const masked = maskedColumns(ctx, values, source, columns);
+  const crossed = bool(values, "show-protected") ? NO_MASK : crossMask(ctx, source, golden, cross, isLive(input));
+  const mask = compiledRows ? { ...NO_MASK, columns: maskedColumns(ctx, values, source, columns) } : crossed;
+  const masked = mask.columns;
   // cross_check_sql against the compiled rows at the tolerance a confirm would record: expected is
   // the compiled, got is cross_check_sql.
   const crossCheck =
@@ -399,7 +430,7 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
       ? compareRows(compiledRows, cross, {
           ordered: orderedGolden(golden),
           tolerance: parseTolerance(values, golden).tolerance,
-          protectedColumns: maskedColumns(ctx, values, source, resultColumns([...compiledRows, ...cross])),
+          protectedColumns: [...maskedColumns(ctx, values, source, resultColumns([...compiledRows, ...cross])), ...crossed.columns],
         })
       : undefined;
   if (ctx.json) {
@@ -409,6 +440,7 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
         columns,
         rows: maskRows(rows, masked),
         protected_columns: masked,
+        ...(mask.extra ? { protected_note: maskNote(mask) } : {}),
         compiled: compiled.ok,
         ...(compiled.ok ? { sql: compiled.sql, params: compiled.params } : { refused: { reason: compiled.reason, next: refusalNext(golden, compiled) } }),
         ...(crossCheck ? { cross_check: crossCheck } : {}),
@@ -418,7 +450,7 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
     ctx.out(plainText(`${golden.name}: ${golden.question}`));
     ctx.out(formatTable(maskRows(shownRows(golden, readLayer(ctx, source), rows, columns), masked), columns));
     ctx.out(`(${rows.length} row${rows.length === 1 ? "" : "s"})`);
-    if (masked.length) ctx.out(protectedNote(masked));
+    if (masked.length) ctx.out(maskNote(mask));
     ctx.out(compiledRows ? "These rows are the request compiled from the current YAML." : notCompiledNote(golden, compiled));
     if (crossCheck?.ok) ctx.out("cross_check_sql gives the same rows.");
     else if (crossCheck) {
@@ -457,7 +489,7 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   const reply = latestReply(readReplies(ctx.root), `golden:${golden.name}`);
   const heard = parsed.from === "flag" ? undefined : readbackTolerance(ctx.root, reply);
   const { tolerance, from: toleranceFrom } = heard === undefined || heard === parsed.tolerance ? parsed : { tolerance: heard, from: "readback" as const };
-  const { rows } = await runGolden(ctx, golden, source, input, tolerance);
+  const { rows, mask: runMask } = await runGolden(ctx, golden, source, input, tolerance);
   if (!rows.length) throw new UserError(`Golden "${golden.name}" returned no rows; a golden needs at least one expected row.`);
   if (rows.length > MAX_CONFIRM_ROWS && !bool(values, "force")) {
     throw new UserError(
@@ -497,13 +529,15 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
     doc.set("confirmed_as", doc.createNode(confirmedAs));
   });
   const columns = resultColumns(rows);
-  const masked = maskedColumns(ctx, values, source, columns);
+  const mask = bool(values, "show-protected") ? NO_MASK : runMask;
+  const masked = mask.columns;
   if (ctx.json) {
     ctx.out(
       formatJson({
         name: golden.name,
         rows: maskRows(rows, masked),
         protected_columns: masked,
+        ...(mask.extra ? { protected_note: maskNote(mask) } : {}),
         written: true,
         tolerance,
         draft_fields: draftFields,
@@ -524,7 +558,7 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
             ? ", kept from the file"
             : ", the default; agree one with the owner and pass --tolerance";
     ctx.out(formatTable(maskRows(shownRows(golden, layer, rows, columns), masked), columns));
-    if (masked.length) ctx.out(protectedNote(masked));
+    if (masked.length) ctx.out(maskNote(mask));
     ctx.out(
       `Recorded ${rows.length} expected row${rows.length === 1 ? "" : "s"} in ${relative(ctx.root, path)} (tolerance ${tolerance}${toleranceNote}), ` +
         `confirmed by ${yes.by} on ${confirmedAt} (reply ${yes.ledger}).`,
@@ -654,7 +688,8 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
         } catch (e) {
           if (!(e instanceof UserError)) throw e;
           const why = e.message.split("\n")[0]!.replace(/^Query failed: /, "");
-          failure = q.id === goldenQueryId(g.name) ? `The query did not run: ${why}` : `cross_check_sql did not run: ${why}`;
+          const guarded = bool(values, "show-protected") ? undefined : guardedFailure(ctx, source, g, e);
+          failure = guarded ?? (q.id === goldenQueryId(g.name) ? `The query did not run: ${why}` : `cross_check_sql did not run: ${why}`);
           break;
         }
       }
@@ -665,10 +700,11 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
       const expected = lowerKeys(g.expected?.rows ?? []);
       const compiledRows = compiled.ok ? (results[goldenQueryId(g.name)] ?? []) : undefined;
       const crossRows = crossCheckSql(g) !== undefined ? (results[crossCheckQueryId(g.name)] ?? []) : undefined;
+      const crossed = bool(values, "show-protected") ? NO_MASK : crossMask(ctx, source, g, crossRows, !stored && !fromFile);
       const judged = judgeGolden(expected, compiledRows, crossRows, {
         ordered: orderedGolden(g),
         tolerance: g.expected?.tolerance ?? DEFAULT_TOLERANCE,
-        protectedColumns: maskedColumns(ctx, values, source, resultColumns([...expected, ...(compiledRows ?? []), ...(crossRows ?? [])])),
+        protectedColumns: [...maskedColumns(ctx, values, source, resultColumns([...expected, ...(compiledRows ?? []), ...(crossRows ?? [])])), ...crossed.columns],
       });
       checks.push({ name: g.name, ...judged, ...(compiled.ok ? {} : { compiled: "unsupported" as const }) });
     }
