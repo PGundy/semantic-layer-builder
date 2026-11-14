@@ -42,7 +42,7 @@ const LEDGER =
   "is written only by the CLI, so it records exactly what the owner heard and said: sl readback writes .sl/pending/, and sl reply, " +
   `sl question resolve and sl review apply append to .sl/ledger.jsonl. Record an owner's answer with ${REPLY.replace("yes", "yes|no|change")}.`;
 const MAX_LINES = 5;
-const TYPED = "sl set, sl tag, sl ignore-column, sl question add, sl add-field, sl remove-field, sl add-metric, sl remove-metric or sl rename";
+const TYPED = "sl set, sl tag, sl ignore-column, sl question add, sl add-field, sl remove-field, sl add-metric, sl remove-metric, sl add-join, sl remove-join or sl rename";
 
 // A stable JSON text: object keys sorted.
 function canonical(v: unknown): string {

@@ -10,7 +10,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { LastApproval } from "./access.ts";
 import { checkRule } from "./compiler/check-rule.ts";
 import { conditionAttributes, parseCondition } from "./conditions.ts";
-import { accessDraftLines, accessToDraft, commitEdits, itemMap, locate, oneLine, placeKey, relFile } from "./edit.ts";
+import { accessDraftLines, accessToDraft, commitEdits, type IgnoredRead, ignoredReads, ignoredRefusal, itemMap, locate, oneLine, placeKey, relFile } from "./edit.ts";
 import { UserError } from "./errors.ts";
 import { listGoldens, listModels, loadSnapshot, loadSource, paths, stem } from "./project.ts";
 import { USER_PLACEHOLDER } from "./sql-text.ts";
@@ -356,6 +356,19 @@ function unknownColumn(root: string, modelRef: string, expr: string): string | u
   }
 }
 
+// The ignored columns a row filter's expr reads, on its model or through its joins; none when the
+// models cannot be read, which sl validate reports.
+function ignoredInFilter(root: string, modelRef: string, expr: string): IgnoredRead[] {
+  const [source, name] = modelRef.split(".") as [string, string];
+  try {
+    const models = listModels(root, source).map((l) => ({ ...l.model, model: stem(basename(l.path)) }));
+    const model = models.find((m) => m.model === name);
+    return model ? ignoredReads(model, models, [expr]) : [];
+  } catch {
+    return [];
+  }
+}
+
 // Adds a row filter to a role: an expr, or a hierarchy (a span of control over a closure model).
 export function addRowFilter(root: string, input: RowFilterInput): AccessEditOutcome & { filter: Obj } {
   const { role, index, item, model } = roleAndModel(root, input, FILTER_USAGE);
@@ -368,6 +381,8 @@ export function addRowFilter(root: string, input: RowFilterInput): AccessEditOut
     filter = { model, expr: input.expr.trim() };
     const unknown = unknownColumn(root, model, input.expr);
     if (unknown) throw new UserError(`Cannot add a row filter on ${model} to role ${role}: ${unknown} Nothing was written.`);
+    const ignored = ignoredInFilter(root, model, input.expr);
+    if (ignored.length) throw ignoredRefusal(model.split(".")[0]!, `The row filter on ${model} for role ${role}`, ignored);
   } else {
     const missing = Object.entries(parts).filter(([, v]) => v === undefined || !v.trim()).map(([k]) => `--${k}`);
     if (missing.length) throw new UserError(`A row filter needs --expr, or all of --column, --via, --manager, --member and --user for a span of control; missing ${given.length ? missing.join(", ") : "--expr"}. Usage: ${FILTER_USAGE}.`);
