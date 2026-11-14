@@ -34,7 +34,7 @@ const ENTRY_FIELDS = [
   "displayName", "metadata", "headers", "headersHelper", ...PLUGIN_FIELDS.filter((f) => !LISTING_ONLY.includes(f) && f !== "$schema"),
 ];
 const COMPONENT_KEYS = ["skills", "commands", "agents", "outputStyles", "workflows", "lspServers", "mcpServers"];
-const HOOK_TOOLS = ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "Read"];
+const HOOK_TOOLS = ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "Read", "Grep"];
 const INTEGRITY = "skills/semantic-layer/scripts/hooks/integrity.ts";
 // The PreToolUse matcher of the MCP hook, and the names Claude Code gives the plugin server's tools.
 const MCP_MATCHER = "mcp__.*semantic-layer.*__sl_.*";
@@ -162,7 +162,7 @@ describe("what Claude Code discovers", () => {
     for (const f of files) expect(frontmatter(join(REPO, "agents", f)).name).toBe(f.replace(/\.md$/, ""));
   });
 
-  test("the PreToolUse hooks cover the edit tools, Bash and Read, and the MCP server's tools; the ledger comparison runs after Bash and those tools; the SessionStart hook has no matcher", () => {
+  test("the PreToolUse hooks cover the edit tools, Bash, Read and Grep, and the MCP server's tools; the ledger comparison runs after Bash and those tools; the SessionStart hook has no matcher", () => {
     const pre = hookFor("PreToolUse");
     expect(new Set(String(pre.matcher).split("|"))).toEqual(new Set(HOOK_TOOLS));
     expect(hookScript(pre.command)).toBe("skills/semantic-layer/scripts/hooks/guard-edits.ts");
