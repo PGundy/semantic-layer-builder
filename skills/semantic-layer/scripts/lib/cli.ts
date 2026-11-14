@@ -16,7 +16,7 @@ export interface CliIO {
   stdin?: () => Promise<string>;
 }
 
-const GLOBAL_OPTIONS = {
+export const GLOBAL_OPTIONS = {
   root: { type: "string" },
   "env-file": { type: "string" },
   json: { type: "boolean" },

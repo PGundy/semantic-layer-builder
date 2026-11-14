@@ -38,6 +38,8 @@ export interface Scope {
   exclude?: string[];
   // A table-list file relative to the semantic root; lib/table-list.ts joins its entries to the lists.
   tables_file?: string;
+  // Why an exclude pattern leaves tables out, by pattern, in the owner's words (sl scope --reason).
+  exclude_reasons?: Record<string, string>;
 }
 
 export interface SourceConnection {

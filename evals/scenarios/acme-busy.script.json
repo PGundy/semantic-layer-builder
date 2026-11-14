@@ -2,7 +2,7 @@
   "skill": [
     {
       "text": "Thanks, Dana. I can't approve anything on \"approve everything\": a definition is approved only on your yes to its readback, so nothing is approved yet. To keep your time short, I'll ask what I need in as few messages as I can, and send each batch of sign-offs as one review form you fill in when you have a moment.\n\nI read the lake source and its five tables. Two questions:\n\n1. Keep web_events, sessions and marketing_spend in scope, and leave out web_events_2024_archive (an archive copy) and tmp_session_dedupe (a scratch table)?\n2. Are the timestamps stored in UTC, and do your reports count days in UTC?",
-      "tokens": 784,
+      "tokens": 791,
       "sl": [
         [
           "status"
@@ -16,7 +16,7 @@
     },
     {
       "text": "Done: three tables in scope, measured and drafted as models with UTC days; every item stays a draft until you confirm its readback. sessions and marketing_spend first:\n\n1. sessions: my guess, since session_id is never empty and never repeats: one row is one visit, anonymous visits included. Right?\n2. marketing_spend: my guess, since it has 3,655 rows, five channels over 731 days: one row is one day of one paid channel, identified by spend_date and channel. Right?\n3. spend_cents: is it spend in cents, and in which currency? The draft divides it by 100.\n\nAnswer all three in one message if you can.",
-      "tokens": 1341,
+      "tokens": 1364,
       "sl": [
         [
           "scope",
@@ -294,7 +294,7 @@
     },
     {
       "text": "Applied your second form, wrote your figures into each golden's reference and confirmed both goldens on your yes, with tolerance 0; the check passes. Where things stand: sessions and marketing_spend are signed off with their counts, spend and dates, and two goldens pin 2025's sessions and spend. Still draft: marketing_spend.channel and web_events.event_type, rewritten as you said, and the rest of web_events. There is no access.yaml yet, so access is open: everyone sees every approved item. That is all for this session; next time I will send those drafts as one form.",
-      "tokens": 1631,
+      "tokens": 1654,
       "done": true,
       "write": {
         "goldens/sessions_2025.yaml": "name: sessions_2025\nquestion: How many sessions were there in 2025?\nrequest:\n  source: lake\n  measures: [sessions.session_count]\n  filters:\n    - { field: sessions.started_at, op: gte, value: \"2025-01-01\" }\n    - { field: sessions.started_at, op: lt, value: \"2026-01-01\" }\nsql: |\n  select count(*) as session_count\n  from main.sessions\n  where started_at >= '2025-01-01' and started_at < '2026-01-01'\nreference: Matches Dana Ruiz's sessions report for 2025, 4,551 sessions, anonymous sessions included, UTC dates.\nstatus: draft\n",

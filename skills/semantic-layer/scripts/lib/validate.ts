@@ -1,5 +1,5 @@
 // Structural (JSON Schema) and semantic (cross-reference) validation of a semantic root.
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import { type AccessLayer, type AccessVisibility, checkRequest, evaluateLayer, metricMeasureRefs } from "./access.ts";
 import {
@@ -23,7 +23,7 @@ import { type Env, envFilesInRoot, rootEnvFile, trackedEnvFiles } from "./env-fi
 import { UserError } from "./errors.ts";
 import { intakeIssues, intakeMode, upgradeCommand } from "./intake.ts";
 import { DEFAULT_TOLERANCE } from "./goldens.ts";
-import { currentYes, ledgerReplies } from "./ledger.ts";
+import { countedReplies, currentYes } from "./ledger.ts";
 import { findTable } from "./naming.ts";
 import { parseYaml } from "./yaml.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
@@ -329,6 +329,10 @@ class Validator {
     if (!existsSync(abs)) return;
     const file = this.rel(abs);
     const fix = "the ledger is append-only: restore it from version control (git checkout -- .sl/ledger.jsonl)";
+    // sl approve reads only a plain file inside the root, so a link is refused there (lib/ledger.ts readReplies).
+    if (!lstatSync(dirname(abs)).isDirectory() || !lstatSync(abs).isFile()) {
+      return this.error(file, "", `is not a plain file inside the semantic root (it or its .sl directory is a link), so sl approve refuses it; replace the link with the file it points to, or ${fix}`);
+    }
     const text = this.overrides?.get(abs) ?? readFileSync(abs, "utf8");
     if (text && !text.endsWith("\n")) this.error(file, "", `the last line has no line break, as when an append is cut off; ${fix}`);
     const seen = new Map<string, number>();
@@ -882,7 +886,7 @@ class Validator {
     if (this.repliesCache) return this.repliesCache;
     const abs = join(this.root, ".sl", "ledger.jsonl");
     const text = this.overrides?.get(abs) ?? (existsSync(abs) && statSync(abs).isFile() ? readFileSync(abs, "utf8") : "");
-    this.repliesCache = ledgerReplies(text);
+    this.repliesCache = countedReplies(text).replies;
     return this.repliesCache;
   }
 

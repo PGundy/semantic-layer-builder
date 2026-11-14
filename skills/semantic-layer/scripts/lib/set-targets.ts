@@ -10,7 +10,7 @@ import { batchWrite, blamed, commitEdit, deferValidation, itemMap, oneLine, plac
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { DEFAULT_TOLERANCE } from "./goldens.ts";
-import { currentYes, LEDGER_FILE, ledgerReplies } from "./ledger.ts";
+import { countedReplies, currentYes, LEDGER_FILE } from "./ledger.ts";
 import { paths } from "./project.ts";
 import { validateProject } from "./validate.ts";
 import { readYamlIfExists } from "./yaml.ts";
@@ -178,7 +178,7 @@ export function setGolden(root: string, name: string, key: string, raw: string |
 // the golden as its file now stands (a change back to what the owner said yes to needs none).
 function unconfirmed(root: string, file: string, before: Obj): boolean {
   const ledger = join(root, LEDGER_FILE);
-  const replies = existsSync(ledger) ? ledgerReplies(readFileSync(ledger, "utf8")) : [];
+  const replies = existsSync(ledger) ? countedReplies(readFileSync(ledger, "utf8")).replies : [];
   const hash = (g: Obj) => {
     const exp = (g.expected ?? {}) as Obj;
     return goldenHash(g, Array.isArray(exp.rows) ? exp.rows : [], typeof exp.tolerance === "number" ? exp.tolerance : DEFAULT_TOLERANCE);

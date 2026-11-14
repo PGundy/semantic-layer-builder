@@ -2,7 +2,7 @@
   "skill": [
     {
       "text": "I read the lake source: five tables. web_events_2024_archive and tmp_session_dedupe look like an archive copy and a scratch table. Keep web_events, sessions and marketing_spend in scope and leave those two out?\n\nStop here or continue?",
-      "tokens": 691,
+      "tokens": 698,
       "sl": [
         ["status"],
         ["introspect", "--source", "lake"]
@@ -18,7 +18,7 @@
     },
     {
       "text": "I drafted the three models with UTC days; every item stays a draft until you confirm its readback. sessions and marketing_spend first:\n\n1. sessions: my guess, since session_id is never empty and never repeats: one row is one visit, anonymous visits included. Right?\n2. marketing_spend: my guess, since it has 3,655 rows, five channels over 731 days: one row is one day of one paid channel, identified by spend_date and channel. Right?\n3. spend_cents: is it spend in cents, and in which currency? The draft divides it by 100.\n\nStop here or continue?",
-      "tokens": 1040,
+      "tokens": 1063,
       "sl": [
         ["draft", "--source", "lake"],
         ["status"]
@@ -82,7 +82,7 @@
     },
     {
       "text": "Confirmed both goldens on your yes, with tolerance 0, and the check passes. Where things stand: sessions and marketing_spend are signed off with their counts, spend and dates, and two goldens pin 2025's sessions and spend. Still draft: web_events and the other sessions and marketing_spend fields. There is no access.yaml yet, so access is open: everyone sees every approved item. That is all for this session; next time I will read back web_events first.\n\nStop here or continue?",
-      "tokens": 1247,
+      "tokens": 1270,
       "done": true,
       "sl": [
         ["reply", "--readback", "rb_0002", "--item", "1", "--text", "yep", "--verdict", "yes", "--by", "Dana Ruiz"],

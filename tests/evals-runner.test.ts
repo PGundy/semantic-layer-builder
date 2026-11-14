@@ -66,7 +66,7 @@ describe("both shipped scenarios run with the scripted driver", () => {
       expect(r.summary.skill_turns + r.summary.owner_turns).toBe(r.summary.turns);
       expect(r.summary.tokens).toBe(r.transcript.reduce((n, t) => n + t.tokens, 0));
       // The scripts' counts follow evals/README.md, Token counts (tests/evals-tokens.test.ts recomputes them).
-      expect(r.summary.tokens_by_speaker.skill).toBe(name === "acme-structured" ? 10029 : 9993);
+      expect(r.summary.tokens_by_speaker.skill).toBe(name === "acme-structured" ? 10082 : 10046);
 
       for (const t of r.transcript) expect(evalSchemaIssues("eval-transcript-turn", t, "transcript.jsonl")).toEqual([]);
       expect(r.transcript.map((t) => t.turn)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
@@ -167,10 +167,10 @@ describe("budgets", () => {
 
   test("the token budget stops the run on the turn that goes past it", async () => {
     const { scenario, script } = scenarioNamed("acme-structured");
-    const r = await run({ ...scenario, budgets: { ...scenario.budgets, max_tokens: 754 } }, scripted(scenario, script));
-    // 713 after the first skill turn is within the budget; the owner's 41 more make 754, not past it.
+    const r = await run({ ...scenario, budgets: { ...scenario.budgets, max_tokens: 761 } }, scripted(scenario, script));
+    // 720 after the first skill turn is within the budget; the owner's 41 more make 761, not past it.
     // The next skill turn's 835 goes past it.
-    expect(r.summary).toMatchObject({ stop_reason: "token_budget", turns: 4, tokens: 1589 });
+    expect(r.summary).toMatchObject({ stop_reason: "token_budget", turns: 4, tokens: 1596 });
     expect(r.transcript.at(-1)!.speaker).toBe("skill");
   });
 
@@ -444,7 +444,7 @@ describe("errors are plain and name the fix", () => {
     const dir = outDir();
     const io = { out: (t: string) => out.push(t), err: (t: string) => out.push(t), env: {} };
     expect(await main(["--scenario", "acme-terse", "--now", START, "--out", dir], io)).toBe(0);
-    expect(out[0]).toBe("Run acme-terse-20260101T000000000Z: 14 turns (7 owner), 10009 tokens, stopped: done.");
+    expect(out[0]).toBe("Run acme-terse-20260101T000000000Z: 14 turns (7 owner), 10062 tokens, stopped: done.");
     expect(out.at(-1)).toContain("Next: read");
     expect(existsSync(join(dir, "acme-terse-20260101T000000000Z", "summary.json"))).toBe(true);
   });

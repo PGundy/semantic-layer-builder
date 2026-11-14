@@ -52,6 +52,7 @@ interface Explain {
   decided_by: { origin: string | null; entry: string | null; kind: string };
   also_matched: { origin: string; entry: string; kind: string }[];
   rule: string;
+  reason: string | null;
 }
 
 async function explain(root: string, args: string[]): Promise<Explain> {
@@ -71,6 +72,7 @@ describe("sl scope --explain", () => {
       source: "wh",
       table: "analytics.fct_orders",
       in_scope: true,
+      reason: null,
       decided_by: { origin: "scope.include[0]", entry: "fct_*", kind: "include" },
       also_matched: [],
       rule: "A table is in scope when an include entry matches it and no exclude entry does.",

@@ -2,7 +2,7 @@
   "skill": [
     {
       "text": "Thanks, Dana. Before I start: can you give me a read-only connection to the lake? With one I measure which values each column holds, which keys are unique and how the tables join, and I check figures you trust against the data; table definitions alone cannot tell me any of that. The connection only reads, and nothing in your data changes.\n\nStop here or continue?",
-      "tokens": 675,
+      "tokens": 682,
       "sl": [
         ["status"]
       ]
@@ -24,7 +24,7 @@
     },
     {
       "text": "Done: three tables in scope, drafted from their definitions, and your reason for the export is in the source's description; every item stays a draft until you confirm its readback. Without data these are guesses from the column names alone:\n\n1. sessions: my guess, from the name session_id: one row is one visit, identified by session_id. Right? Do anonymous visits count?\n2. marketing_spend: my guess, from spend_date and channel: one row is one day of one paid channel. Right?\n3. spend_cents: is it spend in cents, and in which currency? The draft divides it by 100.\n4. web_events: my guess, from event_id: one row is one tracked event, and session_id says which visit it belongs to. Right? Which events count as page views?\n\nStop here or continue?",
-      "tokens": 1516,
+      "tokens": 1539,
       "write": {
         "sources/lake.yaml": "source: lake\ndialect: duckdb\ndescription: \"The Acme event lake, Parquet files the event pipeline writes. Started from a schema export: IT does not allow any connection to the lake files from outside the office network.\"\nintake:\n  mode: export\n  reason: IT does not allow any connection to the lake files from outside the office network.\n  schemas:\n    - main\n  export:\n    file: exports/lake.csv\n"
       },
@@ -59,7 +59,7 @@
     },
     {
       "text": "Approved all seven on your yes. Where things stand: sessions, marketing spend and page views are signed off from their definitions, and the join from events to sessions too, with a warning until a connection checks it. Waiting on a connection, so the layer is not done: profiles (which values each column holds and whether the keys are unique), the check of that join, goldens (figures confirmed against your reports, which need the data), and drift from data. When a connection is possible, I upgrade the lake with sl setup --source lake --dialect duckdb and the connection; your answers and approvals stay, and the waiting steps run. Is a read-only connection possible yet? If not, that is all for this session.\n\nStop here or continue?",
-      "tokens": 1839,
+      "tokens": 1871,
       "done": true,
       "sl": [
         ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Yes, all seven are right. Approve them.", "--verdict", "yes", "--by", "Dana Ruiz"],

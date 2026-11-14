@@ -159,6 +159,29 @@ export function ledgerReplies(text: string, strict = false): LedgerReply[] {
   return out;
 }
 
+// The reply lines of ledger text as every reader counts them: read strictly, as sl approve reads
+// them, or none with the reason when a line would make sl approve refuse, so a yes approve would not
+// accept counts nowhere.
+export function countedReplies(text: string): { replies: LedgerReply[]; problem: string | null } {
+  try {
+    return { replies: ledgerReplies(text, true), problem: null };
+  } catch (e) {
+    if (e instanceof UserError) return { replies: [], problem: e.message };
+    throw e;
+  }
+}
+
+// The semantic root's ledger as sl status, sl next and the typed edits count it: readReplies, or no
+// replies with the reason sl approve would give for refusing it.
+export function ledgerState(root: string): { replies: LedgerReply[]; problem: string | null } {
+  try {
+    return { replies: readReplies(root), problem: null };
+  } catch (e) {
+    if (e instanceof UserError) return { replies: [], problem: e.message };
+    throw e;
+  }
+}
+
 // The kind: reply lines of the semantic root's ledger (none when it has no ledger), read strictly.
 export function readReplies(root: string): LedgerReply[] {
   const file = join(root, LEDGER_FILE);

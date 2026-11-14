@@ -245,7 +245,7 @@ describe("the router and its phase cards", () => {
     expect(flat).toContain("`{ kind, phase, why, run?, ask_owner?, dispatch?, blocked_on }`");
     expect(flat).toContain("`phase` names the card to load");
     expect(flat).toContain("`why` says why this action is next");
-    expect(flat).toContain("`blocked_on` is `open_questions` while `access.yaml`'s open questions wait on the owner, else null");
+    expect(flat).toContain("`blocked_on` is `open_questions` while open questions in `access.yaml` or any model wait on the owner, else null");
     expect(flat).toContain("`sl next` does not return it yet");
   });
 
