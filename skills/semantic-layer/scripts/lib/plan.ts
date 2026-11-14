@@ -5,7 +5,7 @@ import { bool, str, type CommandContext, type OptionValues } from "./command.ts"
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { canRun, openAdapter, type Adapter, type AdapterOptions, type RoleReport } from "./adapters/index.ts";
-import { plainText, protectedNames, protectedResultColumns } from "./output.ts";
+import { plainText, protectedNames, protectedResultColumns, sqlMask } from "./output.ts";
 import { loadSource } from "./project.ts";
 import type { PlannedQuery, PlanResults, QueryPlan, ResultRows, SourceConfig, StoredPlan } from "./types.ts";
 import { schemaIssues } from "./schema.ts";
@@ -492,12 +492,15 @@ function storedRows(root: string, id: string, query: string): ResultRows | undef
   return raw.rows as ResultRows;
 }
 
-// The protected columns (see protectedResultColumns) of a golden's result. A golden's sql can
-// select any column, unlike the other plans, whose queries never select a protected column's values.
-function protectedGoldenColumns(root: string, plan: StoredPlan, query: string, rows: ResultRows): string[] {
-  if (!query.startsWith("golden:")) return [];
+// The protected columns of a golden's result: by name (see protectedResultColumns) for the compiled
+// query, and by what the statement reads (see sqlMask) for its cross_check_sql, which can rename a
+// column. A golden's sql can select any column, unlike the other plans, whose queries never select
+// a protected column's values.
+function protectedGoldenColumns(root: string, plan: StoredPlan, query: PlannedQuery, rows: ResultRows): string[] {
+  if (!query.id.startsWith("golden:")) return [];
   const columns = [...new Set(rows.flatMap((r) => Object.keys(r)))];
-  return protectedResultColumns(columns, protectedNames(root, loadSource(root, plan.source)));
+  const prot = protectedNames(root, loadSource(root, plan.source));
+  return query.id.endsWith(":cross_check") ? sqlMask(query.sql, columns, prot, { ordered: false }).columns : protectedResultColumns(columns, prot);
 }
 
 export interface AddedResult {
@@ -527,7 +530,7 @@ export function addResult(root: string, id: string, query: string, file: string)
         `Run the query again so it returns every row (a row limit above ${q.max_rows}), then rerun sl results add.`,
     );
   }
-  const masked = protectedGoldenColumns(root, plan, query, rows);
+  const masked = protectedGoldenColumns(root, plan, q, rows);
   if (masked.length) {
     throw new UserError(
       `The result of "${query}" has protected column${masked.length === 1 ? "" : "s"} ${masked.map(plainText).join(", ")}, and .sl/plans keeps no ` +
