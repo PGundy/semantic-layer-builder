@@ -1,6 +1,7 @@
 import { validateProject } from "../lib/validate.ts";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { canRun } from "../lib/adapters/index.ts";
 import { validDate } from "./approve.ts";
 import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.ts";
@@ -21,6 +22,7 @@ import {
   goldenDraftFields,
   goldenPlan,
   goldenQueryId,
+  groupingColumns,
   judgeGolden,
   onlyUnsupportedDialect,
   refusalNext,
@@ -30,10 +32,10 @@ import { LEDGER_FILE, latestReply, readPending, readReplies, shellQuote } from "
 import { formatJson, formatTable, maskNote, maskRows, plainText, protectedNames, protectedResultColumns, type SqlMask, sqlMask } from "../lib/output.ts";
 import { emitPlan, executePlan, planResults, resultsInput } from "../lib/plan.ts";
 import type { GoldenRun } from "../lib/readback.ts";
-import { listGoldens, loadAccess, loadMetrics, loadSource, paths, stem, type LoadedGolden } from "../lib/project.ts";
+import { listGoldens, loadAccess, loadFile, loadMetrics, loadSource, paths, stem, type LoadedGolden } from "../lib/project.ts";
 import type { Golden, GoldenRunAs, LedgerReply, Metric, Model, PlanResults, QueryPlan, ResultRows, SourceConfig } from "../lib/types.ts";
 import { NAME_PATTERN } from "../lib/types.ts";
-import { schemaIssues } from "../lib/validate.ts";
+import { schemaIssues } from "../lib/schema.ts";
 import { parseYamlText, readJson, readYaml, updateYaml, writeYaml } from "../lib/yaml.ts";
 
 export const MAX_CONFIRM_ROWS = 200;
@@ -83,7 +85,7 @@ function loadGolden(ctx: CommandContext, name: string): LoadedGolden {
     const known = listGoldens(ctx.root).map((g) => stem(basename(g.path)));
     throw new UserError(`No golden "${name}" (${relative(ctx.root, path)}). Goldens: ${known.length ? known.join(", ") : "none"}.`);
   }
-  const loaded = { path, golden: readYaml<Golden>(path) };
+  const loaded = { path, golden: loadFile<Golden>(ctx.root, path, "golden") };
   const problem = goldenProblem(loaded);
   if (problem) throw new UserError(problem);
   return loaded;
@@ -198,7 +200,12 @@ async function runGolden(
   const { compiled, rows, cross } = await runGoldenQueries(ctx, g, source, input);
   const crossed = crossMask(ctx, source, g, cross, isLive(input));
   if (rows && cross) {
-    const cmp = compareRows(rows, cross, { ordered: orderedGolden(g), tolerance, protectedColumns: [...protectedColumnsOf(ctx, source, [rows, cross]), ...crossed.columns] });
+    const cmp = compareRows(rows, cross, {
+      ordered: orderedGolden(g),
+      tolerance,
+      protectedColumns: [...protectedColumnsOf(ctx, source, [rows, cross]), ...crossed.columns],
+      groupingColumns: groupingColumns(compiled),
+    });
     if (!cmp.ok) {
       throw new UserError(
         `Golden "${g.name}": cross_check_sql gives other rows than the request compiled from the YAML at tolerance ${tolerance} (expected is the compiled, got is cross_check_sql): ` +
@@ -431,6 +438,7 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
           ordered: orderedGolden(golden),
           tolerance: parseTolerance(values, golden).tolerance,
           protectedColumns: [...maskedColumns(ctx, values, source, resultColumns([...compiledRows, ...cross])), ...crossed.columns],
+          groupingColumns: groupingColumns(compiled),
         })
       : undefined;
   if (ctx.json) {
@@ -521,6 +529,15 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   if (!ctx.json) for (const w of warnings) ctx.err(w);
   const confirmedAt = yes.at;
   const confirmedAs = runAs(golden);
+  // The query ran without the lock. Under it the golden and the owner's latest reply are read again:
+  // the yes is recorded only when neither changed while the query ran (invariant 5).
+  const unlock = await ctx.lock();
+  if (!isDeepStrictEqual(readYaml<Golden>(path), golden) || latestReply(readReplies(ctx.root), `golden:${golden.name}`)?.id !== yes.ledger) {
+    throw new UserError(
+      `Golden "${golden.name}" or the owner's reply to it changed while its query ran, so nothing was recorded. ` +
+        `Run sl goldens confirm --name ${golden.name}${passedFlags(values)} again.`,
+    );
+  }
   updateYaml(path, (doc) => {
     doc.set("expected", doc.createNode({ tolerance, rows }));
     doc.set("status", "approved");
@@ -528,6 +545,7 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
     doc.set("confirmed_at", confirmedAt);
     doc.set("confirmed_as", doc.createNode(confirmedAs));
   });
+  unlock();
   const columns = resultColumns(rows);
   const mask = bool(values, "show-protected") ? NO_MASK : runMask;
   const masked = mask.columns;
@@ -705,6 +723,7 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
         ordered: orderedGolden(g),
         tolerance: g.expected?.tolerance ?? DEFAULT_TOLERANCE,
         protectedColumns: [...maskedColumns(ctx, values, source, resultColumns([...expected, ...(compiledRows ?? []), ...(crossRows ?? [])])), ...crossed.columns],
+        groupingColumns: groupingColumns(compiled),
       });
       checks.push({ name: g.name, ...judged, ...(compiled.ok ? {} : { compiled: "unsupported" as const }) });
     }
@@ -865,7 +884,9 @@ const spec: CommandSpec = {
     'goldens new --name <g> --question "<question>" --request <json|file> [--source <s>] [--role <role>] [--user <json>]\n\n' +
     "confirm records the rows the request compiles to now only when the owner's latest reply to golden:<g> in .sl/ledger.jsonl\n" +
     "is a yes to the golden with these rows and this tolerance (sl readback --targets golden:<g>, then sl reply --verdict yes);\n" +
-    "confirmed_by and confirmed_at come from that reply, and --by, when given, must name the same owner.",
+    "confirmed_by and confirmed_at come from that reply, and --by, when given, must name the same owner.\n" +
+    "The tolerance is relative and applies to figures with decimals: the columns a golden is grouped by and whole numbers\n" +
+    "(counts, years) always compare exactly, and a failed check says so on the line.",
   options: {
     name: { type: "string" },
     by: { type: "string" },
@@ -882,6 +903,7 @@ const spec: CommandSpec = {
     user: { type: "string" },
   },
   positionals: true,
+  writes: ({ values, positionals }) => (positionals[0] === "new" || values["emit-sql"] ? "whole" : positionals[0] === "confirm" ? "late" : false),
   async run({ values, positionals }, ctx) {
     const [sub, ...rest] = positionals;
     if (!sub || !(SUBCOMMANDS as readonly string[]).includes(sub)) {

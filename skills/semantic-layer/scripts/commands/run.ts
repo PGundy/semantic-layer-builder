@@ -67,6 +67,7 @@ const spec: CommandSpec = {
     limit: { type: "string" },
     "show-protected": { type: "boolean" },
   },
+  writes: false,
   async run({ values }, ctx) {
     const sourceName = str(values, "source");
     if (!sourceName) throw new UserError("--source is required.");

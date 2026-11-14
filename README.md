@@ -33,7 +33,7 @@ The plugin needs [Bun](https://bun.sh) 1.4 or later on `PATH` and one dependency
 cd "<plugin root>" && bun install --frozen-lockfile --production
 ```
 
-Run it again after each plugin update. The plugin ships the `semantic-layer` skill, five agents (`sl-interviewer`, `sl-connector-runner`, `sl-batch-analyst`, `sl-readback-verifier`, `sl-golden-builder`), the MCP server below (as the interviewer), `PreToolUse` hooks that refuse hand edits to approved items and hold each agent to its role, and a `SessionStart` hook that checks the install. Check it with `claude plugin details semantic-layer-builder`, which lists one skill, five agents, both hook events and one MCP server.
+Run it again after each plugin update. The plugin ships the `semantic-layer` skill, five agents (`sl-interviewer`, `sl-connector-runner`, `sl-batch-analyst`, `sl-readback-verifier`, `sl-golden-builder`), the MCP server below (as the interviewer), `PreToolUse` hooks that refuse hand edits to approved items and hold each agent to its role, hooks after each shell command that put back a change to the answer ledger `sl` did not make, and a `SessionStart` hook that checks the install. Check it with `claude plugin details semantic-layer-builder`, which lists one skill, five agents, four hook events and one MCP server.
 
 Then ask the agent something like "help me build a semantic layer for our warehouse". For a multi-agent build, run the interviewer as the main session: `claude --agent semantic-layer-builder:sl-interviewer`. [`docs/plugin.md`](docs/plugin.md) has the details, how to check the install, and how the plugin runs the MCP server.
 

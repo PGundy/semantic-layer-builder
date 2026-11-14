@@ -16,7 +16,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash",
+        "matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash|Read",
         "hooks": [
           {
             "type": "command",
@@ -31,6 +31,35 @@
           {
             "type": "command",
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/mcp/guard.ts\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/hooks/integrity.ts\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|mcp__.*semantic-layer.*__sl_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/hooks/integrity.ts\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash|mcp__.*semantic-layer.*__sl_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/hooks/integrity.ts\"",
             "timeout": 10
           }
         ]

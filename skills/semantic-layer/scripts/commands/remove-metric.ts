@@ -11,6 +11,7 @@ const spec: CommandSpec = {
   usage: "remove-metric <name | metric:<name>> [--force]",
   options: { force: { type: "boolean" } },
   positionals: true,
+  writes: "whole",
   async run({ values, positionals }, ctx) {
     loadProject(ctx.root);
     const [raw, ...extra] = positionals;

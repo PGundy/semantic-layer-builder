@@ -2,15 +2,16 @@
 // sl readback renders each target from the YAML (its definition, who sees it under the current
 // access.yaml, and the facts measured from the data) and stores the numbered items with the content
 // hash sl approve would record, in .sl/pending/<readback_id>.json under the semantic root.
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type AccessLayer, type AccessVisibility, evaluateLayer, loadAccessLayer } from "./access.ts";
 import { accessEntry, type ApprovalEntry, goldenHash, metricEntries, modelEntries } from "./approval-hash.ts";
 import { UserError } from "./errors.ts";
+import { writeFileAtomic } from "./lock.ts";
 import { findTable, qualifiedName } from "./naming.ts";
 import { formatTable, maskRows, PROTECTED_VALUE, plainText } from "./output.ts";
 import { protectedColumns } from "./profile.ts";
-import { listModels, loadAccess, loadMetrics, loadSnapshot, paths } from "./project.ts";
+import { listModels, loadAccess, loadFile, loadMetrics, loadSnapshot, paths } from "./project.ts";
 import { parseTarget } from "./refs.ts";
 import { referencedColumns } from "./snapshot-diff.ts";
 import { sqlNames } from "./sql-names.ts";
@@ -67,7 +68,7 @@ export function writePending(root: string, pending: PendingReadback): string {
   const rel = join(PENDING_DIR, `${pending.readback_id}.json`);
   mkdirSync(join(root, PENDING_DIR), { recursive: true });
   try {
-    writeFileSync(join(root, rel), `${JSON.stringify(pending, null, 2)}\n`, { flag: "wx" });
+    writeFileAtomic(join(root, rel), `${JSON.stringify(pending, null, 2)}\n`, { exclusive: true });
   } catch (e) {
     if ((e as { code?: string }).code !== "EEXIST") throw e;
     throw new UserError(`${rel} was written by another run just now; run sl readback again for the next free id.`);
@@ -642,8 +643,8 @@ export function renderReadbacks(
     switch (t.kind) {
       case "golden": {
         const file = paths(root).golden(t.name);
-        const g = existsSync(file) ? readYamlIfExists<Golden>(file) : null;
-        if (!isObj(g)) throw unknown(ref, `there is no goldens/${t.name}.yaml`);
+        const g = existsSync(file) ? loadFile<Golden>(root, file, "golden") : null;
+        if (!g) throw unknown(ref, `there is no goldens/${t.name}.yaml`);
         const run = goldens.get(t.name);
         if (!run) throw new UserError(`${ref} is read back with the rows its request compiles to: run sl readback --targets ${ref}.`);
         const text = renderGolden(g, run).join("\n");
@@ -664,8 +665,8 @@ export function renderReadbacks(
       }
       default: {
         const file = paths(root).model(t.source, t.model);
-        const model = existsSync(file) ? readYamlIfExists<Model>(file) : null;
-        if (!isObj(model)) throw unknown(ref, `there is no model ${t.source}.${t.model}`);
+        const model = existsSync(file) ? loadFile<Model>(root, file, "model") : null;
+        if (!model) throw unknown(ref, `there is no model ${t.source}.${t.model}`);
         const i = info(t.source);
         // The model as its file holds it, hashed the way sl approve hashes it; a field is found the way
         // sl approve finds it (dimensions, then measures, then joins).

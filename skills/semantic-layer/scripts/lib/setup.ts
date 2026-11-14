@@ -19,7 +19,7 @@ export function projectName(root: string): string {
 // keys that come before it, so an edited file keeps the shape of a new one.
 const ORDER: Record<string, string[]> = {
   "": ["source", "dialect", "description", "connection", "intake", "scope"],
-  connection: ["env", "database", "setup", "views"],
+  connection: ["env", "env_prefix", "database", "setup", "views"],
   intake: ["mode", "reason", "schemas", "export"],
   scope: ["include", "exclude", "tables_file"],
 };
@@ -70,6 +70,8 @@ function setKey(doc: Document, map: YAMLMap, key: string, value: unknown, order:
 // a scope or a views map, when given, replaces the file's.
 export interface SourceState {
   env?: string;
+  // connection.env_prefix; given, it replaces connection.env, as env replaces it.
+  envPrefix?: string;
   database?: string;
   views?: Record<string, string>;
   mode: "connection" | "export";
@@ -93,7 +95,14 @@ export function applySourceState(doc: Document, state: SourceState): void {
     if (isMap(node) && !node.items.length) root.delete(key);
   };
   const conn = section("connection");
-  if (state.env !== undefined) setKey(doc, conn, "env", state.env, ORDER.connection!);
+  if (state.env !== undefined) {
+    setKey(doc, conn, "env", state.env, ORDER.connection!);
+    setKey(doc, conn, "env_prefix", undefined, ORDER.connection!);
+  }
+  if (state.envPrefix !== undefined) {
+    setKey(doc, conn, "env_prefix", state.envPrefix, ORDER.connection!);
+    setKey(doc, conn, "env", undefined, ORDER.connection!);
+  }
   if (state.database !== undefined) setKey(doc, conn, "database", state.database, ORDER.connection!);
   if (state.views !== undefined) setKey(doc, conn, "views", state.views, ORDER.connection!);
   prune("connection");

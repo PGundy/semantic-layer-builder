@@ -116,6 +116,7 @@ const spec: CommandSpec = {
   summary: "Show progress per source and the next batch of tables to interview.",
   usage: "status [--source <source>]",
   options: { source: { type: "string" } },
+  writes: false,
   async run({ values }, ctx) {
     const st = computeStatus(ctx.root, str(values, "source"));
     ctx.out(ctx.json ? formatJson(st) : render(st));

@@ -17,6 +17,9 @@ export interface CompareOptions {
   tolerance: number;
   // Columns (lowercase) whose values the differences show as [protected].
   protectedColumns?: string[];
+  // The request's grouping columns (see groupingColumns), matched ignoring case. Their values
+  // compare exactly whatever the tolerance, and an unordered comparison pairs rows by them.
+  groupingColumns?: string[];
 }
 
 export interface CompareResult {
@@ -90,13 +93,19 @@ function show(v: unknown): string {
   return String(v);
 }
 
+// Whether both values are whole numbers: an integer number, a bigint or a string that spells an
+// integer (two strings only when both are written canonically, as databases print them).
+function bothWhole(a: unknown, b: unknown): boolean {
+  if (typeof a === "string" && typeof b === "string" && !(INTEGER_STRING.test(a) && INTEGER_STRING.test(b))) return false;
+  return asBigInt(a) !== null && asBigInt(b) !== null;
+}
+
+// Two whole numbers are equal only when they are the same integer, whatever the tolerance: a count
+// of 1000 is never 1001, and a year is never the next one. The tolerance applies when at least one
+// side is not a whole number.
 function numbersEqual(a: unknown, b: unknown, tolerance: number): boolean {
-  if (tolerance <= 0) {
-    if (typeof a === "string" && typeof b === "string") return normalizeDecimal(a) === normalizeDecimal(b);
-    const ia = asBigInt(a);
-    const ib = asBigInt(b);
-    if (ia !== null && ib !== null) return ia === ib;
-  }
+  if (bothWhole(a, b)) return asBigInt(a) === asBigInt(b);
+  if (tolerance <= 0 && typeof a === "string" && typeof b === "string") return normalizeDecimal(a) === normalizeDecimal(b);
   const na = asNumber(a);
   const nb = asNumber(b);
   if (na === null || nb === null) return false;
@@ -104,9 +113,9 @@ function numbersEqual(a: unknown, b: unknown, tolerance: number): boolean {
   return Math.abs(na - nb) <= tolerance * Math.max(Math.abs(na), Math.abs(nb));
 }
 
-// Whether two cell values agree: numbers within the relative tolerance, a numeric
-// string against a number by value, two canonical decimal strings by value, other
-// strings exactly, null only with null, objects by their key-sorted JSON.
+// Whether two cell values agree: two whole numbers exactly, other numbers within the relative
+// tolerance, a numeric string against a number by value, two canonical decimal strings by
+// value, other strings exactly, null only with null, objects by their key-sorted JSON.
 export function valuesEqual(a: unknown, b: unknown, tolerance: number): boolean {
   if (isNull(a) || isNull(b)) return isNull(a) && isNull(b);
   if (typeof a === "string" && typeof b === "string") {
@@ -173,15 +182,10 @@ function sortedIndexes(rows: Row[], order: string[]): number[] {
     });
 }
 
-function rowEquals(a: Row, b: Row, columns: string[], tolerance: number): boolean {
-  return columns.every((c) => valuesEqual(a[c], b[c], tolerance));
-}
-
 // How a difference shows a cell: a protected column's non-null value as [protected].
 type Shower = (column: string, v: unknown) => string;
 
-function shower(protectedCols: string[] | undefined): Shower {
-  const hidden = new Set((protectedCols ?? []).map((c) => c.toLowerCase()));
+function shower(hidden: Set<string>): Shower {
   return (column, v) => (hidden.has(column.toLowerCase()) && !isNull(v) ? PROTECTED_VALUE : show(v));
 }
 
@@ -191,12 +195,43 @@ function describeRow(row: Row, see: Shower): string {
     .join(", ")}}`;
 }
 
-function cellDiffs(label: string, expected: Row, actual: Row, columns: string[], tolerance: number, see: Shower): string[] {
+const GROUPING_EXACT = "grouping columns compare exactly";
+const WHOLE_EXACT = "whole numbers compare exactly";
+
+// How the cells of one comparison compare and show.
+interface Cells {
+  // The columns both sides have, and those of them that are grouping columns.
+  columns: string[];
+  grouping: string[];
+  tolerance: number;
+  // The protected columns, in lowercase, and how a difference shows a cell.
+  hidden: Set<string>;
+  see: Shower;
+}
+
+function cellEquals(k: Cells, column: string, a: unknown, b: unknown): boolean {
+  return valuesEqual(a, b, k.grouping.includes(column) ? 0 : k.tolerance);
+}
+
+function rowEquals(k: Cells, a: Row, b: Row): boolean {
+  return k.columns.every((c) => cellEquals(k, c, a[c], b[c]));
+}
+
+// Why a difference stands though the golden has a tolerance, in parentheses: the reason given, or
+// the rule that compared this cell exactly. Empty at tolerance 0, where every cell compares exactly.
+function exactNote(k: Cells, reason: string | undefined): string {
+  return k.tolerance > 0 && reason ? ` (${reason})` : "";
+}
+
+function cellDiffs(label: string, expected: Row, actual: Row, k: Cells): string[] {
   const out: string[] = [];
-  for (const c of columns) {
-    if (!valuesEqual(expected[c], actual[c], tolerance)) {
-      out.push(`${label}, column ${c}: expected ${see(c, expected[c])}, got ${see(c, actual[c])}.`);
-    }
+  for (const c of k.columns) {
+    const e = expected[c];
+    const a = actual[c];
+    if (cellEquals(k, c, e, a)) continue;
+    // A protected column's difference does not say its values are whole numbers.
+    const why = k.grouping.includes(c) ? GROUPING_EXACT : bothWhole(e, a) && !k.hidden.has(c.toLowerCase()) ? WHOLE_EXACT : undefined;
+    out.push(`${label}, column ${c}: expected ${k.see(c, e)}, got ${k.see(c, a)}${exactNote(k, why)}.`);
   }
   return out;
 }
@@ -205,13 +240,14 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-function compareOrdered(expected: Row[], actual: Row[], columns: string[], tolerance: number, see: Shower): string[] {
+function compareOrdered(expected: Row[], actual: Row[], k: Cells): string[] {
+  const { see } = k;
   const diffs: string[] = [];
   const n = Math.max(expected.length, actual.length);
   for (let i = 0; i < n; i++) {
     const e = expected[i];
     const a = actual[i];
-    if (e && a) diffs.push(...cellDiffs(`Row ${i + 1}`, e, a, columns, tolerance, see));
+    if (e && a) diffs.push(...cellDiffs(`Row ${i + 1}`, e, a, k));
     else if (e) diffs.push(`Row ${i + 1}: expected ${describeRow(e, see)}, but the results end before it.`);
     else if (a) diffs.push(`Row ${i + 1}: got ${describeRow(a, see)}, which is not expected.`);
   }
@@ -219,22 +255,24 @@ function compareOrdered(expected: Row[], actual: Row[], columns: string[], toler
 }
 
 // Walks expected rows in canonical order, pairs each with a result row that agrees in
-// full, then pairs the rest so a changed figure reads as one cell diff: by the label
-// columns when there are any, otherwise with the result row that shares the most cells
-// (at least half of them). Row numbers are positions in expected.rows and in the results.
-function compareUnordered(expected: Row[], actual: Row[], columns: string[], tolerance: number, see: Shower): string[] {
+// full, then pairs the rest so a changed figure reads as one cell diff against its own row:
+// by the grouping columns when the request has any, else by the label columns when there
+// are any, otherwise with the result row that shares the most cells (at least half of
+// them). Row numbers are positions in expected.rows and in the results.
+function compareUnordered(expected: Row[], actual: Row[], k: Cells): string[] {
+  const { columns, grouping, see } = k;
   const { labels, order } = keyOrder(columns, [...expected, ...actual]);
   const expOrder = sortedIndexes(expected, order);
   const actOrder = sortedIndexes(actual, order);
   const used = new Set<number>();
   const freeActual = (pred: (a: Row) => boolean): number => {
-    const j = actOrder.find((k) => !used.has(k) && pred(actual[k]!));
+    const j = actOrder.find((n) => !used.has(n) && pred(actual[n]!));
     return j ?? -1;
   };
 
   const leftover: number[] = [];
   for (const i of expOrder) {
-    const j = freeActual((a) => rowEquals(expected[i]!, a, columns, tolerance));
+    const j = freeActual((a) => rowEquals(k, expected[i]!, a));
     if (j >= 0) used.add(j);
     else leftover.push(i);
   }
@@ -244,17 +282,17 @@ function compareUnordered(expected: Row[], actual: Row[], columns: string[], tol
   for (const i of leftover) {
     const e = expected[i]!;
     let j = -1;
-    let key: string[] = labels;
-    if (labels.length) {
-      j = freeActual((a) => labels.every((c) => valuesEqual(e[c], a[c], 0)));
+    let key: string[] = grouping.length ? grouping : labels;
+    if (key.length) {
+      j = freeActual((a) => key.every((c) => valuesEqual(e[c], a[c], 0)));
     } else if (columns.length > 1) {
       let best = 0;
-      for (const k of actOrder) {
-        if (used.has(k)) continue;
-        const shared = columns.filter((c) => valuesEqual(e[c], actual[k]![c], tolerance));
+      for (const n of actOrder) {
+        if (used.has(n)) continue;
+        const shared = columns.filter((c) => cellEquals(k, c, e[c], actual[n]![c]));
         if (shared.length > best && shared.length * 2 >= columns.length) {
           best = shared.length;
-          j = k;
+          j = n;
           key = shared;
         }
       }
@@ -262,21 +300,27 @@ function compareUnordered(expected: Row[], actual: Row[], columns: string[], tol
     if (j >= 0) {
       used.add(j);
       const label = key.map((c) => `${c}=${see(c, e[c])}`).join(", ");
-      diffs.push(...cellDiffs(`Row ${i + 1} (${label})`, e, actual[j]!, columns, tolerance, see));
+      diffs.push(...cellDiffs(`Row ${i + 1} (${label})`, e, actual[j]!, k));
     } else unmatched.push(i);
   }
-  for (const i of unmatched) diffs.push(`Row ${i + 1}: expected ${describeRow(expected[i]!, see)}, but no result row matches it.`);
-  for (const k of actOrder) {
-    if (!used.has(k)) diffs.push(`Result row ${k + 1}: got ${describeRow(actual[k]!, see)}, which is not expected.`);
+  // With grouping columns, a row is unmatched when no result row has its grouping values.
+  const why = exactNote(k, grouping.length ? GROUPING_EXACT : undefined);
+  for (const i of unmatched) diffs.push(`Row ${i + 1}: expected ${describeRow(expected[i]!, see)}, but no result row matches it${why}.`);
+  for (const n of actOrder) {
+    if (!used.has(n)) diffs.push(`Result row ${n + 1}: got ${describeRow(actual[n]!, see)}, which is not expected.`);
   }
   return diffs;
 }
 
-// Compares a golden's expected rows with the rows a query returned. The differences show the
-// values of opts.protectedColumns as [protected].
+// Compares a golden's expected rows with the rows a query returned. The values of
+// opts.groupingColumns and any two whole numbers compare exactly; opts.tolerance applies to the
+// other figures. A difference in a cell that compared exactly though the tolerance is above zero
+// says which rule made it exact. The differences show the values of opts.protectedColumns as
+// [protected], and say nothing of whether they are whole numbers.
 export function compareRows(expected: Row[], actual: Row[], opts: CompareOptions): CompareResult {
   const tolerance = Math.max(0, opts.tolerance);
-  const see = shower(opts.protectedColumns);
+  const hidden = new Set((opts.protectedColumns ?? []).map((c) => c.toLowerCase()));
+  const see = shower(hidden);
   const expectedColumns = columnsOf(expected);
   const actualColumns = columnsOf(actual);
   const diffs: string[] = [];
@@ -288,11 +332,9 @@ export function compareRows(expected: Row[], actual: Row[], opts: CompareOptions
     diffs.push(`Expected ${plural(expected.length, "row")}, got ${plural(actual.length, "row")}.`);
   }
   const common = expectedColumns.filter((c) => actualColumns.includes(c));
-  diffs.push(
-    ...(opts.ordered
-      ? compareOrdered(expected, actual, common, tolerance, see)
-      : compareUnordered(expected, actual, common, tolerance, see)),
-  );
+  const wanted = new Set((opts.groupingColumns ?? []).map((c) => c.toLowerCase()));
+  const cells: Cells = { columns: common, grouping: common.filter((c) => wanted.has(c.toLowerCase())), tolerance, hidden, see };
+  diffs.push(...(opts.ordered ? compareOrdered(expected, actual, cells) : compareUnordered(expected, actual, cells)));
   if (diffs.length <= MAX_DIFFS) return { ok: diffs.length === 0, diffs };
   const shown = diffs.slice(0, MAX_DIFFS - 1);
   shown.push(`${diffs.length - shown.length} more differences not shown.`);
@@ -354,6 +396,13 @@ export function compileGolden(root: string, golden: Golden): CompileResult {
     const message = `the compiler could not read the layer (${e.message.split("\n")[0]}); run sl validate`;
     return { ok: false, source: source.source, reason: message, refusals: [{ code: "invalid_layer", message }] };
   }
+}
+
+// The grouping columns of a golden: the result columns of its compiled request's dimensions and
+// time grains (order_date:year is the column order_date_year). A golden whose request does not
+// compile, checked by its cross_check_sql alone, has none the comparison can name.
+export function groupingColumns(compiled: CompileResult | undefined): string[] {
+  return compiled?.ok ? compiled.columns.filter((c) => c.kind === "dimension").map((c) => c.name) : [];
 }
 
 // Whether a refusal is only that the compiler does not support the source's dialect.

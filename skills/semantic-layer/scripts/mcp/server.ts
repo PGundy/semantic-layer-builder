@@ -12,6 +12,7 @@ import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
 import { COMMANDS } from "../commands/index.ts";
 import { runCli } from "../lib/cli.ts";
 import type { CommandSpec } from "../lib/command.ts";
+import { processEnvironment } from "../lib/env-file.ts";
 import { resolveRoot } from "../lib/project.ts";
 import { commandList, ROLE_NAMES, ROLES, type Role, type RoleName } from "../lib/roles.ts";
 import { ELICIT_TIMEOUT_MS, Elicitor, elicitationNote, ownerGate, type Run, toolResult } from "./elicit.ts";
@@ -229,7 +230,8 @@ export class Server {
     return toolResult(entry.command, await this.exec(argv));
   }
 
-  // Runs one sl command in-process, collecting what it prints.
+  // Runs one sl command in-process, collecting what it prints. The command resolves its connection
+  // variables during the call (lib/env-file.ts), not when the server started.
   private async exec(argv: string[]): Promise<Run> {
     const out: string[] = [];
     const err: string[] = [];
@@ -282,7 +284,10 @@ async function main(): Promise<number> {
   const write = process.stdout.write.bind(process.stdout);
   console.log = console.info = console.debug = (...a: unknown[]) => console.error(...a);
   const send = (msg: Message) => void write(`${JSON.stringify(msg)}\n`);
-  const server = new Server({ root: resolveRoot(flags.root, process.env, process.cwd()), cwd: process.cwd(), env: process.env, log, send, elicitTimeoutMs: seconds * 1000, role: role as RoleName });
+  // The environment is taken once, with what Bun loaded from .env marked: each call then reads the
+  // env files as they are at that moment, so a .env written or changed after the server started is seen.
+  const env = processEnvironment(process.env, process.cwd());
+  const server = new Server({ root: resolveRoot(flags.root, env, process.cwd()), cwd: process.cwd(), env, log, send, elicitTimeoutMs: seconds * 1000, role: role as RoleName });
   log(`sl mcp: serving the semantic root ${server.root} over stdio as the ${server.role.title.toLowerCase()}`);
   const pending = new Set<Promise<void>>();
   for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {

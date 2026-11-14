@@ -1,14 +1,16 @@
-// The answer ledger, .sl/ledger.jsonl under the semantic root: one JSON object per line, appended by
-// sl reply and sl question resolve and never rewritten. Each line holds the owner's words, with
-// credentials redacted, never data values.
-import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeSync } from "node:fs";
+// The answer ledger, .sl/ledger.jsonl under the semantic root: one JSON object per line, added by
+// sl reply and sl question resolve, whose earlier lines never change. Each line holds the owner's
+// words, with credentials redacted, never data values. The commands that add a line hold the root's
+// lock (lib/lock.ts) from reading the ledger for the next id to writing the line.
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { redactCredentials } from "./credentials.ts";
 import { UserError } from "./errors.ts";
+import { writeFileAtomic } from "./lock.ts";
 import { plainText } from "./output.ts";
 import { PENDING_DIR } from "./readback.ts";
 import type { LedgerEntry, LedgerQuestion, LedgerReply, PendingReadback } from "./types.ts";
-import { schemaIssues } from "./validate.ts";
+import { schemaIssues } from "./schema.ts";
 
 export const LEDGER_FILE = ".sl/ledger.jsonl";
 const ID = /^ans_(\d{4,})$/;
@@ -30,9 +32,9 @@ export function readPending(root: string, id: string): PendingReadback {
   try {
     data = JSON.parse(readFileSync(file, "utf8"));
   } catch {
-    throw new UserError(`${rel} is not valid JSON; run sl validate, then sl readback --targets <ref> again.`);
+    throw new UserError(`${rel} is not valid JSON; run sl validate, then sl readback --targets <ref> again.`, "sl validate");
   }
-  if (schemaIssues("pending", data, rel).length) throw new UserError(`${rel} does not match its schema; run sl validate, then sl readback --targets <ref> again.`);
+  if (schemaIssues("pending", data, rel).length) throw new UserError(`${rel} does not match its schema; run sl validate, then sl readback --targets <ref> again.`, "sl validate");
   return data as PendingReadback;
 }
 
@@ -51,10 +53,6 @@ function assertInside(root: string, path: string): void {
   const p = realpathSync(path);
   if (p !== r && !p.startsWith(r + sep)) throw new UserError(`Refusing to write ${LEDGER_FILE}: ${path} resolves outside the semantic root ${resolve(root)}. Nothing was written.`);
 }
-
-// Append without following a link at the file, so a link put there after openLedger's check still
-// cannot send the line elsewhere.
-const APPEND_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0);
 
 // An entry before the ledger gives it an id.
 export type NewLedgerEntry = Omit<LedgerReply, "id"> | Omit<LedgerQuestion, "id">;
@@ -78,7 +76,7 @@ export function openLedger(root: string): LedgerAppender {
   if (existsSync(file)) {
     if (!lstatSync(file).isFile()) throw new UserError(`${LEDGER_FILE} is not a file, so the answer cannot be recorded; nothing was written. Move it aside and run this again.`);
     const text = readFileSync(file, "utf8");
-    if (text && !text.endsWith("\n")) throw new UserError(`The last line of ${LEDGER_FILE} has no line break (an append was cut off); nothing was written. The ledger is append-only: ${RESTORE}.`);
+    if (text && !text.endsWith("\n")) throw new UserError(`The last line of ${LEDGER_FILE} has no line break (an append was cut off); nothing was written. The ledger is append-only: ${RESTORE}.`, "sl validate");
     text.split("\n").slice(0, -1).forEach((line, i) => {
       let data: unknown;
       try {
@@ -87,7 +85,7 @@ export function openLedger(root: string): LedgerAppender {
         data = undefined;
       }
       if (typeof data !== "object" || data === null || Array.isArray(data))
-        throw new UserError(`Line ${i + 1} of ${LEDGER_FILE} is not a JSON object; nothing was written. The ledger is append-only: ${RESTORE}.`);
+        throw new UserError(`Line ${i + 1} of ${LEDGER_FILE} is not a JSON object; nothing was written. The ledger is append-only: ${RESTORE}.`, "sl validate");
       const m = ID.exec(String((data as { id?: unknown }).id));
       if (m) max = Math.max(max, Number(m[1]));
     });
@@ -98,12 +96,12 @@ export function openLedger(root: string): LedgerAppender {
     append(entry) {
       const full = { ...entry, id } as LedgerEntry;
       mkdirSync(dirname(file), { recursive: true });
-      const fd = openSync(file, APPEND_FLAGS, 0o644);
-      try {
-        writeSync(fd, ledgerLine(full));
-      } finally {
-        closeSync(fd);
-      }
+      // The ledger with the new line replaces the file in one rename, so a cut-off write leaves it
+      // whole. A link put at the path after openLedger's check is refused here, and one put there
+      // after this check is replaced by the rename, never followed.
+      const stat = lstatSync(file, { throwIfNoEntry: false });
+      if (stat && !stat.isFile()) throw new UserError(`${LEDGER_FILE} is no longer a plain file inside the semantic root, so the answer was not recorded; nothing was written. Run sl validate, then run this again.`);
+      writeFileAtomic(file, (stat ? readFileSync(file, "utf8") : "") + ledgerLine(full), { replaceLink: true });
       return full;
     },
   };
@@ -139,7 +137,7 @@ function isReply(data: unknown): data is LedgerReply {
 // are skipped (sl validate reports them on its own).
 export function ledgerReplies(text: string, strict = false): LedgerReply[] {
   const fail = (why: string) => {
-    throw new UserError(`${LEDGER_FILE} cannot be read: ${why}, so no approval can rely on it; nothing was approved. ${RESTORE[0]!.toUpperCase()}${RESTORE.slice(1)}.`);
+    throw new UserError(`${LEDGER_FILE} cannot be read: ${why}, so no approval can rely on it; nothing was approved. ${RESTORE[0]!.toUpperCase()}${RESTORE.slice(1)}.`, "sl validate");
   };
   if (strict && text && !text.endsWith("\n")) fail("its last line has no line break (an append was cut off)");
   const out: LedgerReply[] = [];

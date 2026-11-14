@@ -41,7 +41,11 @@ export interface Scope {
 }
 
 export interface SourceConnection {
+  // The variable that holds the connection URL.
   env?: string;
+  // Postgres: the start of the variables that hold the connection's parts (<prefix>HOST, PORT,
+  // USER, PASSWORD, DATABASE, SSLMODE). A source has env or env_prefix, not both.
+  env_prefix?: string;
   database?: string;
   setup?: string[];
   views?: Record<string, string>;
@@ -120,7 +124,15 @@ export interface SnapshotTable {
   unique_keys?: string[][];
   foreign_keys?: ForeignKey[];
   profiled_at?: string | null;
+  // Why the last sl profile run skipped the table and when (spec: Skipped tables). Removed when a
+  // run profiles it; an earlier profile, if any, stays beside it.
+  profile_skipped?: ProfileSkip;
   columns: SnapshotColumn[];
+}
+
+export interface ProfileSkip {
+  at: string;
+  reason: string;
 }
 
 // The selection sl introspect or sl import recorded when it wrote the snapshot (spec: snapshots,

@@ -94,7 +94,7 @@ describe("cli", () => {
       const r = await sl(t.root, [command, "--help"]);
       expect(r.code).toBe(0);
       expect(r.out).toContain("Usage: sl ");
-      expect(r.out).toEndWith("\n\nEvery command also takes --root <dir> (or SEMANTIC_ROOT) and --json.");
+      expect(r.out).toEndWith("\n\nEvery command also takes --root <dir> (or SEMANTIC_ROOT), --env-file <path> (or SL_ENV_FILE) and --json.");
     }
   });
 
@@ -102,7 +102,7 @@ describe("cli", () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     const r = await sl(t.root, ["help"]);
-    expect(r.out).toStartWith("Usage: sl <command> [flags]\nEvery command also takes --root <dir> (or SEMANTIC_ROOT) and --json.\n");
+    expect(r.out).toStartWith("Usage: sl <command> [flags]\nEvery command also takes --root <dir> (or SEMANTIC_ROOT), --env-file <path> (or SL_ENV_FILE) and --json.\n");
   });
 
   test("unknown command fails cleanly", async () => {

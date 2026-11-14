@@ -5,11 +5,12 @@
 // answer. parseReviewMarkdown reads a filled Markdown form back into the JSON form's structure, and
 // applyReview records a filled form's answers in the ledger.
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, ftruncateSync, lstatSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, ftruncateSync, lstatSync, openSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isScalar, isSeq } from "yaml";
 import { commitEdit, type EditOutcome, itemMap, relFile } from "./edit.ts";
 import { UserError } from "./errors.ts";
+import { writeFileAtomic } from "./lock.ts";
 import { afterYesSteps } from "./export-goldens.ts";
 import { LEDGER_FILE, type NewLedgerEntry, openLedger, ownerText, shellQuote } from "./ledger.ts";
 import { plainText } from "./output.ts";
@@ -17,7 +18,7 @@ import { loadAccess, loadMetrics, paths } from "./project.ts";
 import { currentHash, PENDING_DIR } from "./readback.ts";
 import { parseTarget } from "./refs.ts";
 import type { LedgerEntry, LedgerQuestion, LedgerReply, PendingReadback } from "./types.ts";
-import { schemaIssues } from "./validate.ts";
+import { schemaIssues } from "./schema.ts";
 import { readYamlIfExists } from "./yaml.ts";
 
 export const REVIEWS_DIR = join(".sl", "reviews");
@@ -73,7 +74,7 @@ export function loadPending(root: string, id: string): PendingReadback {
     data = undefined;
   }
   if (data === undefined || schemaIssues("pending", data, file).length || (data as PendingReadback).readback_id !== id)
-    throw new UserError(`.sl/pending/${id}.json is not a valid readback. Run sl validate to see why, then sl readback again.`);
+    throw new UserError(`.sl/pending/${id}.json is not a valid readback. Run sl validate to see why, then sl readback again.`, "sl validate");
   return data as PendingReadback;
 }
 
@@ -558,7 +559,7 @@ export function applyReview(root: string, form: ReviewForm, by: string, at: stri
       out.edited.push(outcome);
     }
   } catch (e) {
-    for (const w of written.reverse()) writeFileSync(w.file, w.before);
+    for (const w of written.reverse()) writeFileAtomic(w.file, w.before);
     if (appended) truncateLedger(root, size);
     const why = e instanceof Error ? e.message : String(e);
     throw new UserError(`${why}\nNothing was recorded: ${LEDGER_FILE} and the YAML files are as they were. Fix the cause and run sl review apply again.`);

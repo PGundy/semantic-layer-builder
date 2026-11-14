@@ -732,8 +732,8 @@ describe("the grade command", () => {
     for (const leak of [email, "Fake-Pw-0042", dir, REPO_ROOT]) expect(text).not.toContain(leak);
     const r = JSON.parse(text) as GradeReport;
     expect(grader(r, "figures")).toMatchObject({ passed: false, score: 0 });
-    expect(grader(r, "figures").details).toEqual([expect.stringMatching(/^could not grade: semantic\/goldens\/broken\.yaml: invalid YAML: [^\n]* at line \d+, column \d+$/)]);
-    expect(grader(r, "effort")).toMatchObject({ passed: true, score: null, details: [expect.stringMatching(/^could not measure: semantic\/goldens\/broken\.yaml: invalid YAML/)] });
+    expect(grader(r, "figures").details).toEqual([expect.stringMatching(/^could not grade: goldens\/broken\.yaml: is not valid YAML \([^\n]* at line \d+, column \d+\)\. Fix the file, or run sl validate for the full list\.$/)]);
+    expect(grader(r, "effort")).toMatchObject({ passed: true, score: null, details: [expect.stringMatching(/^could not measure: goldens\/broken\.yaml: is not valid YAML \(/)] });
     expect(grader(r, "selection").passed).toBe(true);
     // The secrets grader finds the planted email and password in the file, without quoting them.
     expect(grader(r, "secrets").details).toHaveLength(2);

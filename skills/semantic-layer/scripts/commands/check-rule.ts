@@ -34,6 +34,7 @@ const spec: CommandSpec = {
     results: { type: "string" },
     plan: { type: "string" },
   },
+  writes: ({ values }) => (values["emit-sql"] ? "whole" : false),
   async run({ values }, ctx) {
     const sourceName = str(values, "source");
     const modelName = str(values, "model");
