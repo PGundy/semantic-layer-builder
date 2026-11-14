@@ -4,7 +4,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { canRun } from "./adapters/index.ts";
 import { intakeMode } from "./intake.ts";
-import { latestReply } from "./ledger.ts";
+import { latestReply, openAccessChanges } from "./ledger.ts";
 import { plainText } from "./output.ts";
 import { PLAN_ID_PATTERN, planStatus, loadStoredPlan } from "./plan.ts";
 import { loadSource, paths } from "./project.ts";
@@ -42,10 +42,18 @@ export interface NextAction {
   // What sl status's step waits on: open_questions while access.yaml's open questions wait on the owner,
   // else null. It is set whatever the action, which can be taken meanwhile.
   blocked_on: string | null;
+  // On an action of the access phase: the owner's changes to who sees an item, recorded on that
+  // item's readback (sl reply --about access) and not yet settled by a yes to access.yaml.
+  access_changes?: { id: string; target: string; text: string; by: string }[];
 }
 
 const REPLY = (id: string) => `sl reply --readback ${id} --item <n> --text "<owner's words>" --verdict yes|no|change --by "<owner>"`;
 const EDITS = "a typed edit (sl set, sl tag, sl ignore-column, sl question add, sl add-field, sl remove-field, sl add-metric, sl remove-metric or sl rename)";
+// Who sees an item is decided once, in the access phase, so a change to it never holds the item.
+const ABOUT_ACCESS = "--verdict change --about access";
+const ACCESS_EDITS =
+  "sl add-role, sl add-restriction, sl add-row-filter, sl add-attribute, sl set access role:<name> <key> <value> (also restriction:<name>, attribute:<name>, mode, default_role), " +
+  "sl tag <ref> pii|sensitive, or sl remove-role, sl remove-restriction, sl remove-row-filter, sl remove-attribute";
 
 // A target's content hash as it now stands, or null when it no longer exists. A golden's hash covers
 // rows only a run gives, so while its file exists the hash a readback stored stands, as sl reply reads it.
@@ -94,8 +102,9 @@ function approvalReady(root: string, d: StatusDetail): NextAction | undefined {
   const last = new Map<string, number>();
   d.replies.forEach((r, i) => last.set(r.target, i));
   for (const [target] of [...last].sort((a, b) => a[1] - b[1])) {
-    const r = latestReply(d.replies, target)!;
-    if (r.verdict !== "yes") continue;
+    // A target with only a change to who sees it has no reply to its content yet.
+    const r = latestReply(d.replies, target);
+    if (r?.verdict !== "yes") continue;
     const t = d.targets.get(target);
     const golden = target.startsWith("golden:") ? target.slice(7) : undefined;
     if (golden !== undefined) {
@@ -150,12 +159,18 @@ function askOwner(root: string, d: StatusDetail): NextAction | undefined {
     const open = p.items.filter((i) => hashNow(root, d, i.target, i.content_hash) === i.content_hash && !answered(d.replies, i.target, i.content_hash));
     if (!open.length) continue;
     const text = open.map((i) => `${i.n}. ${plainText(i.text).split("\n").join("\n   ")}`).join("\n\n");
+    // An item whose who-sees the owner asked to change still waits for a yes to the item itself.
+    const noted = openAccessChanges(d.replies).filter((r) => open.some((i) => i.target === r.target && i.content_hash === r.content_hash));
+    const kept = noted.length
+      ? ` The owner's change to who sees ${[...new Set(noted.map((r) => r.target))].join(", ")} (${noted.map((r) => r.id).join(", ")}) is kept for the access phase and does not hold the item: ask only whether the rest of it is right.`
+      : "";
     return {
       kind: "ask_owner",
       phase: targetPhase(d.status, open[0]!.target),
       why:
         `Readback ${p.readback_id} has ${open.length} item(s) waiting for the owner's answer: ${open.map((i) => `${i.n} (${i.target})`).join(", ")}. ` +
         `Read each to the owner as written, ending with "Approve?", then record each answer in their words with ${REPLY(p.readback_id)}. ` +
+        `A change only to who sees an item is recorded with ${ABOUT_ACCESS} and never holds the item.${kept} ` +
         `A readback the owner will not answer is set aside by deleting .sl/pending/${p.readback_id}.json.`,
       ask_owner: { readback_id: p.readback_id, text, items: open.map((i) => ({ n: i.n, target: i.target, kind: i.kind })) },
       blocked_on: d.status.next_step.blocked_on ?? null,
@@ -225,8 +240,13 @@ function fromStatus(root: string, d: StatusDetail): NextAction {
     const refs = readback[1]!.split(",");
     const declined = refs.filter((ref) => answered(d.replies, ref, d.targets.get(ref)?.hash ?? null) && latestReply(d.replies, ref)!.verdict !== "yes");
     const rest = refs.filter((r) => !declined.includes(r));
-    const note = declined.length
-      ? ` The owner answered no or change to ${declined.join(", ")} as it now stands: make the change they asked for with ${EDITS} before reading it back again.`
+    const last = declined.length ? latestReply(d.replies, declined[0]!)! : undefined;
+    const note = last
+      ? ` The owner answered no or change to ${declined.join(", ")} as it now stands: make the change they asked for with ${EDITS} before reading it back again.` +
+        (declined[0] === "access" || declined[0]!.startsWith("golden:")
+          ? ""
+          : ` If the change is only to who sees it, the item itself is not held: record it with sl reply --readback ${last.readback_id} --item ${last.item} --text "<owner's words>" ${ABOUT_ACCESS} --by "<owner>", ` +
+            "then ask whether the rest of the item is right and record that answer the same way, with --verdict yes|no|change.")
       : "";
     return rest.length ? run(`sl readback --targets ${rest.join(",")}`, step.message + note) : run(`sl set ${declined[0]} <key> <value>`, step.message + note);
   }
@@ -258,5 +278,25 @@ function fromStatus(root: string, d: StatusDetail): NextAction {
 // record_reply is not returned yet: an answer the owner gave in chat is the agent's to record.
 export function nextAction(root: string): NextAction {
   const d = statusDetail(root);
-  return approvalReady(root, d) ?? askOwner(root, d) ?? dispatchRunner(root, d) ?? fromStatus(root, d);
+  const first = approvalReady(root, d) ?? askOwner(root, d) ?? dispatchRunner(root, d);
+  return withAccessChanges(d, first ?? fromStatus(root, d), !first);
+}
+
+// Routes the owner's changes to who sees an item to the access phase: an action of that phase names
+// them, and when access.yaml is approved and nothing else is left before the goldens or the
+// handoff, they reopen the phase. Items of other phases go on meanwhile.
+function withAccessChanges(d: StatusDetail, action: NextAction, fromStep: boolean): NextAction {
+  const changes = openAccessChanges(d.replies);
+  if (!changes.length) return action;
+  const reopen = fromStep && d.status.access.state === "approved" && (action.phase === "verify" || action.phase === "done");
+  if (action.phase !== "access" && !reopen) return action;
+  const short = (t: string) => (t.length > 200 ? `${t.slice(0, 200)}…` : t);
+  const asked =
+    `The owner asked for ${changes.length} change(s) to who sees what while answering other items: ` +
+    `${changes.map((r) => `${r.target} (${r.id}, ${plainText(r.by)}): "${short(plainText(r.text))}"`).join("; ")}. ` +
+    `Make each with an access command (${ACCESS_EDITS}), then read access.yaml back with sl readback --targets access: the owner's yes to it settles them.`;
+  const access_changes = changes.map((r) => ({ id: r.id, target: r.target, text: r.text, by: r.by }));
+  if (reopen)
+    return { kind: "run", phase: "access", why: `access.yaml is approved, and an edit makes it a draft again until the owner approves it. ${asked}`, run: { command: "sl access" }, blocked_on: action.blocked_on, access_changes };
+  return { ...action, why: `${action.why} ${asked}`, access_changes };
 }

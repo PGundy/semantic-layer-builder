@@ -127,7 +127,8 @@ function isReply(data: unknown): data is LedgerReply {
     d.by.trim() !== "" &&
     typeof d.at === "string" &&
     d.at.trim() !== "" &&
-    (d.verdict === null || d.verdict === "yes" || d.verdict === "no" || d.verdict === "change")
+    (d.verdict === null || d.verdict === "yes" || d.verdict === "no" || d.verdict === "change") &&
+    (d.about === undefined || (d.about === "access" && d.verdict === "change"))
   );
 }
 
@@ -152,7 +153,7 @@ export function ledgerReplies(text: string, strict = false): LedgerReply[] {
     }
     const kind = typeof data === "object" && data !== null ? (data as { kind?: unknown }).kind : undefined;
     if (isReply(data)) out.push(data);
-    else if (strict && kind === "reply") fail(`line ${i + 1} is a reply line without the fields an approval needs (a non-empty by and at, a target, a content_hash, a verdict)`);
+    else if (strict && kind === "reply") fail(`line ${i + 1} is a reply line without the fields an approval needs (a non-empty by and at, a target, a content_hash, a verdict; about only as access on a change)`);
     else if (strict && kind !== "question") fail(`line ${i + 1} is not a reply or question line`);
   });
   return out;
@@ -168,10 +169,21 @@ export function readReplies(root: string): LedgerReply[] {
 }
 
 // The owner's latest reply to a target: the last reply line for it, whatever its verdict, so a later
-// no, change or reply without a verdict overrides an earlier yes.
+// no, change or reply without a verdict overrides an earlier yes. A change to who sees the item
+// (about: access) is not a reply to its content: it is settled in the access phase, and is skipped.
 export function latestReply(replies: LedgerReply[], target: string): LedgerReply | undefined {
-  for (let i = replies.length - 1; i >= 0; i--) if (replies[i]!.target === target) return replies[i];
+  for (let i = replies.length - 1; i >= 0; i--) if (replies[i]!.target === target && replies[i]!.about === undefined) return replies[i];
   return undefined;
+}
+
+// The owner's changes to who sees an item (sl reply --about access) that are still open: no yes to
+// access.yaml was recorded after them. That yes follows a readback of the whole file, so it settles them.
+export function openAccessChanges(replies: LedgerReply[]): LedgerReply[] {
+  let settled = -1;
+  replies.forEach((r, i) => {
+    if (r.target === "access" && r.about === undefined && r.verdict === "yes") settled = i;
+  });
+  return replies.filter((r, i) => r.about === "access" && i > settled);
 }
 
 // Whether the owner's latest reply to a target is a yes to the content it has as it stands.

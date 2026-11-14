@@ -7,6 +7,7 @@ import { COMMANDS } from "../skills/semantic-layer/scripts/commands/index.ts";
 import { NEXT_KINDS } from "../skills/semantic-layer/scripts/lib/next.ts";
 import { ROLES } from "../skills/semantic-layer/scripts/lib/roles.ts";
 import { lastApprovedNote } from "../skills/semantic-layer/scripts/lib/access.ts";
+import { ENTRY_KEYS, type EntryKind } from "../skills/semantic-layer/scripts/lib/access-edit.ts";
 import { runCli } from "../skills/semantic-layer/scripts/lib/cli.ts";
 import { conditionAttributes, parseCondition } from "../skills/semantic-layer/scripts/lib/conditions.ts";
 import { computeStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
@@ -282,7 +283,14 @@ describe("the router and its phase cards", () => {
 
   test("sl set access mode creates access.yaml, so creating it, a golden's role, user, reference and tolerance and a source's description are no longer hand writes", async () => {
     const hand = flat.slice(flat.indexOf("**Writes without a typed command.**"), flat.indexOf("## Topic references"));
-    for (const gone of ["Creating `access.yaml`", "a golden's `reference`", "`tolerance`", "changing its `role` or `user`", "a source file's `description`"]) expect(hand).not.toContain(gone);
+    for (const gone of ["Creating `access.yaml`", "a golden's `reference`", "`tolerance`", "changing its `role` or `user`", "a source file's `description`", "roles, restrictions and row filters"]) expect(hand).not.toContain(gone);
+    // docs/PRD-hardening.md HR-9: every access rule has a typed command, and the card names them.
+    expect(hand).toContain("Every access rule has one, so `access.yaml` is never written by hand.");
+    for (const command of ["add-attribute", "add-role", "add-restriction", "add-row-filter", "remove-attribute", "remove-role", "remove-restriction", "remove-row-filter"]) {
+      expect(flat).toContain(`\`sl ${command}\``);
+      expect(read("references/phases/access.md")).toContain(`\`sl ${command}`);
+    }
+    for (const kind of Object.keys(ENTRY_KEYS)) expect(read("references/phases/access.md")).toContain(`sl set access ${kind}:<name>`);
     expect(hand).toContain("or on `access` (create a draft `access.yaml` first with `sl set access mode open|closed` when there is none)");
     expect(flat).toContain("`sl set` (also `sl set access mode open|closed`, which creates a draft `access.yaml` when there is none, `sl set golden:<g> role|user|reference|tolerance` and `sl set source:<s> description`)");
     const card = read("references/phases/access.md");
@@ -318,6 +326,12 @@ describe("the router and its phase cards", () => {
       if (ref.startsWith("golden:") || ref.startsWith("source:")) {
         const takes = ref.startsWith("golden:") ? GOLDEN_KEYS : SOURCE_KEYS;
         if (!inv.text.split(/\s+/)[3]!.split("|").every((k) => takes.includes(k))) bad.push(`${inv.doc}:${inv.line} ${inv.text}`);
+        continue;
+      }
+      // One key of a role, restriction or user attribute: sl set access <kind>:<name> <key>.
+      const entry = ref === "access" ? /^sl set access (role|restriction|attribute):\S+ (\S+)/.exec(inv.text) : null;
+      if (entry) {
+        if (!entry[2]!.startsWith("<") && !(entry[2]! in ENTRY_KEYS[entry[1] as EntryKind])) bad.push(`${inv.doc}:${inv.line} ${inv.text}`);
         continue;
       }
       const kinds = ref === "access" ? ["access"] : ref.startsWith("metric:") ? ["metric"] : ref.split(".").length === 2 ? ["model"] : ["dimension", "measure", "join"];
@@ -1077,11 +1091,17 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["access.md", "the closure model reads without row filters", "reads the closure model without its own row filters"],
   ["access.md", "sl access explains the default audience", "With no `--user` and no `--roles` it explains the default audience"],
   ["access.md", "sl access before the whole-file readback", "Run it for the default audience first, then once per role"],
-  ["access.md", "interview exceptions are written before approval", "before you run `sl approve` on the table or field"],
-  ["access.md", "the open-mode table readback", "everyone will be able to see this once approved; is that right?"],
-  ["phases/interview.md", "the open-mode table readback", "everyone will be able to see this once approved; is that right?"],
-  ["interview-guide.md", "the open-mode table readback", "Everyone will be able to see this once approved; is that right?"],
-  ["interview-guide.md", "new fields of signed-off tables are read back as visible", "so does the readback of a field approved into a table already signed off"],
+  // Who sees what is decided once, in the access phase (docs/PRD-hardening.md HR-9).
+  ["access.md", "a who-sees change during the interview does not hold the item", "It does not hold the item: the table or field is approved on the owner's yes to the item itself"],
+  ["access.md", "a table readback states who sees it and does not ask", "Every table, field and metric readback states who will see the item once it is approved and does not ask"],
+  ["phases/interview.md", "a table readback states who sees it and does not ask", "The readback states who will see the table once it is approved, and does not ask"],
+  ["interview-guide.md", "a table readback states who sees it and does not ask", "The readback states who sees each item under the current `access.yaml` and does not ask"],
+  ["phases/interview.md", "a who-sees change is recorded as about access", "--verdict change --about access"],
+  ["interview-guide.md", "a who-sees change is recorded as about access", "--verdict change --about access"],
+  ["phases/access.md", "who-sees changes come back in the access phase", "`sl next` lists those changes in this phase (`access_changes`"],
+  ["phases/access.md", "every access rule has a command", "Every rule has a command; never edit `access.yaml` by hand"],
+  ["access.md", "every access rule has a command", "Build the file with the access commands, never by hand"],
+  ["interview-guide.md", "new fields of signed-off tables are read back as visible", "In open mode each new field's readback says that everyone will be able to see it once approved"],
   ["phases/access.md", "access is open by default", "Access is open by default"],
   ["phases/access.md", "the exceptions question", "is there anything some people should not see?"],
   ["phases/access.md", "sl access in the readback", "Show the owner what people see with `sl access` (the default audience)"],
@@ -1247,8 +1267,8 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["SKILL.md", "resume re-checks open questions against new capabilities", "Re-check every open question, and anything the owner was told needs engineering or waits on the tool, against capabilities the skill has gained since"],
   ["interview-guide.md", "resume re-checks engineering asks", "On resume, check each open question and each item the owner was told needs engineering or waits on the tool against what the skill can now do"],
   // Revoke keeps the last approval; sl access wording.
-  ["phases/access.md", "a revoke keeps the sign-off", "the revoke keeps its sign-off as `last_approved`"],
-  ["access.md", "a revoke keeps the sign-off", "The revoke keeps the sign-off as `last_approved: { by, at }`"],
+  ["phases/access.md", "an edit of an approved file keeps the sign-off", "makes it a draft again in the same write and keeps its sign-off as `last_approved`"],
+  ["access.md", "an edit of an approved file keeps the sign-off", "The edit keeps the sign-off as `last_approved: { by, at }`"],
   ["access.md", "sl access totals line", 'on the line "Items visible across N source(s) (row filters limit rows, not these counts)"'],
   ["access.md", "row filters always printed", '"row filters: none (every row of every visible model)"'],
   ["access.md", "assigned roles only with --roles", "names assigned roles only when `--roles` was given"],
@@ -1455,7 +1475,7 @@ describe("readbacks and examples", () => {
 
   test("access.md keeps the status rule out of the revoke bullet", () => {
     const text = read("references/access.md");
-    const revoke = text.split("\n").find((l) => l.startsWith("- A revoke to edit an approved file"))!;
+    const revoke = text.split("\n").find((l) => l.startsWith("- An edit to an approved file"))!;
     expect(revoke).not.toContain("sl status");
     expect(text).not.toContain(": Draft and approved access)");
     const intro = text.split("\n").find((l) => l.startsWith("Run the access phase after the important models are approved"))!;

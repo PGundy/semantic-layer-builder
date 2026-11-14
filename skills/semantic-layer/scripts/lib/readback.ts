@@ -284,6 +284,10 @@ function noFacts(source: string, why: string): string[] {
 
 // Who sees it -----------------------------------------------------------------------------------
 
+// The last line of a who-sees block: it states and does not ask, since who sees what is decided
+// once, in the access phase (a change to it is recorded with sl reply --about access).
+export const WHO_SEES_STATED = "- Stated, not asked: who sees what is decided once, in the access step, and a change to it does not hold this approval.";
+
 const REASONS: [RegExp, (m: RegExpExecArray) => string][] = [
   [/^protected_tag:(.+)$/, (m) => `tagged ${m[1]}, which only a role that allows ${m[1]} sees`],
   [/^restricted:(.+)$/, (m) => `restriction ${m[1]} keeps it to the roles it names`],
@@ -366,6 +370,7 @@ function whoSees(aud: Audiences, refs: string[]): string[] {
   const out = [`Who sees it once approved (${state}):`, `- ${list[0]!.label}: ${base}.`];
   const differ = list.slice(1).map((a) => [a.label, one(a.vis)] as const).filter(([, s]) => s !== base);
   out.push(...(differ.length ? differ.map(([l, s]) => `- ${l}: ${s}.`) : [list.length > 1 ? "- Every role sees it the same way." : "- No role is defined."]));
+  out.push(WHO_SEES_STATED);
   return out;
 }
 
