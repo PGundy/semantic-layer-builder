@@ -1,7 +1,7 @@
 import { isSeq } from "yaml";
 import type { CommandSpec } from "../lib/command.ts";
 import { bool } from "../lib/command.ts";
-import { commitEdit, itemMap, locate, pathText, reapproveLines, referenceSites, relFile } from "../lib/edit.ts";
+import { commitEdit, inTurnApply, itemMap, locate, pathText, reapproveLines, referenceSites, relFile } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
@@ -25,7 +25,7 @@ const spec: CommandSpec = {
       const lines = sites.map((s) => `  - ${relFile(ctx.root, s.file)} ${pathText(s.path)}: ${s.from}`);
       throw new UserError(
         `Cannot remove ${ref}: ${sites.length === 1 ? "this names" : "these name"} it, so nothing was written:\n${lines.join("\n")}\n` +
-          `Change or remove each reference first, then run this again; to change its name everywhere instead, use sl rename ${ref} <new_name>.`,
+          `Change or remove each reference first, then run this again; to change its name everywhere instead, rename it ${inTurnApply([["rename", ref, "<new_name>"]])}.`,
       );
     }
     if (approved && !bool(values, "force")) {

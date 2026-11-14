@@ -267,6 +267,9 @@ function tableOf(info: SourceInfo, model: Model | undefined): SnapshotTable | un
   return model && info.snapshot ? findTable(info.snapshot.tables, model.table) : undefined;
 }
 
+// The words a readback item gives a protected column, which sl readback looks for to add its note.
+export const PROTECTED_FACT = "protected, so counts only and no values";
+
 // Counts for one column; values (top values, a text min or max) only for a column that is not
 // protected, and then quoted as data. A protected column shows counts only.
 function columnFacts(info: SourceInfo, table: SnapshotTable, name: string, label: string, tagged: boolean): string[] {
@@ -280,7 +283,7 @@ function columnFacts(info: SourceInfo, table: SnapshotTable, name: string, label
   if (typeof p.distinct_count === "number") parts.push(`${num(p.distinct_count)} distinct values`);
   const numeric = typeof p.min === "number" && typeof p.max === "number";
   if (!prot && numeric) parts.push(`from ${p.min} to ${p.max}`);
-  if (prot) parts.push("protected, so counts only and no values");
+  if (prot) parts.push(PROTECTED_FACT);
   const out = [`- ${label} (${flat(col.type)}): ${listText(parts)}${p.sampled ? ", from a sample" : ""}.`];
   if (prot) return out;
   const data = (p.top_values ?? []).slice(0, 10).map((t) => `${value(t.value)}: ${num(t.count)} rows`);

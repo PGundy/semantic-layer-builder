@@ -198,14 +198,36 @@ describe("sl next through the phases", () => {
     const refs = readbackRefs(await status(root));
     const rb = JSON.parse(await ok(root, ["readback", "--targets", refs.join(","), "--json"])) as { readback_id: string; items: { n: number }[] };
     for (const item of rb.items) await reply(root, rb.readback_id, item.n, "yes");
-    // One approve per call, in the order of the owner's replies.
-    for (const ref of refs) {
-      const a = await next(root);
-      expect(a.run!.command).toBe(`sl approve --target ${ref}`);
-      await ok(root, ["approve", "--target", ref]);
-    }
+    // The yeses of one readback are approved in one sl approve --readback (HR-15).
+    expect(refs.length).toBeGreaterThan(1);
+    const all = await next(root);
+    expect(all.run!.command).toBe(`sl approve --readback ${rb.readback_id}`);
+    expect(all.why).toContain(`The owner said yes to ${refs.join(", ")} as they now stand (readback ${rb.readback_id} in the ledger)`);
+    await ok(root, ["approve", "--readback", rb.readback_id]);
     const a = await next(root);
     expect(a).toMatchObject({ kind: "run", phase: "access", run: { command: "sl readback --targets access" } });
+  });
+
+  test("a no among the yeses keeps the batched approve; a yes edited since falls back to the single approve", async () => {
+    const T = [`${ORDERS}.order_count`, `${ORDERS}.revenue`, `${ORDERS}.discount`];
+    const setup = async () => {
+      const root = acme();
+      for (const t of T) await ok(root, ["approve", "--target", t, "--revoke"]);
+      const rb = JSON.parse(await ok(root, ["readback", "--targets", T.join(","), "--json"])) as { readback_id: string };
+      return { root, rb: rb.readback_id };
+    };
+    const a = await setup();
+    await reply(a.root, a.rb, 1, "yes");
+    await reply(a.root, a.rb, 2, "yes");
+    await reply(a.root, a.rb, 3, "no");
+    expect((await next(a.root)).run?.command).toBe(`sl approve --readback ${a.rb}`);
+    expect(await ok(a.root, ["approve", "--readback", a.rb])).toContain("Approved 2 of the 3 items");
+    const b = await setup();
+    for (const i of [1, 2, 3]) await reply(b.root, b.rb, i, "yes");
+    await ok(b.root, ["set", `${ORDERS}.discount`, "expr", "discount_cents / 100"]);
+    const step = await next(b.root);
+    expect(step.run?.command).toStartWith("sl approve --target");
+    await ok(b.root, [step.action.command, ...step.action.args]);
   });
 
   test("a plan waiting on results -> dispatch connector_runner; once complete, the plan's finish", async () => {

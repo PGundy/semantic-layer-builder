@@ -12,6 +12,7 @@ import {
   type IgnoredRead,
   ignoredReads,
   ignoredRefusal,
+  inTurnApply,
   itemMap,
   locate,
   parseValue,
@@ -26,17 +27,20 @@ import { formatJson } from "../lib/output.ts";
 import { listModels, loadProject, paths } from "../lib/project.ts";
 import { createAccess, GOLDEN_KEYS, setGolden, setSource, type SetOutcome, SOURCE_KEYS } from "../lib/set-targets.ts";
 
-// Keys another command owns, with the command to use instead.
-const FIELDS = "fields are added and removed one at a time with sl add-field <source.model> and sl remove-field <source.model.field>";
-const OWNED: Record<string, string> = {
-  name: "renaming changes every reference to the item, which sl rename <ref> <new_name> updates in one write",
-  model: "a model's name is its file name, and renaming it moves the file and updates every reference, which sl rename <source.model> <new_name> does in one write",
+// Keys another command owns, with the command to use instead, given as the turn's sl apply entry.
+const FIELDS = () => "fields are added and removed one at a time with sl add-field <source.model> and sl remove-field <source.model.field>";
+const OWNED: Record<string, (ref: string) => string> = {
+  name: (ref) => `renaming changes every reference to the item, which sl rename updates in one write, ${inTurnApply([["rename", ref, "<new_name>"]])}`,
+  model: (ref) => `a model's name is its file name, and renaming it moves the file and updates every reference, which sl rename does in one write, ${inTurnApply([["rename", ref, "<new_name>"]])}`,
   dimensions: FIELDS,
   measures: FIELDS,
   joins: FIELDS,
-  ignored_columns: "use sl ignore-column --source <s> --model <m> --column <c>",
-  open_questions: 'use sl question add <ref> --text "<question>"',
-  evidence: "sl check-join measures the join and writes its evidence",
+  ignored_columns: (ref) => {
+    const [source = "<s>", model = "<m>"] = ref.split(".");
+    return `a column is left out of the layer ${inTurnApply([["ignore-column", "--source", source, "--model", model, "--column", "<column>"]])}`;
+  },
+  open_questions: (ref) => `a question is added ${inTurnApply([["question", "add", ref, "--text", "<question>"]])}`,
+  evidence: () => "sl check-join measures the join and writes its evidence",
 };
 
 // The access.yaml keys sl set takes at the top level; a role, restriction or user attribute is named as <kind>:<name>.
@@ -117,7 +121,7 @@ const spec: CommandSpec = {
       );
     }
     const props = schemaProperties(loc.kind);
-    if (OWNED[key] && key in props) throw new UserError(`sl set does not change ${key}: ${OWNED[key]}.`);
+    if (OWNED[key] && key in props) throw new UserError(`sl set does not change ${key}: ${OWNED[key](ref)}.`);
     if (loc.kind === "access" && !ACCESS_KEYS.includes(key)) {
       throw new UserError(`sl set access takes ${ACCESS_KEYS.join(" or ")} at the top level. ${ACCESS_COMMANDS}. sl access shows the result.`);
     }

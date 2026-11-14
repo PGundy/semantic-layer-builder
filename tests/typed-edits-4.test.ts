@@ -225,7 +225,7 @@ describe("sl rename <source.model>", () => {
   test("sl set model names sl rename", async () => {
     const r = await sl(root, ["set", "warehouse.orders", "model", "sales"]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain("sl rename <source.model> <new_name>");
+    expect(r.err).toContain(`in the turn's sl apply --file -: ["rename", "warehouse.orders", "<new_name>"] (on its own: sl rename warehouse.orders <new_name>)`);
     expect(r.err).not.toContain("does not rename models");
   });
 });

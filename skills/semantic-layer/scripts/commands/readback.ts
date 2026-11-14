@@ -5,10 +5,10 @@ import { list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { readbackGate } from "../lib/approve-checks.ts";
 import { afterYesSteps } from "../lib/export-goldens.ts";
-import { formatJson } from "../lib/output.ts";
+import { formatJson, UNPROTECT } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
 import { ledgerState } from "../lib/ledger.ts";
-import { DISCARDED, type GoldenRun, nextReadbackId, PENDING_DIR, renderReadbacks, writePending } from "../lib/readback.ts";
+import { DISCARDED, type GoldenRun, nextReadbackId, PENDING_DIR, PROTECTED_FACT, renderReadbacks, writePending } from "../lib/readback.ts";
 import { writeFileAtomic } from "../lib/lock.ts";
 import { readbackFigures } from "../lib/readback-figures.ts";
 import { parseTarget } from "../lib/refs.ts";
@@ -106,8 +106,28 @@ const spec: CommandSpec = {
       (t) => (t.startsWith("golden:") ? `sl goldens confirm --name ${t.slice(7)}${rowsFrom}` : `sl approve --target ${t} --by "<owner>"`),
     );
     const next = `sl reply --readback ${pending.readback_id} --item <n> --text "<owner's words>" --verdict yes|no|change --by "<owner>"`;
+    // A readback of several items is answered as one owner turn: one sl reply --answers, then one
+    // approve (and one confirm for goldens) for the whole readback. An export source's golden waits
+    // on its upgrade, so such a readback keeps the steps item by item. sl goldens confirm --readback
+    // takes no --results or --plan, so goldens read from them are confirmed one by one.
+    const targets = pending.items.map((i) => i.target);
+    const waits = nextSteps.some((s) => !/^sl (approve --target|goldens confirm --name) /.test(s));
+    const hasGolden = targets.some((t) => t.startsWith("golden:"));
+    const batched =
+      targets.length > 1 && !waits
+        ? {
+            reply: `sl reply --readback ${pending.readback_id} --answers -`,
+            approve: [
+              ...(targets.some((t) => !t.startsWith("golden:")) ? [`sl approve --readback ${pending.readback_id}`] : []),
+              ...(hasGolden && !rowsFrom ? [`sl goldens confirm --readback ${pending.readback_id}`] : []),
+            ],
+            confirm_each: hasGolden && rowsFrom ? nextSteps.filter((s) => s.startsWith("sl goldens confirm --name ")) : [],
+          }
+        : undefined;
+    // An item that shows a column as protected names how one the owner says is not personal comes out.
+    const guarded = pending.items.some((i) => i.text.includes(PROTECTED_FACT));
     if (ctx.json) {
-      ctx.out(formatJson({ readback_id: pending.readback_id, path, items: pending.items, next, next_steps: nextSteps }));
+      ctx.out(formatJson({ readback_id: pending.readback_id, path, items: pending.items, next, next_steps: nextSteps, ...(batched ? { batched } : {}), ...(guarded ? { protected_note: UNPROTECT } : {}) }));
       return 0;
     }
     const lines = [`Readback ${pending.readback_id}, stored in ${path}. Read each item to the owner as written, ending with "Approve?".`, ""];
@@ -115,7 +135,17 @@ const spec: CommandSpec = {
       const [head, ...rest] = item.text.split("\n");
       lines.push(`${item.n}. ${head}`, ...rest.map((l) => `   ${l}`), "");
     }
-    lines.push(`Only after the owner says yes to an item, approve it: ${nextSteps.join("; ")}. A no or a change goes into the YAML, then run sl readback again.`);
+    lines.push(
+      batched
+        ? `Record the owner's answers in one ${batched.reply}, each item with its own verdict and their words; then ` +
+            [
+              ...(batched.approve.length ? [`approve every item they said yes to in one ${batched.approve.join(" and one ")}`] : []),
+              ...(batched.confirm_each.length ? [`confirm each golden they said yes to: ${batched.confirm_each.join("; ")}`] : []),
+            ].join(", and ") +
+            ". A no or a change goes into the YAML, then run sl readback again."
+        : `Only after the owner says yes to an item, approve it: ${nextSteps.join("; ")}. A no or a change goes into the YAML, then run sl readback again.`,
+    );
+    if (guarded) lines.push(UNPROTECT);
     ctx.out(lines.join("\n"));
     return 0;
   },

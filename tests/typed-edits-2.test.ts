@@ -256,7 +256,8 @@ describe("sl remove-field", () => {
     expect(measure.err).toContain("  - metrics.yaml metrics[0].numerator: orders.revenue\n");
     expect(measure.err).toContain("  - metrics.yaml metrics[1].expr: {orders.revenue} - {refunds.refund_amount}\n");
     expect(measure.err).toContain("  - goldens/revenue_by_region_2025.yaml request.measures[0]: orders.revenue\n");
-    expect(measure.err).toContain("use sl rename warehouse.orders.revenue <new_name>");
+    expect(measure.err).toContain('rename it with this entry in the turn\'s sl apply --file -: ["rename", "warehouse.orders.revenue", "<new_name>"]');
+    expect(measure.err).toContain("(on its own: sl rename warehouse.orders.revenue <new_name>)");
     const filter = await sl(root, ["remove-field", "warehouse.orders.sales_rep_id", "--force"]);
     expect(filter.err).toContain("goldens/analyst_rep_101_by_name_2025.yaml request.filters[0].field: orders.sales_rep_id");
     const viaJoin = await sl(root, ["remove-field", "warehouse.orders.test_account", "--force"]);

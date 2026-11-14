@@ -135,8 +135,15 @@ export function maskRows(rows: Record<string, unknown>[], columns: string[]): Re
 
 // The note printed under a table with protected columns.
 export function protectedNote(columns: string[]): string {
-  return `Protected column${columns.length === 1 ? "" : "s"} shown as ${PROTECTED_VALUE}: ${columns.map(plainText).join(", ")}.`;
+  return `Protected column${columns.length === 1 ? "" : "s"} shown as ${PROTECTED_VALUE}: ${columns.map(plainText).join(", ")}. ${UNPROTECT}`;
 }
+
+// How a column the draft protected comes out of protection, once the owner says it is not personal
+// or sensitive data: its field tagged public in place of pii or sensitive, then profiled again.
+export const UNPROTECT =
+  'A column the owner says is not personal or sensitive data comes out of protection when its field is tagged public: in the turn\'s sl apply, ' +
+  '["tag", "<s>.<m>.<field>", "pii", "--remove"] (or "sensitive"), then ["tag", "<s>.<m>.<field>", "public"]; then sl profile --source <s> --tables <table> --refresh measures its values. ' +
+  'An approved field has its approval revoked first, as the tag edit\'s refusal names, and is read back after.';
 
 
 // Protected values under another name ----------------------------------------------------------

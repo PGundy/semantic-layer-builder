@@ -2,7 +2,8 @@
 // ledger, the pending readbacks and the stored query plans. It reads files only and writes nothing.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { approvalLacks, lacksNote } from "./approve-checks.ts";
+import { approvalLacks, type Lack, lacksFile, lacksNote } from "./approve-checks.ts";
+import { inTurnApply } from "./edit.ts";
 import { type Env, resolveConnection } from "./env-file.ts";
 import { intakeMode } from "./intake.ts";
 import { latestReply, openAccessChanges } from "./ledger.ts";
@@ -10,6 +11,7 @@ import { plainText } from "./output.ts";
 import { PLAN_ID_PATTERN, planStatus, loadStoredPlan } from "./plan.ts";
 import { loadSource, paths } from "./project.ts";
 import { PENDING_DIR } from "./readback.ts";
+import { APPLY_COMMANDS } from "./roles.ts";
 import { act, actionText, flagValue, liveRunnable, type ProjectStatus, type StatusDetail, type StepAction, statusDetail } from "./status.ts";
 import type { Golden, LedgerReply, PendingReadback, ReadbackItem, SourceConfig } from "./types.ts";
 import { schemaIssues } from "./schema.ts";
@@ -38,6 +40,8 @@ export interface NextStepAction {
   command: string;
   args: string[];
   kind: NextKind;
+  // What the command reads on its standard input (sl apply --file -), with <placeholders> for the owner's answers.
+  stdin?: string;
 }
 
 export interface NextAction {
@@ -71,7 +75,9 @@ function fromAction(a: StepAction | NextStepAction, phase: string, why: string, 
 }
 
 const REPLY = (id: string) => `sl reply --readback ${id} --item <n> --text "<owner's words>" --verdict yes|no|change --by "<owner>"`;
-const EDITS = "a typed edit (sl set, sl tag, sl ignore-column, sl question add, sl add-field, sl remove-field, sl add-metric, sl remove-metric, sl add-join, sl remove-join or sl rename)";
+const EDITS =
+  "a typed edit (sl set, sl tag, sl ignore-column, sl question add, sl add-field, sl remove-field, sl add-metric, sl remove-metric, sl add-join, sl remove-join or sl rename), " +
+  "every edit of the owner's turn as one entry of one sl apply --file -";
 // Who sees an item is decided once, in the access phase, so a change to it never holds the item.
 const ABOUT_ACCESS = "--verdict change --about access";
 const ACCESS_EDITS =
@@ -162,6 +168,23 @@ function approvalReady(root: string, d: StatusDetail): NextAction | undefined {
       );
     }
     if (!t || t.hash !== r.content_hash || t.state === "current" || t.state === "unhashed") continue;
+    // Yeses of one readback, each ready to approve and none that approve would refuse, are approved
+    // in one sl approve --readback, as the owner's turn answered them.
+    const ofReadback = [...last.keys()].filter((x) => !x.startsWith("golden:") && latestReply(d.replies, x)?.verdict === "yes" && latestReply(d.replies, x)?.readback_id === r.readback_id);
+    const ready = ofReadback.filter((x) => {
+      const tx = d.targets.get(x);
+      return !!tx && tx.hash === latestReply(d.replies, x)!.content_hash && tx.state !== "current" && tx.state !== "unhashed";
+    });
+    const refused = ofReadback.some((x) => !ready.includes(x) && d.targets.get(x)?.state !== "current");
+    if (ready.length > 1 && !refused && existsSync(join(root, PENDING_DIR, `${r.readback_id}.json`))) {
+      return fromAction(
+        act("approve", ["--readback", r.readback_id]),
+        targetPhase(d.status, target),
+        `The owner said yes to ${ready.join(", ")} as they now stand (readback ${r.readback_id} in the ledger) and they are not approved yet. ` +
+          "Approve them in one command; approved_by and approved_at come from each reply.",
+        blocked_on,
+      );
+    }
     return fromAction(
       act("approve", ["--target", target]),
       targetPhase(d.status, target),
@@ -451,8 +474,17 @@ export function nextAction(root: string, env: Env = {}): NextAction {
   const d = statusDetail(root);
   if (d.ledger_problem !== null) return fromAction(act("validate", []), d.status.next_step.phase, d.ledger_problem, d.status.next_step.blocked_on ?? null);
   const first = approvalReady(root, d) ?? askOwner(root, d) ?? dispatchRunner(root, d);
-  const action = lacking(root, withAccessChanges(d, first ?? fromStatus(root, d), !first));
+  const action = inApply(lacking(root, withAccessChanges(d, first ?? fromStatus(root, d), !first)));
   return connectionBlock(root, env, action) ?? action;
+}
+
+// An action that names one typed edit says where it goes: one owner turn's edits go in one sl apply,
+// so `why` gives the entry that apply takes beside the command on its own.
+function inApply(a: NextAction): NextAction {
+  const words = [a.action.command, ...a.action.args];
+  const named = APPLY_COMMANDS.some((c) => c.split(" ").every((w, i) => words[i] === w));
+  if (!named || a.kind === "done" || a.kind === "dispatch") return a;
+  return { ...a, why: `${a.why} Record it ${inTurnApply([words], "beside the turn's other edits")}.` };
 }
 
 // A readback (or an approve) of items sl readback would refuse for what their files lack (a
@@ -463,12 +495,58 @@ function lacking(root: string, a: NextAction): NextAction {
   const command = a.action.command;
   if (!((a.kind === "run" && command === "readback") || command === "approve")) return a;
   // An sl approve the gate would refuse (a yes recorded before the item lacked something) gets the same apply.
-  const lacks = approvalLacks(root, (flagValue(a.action as StepAction, command === "readback" ? "--targets" : "--target") ?? "").split(","));
+  const rb = command === "approve" ? flagValue(a.action as StepAction, "--readback") : undefined;
+  const refs = rb
+    ? (pendingReadbacks(root).find((p) => p.readback_id === rb)?.items ?? []).map((i) => i.target).filter((t) => !t.startsWith("golden:"))
+    : (flagValue(a.action as StepAction, command === "readback" ? "--targets" : "--target") ?? "").split(",");
+  const lacks = approvalLacks(root, refs);
   if (!lacks.length) return a;
   const why = `${a.why} ${lacksNote(lacks)}`;
   // A lack no typed edit below gives is fixed as its words say; sl validate lists it meanwhile.
-  const action = lacks.some((l) => l.edit) ? act("apply", ["--file", "-"], "ask_owner") : act("validate", [], "ask_owner");
-  return { ...fromAction(action, a.phase, why, a.blocked_on), ...(a.access_changes ? { access_changes: a.access_changes } : {}) };
+  const edits = lacks.some((l) => l.edit);
+  const action = edits ? act("apply", ["--file", "-"], "ask_owner") : act("validate", [], "ask_owner");
+  const out = fromAction(action, a.phase, why, a.blocked_on, edits ? lackQuestions(lacks) : undefined);
+  if (edits) out.action = { ...out.action, stdin: lacksFile(lacks) };
+  return { ...out, ...(a.access_changes ? { access_changes: a.access_changes } : {}) };
+}
+
+// An item as the owner knows it: a metric, a field on its table, or a table.
+function itemWords(ref: string): string {
+  if (ref.startsWith("metric:")) return `the figure ${ref.slice(7)}`;
+  const [, model, field] = ref.split(".");
+  return field ? `${field} on ${model}` : `the table ${model}`;
+}
+
+// What to ask the owner for each lack a typed edit gives, one numbered question each: the answers
+// fill the <placeholders> of action.stdin.
+function lackQuestions(lacks: Lack[]): string {
+  const ask = (l: Lack): string | undefined => {
+    if (!l.edit) return undefined;
+    const [command, ref = l.target, key] = l.edit;
+    const it = itemWords(ref);
+    if (command === "tag") return `Is ${it} personal or sensitive data, or may everyone see it?`;
+    switch (key) {
+      case "description":
+        return `In your words, what is ${it}: what does it count or add up?`;
+      case "grain":
+        return `What is one row of ${it.replace(/^the table /, "")}?`;
+      case "primary_key":
+        return `Which column, or columns, tell one row of ${it.replace(/^the table /, "")} from another?`;
+      case "currency":
+        return `Which currency are the amounts of ${it} in?`;
+      case "fanout_override":
+        return `The join ${it} matches some rows more than once. Why is that fine?`;
+      case "numerator":
+      case "denominator":
+        return `Which figure is the ${key} of ${it}?`;
+      case "expr":
+        return `How is ${it} worked out from the other figures?`;
+      default:
+        return `What should the ${key ?? "value"} of ${it} be?`;
+    }
+  };
+  const questions = [...new Set(lacks.map(ask).filter((q): q is string => !!q))];
+  return [`Before I read ${questions.length === 1 ? "this" : "these"} back for your sign-off, I need your words:`, ...questions.map((q, i) => `${i + 1}. ${q}`)].join("\n");
 }
 
 // Routes the owner's changes to who sees an item to the access phase: an action of that phase names

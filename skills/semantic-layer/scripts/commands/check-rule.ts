@@ -1,7 +1,7 @@
 import type { CommandSpec } from "../lib/command.ts";
 import { bool, str } from "../lib/command.ts";
 import { checkRule, type Expressible, type RuleKind, ruleCounts } from "../lib/compiler/check-rule.ts";
-import { ignoredReads, ignoredRefusal } from "../lib/edit.ts";
+import { ignoredReads, ignoredRefusal, inTurnApply } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { pct } from "../lib/joins.ts";
 import { columnRefs } from "../lib/compiler/qualify.ts";
@@ -10,13 +10,11 @@ import { emitPlan, executePlan, resultsInput } from "../lib/plan.ts";
 import { listModels, loadModel, loadSnapshot, loadSource } from "../lib/project.ts";
 import { NAME_PATTERN } from "../lib/types.ts";
 
-const quote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-
 // Where an expressible rule goes next: a measure's filter or a dimension's expr, after a readback.
 function nextStep(r: Expressible): string {
   const [key, field] = r.kind === "filter" ? ["filter", "<measure>"] : ["expr", "<dimension>"];
   return (
-    `Put it on a field with sl set ${r.source}.${r.model}.${field} ${key} ${quote(r.rule)}, read it back to the owner, ` +
+    `Put it on a field ${inTurnApply([["set", `${r.source}.${r.model}.${field}`, key, r.rule]])}, read it back to the owner, ` +
     "and approve it only after they say yes."
   );
 }

@@ -142,7 +142,8 @@ describe("check-rule on Acme's lake (duckdb)", () => {
     const plain = await rule(root, "lake", "sessions", "--filter", "device = 'mobile'");
     expect(plain.out).toBe(
       "The layer can express this filter on lake.sessions.\nIt matches 4380 of 8000 rows of sessions (54.8%).\n" +
-        "Put it on a field with sl set lake.sessions.<measure> filter 'device = '\\''mobile'\\''', read it back to the owner, and approve it only after they say yes.",
+        "Put it on a field with this entry in the turn's sl apply --file -: [\"set\", \"lake.sessions.<measure>\", \"filter\", \"device = 'mobile'\"] " +
+          "(on its own: sl set lake.sessions.<measure> filter 'device = '\\''mobile'\\'''), read it back to the owner, and approve it only after they say yes.",
     );
     const dim = (await rule(root, "lake", "sessions", "--dimension-expr", "utm_channel -- the raw channel", ["--json"])).json<Yes>();
     expect(dim.sql).toBe('select\n  count((utm_channel -- the raw channel\n)) as "rows_matched",\n  count(*) as "rows_total"\nfrom "main"."sessions"');

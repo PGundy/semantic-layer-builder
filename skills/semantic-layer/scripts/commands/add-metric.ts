@@ -3,7 +3,7 @@ import { isSeq, type YAMLMap, type YAMLSeq } from "yaml";
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { parseFormula } from "../lib/compiler/metrics.ts";
-import { APPROVAL_FIELDS, commitEdits, itemMap, oneLine, parseValue, reapproveLines, relFile, schemaProperties } from "../lib/edit.ts";
+import { APPROVAL_FIELDS, commitEdits, inTurnApply, itemMap, oneLine, parseValue, reapproveLines, relFile, schemaProperties } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
 import { listModels, listSourceNames, loadMetrics, loadProject, paths } from "../lib/project.ts";
@@ -48,7 +48,7 @@ const spec: CommandSpec = {
     if (!NAME_PATTERN.test(name)) throw new UserError(`"${name}" is not a name: a name is lowercase and matches ^[a-z][a-z0-9_]*$, such as average_order_value.`);
     if (type !== "ratio" && type !== "derived") throw new UserError(`--type is ratio (one measure divided by another) or derived (arithmetic over measures), not ${type}.`);
     if ((loadMetrics(ctx.root).metrics ?? []).some((m) => m?.name === name)) {
-      throw new UserError(`metrics.yaml already has a metric "${name}". Pick another name, or change it with sl set metric:${name} <key> <value>.`);
+      throw new UserError(`metrics.yaml already has a metric "${name}". Pick another name, or change it ${inTurnApply([["set", `metric:${name}`, "<key>", "<value>"]])}.`);
     }
     const sources = listSourceNames(ctx.root);
     const source = str(values, "source")?.trim() ?? project.default_source ?? (sources.length === 1 ? sources[0] : undefined);

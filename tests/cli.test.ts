@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { UNPROTECT } from "../skills/semantic-layer/scripts/lib/output.ts";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { Project } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { duckdbSource, initProject, sl, tempRoot } from "./helpers.ts";
@@ -76,7 +77,7 @@ describe("cli", () => {
     await duckdbSource(t.root, t.dir, "wh", ["create table people as select 1 as id, 'ana@example.com' as email, 'Lisbon' as city"]);
     const r = await sl(t.root, ["run", "--source", "wh", "--sql", "select id, email, city from people"]);
     expect(r.code).toBe(0);
-    expect(r.out).toBe("id  email        city\n--  -----------  ------\n1   [protected]  Lisbon\n(1 row)\nProtected column shown as [protected]: email.");
+    expect(r.out).toBe(`id  email        city\n--  -----------  ------\n1   [protected]  Lisbon\n(1 row)\nProtected column shown as [protected]: email. ${UNPROTECT}`);
     const shown = await sl(t.root, ["run", "--source", "wh", "--sql", "select email from people", "--show-protected"]);
     expect(shown.out).toContain("ana@example.com");
     expect(shown.out).not.toContain("Protected column");

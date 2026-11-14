@@ -72,6 +72,8 @@ A change should:
 - keep `SKILL.md` under 120 lines and each phase card under 150: a phase's steps go in its card, detail in the topic reference, and a new phase `sl next` can name gets a row in `SKILL.md`'s router table and a card (`tests/skill-docs.test.ts` checks the caps, the table and every card's commands against `--help`);
 - write docs and comments in the present tense, describing what the code does.
 
+Before a release, run the exit walkthrough by hand (`evals/walkthrough/README.md`): a fresh agent builds a layer from an empty folder and a `.env` through the plugin's hooks, and `evals/walkthrough/count.ts` counts the exit conditions of `docs/PRD-hardening.md` section 2 from its log. It needs an agent and a Postgres, so CI does not run it.
+
 A semantic directory is executable configuration: its `sources/` run setup statements and views on every connection, and its `goldens/` run SQL. Review changes to them, in this repository's examples or anywhere else, as you would review code.
 
 ## The plugin and its version
