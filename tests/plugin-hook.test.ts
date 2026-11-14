@@ -395,6 +395,73 @@ describe("Bash", () => {
       refused(sh(c, root), "models/wh/orders.yaml");
   });
 
+  // Each way a shell keyword, a group or a function body stands before a command's name.
+  const KEYWORD_FORMS: ((c: string) => string)[] = [
+    (c) => `if true; then ${c}; fi`,
+    (c) => `if false; then :; else ${c}; fi`,
+    (c) => `if false; then :; elif ${c}; then :; fi`,
+    (c) => `while true; do ${c}; break; done`,
+    (c) => `while ${c}; do break; done`,
+    (c) => `until false; do ${c}; break; done`,
+    (c) => `for f in a b; do ${c}; done`,
+    (c) => `{ ${c}; }`,
+    (c) => `true && { ${c}; }`,
+    (c) => `! ${c}`,
+    (c) => `if ! ${c}; then echo failed; fi`,
+    (c) => `change() { ${c}; }; change`,
+    (c) => `function change { ${c}; }; change`,
+    (c) => `function change() { ${c}; }; change`,
+  ];
+  // rm, mv, cp, tee, a redirection and sed -i on the file `f`, each with how the refusal names it.
+  const writesTo = (f: string, aside: string): [string, string][] => [
+    [`rm ${f}`, "(rm)"],
+    [`mv ${f} ${aside}/moved.yaml`, "(mv)"],
+    [`cp ${aside}/new.yaml ${f}`, "(cp)"],
+    [`tee ${f} < ${aside}/new.yaml`, "(tee)"],
+    [`echo 'status: approved' > ${f}`, "(the redirection >)"],
+    [`sed -i 's/status: draft/status: approved/' ${f}`, "(sed -i)"],
+  ];
+
+  test("a write behind a shell keyword, in a group or in a function body is refused with the message the plain command gets", () => {
+    for (const f of [model(), join(root, "metrics.yaml"), join(root, ".sl", "ledger.jsonl")]) {
+      for (const [write, how] of writesTo(f, outside)) {
+        const plain = sh(write);
+        refused(plain, how);
+        for (const form of KEYWORD_FORMS) {
+          const v = sh(form(write));
+          expect(`${form(write)}: ${v.allow}`).toBe(`${form(write)}: false`);
+          expect(v.message).toBe(plain.message!);
+        }
+      }
+    }
+    // A relative path, a cd and a nested shell behind a keyword are read as they are without one.
+    refused(sh("if true; then rm models/wh/orders.yaml; fi", root), "models/wh/orders.yaml", "(rm)", "typed edit");
+    refused(sh(`if true; then cd ${root}; rm models/wh/orders.yaml; fi`), "models/wh/orders.yaml", "(rm)");
+    refused(sh(`while true; do bash -c "sed -i s/a/b/ ${model()}"; break; done`), "(sed -i)");
+    refused(sh(`{ eval "rm ${root}/.sl/pending/rb_0001.json"; }`), ".sl/pending/rb_0001.json", "written only by the CLI");
+    refused(sh("if true; then rm semantic.yaml; fi", root), "marks the semantic layer");
+    refused(sh('{ rm "$ROOT/.sl/ledger.jsonl"; }'), "may write $ROOT/.sl/ledger.jsonl");
+    // The interviewer's shell writes anywhere in the root are found the same way (spec: Agent roles).
+    const interviewer = (command: string) =>
+      checkToolUse(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd: dir, agent_type: "semantic-layer-builder:sl-interviewer", agent_id: "a1" }));
+    const plain = interviewer(`rm ${root}/sources/wh.yaml`);
+    refused(plain, "sources/wh.yaml", "(rm)", "never edits the semantic layer by hand");
+    for (const form of KEYWORD_FORMS) expect(interviewer(form(`rm ${root}/sources/wh.yaml`)).message).toBe(plain.message!);
+  });
+
+  test("the same commands behind a keyword on files outside the root, and reads of layer files, are allowed", () => {
+    for (const [write] of writesTo(join(outside, "notes.yaml"), outside)) for (const form of [(c: string) => c, ...KEYWORD_FORMS]) expect(`${form(write)}: ${JSON.stringify(sh(form(write)))}`).toBe(`${form(write)}: {"allow":true}`);
+    for (const form of KEYWORD_FORMS) {
+      allowed(sh(form(`cat ${model()}`)));
+      allowed(sh(form(`sed -n 1,5p ${model()}`)));
+      allowed(sh(form(`cp ${model()} ${outside}/orders-copy.yaml`)));
+      allowed(sh(form(`bun skills/semantic-layer/scripts/sl.ts validate --root ${root}`)));
+    }
+    // A keyword as an argument is not a command's name.
+    allowed(sh(`echo if then rm ${model()}`));
+    allowed(sh(`[ ! -f ${model()} ] && echo missing`));
+  });
+
   test("perl without -i is a read, and -M does not count as -i", () => {
     allowed(sh(`perl -Mstrict -ne print ${model()}`));
     refused(sh(`perl -Mstrict -i -pe 's/a/b/' ${model()}`), "(perl -i)");
@@ -475,8 +542,8 @@ describe("the plugin registers the hook", () => {
   };
   const entry = plugin.hooks.PreToolUse[0]!;
 
-  test("for every tool that writes files, and for Read", () => {
-    expect(entry.matcher.split("|").sort()).toEqual(["Bash", "Edit", "MultiEdit", "NotebookEdit", "Read", "Write"]);
+  test("for every tool that writes files, and for Read and Grep", () => {
+    expect(entry.matcher.split("|").sort()).toEqual(["Bash", "Edit", "Grep", "MultiEdit", "NotebookEdit", "Read", "Write"]);
     expect(entry.hooks[0]!.type).toBe("command");
   });
 

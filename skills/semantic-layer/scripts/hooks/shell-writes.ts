@@ -1,8 +1,9 @@
 // The files a shell command plainly writes, for the hand-edit hook (spec: Hand edits). It reads the
 // command the way a shell splits it (quotes, escapes, operators, redirections, heredocs, braces, `cd`)
 // and reports the targets of redirections, tee, in-place sed, perl, yq and awk, cp, mv, install, ln,
-// rsync, patch, rm, unlink, shred, truncate and dd of=, also inside $(...), `...`, `sh -c` strings,
-// heredocs given to a shell and `eval`. It is
+// rsync, patch, rm, unlink, shred, truncate and dd of=, also after a shell keyword (`then`, `do`, `{`,
+// `!`), in a function body and inside $(...), `...`, `sh -c` strings, heredocs given to a shell and
+// `eval`. It is
 // a first check, not a sandbox: a program that writes files itself (a script, python -c, git) is not
 // seen, and the CLI's own checks remain the guarantee.
 import { homedir } from "node:os";
@@ -324,7 +325,7 @@ export const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
 
 // Where a simple command's own name sits among its words: after its variable assignments and after
 // command prefixes (sudo -u x, env A=b, timeout 5) with their options.
-export function commandStart(words: { word: string }[]): number {
+function commandStart(words: { word: string }[]): number {
   let k = 0;
   while (k < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]!.word)) k++;
   while (k < words.length && PREFIXES.has(basename(words[k]!.word))) {
@@ -334,6 +335,21 @@ export function commandStart(words: { word: string }[]): number {
       k += values.includes(words[k]!.word) ? 2 : 1;
   }
   return k;
+}
+
+// Shell words that stand before a command's name: `if [ -f x ]; then rm x; fi`, `{ rm x; }`.
+const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "coproc"]);
+
+// Where a simple command's name sits: past its assignments and prefixes (commandStart) and past the
+// shell keywords before it (`then`, `do`, `{`, `!`, `function <name>`).
+export function nameAt(words: { word: string; dynamic: boolean }[]): number {
+  for (let k = 0; ; k++) {
+    k += commandStart(words.slice(k));
+    const w = words[k];
+    if (!w || w.dynamic) return k;
+    if (w.word === "function") k++;
+    else if (!KEYWORDS.has(w.word)) return k;
+  }
 }
 
 // Every file the command plainly writes. A relative path is resolved against `cwd` and against every
@@ -373,7 +389,7 @@ export function shellWrites(command: string, cwd: string, depth = 0, bases: stri
       words.push(t);
     }
     i++;
-    const k = commandStart(words);
+    const k = nameAt(words);
     const cmd = words[k];
     if (!cmd) continue;
     const name = basename(cmd.word);

@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 // The plugin's PreToolUse hook against hand edits (spec: Hand edits). Claude Code runs it before
-// Edit, MultiEdit, Write, NotebookEdit and Bash with the call as JSON on stdin. For a file under a
+// Edit, MultiEdit, Write, NotebookEdit, Bash, Read and Grep with the call as JSON on stdin. For a file under a
 // semantic root (a directory holding semantic.yaml) it exits 2, with the reason and the command to
 // use on stderr, when the call would add, change or remove an approval field, change what an
 // approved item's content hash covers, change a confirmed golden's recorded rows, or write
 // .sl/ledger.jsonl or .sl/pending/ by hand. Before those checks, a call from one of the plugin's
 // role agents (spec: Agent roles) is held to what lib/roles.ts lets that role run and edit.
-// It also refuses a read of the env file that holds a connection's secret, and it runs the before
-// half of the answer ledger's before-and-after comparison (integrity.ts).
+// It also refuses a read or a search of the env file that holds a connection's secret (Read, Grep
+// and Bash), and it runs the before half of the answer ledger's before-and-after comparison (integrity.ts).
 // Anything else exits 0. The CLI's own checks (sl validate, sl approve) remain the guarantee; this
 // hook stops the edit before it is made.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -618,7 +618,7 @@ function roleCall(role: Role, tool: string, input: Obj, cwd: string): Verdict | 
 // The verdict on one PreToolUse call, given the hook's stdin. Input that is not a tool call
 // (not JSON, no tool name, no path or command) is let through with a warning: it names no file
 // the hook could check. Inside a semantic root, input the hook cannot read is refused.
-export function checkToolUse(stdin: string, fallbackCwd = process.cwd()): Verdict {
+export function checkToolUse(stdin: string, fallbackCwd = process.cwd(), env: Record<string, string | undefined> = process.env): Verdict {
   let input: unknown;
   try {
     input = JSON.parse(stdin);
@@ -629,14 +629,16 @@ export function checkToolUse(stdin: string, fallbackCwd = process.cwd()): Verdic
     return { allow: true, message: "semantic-layer hook: the hook input has no tool_name or tool_input; not checked." };
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : fallbackCwd;
   // The env file a semantic root loads holds the connection secret: no agent reads it. A failure of
-  // this check leaves the checks below to decide.
+  // this check leaves the checks below to decide, and a call they allow carries its warning.
   let secret: string | undefined;
+  let unchecked: string | undefined;
   try {
-    secret = envFileRefusal(input.tool_name, input.tool_input, cwd);
-  } catch {
-    secret = undefined;
+    secret = envFileRefusal(input.tool_name, input.tool_input, cwd, env);
+  } catch (e) {
+    unchecked = `semantic-layer hook: could not check this call for the connection's env file (${(e as Error).message}); not checked.`;
   }
   if (secret) return { allow: false, message: secret };
+  const warned = (v: Verdict): Verdict => (unchecked && v.allow && !v.message ? { allow: true, message: unchecked } : v);
   // A call from one of the plugin's role agents: its role is checked first, and a failure refuses.
   const role = roleOf(input.agent_type);
   if (role) {
@@ -653,11 +655,11 @@ export function checkToolUse(stdin: string, fallbackCwd = process.cwd()): Verdic
       case "MultiEdit":
       case "Write":
       case "NotebookEdit":
-        return fileCall(input.tool_name, input.tool_input, cwd);
+        return warned(fileCall(input.tool_name, input.tool_input, cwd));
       case "Bash":
-        return bashCall(input.tool_input, cwd);
+        return warned(bashCall(input.tool_input, cwd));
       default:
-        return { allow: true };
+        return warned({ allow: true });
     }
   } catch (e) {
     return { allow: true, message: `semantic-layer hook: could not check this call (${(e as Error).message}); not checked.` };

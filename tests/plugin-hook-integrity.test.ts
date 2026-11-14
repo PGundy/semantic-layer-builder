@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { appendFileSync, cpSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { checkToolUse } from "../skills/semantic-layer/scripts/hooks/guard-edits.ts";
 import { envFileRefusal, runAfter, runBefore, type Outcome } from "../skills/semantic-layer/scripts/hooks/integrity.ts";
 import { initProject, sl, tempDir } from "./helpers.ts";
@@ -707,6 +707,126 @@ describe("the env file that holds the connection secret", () => {
   });
 });
 
+describe("the Grep tool and the env file", () => {
+  // A project whose only env file is .env, beside the semantic root.
+  async function withEnv(): Promise<Project & { env: string }> {
+    const p = await project();
+    writeFileSync(join(p.dir, ".env"), "PG_URL=postgres://reader:synthetic@localhost:5432/acme\n");
+    writeFileSync(join(p.dir, ".env.example"), "PG_URL=postgres://<user>:<password>@<host>:5432/<database>\n");
+    writeFileSync(join(p.dir, "notes.txt"), "the .env file holds PG_URL\n");
+    mkdirSync(join(p.dir, "docs"));
+    writeFileSync(join(p.dir, "docs", "plan.md"), "PG_URL is set by the owner\n");
+    return { ...p, env: join(p.dir, ".env") };
+  }
+  const grep = (p: Project, input: Record<string, unknown>, cwd = p.dir, env: Record<string, string | undefined> = {}) =>
+    checkToolUse(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Grep", tool_input: { pattern: "PG_URL", ...input }, cwd }), cwd, env);
+  const HINT = (f: string) => ` To search the other files, give a subdirectory as path, or a glob that leaves this file out (glob: "!${basename(f)}").`;
+  const refusal = (files: string[], hint?: string) => ["semantic-layer: refused Grep:", ...files.map((f) => `- it reads ${f}. ${SECRET}${hint ?? HINT(f)}`)].join("\n");
+  const refused = (p: Project, input: Record<string, unknown>, message: string, cwd = p.dir) => expect(`${JSON.stringify(input)}: ${grep(p, input, cwd).message}`).toBe(`${JSON.stringify(input)}: ${message}`);
+  const allowed = (p: Project, input: Record<string, unknown>, cwd = p.dir) => expect(`${JSON.stringify(input)}: ${JSON.stringify(grep(p, input, cwd))}`).toBe(`${JSON.stringify(input)}: {"allow":true}`);
+
+  test("a Grep on the env file is refused, whatever its glob, type and output mode", async () => {
+    const p = await withEnv();
+    symlinkSync(p.env, join(p.dir, "settings.txt"));
+    for (const input of [{ path: p.env }, { path: ".env" }, { path: "./.env", output_mode: "count" }, { path: p.env, glob: "*.yaml" }, { path: p.env, type: "yaml" }, { path: p.env, glob: "!.env*" }])
+      refused(p, input, refusal([p.env], ""));
+    refused(p, { path: "../.env" }, refusal([p.env], ""), p.root);
+    refused(p, { path: "settings.txt" }, refusal([join(p.dir, "settings.txt")], ""));
+  });
+
+  test("a Grep on the directory that holds the env file, or on the project directory with no path, is refused with how to search the other files", async () => {
+    const p = await withEnv();
+    for (const input of [{ path: p.dir }, {}, { path: "." }, { path: "" }, { output_mode: "files_with_matches" }, { output_mode: "content", "-n": true, "-i": true }, { pattern: "TODO" }])
+      refused(p, input, refusal([p.env]));
+    refused(p, { path: ".." }, refusal([p.env]), p.root);
+    // The search goes into every directory below: an env file kept inside the semantic root is reached too.
+    writeFileSync(join(p.root, ".env.local"), "PG_URL=postgres://reader:synthetic@localhost:5432/acme\n");
+    refused(p, {}, refusal([p.env, join(p.root, ".env.local")]));
+    refused(p, { path: "semantic" }, refusal([join(p.root, ".env.local")]));
+    // And from a directory further up, here two above a copy of the project.
+    const outer = tempDir("integrity-outer");
+    const copy = join(outer, "work", "acme");
+    cpSync(p.dir, copy, { recursive: true });
+    refused(p, { path: outer }, refusal([join(copy, ".env"), join(copy, "semantic", ".env.local")]));
+    refused(p, { path: "../.." }, refusal([join(copy, ".env"), join(copy, "semantic", ".env.local")]), copy);
+  });
+
+  test("a Grep whose glob matches the env file is refused", async () => {
+    const p = await withEnv();
+    for (const glob of [".env", ".env*", "*", "**", "**/*", ".e*", "*env", "**/.env", "/.env", "*.{yaml,env}", "*.yaml .env", "*.yaml,.env", "!*.md", "!.env.example", "!.env* .env", "!docs/.env*"])
+      refused(p, { glob }, refusal([p.env]));
+    // A glob that takes the file wins over a type that would not.
+    refused(p, { glob: ".env", type: "yaml" }, refusal([p.env]));
+    // A type picks .env.<name> by its last extension, so only a glob leaves that file out.
+    writeFileSync(join(p.dir, ".env.yaml"), "PG_URL=postgres://reader:synthetic@localhost:5432/acme\n");
+    refused(p, { type: "yaml" }, refusal([join(p.dir, ".env.yaml")]));
+    refused(p, { glob: "*.yaml" }, refusal([join(p.dir, ".env.yaml")]));
+  });
+
+  test("a Grep whose glob or type leaves the env file out, or on a subdirectory without one, is allowed", async () => {
+    const p = await withEnv();
+    for (const glob of ["*.yaml", "*.{yaml,yml}", "**/*.yaml", "*.ts,*.md", "*.ts *.md", "semantic/**", "!.env*", "!.env", "!**/.env*", "*.md !.env*", ".env.example"]) allowed(p, { glob });
+    for (const type of ["yaml", "md", "sh", "ts"]) allowed(p, { type });
+    allowed(p, { type: "yaml", glob: "!*.lock" });
+    for (const path of [p.root, "semantic", "semantic/models", "docs", join(p.dir, "notes.txt"), join(p.dir, ".env.example"), join(p.dir, "missing")]) allowed(p, { path });
+    allowed(p, {}, p.root);
+    // A .env where no semantic root is, and a project with .env.example alone, are not the connection's env file.
+    const elsewhere = tempDir("integrity-elsewhere");
+    writeFileSync(join(elsewhere, ".env"), "OTHER=1\n");
+    allowed(p, { path: elsewhere });
+    allowed(p, {}, elsewhere);
+    rmSync(p.env);
+    allowed(p, {});
+  });
+
+  test("the file SL_ENV_FILE names is reached by a Grep on it or on a directory above it", async () => {
+    const p = await withEnv();
+    rmSync(p.env);
+    mkdirSync(join(p.dir, "secrets"));
+    const named = join(p.dir, "secrets", "warehouse.env");
+    writeFileSync(named, "PG_URL=postgres://reader:synthetic@localhost:5432/acme\n");
+    const env = { SL_ENV_FILE: named };
+    expect(grep(p, { path: named }, p.dir, env).message).toBe(refusal([named], ""));
+    for (const input of [{}, { path: "secrets" }, { type: "sh" }, { glob: "*.env" }]) expect(grep(p, input, p.dir, env).message).toBe(refusal([named]));
+    for (const input of [{ path: "semantic" }, { glob: "*.yaml" }, { glob: "!*.env" }]) expect(grep(p, input, p.dir, env)).toEqual({ allow: true });
+    expect(grep(p, {}, p.dir, { SL_ENV_FILE: "secrets/warehouse.env" }).message).toBe(refusal([named]));
+    // The glob the refusal suggests leaves the file out.
+    expect(grep(p, { glob: "!warehouse.env" }, p.dir, env)).toEqual({ allow: true });
+    expect(grep(p, {}, p.dir, {})).toEqual({ allow: true });
+  });
+
+  test("the refusal carries nothing from the file or the pattern", async () => {
+    const p = await withEnv();
+    writeFileSync(join(p.dir, ".env.local"), "LAKE_URL=postgres://reader:synthetic@localhost:5432/lake\n");
+    for (const input of [{}, { path: p.env }, { pattern: "synthetic" }, { pattern: "LAKE_URL", glob: ".env*" }]) {
+      const v = grep(p, input);
+      expect(v.allow).toBe(false);
+      for (const text of ["synthetic", "postgres://", "reader", "LAKE_URL", "localhost"]) expect(v.message).not.toContain(text);
+    }
+    // The rule goes by the path alone: an empty env file is refused the same way.
+    writeFileSync(p.env, "");
+    expect(grep(p, { glob: ".env" }).message).toBe(refusal([p.env]));
+  });
+
+  test("the Glob tool, and a Grep in a directory with many files, are let through quickly", async () => {
+    const p = await withEnv();
+    expect(checkToolUse(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Glob", tool_input: { pattern: "**/.env*" }, cwd: p.dir }))).toEqual({ allow: true });
+    // This repository: thousands of files, no env file. The search for env files stops at 1,000 directories.
+    const start = performance.now();
+    expect(checkToolUse(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Grep", tool_input: { pattern: "TODO" }, cwd: REPO }), REPO, {})).toEqual({ allow: true });
+    // Typically about 20 ms; the bound leaves room for a loaded CI machine.
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
+  test("an error of the hook's own warns and lets the Grep through", async () => {
+    const p = await withEnv();
+    const broken = new Proxy({}, { get: () => { throw new Error("no environment"); } }) as Record<string, string | undefined>;
+    expect(grep(p, {}, p.dir, broken)).toEqual({ allow: true, message: "semantic-layer hook: could not check this call for the connection's env file (no environment); not checked." });
+    // Input the rule cannot read names no env file: the tool itself reports it.
+    for (const input of [{ path: 5 }, { path: ["."], glob: 7 }, { path: "\0" }, { glob: "[" }]) expect(grep(p, { ...input, type: "yaml" }).allow).toBe(true);
+  });
+});
+
 describe("the plugin registers the comparison", () => {
   interface Group {
     matcher?: string;
@@ -716,8 +836,11 @@ describe("the plugin registers the comparison", () => {
   const INTEGRITY = 'bun "${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/hooks/integrity.ts"';
   const MCP = "mcp__.*semantic-layer.*__sl_.*";
 
-  test("before Bash and Read, after Bash whether it succeeds or fails, and around the MCP server's sl tools", () => {
-    expect(hooks.PreToolUse![0]!.matcher!.split("|")).toEqual(expect.arrayContaining(["Bash", "Read"]));
+  test("before Bash, Read and Grep, after Bash whether it succeeds or fails, and around the MCP server's sl tools", () => {
+    expect(hooks.PreToolUse![0]!.matcher!.split("|")).toEqual(expect.arrayContaining(["Bash", "Read", "Grep"]));
+    // Glob lists names only, and nothing is compared after a search.
+    for (const group of [...hooks.PreToolUse!, ...hooks.PostToolUse!, ...hooks.PostToolUseFailure!]) expect(group.matcher!.split("|")).not.toContain("Glob");
+    for (const event of ["PostToolUse", "PostToolUseFailure"]) expect(hooks[event]![0]!.matcher!.split("|")).not.toContain("Grep");
     expect(hooks.PreToolUse![0]!.hooks.map((h) => h.command)).toEqual(['bun "${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/hooks/guard-edits.ts"']);
     expect(hooks.PreToolUse![1]!.matcher).toBe(MCP);
     expect(hooks.PreToolUse![1]!.hooks.map((h) => h.command)).toContain(INTEGRITY);
@@ -774,7 +897,7 @@ describe("the plugin registers the comparison", () => {
     expect(readdirSync(tmp)).toEqual([]);
   }, 30_000);
 
-  test("the registered commands refuse the env file, and the MCP sl tools are marked as sl and stopped by an earlier forged change", async () => {
+  test("the registered commands refuse the env file to Read and to Grep, and the MCP sl tools are marked as sl and stopped by an earlier forged change", async () => {
     const p = await project();
     await readback(p, true);
     const ledger = read(p.ledger)!;
@@ -784,6 +907,14 @@ describe("the plugin registers the comparison", () => {
     expect(refused.code).toBe(2);
     expect(refused.err).toContain(SECRET);
     expect(refused.err).not.toContain("synthetic");
+    // A Grep over the project is refused the same way, and one that leaves the file out passes and leaves no state.
+    const grep = (input: Record<string, unknown>) => run(pre, p, "PreToolUse", payload(p, "", { tool: "Grep", input: { pattern: "PG_URL", ...input } }), env);
+    const searched = grep({ output_mode: "content" });
+    expect(searched.code).toBe(2);
+    expect(searched.err).toBe(`semantic-layer: refused Grep:\n- it reads ${join(p.dir, ".env")}. ${SECRET} To search the other files, give a subdirectory as path, or a glob that leaves this file out (glob: "!.env").\n`);
+    expect(grep({ glob: "*.yaml" })).toEqual({ code: 0, err: "" });
+    expect(grep({ path: "semantic" })).toEqual({ code: 0, err: "" });
+    expect(existsSync(join(env.CLAUDE_PLUGIN_DATA, "ledger-guard"))).toBe(false);
     const mcp = hooks.PreToolUse![1]!.hooks.find((h) => h.command === INTEGRITY)!.command;
     const tool = payload(p, "", { tool: "mcp__plugin_semantic-layer-builder_semantic-layer__sl_approve", input: { target: "wh.orders.revenue" } });
     expect(run(pre, p, "PreToolUse", payload(p, "node rewrite.js; exit 1"), env)).toEqual({ code: 0, err: "" });
