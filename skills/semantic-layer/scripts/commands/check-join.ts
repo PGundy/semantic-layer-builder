@@ -190,6 +190,7 @@ const spec: CommandSpec = {
     plan: { type: "string" },
     "no-write": { type: "boolean" },
   },
+  writes: ({ values }) => (values["emit-sql"] ? "whole" : values["no-write"] ? false : "late"),
   async run({ values }, ctx) {
     const sourceName = requireName("source", str(values, "source"));
     if (!sourceName) throw new UserError("--source is required.");
@@ -252,6 +253,8 @@ const spec: CommandSpec = {
     });
     let written = 0;
     let unmeasured = 0;
+    // The queries ran without the lock: each model file is read and written under it.
+    const unlock = write ? await ctx.lock() : undefined;
     answered.forEach((t, i) => {
       const { evidence, measured, findings, sentence } = evaluated[i]!;
       if (measured && write) {
@@ -263,6 +266,7 @@ const spec: CommandSpec = {
       checks.push(r);
       reports.push(humanReport(r, t, evidence));
     });
+    unlock?.();
     // Non-zero only when the database answered for no join.
     const code = answered.length ? 0 : 1;
 

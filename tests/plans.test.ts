@@ -504,7 +504,8 @@ describe(".sl/plans is gitignored", () => {
     mkdirSync(t.root, { recursive: true });
     writeFileSync(join(t.root, ".gitignore"), "# mine\n*.tmp");
     await initProject(t.root);
-    expect(readFileSync(join(t.root, ".gitignore"), "utf8")).toBe("# mine\n*.tmp\n.sl/plans/\n");
+    // sl init also names the lock a writing command holds (tests/lock.test.ts).
+    expect(readFileSync(join(t.root, ".gitignore"), "utf8")).toBe("# mine\n*.tmp\n.sl/plans/\n.sl/lock\n");
   });
 
   test("the example layer ignores it", () => {

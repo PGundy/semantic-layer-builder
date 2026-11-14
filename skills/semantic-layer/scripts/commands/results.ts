@@ -63,6 +63,7 @@ const spec: CommandSpec = {
     file: { type: "string" },
   },
   positionals: true,
+  writes: ({ positionals }) => (positionals[0] === "add" ? "whole" : false),
   async run({ values, positionals }, ctx) {
     const [sub, ...rest] = positionals;
     if (!sub || !(SUBCOMMANDS as readonly string[]).includes(sub)) {

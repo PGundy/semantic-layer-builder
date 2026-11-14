@@ -236,6 +236,7 @@ const spec: CommandSpec = {
     force: { type: "boolean" },
     "new-columns": { type: "boolean" },
   },
+  writes: "whole",
   async run({ values }, ctx) {
     const project = loadProject(ctx.root);
     const sourceName = sourceFlag(values, project);

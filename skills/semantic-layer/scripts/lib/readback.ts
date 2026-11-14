@@ -2,11 +2,12 @@
 // sl readback renders each target from the YAML (its definition, who sees it under the current
 // access.yaml, and the facts measured from the data) and stores the numbered items with the content
 // hash sl approve would record, in .sl/pending/<readback_id>.json under the semantic root.
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type AccessLayer, type AccessVisibility, evaluateLayer, loadAccessLayer } from "./access.ts";
 import { accessEntry, type ApprovalEntry, goldenHash, metricEntries, modelEntries } from "./approval-hash.ts";
 import { UserError } from "./errors.ts";
+import { writeFileAtomic } from "./lock.ts";
 import { findTable, qualifiedName } from "./naming.ts";
 import { formatTable, maskRows, PROTECTED_VALUE, plainText } from "./output.ts";
 import { protectedColumns } from "./profile.ts";
@@ -67,7 +68,7 @@ export function writePending(root: string, pending: PendingReadback): string {
   const rel = join(PENDING_DIR, `${pending.readback_id}.json`);
   mkdirSync(join(root, PENDING_DIR), { recursive: true });
   try {
-    writeFileSync(join(root, rel), `${JSON.stringify(pending, null, 2)}\n`, { flag: "wx" });
+    writeFileAtomic(join(root, rel), `${JSON.stringify(pending, null, 2)}\n`, { exclusive: true });
   } catch (e) {
     if ((e as { code?: string }).code !== "EEXIST") throw e;
     throw new UserError(`${rel} was written by another run just now; run sl readback again for the next free id.`);

@@ -62,6 +62,7 @@ const spec: CommandSpec = {
     "With no access.yaml, sl set access mode open|closed creates a draft one holding that mode.",
   options: { unset: { type: "boolean" } },
   positionals: true,
+  writes: "whole",
   async run({ values, positionals }, ctx) {
     loadProject(ctx.root);
     const unset = bool(values, "unset");

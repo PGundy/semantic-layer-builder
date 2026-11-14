@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { bool, str, type CommandContext, type OptionValues } from "./command.ts";
 import { UserError } from "./errors.ts";
+import { writeFileAtomic } from "./lock.ts";
 import { canRun, openAdapter, type Adapter, type AdapterOptions, type RoleReport } from "./adapters/index.ts";
 import { plainText, protectedNames, protectedResultColumns } from "./output.ts";
 import { loadSource } from "./project.ts";
@@ -402,7 +403,7 @@ export function emitPlan(ctx: CommandContext, plan: QueryPlan, how: Invocation):
   writeJson(path, stored);
   // Plans and results are working files: ignored even in a root sl init did not write.
   const ignore = join(plansDir(ctx.root), ".gitignore");
-  if (!existsSync(ignore)) writeFileSync(ignore, "*\n");
+  if (!existsSync(ignore)) writeFileAtomic(ignore, "*\n");
   ctx.err(
     full.queries.length
       ? `Wrote plan ${id} to ${path}. Run each query with a row limit of its max_rows, store each result with ` +

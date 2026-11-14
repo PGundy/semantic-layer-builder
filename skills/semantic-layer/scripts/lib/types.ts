@@ -41,7 +41,11 @@ export interface Scope {
 }
 
 export interface SourceConnection {
+  // The variable that holds the connection URL.
   env?: string;
+  // Postgres: the start of the variables that hold the connection's parts (<prefix>HOST, PORT,
+  // USER, PASSWORD, DATABASE, SSLMODE). A source has env or env_prefix, not both.
+  env_prefix?: string;
   database?: string;
   setup?: string[];
   views?: Record<string, string>;

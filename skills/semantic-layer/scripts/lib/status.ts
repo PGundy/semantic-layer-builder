@@ -100,7 +100,7 @@ export interface SourceStatus {
   dialect: Dialect;
   // intake.mode: connection, or export for a source read from a schema export.
   intake_mode: IntakeMode;
-  // The CLI can open a live connection: duckdb, or postgres with connection.env set, and not an export source.
+  // The CLI can open a live connection: duckdb, or postgres with connection.env or connection.env_prefix set, and not an export source.
   runnable: boolean;
   // Export sources: every data-dependent step, waiting on a connection; empty for a connection source.
   waiting_on_connection: WaitingStep[];
@@ -355,7 +355,7 @@ function draftFields(m: LoadedModel["model"]): string[] {
 // source has none, whatever its connection block holds.
 function liveRunnable(config: SourceConfig): boolean {
   if (!canRun(config) || intakeMode(config) === "export") return false;
-  return config.dialect === "duckdb" || !!config.connection?.env;
+  return config.dialect === "duckdb" || !!config.connection?.env || config.connection?.env_prefix !== undefined;
 }
 
 // Whether the dimension or measure `field` of a model is approved.

@@ -32,6 +32,7 @@ const spec: CommandSpec = {
     set: { type: "string", multiple: true },
   },
   positionals: false,
+  writes: "whole",
   async run({ values }, ctx) {
     const project = loadProject(ctx.root);
     const name = str(values, "name")?.trim();

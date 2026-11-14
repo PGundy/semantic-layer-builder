@@ -34,6 +34,7 @@ const spec: CommandSpec = {
     plan: { type: "string" },
     redact: { type: "boolean" },
   },
+  writes: ({ values }) => (values["emit-sql"] || values.redact ? "whole" : "late"),
   async run({ values }, ctx) {
     const sourceName = str(values, "source");
     if (!sourceName) throw new UserError("--source is required.");
@@ -168,7 +169,9 @@ const spec: CommandSpec = {
       known: new Set(selected.flatMap((t) => [t.schema ?? "", t.name, qualifiedName(t), ...t.columns.map((c) => c.name)]).map((n) => n.toLowerCase())),
     });
     const wanted = new Set(selected.map(qualifiedName));
-    const { snapshot: measured, empty_samples, failed } = applyProfile(snapshot, details, outcome.results, ctx.now().toISOString(), outcome.failed);
+    // The queries ran without the lock: the profiles go into the snapshot as it is now, read under the lock.
+    const unlock = await ctx.lock();
+    const { snapshot: measured, empty_samples, failed } = applyProfile(requireSnapshot(ctx.root, sourceName), details, outcome.results, ctx.now().toISOString(), outcome.failed);
     for (const f of failed) {
       wanted.delete(f.table);
       skipped.push(f);
@@ -189,6 +192,7 @@ const spec: CommandSpec = {
     // Stored top values can hold raw values of columns this profile only now protects, so a plan
     // finished here is removed.
     if (input.planId !== undefined) removePlan(ctx.root, input.planId);
+    unlock();
 
     const profiled = updated.tables
       .filter((t) => wanted.has(qualifiedName(t)))

@@ -45,7 +45,7 @@ describe("compareRows", () => {
     expect(compareRows([{ v: 0 }], [{ v: 0.0001 }], { ordered: true, tolerance: 0.005 }).ok).toBe(false);
     expect(compareRows([{ v: 1 }], [{ v: 1.0000001 }], O).ok).toBe(false);
     const r = compareRows([{ v: 100 }], [{ v: 101 }], { ordered: true, tolerance: 0.005 });
-    expect(r.diffs).toEqual(["Row 1, column v: expected 100, got 101."]);
+    expect(r.diffs).toEqual(["Row 1, column v: expected 100, got 101 (whole numbers compare exactly)."]);
   });
 
   test("numeric strings compare numerically with numbers; other strings exactly", () => {
@@ -412,8 +412,8 @@ describe("goldens CLI on duckdb", () => {
     const westRow = saved.expected!.rows.findIndex((r) => r.region === "west") + 1;
     expect(failed.results[0]!.diffs).toEqual([
       "Both the rows compiled from the YAML and cross_check_sql differ from expected.rows.",
-      `Compiled: Row ${westRow} (region="west"), column revenue: expected 200, got 250.`,
-      `cross_check_sql: Row ${westRow} (region="west"), column revenue: expected 200, got 250.`,
+      `Compiled: Row ${westRow} (region="west"), column revenue: expected 200, got 250 (whole numbers compare exactly).`,
+      `cross_check_sql: Row ${westRow} (region="west"), column revenue: expected 200, got 250 (whole numbers compare exactly).`,
     ]);
 
     const failHuman = await sl(t.root, ["goldens", "check", "--name", "revenue_by_region"]);

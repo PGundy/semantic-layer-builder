@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -17,6 +17,7 @@ import {
   type Scalar,
 } from "yaml";
 import { UserError } from "./errors.ts";
+import { writeFileAtomic } from "./lock.ts";
 
 const STRINGIFY = { lineWidth: 0, indent: 2, flowCollectionPadding: false } as const;
 
@@ -44,14 +45,14 @@ export function readYamlIfExists<T>(path: string): T | null {
 // Writes a new file from a plain object. Use updateYaml to edit an existing file.
 export function writeYaml(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, stringify(value, STRINGIFY));
+  writeFileAtomic(path, stringify(value, STRINGIFY));
 }
 
 // Edits an existing YAML file in place. The file's text stays byte-identical outside the keys
 // the edit changed, so the owner's comments, blank lines, quoting and block styles survive.
 export function updateYaml(path: string, edit: (doc: Document) => void): void {
   const text = readFileSync(path, "utf8");
-  writeFileSync(path, editYamlText(text, edit, path));
+  writeFileAtomic(path, editYamlText(text, edit, path));
 }
 
 // Runs `edit` on the parsed document and returns the original text with only the changed
@@ -628,5 +629,5 @@ export function readJson<T>(path: string): T {
 
 export function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+  writeFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
 }
