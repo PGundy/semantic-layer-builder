@@ -1,25 +1,170 @@
-import type { CommandSpec } from "../lib/command.ts";
+import type { CommandContext, CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { oneLine } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
+import { afterYesSteps, goldenExportSource, goldenUpgradeNext } from "../lib/export-goldens.ts";
+import { readJsonObject, unknownKeys } from "../lib/json-input.ts";
 import { LEDGER_FILE, latestReply, openLedger, ownerText, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
 import { currentHash } from "../lib/readback.ts";
-import { goldenExportSource, goldenUpgradeNext } from "../lib/export-goldens.ts";
-import type { LedgerReply, ReplyVerdict } from "../lib/types.ts";
+import type { LedgerReply, PendingReadback, ReadbackItem, ReplyVerdict } from "../lib/types.ts";
 
 const VERDICTS: readonly ReplyVerdict[] = ["yes", "no", "change"];
 const USAGE = 'sl reply --readback <readback_id> --item <n> --text "<owner\'s words>" [--verdict yes|no|change] [--about access] --by "<owner>"';
+const ANSWERS_USAGE =
+  'sl reply --readback <readback_id> --answers <file | -> holding {"by": "<owner>", "answers": [{"item": 1, "verdict": "yes", "text": "<owner\'s words>"}, ' +
+  '{"items": [2, 3], "verdict": "change", "text": "<owner\'s words>"}]}';
+
+// One reply as the ledger records it, the single form and --answers alike: the same keys from the
+// same inputs, so a batch writes the lines the single form would, apart from ids and times.
+function replyLine(pending: PendingReadback, item: ReadbackItem, text: string, verdict: ReplyVerdict | null, about: "access" | undefined, by: string, at: string): Omit<LedgerReply, "id"> {
+  return {
+    kind: "reply",
+    readback_id: pending.readback_id,
+    item: item.n,
+    target: item.target,
+    content_hash: item.content_hash,
+    text,
+    verdict,
+    ...(about ? { about } : {}),
+    by,
+    at,
+  };
+}
+
+// Why --about access does not go with this verdict or item, or undefined when it does; `answers`
+// words it for an entry of --answers.
+function aboutRefusal(item: ReadbackItem, verdict: ReplyVerdict | null, answers = false): string | undefined {
+  const change = answers ? '"verdict": "change"' : "--verdict change";
+  const without = answers ? 'without "about"' : "without --about";
+  if (verdict !== "change")
+    return `${answers ? '"about": "access"' : "--about access"} records a change to who sees the item, so it goes with ${change}. Record the owner's ${verdict} to the item itself in its own ${answers ? "entry" : "sl reply"}, ${without}.`;
+  if (item.target === "access") return `This item is access.yaml itself, so a change to who sees what is a change to it: record it with ${change}, ${without}.`;
+  return undefined;
+}
+
+// The step after a yes to a target: its approve or confirm, or the upgrade an export source's golden waits on.
+function afterYes(root: string, target: string, by: string): { next: string; waits?: string } {
+  if (!target.startsWith("golden:")) return { next: `sl approve --target ${target} --by ${shellQuote(by)}` };
+  // Decision D2: an export source's golden is confirmed only once its source has a connection.
+  const waits = goldenExportSource(root, target.slice(7));
+  return waits ? { next: goldenUpgradeNext(waits.source, waits.dialect, [target.slice(7)]), waits: waits.source } : { next: `sl goldens confirm --name ${target.slice(7)}` };
+}
+
+// The --answers form: every entry is checked before any line is written, then one ledger line per
+// item, in one write, each the line the single form writes for it.
+async function replyAnswers(ctx: CommandContext, rb: string, file: string): Promise<number> {
+  const data = await readJsonObject(ctx, "answers", file, `Usage: ${ANSWERS_USAGE}.`);
+  const fail = (why: string): never => {
+    throw new UserError(`${why} Nothing was written. Fix it and run the same command again. Usage: ${ANSWERS_USAGE}.`);
+  };
+  const extra = unknownKeys(data, ["by", "answers"]);
+  if (extra.length) fail(`The answers file has key(s) ${extra.join(", ")}; it holds only "by" and "answers".`);
+  const by = typeof data.by === "string" ? ownerText(oneLine(data.by)).text : "";
+  if (!by) fail('"by" is missing or empty; give the name of the owner who answered.');
+  if (!Array.isArray(data.answers) || !data.answers.length) fail('"answers" is missing or empty; give one entry per answer the owner gave.');
+  const pending = readPending(ctx.root, rb.trim());
+  const list = pending.items.map((i) => `${i.n} (${i.target})`).join(", ");
+  const named = new Map<number, number>();
+  const picked: { item: ReadbackItem; text: string; redacted: boolean; verdict: ReplyVerdict; about?: "access" }[] = [];
+  (data.answers as unknown[]).forEach((raw, i) => {
+    const at = `Entry ${i + 1} of "answers"`;
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return fail(`${at} is not an object.`);
+    const e = raw as Record<string, unknown>;
+    const bad = unknownKeys(e, ["item", "items", "verdict", "text", "about"]);
+    if (bad.length) fail(`${at} has key(s) ${bad.join(", ")}; an entry holds "item" or "items", "verdict", "text" and, on a change to who sees an item, "about": "access".`);
+    if ((e.item === undefined) === (e.items === undefined)) fail(`${at} gives ${e.item === undefined ? "neither" : "both"} "item" and "items"; give one: "item": <n> or "items": [<n>, ...].`);
+    const ns = e.item !== undefined ? [e.item] : Array.isArray(e.items) && e.items.length ? e.items : fail(`${at} has "items" that is not a list of item numbers.`);
+    const verdict = typeof e.verdict === "string" ? (e.verdict.trim().toLowerCase() as ReplyVerdict) : undefined;
+    if (!verdict || !VERDICTS.includes(verdict)) fail(`${at} has verdict ${JSON.stringify(e.verdict ?? null)}; a verdict is "yes", "no" or "change".`);
+    const { text, redacted } = typeof e.text === "string" ? ownerText(e.text) : { text: "", redacted: false };
+    if (!text) fail(`${at} has no "text"; record the owner's words as they said them.`);
+    const about = e.about === undefined ? undefined : e.about === "access" ? ("access" as const) : fail(`${at} has "about": ${JSON.stringify(e.about)}; "about" is "access" (a change to who sees the item), or left out.`);
+    for (const n of ns) {
+      const item = typeof n === "number" && Number.isInteger(n) ? pending.items.find((x) => x.n === n) : undefined;
+      if (typeof n !== "number") fail(`${at} names item ${JSON.stringify(n)}; an item number is a whole number, not text: "item": 1.`);
+      if (!item) fail(`${at} names item ${JSON.stringify(n)}, which ${pending.readback_id} does not have; its items are ${list}.`);
+      if (named.has(item!.n)) fail(`${at} names item ${item!.n}, which entry ${named.get(item!.n)} already names; give each item once.`);
+      named.set(item!.n, i + 1);
+      if (about) {
+        const why = aboutRefusal(item!, verdict!, true);
+        if (why) fail(`${at}, item ${item!.n}: ${why}`);
+      }
+      picked.push({ item: item!, text, redacted, verdict: verdict!, ...(about ? { about } : {}) });
+    }
+  });
+  const at = ctx.now().toISOString();
+  const entries = openLedger(ctx.root).appendAll(picked.map((p) => replyLine(pending, p.item, p.text, p.verdict, p.about, by, at))) as LedgerReply[];
+
+  // What each recorded line leaves to do.
+  const warnings: string[] = [];
+  if (picked.some((p) => p.redacted)) warnings.push("The owner's words held what looks like a credential; it was stored as [redacted]. Ask the owner to change that credential, since it was shared in the conversation.");
+  const stale: string[] = [];
+  const gone: string[] = [];
+  const yesApprove: number[] = [];
+  const yesGolden: number[] = [];
+  const waiting: string[] = [];
+  const edits: string[] = [];
+  const access: string[] = [];
+  for (const p of picked) {
+    const t = p.item.target;
+    const now = currentHash(ctx.root, t, p.item.content_hash);
+    if (now === null) gone.push(t);
+    else if (now !== p.item.content_hash) stale.push(t);
+    else if (p.about) access.push(t);
+    else if (p.verdict === "yes") {
+      if (t.startsWith("golden:") && afterYes(ctx.root, t, by).waits) waiting.push(t);
+      else (t.startsWith("golden:") ? yesGolden : yesApprove).push(p.item.n);
+    } else edits.push(t);
+  }
+  if (gone.length) warnings.push(`${gone.join(", ")} no longer exist${gone.length === 1 ? "s" : ""} in the YAML, so ${gone.length === 1 ? "its reply" : "their replies"} cannot approve anything; run sl status to see the current targets.`);
+  if (stale.length) warnings.push(`${stale.join(", ")} changed since ${stale.length === 1 ? "it was" : "they were"} read back; read ${stale.length === 1 ? "it" : "them"} back again with sl readback --targets ${stale.join(",")}, and record the owner's answers to the new readback.`);
+  // Each step with the command it starts with, which --json gives as next.
+  const steps: [string, string][] = [];
+  if (yesApprove.length) steps.push([`sl approve --readback ${pending.readback_id}`, ""]);
+  if (yesGolden.length) steps.push([`sl goldens confirm --readback ${pending.readback_id}`, ""]);
+  for (const s of afterYesSteps(ctx.root, waiting, (t) => afterYes(ctx.root, t, by).next)) steps.push([s, ""]);
+  const redo = [...new Set([...edits, ...stale])];
+  if (edits.length) steps.push(["sl apply --file -", `make the changes the owner asked for to ${edits.join(", ")} with one sl apply --file -, then sl readback --targets ${redo.join(",")}`]);
+  else if (stale.length) steps.push([`sl readback --targets ${stale.join(",")}`, ""]);
+  if (!steps.length) steps.push(["sl next", ""]);
+  const next = steps[0]![0];
+  const stepText = steps.map(([cmd, text]) => text || cmd);
+  if (ctx.json) {
+    ctx.out(formatJson({ readback_id: pending.readback_id, path: LEDGER_FILE, ids: entries.map((e) => e.id), entries, warnings, next, next_steps: stepText }));
+    return 0;
+  }
+  const counts = (["yes", "no", "change"] as const)
+    .map((v) => [v, picked.filter((p) => p.verdict === v && !p.about).map((p) => p.item.n)] as const)
+    .filter(([, ns]) => ns.length)
+    .map(([v, ns]) => `${v} to item${ns.length === 1 ? "" : "s"} ${ns.join(", ")}`);
+  const aboutItems = picked.filter((p) => p.about).map((p) => p.item.n);
+  if (aboutItems.length) counts.push(`a change to who sees item${aboutItems.length === 1 ? "" : "s"} ${aboutItems.join(", ")}`);
+  const span = entries.length === 1 ? entries[0]!.id : `${entries[0]!.id} to ${entries[entries.length - 1]!.id}`;
+  const lines = [`Recorded ${span} in ${LEDGER_FILE}: ${by}'s replies to ${entries.length} item${entries.length === 1 ? "" : "s"} of ${pending.readback_id}, ${counts.join("; ")}.`];
+  lines.push(...warnings.map((w) => `Warning: ${w}`));
+  if (access.length) lines.push(`Who sees ${access.join(", ")} is decided in the access phase: sl next brings ${access.length === 1 ? "that change" : "those changes"} up there, and ${access.length === 1 ? "it does" : "they do"} not hold the items' sign-off.`);
+  lines.push(`Next: ${stepText.join("; then ")}.`);
+  ctx.out(lines.join("\n"));
+  return 0;
+}
 
 const spec: CommandSpec = {
-  summary: "Record the owner's answer to one item of a readback in the answer ledger, .sl/ledger.jsonl.",
+  summary: "Record the owner's answers to the items of a readback in the answer ledger, .sl/ledger.jsonl.",
   usage:
-    'reply --readback <readback_id> --item <n> --text "<owner\'s words>" [--verdict yes|no|change] [--about access] --by "<owner>"\n\n' +
+    'reply --readback <readback_id> --item <n> --text "<owner\'s words>" [--verdict yes|no|change] [--about access] --by "<owner>"\n' +
+    "       reply --readback <readback_id> --answers <file | ->\n\n" +
     "Appends one line to .sl/ledger.jsonl with the item's target and the content hash it had when it was read\n" +
     "back, the owner's words (credentials redacted), the verdict and the time. Never rewrites earlier lines.\n" +
     "--about access records a change to who sees the item, not to the item: it is settled in the access phase\n" +
-    "(sl next brings it up there) and does not hold the item's sign-off, which still takes its own yes.",
+    "(sl next brings it up there) and does not hold the item's sign-off, which still takes its own yes.\n" +
+    "--answers records one owner turn: the file, or stdin with -, holds\n" +
+    '  {"by": "<owner>", "answers": [{"item": 1, "verdict": "yes", "text": "<owner\'s words>"},\n' +
+    '                                {"items": [2, 3], "verdict": "change", "text": "<owner\'s words>", "about": "access"}]}\n' +
+    "Every entry is checked first (each item exists and is named once, a verdict, words, about only on a change);\n" +
+    "on any error nothing is written. Then each item gets the line the single form writes for it. \"items\" shares\n" +
+    "one answer only when the owner said those words of each of those items.",
   options: {
     readback: { type: "string" },
     item: { type: "string" },
@@ -27,12 +172,23 @@ const spec: CommandSpec = {
     verdict: { type: "string" },
     about: { type: "string" },
     by: { type: "string" },
+    answers: { type: "string", mcp: "omit" },
   },
   writes: "whole",
   async run({ values }, ctx) {
     loadProject(ctx.root);
+    const answers = str(values, "answers");
+    if (answers !== undefined) {
+      const rb = str(values, "readback");
+      if (rb === undefined) throw new UserError(`--answers needs --readback <readback_id>. Usage: ${ANSWERS_USAGE}.`);
+      const mixed = ["item", "text", "verdict", "about", "by"].filter((f) => str(values, f) !== undefined);
+      if (mixed.length) throw new UserError(`--answers takes no ${mixed.map((f) => `--${f}`).join(", ")}: the answers file holds the owner's name, each item, its verdict and words. Nothing was written. Usage: ${ANSWERS_USAGE}.`);
+      return replyAnswers(ctx, rb, answers);
+    }
     const [rb, itemRaw, raw, byRaw] = [str(values, "readback"), str(values, "item"), str(values, "text"), str(values, "by")];
     if (rb === undefined || itemRaw === undefined || raw === undefined || byRaw === undefined) throw new UserError(`Usage: ${USAGE}.`);
+    if (/[,\s]/.test(itemRaw.trim()))
+      throw new UserError(`--item takes one item number, not ${JSON.stringify(itemRaw)}; nothing was written. To record several answers at once, give each item its own entry, with the owner's words for it: ${ANSWERS_USAGE}.`);
     const verdictRaw = str(values, "verdict");
     const aboutRaw = str(values, "about");
     const about = aboutRaw === undefined ? undefined : aboutRaw.trim().toLowerCase();
@@ -40,8 +196,7 @@ const spec: CommandSpec = {
     // A change to who sees an item is a change, whatever else the owner says about the item itself.
     const verdict = verdictRaw === undefined ? (about ? "change" : null) : (verdictRaw.trim().toLowerCase() as ReplyVerdict);
     if (verdict !== null && !VERDICTS.includes(verdict)) throw new UserError(`--verdict is yes, no or change, not ${JSON.stringify(verdictRaw)}. Usage: ${USAGE}.`);
-    if (about && verdict !== "change")
-      throw new UserError(`--about access records a change to who sees the item, so it goes with --verdict change. Record the owner's ${verdict} to the item itself in its own sl reply, without --about.`);
+    if (about && verdict !== "change") throw new UserError(aboutRefusal({ target: "" } as ReadbackItem, verdict)!);
     const by = ownerText(oneLine(byRaw)).text;
     if (!by) throw new UserError('--by is empty; give the name of the owner who answered (--by "<owner>").');
     const { text, redacted } = ownerText(raw);
@@ -53,23 +208,14 @@ const spec: CommandSpec = {
       const items = pending.items.map((i) => `${i.n} (${i.target})`).join(", ");
       throw new UserError(`Readback ${pending.readback_id} has no item ${JSON.stringify(itemRaw)}; its items are ${items}. To ask about something else, read it back first with sl readback --targets <ref>.`);
     }
-    if (about && item.target === "access")
-      throw new UserError("This item is access.yaml itself, so a change to who sees what is a change to it: record it with --verdict change, without --about.");
+    if (about) {
+      const why = aboutRefusal(item, verdict);
+      if (why) throw new UserError(why);
+    }
     const ledger = openLedger(ctx.root);
     const now = currentHash(ctx.root, item.target, item.content_hash);
     const changed = now !== item.content_hash;
-    const entry = ledger.append({
-      kind: "reply",
-      readback_id: pending.readback_id,
-      item: item.n,
-      target: item.target,
-      content_hash: item.content_hash,
-      text,
-      verdict,
-      ...(about ? { about } : {}),
-      by,
-      at: ctx.now().toISOString(),
-    } satisfies Omit<LedgerReply, "id">);
+    const entry = ledger.append(replyLine(pending, item, text, verdict, about ? "access" : undefined, by, ctx.now().toISOString()));
     const t = item.target;
     const again = `sl readback --targets ${t}`;
     const warnings: string[] = [];
@@ -95,12 +241,10 @@ const spec: CommandSpec = {
       next = now === null ? "sl status" : again;
       advice = `Next: ${next}.`;
     } else if (verdict === "yes") {
-      // Decision D2: an export source's golden is confirmed only once its source has a connection.
-      const waits = t.startsWith("golden:") ? goldenExportSource(ctx.root, t.slice(7)) : undefined;
-      if (waits) next = goldenUpgradeNext(waits.source, waits.dialect, [t.slice(7)]);
-      else next = t.startsWith("golden:") ? `sl goldens confirm --name ${t.slice(7)}` : `sl approve --target ${t} --by ${shellQuote(by)}`;
-      advice = waits
-        ? `The owner said yes to the item as read back, and the yes stays recorded, but ${t} cannot be confirmed until source ${waits.source} has a connection. Next: ${next}.`
+      const step = afterYes(ctx.root, t, by);
+      next = step.next;
+      advice = step.waits
+        ? `The owner said yes to the item as read back, and the yes stays recorded, but ${t} cannot be confirmed until source ${step.waits} has a connection. Next: ${next}.`
         : `The owner said yes to the item as read back. Next: ${next}.`;
     } else {
       next = again;

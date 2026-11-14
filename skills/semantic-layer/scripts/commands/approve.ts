@@ -4,9 +4,9 @@ import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import type { LastApproval } from "../lib/access.ts";
 import { type ApprovalEntry, carriesHash, holdsHashes, integrity, itemApprovals, itemHash, type LayerModel, listApprovals } from "../lib/approval-hash.ts";
 import type { CommandSpec } from "../lib/command.ts";
-import { bool, str } from "../lib/command.ts";
+import { bool, list, str, type CommandContext, type OptionValues } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
-import { LEDGER_FILE, latestReply, readReplies, shellQuote } from "../lib/ledger.ts";
+import { LEDGER_FILE, latestReply, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadAccess, loadMetrics, loadModel, loadProject, paths } from "../lib/project.ts";
 import { findField, parseTarget, type Target } from "../lib/refs.ts";
@@ -387,17 +387,151 @@ function stampHashes(root: string, target: Target | undefined, confirmUnchanged:
   return out;
 }
 
+// One item of a batched approve, as it ended.
+interface ItemResult {
+  target: string;
+  item?: number;
+  approved: boolean;
+  // Already approved and unchanged, so nothing was written for it.
+  already?: boolean;
+  by?: string;
+  at?: string;
+  ledger?: string;
+  from?: Status;
+  reason?: string;
+  // The owner's latest reply was a yes, so this item counts against the exit code when not approved.
+  said_yes?: boolean;
+  next?: string;
+  warnings?: string[];
+}
+
+// The order a batch approves in: models and fields, then metrics (whose measures may be approved in
+// the same batch), then access.yaml.
+const rank = (t: string) => (t === "access" ? 2 : t.startsWith("metric:") ? 1 : 0);
+
+// sl approve --readback <id>, or --target given more than once: each item on its own, as --target
+// approves it, only on the owner's latest reply being a yes to it as it stands.
+async function approveMany(ctx: CommandContext, values: OptionValues, refs: string[], rb: string | undefined): Promise<number> {
+  for (const flag of ["revoke", "recursive"] as const)
+    if (bool(values, flag)) throw new UserError(`--${flag} takes one --target and no --readback; run sl approve --target <ref> --${flag} for each.`);
+  if (str(values, "date") !== undefined) throw new UserError(`--date is no longer taken: an approval's date comes from the owner's recorded reply in ${LEDGER_FILE}. Run the same command without --date.`);
+  const by = str(values, "by")?.trim();
+  if (by === "") throw new UserError(`--by is empty. Leave it out to record the owner whose yes is in ${LEDGER_FILE}, or give that owner's name.`);
+  const pending = rb === undefined ? undefined : readPending(ctx.root, rb.trim());
+  const golden = refs.find((r) => r.startsWith("golden:"));
+  if (golden) throw new UserError(`${golden} is a golden: goldens are confirmed against their rows with sl goldens confirm, not approved here; nothing was approved.`);
+  for (const r of refs) parseTarget(r);
+  const items: { target: string; item?: number }[] = [];
+  const seen = new Set<string>();
+  const take = (target: string, item?: number) => {
+    if (seen.has(target)) return;
+    seen.add(target);
+    items.push({ target, ...(item ? { item } : {}) });
+  };
+  for (const i of pending?.items ?? []) take(i.target, i.n);
+  for (const r of refs) take(r);
+  const replies = readReplies(ctx.root);
+  const owner = by ? shellQuote(by) : '"<owner>"';
+  const results = new Map<string, ItemResult>();
+  for (const it of [...items].sort((a, b) => rank(a.target) - rank(b.target))) {
+    const t = it.target;
+    const base: ItemResult = { target: t, ...(it.item ? { item: it.item } : {}), approved: false };
+    const answer = it.item && pending ? `sl reply --readback ${pending.readback_id} --item ${it.item} --text "<owner's words>" --verdict yes|no|change --by ${owner}` : `sl readback --targets ${t}, read it to the owner and record their answer with sl reply`;
+    if (t.startsWith("golden:")) {
+      results.set(t, { ...base, reason: "it is a golden, confirmed against its rows", next: `sl goldens confirm --readback ${pending!.readback_id}` });
+      continue;
+    }
+    const r = latestReply(replies, t);
+    const ref = r ? `${r.id}, to item ${r.item} of ${r.readback_id}` : "";
+    if (!r) {
+      results.set(t, { ...base, reason: "no owner reply to it is recorded", next: answer });
+      continue;
+    }
+    if (r.verdict !== "yes") {
+      results.set(t, {
+        ...base,
+        reason: r.verdict === null ? `the owner's latest reply (${ref}) has no verdict` : `the owner's latest reply (${ref}) is "${r.verdict}", not yes`,
+        next: r.verdict === null ? `ask the owner whether that is a yes, a no or a change: ${answer}` : `make the ${r.verdict === "no" ? "correction" : "change"} with a typed edit (one sl apply for the turn's edits), then sl readback --targets ${t}`,
+      });
+      continue;
+    }
+    const out: string[] = [];
+    try {
+      await spec.run({ values: { target: [t], ...(by ? { by } : {}) }, positionals: [] }, { ...ctx, json: true, out: (x) => out.push(x) });
+      const res = JSON.parse(out.join("\n")) as { changed: Change[]; warnings: string[] };
+      const c = res.changed.find((x) => x.target === t);
+      results.set(t, { ...base, approved: true, said_yes: true, ...(c ? { from: c.from } : { already: true }), by: r.by, at: r.at.slice(0, 10), ledger: r.id, ...(res.warnings.length ? { warnings: res.warnings } : {}) });
+    } catch (e) {
+      if (!(e instanceof UserError)) throw e;
+      // The refusal --target gives, without its "Cannot approve <ref>" head; its own Next: names the step.
+      const text = e.message.startsWith(`Cannot approve ${t}`) ? e.message.slice(`Cannot approve ${t}`.length).replace(/^:\s*/, "") : e.message;
+      const at = text.lastIndexOf("Next: ");
+      results.set(t, {
+        ...base,
+        said_yes: true,
+        reason: (at >= 0 ? text.slice(0, at) : text).replace(/; nothing was approved\..*$/s, "").trim().replace(/[.;:]$/, ""),
+        next: at >= 0 ? text.slice(at + 6).replace(/\.$/, "").trim() : `sl readback --targets ${t}, read it to the owner, record their answer with sl reply, then sl approve --target ${t}`,
+      });
+    }
+  }
+  const all = items.map((i) => results.get(i.target)!);
+  const approved = all.filter((r) => r.approved);
+  const not = all.filter((r) => !r.approved);
+  const failed = not.filter((r) => r.said_yes);
+  const code = failed.length ? 1 : 0;
+  if (ctx.json) {
+    ctx.out(
+      formatJson({
+        ...(pending ? { readback_id: pending.readback_id } : {}),
+        changed: approved.filter((r) => !r.already).map((r) => ({ target: r.target, from: r.from, to: "approved" })),
+        approved: approved.map(({ said_yes: _, ...r }) => r),
+        not_approved: not.map(({ approved: _a, said_yes, ...r }) => ({ ...r, said_yes: !!said_yes })),
+        warnings: approved.flatMap((r) => r.warnings ?? []),
+        all_yes_approved: !failed.length,
+      }),
+    );
+    return code;
+  }
+  const what = pending ? `the ${all.length} items of ${pending.readback_id}` : `the ${all.length} targets`;
+  const lines = [`Approved ${approved.length} of ${what}, each on the owner's own yes to it as it stands${approved.length ? ":" : "."}`];
+  for (const r of approved) {
+    const no = r.item ? `item ${r.item}, ` : "";
+    lines.push(`  - ${r.target} (${no}${r.already ? "already approved, unchanged" : `${r.from} -> approved`}) by ${r.by} on ${r.at} (reply ${r.ledger})`);
+  }
+  for (const w of approved.flatMap((r) => r.warnings ?? [])) lines.push(`Warning: ${w}`);
+  if (not.length) {
+    lines.push(`Not approved (${not.length}):`);
+    for (const r of not) lines.push(`  - ${r.target}${r.item ? ` (item ${r.item})` : ""}: ${r.reason}. Next: ${r.next}.`);
+  }
+  lines.push(
+    failed.length
+      ? `${failed.length} item(s) the owner said yes to were not approved (listed above with why); fix each as its line says.`
+      : !approved.length
+        ? `The owner has said yes to none of these yet; record their answers first: ${pending ? `sl reply --readback ${pending.readback_id} --answers -` : "sl reply"}.`
+        : `Everything the owner said yes to as it stands is approved.${not.length ? "" : " Next: sl next."}`,
+  );
+  ctx.out(lines.join("\n"));
+  return code;
+}
+
 const spec: CommandSpec = {
   summary: "Mark a model, field, metric or the access file approved on the owner's recorded yes, or revoke an approval.",
   usage:
     "approve --target <source.model | source.model.field | metric:<name> | access> [--by <name>] [--recursive]\n" +
+    "       approve --readback <readback_id> [--by <name>]\n" +
+    "       approve --target <ref> --target <ref> ... [--by <name>]\n" +
     "       approve --target <ref> --revoke [--recursive]\n" +
     "       approve --stamp-hashes [--target <ref>] [--confirm-unchanged]\n\n" +
     "Approves an item only when the owner's latest reply to it in .sl/ledger.jsonl is a yes to it as it\n" +
     "now stands (sl readback, then sl reply --verdict yes); approved_by and approved_at come from that\n" +
-    "reply, and --by, when given, must name the same owner. --date is no longer taken.",
+    "reply, and --by, when given, must name the same owner. --date is no longer taken.\n" +
+    "--readback (or --target given more than once) takes each item on its own, as --target would: it approves\n" +
+    "each one the owner said yes to as it stands and lists every other with why (a change, a no, no reply,\n" +
+    "changed since the yes). It exits 0 when every item whose latest reply is a yes was approved, and 1 when\n" +
+    "one of them was not; items the owner did not say yes to are listed and do not fail it.",
   options: {
-    target: { type: "string" },
+    target: { type: "string", multiple: true, mcp: "single" },
+    readback: { type: "string", mcp: "omit" },
     by: { type: "string" },
     recursive: { type: "boolean" },
     revoke: { type: "boolean" },
@@ -413,8 +547,10 @@ const spec: CommandSpec = {
         if (str(values, flag) !== undefined) throw new UserError(`--stamp-hashes keeps each item's approved_by and approved_at, so it takes no --${flag}.`);
       for (const flag of ["revoke", "recursive"] as const)
         if (bool(values, flag)) throw new UserError(`--stamp-hashes takes no --${flag}; it only records hashes of items already approved.`);
-      const targetRef = str(values, "target");
-      const target = targetRef ? parseTarget(targetRef) : undefined;
+      if (str(values, "readback") !== undefined) throw new UserError("--stamp-hashes takes no --readback; it only records hashes of items already approved.");
+      const targetRefs = list(values, "target");
+      if (targetRefs.length > 1) throw new UserError(`--stamp-hashes takes one --target at most, not ${targetRefs.join(", ")}.`);
+      const target = targetRefs[0] ? parseTarget(targetRefs[0]) : undefined;
       if (target?.kind === "golden") throw new UserError("Goldens are confirmed with sl goldens confirm and carry no approved_hash.");
       const stamped = stampHashes(ctx.root, target, bool(values, "confirm-unchanged"));
       const refs = stamped.flatMap((s) => s.refs);
@@ -431,10 +567,14 @@ const spec: CommandSpec = {
       return 0;
     }
     if (bool(values, "confirm-unchanged")) throw new UserError("--confirm-unchanged applies only to sl approve --stamp-hashes.");
-    const ref = str(values, "target");
+    const refs = list(values, "target");
+    const rb = str(values, "readback");
+    if (rb !== undefined || refs.length > 1) return approveMany(ctx, values, refs, rb);
+    const ref = refs[0];
     if (!ref) {
       throw new UserError(
-        "--target is required: source.model, source.model.field, metric:<name> or access (a golden:<name> is confirmed with sl goldens confirm).",
+        "--target is required: source.model, source.model.field, metric:<name> or access (a golden:<name> is confirmed with sl goldens confirm). " +
+          "Or pass --readback <readback_id> to approve each item of a readback the owner said yes to.",
       );
     }
     const revoke = bool(values, "revoke");

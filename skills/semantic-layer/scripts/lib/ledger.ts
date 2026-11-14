@@ -62,6 +62,9 @@ export interface LedgerAppender {
   id: string;
   // Appends the entry under that id, creating .sl/ and the file when missing.
   append(entry: NewLedgerEntry): LedgerEntry;
+  // Appends the entries in order under that id and the ones after it, in one write: all of them
+  // land or none do. Each line is the one append would write for its entry.
+  appendAll(entries: NewLedgerEntry[]): LedgerEntry[];
 }
 
 // Checks that the ledger can take a line (inside the root, a file whose every line is a JSON object
@@ -90,20 +93,22 @@ export function openLedger(root: string): LedgerAppender {
       if (m) max = Math.max(max, Number(m[1]));
     });
   }
-  const id = `ans_${String(max + 1).padStart(4, "0")}`;
+  const idAt = (k: number) => `ans_${String(max + 1 + k).padStart(4, "0")}`;
+  const write = (entries: NewLedgerEntry[]): LedgerEntry[] => {
+    const full = entries.map((entry, k) => ({ ...entry, id: idAt(k) }) as LedgerEntry);
+    mkdirSync(dirname(file), { recursive: true });
+    // The ledger with the new lines replaces the file in one rename, so a cut-off write leaves it
+    // whole. A link put at the path after openLedger's check is refused here, and one put there
+    // after this check is replaced by the rename, never followed.
+    const stat = lstatSync(file, { throwIfNoEntry: false });
+    if (stat && !stat.isFile()) throw new UserError(`${LEDGER_FILE} is no longer a plain file inside the semantic root, so the answer was not recorded; nothing was written. Run sl validate, then run this again.`);
+    writeFileAtomic(file, (stat ? readFileSync(file, "utf8") : "") + full.map(ledgerLine).join(""), { replaceLink: true });
+    return full;
+  };
   return {
-    id,
-    append(entry) {
-      const full = { ...entry, id } as LedgerEntry;
-      mkdirSync(dirname(file), { recursive: true });
-      // The ledger with the new line replaces the file in one rename, so a cut-off write leaves it
-      // whole. A link put at the path after openLedger's check is refused here, and one put there
-      // after this check is replaced by the rename, never followed.
-      const stat = lstatSync(file, { throwIfNoEntry: false });
-      if (stat && !stat.isFile()) throw new UserError(`${LEDGER_FILE} is no longer a plain file inside the semantic root, so the answer was not recorded; nothing was written. Run sl validate, then run this again.`);
-      writeFileAtomic(file, (stat ? readFileSync(file, "utf8") : "") + ledgerLine(full), { replaceLink: true });
-      return full;
-    },
+    id: idAt(0),
+    append: (entry) => write([entry])[0]!,
+    appendAll: (entries) => (entries.length ? write(entries) : []),
   };
 }
 

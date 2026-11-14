@@ -1,4 +1,6 @@
-export type OptionSpec = { type: "string" | "boolean"; multiple?: boolean; short?: string };
+// mcp: "omit" keeps a flag off the MCP tool (a batched owner-turn form, which would skip the
+// server's asking the owner); "single" gives the tool one value of a flag the CLI takes more than once.
+export type OptionSpec = { type: "string" | "boolean"; multiple?: boolean; short?: string; mcp?: "omit" | "single" };
 
 export type OptionValues = Record<string, string | boolean | string[] | boolean[] | undefined>;
 

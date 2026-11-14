@@ -4,6 +4,7 @@ import { userInfo } from "node:os";
 import { basename, join } from "node:path";
 import { checkToolUse } from "../skills/semantic-layer/scripts/hooks/guard-edits.ts";
 import { envFileRefusal, runAfter, runBefore, type Outcome } from "../skills/semantic-layer/scripts/hooks/integrity.ts";
+import { runCli } from "../skills/semantic-layer/scripts/lib/cli.ts";
 import { initProject, sl, tempDir } from "./helpers.ts";
 
 // The answer ledger's before-and-after comparison and the env file refusals (docs/PRD-hardening.md
@@ -305,6 +306,36 @@ describe("what sl and git write is kept", () => {
     expect(read(p.ledger)).toBe(ledger);
     expect(stateEntries(p)).toEqual([]);
     expect((await sl(p.root, ["approve", "--target", "wh.orders.revenue", "--by", "Dana"])).code).toBe(0);
+  });
+
+  // docs/PRD-hardening.md HR-15: an owner turn's batched forms, run as the skill runs them (the
+  // answers in a quoted heredoc), are sl commands, and what they write stays.
+  test("sl reply --answers, sl approve --readback and sl question resolve --answers keep what they record", async () => {
+    const p = await project();
+    expect((await sl(p.root, ["question", "add", "wh.orders", "--text", "Do gift orders count?"])).code).toBe(0);
+    const id = await readback(p);
+    const replies = JSON.stringify({ by: "Dana", answers: [{ item: 1, verdict: "yes", text: "Yes, that is revenue." }] });
+    const questions = JSON.stringify({ by: "Dana", answers: [{ target: "wh.orders", match: "gift orders", text: "No, they do not." }] });
+    const runs: [string, string[], string?][] = [
+      [`bun ${SL} reply --readback ${id} --answers - --root ${p.root} <<'JSON'\n${replies}\nJSON`, ["reply", "--readback", id, "--answers", "-"], replies],
+      [`bun ${SL} approve --readback ${id} --root ${p.root}`, ["approve", "--readback", id]],
+      [`cd ${p.dir} && bun ${SL} question resolve --answers - <<'JSON'\n${questions}\nJSON`, ["question", "resolve", "--answers", "-"], questions],
+    ];
+    for (const [command, args, stdin] of runs) {
+      const call = payload(p, command);
+      expect(before(p, call)).toEqual({ block: false });
+      expect(stateEntries(p)).toEqual(["sl"]);
+      const out: string[] = [];
+      const code = await runCli([...args, "--root", p.root], { cwd: p.root, env: { SL_NOW: "2026-01-15T12:00:00.000Z" }, out: (t) => out.push(t), err: (t) => out.push(t), ...(stdin ? { stdin: async () => stdin } : {}) });
+      expect({ args, code, out: out.join("\n") }).toEqual({ args, code: 0, out: expect.any(String) });
+      expect(after(p, call)).toEqual({ block: false });
+    }
+    const ledger = read(p.ledger)!;
+    expect(ledger.split("\n").filter(Boolean).map((l) => (JSON.parse(l) as { kind: string }).kind)).toEqual(["reply", "question"]);
+    expect(around(p, "cat semantic/.sl/ledger.jsonl | head -5", () => undefined)).toEqual({ block: false });
+    expect(read(p.ledger)).toBe(ledger);
+    expect(readFileSync(join(p.root, "models", "wh", "orders.yaml"), "utf8")).toContain("approved_by: Dana");
+    expect(stateEntries(p)).toEqual([]);
   });
 
   test("sl with a cd, a pipe to head, tail or tee, an echo, a test and a redirection is still a plain sl command; anything else is copied", async () => {
