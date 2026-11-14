@@ -8,7 +8,8 @@ import { UserError } from "../lib/errors.ts";
 import { findTable, qualifiedName } from "../lib/naming.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
 import { inScope, matchesPattern, validatePattern } from "../lib/patterns.ts";
-import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot } from "../lib/project.ts";
+import { protectedColumns, redactSnapshot } from "../lib/profile.ts";
+import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot, saveSnapshot } from "../lib/project.ts";
 import { effectiveScope } from "../lib/table-list.ts";
 import { rankTables } from "../lib/rank.ts";
 import type { Model, Scope, Snapshot, SnapshotTable, SourceConfig } from "../lib/types.ts";
@@ -76,6 +77,27 @@ function resolveTableRefs(snapshot: Snapshot, refs: string[], sourceName: string
     );
   }
   return picked;
+}
+
+// Keeps counts only in the snapshot for the columns the models just written protect: a field the
+// draft tags pii or sensitive, and a column it leaves out into ignored_columns, whose sample values
+// a profile taken before the draft still holds. `tables` are the models' tables as written in them.
+// Returns the columns whose profile changed, as table.column, so a draft after a profile needs no
+// sl profile --redact.
+function redactDrafted(ctx: CommandContext, source: SourceConfig, snapshot: Snapshot, tables: string[]): string[] {
+  const only = new Set(tables.flatMap((ref) => ((t) => (t ? [qualifiedName(t)] : []))(findTable(snapshot.tables, ref))));
+  if (!only.size) return [];
+  const models = listModels(ctx.root, source.source).map((l) => l.model as unknown);
+  const { snapshot: updated, redacted } = redactSnapshot(snapshot, protectedColumns(snapshot.tables, models, source.dialect), only);
+  if (redacted.length) saveSnapshot(ctx.root, updated);
+  return redacted;
+}
+
+function redactedLine(redacted: string[]): string {
+  return (
+    `The snapshot keeps counts only, and no sample values, for ${plural(redacted.length, "protected column")} ` +
+    `(left out of the draft, or tagged pii or sensitive): ${redacted.join(", ")}.`
+  );
 }
 
 interface UpdatedEntry {
@@ -169,8 +191,9 @@ function draftNewColumnsCommand(
     });
   }
 
+  const redacted = redactDrafted(ctx, source, snapshot, updated.map((u) => u.table));
   if (ctx.json) {
-    ctx.out(formatJson({ source: sourceName, updated: updated.map(({ model, added, joins, skipped }) => ({ model, added, joins, skipped })) }));
+    ctx.out(formatJson({ source: sourceName, updated: updated.map(({ model, added, joins, skipped }) => ({ model, added, joins, skipped })), redacted }));
     return 0;
   }
   if (!updated.length) {
@@ -185,6 +208,7 @@ function draftNewColumnsCommand(
     if (u.skipped.length) parts.push(`left out ${u.skipped.map((x) => `${x.column} (${x.reason})`).join(", ")}, now in ignored_columns`);
     lines.push(`  ${u.model} (${u.table}, ${relative(ctx.cwd, u.path) || u.path}): ${parts.join("; ")}`);
   }
+  if (redacted.length) lines.push(redactedLine(redacted));
   // A join to a table with no model fails sl validate and sl check-join until that table is drafted.
   const draftFirst = [...new Set(updated.flatMap((u) => u.unmodeled.map((x) => x.table)))];
   lines.push(
@@ -305,8 +329,9 @@ const spec: CommandSpec = {
       updateYaml(paths(ctx.root).source(sourceName), (doc) => doc.setIn(["draft", "strip_prefixes"], flagPrefixes));
     }
 
+    const redacted = redactDrafted(ctx, source, snapshot, drafted.map((d) => d.table));
     if (ctx.json) {
-      ctx.out(formatJson({ source: sourceName, drafted, skipped }));
+      ctx.out(formatJson({ source: sourceName, drafted, skipped, redacted }));
       return 0;
     }
 
@@ -340,6 +365,7 @@ const spec: CommandSpec = {
       lines.push("", "Notes:");
       for (const n of notes) lines.push(`  ${n}`);
     }
+    if (redacted.length) lines.push("", redactedLine(redacted));
     if (drafted.length) {
       lines.push(
         "",

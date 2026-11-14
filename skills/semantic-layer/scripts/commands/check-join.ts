@@ -7,7 +7,7 @@ import { UserError } from "../lib/errors.ts";
 import { evaluateJoin, pct, type JoinFinding } from "../lib/joins.ts";
 import { findTable, splitQualified } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
-import { emitPlan, executePlan, resultsInput } from "../lib/plan.ts";
+import { emitPlan, executePlanPartial, resultsInput } from "../lib/plan.ts";
 import { listModels, loadModel, loadSnapshot, loadSource, paths } from "../lib/project.ts";
 import { joinCheckPlan, joinQueryId, type JoinCheck, type TableRef } from "../lib/sql/join-check.ts";
 import { NAME_PATTERN, type Join, type JoinEvidence, type JoinKey, type Model, type Snapshot } from "../lib/types.ts";
@@ -30,7 +30,8 @@ export interface CheckJoinResult {
   sentence: string;
 }
 
-// A join that --all could not check, with the reason.
+// A join that was not checked, with the reason: one --all could not resolve, or one whose query
+// the database refused (no SELECT permission, a timeout, any other error).
 export interface SkippedJoin {
   model: string;
   join: string;
@@ -165,8 +166,19 @@ function humanReport(r: CheckJoinResult, target: Target, measuredEvidence: JoinE
   return lines.join("\n");
 }
 
+// The names a database message about these joins may quote: their tables and key columns, lowercased.
+function knownNames(targets: Target[]): Set<string> {
+  const names = targets.flatMap(({ check }) => [
+    ...[check.left, check.right].flatMap((r) => [r.schema ?? "", r.name, r.schema ? `${r.schema}.${r.name}` : r.name]),
+    ...check.keys.flatMap((k) => [k.from, k.to]),
+  ]);
+  return new Set(names.map((n) => n.toLowerCase()));
+}
+
 const spec: CommandSpec = {
-  summary: "Measure joins' match rate, key uniqueness and fan-out and write evidence.",
+  summary:
+    "Measure joins' match rate, key uniqueness and fan-out and write evidence, join by join: a join the database refuses " +
+    "(no SELECT permission, a timeout) is skipped with its reason and the others are written.",
   usage: "check-join --source <s> (--model <m> --join <j> | --model <m> --all | --all) [--emit-sql] [--results <file>] [--plan <plan_id>] [--no-write]",
   options: {
     source: { type: "string" },
@@ -191,7 +203,7 @@ const spec: CommandSpec = {
     const plan = joinCheckPlan(source, targets.map((t) => t.check));
     const input = resultsInput(ctx, values);
     if (bool(values, "emit-sql")) {
-      ctx.out(formatJson(emitPlan(ctx, plan, { name: "check-join", values })));
+      ctx.out(formatJson(emitPlan(ctx, plan, { name: "check-join", values, keepsPartial: true })));
       return 0;
     }
     if (!targets.length) {
@@ -200,13 +212,27 @@ const spec: CommandSpec = {
       return 0;
     }
 
-    const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input });
+    // Each join's query runs on its own: a failure skips that join and the others are written.
+    const { results, failed } = await executePlanPartial(plan, {
+      root: ctx.root,
+      source,
+      env: ctx.env,
+      ...input,
+      known: knownNames(targets),
+    });
+    const refused: SkippedJoin[] = [];
+    const answered = targets.filter((t) => {
+      const reason = failed[joinQueryId(t.model.model, t.join.name)];
+      if (reason !== undefined) refused.push({ model: t.model.model, join: t.join.name, reason });
+      return reason === undefined;
+    });
+    skipped.push(...refused);
     const checkedAt = ctx.now().toISOString();
     const write = !bool(values, "no-write");
     const checks: CheckJoinResult[] = [];
     const reports: string[] = [];
     // Evaluate every row before writing any file, so a bad results row writes nothing.
-    const evaluated = targets.map((t) => {
+    const evaluated = answered.map((t) => {
       const id = joinQueryId(t.model.model, t.join.name);
       const row = results[id]?.[0];
       if (!row) throw new UserError(`No result row for "${id}".`);
@@ -226,7 +252,7 @@ const spec: CommandSpec = {
     });
     let written = 0;
     let unmeasured = 0;
-    targets.forEach((t, i) => {
+    answered.forEach((t, i) => {
       const { evidence, measured, findings, sentence } = evaluated[i]!;
       if (measured && write) {
         writeEvidence(ctx.root, t.path, t.join.name, evidence);
@@ -237,12 +263,23 @@ const spec: CommandSpec = {
       checks.push(r);
       reports.push(humanReport(r, t, evidence));
     });
+    // Non-zero only when the database answered for no join.
+    const code = answered.length ? 0 : 1;
 
     if (ctx.json) ctx.out(formatJson({ source: sourceName, checks, skipped }));
     else {
-      ctx.out(reports.join("\n\n"));
+      if (reports.length) ctx.out(reports.join("\n\n"));
       const tail: string[] = [];
       if (skippedLines.length) tail.push("", ...skippedLines);
+      if (refused.length) {
+        tail.push(
+          "",
+          `Skipped ${refused.length} join${refused.length === 1 ? "" : "s"} the database did not answer for${answered.length ? "; the others are checked" : ""}:`,
+          ...refused.map((r) => `  ${r.model}.${r.join}: ${r.reason}`),
+          `Next: fix what each reason names (ask the database's owner for SELECT on both tables and USAGE on their schemas, or raise the timeout), then check each again: ` +
+            `sl check-join --source ${sourceName} --model ${refused[0]!.model} --join ${refused[0]!.join}.`,
+        );
+      }
       tail.push(
         "",
         write
@@ -250,9 +287,11 @@ const spec: CommandSpec = {
           : "Nothing written (--no-write).",
       );
       if (unmeasured) tail.push(`${unmeasured} join${unmeasured === 1 ? " was" : "s were"} not measured, so no evidence was written for ${unmeasured === 1 ? "it" : "them"}.`);
+      // With no report above it, the tail starts at its first line of text.
+      while (!reports.length && tail[0] === "") tail.shift();
       ctx.out(tail.join("\n"));
     }
-    return 0;
+    return code;
   },
 };
 export default spec;

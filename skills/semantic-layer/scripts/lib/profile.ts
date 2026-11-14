@@ -1,12 +1,16 @@
 // Turns profile query results into snapshot column profiles, reads the facts
-// the skill uses from a profiled table, and keeps the values of protected
-// columns out of the snapshot: their profiles hold counts only.
+// the skill uses from a profiled table, records the tables a run skipped and
+// why, and keeps the values of protected columns out of the snapshot: their
+// profiles hold counts only.
 import { classifyType, isNumeric, isTemporal } from "./column-types.ts";
 import { UserError } from "./errors.ts";
 import { findTable, qualifiedName } from "./naming.ts";
+import { inScope } from "./patterns.ts";
+import { loadSnapshot, loadSource } from "./project.ts";
 import { sensitivityOf } from "./sensitivity.ts";
 import { referencedColumns } from "./snapshot-diff.ts";
 import { approximateDistinct, hasMinMax, type ProfilePlanDetails, statsQueryId, topQueryId } from "./sql/profile.ts";
+import { effectiveScope } from "./table-list.ts";
 import type {
   ColumnProfile,
   Dialect,
@@ -137,7 +141,16 @@ function profileTable(
     return { ...col, profile };
   });
 
-  return { ...table, row_count: rowCount, profiled_at: profiledAt, columns };
+  const { profile_skipped: _skipped, ...rest } = table;
+  return { ...rest, row_count: rowCount, profiled_at: profiledAt, columns };
+}
+
+// The reason recorded for a table whose sample read no rows.
+export const EMPTY_SAMPLE_REASON = "its sample read no rows";
+
+export interface ProfileGap {
+  table: string;
+  reason: string;
 }
 
 export interface AppliedProfile {
@@ -145,26 +158,52 @@ export interface AppliedProfile {
   // Tables whose sample read no rows of the row_count they report: they keep their earlier
   // profile, if any.
   empty_samples: { table: string; row_count: number }[];
+  // Tables with a query that failed, and why: they keep their earlier profile, if any.
+  failed: ProfileGap[];
 }
 
 // Writes the results of a profile plan into the snapshot's tables: each table with a statistics
 // query in the plan is profiled, and a column gets top values when the table's top-values query
-// covers it (an empty list when it has no non-null values). A table whose sample read no rows is
-// left as it was and listed in empty_samples.
-export function applyProfile(snapshot: Snapshot, details: ProfilePlanDetails, results: PlanResults, profiledAt: string): AppliedProfile {
+// covers it (an empty list when it has no non-null values). A table whose sample read no rows, or
+// one of whose queries is in `failed` (query id to reason), is left as it was except for
+// profile_skipped, which records the reason; a table profiled here loses that mark.
+export function applyProfile(
+  snapshot: Snapshot,
+  details: ProfilePlanDetails,
+  results: PlanResults,
+  profiledAt: string,
+  failed: Record<string, string> = {},
+): AppliedProfile {
   const ids = new Set(details.plan.queries.map((q) => q.id));
   const sampledSet = new Set(details.sampled);
   const empty: AppliedProfile["empty_samples"] = [];
-  const tables = snapshot.tables.map((t) => {
+  const failedTables: ProfileGap[] = [];
+  const tables = snapshot.tables.map((t): SnapshotTable => {
     if (!ids.has(statsQueryId(t))) return t;
     const q = qualifiedName(t);
+    const reason = failed[statsQueryId(t)] ?? failed[topQueryId(t)];
+    if (reason !== undefined) {
+      failedTables.push({ table: q, reason });
+      return { ...t, profile_skipped: { at: profiledAt, reason } };
+    }
     const queried = new Set(ids.has(topQueryId(t)) ? (details.top_columns.get(q) ?? []) : []);
     const profiled = profileTable(t, queried, results, profiledAt, sampledSet.has(q));
     if (profiled) return profiled;
     empty.push({ table: q, row_count: toCount(results[statsQueryId(t)]?.[0]?.row_count) ?? 0 });
-    return t;
+    return { ...t, profile_skipped: { at: profiledAt, reason: EMPTY_SAMPLE_REASON } };
   });
-  return { snapshot: { ...snapshot, tables }, empty_samples: empty };
+  return { snapshot: { ...snapshot, tables }, empty_samples: empty, failed: failedTables };
+}
+
+// The in-scope tables of a source that the last sl profile run skipped, with the reason it gave
+// (NO_SELECT_REASON in lib/plan.ts, "timed out ...", EMPTY_SAMPLE_REASON, or the database's
+// message), in the snapshot's order. A table that was never tried is not a gap. Empty when the
+// source has no snapshot.
+export function profileGaps(root: string, source: string): ProfileGap[] {
+  const snapshot = loadSnapshot(root, source);
+  if (!snapshot) return [];
+  const scope = effectiveScope(root, loadSource(root, source));
+  return snapshot.tables.filter((t) => t.profile_skipped && inScope(scope, t)).map((t) => ({ table: qualifiedName(t), reason: t.profile_skipped!.reason }));
 }
 
 export interface TableSummary {
