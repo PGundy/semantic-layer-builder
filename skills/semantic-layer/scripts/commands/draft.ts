@@ -7,6 +7,7 @@ import { draftModels, draftNewColumns } from "../lib/draft.ts";
 import { UserError } from "../lib/errors.ts";
 import { findTable, qualifiedName } from "../lib/naming.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
+import { accessRowFilters, layerReads } from "../lib/layer-reads.ts";
 import { inScope, matchesPattern, validatePattern } from "../lib/patterns.ts";
 import { protectedColumns, redactSnapshot } from "../lib/profile.ts";
 import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot, saveSnapshot } from "../lib/project.ts";
@@ -159,6 +160,7 @@ function draftNewColumnsCommand(
   const picked = refs.length ? resolveTableRefs(snapshot, refs, sourceName) : null;
   const loaded = listModels(ctx.root, sourceName).filter((l) => l.model && typeof l.model === "object");
   const existing = loaded.map((l) => l.model);
+  const reads = layerReads(existing, accessRowFilters(ctx.root, sourceName));
   const modeledKeys = new Set<string>();
   for (const m of existing) {
     const t = typeof m.table === "string" ? findTable(snapshot.tables, m.table) : undefined;
@@ -171,7 +173,11 @@ function draftNewColumnsCommand(
     const table = findTable(snapshot.tables, model.table);
     if (!table || !inScope(scope, table)) continue;
     if (picked && !picked.has(qualifiedName(table).toLowerCase())) continue;
-    const r = draftNewColumns(snapshot, table, model as Model, existing, { source: sourceName, stripPrefixes, knownTables });
+    // A column another model's field reads through a join, or a row filter reads, is in use: it is
+    // not drafted and not left out (its values stay protected by the sensitivity rules).
+    const inUse = reads.filter((x) => x.model === model.model).map((x) => x.column);
+    const seen = inUse.length ? ({ ...model, ignored_columns: [...(Array.isArray(model.ignored_columns) ? model.ignored_columns : []), ...inUse] } as Model) : (model as Model);
+    const r = draftNewColumns(snapshot, table, seen, existing, { source: sourceName, stripPrefixes, knownTables });
     if (!r.columns.length) continue;
     updateYaml(path, (doc) => {
       appendItems(doc, "open_questions", r.open_questions, ["ignored_columns", "dimensions", "measures", "joins"]);

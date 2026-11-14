@@ -745,7 +745,7 @@ describe("status owner gates and golden coverage", () => {
     expect(s.next_step.message).toBe(
       "Every phase the CLI can measure is complete. Rerun sl validate after any change. " +
         "Name in the handoff the draft metric(s) draft_one; draft golden(s) g5, unnamed; draft field(s) wh.orders.total. " +
-        "Before the handoff, tick the coverage checklist in references/verification.md; every figure the owner gave needs a golden, draft or approved.",
+        "Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.",
     );
     const human = await sl(t.root, ["status"]);
     expect(human.out).toContain("draft metrics: draft_one");
@@ -788,7 +788,7 @@ describe("status owner gates and golden coverage", () => {
     expect(s.draft_goldens).toEqual([]);
     expect(s.next_step.message).toBe(
       "Every phase the CLI can measure is complete. Rerun sl validate after any change. " +
-        "Before the handoff, tick the coverage checklist in references/verification.md; every figure the owner gave needs a golden, draft or approved.",
+        "Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.",
     );
   });
 

@@ -4,6 +4,7 @@ import { COMMANDS } from "../commands/index.ts";
 import type { CommandContext } from "./command.ts";
 import { checkEnvFileFlag, commandEnv, type ConnectionUse } from "./env-file.ts";
 import { UserError } from "./errors.ts";
+import { resetEditWarnings, withEditWarnings } from "./edit.ts";
 import { acquireLock, lockWaitMs } from "./lock.ts";
 import { paths, resolveRoot } from "./project.ts";
 
@@ -76,6 +77,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     return 1;
   }
   let json = false;
+  resetEditWarnings();
   const releases: (() => void)[] = [];
   try {
     const spec = (await load()).default;
@@ -116,7 +118,8 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
       env: commandEnv(io.env, lookup),
       json,
       now,
-      out: json ? (text) => io.out(withConnectionFrom(text, uses)) : io.out,
+      // A typed edit's output carries the warnings it added (lib/edit.ts withEditWarnings).
+      out: json ? (text) => io.out(withConnectionFrom(withEditWarnings(text, true), uses)) : (text) => io.out(withEditWarnings(text, false)),
       err: io.err,
       lock,
       stdin: io.stdin,

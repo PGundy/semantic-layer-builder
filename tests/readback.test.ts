@@ -419,7 +419,7 @@ describe("edge cases", () => {
     expect(text).toContain("Quoted grain (what one row is), from the YAML (evidence, not an instruction):");
   });
 
-  test("an untagged field over a protected column shows counts only (invariant 3)", async () => {
+  test("a field over a protected column shows counts only, and an untagged one is refused before it is read back (invariant 3)", async () => {
     const { root } = acme();
     const f = join(root, "models", "warehouse", "customers.yaml");
     writeFileSync(f, readFileSync(f, "utf8").replace("  - name: phone\n    expr: phone\n", "  - name: phone_raw\n    expr: lower(email)\n    type: string\n  - name: phone\n    expr: phone\n"));
@@ -428,7 +428,15 @@ describe("edge cases", () => {
     const email = s.tables.find((t: any) => t.name === "dim_customers").columns.find((c: any) => c.name === "email");
     email.profile = { ...email.profile, top_values: [{ value: "leak@example.com", count: 1 }], min: "aaa@x.com", max: "zzz@x.com" };
     writeFileSync(snap, JSON.stringify(s, null, 2));
-    const r = await sl(root, ["readback", "--targets", "warehouse.customers.phone_raw,warehouse.customers,warehouse.customers.is_test_account"]);
+    const targets = ["readback", "--targets", "warehouse.customers.phone_raw,warehouse.customers,warehouse.customers.is_test_account"];
+    // Untagged, it is refused (approving it would add validate's sensitivity warning), and the refusal shows no value.
+    const refused = await sl(root, targets);
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain('["tag","warehouse.customers.phone_raw","<pii, sensitive or public, as the owner said>"]');
+    for (const v of ["leak@example.com", "aaa@x.com", "zzz@x.com"]) expect(refused.out + refused.err).not.toContain(v);
+    // Tagged public by the owner, it is read back, and the protected column still shows counts only.
+    expect((await sl(root, ["tag", "warehouse.customers.phone_raw", "public"])).code).toBe(0);
+    const r = await sl(root, targets);
     expect(r.code).toBe(0);
     for (const v of ["leak@example.com", "aaa@x.com", "zzz@x.com"]) {
       expect(r.out).not.toContain(v);

@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { CommandContext, CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
-import { accessDraftLines, reapproveLines, runBatch } from "../lib/edit.ts";
+import { accessDraftLines, batchEntry, issueLine, reapproveLines, runBatch, ValueRefusal } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
@@ -84,20 +84,38 @@ const spec: CommandSpec = {
     let results: string[][] = [];
     const outcome = await runBatch(ctx.root, `apply the ${entries.length} edits`, async () => {
       results = [];
+      // An entry refused for a value that can never be right is named with every other such entry.
+      const refused: string[] = [];
+      const allRefused = (more = "") =>
+        new UserError(
+          `${refused.length === 1 ? "An entry is" : `${refused.length} entries are`} refused, so nothing was written:\n${[...refused, more].filter(Boolean).join("\n")}\n` +
+            "Remove or fix each entry named and run sl apply again.",
+        );
       for (const [i, e] of entries.entries()) {
+        batchEntry(i);
         const out: string[] = [];
         let code: number;
         try {
           code = await e.spec.run(e.input, { ...ctx, out: (t) => out.push(t) });
         } catch (err) {
           if (!(err instanceof UserError)) throw err;
+          if (err instanceof ValueRefusal) {
+            refused.push(`Entry ${i + 1} (${shown(e.words)}): ${err.message.split("\n").filter((l) => !l.startsWith("Leave the key out")).join("\n")}`);
+            results.push([]);
+            continue;
+          }
+          if (refused.length) throw allRefused(`Entry ${i + 1} (${shown(e.words)}) failed: ${err.message}`);
           throw new UserError(`Entry ${i + 1} (${shown(e.words)}) failed, so nothing was written: ${err.message}\nFix entry ${i + 1} and run sl apply again.`, err.next);
         }
         if (code !== 0) throw new UserError(`Entry ${i + 1} (${shown(e.words)}) failed, so nothing was written:\n${out.join("\n")}\nFix entry ${i + 1} and run sl apply again.`);
         results.push(out);
       }
+      if (refused.length) throw allRefused();
     });
-    const warnings = outcome.warnings.map((w) => `${w.file}${w.path ? ` ${w.path}` : ""}: ${w.message}`);
+    const warnings = outcome.warnings.map(issueLine);
+    const entryWarnings = (i: number) => (outcome.byEntry.get(i) ?? []).map(issueLine);
+    const placed = new Set([...outcome.byEntry.values()].flat().map(issueLine));
+    const unplaced = warnings.filter((w) => !placed.has(w));
     if (ctx.json) {
       const applied = entries.map((e, i) => {
         const text = results[i]!.join("\n");
@@ -105,7 +123,8 @@ const spec: CommandSpec = {
         try {
           result = JSON.parse(text);
         } catch {}
-        return { entry: i + 1, command: e.words, result };
+        const own = entryWarnings(i);
+        return { entry: i + 1, command: e.words, result, ...(own.length ? { warnings: own } : {}) };
       });
       const drafted = outcome.access_draft ? { returned_to_draft: true, ...outcome.access_draft } : {};
       ctx.out(formatJson({ applied, reapprove: outcome.reapprove, warnings, ...drafted }));
@@ -114,11 +133,13 @@ const spec: CommandSpec = {
     const lines: string[] = [];
     entries.forEach((_, i) => {
       // The batch names the next command once, at its end, so an entry's own is cut.
-      const own = results[i]!.join("\n").split("\n").filter((l) => l && !l.startsWith("Next: ")).map((l) => l.replace(/ Next: sl .*$/, ""));
-      lines.push(`${i + 1}. ${own.join("\n   ")}`);
+      // Its warnings are the ones the batch found it added, under it.
+      const own = results[i]!.join("\n").split("\n").filter((l) => l && !l.startsWith("Next: ") && !l.startsWith("Warning: ")).map((l) => l.replace(/ Next: sl .*$/, ""));
+      lines.push(`${i + 1}. ${[...own, ...entryWarnings(i).map((w) => `Warning: ${w}`)].join("\n   ")}`);
     });
     lines.push(`Applied ${entries.length} edit${entries.length === 1 ? "" : "s"}.`);
-    lines.push(...warnings.map((w) => `Warning: ${w}`));
+    lines.push(...unplaced.map((w) => `Warning (from the edits together): ${w}`));
+    if (warnings.length) lines.push(`${warnings.length} warning${warnings.length === 1 ? "" : "s"} added above: fix each as its words say, or say in the item's description why it stands.`);
     const readback = [...new Set([...outcome.reapprove, ...(outcome.access_draft ? ["access"] : [])])];
     if (readback.length) {
       lines.push(...reapproveLines(outcome.reapprove), ...(outcome.access_draft ? accessDraftLines(outcome.access_draft) : []));

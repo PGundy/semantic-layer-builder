@@ -195,6 +195,10 @@ describe("sl remove-field", () => {
       ignored_columns: ["reason"],
       redact: true,
       was_approved: false,
+      // The warning the edit adds is part of its output (HR-15): the column is protected now.
+      warnings: [
+        "snapshots/warehouse.json tables[12].columns[4].profile: acme.fct_refunds.reason is protected but the snapshot holds raw sample values; run sl profile --source warehouse --redact",
+      ],
     });
     const start = before.indexOf("  - name: reason\n");
     const field = before.slice(start, before.indexOf("measures:\n", start));

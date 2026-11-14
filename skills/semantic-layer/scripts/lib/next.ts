@@ -455,15 +455,20 @@ export function nextAction(root: string, env: Env = {}): NextAction {
   return connectionBlock(root, env, action) ?? action;
 }
 
-// A readback of items sl readback would refuse for what their files lack (a description, a grain, a
-// primary_key, a metric's measure) becomes the one sl apply that gives it, the owner's words in
+// A readback (or an approve) of items sl readback would refuse for what their files lack (a
+// description, a grain, a primary_key, a metric's measure, what sl validate would raise once they
+// are approved) becomes the one sl apply that gives it, the owner's words in
 // place of each <placeholder>, so the command named runs.
 function lacking(root: string, a: NextAction): NextAction {
-  if (a.kind !== "run" || a.action.command !== "readback") return a;
-  const lacks = approvalLacks(root, (flagValue(a.action as StepAction, "--targets") ?? "").split(","));
+  const command = a.action.command;
+  if (!((a.kind === "run" && command === "readback") || command === "approve")) return a;
+  // An sl approve the gate would refuse (a yes recorded before the item lacked something) gets the same apply.
+  const lacks = approvalLacks(root, (flagValue(a.action as StepAction, command === "readback" ? "--targets" : "--target") ?? "").split(","));
   if (!lacks.length) return a;
   const why = `${a.why} ${lacksNote(lacks)}`;
-  return { ...fromAction(act("apply", ["--file", "-"], "ask_owner"), a.phase, why, a.blocked_on), ...(a.access_changes ? { access_changes: a.access_changes } : {}) };
+  // A lack no typed edit below gives is fixed as its words say; sl validate lists it meanwhile.
+  const action = lacks.some((l) => l.edit) ? act("apply", ["--file", "-"], "ask_owner") : act("validate", [], "ask_owner");
+  return { ...fromAction(action, a.phase, why, a.blocked_on), ...(a.access_changes ? { access_changes: a.access_changes } : {}) };
 }
 
 // Routes the owner's changes to who sees an item to the access phase: an action of that phase names
