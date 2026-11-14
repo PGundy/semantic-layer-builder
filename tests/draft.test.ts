@@ -171,6 +171,8 @@ interface DraftJson {
   source: string;
   drafted: { model: string; table: string; path: string; dimensions: number; measures: number; joins: number; open_questions: number }[];
   skipped: { table: string; reason: string }[];
+  // Columns whose snapshot profile the draft cut to counts only, as table.column.
+  redacted: string[];
 }
 
 const ORDERS_YAML = `model: orders
@@ -435,6 +437,7 @@ describe("draft command", () => {
       source: "wh",
       drafted: [],
       skipped: [{ table: "analytics.fct_orders", reason: "already modeled as orders" }],
+      redacted: [],
     });
     expect(readModel(root, "orders")).toBe(edited);
 
@@ -1260,7 +1263,7 @@ describe("ignored_columns and sensitivity tags", () => {
       expect(unreferencedColumns(model, table, snap.dialect).map((c) => c.name)).toEqual([]);
     }
     const again = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
-    expect(again.json()).toEqual({ source: "wh", updated: [] });
+    expect(again.json()).toEqual({ source: "wh", updated: [], redacted: [] });
   });
 
   test("ignored_columns lists id columns that are not keys, unsupported types and composite keys with no join", () => {
@@ -1410,6 +1413,7 @@ measures:
 
   interface NewColumnsJson {
     source: string;
+    redacted: string[];
     updated: { model: string; added: string[]; joins: string[]; skipped: { column: string; reason: string }[] }[];
   }
 
@@ -1436,6 +1440,8 @@ measures:
           ],
         },
       ],
+      // The model's protected columns keep counts only: the ignored legacy_score and coupon_code, and notes, tagged sensitive.
+      redacted: ["analytics.orders.legacy_score", "analytics.orders.notes", "analytics.orders.coupon_code"],
     });
     const after = readModel(root, "orders");
     expect(after).toBe(`# Orders, as the finance team reads them.
@@ -1509,7 +1515,7 @@ measures:
 
     // Nothing changed since: nothing is reported and the file stays as it is.
     const again = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
-    expect(again.json<NewColumnsJson>()).toEqual({ source: "wh", updated: [] });
+    expect(again.json<NewColumnsJson>()).toEqual({ source: "wh", updated: [], redacted: [] });
     expect(readModel(root, "orders")).toBe(after);
     const human = await sl(root, ["draft", "--source", "wh", "--new-columns"]);
     expect(human.out).toBe("No new columns in wh: every column of a modeled in-scope table is read by a field or listed in ignored_columns.");

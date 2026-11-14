@@ -4,8 +4,8 @@ import { UserError } from "../lib/errors.ts";
 import { findTable, qualifiedName } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
 import { inScope } from "../lib/patterns.ts";
-import { emitPlan, executePlan, removePlan, resultsInput, withMaxRows } from "../lib/plan.ts";
-import { applyProfile, protectedColumns, redactSnapshot, summarizeTable } from "../lib/profile.ts";
+import { emitPlan, executePlanPartial, removePlan, resultsInput, withMaxRows } from "../lib/plan.ts";
+import { applyProfile, EMPTY_SAMPLE_REASON, protectedColumns, redactSnapshot, summarizeTable } from "../lib/profile.ts";
 import { listModels, loadSource, paths, requireSnapshot, saveSnapshot } from "../lib/project.ts";
 import { effectiveScope } from "../lib/table-list.ts";
 import { buildProfilePlan, MAX_TOP_COLUMNS, topQueryId } from "../lib/sql/profile.ts";
@@ -22,11 +22,12 @@ interface Skipped {
 
 const spec: CommandSpec = {
   summary:
-    "Profile in-scope tables (row counts, nulls, distinct counts, ranges, top values) into the snapshot; protected columns keep counts (and min and max for numbers and dates) and no top values. --redact rewrites the snapshot's protected profiles, and removes hashed values, without querying.",
-  usage: "profile --source <source> [--tables t1,t2] [--refresh] [--emit-sql] [--results <file>] [--plan <plan_id>] [--redact]",
+    "Profile in-scope tables (row counts, nulls, distinct counts, ranges, top values) into the snapshot, table by table: a table the database refuses (no SELECT permission, a timeout) is skipped with its reason and the rest are saved. A rerun profiles only the tables still missing or skipped; --all (or --refresh) profiles every table again. Protected columns keep counts (and min and max for numbers and dates) and no top values. --redact rewrites the snapshot's protected profiles, and removes hashed values, without querying.",
+  usage: "profile --source <source> [--tables t1,t2] [--all] [--refresh] [--emit-sql] [--results <file>] [--plan <plan_id>] [--redact]",
   options: {
     source: { type: "string" },
     tables: { type: "string", multiple: true },
+    all: { type: "boolean" },
     refresh: { type: "boolean" },
     "emit-sql": { type: "boolean" },
     results: { type: "string" },
@@ -39,7 +40,8 @@ const spec: CommandSpec = {
     if (!sourceName) throw new UserError("--source is required.");
     const source = loadSource(ctx.root, sourceName);
     const snapshot = requireSnapshot(ctx.root, sourceName);
-    const refresh = bool(values, "refresh");
+    // --all and --refresh are one switch: profile every table again.
+    const refresh = bool(values, "refresh") || bool(values, "all");
     const emitSql = bool(values, "emit-sql");
     const resultsFile = str(values, "results");
     if (emitSql && resultsFile) throw new UserError("Pass --emit-sql or --results, not both.");
@@ -47,7 +49,8 @@ const spec: CommandSpec = {
     if (bool(values, "redact")) {
       const others = [
         list(values, "tables").length ? "--tables" : "",
-        refresh ? "--refresh" : "",
+        bool(values, "all") ? "--all" : "",
+        bool(values, "refresh") ? "--refresh" : "",
         emitSql ? "--emit-sql" : "",
         resultsFile ? "--results" : "",
         input.planId !== undefined ? "--plan" : "",
@@ -86,8 +89,9 @@ const spec: CommandSpec = {
     }
 
     const skipped: Skipped[] = [];
+    // Without --all a run takes what is missing: tables never profiled and tables the last run skipped.
     const selected = candidates.filter((t) => {
-      if (refresh || !t.profiled_at) return true;
+      if (refresh || !t.profiled_at || t.profile_skipped) return true;
       skipped.push({ table: qualifiedName(t), reason: "already profiled" });
       return false;
     });
@@ -144,7 +148,7 @@ const spec: CommandSpec = {
 
     if (emitSql) {
       if (!selected.length) ctx.err(nothingMessage(candidates.length, named.length > 0));
-      ctx.out(formatJson(emitPlan(ctx, plan, { name: "profile", values })));
+      ctx.out(formatJson(emitPlan(ctx, plan, { name: "profile", values, keepsPartial: true })));
       return 0;
     }
 
@@ -154,14 +158,27 @@ const spec: CommandSpec = {
       return 0;
     }
 
-    const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input });
+    // Each table's queries run on their own: a failure skips that table and the rest are saved.
+    const outcome = await executePlanPartial(plan, {
+      root: ctx.root,
+      source,
+      env: ctx.env,
+      ...input,
+      group: (id) => id.replace(/^(stats|top):/, ""),
+      timeoutHint: `${settings.sample_rows ? "lower" : "set"} profile.sample_rows`,
+      known: new Set(selected.flatMap((t) => [t.schema ?? "", t.name, qualifiedName(t), ...t.columns.map((c) => c.name)]).map((n) => n.toLowerCase())),
+    });
     const wanted = new Set(selected.map(qualifiedName));
     // The queries ran without the lock: the profiles go into the snapshot as it is now, read under the lock.
     const unlock = await ctx.lock();
-    const { snapshot: measured, empty_samples } = applyProfile(requireSnapshot(ctx.root, sourceName), details, results, ctx.now().toISOString());
+    const { snapshot: measured, empty_samples, failed } = applyProfile(requireSnapshot(ctx.root, sourceName), details, outcome.results, ctx.now().toISOString(), outcome.failed);
+    for (const f of failed) {
+      wanted.delete(f.table);
+      skipped.push(f);
+    }
     for (const e of empty_samples) {
       wanted.delete(e.table);
-      skipped.push({ table: e.table, reason: "its sample read no rows" });
+      skipped.push({ table: e.table, reason: EMPTY_SAMPLE_REASON });
       const w =
         `The sample of ${e.table} read no rows of its ${e.row_count.toLocaleString("en-US")}: TABLESAMPLE picks whole storage blocks and reached none. ` +
         "Its earlier profile, if any, is kept. To profile it, raise profile.sample_rows (or remove it) in " +
@@ -169,6 +186,7 @@ const spec: CommandSpec = {
       warnings.push(w);
       ctx.err(`warning: ${w}`);
     }
+    // The snapshot is saved whatever succeeded: it records why each skipped table was skipped.
     const { snapshot: updated, redacted } = redactSnapshot(measured, protectedColumns(measured.tables, models, source.dialect), wanted);
     saveSnapshot(ctx.root, updated);
     // Stored top values can hold raw values of columns this profile only now protects, so a plan
@@ -184,10 +202,12 @@ const spec: CommandSpec = {
         sampled: t.columns.some((c) => c.profile?.sampled === true),
         ...summarizeTable(t, source.dialect),
       }));
+    // Non-zero only when no table was profiled.
+    const code = profiled.length ? 0 : 1;
 
     if (ctx.json) {
       ctx.out(formatJson({ source: sourceName, profiled, skipped, warnings, redacted }));
-      return 0;
+      return code;
     }
     const lines = profiled.map(
       (p) =>
@@ -199,16 +219,26 @@ const spec: CommandSpec = {
       lines.push(`Protected columns, stored with counts only (no top values, and min and max only for numbers and dates): ${redacted.join(", ")}.`);
     }
     const already = skipped.filter((x) => x.reason === "already profiled").length;
-    if (already) lines.push(`Skipped ${already} already profiled table${already === 1 ? "" : "s"}; pass --refresh to re-profile.`);
+    if (already) lines.push(`Skipped ${already} already profiled table${already === 1 ? "" : "s"}; pass --all to profile ${already === 1 ? "it" : "them"} again.`);
     lines.push(`Profiled ${profiled.length} table${profiled.length === 1 ? "" : "s"} into ${paths(ctx.root).snapshot(sourceName)}.`);
     if (input.planId !== undefined) lines.push(`Removed plan ${input.planId} and its stored results, which the snapshot now holds.`);
-    lines.push(
-      "Which columns are protected is a heuristic of names, tags and profiles: review the snapshot's top values before committing it, " +
-        "and tag any personal column it missed, then run sl profile --redact. A protected number or date column keeps its min and max, " +
-        "which are real values (the oldest birth date, the lowest number).",
-    );
+    if (failed.length) {
+      lines.push(
+        `Skipped ${failed.length} table${failed.length === 1 ? "" : "s"} the database did not answer for${profiled.length ? "; the rest are saved" : ""}:`,
+        ...failed.map((f) => `  ${f.table}: ${f.reason}`),
+        `Next: fix what each reason names (ask the database's owner for SELECT on the table and USAGE on its schema, or change what a timeout names), or leave a table out with ` +
+          `sl scope --source ${sourceName} --exclude <table> --write; then run sl profile --source ${sourceName} again, which profiles only the tables still missing.`,
+      );
+    }
+    if (profiled.length) {
+      lines.push(
+        "Which columns are protected is a heuristic of names, tags and profiles: review the snapshot's top values before committing it, " +
+          "and tag any personal column it missed, then run sl profile --redact. A protected number or date column keeps its min and max, " +
+          "which are real values (the oldest birth date, the lowest number).",
+      );
+    }
     ctx.out(lines.join("\n"));
-    return 0;
+    return code;
   },
 };
 
@@ -240,7 +270,7 @@ function setting(value: unknown, key: string, min: number, sourceName: string): 
 
 function nothingMessage(candidates: number, named: boolean): string {
   if (!candidates) return "Nothing to profile: no tables are in scope. Check the source's scope with `sl scope`.";
-  return `Nothing to profile: ${named ? "the named" : `all ${candidates} in-scope`} table${candidates === 1 ? " is" : "s are"} already profiled. Pass --refresh to re-profile.`;
+  return `Nothing to profile: ${named ? "the named" : `all ${candidates} in-scope`} table${candidates === 1 ? " is" : "s are"} already profiled. Pass --all to profile ${candidates === 1 ? "it" : "them"} again.`;
 }
 
 export default spec;
