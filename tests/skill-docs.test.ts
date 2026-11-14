@@ -1032,7 +1032,7 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["phases/interview.md", "an approved field is removed only on a yes, with --force", "An approved field or join is removed only on the owner's yes, with `--force`."],
   ["phases/joins.md", "a join is approved on a recorded reply", "record the owner's answer with `sl reply`, and on a yes approve it with `sl approve --target <s>.<m>.<j>`"],
   ["phases/metrics.md", "a metric is approved on a recorded reply", "record the answer with `sl reply`, and on a yes run `sl approve --target metric:<name>`"],
-  ["phases/access.md", "access is approved on a recorded reply", "record each answer with `sl reply`, and on a yes to the whole file run `sl approve --target access`"],
+  ["phases/access.md", "access is approved on a recorded reply", "record the answers in one `sl reply --readback <id> --answers -` and run `sl approve --readback <id>`; it approves the file only on a yes to the whole file"],
   ["interview-guide.md", "removing a drafted field", "Remove a drafted field with `sl remove-field <source>.<model>.<field>`"],
   ["SKILL.md", "resume news goes in the numbered items", "news from a resumed session (warnings fixed, rules added) goes into the numbered items"],
   ["interview-guide.md", "resume news goes in the numbered items", "goes into the numbered items, not the status"],

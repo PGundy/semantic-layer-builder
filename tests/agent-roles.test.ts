@@ -173,6 +173,31 @@ describe("the hook holds each role agent to its role", () => {
     refused(bash(who, `echo x > ${join(root, "models", "wh", "orders.yaml")}`), "refused this shell command");
   });
 
+  // docs/PRD-hardening.md HR-15: an owner turn's batched forms are allowed exactly as the single
+  // forms are: the interviewer runs them, and no other role does.
+  test("the interviewer runs the batched owner-turn forms, which every other role is refused as the single forms are", () => {
+    const who = "semantic-layer-builder:sl-interviewer";
+    const forms = [
+      "reply --readback rb_0001 --answers answers.json",
+      "approve --readback rb_0001",
+      "approve --target wh.orders --target wh.orders.revenue",
+      "question resolve --answers answers.json",
+      "goldens confirm --readback rb_0001",
+    ];
+    const heredoc = (c: string) => `${run(c.replace("answers.json", "-"))} <<'JSON'\n{"by": "Owner", "answers": []}\nJSON`;
+    for (const c of forms) {
+      allowed(bash(who, run(c)));
+      if (c.includes("answers.json")) allowed(bash(who, heredoc(c)));
+      allowed(bash(undefined, run(c)));
+      for (const agent of ["sl-golden-builder", "sl-batch-analyst", "sl-connector-runner", "sl-readback-verifier"]) {
+        const single = bash(agent, run(c.startsWith("question") ? 'question resolve wh.orders --index 1 --text "No." --by "Owner"' : c.startsWith("reply") ? 'reply --readback rb_0001 --item 1 --text "Yes." --verdict yes --by "Owner"' : c.startsWith("goldens") ? "goldens confirm --name revenue_2025" : "approve --target wh.orders"));
+        const batched = bash(agent, run(c));
+        expect(single.allow).toBe(false);
+        expect({ c, agent, allow: batched.allow, message: batched.message }).toEqual({ c, agent, allow: false, message: single.message });
+      }
+    }
+  });
+
   test("the interviewer creates access.yaml and sets a golden's and a source's keys with sl set, which it may not write by hand", () => {
     const who = "semantic-layer-builder:sl-interviewer";
     allowed(bash(who, run("set access mode open")));
