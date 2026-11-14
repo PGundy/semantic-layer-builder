@@ -62,7 +62,7 @@ It takes `--role-name <name>` (default `sl_reader`, `SL_READER` on Snowflake) an
 
 ## Connections without secrets
 
-The CLI reads a connection URL from an environment variable whose name the source file stores. The URL itself never goes in a file, in chat or in a command line you print.
+The CLI reads a connection URL from a variable whose name the source file stores. The URL itself never goes in a file under the semantic root, in chat or in a command line you print.
 
 ```
 sl add-source --name warehouse --dialect postgres --env WAREHOUSE_URL
@@ -70,7 +70,7 @@ sl add-source --name warehouse --dialect postgres --env WAREHOUSE_URL
 
 Add a one-line `description` to `sources/warehouse.yaml`, in the owner's words: `sl set source:warehouse description "Read replica of the order system"`.
 
-Then ask the owner to set the variable themselves in the shell that runs the CLI, for example `export WAREHOUSE_URL=postgres://readonly_user:...@host:5432/db`, or in a `.env` file that is outside the semantic root and ignored by version control. Recommend a SELECT-only database role (below). If the owner pastes a URL or password into the chat, do not repeat it or write it to a file, and suggest they rotate it.
+Then ask the owner to set the variable themselves: in the shell that runs the CLI, for example `export WAREHOUSE_URL=postgres://readonly_user:...@host:5432/db`, or as a `WAREHOUSE_URL=...` line in the `.env` file beside the semantic root (`sl init` and `sl setup` keep that file out of version control, and `sl validate` errors on an env file under the root or tracked by git). The CLI looks in the environment first, then in the file `--env-file <path>` or `SL_ENV_FILE` names, then in that `.env`, then in the working directory's, and says which it used, never the value; a `$` in a value arrives as written. When the owner has the parts instead of a URL, `sl setup ... --env-prefix PG` reads `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` and `PGSSLMODE` (any prefix works: `LAKE_` reads `LAKE_HOST` and so on), and the password needs no encoding. When a variable is not set, the command names it, the files it looked at and the line to add: pass that on to the owner, and never read or write the env file yourself. Recommend a SELECT-only database role (below). If the owner pastes a URL or password into the chat, do not repeat it or write it to a file, and suggest they rotate it.
 
 For a warehouse dialect the CLI does not connect at all, so `--env` is optional: your own connector holds the credentials. Give that connector a read-only role too.
 

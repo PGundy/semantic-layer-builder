@@ -18,6 +18,7 @@ const spec: CommandSpec = {
   summary: "Add a column to a model's ignored_columns: left out on purpose, so no field is drafted for it.",
   usage: "ignore-column --source <s> --model <m> --column <c> [--reason <text>]",
   options: { source: { type: "string" }, model: { type: "string" }, column: { type: "string" }, reason: { type: "string" } },
+  writes: "whole",
   async run({ values }, ctx) {
     loadProject(ctx.root);
     const source = str(values, "source");

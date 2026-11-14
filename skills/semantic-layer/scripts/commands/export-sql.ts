@@ -139,6 +139,7 @@ const spec: CommandSpec = {
     include: { type: "string", multiple: true },
     exclude: { type: "string", multiple: true },
   },
+  writes: false,
   async run({ values }, ctx) {
     const dialect = str(values, "dialect");
     if (!dialect) throw new UserError(`--dialect is required: one of ${EXPORT_DIALECTS.join(", ")}.`);

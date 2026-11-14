@@ -3,6 +3,7 @@ import { relative, resolve } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 import { list, str } from "../lib/command.ts";
 import { credentialHint, hasCredential } from "../lib/credentials.ts";
+import { rootEnvFile, variableFrom } from "../lib/env-file.ts";
 import { UserError } from "../lib/errors.ts";
 import { SCHEMA_NAME_HINT, schemaListIssues } from "../lib/intake.ts";
 import { formatJson } from "../lib/output.ts";
@@ -42,6 +43,18 @@ export function checkEnv(env: string, dialect: Dialect): void {
   if (dialect === "duckdb") throw new UserError("duckdb sources do not use --env; pass --database <path> and --view name=relation instead.");
 }
 
+// Refuses an --env-prefix that could not start a variable name, and one on a source that is not
+// postgres: the parts it names are a Postgres connection's. The value is never echoed.
+export function checkEnvPrefix(prefix: string, dialect: Dialect): void {
+  if (!ENV_NAME.test(prefix)) {
+    throw new UserError(
+      "--env-prefix takes the start of the variable names, not a value: PG reads PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE and PGSSLMODE; " +
+        "LAKE_ reads LAKE_HOST and so on. Run the command again with a prefix of letters, digits and underscores.",
+    );
+  }
+  if (dialect !== "postgres") throw new UserError(`--env-prefix names the parts of a postgres connection; a ${dialect} source takes ${dialect === "duckdb" ? "--database <path> or --view name=relation" : "--env <VAR>"} instead.`);
+}
+
 // The --view name=relation flags as connection.views, refusing a malformed one, a repeat and a credential.
 export function parseViews(views: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -73,6 +86,7 @@ const spec: CommandSpec = {
     schemas: { type: "string", multiple: true },
     description: { type: "string" },
   },
+  writes: "whole",
   async run({ values }, ctx) {
     loadProject(ctx.root);
     const name = str(values, "name");
@@ -128,7 +142,9 @@ const spec: CommandSpec = {
 
     const runnable = RUNNABLE_DIALECTS.includes(dialect);
     const notes: string[] = schemaIssues.map((x) => `--schemas: ${x.path} ${x.message}.`);
-    if (env && !ctx.env[env]) notes.push(`Environment variable ${env} is not set in this shell; set it before running queries.`);
+    if (env && !variableFrom(env, ctx.root, ctx.env)) {
+      notes.push(`${env} is not set in the environment or in ${rootEnvFile(ctx.root)}; the owner sets it there before queries run.`);
+    }
     const db = connection.database;
     if (dialect === "duckdb" && db !== undefined && db !== ":memory:" && !NOT_A_FILE.test(db) && !existsSync(resolve(ctx.root, db))) {
       notes.push("The database file does not exist yet; its path resolves from the semantic root.");

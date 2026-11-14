@@ -36,7 +36,12 @@
         "env": {
           "type": "string",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-          "description": "Name of the environment variable holding the connection URL; never the URL itself."
+          "description": "Name of the variable holding the connection URL; never the URL itself. Read from the environment, else from an env file outside the semantic root."
+        },
+        "env_prefix": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "Postgres only: the start of the variables holding the connection's parts, joined as written: PG reads PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE and PGSSLMODE; LAKE_ reads LAKE_HOST and so on. A source has env or env_prefix, not both."
         },
         "database": {
           "type": "string",

@@ -1,10 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, extname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { CommandContext, CommandSpec } from "../lib/command.ts";
 import { bool, list, str } from "../lib/command.ts";
 import { redactCredentials } from "../lib/credentials.ts";
+import { ignoreEnvFiles, resolveConnection } from "../lib/env-file.ts";
 import { UserError } from "../lib/errors.ts";
+import { writeFileAtomic } from "../lib/lock.ts";
 import { patternFlags } from "../lib/export-filters.ts";
 import { intakeMode, intakeSchemas, SCHEMA_NAME_HINT, schemaListIssues } from "../lib/intake.ts";
 import { qualifiedName } from "../lib/naming.ts";
@@ -20,7 +22,7 @@ import { profileState } from "../lib/status.ts";
 import { effectiveScope, parseTableList, problemsMessage, rootPath } from "../lib/table-list.ts";
 import { DIALECTS, NAME_PATTERN, RUNNABLE_DIALECTS, type Dialect, type Snapshot, type SourceConfig } from "../lib/types.ts";
 import { editYamlText, parseYamlText } from "../lib/yaml.ts";
-import { checkEnv, many, NOT_A_FILE, parseViews, refuseCredentials } from "./add-source.ts";
+import { checkEnv, checkEnvPrefix, many, NOT_A_FILE, parseViews, refuseCredentials } from "./add-source.ts";
 import checkJoinCommand from "./check-join.ts";
 import importCommand from "./import.ts";
 import initCommand from "./init.ts";
@@ -31,7 +33,8 @@ const CONNECTION_FIRST =
   "sl setup needs a connection, or a schema export when a connection is not possible. A connection gives a much better layer: " +
   "the tool can measure which values exist and how often, which keys are unique, how tables join and whether a join repeats rows, " +
   "and check figures the owner trusts (profiles, join evidence, goldens). Pass --env <VAR>, the name of the environment variable " +
-  "that holds the connection URL (for a duckdb source, --database <path> or --view name=relation). Only when a connection is not " +
+  "that holds the connection URL, or --env-prefix <PREFIX> when the owner has the parts (<PREFIX>HOST, <PREFIX>USER and the rest); " +
+  "the variables may sit in a .env file beside the semantic root (for a duckdb source, --database <path> or --view name=relation). Only when a connection is not " +
   'possible, pass --export <file> with --reason "<why>": the layer then starts from table definitions alone.';
 
 type CopyStatus = "added" | "replaced" | "removed" | null;
@@ -118,14 +121,17 @@ const MAX_SHOWN = 40;
 const spec: CommandSpec = {
   summary: "Create or update a source in one step: project, source file, schemas, scope and snapshot.",
   usage:
-    "setup --source <source> --dialect duckdb|postgres|snowflake|bigquery|databricks (--env VAR | --export <file> [--reason <text>])\n" +
+    "setup --source <source> --dialect duckdb|postgres|snowflake|bigquery|databricks (--env VAR | --env-prefix PREFIX | --export <file> [--reason <text>])\n" +
     "      [--schemas a,b] [--include <pattern>]... [--exclude <pattern>]... [--tables-file <path>]\n" +
     "      [--database <path>] [--view name=relation]... [--name <project>]\n" +
     "setup --print-role-sql --dialect postgres|redshift|snowflake|bigquery|databricks --schemas a,b [--role-name sl_reader]\n" +
     "      [--database <name>] [--warehouse <name>] [--catalog <name>] [--project <id>]\n\n" +
     "  Runs sl init when there is no project, writes or updates sources/<source>.yaml in place, sets the scope,\n" +
     "  reads the catalog (introspect, or import of the export copied to exports/<source>.<ext>) and previews the scope.\n" +
-    "  A connection comes first: --export with --reason is the fallback. The same arguments again change nothing;\n" +
+    "  A connection comes first: --export with --reason is the fallback. --env names the variable that holds a connection\n" +
+    "  URL; --env-prefix names a postgres connection in parts (PG reads PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE and\n" +
+    "  PGSSLMODE). The variables come from the environment, else from --env-file, else from the .env beside the semantic\n" +
+    "  root, which setup keeps out of version control (.gitignore). The same arguments again change nothing;\n" +
     "  a group of flags left out (--schemas; the scope flags; --database; --view) leaves that part of the source as it is.\n" +
     "  An export source given its connection is upgraded: it introspects, profiles, checks every join and lists the items\n" +
     "  the data contradicts, for sl readback.",
@@ -133,6 +139,7 @@ const spec: CommandSpec = {
     source: { type: "string" },
     dialect: { type: "string" },
     env: { type: "string" },
+    "env-prefix": { type: "string" },
     export: { type: "string" },
     reason: { type: "string" },
     schemas: { type: "string", multiple: true },
@@ -148,6 +155,7 @@ const spec: CommandSpec = {
     catalog: { type: "string" },
     project: { type: "string" },
   },
+  writes: ({ values }) => (values["print-role-sql"] ? false : "late"),
   async run({ values }, ctx) {
     if (bool(values, "print-role-sql")) return printRoleSql(values, ctx);
     for (const f of ["role-name", "warehouse", "catalog", "project"]) {
@@ -161,6 +169,7 @@ const spec: CommandSpec = {
     const dialect = dialectRaw as Dialect;
     const duck = dialect === "duckdb";
     const env = str(values, "env");
+    const envPrefix = str(values, "env-prefix");
     const exportArg = str(values, "export");
     const reasonArg = str(values, "reason");
     const database = str(values, "database");
@@ -169,20 +178,24 @@ const spec: CommandSpec = {
     const projectArg = str(values, "name");
     const mode = exportArg !== undefined ? "export" : "connection";
 
-    if (exportArg !== undefined && (env !== undefined || database !== undefined || views.length)) {
+    if (env !== undefined && envPrefix !== undefined) {
+      throw new UserError("--env names one variable that holds the connection URL and --env-prefix names the connection in parts; a source has one or the other. Run sl setup again with one of them.");
+    }
+    if (exportArg !== undefined && (env !== undefined || envPrefix !== undefined || database !== undefined || views.length)) {
       throw new UserError(
         "--export is the fallback for when no connection is possible, so it takes no --env, --database or --view. Run sl setup again with the connection, or with --export and --reason alone.",
       );
     }
-    if (exportArg === undefined && env === undefined && !(duck && (database !== undefined || views.length))) {
+    if (exportArg === undefined && env === undefined && envPrefix === undefined && !(duck && (database !== undefined || views.length))) {
       if (!existsSync(paths(ctx.root).source(name))) throw new UserError(CONNECTION_FIRST);
       throw new UserError(
-        `Source "${name}" exists, and sl setup needs its connection flags again (--env, or for duckdb --database or --view; --export for an export source), as they were. ` +
+        `Source "${name}" exists, and sl setup needs its connection flags again (--env or --env-prefix, or for duckdb --database or --view; --export for an export source), as they were. ` +
           `To change only its scope, run sl scope --source ${name} --include <pattern> --write.`,
       );
     }
     if (reasonArg !== undefined && exportArg === undefined) throw new UserError('--reason records why a connection is not possible, so it goes with --export; run sl setup again without it.');
     if (env !== undefined) checkEnv(env, dialect);
+    if (envPrefix !== undefined) checkEnvPrefix(envPrefix, dialect);
     if (!duck && (database !== undefined || views.length)) throw new UserError("--database and --view apply only to duckdb sources; run sl setup again without them.");
     if (database !== undefined) {
       if (!database.trim()) throw new UserError("--database must not be empty.");
@@ -235,6 +248,7 @@ const spec: CommandSpec = {
     const spelled = (given: string[], had: readonly string[] | undefined) => given.map((g) => had?.find((h) => patternKey(h) === patternKey(g)) ?? g);
     const state: SourceState = {
       env,
+      envPrefix,
       database: duck && mode === "connection" ? (database ?? (old && !upgrading ? undefined : ":memory:")) : undefined,
       views: viewMap,
       mode,
@@ -263,7 +277,7 @@ const spec: CommandSpec = {
     const oldScope = old?.scope ?? {};
     const newScope = next.scope ?? {};
     const changes = {
-      connection: ["env", "database", "views"].filter((k) => !isDeepStrictEqual(oc[k], nc[k])),
+      connection: ["env", "env_prefix", "database", "views"].filter((k) => !isDeepStrictEqual(oc[k], nc[k])),
       intake_mode: old?.intake?.mode !== next.intake?.mode,
       reason: (old?.intake?.reason ?? null) !== (next.intake?.reason ?? null),
       schemas: listChange(old ? intakeSchemas(old) : [], intakeSchemas(next)),
@@ -279,14 +293,15 @@ const spec: CommandSpec = {
     const refresh = created || !oldSnapshot || changes.connection.length > 0 || changes.intake_mode || schemasChanged || changes.export_file !== null;
     const live = mode === "export" || RUNNABLE_DIALECTS.includes(dialect);
     const read = refresh && live;
-    if (read && dialect === "postgres" && mode === "connection" && !ctx.env[next.connection?.env ?? ""]) {
-      throw new UserError(
-        `Environment variable ${next.connection?.env} is not set in this shell, so sl setup cannot read the catalog, and nothing was written. ` +
-          `Ask the owner to set it to the connection URL (export ${next.connection?.env}=...), then run the same sl setup command again.`,
-      );
-    }
-    if (!read && dialect === "postgres" && mode === "connection" && !ctx.env[next.connection?.env ?? ""]) {
-      warnings.push(`Environment variable ${next.connection?.env} is not set in this shell; set it before running queries.`);
+    // Where the connection variables would come from, before anything is written.
+    const connection = mode === "connection" ? resolveConnection(ctx.root, next, ctx.env) : null;
+    if (connection?.status === "unset") {
+      if (read) {
+        // The owner is about to put a secret in an env file, so the lines that keep it out of version control go in first.
+        ignoreEnvFiles(ctx.root);
+        throw new UserError(`${connection.message}\nsl setup reads the catalog through that connection, so nothing was written under the semantic root.`);
+      }
+      warnings.push(`${connection.variables.join(", ")} ${connection.variables.length > 1 ? "are" : "is"} not set in the environment or an env file; sl introspect --source ${name} says where it looked and which line to add.`);
     }
     let before: string[] | null = null;
     if (old && oldSnapshot) {
@@ -297,7 +312,10 @@ const spec: CommandSpec = {
       }
     }
 
-    // The writes, undone together when reading the catalog fails.
+    // The writes, undone together when reading the catalog fails. The project, the source file and
+    // the copies are written under the lock, which is released while the catalog is read.
+    const unlock = await ctx.lock();
+    if ((existsSync(file) ? readFileSync(file, "utf8") : null) !== oldText) throw new UserError(`${rel} changed while sl setup read it; nothing was written. Run the same sl setup command again.`);
     let projectCreated = false;
     if (!existsSync(p.project)) {
       await runQuiet(initCommand, { name: projectArg ?? projectName(ctx.root) }, ctx);
@@ -305,18 +323,21 @@ const spec: CommandSpec = {
     } else if (projectArg !== undefined && loadProject(ctx.root).name !== projectArg) {
       warnings.push(`The project already exists as ${loadProject(ctx.root).name}; --name is used only when sl setup creates the project.`);
     }
+    ignoreEnvFiles(ctx.root);
     const project = loadProject(ctx.root);
     const backups = new Map<string, Buffer | null>();
     const write = (path: string, data: string | Buffer) => {
       if (!backups.has(path)) backups.set(path, existsSync(path) ? readFileSync(path) : null);
       mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, data);
+      writeFileAtomic(path, data);
     };
     let result: Record<string, unknown> | null = null;
     let upgrade: UpgradeReport | null = null;
     try {
       if (created || updated) write(file, newText);
       for (const c of [tablesCopy, exportCopy]) if (c?.status) write(c.to, c.data);
+      // sl import queries nothing and writes under this lock; sl introspect takes it again for its write.
+      if (mode !== "export") unlock();
       if (read) {
         const snap = p.snapshot(name);
         backups.set(snap, existsSync(snap) ? readFileSync(snap) : null);
@@ -324,9 +345,11 @@ const spec: CommandSpec = {
         if (upgrading) upgrade = await upgradeSteps(ctx, name, oldSnapshot, (path) => backups.has(path) || backups.set(path, readFileSync(path)));
       }
     } catch (e) {
+      // The files go back under the lock; when another command still holds it after the wait, they go back all the same.
+      await ctx.lock().catch(() => undefined);
       for (const [path, data] of backups) {
         if (data === null) rmSync(path, { force: true });
-        else writeFileSync(path, data);
+        else writeFileAtomic(path, data);
       }
       if (!(e instanceof UserError)) throw e;
       const kept = projectCreated ? " (the project it created stays)" : "";
@@ -394,7 +417,8 @@ const spec: CommandSpec = {
     if (projectCreated) lines.push(`Created semantic.yaml for project ${project.name}.`);
     // The database value and the view relations stay out of the output, as sl add-source keeps them.
     const viewNames = Object.keys(next.connection?.views ?? {});
-    const how = mode === "export" ? `schema export ${exportRel}` : env ? `connection through ${env}` : viewNames.length ? `views ${viewNames.join(", ")}` : "a database file";
+    const prefix = next.connection?.env_prefix;
+    const how = mode === "export" ? `schema export ${exportRel}` : env ? `connection through ${env}` : prefix !== undefined ? `connection through ${prefix}HOST and the other ${prefix} variables` : viewNames.length ? `views ${viewNames.join(", ")}` : "a database file";
     const schemaText = intake.schemas.length ? `; ${intake.schemas.length === 1 ? "schema" : "schemas"} ${intake.schemas.join(", ")}` : "; every schema";
     if (created) lines.push(`Created ${rel} (${dialect}; ${how}${schemaText}).`);
     else if (updated) {

@@ -560,6 +560,7 @@ describe("a failure of the tool itself", () => {
         summary: "Fails whatever the files hold.",
         usage: "fall-over",
         options: {},
+        writes: false,
         async run() {
           throw new TypeError("a bug in the command");
         },

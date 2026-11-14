@@ -1,9 +1,10 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname, relative } from "node:path";
 import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.ts";
 import { bool, str } from "../lib/command.ts";
 import { oneLine } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
+import { writeFileAtomic } from "../lib/lock.ts";
 import { LEDGER_FILE, ownerText } from "../lib/ledger.ts";
 import { formatJson, plainText } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
@@ -43,7 +44,7 @@ async function exportForm(args: string[], values: OptionValues, ctx: CommandCont
   const text = format === "md" ? renderReviewMarkdown(form) : renderReviewJson(form);
   mkdirSync(dirname(target), { recursive: true });
   try {
-    writeFileSync(target, text, { flag: bool(values, "force") ? "w" : "wx" });
+    writeFileAtomic(target, text, { exclusive: !bool(values, "force") });
   } catch (e) {
     if ((e as { code?: string }).code !== "EEXIST") throw e;
     throw new UserError(`${target} was written by another run just now; pass --force to replace it, or --out <another path>.`);
@@ -118,6 +119,7 @@ const spec: CommandSpec = {
     by: { type: "string" },
   },
   positionals: true,
+  writes: "whole",
   async run({ values, positionals }, ctx) {
     loadProject(ctx.root);
     const [sub, ...args] = positionals;

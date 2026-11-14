@@ -1,7 +1,8 @@
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { parse } from "yaml";
 import { UserError } from "./errors.ts";
+import { writeFileAtomic } from "./lock.ts";
 import { parserLine, type SchemaKind, SHAPE_FIX, shapeIssue, shapeMessage } from "./schema.ts";
 import type { AccessFile, Golden, MetricsFile, Model, Project, Snapshot, SourceConfig } from "./types.ts";
 import { DEFAULT_BATCH_SIZE, DEFAULT_FOCUS_THRESHOLD, NAME_PATTERN } from "./types.ts";
@@ -138,24 +139,15 @@ export function saveSnapshot(root: string, snapshot: Snapshot): void {
   const slot = `\n  "tables": ${JSON.stringify(marker)}`;
   const at = head.indexOf(slot);
   mkdirSync(dirname(path), { recursive: true });
-  const partial = `${path}.partial`;
-  const fd = openSync(partial, "w");
-  try {
-    try {
-      writeSync(fd, `${head.slice(0, at)}\n  "tables": ${tables.length ? "[" : "[]"}`);
-      for (let i = 0; i < tables.length; i += 500) {
-        const batch = tables.slice(i, i + 500).map((t) => `\n    ${JSON.stringify(t, null, 2).replaceAll("\n", "\n    ")}`);
-        writeSync(fd, `${i ? "," : ""}${batch.join(",")}`);
-      }
-      writeSync(fd, `${tables.length ? "\n  ]" : ""}${head.slice(at + slot.length)}\n`);
-    } finally {
-      closeSync(fd);
+  function* pieces(): Generator<string> {
+    yield `${head.slice(0, at)}\n  "tables": ${tables.length ? "[" : "[]"}`;
+    for (let i = 0; i < tables.length; i += 500) {
+      const batch = tables.slice(i, i + 500).map((t) => `\n    ${JSON.stringify(t, null, 2).replaceAll("\n", "\n    ")}`);
+      yield `${i ? "," : ""}${batch.join(",")}`;
     }
-    renameSync(partial, path);
-  } catch (e) {
-    rmSync(partial, { force: true });
-    throw e;
+    yield `${tables.length ? "\n  ]" : ""}${head.slice(at + slot.length)}\n`;
   }
+  writeFileAtomic(path, pieces());
 }
 
 export interface LoadedModel {
