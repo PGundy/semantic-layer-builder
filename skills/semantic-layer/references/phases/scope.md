@@ -8,6 +8,8 @@ Load this card when `sl next` names phase `scope`. It holds focusing a large sou
 sl tables --source <s> --json
 ```
 
+**Start from usage when there is any.** When `sl tables` shows a `used` column (saved queries read with `sl usage add`), propose the tables people query first, quoting the counts as evidence, and ask about each in-scope table no saved query reads (`unused` in `--json`) before keeping it. The counts are evidence; the scope is still the owner's choice.
+
 `semantic.yaml` holds `settings.focus_threshold` (12 unless changed). If more tables are in scope than that, **always** ask the owner whether to focus on specific tables before profiling anything. Then:
 
 1. Run `sl tables --source <s> --groups` and summarise it in plain words, alongside the baseline's star-schema sketch and its noise and staging guesses: schemas, common prefixes (`fct_`, `dim_`, `stg_`), suffixes (`_daily`, `_backup`), and tables that look like noise. Its `Suggested scope` line (`suggested_scope` in `--json`) is one combined `sl scope` command: the include-suggested groups, less the noise tables they would catch. Start from it.

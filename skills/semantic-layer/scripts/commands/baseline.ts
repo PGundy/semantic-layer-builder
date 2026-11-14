@@ -10,6 +10,7 @@ import { listModels, loadProject, loadSource, paths, projectSettings, requireSna
 import { computeStatus } from "../lib/status.ts";
 import { effectiveScope } from "../lib/table-list.ts";
 import type { SourceConfig } from "../lib/types.ts";
+import { loadUsage, namesFor, usageBlock } from "../lib/usage.ts";
 import { sourceFlag } from "./tables.ts";
 
 function inside(root: string, path: string): boolean {
@@ -130,7 +131,10 @@ const spec: CommandSpec = {
       }
       const tablesFlag = list(values, "tables");
       const full = `sl baseline --source ${sourceName}${tablesFlag.length ? ` --tables ${tablesFlag.join(",")}` : ""} --full --json`;
-      ctx.out(formatScopedJson({ ...scopeBaseline(report, currentPhase(ctx.root), full), ...written }));
+      const usage = loadUsage(ctx.root, sourceName);
+      const names = usage ? namesFor(ctx.root, sourceName, snapshot) : undefined;
+      const block = usage && names ? (table: string) => usageBlock(table, usage, names) : undefined;
+      ctx.out(formatScopedJson({ ...scopeBaseline(report, currentPhase(ctx.root), full, block), ...written }));
       return 0;
     }
     if (target) {
