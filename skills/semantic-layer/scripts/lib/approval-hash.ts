@@ -253,6 +253,95 @@ export function accessEntry(access: unknown): ApprovalEntry | undefined {
   return isObject(access) ? { kind: "access", ref: "access", path: [], item: access, hash: itemHash("access", access) } : undefined;
 }
 
+// The relative tolerance a golden records when none is agreed (--tolerance) or kept in its file.
+export const DEFAULT_TOLERANCE = 0.005;
+
+// A model of the layer to list: its source, the file it sits in, a lookup of the source's other models
+// (the second hop of a join reference) and the source's dialect.
+export interface LayerModel {
+  source: string;
+  model: Model;
+  file?: string;
+  lookup: (name: string) => Model | undefined;
+  dialect?: Dialect;
+}
+
+// The parts of a layer whose approvals to list, each as its reader loaded it. A part left out is not
+// listed: a caller that reads one file passes only that file.
+export interface ApprovalLayer {
+  models?: LayerModel[];
+  // The list under metrics: in metrics.yaml.
+  metrics?: unknown;
+  metricsFile?: string;
+  // access.yaml as parsed; null or undefined when there is none.
+  access?: unknown;
+  accessFile?: string;
+  goldens?: { golden: unknown; file?: string }[];
+}
+
+// Where an entry sits and what it records: its file, its status and the approved_hash it records
+// (a golden records none: its owner's yes carries the hash of its recorded rows).
+interface Recorded {
+  file?: string;
+  status?: string;
+  recorded_hash?: string;
+}
+
+// A model, field, join, metric or access.yaml entry.
+export type ItemApproval = ApprovalEntry & Recorded;
+
+// A golden: hash is the hash of its recorded rows and tolerance, the one its owner's yes carries.
+// complete is false when it has no name or no recorded rows (its hash then reads them as none).
+export interface GoldenApproval extends Recorded {
+  kind: "golden";
+  ref: string;
+  path: (string | number)[];
+  item: Obj;
+  hash: string;
+  complete: boolean;
+}
+
+export type Approval = ItemApproval | GoldenApproval;
+
+function recorded(item: Obj, file: string | undefined): Recorded {
+  const hash = carriesHash(item) ? String(item.approved_hash).trim() : undefined;
+  return { file, status: typeof item.status === "string" ? item.status : undefined, recorded_hash: hash };
+}
+
+// Every approval entry of a layer, in one list: each model with its dimensions, measures and joins
+// (in the order given), then the metrics, access.yaml and the goldens. sl approve, the typed edits,
+// sl status, sl validate, sl access, sl readback and the approvals grader list them here; the edit
+// hook lists models, metrics and access.yaml here and compares a golden's expected rows directly.
+export function listApprovals(layer: ApprovalLayer): Approval[] {
+  const out: Approval[] = [];
+  for (const m of layer.models ?? [])
+    for (const e of modelEntries(m.source, m.model, m.lookup, m.dialect)) out.push({ ...e, ...recorded(e.item, m.file) });
+  for (const e of metricEntries(layer.metrics)) out.push({ ...e, ...recorded(e.item, layer.metricsFile) });
+  const access = accessEntry(layer.access);
+  if (access) out.push({ ...access, ...recorded(access.item, layer.accessFile) });
+  for (const { golden: g, file } of layer.goldens ?? []) {
+    if (!isObject(g)) continue;
+    const expected = isObject(g.expected) ? g.expected : {};
+    const rows = Array.isArray(expected.rows) ? expected.rows : undefined;
+    const tolerance = (expected.tolerance ?? DEFAULT_TOLERANCE) as number;
+    out.push({
+      kind: "golden",
+      ref: `golden:${g.name}`,
+      path: [],
+      item: g,
+      hash: goldenHash(g, rows ?? [], tolerance),
+      complete: typeof g.name === "string" && rows !== undefined,
+      ...recorded(g, file),
+    });
+  }
+  return out;
+}
+
+// The model, field, join, metric and access entries of a list, without its goldens.
+export function itemApprovals(list: Approval[]): ItemApproval[] {
+  return list.filter((e): e is ItemApproval => e.kind !== "golden");
+}
+
 // Whether an item records an approved_hash.
 export function carriesHash(item: Obj): boolean {
   return typeof item.approved_hash === "string" && item.approved_hash.trim() !== "";

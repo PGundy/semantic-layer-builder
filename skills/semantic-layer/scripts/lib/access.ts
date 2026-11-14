@@ -41,7 +41,7 @@
 //     unknown default_role breaks a user holding no other role.
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { accessEntry, type ApprovalEntry, holdsHashes, integrity, metricEntries, modelEntries } from "./approval-hash.ts";
+import { holdsHashes, integrity, itemApprovals, listApprovals } from "./approval-hash.ts";
 import { type Condition, evaluateCondition, parseCondition } from "./conditions.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
 import { listSourceNames, loadSource, paths } from "./project.ts";
@@ -896,12 +896,13 @@ function unapprovedApprovals(layer: AccessLayer): { items: Map<unknown, "changed
     if (!models.has(m.model)) models.set(m.model, m);
     bySource.set(m.source, models);
   }
-  const entries: ApprovalEntry[] = [
-    ...layer.models.flatMap((m) => modelEntries(m.source, m, (name) => bySource.get(m.source)?.get(name), layer.dialects?.[m.source])),
-    ...metricEntries(layer.metrics),
-  ];
-  const access = layer.access_present ? accessEntry(layer.access) : undefined;
-  if (access) entries.push(access);
+  const entries = itemApprovals(
+    listApprovals({
+      models: layer.models.map((m) => ({ source: m.source, model: m, lookup: (name: string) => bySource.get(m.source)?.get(name), dialect: layer.dialects?.[m.source] })),
+      metrics: layer.metrics,
+      access: layer.access_present ? layer.access : undefined,
+    }),
+  );
   const hashed = holdsHashes(entries);
   const refs = { changed: new Set<string>(), missing: new Set<string>() };
   for (const e of entries) {

@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type AccessLayer, type AccessVisibility, evaluateLayer, loadAccessLayer } from "./access.ts";
-import { accessEntry, type ApprovalEntry, goldenHash, metricEntries, modelEntries } from "./approval-hash.ts";
+import { type ApprovalEntry, goldenHash, itemApprovals, listApprovals } from "./approval-hash.ts";
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { findTable, qualifiedName } from "./naming.ts";
@@ -805,13 +805,13 @@ export function renderReadbacks(
       }
       case "access": {
         const access = loadAccess(root);
-        entry = accessEntry(access);
+        entry = itemApprovals(listApprovals({ access }))[0];
         if (!entry) throw unknown(ref, "there is no access.yaml; write it as a draft first");
         r = renderAccess(aud, entry.item);
         break;
       }
       case "metric": {
-        entry = metricEntries(loadMetrics(root).metrics).find((e) => e.ref === ref);
+        entry = itemApprovals(listApprovals({ metrics: loadMetrics(root).metrics })).find((e) => e.ref === ref);
         if (!entry) throw unknown(ref, "metrics.yaml has no such metric");
         r = renderMetric(entry.item as unknown as Metric, figures.get(ref));
         break;
@@ -823,7 +823,7 @@ export function renderReadbacks(
         const i = info(t.source);
         // The model as its file holds it, hashed the way sl approve hashes it; a field is found the way
         // sl approve finds it (dimensions, then measures, then joins).
-        const entries = modelEntries(t.source, model, i.lookup, i.dialect);
+        const entries = itemApprovals(listApprovals({ models: [{ source: t.source, model, lookup: i.lookup, dialect: i.dialect }] }));
         const field = t.kind === "field" ? t.field : undefined;
         entry = field === undefined ? entries[0] : entries.find((e) => e.kind !== "model" && e.item.name === field);
         if (!entry) throw unknown(ref, `${t.source}.${t.model} has no dimension, measure or join "${field}"`);

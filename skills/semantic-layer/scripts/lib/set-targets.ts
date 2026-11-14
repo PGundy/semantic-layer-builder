@@ -5,7 +5,7 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { isMap, type Document, type YAMLMap } from "yaml";
-import { goldenHash } from "./approval-hash.ts";
+import { listApprovals } from "./approval-hash.ts";
 import { batchWrite, blamed, commitEdit, deferValidation, itemMap, oneLine, placeKey, relFile } from "./edit.ts";
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
@@ -179,10 +179,7 @@ export function setGolden(root: string, name: string, key: string, raw: string |
 function unconfirmed(root: string, file: string, before: Obj): boolean {
   const ledger = join(root, LEDGER_FILE);
   const replies = existsSync(ledger) ? countedReplies(readFileSync(ledger, "utf8")).replies : [];
-  const hash = (g: Obj) => {
-    const exp = (g.expected ?? {}) as Obj;
-    return goldenHash(g, Array.isArray(exp.rows) ? exp.rows : [], typeof exp.tolerance === "number" ? exp.tolerance : DEFAULT_TOLERANCE);
-  };
+  const hash = (g: Obj) => listApprovals({ goldens: [{ golden: g }] })[0]?.hash ?? "";
   const after = readYamlIfExists<Obj>(file) ?? {};
   return hash(after) !== hash(before) && !currentYes(replies, `golden:${String(before.name)}`, hash(after));
 }
