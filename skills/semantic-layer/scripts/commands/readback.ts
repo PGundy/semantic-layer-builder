@@ -5,6 +5,7 @@ import { afterYesSteps } from "../lib/export-goldens.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
 import { type GoldenRun, nextReadbackId, renderReadbacks, writePending } from "../lib/readback.ts";
+import { readbackFigures } from "../lib/readback-figures.ts";
 import { parseTarget } from "../lib/refs.ts";
 import { goldenRun, passedFlags } from "./goldens.ts";
 import type { PendingReadback } from "../lib/types.ts";
@@ -37,15 +38,18 @@ const spec: CommandSpec = {
     // A golden's rows come from compiling and running its request, before anything is written.
     const goldens = new Map<string, GoldenRun>();
     for (const name of names) if (!goldens.has(name)) goldens.set(name, await goldenRun(ctx, values, name));
+    // A measure's or metric's figure on today's data, as evidence: a failure is its reason, never an error.
+    const figures = await readbackFigures(ctx.root, refs, ctx.env);
     // The items are rendered, numbered and stored under the lock, so two readbacks never share an id.
     await ctx.lock();
-    const rendered = renderReadbacks(ctx.root, refs, goldens);
+    const rendered = renderReadbacks(ctx.root, refs, goldens, figures);
     const pending: PendingReadback = {
       readback_id: nextReadbackId(ctx.root),
       created_at: ctx.now().toISOString(),
       items: rendered.map((r, i) => {
         const run = r.target.startsWith("golden:") ? goldens.get(r.target.slice(7)) : undefined;
-        return { n: i + 1, target: r.target, kind: "approve" as const, text: r.text, content_hash: r.content_hash, ...(run ? { tolerance: run.tolerance } : {}) };
+        const evidence = figures.get(r.target);
+        return { n: i + 1, target: r.target, kind: "approve" as const, text: r.text, content_hash: r.content_hash, ...(run ? { tolerance: run.tolerance } : {}), ...(evidence ? { evidence } : {}) };
       }),
     };
     const path = writePending(ctx.root, pending);

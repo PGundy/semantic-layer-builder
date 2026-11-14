@@ -41,6 +41,30 @@
             "type": "number",
             "minimum": 0,
             "description": "golden:<name> items only: the tolerance read back, which sl goldens confirm records when it is not given --tolerance."
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Measure and metric items only: the figure on today's data and the rows behind it, or why it is not shown. Evidence only: it is outside content_hash and never holds a protected value.",
+            "properties": {
+              "figure": { "type": ["number", "string", "null"], "description": "The total (a large integer as a string; null when no row counts)." },
+              "row_count": { "type": ["number", "string", "null"], "description": "A measure's rows: the rows its filter keeps." },
+              "parts": {
+                "type": "array",
+                "description": "A metric's measures, each with its own total and rows.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["ref", "figure", "row_count"],
+                  "properties": {
+                    "ref": { "type": "string", "description": "model.measure" },
+                    "figure": { "type": ["number", "string", "null"] },
+                    "row_count": { "type": ["number", "string", "null"] }
+                  }
+                }
+              },
+              "not_shown": { "type": "string", "minLength": 1, "description": "Why the figure is not shown, in one line." }
+            }
           }
         }
       }

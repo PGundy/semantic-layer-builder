@@ -261,3 +261,29 @@ export function evaluateCondition(c: Condition, user: Record<string, unknown>): 
     }
   }
 }
+
+const CMP_WORDS: Record<string, string> = { "==": "is", "!=": "is not", "<": "is below", "<=": "is at most", ">": "is above", ">=": "is at least" };
+const literalText = (v: Literal) => (typeof v === "string" ? `'${v}'` : String(v));
+const orList = (vs: Literal[]) => (vs.length > 1 ? `${vs.slice(0, -1).map(literalText).join(", ")} or ${literalText(vs[vs.length - 1]!)}` : literalText(vs[0]!));
+
+// A condition in words, for a readback: "the user's department is 'analytics'".
+export function conditionWords(c: Condition, nested = false): string {
+  const attr = (a: string) => `the user's ${a}`;
+  switch (c.kind) {
+    case "and":
+    case "or": {
+      const words = c.parts.map((p) => conditionWords(p, true)).join(c.kind === "and" ? " and " : " or ");
+      return nested ? `(${words})` : words;
+    }
+    case "not":
+      return `not ${conditionWords(c.part, true)}`;
+    case "cmp":
+      return `${attr(c.attr)} ${CMP_WORDS[c.op]} ${literalText(c.value)}`;
+    case "in":
+      return `${attr(c.attr)} ${c.negate ? "is none of" : "is"} ${orList(c.values)}`;
+    case "contains":
+      return `${attr(c.attr)} include ${literalText(c.value)}`;
+    case "set":
+      return `${attr(c.attr)} ${c.negate ? "is not set" : "is set"}`;
+  }
+}
