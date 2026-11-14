@@ -34,7 +34,8 @@ const ENTRY_FIELDS = [
   "displayName", "metadata", "headers", "headersHelper", ...PLUGIN_FIELDS.filter((f) => !LISTING_ONLY.includes(f) && f !== "$schema"),
 ];
 const COMPONENT_KEYS = ["skills", "commands", "agents", "outputStyles", "workflows", "lspServers", "mcpServers"];
-const HOOK_TOOLS = ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"];
+const HOOK_TOOLS = ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "Read"];
+const INTEGRITY = "skills/semantic-layer/scripts/hooks/integrity.ts";
 // The PreToolUse matcher of the MCP hook, and the names Claude Code gives the plugin server's tools.
 const MCP_MATCHER = "mcp__.*semantic-layer.*__sl_.*";
 const MCP_TOOL = (tool: string) => `mcp__plugin_semantic-layer-builder_semantic-layer__${tool}`;
@@ -161,14 +162,20 @@ describe("what Claude Code discovers", () => {
     for (const f of files) expect(frontmatter(join(REPO, "agents", f)).name).toBe(f.replace(/\.md$/, ""));
   });
 
-  test("the PreToolUse hooks cover the edit tools and Bash, and the MCP server's tools; the SessionStart hook has no matcher", () => {
+  test("the PreToolUse hooks cover the edit tools, Bash and Read, and the MCP server's tools; the ledger comparison runs after Bash and those tools; the SessionStart hook has no matcher", () => {
     const pre = hookFor("PreToolUse");
     expect(new Set(String(pre.matcher).split("|"))).toEqual(new Set(HOOK_TOOLS));
     expect(hookScript(pre.command)).toBe("skills/semantic-layer/scripts/hooks/guard-edits.ts");
     const pres = hookCommands().filter((h) => h.event === "PreToolUse");
-    expect(pres.length).toBe(2);
-    expect(pres[1]!.matcher).toBe(MCP_MATCHER);
-    expect(hookScript(pres[1]!.command)).toBe("skills/semantic-layer/scripts/mcp/guard.ts");
+    expect(pres.map((h) => [h.matcher, hookScript(h.command)])).toEqual([
+      [pre.matcher, "skills/semantic-layer/scripts/hooks/guard-edits.ts"],
+      [MCP_MATCHER, "skills/semantic-layer/scripts/mcp/guard.ts"],
+      [MCP_MATCHER, INTEGRITY],
+    ]);
+    // After a call, whether it succeeded or failed (spec: Hand edits).
+    for (const event of ["PostToolUse", "PostToolUseFailure"]) {
+      expect(hookCommands().filter((h) => h.event === event).map((h) => [h.matcher, hookScript(h.command)])).toEqual([[`Bash|${MCP_MATCHER}`, INTEGRITY]]);
+    }
     const matches = (name: string) => new RegExp(`^(?:${MCP_MATCHER})$`).test(name);
     expect(matches(MCP_TOOL("sl_reply"))).toBe(true);
     expect(matches("mcp__semantic-layer__sl_status")).toBe(true); // the server added by hand as docs/plugin.md shows
@@ -176,7 +183,7 @@ describe("what Claude Code discovers", () => {
     const start = hookFor("SessionStart");
     expect(start.matcher).toBeUndefined();
     expect(hookScript(start.command)).toBe("skills/semantic-layer/scripts/hooks/check-install.sh");
-    expect(Object.keys(plugin.hooks as Json).sort()).toEqual(["PreToolUse", "SessionStart"]);
+    expect(Object.keys(plugin.hooks as Json).sort()).toEqual(["PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionStart"]);
     for (const h of hookCommands()) {
       expect(typeof h.timeout).toBe("number");
       expect(h.command).not.toContain("${user_config");
@@ -509,7 +516,7 @@ describe(`Claude Code's checks${why}`, () => {
     }
   }, 120_000);
 
-  test.skipIf(!claude)("claude plugin details lists the skill, the five agents, both hooks and the MCP server", () => {
+  test.skipIf(!claude)("claude plugin details lists the skill, the five agents, the four hook events and the MCP server", () => {
     const r = runClaude(["--plugin-dir", copy, "plugin", "details", String(plugin.name)]);
     expect(r.code).toBe(0);
     const flat = r.out.replace(/[ \t]+/g, " ");
@@ -517,7 +524,7 @@ describe(`Claude Code's checks${why}`, () => {
     expect(flat).toContain("Skills (1) semantic-layer");
     const agents = /Agents \(5\) ([^\n]+)/.exec(flat)?.[1]?.split(", ").map((a) => a.trim()).sort();
     expect(agents).toEqual(Object.values(ROLES).map((x) => x.agent).sort());
-    expect(flat).toMatch(/Hooks \(2\) PreToolUse, SessionStart/);
+    expect(flat).toMatch(/Hooks \(4\) PreToolUse, PostToolUse, PostToolUseFailure, SessionStart/);
     expect(flat).toContain("MCP servers (1) semantic-layer");
   }, 120_000);
 

@@ -6,16 +6,21 @@
 // approved item's content hash covers, change a confirmed golden's recorded rows, or write
 // .sl/ledger.jsonl or .sl/pending/ by hand. Before those checks, a call from one of the plugin's
 // role agents (spec: Agent roles) is held to what lib/roles.ts lets that role run and edit.
+// It also refuses a read of the env file that holds a connection's secret, and it runs the before
+// half of the answer ledger's before-and-after comparison (integrity.ts).
 // Anything else exits 0. The CLI's own checks (sl validate, sl approve) remain the guarantee; this
 // hook stops the edit before it is made.
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { accessEntry, carriesHash, metricEntries, modelEntries, type ApprovalEntry } from "../lib/approval-hash.ts";
 import { commandList, DENIED_FLAGS, roleOf, slRefusal, type Role } from "../lib/roles.ts";
 import { DIALECTS, type Dialect, type Model } from "../lib/types.ts";
 import { parseYamlText } from "../lib/yaml.ts";
+import { envFileRefusal, realPath, runBefore, semanticRoot } from "./integrity.ts";
 import { shellWrites, tokenize } from "./shell-writes.ts";
+
+export { semanticRoot };
 
 export interface Verdict {
   // false: the hook exits 2 and Claude Code refuses the call.
@@ -44,27 +49,6 @@ function canonical(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
   if (isObject(v)) return `{${Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`;
   return JSON.stringify(v) ?? "null";
-}
-
-// The path with links resolved, for a file that may not exist yet.
-function realPath(p: string): string {
-  const rest: string[] = [];
-  let cur = p;
-  while (!existsSync(cur)) {
-    const up = dirname(cur);
-    if (up === cur) return p;
-    rest.unshift(basename(cur));
-    cur = up;
-  }
-  return join(realpathSync.native(cur), ...rest);
-}
-
-// The nearest directory holding semantic.yaml at or above `p`.
-export function semanticRoot(p: string): string | undefined {
-  for (let dir = p; ; dir = dirname(dir)) {
-    if (existsSync(join(dir, "semantic.yaml"))) return dir;
-    if (dirname(dir) === dir) return undefined;
-  }
 }
 
 type Area = "ledger" | "layer" | "dir";
@@ -644,6 +628,15 @@ export function checkToolUse(stdin: string, fallbackCwd = process.cwd()): Verdic
   if (!isObject(input) || typeof input.tool_name !== "string" || !isObject(input.tool_input))
     return { allow: true, message: "semantic-layer hook: the hook input has no tool_name or tool_input; not checked." };
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : fallbackCwd;
+  // The env file a semantic root loads holds the connection secret: no agent reads it. A failure of
+  // this check leaves the checks below to decide.
+  let secret: string | undefined;
+  try {
+    secret = envFileRefusal(input.tool_name, input.tool_input, cwd);
+  } catch {
+    secret = undefined;
+  }
+  if (secret) return { allow: false, message: secret };
   // A call from one of the plugin's role agents: its role is checked first, and a failure refuses.
   const role = roleOf(input.agent_type);
   if (role) {
@@ -672,7 +665,11 @@ export function checkToolUse(stdin: string, fallbackCwd = process.cwd()): Verdic
 }
 
 if (import.meta.main) {
-  const verdict = checkToolUse(await Bun.stdin.text());
-  if (verdict.message) process.stderr.write(`${verdict.message}\n`);
-  process.exit(verdict.allow ? 0 : 2);
+  const stdin = await Bun.stdin.text();
+  const verdict = checkToolUse(stdin);
+  // The answer ledger's comparison: an earlier change no sl command made is put back and reported,
+  // which stops this call, and a call that is allowed is recorded for its after-check.
+  const ledger = runBefore(stdin, verdict.allow);
+  for (const m of [verdict.message, ledger.message]) if (m) process.stderr.write(`${m}\n`);
+  process.exit(verdict.allow && !ledger.block ? 0 : 2);
 }
