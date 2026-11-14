@@ -312,7 +312,7 @@ describe("the router and its phase cards", () => {
   });
 
   test("every subcommand and `sl set` key SKILL.md and the cards name is one the command takes", () => {
-    const subcommands: Record<string, string[]> = { question: ["add", "resolve"], review: ["export", "apply"], results: ["add", "status"], goldens: [...GOLDENS_SUBCOMMANDS] };
+    const subcommands: Record<string, string[]> = { question: ["add", "resolve", "list"], review: ["export", "apply"], results: ["add", "status"], goldens: [...GOLDENS_SUBCOMMANDS] };
     const bad: string[] = [];
     let keys = 0;
     for (const inv of ["SKILL.md", ...CARDS].flatMap((d) => invocations(d, read(d)))) {
@@ -1262,7 +1262,7 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["SKILL.md", "suggestions keep recorded decisions", "A suggestion never reopens a decision the owner has recorded; when a decision blocks a check, say so and offer options that keep it"],
   ["interview-guide.md", "suggestions keep recorded decisions", "A suggestion never reopens a decision the owner has recorded"],
   ["interview-guide.md", "a blocking decision gets options that keep it", "say so and offer options that keep the decision"],
-  ["phases/access.md", "role and whole-file readbacks may share a message", 'they may share one message as separate "Approve?" items, the whole file last, and a no or correction to any of them voids the whole-file yes'],
+  ["phases/access.md", "the access readback is the whole file, and a no about any role voids its yes", "`sl readback` takes `access` and no single role. Walk the owner through each role in that readback, with its `sl access` view; a no or correction about any role voids the whole-file yes"],
   ["access.md", "role and whole-file readbacks may share a message", 'may share one message as separate "Approve?" items, the whole file last; a no or a correction to any of them voids the yes to the whole file'],
   ["SKILL.md", "resume re-checks open questions against new capabilities", "Re-check every open question, and anything the owner was told needs engineering or waits on the tool, against capabilities the skill has gained since"],
   ["interview-guide.md", "resume re-checks engineering asks", "On resume, check each open question and each item the owner was told needs engineering or waits on the tool against what the skill can now do"],

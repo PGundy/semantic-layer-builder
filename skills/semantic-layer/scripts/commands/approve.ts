@@ -4,7 +4,7 @@ import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import type { LastApproval } from "../lib/access.ts";
 import { type ApprovalEntry, carriesHash, holdsHashes, integrity, itemApprovals, itemHash, type LayerModel, listApprovals } from "../lib/approval-hash.ts";
 import type { CommandSpec } from "../lib/command.ts";
-import { describedProblem, metricProblems, modelProblems } from "../lib/approve-checks.ts";
+import { approvedIssues, describedProblem, metricProblems, modelProblems } from "../lib/approve-checks.ts";
 import { bool, list, str, type CommandContext, type OptionValues } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { LEDGER_FILE, latestReply, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
@@ -709,6 +709,8 @@ const spec: CommandSpec = {
       }
     }
     const approving = new Set(ready.map((e) => e.target));
+    // Approving never adds a validate issue: what validate would raise of the items once approved is refused here too.
+    if (!revoke && approving.size) problems.push(...approvedIssues(ctx.root, [...approving]).map((l) => ({ target: l.target, text: l.edit ? `${l.text} (sl ${l.edit.map((w) => (/\s/.test(w) ? JSON.stringify(w) : w)).join(" ")}, then read it back)` : l.text })));
     const blocking = problems.filter((p) => approving.has(p.target)).map((p) => p.text);
     if (blocking.length) refuse(`approve ${ref}${recursive ? " and its fields; nothing was approved" : ""}`, blocking);
     const again = `sl approve --target ${ref}${recursive ? " --recursive" : ""}`;

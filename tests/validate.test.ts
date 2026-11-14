@@ -2559,14 +2559,18 @@ describe("joins whose evidence shows fan-out", () => {
     expect(errors(withoutApprovalHashes(validateProject(stale)))).toEqual([]);
   });
 
-  test("sl approve warns that validate will error on such a join", async () => {
+  test("sl readback refuses such a join, since approving it would add validate's error, and names fanout_override (HR-15)", async () => {
     const root = copyFixture();
     fanOut(root, { status: "draft", approved_by: undefined, approved_at: undefined, approved_hash: undefined });
+    const refused = await sl(root, ["readback", "--targets", "warehouse.orders.customer"]);
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain("warehouse.orders.customer: once approved, sl validate says models/warehouse/orders.yaml joins[0].evidence: is approved as many_to_one");
+    expect(refused.err).toContain('fanout_override: "<reason>"');
+    expect(refused.err).toContain('["set","warehouse.orders.customer","fanout_override","<why the owner accepts the data, in their words>"]');
+    expect((await sl(root, ["set", "warehouse.orders.customer", "fanout_override", "Duplicate customer rows from the 2019 migration; the owner accepts them."])).code).toBe(0);
     const r = await approveWithYes(root, ["--target", "warehouse.orders.customer", "--by", "Dana Ruiz", "--json"]);
     expect(r.code).toBe(0);
-    expect(r.json<{ warnings: string[] }>().warnings).toEqual([
-      'Join warehouse.orders.customer is many_to_one, but its evidence shows fan-out (the key of customers is not unique, and a row matches up to 5 rows of customers); sl validate errors on it until the keys or the relationship are fixed, or fanout_override: "<reason>" records why the owner accepts it.',
-    ]);
+    expect(errors(withoutApprovalHashes(validateProject(root)))).toEqual([]);
   });
 
   test("sl approve words the fan-out from the evidence it has, names many_to_many's bridge table and skips stale evidence", async () => {

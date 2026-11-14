@@ -16,6 +16,7 @@ import {
 import { canRun } from "./adapters/index.ts";
 import { type ApprovalEntry, holdsHashes, type Integrity, integrity, itemApprovals, listApprovals } from "./approval-hash.ts";
 import { currentYes, ledgerState } from "./ledger.ts";
+import { accessRowFilters, layerReads } from "./layer-reads.ts";
 import { findTable, qualifiedName } from "./naming.ts";
 import { inScope } from "./patterns.ts";
 import { parseRequestField } from "./refs.ts";
@@ -530,7 +531,11 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
     }
   }
   const active = models.filter((m) => scopedModels.has(m));
-  const newColumns = tableNewColumns(active, resolved, scopedModels, models, config.dialect);
+  // A column another model reads through a join, or a row filter reads, is in use, not new.
+  const inUse = layerReads(models, accessRowFilters(root, name));
+  const newColumns = tableNewColumns(active, resolved, scopedModels, models, config.dialect).filter(
+    (c) => !inUse.some((r) => r.model === c.model && r.column.toLowerCase() === c.column.toLowerCase()),
+  );
   // A model out of scope is still served, so a column it reads is checked wherever its table is.
   const missing: MissingColumn[] = [];
   const drift: Drift = { columns: [], tables: [] };
@@ -1156,7 +1161,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     message:
       "Every phase the CLI can measure is complete. Rerun sl validate after any change." +
       (left.length ? ` Name in the handoff the ${left.join("; ")}.` : "") +
-      " Before the handoff, tick the coverage checklist in references/verification.md; every figure the owner gave needs a golden, draft or approved.",
+      " Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.",
     action: act("validate", [], "done"),
   };
 }

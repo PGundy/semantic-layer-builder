@@ -442,7 +442,9 @@ describe("HR-12 walk: the command sl next names at each state runs", () => {
     // The owner's words in place of each <placeholder> make the edits run.
     const edits = JSON.parse(/standard input: (\{.*?\})\. Then read/.exec(a.why)![1]!) as { edits: string[][] };
     expect(edits.edits).toContainEqual(["set", "wh.orders", "grain", "<what one row is, in the owner's words>"]);
-    const filled = edits.edits.map((e) => e.map((w) => (w.startsWith("<") ? "One order as the shop records it." : w)));
+    // A measure drafted with format currency needs its currency before it is approved (HR-15).
+    expect(edits.edits).toContainEqual(["set", "wh.orders.amount", "currency", "<ISO 4217 code, such as USD, as the owner said>"]);
+    const filled = edits.edits.map((e) => e.map((w) => (w.startsWith("<ISO") ? "USD" : w.startsWith("<") ? "One order as the shop records it." : w)));
     const file = join(dir, "edits.json");
     writeFileSync(file, JSON.stringify({ edits: filled }));
     await ok(root, ["apply", "--file", file]);

@@ -137,11 +137,12 @@ describe("a figure that is not shown says why and blocks nothing", () => {
 
   test("a protected column never appears: a total over it is not computed, and its values are in no output", async () => {
     const root = acme();
+    // Tagged public by the owner (an untagged one is refused before it is read back), the column itself stays protected.
     const f = join(root, "models", "warehouse", "customers.yaml");
     const extra =
-      "  - name: last_email\n    agg: max\n    expr: email\n    format: integer\n    description: The latest email.\n" +
+      "  - name: last_email\n    agg: max\n    expr: email\n    tags: [public]\n    format: integer\n    description: The latest email.\n" +
       "  - name: tagged_count\n    agg: count\n    tags: [pii]\n    format: integer\n    description: Customers, counted.\n" +
-      "  - name: emails\n    agg: count_distinct\n    expr: email\n    format: integer\n    description: Distinct emails.\n";
+      "  - name: emails\n    agg: count_distinct\n    expr: email\n    tags: [public]\n    format: integer\n    description: Distinct emails.\n";
     writeFileSync(f, readFileSync(f, "utf8").replace("measures: []\n", `measures:\n${extra}`));
     const r = await sl(root, ["readback", "--targets", "warehouse.customers.last_email,warehouse.customers.tagged_count,warehouse.customers.emails", "--json"]);
     expect(r.err).toBe("");

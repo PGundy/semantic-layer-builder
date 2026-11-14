@@ -21,6 +21,7 @@ import { type Env, envFilesInRoot, rootEnvFile, trackedEnvFiles } from "./env-fi
 import { UserError } from "./errors.ts";
 import { intakeIssues, intakeMode, upgradeCommand } from "./intake.ts";
 import { countedReplies, currentYes } from "./ledger.ts";
+import { layerReads, sourceRowFilters } from "./layer-reads.ts";
 import { findTable } from "./naming.ts";
 import { parseYaml } from "./yaml.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
@@ -928,7 +929,8 @@ class Validator {
   }
 
   // Warns when ignored_columns names a column the table lacks (when the snapshot has the table), or
-  // a column a field, a join key, the primary key or another model's join to this one reads.
+  // a column a field, a join key, the primary key or another model's join to this one reads, or
+  // another model's field through a join, or a row filter of access.yaml (lib/layer-reads.ts).
   checkIgnoredColumns(f: string, m: Model, table: SnapshotTable | undefined, rules: IdentRules): void {
     const ignored = strings(m.ignored_columns);
     if (!ignored.length) return;
@@ -938,15 +940,21 @@ class Validator {
           this.warn(f, `ignored_columns[${i}]`, `"${c}" is not a column of ${qualified(table)}; remove it from ignored_columns`);
       });
     const listed: SnapshotTable = { schema: null, name: m.model, kind: "table", columns: ignored.map((name) => ({ name, type: "" })) };
-    const incoming = incomingKeyColumns(m, [...(this.models.get(m.source)?.values() ?? [])].map((x) => x.data));
+    const models = [...(this.models.get(m.source)?.values() ?? [])].map((x) => x.data);
+    const incoming = incomingKeyColumns(m, models);
     const used = new Set(referencedColumns(m, listed, rules.dialect, incoming));
+    const elsewhere = layerReads(models, sourceRowFilters(this.access?.data, m.source)).filter((r) => r.model === m.model);
     ignored.forEach((c, i) => {
+      const back = `take it back in with sl ignore-column --source ${m.source} --model ${m.model} --column ${c} --remove`;
+      const other = elsewhere.find((r) => r.column.toLowerCase() === c.toLowerCase());
       if (used.has(c))
         this.warn(
           f,
           `ignored_columns[${i}]`,
-          `"${c}" is read by a field, a join key, the primary key of model ${m.model} or a join from another model, so it is not left out; remove it from ignored_columns`,
+          `"${c}" is read by a field, a join key, the primary key of model ${m.model} or a join from another model, so it is not left out; ${back}`,
         );
+      else if (other)
+        this.warn(f, `ignored_columns[${i}]`, `"${c}" is read by ${other.by}${other.by.startsWith("a row filter") ? "" : " through a join"}, so it is not left out; ${back}`);
     });
   }
 

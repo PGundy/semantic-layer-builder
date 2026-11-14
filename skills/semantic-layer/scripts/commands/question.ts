@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import { type Document, isSeq } from "yaml";
 import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
@@ -9,7 +10,7 @@ import { writeFileAtomic } from "../lib/lock.ts";
 import { LEDGER_FILE, openLedger, ownerText } from "../lib/ledger.ts";
 import { readJsonObject, unknownKeys } from "../lib/json-input.ts";
 import { formatJson, plainText } from "../lib/output.ts";
-import { loadProject } from "../lib/project.ts";
+import { listModels, listSourceNames, loadAccess, loadProject, stem } from "../lib/project.ts";
 
 // The item a question ref names; access.roles.<role> is that role of access.yaml.
 function holderOf(root: string, ref: string): Located {
@@ -221,12 +222,68 @@ async function resolveAnswers(file: string, ctx: CommandContext): Promise<number
   return 0;
 }
 
-const SUBCOMMANDS: Record<string, (ref: string | undefined, values: OptionValues, ctx: CommandContext) => Promise<number>> = { add, resolve: resolveQuestion };
+// One open question as sl question list gives it: the ref that holds it (a model, access or
+// access.roles.<role>) and its place in that list, which sl question resolve --index takes.
+interface Listed {
+  target: string;
+  index: number;
+  question: string;
+}
+
+// sl question list [<target>]: every open question of the layer, or of one source, model, field
+// (the model's questions that start "<field>: "), access or role, each with its target and index.
+async function listQuestions(ref: string | undefined, values: OptionValues, ctx: CommandContext): Promise<number> {
+  for (const flag of ["text", "index", "match", "by", "answers"]) if (str(values, flag) !== undefined) throw new UserError(`sl question list takes no --${flag}. Usage: sl question list [<source | source.model | source.model.field | access | access.roles.<role>>].`);
+  // A target with parts names a model, field or role, which must exist as sl question resolve reads it.
+  if (ref?.includes(".")) holderOf(ctx.root, ref);
+  const out: Listed[] = [];
+  const add = (target: string, list: unknown, keep: (q: string) => boolean = () => true) =>
+    (Array.isArray(list) ? list.map(String) : []).forEach((q, i) => keep(q) && out.push({ target, index: i + 1, question: plainText(q) }));
+  const parts = ref?.split(".") ?? [];
+  const sources = listSourceNames(ctx.root);
+  if (ref === undefined || (parts[0] !== "access" && parts.length <= 3)) {
+    if (ref !== undefined && !sources.includes(parts[0]!)) throw new UserError(`No source "${parts[0]}". Sources: ${sources.join(", ") || "none"}. Run sl question list with no target to list every open question.`);
+    for (const s of ref === undefined ? sources : [parts[0]!]) {
+      const models = listModels(ctx.root, s).filter((l) => parts.length < 2 || stem(basename(l.path)) === parts[1]);
+      if (parts.length >= 2 && !models.length) throw new UserError(`No model "${parts[1]}" in source "${s}". Run sl status to list the models.`);
+      for (const l of models) add(`${s}.${stem(basename(l.path))}`, l.model?.open_questions, parts.length === 3 ? (q) => q.startsWith(`${parts[2]}: `) : undefined);
+    }
+  }
+  if (ref === undefined || parts[0] === "access") {
+    const access = loadAccess(ctx.root) as { open_questions?: unknown; roles?: { name?: unknown; open_questions?: unknown }[] } | null;
+    const role = /^access\.roles\.(.+)$/s.exec(ref ?? "")?.[1];
+    if (ref !== undefined && ref !== "access" && role === undefined) throw new UserError(`${ref} is not a target with open questions; use access or access.roles.<role>.`);
+    if (role === undefined) add("access", access?.open_questions);
+    for (const r of Array.isArray(access?.roles) ? access.roles : [])
+      if (role === undefined || r?.name === role) add(`access.roles.${String(r?.name)}`, r?.open_questions);
+  }
+  if (ctx.json) {
+    ctx.out(formatJson({ questions: out, count: out.length }));
+    return 0;
+  }
+  const where = ref ?? "the layer";
+  if (!out.length) {
+    ctx.out(`No open questions in ${where}. Next: sl next.`);
+    return 0;
+  }
+  const lines = [`${out.length} open question${out.length === 1 ? "" : "s"} in ${where}, as target #index (the index sl question resolve takes):`];
+  for (const q of out) lines.push(`  ${q.target} #${q.index}: ${q.question}`);
+  lines.push(`Ask the owner. Next: record their answers in one sl question resolve --answers - holding {"by": "<owner>", "answers": [{"target": "<target>", "index": <index>, "text": "<the owner's answer>"}]}.`);
+  ctx.out(lines.join("\n"));
+  return 0;
+}
+
+const SUBCOMMANDS: Record<string, (ref: string | undefined, values: OptionValues, ctx: CommandContext) => Promise<number>> = {
+  add,
+  resolve: resolveQuestion,
+  list: listQuestions,
+};
 
 const spec: CommandSpec = {
-  summary: "Add an open question for the owner to a model or access.yaml, or resolve one into the answer ledger.",
+  summary: "Add an open question for the owner to a model or access.yaml, list the open questions, or resolve one into the answer ledger.",
   usage:
     'question add <source.model | source.model.field | access | access.roles.<role>> --text "<question>"\n' +
+    "       question list [<source | source.model | source.model.field | access | access.roles.<role>>]\n" +
     '       question resolve <source.model | source.model.field | access | access.roles.<role>> (--index <n> | --match "<text>") --text "<the owner\'s answer>" --by "<owner>"\n' +
     "       question resolve --answers <file | ->\n\n" +
     "resolve removes the question from the file and appends it, with the owner's answer, to .sl/ledger.jsonl.\n" +
@@ -234,15 +291,16 @@ const spec: CommandSpec = {
     '  {"by": "<owner>", "answers": [{"target": "<ref>", "match": "<question text>", "text": "<the owner\'s answer>"},\n' +
     '                                {"target": "<ref>", "index": <n>, "text": "<the owner\'s answer>"}]}\n' +
     "each picked and resolved as the single form does, an \"index\" counting in each list as it stands before this command;\n" +
-    "every entry is checked first, and all of them land or none do.",
+    "every entry is checked first, and all of them land or none do.\n" +
+    "list prints each open question with its target and index, as an --answers entry names them; it writes nothing.",
   options: { text: { type: "string" }, index: { type: "string" }, match: { type: "string" }, by: { type: "string" }, answers: { type: "string", mcp: "omit" } },
   positionals: true,
-  writes: "whole",
+  writes: ({ positionals }) => (positionals[0] === "list" ? false : "whole"),
   async run({ values, positionals }, ctx) {
     loadProject(ctx.root);
     const [sub, ref, ...extra] = positionals;
     const run = sub ? SUBCOMMANDS[sub] : undefined;
-    if (!run || extra.length) throw new UserError(`Usage: sl question ${Object.keys(SUBCOMMANDS).join("|")} <ref> --text "<text>"; resolve also takes --index <n> or --match "<text>", and --by "<owner>", or --answers <file | -> alone.`);
+    if (!run || extra.length) throw new UserError(`Usage: sl question ${Object.keys(SUBCOMMANDS).join("|")} <ref> --text "<text>"; resolve also takes --index <n> or --match "<text>", and --by "<owner>", or --answers <file | -> alone; list takes an optional <ref>.`);
     return run(ref, values, ctx);
   },
 };

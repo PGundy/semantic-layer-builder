@@ -7,14 +7,15 @@ import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, unlinkS
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import type { LastApproval } from "./access.ts";
-import { type ApprovalEntry, carriesHash, itemApprovals, type LayerModel, listApprovals } from "./approval-hash.ts";
+import { type ApprovalEntry, carriesHash, itemApprovals, type LayerModel, listApprovals, UNHASHED_MESSAGE } from "./approval-hash.ts";
 import { columnRefs } from "./compiler/qualify.ts";
+import { resolveRef } from "./layer-reads.ts";
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { plainText } from "./output.ts";
 import { listSourceNames, paths, stem } from "./project.ts";
 import { findField, type FieldMatch, parseTarget } from "./refs.ts";
-import { DIALECTS, type Dialect, type Join, type Model, PROTECTED_TAGS, PUBLIC_TAG, type SnapshotTable } from "./types.ts";
+import { DIALECTS, type Dialect, type Model, PROTECTED_TAGS, PUBLIC_TAG, type SnapshotTable } from "./types.ts";
 import { matchesDotted } from "./patterns.ts";
 import { incomingKeyColumns, referencedColumns } from "./snapshot-diff.ts";
 import { sqlNames } from "./sql-names.ts";
@@ -181,6 +182,60 @@ export interface EditOutcome {
   reapprove: string[];
 }
 
+// The warnings sl validate gives for a value of one key that can never be right, whatever else the
+// layer holds: a typed edit that adds one is refused with validate's own words, as an error is.
+// - time_zone on a time dimension whose column carries its own zone;
+// - a measure expr dividing by a numeric literal on duckdb (validate: "this warning never stands");
+// - a column listed in ignored_columns that a field, a filter, a join key or a row filter reads.
+export function neverRight(i: Issue): boolean {
+  if (i.level !== "warning") return false;
+  if (/\.time_zone$/.test(i.path) && i.message.includes("which carries its own")) return true;
+  if (/\.expr$/.test(i.path) && i.message.includes("this warning never stands")) return true;
+  return /^ignored_columns\[\d+\]$/.test(i.path) && i.message.includes("so it is not left out");
+}
+
+// A typed edit refused for a value that can never be right (neverRight). sl apply names every
+// entry refused this way, not only the first.
+export class ValueRefusal extends UserError {}
+
+// An issue as one line: the file, the path in it and validate's message.
+export function issueLine(i: Issue): string {
+  return `${i.file}${i.path ? ` ${i.path}` : ""}: ${i.message}`;
+}
+
+// The warnings the typed edits of this CLI run added, outside sl apply and the access edits (which
+// report their own): the CLI prints them with the command's output (withEditWarnings).
+let pendingWarnings: Issue[] = [];
+
+export function resetEditWarnings(): void {
+  pendingWarnings = [];
+}
+
+// A command's output with the warnings its typed edits added: with --json lines added to the
+// object's "warnings" list (made when it has none), otherwise a "Warning: " line each, before the
+// output's Next: line.
+export function withEditWarnings(text: string, json: boolean): string {
+  if (!pendingWarnings.length) return text;
+  const lines = pendingWarnings.map(issueLine);
+  pendingWarnings = [];
+  if (json) {
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      return text;
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return text;
+    const own = (value as { warnings?: unknown }).warnings;
+    if (own !== undefined && !Array.isArray(own)) return text;
+    return JSON.stringify({ ...value, warnings: [...(own ?? []), ...lines] }, null, text.includes("\n") ? 2 : undefined);
+  }
+  const out = text.split("\n");
+  const at = out.findLastIndex((l) => l.startsWith("Next: "));
+  out.splice(at < 0 ? out.length : at, 0, ...lines.map((l) => `Warning: ${l}`));
+  return out.join("\n");
+}
+
 // One file's edit; several for the same file run in order on one document.
 export interface FileEdit {
   file: string;
@@ -191,8 +246,8 @@ export interface FileEdit {
 // edits start from. `move` writes the edited text of `from` to `to`, which must not exist yet, and
 // removes `from`.
 // `warnings` collects the warnings the edits add (a file holding more of one than before, wherever
-// it sits, since removing a list entry moves the paths after it); one that `refuse` matches stops
-// the edit as an error does.
+// it sits, since removing a list entry moves the paths after it); one that `refuse` or neverRight
+// matches stops the edit as an error does. Without `warnings`, the CLI prints them (withEditWarnings).
 export interface CommitOptions {
   create?: ReadonlyMap<string, string>;
   move?: { from: string; to: string };
@@ -254,16 +309,21 @@ export function commitEdits(
   const reapprove = changedApprovals(root, after, renamed, removed);
   guard?.(reapprove);
   const moves: [string, string][] = move ? [[relFile(root, move.from), relFile(root, move.to)]] : [];
+  const refuse = (i: Issue) => neverRight(i) || !!opts.refuse?.(i);
+  const warnings: Issue[] = [];
   if (!batch?.deferred) {
-    const added = blamed(addedIssues(validateProject(root, after, removed), () => validateProject(root), { moves, reapprove, warnings: opts.warnings, refuse: opts.refuse }));
+    const added = blamed(addedIssues(validateProject(root, after, removed), () => validateProject(root), { moves, reapprove, warnings, refuse }));
     if (added.length) throw invalid(what, added);
+    opts.warnings?.push(...warnings);
+    // In sl apply's pass that finds which entry added a warning, the warnings the batch ends with go to the entry.
+    if (batch?.entryWarnings) batch.entryWarnings.push(...warnings.filter((w) => batch!.endWarnings.has(endKey(batch!, w))));
+    else if (!batch && !opts.warnings) pendingWarnings.push(...warnings);
   }
   if (batch) {
     // Inside sl apply: the batch validates once at its end and puts every file back on any failure.
     for (const file of [...after.keys(), ...removed]) batchWrite(file);
     batch.moves.push(...moves);
     for (const r of reapprove) batch.reapprove.add(r);
-    if (opts.warnings) for (const file of after.keys()) batch.warningFiles.add(relFile(root, file));
     if (opts.refuse) batch.refuse.push(opts.refuse);
   }
   // A created or moved file is written only where nothing is, and the moved file is removed last.
@@ -274,10 +334,22 @@ export function commitEdits(
 }
 
 function invalid(what: string, added: Issue[]): UserError {
-  const lines = added.map((i) => `  - ${i.file}${i.path ? ` ${i.path}` : ""}: ${i.message}`);
+  const lines = added.map((i) => `  - ${issueLine(i)}`);
+  // Only refused warnings: the value itself can never be right.
+  if (added.every((i) => i.level === "warning"))
+    return new ValueRefusal(
+      `Cannot ${what}: sl validate would warn about the value, and it can never be right here, so nothing was written:\n${lines.join("\n")}\n` +
+        "Leave the key out or give a value the warning allows, then run it again; sl validate lists the project's issues.",
+    );
   return new UserError(
     `Cannot ${what}: the result would not validate, so nothing was written:\n${lines.join("\n")}\nFix the value and run it again; sl validate lists the project's errors.`,
   );
+}
+
+// The once-per-file count of approved items without a hash or without a matching owner yes: its
+// words change with the count, and only sl approve adds to it, so an edit never reports it.
+function approvalSummary(i: Issue): boolean {
+  return i.path === "" && (i.message.includes(UNHASHED_MESSAGE) || i.message.includes("no recorded owner yes in"));
 }
 
 interface AddedOptions {
@@ -292,7 +364,7 @@ interface AddedOptions {
 // The errors of `now` (the project as the edits leave it) that `before` (the project as it was) did
 // not have, plus the warnings `refuse` matches among the warnings it adds; the other added warnings
 // go to `warnings`. The project as it was is validated only when the edits leave an error, or a
-// warning to sort, so an edit that leaves the project valid validates it once.
+// warning to sort, so an edit that leaves the project without either validates it once.
 function addedIssues(now: Issue[], before: () => Issue[], o: AddedOptions): Issue[] {
   const reapprove = [...o.reapprove];
   const errors = now.filter((i) => i.level === "error" && !reapprove.some((r) => i.message.startsWith(`${r} changed since it was approved`)));
@@ -309,7 +381,7 @@ function addedIssues(now: Issue[], before: () => Issue[], o: AddedOptions): Issu
     const same = (i: Issue) => `${i.file}\0${i.message}`;
     for (const i of was) if (i.level === "warning") left.set(same(i), (left.get(same(i)) ?? 0) + 1);
     for (const i of now) {
-      if (i.level !== "warning") continue;
+      if (i.level !== "warning" || approvalSummary(i)) continue;
       const n = left.get(same(i)) ?? 0;
       left.set(same(i), n - 1);
       if (n > 0) continue;
@@ -328,11 +400,20 @@ interface Batch {
   originals: Map<string, string | null>;
   moves: [string, string][];
   reapprove: Set<string>;
-  // The files of the edits that ask for the warnings they add (the access edits).
-  warningFiles: Set<string>;
   refuse: ((warning: Issue) => boolean)[];
   // In the check pass: whether an error an edit adds is one the batch ends with.
   blame?: (issue: Issue) => boolean;
+  // In the pass that finds which entry added each warning the batch ends with: their keys (endKey),
+  // and the list the running entry's go to (batchEntry starts a new one).
+  endWarnings: Set<string>;
+  entryWarnings?: Issue[];
+  // The moves of the whole batch, from its first run, when this pass knows them.
+  endMoves?: [string, string][];
+}
+
+// An issue's key as the batch ends: the file it ends in after the batch's moves, its path and message.
+function endKey(b: Batch, i: Issue): string {
+  return `${(b.endMoves ?? b.moves).reduce((f, [from, to]) => (f === from ? to : f), i.file)}\0${i.path}\0${i.message}`;
 }
 
 let batch: Batch | undefined;
@@ -357,16 +438,28 @@ export function batchWrite(file: string): void {
 export interface BatchOutcome {
   // The approved items the batch changed, as its end leaves them.
   reapprove: string[];
-  // The warnings the batch added in the files of the edits that ask for them (the access edits).
+  // The warnings the batch added.
   warnings: Issue[];
+  // The same warnings by the entry that added each (the index batchEntry was given); a warning no
+  // single entry adds on its own is in `warnings` only.
+  byEntry: Map<number, Issue[]>;
   // Set when access.yaml was approved before the batch and its end leaves it a draft.
   access_draft?: { last_approved?: LastApproval };
 }
 
-function openBatch(deferred: boolean, blame?: Batch["blame"]): Batch {
+function openBatch(deferred: boolean, blame?: Batch["blame"], endWarnings: Set<string> = new Set()): Batch {
   if (batch) throw new UserError("sl apply cannot run inside another sl apply.");
-  batch = { deferred, originals: new Map(), moves: [], reapprove: new Set(), warningFiles: new Set(), refuse: [], blame };
+  batch = { deferred, originals: new Map(), moves: [], reapprove: new Set(), refuse: [], blame, endWarnings };
   return batch;
+}
+
+// Marks the start of entry `i` of a batch, so the warnings it adds are recorded as its own.
+let entryLists: Map<number, Issue[]> | undefined;
+export function batchEntry(i: number): void {
+  if (!batch || !entryLists) return;
+  const list: Issue[] = [];
+  entryLists.set(i, list);
+  batch.entryWarnings = list;
 }
 
 // Runs `edits` as one batch: each typed edit inside writes as it goes, and at the end the project
@@ -386,25 +479,25 @@ export async function runBatch(root: string, what: string, edits: () => Promise<
     added = addedIssues(validateProject(root), () => validateProject(root, before, created), {
       moves: open.moves,
       reapprove: open.reapprove,
-      warnings: open.warningFiles.size ? warnings : undefined,
-      refuse: open.refuse.length ? (i) => open.refuse.some((r) => r(i)) : undefined,
+      warnings,
+      refuse: (i) => neverRight(i) || open.refuse.some((r) => r(i)),
     });
-    if (!added.length) {
-      const access_draft = accessDrafted(root, open.originals);
-      return { reapprove: stillChanged(root, open.reapprove), warnings: warnings.filter((w) => open.warningFiles.has(w.file)), ...(access_draft ? { access_draft } : {}) };
-    }
   } catch (e) {
     restore(open.originals);
     throw e;
   } finally {
     batch = undefined;
   }
+  if (!added.length) {
+    const byEntry = warnings.length ? await attribute(open, warnings, edits) : new Map<number, Issue[]>();
+    const access_draft = accessDrafted(root, open.originals);
+    return { reapprove: stillChanged(root, open.reapprove), warnings, byEntry, ...(access_draft ? { access_draft } : {}) };
+  }
   restore(open.originals);
   // An edit's error is keyed by the file it ends in after the batch's moves, its path and message.
-  const fileAtEnd = (file: string) => open.moves.reduce((f, [from, to]) => (f === from ? to : f), file);
-  const key = (i: Issue) => `${fileAtEnd(i.file)}\0${i.path}\0${i.message}`;
-  const ends = new Set(added.map(key));
-  const check = openBatch(false, (i) => ends.has(key(i)));
+  const ends = new Set(added.map((i) => endKey(open, i)));
+  const check = openBatch(false, (i) => ends.has(endKey(open, i)));
+  check.endMoves = open.moves;
   try {
     await edits();
   } finally {
@@ -412,6 +505,27 @@ export async function runBatch(root: string, what: string, edits: () => Promise<
     restore(check.originals);
   }
   throw invalid(what, added);
+}
+
+// Which entry added each warning a batch that succeeded ends with: the files are put back and the
+// edits run once more, each validated as on its own, and each warning goes to the first entry that
+// adds it. The files end as the first run left them. A failure there puts every file back.
+async function attribute(first: Batch, warnings: Issue[], edits: () => Promise<void>): Promise<Map<number, Issue[]>> {
+  restore(first.originals);
+  const ends = new Set(warnings.map((w) => endKey(first, w)));
+  const pass = openBatch(false, () => false, ends);
+  pass.endMoves = first.moves;
+  entryLists = new Map();
+  try {
+    await edits();
+    return entryLists;
+  } catch (e) {
+    restore(pass.originals);
+    throw e;
+  } finally {
+    batch = undefined;
+    entryLists = undefined;
+  }
 }
 
 // What the batch left of an approved access.yaml it changed: a draft, with its last approval kept.
@@ -573,20 +687,13 @@ export interface IgnoredRead {
 // `models` are the source's models, for following joins. Each column once, in reading order.
 export function ignoredReads(model: Model, models: readonly Model[], texts: readonly string[]): IgnoredRead[] {
   const out: IgnoredRead[] = [];
-  const same = (a: string, b: string, quoted: boolean) => (quoted ? a === b : a.toLowerCase() === b.toLowerCase());
   for (const text of texts) {
     for (const ref of columnRefs(text)) {
-      let at: Model | undefined = model;
-      let i = 0;
-      for (; i < ref.parts.length - 1 && at; i++) {
-        const join: Join | undefined = (at.joins ?? []).find((j) => typeof j?.name === "string" && same(j.name, ref.parts[i]!, ref.quoted[i]!));
-        if (!join) break;
-        at = models.find((m) => m.model === join.to);
-      }
-      if (!at) continue;
-      const column = ref.parts[i]!;
-      const listed = (Array.isArray(at.ignored_columns) ? at.ignored_columns : []).map(String).find((c) => same(c, column, ref.quoted[i]!));
-      if (listed && !out.some((o) => o.model === at!.model && o.column === listed)) out.push({ model: at.model, column: listed });
+      const r = resolveRef(model, models, ref.parts, ref.quoted);
+      if (!r) continue;
+      const column = r.column;
+      const listed = (Array.isArray(r.model.ignored_columns) ? r.model.ignored_columns : []).map(String).find((c) => (r.quoted ? c === column : c.toLowerCase() === column.toLowerCase()));
+      if (listed && !out.some((o) => o.model === r.model.model && o.column === listed)) out.push({ model: r.model.model, column: listed });
     }
   }
   return out;

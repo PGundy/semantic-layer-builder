@@ -59,6 +59,8 @@ async function approveLake(root: string) {
     ["lake.marketing_spend", "grain", "One row per day per paid channel."],
     ["lake.marketing_spend", "primary_key", '["spend_date", "channel"]'],
     ["lake.marketing_spend.spend", "description", "Spend in US dollars."],
+    // Approving never adds a validate issue: a currency-format measure needs its currency first.
+    ["lake.marketing_spend.spend", "currency", "USD"],
   ];
   for (const [ref, key, value] of edits) expect((await sl(root, ["set", ref, key, value])).code).toBe(0);
   for (const t of ["sessions", "sessions.session_count", "sessions.started_at", "marketing_spend", "marketing_spend.spend", "marketing_spend.channel", "marketing_spend.spend_date"]) {
