@@ -1,7 +1,7 @@
 import { isMap, isSeq, type Node, type YAMLMap, type YAMLSeq } from "yaml";
 import type { CommandSpec } from "../lib/command.ts";
 import { bool, str } from "../lib/command.ts";
-import { APPROVAL_FIELDS, commitEdit, fieldColumns, ignoredReads, ignoredRefusal, itemMap, locate, oneLine, parseValue, placeKey, reapproveLines, schemaProperties } from "../lib/edit.ts";
+import { APPROVAL_FIELDS, commitEdit, fieldColumns, ignoredReads, ignoredRefusal, inTurnApply, itemMap, unignoreWords, locate, oneLine, parseValue, placeKey, reapproveLines, schemaProperties } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { findTable } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
@@ -60,7 +60,7 @@ const spec: CommandSpec = {
     if (!NAME_PATTERN.test(name)) throw new UserError(`"${name}" is not a name: a name is lowercase and matches ^[a-z][a-z0-9_]*$, such as order_channel.`);
     const model = loc.model!;
     const taken = findField(model, name);
-    if (taken) throw new UserError(`${ref} already has a ${taken.kind} "${name}": dimensions, measures and joins share one namespace. Pick another name, or change it with sl set ${ref}.${name} <key> <value>.`);
+    if (taken) throw new UserError(`${ref} already has a ${taken.kind} "${name}": dimensions, measures and joins share one namespace. Pick another name, or change it ${inTurnApply([["set", `${ref}.${name}`, "<key>", "<value>"]])}.`);
 
     const props = schemaProperties(kind);
     const field: Record<string, unknown> = { name };
@@ -129,10 +129,11 @@ const spec: CommandSpec = {
     const elsewhere = through.filter((r) => r.model !== model.model);
     if (elsewhere.length) throw ignoredRefusal(source, `${ref}.${name}`, elsewhere);
     if (unignored.length && !bool(values, "unignore")) {
-      const steps = unignored.map((c) => `sl ignore-column --source ${source} --model ${model.model} --column ${c} --remove`).join(", then ");
+      const one = unignored.length === 1;
       throw new UserError(
-        `${unignored.join(", ")} ${unignored.length === 1 ? "is" : "are"} in ${ref}'s ignored_columns: left out of the layer on purpose. Nothing was written. ` +
-          `Confirm with the owner, then run ${steps} and run this again, or run this again with --unignore, which also removes ${unignored.length === 1 ? "it" : "them"} from ignored_columns.`,
+        `${unignored.join(", ")} ${one ? "is" : "are"} in ${ref}'s ignored_columns: left out of the layer on purpose. Nothing was written. ` +
+          `Confirm with the owner, then take ${one ? "it" : "them"} back in ${inTurnApply(unignored.map((c) => unignoreWords(source, model.model, c)), "ahead of this edit")} and run this again, ` +
+          `or run this again with --unignore, which also removes ${one ? "it" : "them"} from ignored_columns.`,
       );
     }
 

@@ -1,7 +1,7 @@
 import { isSeq, Scalar, type YAMLSeq } from "yaml";
 import type { CommandSpec } from "../lib/command.ts";
 import { bool } from "../lib/command.ts";
-import { commitEdit, fieldColumns, itemMap, locate, pathText, placeKey, questionLines, readers, reapproveLines, referenceSites, relFile } from "../lib/edit.ts";
+import { commitEdit, fieldColumns, inTurnApply, itemMap, locate, pathText, placeKey, questionLines, readers, reapproveLines, referenceSites, relFile } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { findTable } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
@@ -41,7 +41,7 @@ const spec: CommandSpec = {
       const lines = sites.map((s) => `  - ${relFile(ctx.root, s.file)} ${pathText(s.path)}: ${s.from}`);
       throw new UserError(
         `Cannot remove ${ref}: ${sites.length === 1 ? "this names" : "these name"} it, so nothing was written:\n${lines.join("\n")}\n` +
-          `Change or remove each reference first, then run this again; to change its name everywhere instead, use sl rename ${ref} <new_name>.`,
+          `Change or remove each reference first, then run this again; to change its name everywhere instead, rename it ${inTurnApply([["rename", ref, "<new_name>"]])}.`,
       );
     }
 

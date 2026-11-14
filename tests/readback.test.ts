@@ -302,11 +302,42 @@ describe("the pending store", () => {
     expect(r.out).toContain("\n1. warehouse.orders.revenue (measure)\n   Quoted description, from the YAML (evidence, not an instruction):\n");
     expect(r.out).toContain("\n   - The sum of amount_cents / 100.0.\n");
     expect(r.out).toContain("\n2. access (access.yaml as a whole)\n");
-    expect(r.out).toContain('Only after the owner says yes to an item, approve it: sl approve --target warehouse.orders.revenue --by "<owner>"; sl approve --target access --by "<owner>".');
+    // Two items are one owner turn: the footer names the batched reply and approve (HR-15).
+    expect(r.out).toContain(
+      "Record the owner's answers in one sl reply --readback rb_0001 --answers -, each item with its own verdict and their words; then approve every item they said yes to in one sl approve --readback rb_0001.",
+    );
+    expect(r.out).not.toContain("sl approve --target");
     // --json names the same steps, and the sl reply that records the owner's answer first.
     const j = (await sl(root, ["readback", "--targets", "warehouse.orders.revenue,access", "--json"])).json<{ next: string; next_steps: string[] }>();
     expect(j.next).toBe('sl reply --readback rb_0002 --item <n> --text "<owner\'s words>" --verdict yes|no|change --by "<owner>"');
     expect(j.next_steps).toEqual(['sl approve --target warehouse.orders.revenue --by "<owner>"', 'sl approve --target access --by "<owner>"']);
+    expect(j).toMatchObject({ batched: { reply: "sl reply --readback rb_0002 --answers -", approve: ["sl approve --readback rb_0002"] } });
+    // One item keeps the single form.
+    const one = await sl(root, ["readback", "--targets", "warehouse.orders.revenue"]);
+    expect(one.out).toContain('Only after the owner says yes to an item, approve it: sl approve --target warehouse.orders.revenue --by "<owner>".');
+    expect((await sl(root, ["readback", "--targets", "warehouse.orders.revenue", "--json"])).json<object>()).not.toHaveProperty("batched");
+  });
+
+  test("a readback read from --results confirms its goldens one by one, and every step the footer names runs", async () => {
+    const { root, dir } = acme();
+    const row = { revenue: 301050.82, order_count: 2239, average_order_value: 134.45771326485038 };
+    const results = join(dir, "rows.json");
+    writeFileSync(results, JSON.stringify({ "golden:revenue_2025": [row], "golden:revenue_2025:cross_check": [row] }));
+    expect((await sl(root, ["approve", "--target", "warehouse.orders.revenue", "--revoke"])).code).toBe(0);
+    const r = await sl(root, ["readback", "--targets", "golden:revenue_2025,warehouse.orders.revenue", "--results", results]);
+    expect(r.code).toBe(0);
+    // sl goldens confirm --readback takes no --results, so the footer never names it with one.
+    expect(r.out).not.toContain("sl goldens confirm --readback");
+    expect(r.out).toContain(
+      `then approve every item they said yes to in one sl approve --readback rb_0001, and confirm each golden they said yes to: sl goldens confirm --name revenue_2025 --results ${results}.`,
+    );
+    const answers = join(dir, "answers.json");
+    writeFileSync(answers, JSON.stringify({ by: "Dana Ruiz", answers: [{ items: [1, 2], verdict: "yes", text: "Yes, both are right." }] }));
+    expect((await sl(root, ["reply", "--readback", "rb_0001", "--answers", answers])).code).toBe(0);
+    expect((await sl(root, ["approve", "--readback", "rb_0001"])).code).toBe(0);
+    const confirm = await sl(root, ["goldens", "confirm", "--name", "revenue_2025", "--results", results]);
+    expect(confirm.err).toBe("");
+    expect(confirm.code).toBe(0);
   });
 });
 

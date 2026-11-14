@@ -703,11 +703,26 @@ export function ignoredReads(model: Model, models: readonly Model[], texts: read
 // left out of the layer on purpose, so the owner confirms first and sl ignore-column --remove takes it back.
 export function ignoredRefusal(source: string, what: string, reads: readonly IgnoredRead[], written = true): UserError {
   const names = reads.map((r) => `${r.model}.${r.column}`);
-  const steps = reads.map((r) => `sl ignore-column --source ${source} --model ${r.model} --column ${r.column} --remove`);
+  const one = reads.length === 1;
   return new UserError(
-    `${what} reads ${names.join(", ")}, which ${reads.length === 1 ? "is" : "are"} in ignored_columns: left out of the layer on purpose.${written ? " Nothing was written." : ""} ` +
-      `Confirm with the owner, then run ${steps.join(", then ")} and run this again.`,
+    `${what} reads ${names.join(", ")}, which ${one ? "is" : "are"} in ignored_columns: left out of the layer on purpose.${written ? " Nothing was written." : ""} ` +
+      `Confirm with the owner, then take ${one ? "it" : "them"} back in ${inTurnApply(reads.map((r) => unignoreWords(source, r.model, r.column)), "ahead of the edit that reads it")}, and run this again.`,
   );
+}
+
+// The words of the sl ignore-column that takes a column back into the layer.
+export function unignoreWords(source: string, model: string, column: string): string[] {
+  return ["ignore-column", "--source", source, "--model", model, "--column", column, "--remove"];
+}
+
+// Where typed edits a message names go: one owner turn's edits go in one sl apply, so each is given
+// as the entry that apply takes (the words after "sl", as JSON), with the command that runs it alone.
+// `where` places the entries among the turn's other edits.
+export function inTurnApply(edits: readonly (readonly string[])[], where?: string): string {
+  const entries = edits.map((w) => `[${w.map((x) => JSON.stringify(x)).join(", ")}]`).join(", ");
+  const word = (x: string) => (/[\s"'\\$`;&|()]/.test(x) || !x ? `'${x.replace(/'/g, "'\\''")}'` : x);
+  const alone = edits.map((w) => `sl ${w.map(word).join(" ")}`).join(", then ");
+  return `with ${edits.length === 1 ? "this entry" : "these entries"} in the turn's sl apply --file -${where ? `, ${where}` : ""}: ${entries} (on ${edits.length === 1 ? "its" : "their"} own: ${alone})`;
 }
 
 // The columns of the model's own table one field reads: a join's key columns, or the columns of a

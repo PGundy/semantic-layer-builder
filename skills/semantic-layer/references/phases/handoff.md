@@ -8,7 +8,7 @@ Load this card when `sl next` names phase `done`. It holds the last readbacks, t
 
 ## Coverage checklist
 
-- [ ] Every approved measure and metric is in at least one approved golden.
+- [ ] Every approved measure and metric is in at least one approved golden. A first build often has figures the owner has no number for: name each such measure and metric in the summary as not yet checked against a figure. That gap does not hold the handoff, and `sl status` does not track it.
 - [ ] Every role in `access.yaml`, restricted or not, has an approved golden that runs as it (one with no `role` runs as `default_role`); `roles_without_goldens` in `sl status --json` lists the gaps.
 - [ ] An approved golden crosses a join to a row-filtered model as the role with the filter; `row_filter_joins_without_goldens` lists the gaps, and the line is N/A, with the reason, when no join the role may use reaches that model.
 - [ ] Every figure the owner gave has a golden, draft or approved.

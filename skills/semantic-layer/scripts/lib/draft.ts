@@ -938,7 +938,8 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
         const x = norm.replace(/_id$/, "");
         columnMeasures.push({
           names: () => [...(join ? [`${joinNames.get(join)!}_count`] : []), `${x}_count`, `distinct_${norm}_count`],
-          build: (name) => ({ name, expr, agg: "count_distinct", format: "integer", ...extras(col, tags), status: "draft" }),
+          // A plain count states what it counts; a column's own comment, when it has one, says it better.
+          build: (name) => ({ name, expr, agg: "count_distinct", format: "integer", description: `Number of different ${col.name} values`, ...extras(col, tags), status: "draft" }),
         });
       } else if (!pkSet.has(lower)) {
         notes.push(`${q}: left out ${col.name}, an id column that is not the primary key.`);
@@ -1058,7 +1059,7 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
 
   // The row count leads; column measures keep column order.
   const measures: Measure[] = [
-    { name: ns.claim(`${singular(modelName)}_count`, "row_count"), agg: "count", format: "integer", status: "draft" },
+    { name: ns.claim(`${singular(modelName)}_count`, "row_count"), agg: "count", format: "integer", description: `Number of rows of ${qualifiedName(table)}`, status: "draft" },
     ...columnMeasures.map((m) => m.build(ns.claim(...m.names()))),
   ];
 

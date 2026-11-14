@@ -239,21 +239,25 @@ measures:
   - name: order_count
     agg: count
     format: integer
+    description: Number of rows of analytics.fct_orders
     status: draft
   - name: customer_count
     expr: customer_id
     agg: count_distinct
     format: integer
+    description: Number of different customer_id values
     status: draft
   - name: product_count
     expr: product_id
     agg: count_distinct
     format: integer
+    description: Number of different product_id values
     status: draft
   - name: store_count
     expr: store_id
     agg: count_distinct
     format: integer
+    description: Number of different store_id values
     status: draft
   - name: amount
     expr: amount_cents * 0.01
@@ -928,8 +932,8 @@ describe("draft heuristics on Acme-like tables", () => {
   test("cents are divided by 100 and a single-valued currency column sets currency", () => {
     const orders = draftAcme().model("orders");
     expect(orders.measures).toEqual([
-      { name: "order_count", agg: "count", format: "integer", status: "draft" },
-      { name: "customer_count", expr: "customer_id", agg: "count_distinct", format: "integer", status: "draft" },
+      { name: "order_count", agg: "count", format: "integer", description: "Number of rows of acme.fct_orders", status: "draft" },
+      { name: "customer_count", expr: "customer_id", agg: "count_distinct", format: "integer", description: "Number of different customer_id values", status: "draft" },
       { name: "amount", expr: "amount_cents / 100.0", agg: "sum", format: "currency", currency: "USD", status: "draft" },
       { name: "shipping", expr: "shipping_cents / 100.0", agg: "sum", format: "currency", currency: "USD", status: "draft" },
     ]);
@@ -985,9 +989,9 @@ describe("draft heuristics on Acme-like tables", () => {
   test("a per-unit price is averaged and a quantity column adds a line total", () => {
     const items = draftAcme().model("order_items");
     expect(items.measures).toEqual([
-      { name: "order_item_count", agg: "count", format: "integer", status: "draft" },
-      { name: "order_count", expr: "order_id", agg: "count_distinct", format: "integer", status: "draft" },
-      { name: "product_count", expr: "product_id", agg: "count_distinct", format: "integer", status: "draft" },
+      { name: "order_item_count", agg: "count", format: "integer", description: "Number of rows of acme.fct_order_items", status: "draft" },
+      { name: "order_count", expr: "order_id", agg: "count_distinct", format: "integer", description: "Number of different order_id values", status: "draft" },
+      { name: "product_count", expr: "product_id", agg: "count_distinct", format: "integer", description: "Number of different product_id values", status: "draft" },
       { name: "quantity", expr: "quantity", agg: "sum", format: "integer", status: "draft" },
       { name: "avg_unit_price", expr: "unit_price_cents / 100.0", agg: "avg", format: "currency", status: "draft" },
       { name: "line_total", expr: "quantity * (unit_price_cents / 100.0)", agg: "sum", format: "currency", status: "draft" },
@@ -999,7 +1003,7 @@ describe("draft heuristics on Acme-like tables", () => {
 
     const products = draftAcme().model("products");
     expect(products.measures).toEqual([
-      { name: "product_count", agg: "count", format: "integer", status: "draft" },
+      { name: "product_count", agg: "count", format: "integer", description: "Number of rows of acme.dim_products", status: "draft" },
       { name: "avg_list_price", expr: "list_price_cents / 100.0", agg: "avg", format: "currency", status: "draft" },
     ]);
     expect(products.open_questions).toContain(
@@ -1536,6 +1540,7 @@ measures:
       expr: "customer_id",
       agg: "count_distinct",
       format: "integer",
+      description: "Number of different customer_id values",
       status: "draft",
     });
     expect(orders.open_questions).toContain(
@@ -1955,7 +1960,7 @@ measures:
           { name: "manager_id", expr: "manager_id", type: "number", status: "draft" },
           { name: "member_id", expr: "member_id", type: "number", status: "draft" },
         ],
-        measures: [{ name: "sales_team_closure_count", agg: "count", format: "integer", status: "draft" }],
+        measures: [{ name: "sales_team_closure_count", agg: "count", format: "integer", description: "Number of rows of acme.sales_team_closure", status: "draft" }],
       });
     });
 
@@ -2045,8 +2050,8 @@ describe("composite keys, text keys, currencies and time zones", () => {
     expect(m.primary_key).toEqual(["store_id", "month"]);
     expect(m.dimensions).toEqual([{ name: "month", expr: "month", type: "time", time_grains: ["day", "week", "month", "quarter", "year"], status: "draft" }]);
     expect(m.measures).toEqual([
-      { name: "sales_target_count", agg: "count", format: "integer", status: "draft" },
-      { name: "store_count", expr: "store_id", agg: "count_distinct", format: "integer", status: "draft" },
+      { name: "sales_target_count", agg: "count", format: "integer", description: "Number of rows of ops.sales_targets", status: "draft" },
+      { name: "store_count", expr: "store_id", agg: "count_distinct", format: "integer", description: "Number of different store_id values", status: "draft" },
       { name: "target_eur", expr: "target_eur", agg: "sum", format: "currency", currency: "EUR", status: "draft" },
     ]);
     expect(m.ignored_columns).toBeUndefined();
