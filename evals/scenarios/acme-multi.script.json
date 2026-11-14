@@ -55,7 +55,7 @@
     {
       "agent": "readback_verifier",
       "text": "Wrote rb_0001 with six items. The draft message matches it item by item: no clause missing, none extra; each item ends with \"Approve?\", and the measured facts stay apart from the definitions. ok: true.",
-      "tokens": 2012,
+      "tokens": 2015,
       "sl": [
         ["readback", "--targets", "lake.sessions,lake.sessions.session_count,lake.sessions.started_at,lake.marketing_spend,lake.marketing_spend.spend,lake.marketing_spend.spend_date", "--json"]
       ]
