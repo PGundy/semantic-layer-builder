@@ -10,7 +10,7 @@ import { writeFileAtomic } from "./lock.ts";
 import { plainText } from "./output.ts";
 import { PENDING_DIR } from "./readback.ts";
 import type { LedgerEntry, LedgerQuestion, LedgerReply, PendingReadback } from "./types.ts";
-import { schemaIssues } from "./validate.ts";
+import { schemaIssues } from "./schema.ts";
 
 export const LEDGER_FILE = ".sl/ledger.jsonl";
 const ID = /^ans_(\d{4,})$/;
@@ -32,9 +32,9 @@ export function readPending(root: string, id: string): PendingReadback {
   try {
     data = JSON.parse(readFileSync(file, "utf8"));
   } catch {
-    throw new UserError(`${rel} is not valid JSON; run sl validate, then sl readback --targets <ref> again.`);
+    throw new UserError(`${rel} is not valid JSON; run sl validate, then sl readback --targets <ref> again.`, "sl validate");
   }
-  if (schemaIssues("pending", data, rel).length) throw new UserError(`${rel} does not match its schema; run sl validate, then sl readback --targets <ref> again.`);
+  if (schemaIssues("pending", data, rel).length) throw new UserError(`${rel} does not match its schema; run sl validate, then sl readback --targets <ref> again.`, "sl validate");
   return data as PendingReadback;
 }
 
@@ -76,7 +76,7 @@ export function openLedger(root: string): LedgerAppender {
   if (existsSync(file)) {
     if (!lstatSync(file).isFile()) throw new UserError(`${LEDGER_FILE} is not a file, so the answer cannot be recorded; nothing was written. Move it aside and run this again.`);
     const text = readFileSync(file, "utf8");
-    if (text && !text.endsWith("\n")) throw new UserError(`The last line of ${LEDGER_FILE} has no line break (an append was cut off); nothing was written. The ledger is append-only: ${RESTORE}.`);
+    if (text && !text.endsWith("\n")) throw new UserError(`The last line of ${LEDGER_FILE} has no line break (an append was cut off); nothing was written. The ledger is append-only: ${RESTORE}.`, "sl validate");
     text.split("\n").slice(0, -1).forEach((line, i) => {
       let data: unknown;
       try {
@@ -85,7 +85,7 @@ export function openLedger(root: string): LedgerAppender {
         data = undefined;
       }
       if (typeof data !== "object" || data === null || Array.isArray(data))
-        throw new UserError(`Line ${i + 1} of ${LEDGER_FILE} is not a JSON object; nothing was written. The ledger is append-only: ${RESTORE}.`);
+        throw new UserError(`Line ${i + 1} of ${LEDGER_FILE} is not a JSON object; nothing was written. The ledger is append-only: ${RESTORE}.`, "sl validate");
       const m = ID.exec(String((data as { id?: unknown }).id));
       if (m) max = Math.max(max, Number(m[1]));
     });
@@ -137,7 +137,7 @@ function isReply(data: unknown): data is LedgerReply {
 // are skipped (sl validate reports them on its own).
 export function ledgerReplies(text: string, strict = false): LedgerReply[] {
   const fail = (why: string) => {
-    throw new UserError(`${LEDGER_FILE} cannot be read: ${why}, so no approval can rely on it; nothing was approved. ${RESTORE[0]!.toUpperCase()}${RESTORE.slice(1)}.`);
+    throw new UserError(`${LEDGER_FILE} cannot be read: ${why}, so no approval can rely on it; nothing was approved. ${RESTORE[0]!.toUpperCase()}${RESTORE.slice(1)}.`, "sl validate");
   };
   if (strict && text && !text.endsWith("\n")) fail("its last line has no line break (an append was cut off)");
   const out: LedgerReply[] = [];

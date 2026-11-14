@@ -8,7 +8,7 @@ import { canRun, openAdapter, type Adapter, type AdapterOptions, type RoleReport
 import { plainText, protectedNames, protectedResultColumns } from "./output.ts";
 import { loadSource } from "./project.ts";
 import type { PlannedQuery, PlanResults, QueryPlan, ResultRows, SourceConfig, StoredPlan } from "./types.ts";
-import { schemaIssues } from "./validate.ts";
+import { schemaIssues } from "./schema.ts";
 import { readJson, writeJson } from "./yaml.ts";
 
 function lowerKeys(rows: ResultRows): ResultRows {

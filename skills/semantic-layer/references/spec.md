@@ -1226,6 +1226,33 @@ The repository root is a Claude Code plugin, `semantic-layer-builder`, and `.cla
 | `review apply <file> --by <owner>` | Records a filled review form's answers in `.sl/ledger.jsonl` (see Applying a filled form): each answered item as `sl reply` would, refusing an item whose content hash changed since export, and each answered open question as `sl question resolve` would. Refuses an unknown readback and a malformed form, writing nothing; a second apply of the same form records nothing. Never approves; names `sl approve --target <t> --by "<owner>"` for each yes (for a golden, `sl goldens confirm --name <g>`; for goldens whose source is an export source, once per source, "golden:<g> cannot be confirmed until source <s> has a connection: sl setup --source <s> --dialect <d> --env <VAR>, then sl goldens confirm --name <g>" (several goldens joined with "and"; `--database <path>` for duckdb), the yes staying recorded). A golden's rows are not rerun here: its item counts as changed only when the golden file is gone, and `sl goldens confirm` rechecks the rows. `--json`: `{ readback_id, file, recorded, already_recorded, refused, questions_already_resolved, questions_not_found, unanswered: { items, questions }, edited, redacted, ledger_path, next, next_steps }`, `recorded` the appended ledger entries. |
 | `review export --readback <readback_id> --format md\|json [--out <path>] [--force]` | Writes the pending readback as a form the owner fills in (see Review forms): per item its number, target, readback text and content hash, an empty verdict (yes, no or change) and an empty answer, then the open questions of the models and `access.yaml` the items belong to, each with an empty answer. Markdown for the owner, JSON for a tool. Writes `.sl/reviews/<readback_id>.<md\|json>` or `--out`, a path resolved from the semantic root that it refuses outside it, never over an existing file unless `--force`. Refuses an unknown readback and one whose items changed since it was read back (a `golden:<name>` item only when its file is gone, since its rows are not rerun here). Prints the path and the next step, `sl review apply <path> --by "<owner>"`. `--json`: `{ readback_id, format, path, item_count, question_count, next }`, `path` relative to the semantic root. |
 
+### Errors and malformed files
+
+A command that refuses exits 1 with one plain line on stderr, `sl <command>: <message>`, which names the next command where there is one. Exit code 2 is an error in the tool itself, printed with its stack trace.
+
+The loaders the commands share for `semantic.yaml`, a source, a snapshot, a model, `metrics.yaml`, `access.yaml` and a golden check a file's shape as they read it, against the JSON Schema `sl validate` uses for that kind of file (`schemas/<kind>.schema.json`). The check follows the schema through the whole file and compares shapes: a map, a list, or a single value (text, a number, true or false). A part that holds one where the schema names another is refused in one line, and so is a file that is empty, cannot be read or does not parse:
+
+```
+<file, from the semantic root>: <place> should be <expected> (found <kind>). Fix the file, or run sl validate for the full list.
+<file, from the semantic root>: is not valid YAML (<the parser's first line>). Fix the file, or run sl validate for the full list.
+```
+
+`<place>` is a key (`metrics`, `measures[0].name`) or `the file`, and a kind is `a map`, `a list`, `text`, `a number`, `true or false`, `nothing` or `an empty file`: `metrics.yaml: metrics should be a list (found a number).` The second line reads `is not valid JSON (...)` for a snapshot, `is a directory, not a file.` or `cannot be read (<code>).` where that is the trouble. The parser's later lines, which quote the file, are not printed.
+
+The check stops there, so that a half-written layer still loads:
+
+- A single value of another kind (a number where text belongs), a missing key, a key the schema does not know and a value outside its list all load. The commands read around them and `sl validate` lists each. A key with no value reads as a key that is not there.
+- What must be there is a model's `table` and, in a snapshot, which only `sl` writes, every key its schema requires.
+- A `status` and a `scope.tables_file` load whatever they hold, and so does an item of `metrics` with no value, because the commands read each in words of their own: a status that is not `approved` is a draft, `sl scope` reports and clears a `tables_file` that is not a path, and an empty metric is skipped.
+- A `metrics.yaml` or `access.yaml` that holds nothing but comments loads as nothing written yet, and a golden file like it is passed over where goldens are listed, though `sl validate` lists the empty file. Any other empty file is refused, an empty golden asked for by name among them.
+- `access.yaml` is checked no further than being a map, because the access evaluator reads each of its parts closed (see access.yaml) and `sl status` names a part it cannot read.
+
+The check reads a 50,000-table, 1,000,000-column snapshot in about 0.1 s, beside the 0.13 s its JSON takes to parse.
+
+`sl validate` reads every file itself and lists each problem, a malformed file's among them, and does not stop at the first.
+
+With `--json`, a refusal that carries its next command as data also prints one JSON object on stdout, `{ "error": "<message>", "next": "<command>" }`, beside the line on stderr: a malformed layer file, pending readback or ledger (`next` is `sl validate`) and a directory with no semantic layer (`next` is `sl init --name <name>`), so `sl status --json` and `sl next --json` in an empty directory print a JSON error naming `sl init`. Any other refusal prints the stderr line and leaves stdout empty.
+
 ### sl status --json
 
 The skill resumes from this output.

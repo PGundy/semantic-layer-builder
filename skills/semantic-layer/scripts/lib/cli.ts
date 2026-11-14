@@ -73,6 +73,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     io.err(`Unknown command "${name}". Run \`sl help\` for the list.`);
     return 1;
   }
+  let json = false;
   const releases: (() => void)[] = [];
   try {
     const spec = (await load()).default;
@@ -83,12 +84,12 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
       strict: true,
     });
     const values = parsed.values as Record<string, string | boolean | string[] | undefined>;
+    json = values.json === true;
     if (values.help) {
       io.out(`${spec.summary}\n\nUsage: sl ${spec.usage}\n\n${GLOBAL_HELP}`);
       return 0;
     }
     // Each connection a command opens is said once on stderr; with --json the output carries the first as connection_from instead.
-    const json = values.json === true;
     const uses: ConnectionUse[] = [];
     const lookup = {
       cwd: io.cwd,
@@ -125,6 +126,10 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     return await spec.run(input, ctx);
   } catch (e) {
     if (e instanceof UserError || (e as { code?: string }).code?.startsWith("ERR_PARSE_ARGS")) {
+      // A refusal is one plain line on stderr. One that carries the command that fixes it (a
+      // malformed file, a directory with no layer) is also, with --json, one JSON object on stdout.
+      const next = e instanceof UserError ? e.next : undefined;
+      if (json && next) io.out(JSON.stringify({ error: (e as Error).message, next }, null, 2));
       io.err(`sl ${name}: ${(e as Error).message}`);
       return 1;
     }

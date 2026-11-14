@@ -32,10 +32,10 @@ import { LEDGER_FILE, latestReply, readPending, readReplies, shellQuote } from "
 import { formatJson, formatTable, maskRows, plainText, protectedNames, protectedNote, protectedResultColumns } from "../lib/output.ts";
 import { emitPlan, executePlan, planResults, resultsInput } from "../lib/plan.ts";
 import type { GoldenRun } from "../lib/readback.ts";
-import { listGoldens, loadAccess, loadMetrics, loadSource, paths, stem, type LoadedGolden } from "../lib/project.ts";
+import { listGoldens, loadAccess, loadFile, loadMetrics, loadSource, paths, stem, type LoadedGolden } from "../lib/project.ts";
 import type { Golden, GoldenRunAs, LedgerReply, Metric, Model, PlanResults, QueryPlan, ResultRows, SourceConfig } from "../lib/types.ts";
 import { NAME_PATTERN } from "../lib/types.ts";
-import { schemaIssues } from "../lib/validate.ts";
+import { schemaIssues } from "../lib/schema.ts";
 import { parseYamlText, readJson, readYaml, updateYaml, writeYaml } from "../lib/yaml.ts";
 
 export const MAX_CONFIRM_ROWS = 200;
@@ -85,7 +85,7 @@ function loadGolden(ctx: CommandContext, name: string): LoadedGolden {
     const known = listGoldens(ctx.root).map((g) => stem(basename(g.path)));
     throw new UserError(`No golden "${name}" (${relative(ctx.root, path)}). Goldens: ${known.length ? known.join(", ") : "none"}.`);
   }
-  const loaded = { path, golden: readYaml<Golden>(path) };
+  const loaded = { path, golden: loadFile<Golden>(ctx.root, path, "golden") };
   const problem = goldenProblem(loaded);
   if (problem) throw new UserError(problem);
   return loaded;
