@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { parse } from "yaml";
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { parserLine, type SchemaKind, SHAPE_FIX, shapeIssue, shapeMessage } from "./schema.ts";
+import { parseYaml } from "./yaml.ts";
 import type { AccessFile, Golden, MetricsFile, Model, Project, Snapshot, SourceConfig } from "./types.ts";
 import { DEFAULT_BATCH_SIZE, DEFAULT_FOCUS_THRESHOLD, NAME_PATTERN } from "./types.ts";
 
@@ -66,7 +66,7 @@ export function loadFile<T>(root: string, path: string, kind: SchemaKind, emptyO
   const json = path.endsWith(".json");
   let data: unknown;
   try {
-    data = json ? JSON.parse(text) : parse(text);
+    data = json ? JSON.parse(text) : parseYaml(text);
   } catch (e) {
     throw refuse(`is not valid ${json ? "JSON" : "YAML"} (${parserLine(e)}).`);
   }

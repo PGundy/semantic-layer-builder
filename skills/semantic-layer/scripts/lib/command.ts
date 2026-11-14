@@ -15,6 +15,8 @@ export interface CommandContext {
   // what it is about to change, writes, and releases. A lock still held when the command ends is
   // released for it. Asking again while holding it is safe.
   lock: () => Promise<() => void>;
+  // Reads all of standard input, when the caller has one to give (the CLI does; the MCP server does not).
+  stdin?: () => Promise<string>;
 }
 
 // How a command changes files under the semantic root, which decides how it takes the root's lock:

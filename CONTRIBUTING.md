@@ -48,8 +48,10 @@ A test makes its temp directories with `tempDir()` or `tempRoot()` from `tests/h
 `tests/perf/` checks the large-catalog targets (docs/PRD.md FR-1.7) on a seeded synthetic catalog of 50,000 tables and 1,000,000 columns:
 
 ```sh
-bun run perf    # SL_PERF=1 bun test tests/perf: import, scope, tables --groups, status, baseline, introspect
+bun run perf    # SL_PERF=1 bun test tests/perf: import, scope, tables --groups, status, baseline, introspect, validate and typed edits
 ```
+
+It also checks validation and typed edits on a layer of 870 models over a 5,000-table catalog (`tests/perf/edits.test.ts`, the layer written by `tests/perf/layer.ts`): `sl validate` under 5 seconds, one typed edit under 8, and twelve edits through `sl apply` under 8.
 
 Each command runs as its own process and the suite prints its wall time and peak memory. The catalog is written once per generator version under `${TMPDIR:-/tmp}/sl-perf-g<version>` (`SL_PERF_CACHE` overrides) as an information_schema CSV and a DuckDB database. With `PG_URL` set it also introspects 50,000 Postgres tables, created on the first run in schemas named `slperf_g<version>_50000_*` in the `PG_URL` database and kept for the next (creating them adds under a minute). `bun tests/perf/catalog.ts --drop-pg` drops them. `SL_PERF_CLI` points the suite at another copy of `sl.ts`, such as the base branch's, to compare. `bun test` runs only the quick 5,000-table check (`tests/perf/smoke.test.ts`) and the tests that compare the fast paths with the code they replace (`tests/perf/equivalence.test.ts`).
 

@@ -101,6 +101,46 @@ export const ROLES: Record<RoleName, Role> = {
   },
 };
 
+// The typed edits sl apply runs as its entries: each changes layer files only, through lib/edit.ts.
+export const APPLY_COMMANDS = [
+  "set", "add-field", "remove-field", "rename", "tag", "ignore-column", "question add", "add-metric", "remove-metric",
+  "add-role", "remove-role", "add-restriction", "remove-restriction", "add-row-filter", "remove-row-filter", "add-attribute", "remove-attribute",
+] as const;
+// The flags sl apply gives every entry itself, which an entry does not pass.
+const APPLY_OWN_FLAGS = ["--root", "--env-file", "--json", "--help", "-h"];
+
+// Why sl apply does not run one entry (the words of one sl command, without "sl"), or, given a role,
+// why that role may not run it; undefined when it runs.
+export function applyEntryRefusal(entry: unknown, role?: Role): string | undefined {
+  if (!Array.isArray(entry) || !entry.length || entry.some((w) => typeof w !== "string"))
+    return 'is not a list of words; write each entry as the words of one typed edit, as ["set", "<ref>", "<key>", "<value>"].';
+  const [name, sub] = entry as string[];
+  const full = sub && !sub.startsWith("-") ? `${name} ${sub}` : name!;
+  const own = entry.find((w: string) => APPLY_OWN_FLAGS.some((f) => w === f || w.startsWith(`${f}=`)));
+  if (own) return `passes ${own.split("=")[0]}, which sl apply gives every entry itself; remove it from the entry.`;
+  if ((OWNER_COMMANDS as readonly string[]).some((c) => c === name || c === full) || full === "question resolve")
+    return `is sl ${full}, which records the owner's answer or approval: sl apply never does that, so run it on its own, after the owner's yes.`;
+  if (!(APPLY_COMMANDS as readonly string[]).some((c) => c === name || c === full))
+    return `is sl ${full}, which is not a typed edit (it reads a database, records an answer or does more than change layer files): run it on its own. sl apply runs ${APPLY_COMMANDS.map((c) => `sl ${c}`).join(", ")}.`;
+  const why = role ? slRefusal(role, entry as string[]) : undefined;
+  return why ? `is refused for the ${role!.title.toLowerCase()}: ${why}` : undefined;
+}
+
+// Why `role` may not run the entries of an sl apply file (its text), entry by entry, or [] when it may run them all.
+export function applyFileRefusals(role: Role, text: string): string[] {
+  let edits: unknown;
+  try {
+    edits = (JSON.parse(text) as { edits?: unknown }).edits;
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(edits)) return [];
+  return edits.flatMap((e, i) => {
+    const why = applyEntryRefusal(e, role);
+    return why ? [`entry ${i + 1} of sl apply ${why}`] : [];
+  });
+}
+
 // The role an agent_type names: the agent's frontmatter name, alone or after a plugin's "<plugin>:"
 // prefix (the last ":"-separated part counts). Any other agent, and no agent_type, is no role.
 export function roleOf(agentType: unknown): Role | undefined {

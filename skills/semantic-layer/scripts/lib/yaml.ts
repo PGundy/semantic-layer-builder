@@ -21,10 +21,29 @@ import { writeFileAtomic } from "./lock.ts";
 
 const STRINGIFY = { lineWidth: 0, indent: 2, flowCollectionPadding: false } as const;
 
+// Parsed YAML by its text, so a file read again in one process (by each entry of sl apply, or by an
+// edit's reads before and after) is parsed once. Each caller gets its own copy to change. The cache
+// is emptied when the text it holds passes CACHE_CHARS, which bounds a long-lived MCP server.
+const parsedTexts = new Map<string, unknown>();
+let cachedChars = 0;
+const CACHE_CHARS = 64 * 1024 * 1024;
+
+// parse(text) of the yaml package, through the cache: it throws as parse does.
+export function parseYaml(text: string): unknown {
+  let value = parsedTexts.get(text);
+  if (value === undefined && !parsedTexts.has(text)) {
+    value = parse(text);
+    if (cachedChars + text.length > CACHE_CHARS) (parsedTexts.clear(), (cachedChars = 0));
+    parsedTexts.set(text, value);
+    cachedChars += text.length;
+  }
+  return value !== null && typeof value === "object" ? structuredClone(value) : value;
+}
+
 export function readYaml<T>(path: string): T {
   const text = readFileSync(path, "utf8");
   try {
-    return parse(text) as T;
+    return parseYaml(text) as T;
   } catch (e) {
     throw new UserError(`${path}: invalid YAML: ${(e as Error).message}`);
   }
@@ -32,7 +51,7 @@ export function readYaml<T>(path: string): T {
 
 export function parseYamlText(text: string, label = "input"): unknown {
   try {
-    return parse(text);
+    return parseYaml(text);
   } catch (e) {
     throw new UserError(`${label}: invalid YAML: ${(e as Error).message}`);
   }

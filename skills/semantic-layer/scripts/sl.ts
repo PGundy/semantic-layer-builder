@@ -15,6 +15,7 @@ const code = await runCli(process.argv.slice(2), {
   env: processEnvironment(process.env, process.cwd()),
   out: writer(process.stdout),
   err: writer(process.stderr),
+  stdin: () => Bun.stdin.text(),
 });
 await Promise.all(last.values());
 process.exit(code);
