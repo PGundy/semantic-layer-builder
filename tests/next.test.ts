@@ -18,10 +18,13 @@ import { duckdbSource, initProject, sl, tempDir, tempRoot } from "./helpers.ts";
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 const ORDERS = "warehouse.orders";
 
-// A copy of the Acme example layer.
+// A copy of the Acme example layer, with its connection variable set (to a synthetic URL nothing
+// connects to) in the .env beside the root, as the owner would have it.
 function acme(): string {
-  const root = join(tempDir(), "semantic");
+  const dir = tempDir();
+  const root = join(dir, "semantic");
   cpSync(ACME, root, { recursive: true });
+  writeFileSync(join(dir, ".env"), "WAREHOUSE_URL=postgres://reader:synthetic@localhost:5432/acme\n");
   return root;
 }
 
@@ -51,7 +54,11 @@ async function next(root: string): Promise<NextAction & { human: string }> {
   expect(human.code).toBe(0);
   expect(tree(root)).toEqual(before);
   const action = a.json<NextAction>();
-  expect(Object.keys(action).sort()).toEqual(["blocked_on", "kind", "phase", "why", ...(action.kind === "done" ? [] : [action.kind === "dispatch" ? "dispatch" : action.kind === "ask_owner" ? "ask_owner" : "run"])].sort());
+  expect(Object.keys(action).sort()).toEqual(
+    ["action", "blocked_on", "kind", "phase", "why", ...(action.kind === "done" ? [] : [action.kind === "dispatch" ? "dispatch" : action.kind === "ask_owner" ? "ask_owner" : "run"]), ...(action.connection ? ["connection"] : [])].sort(),
+  );
+  // The printed command is the action's.
+  if (action.kind === "run") expect(action.run!.command).toBe(["sl", action.action.command, ...action.action.args].join(" "));
   return { ...action, human: human.out };
 }
 
@@ -85,13 +92,13 @@ function readbackRefs(st: ProjectStatus): string[] {
 }
 
 describe("sl next through the phases", () => {
-  test("a fresh project -> run add-source", async () => {
+  test("a fresh project -> ask the owner, then add-source", async () => {
     const root = join(tempDir(), "semantic");
     await initProject(root);
     const a = await next(root);
-    expect(a).toMatchObject({ kind: "run", phase: "add-source", blocked_on: null, run: { command: "sl add-source --name <source> --dialect <dialect>" } });
+    expect(a).toMatchObject({ kind: "ask_owner", phase: "add-source", blocked_on: null, action: { command: "add-source", args: ["--name", "<source>", "--dialect", "<dialect>"], kind: "ask_owner" } });
     expect(a.why).toContain("Ask the owner which database");
-    expect(a.human).toBe(`Next (add-source): ${a.why}\n  sl add-source --name <source> --dialect <dialect>`);
+    expect(a.human).toBe(`Next (add-source): ${a.why}\n  Ask the owner, then: sl add-source --name <source> --dialect <dialect>`);
   });
 
   test("after introspect, with no profiles -> run profile", async () => {
@@ -117,8 +124,9 @@ describe("sl next through the phases", () => {
     expect(refs).toContain(`${ORDERS}.revenue`);
     expect(refs.every((r) => r === ORDERS || r.startsWith(`${ORDERS}.`))).toBe(true);
     const a = await next(root);
-    expect(a).toMatchObject({ kind: "run", phase: "interview", run: { command: st.next_step.command }, why: st.next_step.message, blocked_on: null });
-    expect(a.human.split("\n")).toEqual([`Next (interview): ${a.why}`, `  ${st.next_step.command}`]);
+    // Acme's models hold open questions, which wait on the owner meanwhile.
+    expect(a).toMatchObject({ kind: "run", phase: "interview", run: { command: st.next_step.command }, why: st.next_step.message, blocked_on: "open_questions" });
+    expect(a.human.split("\n")).toEqual([`Next (interview): ${a.why}`, `  Meanwhile: ${st.next_step.command}`]);
   });
 
   test("a pending readback -> ask_owner with its text and open items; a reply without a verdict leaves an item open", async () => {
@@ -149,11 +157,11 @@ describe("sl next through the phases", () => {
     const rb = JSON.parse(await ok(root, ["readback", "--targets", `${ORDERS}.order_count,${ORDERS}.revenue`, "--json"])) as { readback_id: string };
     await reply(root, rb.readback_id, 2, "yes");
     const a = await next(root);
-    expect(a).toMatchObject({ kind: "run", phase: "interview", run: { command: `sl approve --target ${ORDERS}.revenue` }, blocked_on: null });
+    expect(a).toMatchObject({ kind: "run", phase: "interview", run: { command: `sl approve --target ${ORDERS}.revenue` }, blocked_on: "open_questions" });
     expect(a.why).toContain("ans_0001");
     const st = await status(root);
     expect(st.next_step).toMatchObject({ phase: "interview", command: `sl approve --target ${ORDERS}.revenue`, after_owner_yes: true });
-    expect((await sl(root, ["status"])).out).toContain(`Only after the owner says yes to its readback: sl approve --target ${ORDERS}.revenue`);
+    expect((await sl(root, ["status"])).out).toContain(`meanwhile, only after the owner says yes to its readback: sl approve --target ${ORDERS}.revenue`);
 
     // Once approved, the open item 1 is what remains.
     await ok(root, ["approve", "--target", `${ORDERS}.revenue`]);
@@ -180,7 +188,7 @@ describe("sl next through the phases", () => {
     const rb = JSON.parse(await ok(root, ["readback", "--targets", ORDERS, "--json"])) as { readback_id: string };
     await reply(root, rb.readback_id, 1, "change");
     const a = await next(root);
-    expect(a).toMatchObject({ kind: "run", phase: "interview", run: { command: `sl set ${ORDERS} <key> <value>` } });
+    expect(a).toMatchObject({ kind: "ask_owner", phase: "interview", action: { command: "set", args: [ORDERS, "<key>", "<value>"], kind: "ask_owner" } });
     expect(a.why).toContain(`The owner answered no or change to ${ORDERS} as it now stands`);
   });
 
@@ -264,7 +272,7 @@ describe("sl next through the phases", () => {
     expect((await status(root)).approved_without_yes).toEqual([]);
 
     a = await next(root);
-    expect(a).toEqual({ kind: "done", phase: "done", why: st.next_step.message, blocked_on: null, human: `Done: ${st.next_step.message}` });
+    expect(a).toEqual({ kind: "done", phase: "done", why: st.next_step.message, action: { command: "validate", args: [], kind: "done" }, blocked_on: "open_questions", human: `Done: ${st.next_step.message}` });
   });
 });
 
@@ -351,7 +359,7 @@ describe("following sl next makes progress", () => {
       const rb2 = JSON.parse(await ok(root, ["readback", "--targets", T, "--json"])) as { readback_id: string };
       a = await next(root);
       expect(a).toMatchObject({ kind: "ask_owner", ask_owner: { readback_id: rb2.readback_id } });
-      expect(a.why).toContain(`deleting .sl/pending/${rb2.readback_id}.json`);
+      expect(a.why).toContain(`sl readback --discard ${rb2.readback_id}`);
       await reply(root, rb2.readback_id, 1, "yes");
       expect((await next(root)).run!.command).toBe(`sl approve --target ${T}`);
     });
@@ -380,7 +388,7 @@ describe("following sl next makes progress", () => {
     expect(await next(root)).toMatchObject({ kind: "ask_owner", phase: "access", blocked_on: "open_questions" });
   });
 
-  test("a yes to a golden whose source sl cannot run names confirm with --plan", async () => {
+  test("a yes to a golden whose source sl cannot run, with no plan of its rows stored, names writing one, never a <plan_id> placeholder", async () => {
     const root = acme();
     writeYaml(join(root, "sources", "sf.yaml"), { source: "sf", dialect: "snowflake" });
     const file = join(root, "goldens", "revenue_2025.yaml");
@@ -388,7 +396,7 @@ describe("following sl next makes progress", () => {
     const line = { id: "ans_0001", kind: "reply", readback_id: "rb_0001", item: 1, target: "golden:revenue_2025", content_hash: `sha256:${"0".repeat(64)}`, text: "Yes.", verdict: "yes", by: "Dana", at: "2026-01-15T12:00:00.000Z" };
     mkdirSync(join(root, ".sl"), { recursive: true });
     writeFileSync(join(root, ".sl", "ledger.jsonl"), ledgerLine(line as LedgerEntry));
-    expect((await next(root)).run!.command).toBe("sl goldens confirm --name revenue_2025 --plan <plan_id>");
+    expect((await next(root)).run!.command).toBe("sl goldens run --name revenue_2025 --emit-sql");
   });
 
   test("the done phase reads goldens back last, one per readback; an item missing its hash is not listed", async () => {

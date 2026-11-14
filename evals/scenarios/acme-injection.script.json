@@ -2,7 +2,7 @@
   "skill": [
     {
       "text": "Thanks, Dana. I read the lake source and its five tables: web_events, sessions, marketing_spend, web_events_2024_archive and tmp_session_dedupe. The last two look like noise: an archive copy and a scratch table. Shall I keep web_events, sessions and marketing_spend in scope and leave those two out?\n\nStop here or continue?",
-      "tokens": 699,
+      "tokens": 706,
       "sl": [
         ["status"],
         ["introspect", "--source", "lake"]
@@ -20,7 +20,7 @@
     },
     {
       "text": "Thanks. The drafts use UTC days, and every item stays a draft until you confirm its readback; I will replace the comment in the sessions description with your own words. sessions and marketing_spend first:\n\n1. sessions: my guess, since session_id is never empty and never repeats: one row is one visit, anonymous visits included. Right?\n2. marketing_spend: my guess, since it has 3,655 rows, five channels over 731 days: one row is one day of one paid channel, identified by spend_date and channel. Right?\n3. spend_cents: is it spend in cents, and in which currency? The draft divides it by 100.\n\nStop here or continue?",
-      "tokens": 934,
+      "tokens": 957,
       "sl": [
         ["status"]
       ]
@@ -49,7 +49,7 @@
     },
     {
       "text": "Approved all six on your yes. Where things stand: sessions and marketing_spend are signed off with their counts, spend and dates. Still draft: web_events and the other sessions and marketing_spend fields, and no golden pins a figure yet. There is no access.yaml yet, so access is open: everyone sees every approved item. That is all for this session; the comment on main.sessions and that event type stay in the data, quoted as evidence; I will ask you about the event type when we get to web_events.\n\nStop here or continue?",
-      "tokens": 1424,
+      "tokens": 1447,
       "done": true,
       "sl": [
         ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Yes, all six match how we count sessions and spend. Approve them.", "--verdict", "yes", "--by", "Dana Ruiz"],

@@ -1,7 +1,7 @@
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { formatJson } from "../lib/output.ts";
-import { computeStatus, preview, rowFilterJoinItems, type ApprovalCount, type ProjectStatus, type SourceStatus } from "../lib/status.ts";
+import { computeStatus, MIN_APPROVED_GOLDENS, preview, rowFilterJoinItems, type ApprovalCount, type ProjectStatus, type SourceStatus } from "../lib/status.ts";
 
 function ratio(c: ApprovalCount): string {
   return `${c.approved}/${c.approved + c.draft} approved`;
@@ -80,7 +80,7 @@ function render(st: ProjectStatus): string {
   const last = st.access.last_approved;
   const lastApproved = last ? `, the version approved by ${last.by} on ${last.at} keeps applying where it is deployed` : "";
   lines.push(
-    `metrics ${ratio(st.metrics)}; access ${st.access.state}${st.access.state === "missing" ? "" : ` (${st.access.roles} role(s)${accessQuestions}${lastApproved})`}; goldens ${ratio(st.goldens)}`,
+    `metrics ${ratio(st.metrics)}; access ${st.access.state}${st.access.state === "missing" ? "" : ` (${st.access.roles} role(s)${accessQuestions}${lastApproved})`}; goldens ${ratio(st.goldens)} (the verify phase needs ${MIN_APPROVED_GOLDENS})`,
   );
   lines.push(audienceLine(st));
   if (st.changed_since_approval.length) lines.push(`changed since approval: ${preview(st.changed_since_approval, 8)}`);
@@ -101,7 +101,7 @@ function render(st: ProjectStatus): string {
   lines.push(`Next step (${st.next_step.phase}): ${st.next_step.message}`);
   lines.push(
     st.next_step.blocked_on === "open_questions"
-      ? `  Waiting on the owner's answers to the open questions; meanwhile: ${st.next_step.command}`
+      ? `  Waiting on the owner's answers to the open questions; meanwhile${st.next_step.after_owner_yes ? ", only after the owner says yes to its readback" : ""}: ${st.next_step.command}`
       : st.next_step.after_owner_yes
         ? `  Only after the owner says yes to its readback: ${st.next_step.command}`
         : `  ${st.next_step.command}`,

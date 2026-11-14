@@ -5,6 +5,7 @@ import type { CommandSpec, OptionValues } from "../lib/command.ts";
 import { bool, list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { writeFileAtomic } from "../lib/lock.ts";
+import { ownerText } from "../lib/ledger.ts";
 import { findTable, qualifiedName } from "../lib/naming.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
 import { checkPattern, literalPattern, matchesPattern, matchIndex, validatePattern } from "../lib/patterns.ts";
@@ -79,6 +80,26 @@ function setList(doc: Document, node: YAMLMap, key: "include" | "exclude", wante
   }
   const present = new Set(seq.items.map((item) => (isScalar(item) ? String(item.value) : "")));
   for (const v of wanted) if (!present.has(v)) seq.items.push(doc.createNode(v));
+}
+
+// Brings scope.exclude_reasons to `wanted` in place, so its comments survive: reasons for patterns
+// no longer excluded are deleted, new or changed ones set; an empty map is removed.
+function setReasons(doc: Document, node: YAMLMap, wanted: Record<string, string>): void {
+  const keys = Object.keys(wanted);
+  const map = node.get("exclude_reasons", true);
+  if (!keys.length) {
+    node.delete("exclude_reasons");
+    return;
+  }
+  if (!isMap(map)) {
+    node.set("exclude_reasons", doc.createNode(wanted));
+    return;
+  }
+  for (const item of [...map.items]) {
+    const k = isScalar(item.key) ? String(item.key.value) : undefined;
+    if (k === undefined || !(k in wanted)) map.delete(item.key);
+  }
+  for (const k of keys) if (map.get(k) !== wanted[k]) map.set(k, wanted[k]);
 }
 
 // Most entries the human preview lists one per line; --json lists them all.
@@ -198,7 +219,9 @@ const spec: CommandSpec = {
   summary: "Preview the tables a scope change selects; --write saves it to sources/<source>.yaml.",
   usage:
     "scope --source <source> [--include <pattern>]... [--exclude <pattern>]... [--remove <pattern>]... " +
-    "[--tables a,b] [--from-file <path>] [--to-file <path>] [--force] [--clear] [--write] [--explain <table>]",
+    "[--tables a,b] [--from-file <path>] [--to-file <path>] [--force] [--clear] [--write] [--explain <table>] [--reason <text>]\n\n" +
+    "--reason records why the --exclude patterns of this command leave tables out (the owner's words), in\n" +
+    "scope.exclude_reasons with --write; sl scope --explain shows it for a table such a pattern excludes.",
   options: {
     "from-file": { type: "string" },
     "to-file": { type: "string" },
@@ -211,6 +234,7 @@ const spec: CommandSpec = {
     clear: { type: "boolean" },
     write: { type: "boolean" },
     explain: { type: "string" },
+    reason: { type: "string" },
   },
   writes: ({ values }) => (values.write || values["to-file"] !== undefined ? "whole" : false),
   async run({ values }, ctx) {
@@ -224,6 +248,12 @@ const spec: CommandSpec = {
     const includes = patterns(values, "include");
     const excludes = patterns(values, "exclude");
     const removes = patterns(values, "remove");
+    const reasonArg = str(values, "reason");
+    if (reasonArg !== undefined && !excludes.length) {
+      throw new UserError(`--reason records why --exclude leaves tables out; add the --exclude pattern it is for, such as \`sl scope --source ${sourceName} --exclude <pattern> --reason "<why>" --write\`.`);
+    }
+    const reason = reasonArg === undefined ? undefined : ownerText(reasonArg).text;
+    if (reason !== undefined && !reason) throw new UserError(`--reason is empty; give the owner's reason in words, then run the same command again.`);
     for (const p of [...includes, ...excludes, ...removes]) {
       const problem = validatePattern(p);
       if (problem) throw new UserError(problem);
@@ -300,6 +330,15 @@ const spec: CommandSpec = {
     const next: Scope = {};
     if (include.length) next.include = include;
     if (exclude.length) next.exclude = exclude;
+    // Each excluded pattern keeps its reason; --reason gives one to this command's --exclude patterns.
+    const reasons: Record<string, string> = {};
+    const saved = clear ? {} : (current.exclude_reasons ?? {});
+    for (const p of exclude) {
+      const given = reason !== undefined && excludes.some((e) => patternKey(e) === patternKey(p)) ? reason : undefined;
+      const had = Object.entries(saved).find(([k]) => patternKey(k) === patternKey(p))?.[1];
+      if (given ?? had) reasons[p] = (given ?? had)!;
+    }
+    if (Object.keys(reasons).length) next.exclude_reasons = reasons;
     if (nextList) next.tables_file = nextList.rel;
     const nextScope = combineScope(next, nextList?.entries ?? []);
 
@@ -358,6 +397,7 @@ const spec: CommandSpec = {
               ? "The include list is empty, so every table no exclude entry matches is in scope."
               : "No entry matches it, and the include list is not empty, so only tables an include entry matches are in scope.";
       const also = hits.filter((e) => e !== decider);
+      const why = decider?.kind === "exclude" ? (reasons[decider.entry] ?? null) : null;
       if (ctx.json) {
         ctx.out(
           formatJson({
@@ -365,6 +405,7 @@ const spec: CommandSpec = {
             table: name,
             in_scope: inScopeNow,
             decided_by: { origin: decider?.origin ?? null, entry: decider?.entry ?? null, kind },
+            reason: why,
             also_matched: also,
             rule,
           }),
@@ -417,6 +458,7 @@ const spec: CommandSpec = {
       }
       const lines = [`${name} is ${inScopeNow ? "in" : "out of"} scope for ${sourceName}.`];
       if (decider) lines.push(`Decided by: ${entryText(decider, fileShown)}.`);
+      if (why) lines.push(`Reason recorded: ${why}`);
       lines.push(rule);
       if (also.length) lines.push(`Also matched: ${also.map((e) => entryText(e, fileShown)).join("; ")}.`);
       lines.push(next);
@@ -489,6 +531,7 @@ const spec: CommandSpec = {
         }
         setList(doc, node, "include", include);
         setList(doc, node, "exclude", exclude);
+        setReasons(doc, node, reasons);
         if (!nextList) node.delete("tables_file");
         else if (node.get("tables_file") !== nextList.rel) node.set("tables_file", nextList.rel);
       });
@@ -528,7 +571,7 @@ const spec: CommandSpec = {
     const lines: string[] = [];
     lines.push(`Scope for ${sourceName}:`);
     lines.push(`  include: ${include.length ? include.join(", ") : fileCounts?.include ? "(only the table-list file's entries)" : "(everything)"}`);
-    lines.push(`  exclude: ${exclude.length ? exclude.join(", ") : fileCounts?.exclude ? "(only the table-list file's entries)" : "(nothing)"}`);
+    lines.push(`  exclude: ${exclude.length ? exclude.map((p) => (reasons[p] ? `${p} (${reasons[p]})` : p)).join(", ") : fileCounts?.exclude ? "(only the table-list file's entries)" : "(nothing)"}`);
     if (fileCounts) lines.push(`  tables file: ${fileCounts.path} (${plural(fileCounts.include, "include")}, ${plural(fileCounts.exclude, "exclude")})`);
     lines.push("");
     lines.push(`Added (${added.length}): ${added.length ? added.join(", ") : "none"}`);

@@ -1,7 +1,7 @@
 // Progress of a semantic layer, read from its files alone, and the next step
 // the skill should take. Nothing here touches a database.
-import { existsSync, lstatSync, readFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { basename } from "node:path";
 import {
   type AccessLayer,
   type AccessVisibility,
@@ -16,7 +16,7 @@ import {
 import { canRun } from "./adapters/index.ts";
 import { accessEntry, type ApprovalEntry, goldenHash, holdsHashes, type Integrity, integrity, metricEntries, modelEntries } from "./approval-hash.ts";
 import { DEFAULT_TOLERANCE } from "./goldens.ts";
-import { currentYes, LEDGER_FILE, ledgerReplies } from "./ledger.ts";
+import { currentYes, ledgerState } from "./ledger.ts";
 import { findTable, qualifiedName } from "./naming.ts";
 import { inScope } from "./patterns.ts";
 import { parseRequestField } from "./refs.ts";
@@ -35,6 +35,8 @@ import {
   type LoadedGolden,
   type LoadedModel,
 } from "./project.ts";
+import { NO_SELECT_REASON } from "./plan.ts";
+import type { ProfileGap } from "./profile.ts";
 import { rankTables } from "./rank.ts";
 import {
   approvedModelsOn,
@@ -54,6 +56,11 @@ import type { AccessMode, Approval, Dialect, Golden, IntakeMode, LedgerReply, Me
 
 // Golden count below which the verify phase stays open.
 export const MIN_APPROVED_GOLDENS = 5;
+
+// The golden counts in the words sl status and sl next both print.
+export function goldenCounts(c: ApprovalCount): string {
+  return `${c.approved} of ${c.approved + c.draft} golden(s) approved; the verify phase needs ${MIN_APPROVED_GOLDENS} approved`;
+}
 
 export interface ApprovalCount {
   approved: number;
@@ -121,6 +128,8 @@ export interface SourceStatus {
   unprofiled_tables: string[];
   // The unprofiled_tables whose profile is partial: some columns carry a profile, but new or retyped columns do not.
   partially_profiled_tables: string[];
+  // The unprofiled_tables the last sl profile run skipped, with its reason (profile_skipped in the snapshot).
+  profile_skipped: ProfileGap[];
   // Draft models on in-scope tables; only these hold the interview phase open.
   draft_models: string[];
   // Approved models on in-scope tables that still hold draft dimensions, measures or joins.
@@ -183,17 +192,52 @@ export type Phase =
   | "connect"
   | "done";
 
+// What a step does, as data: the sl command (a key of commands/index.ts), its arguments as sl would
+// be given them, and how it is taken: run it; ask the owner first (its arguments may then hold a
+// <placeholder> for what the owner says); or nothing is left (done). `command` of a step and of sl
+// next's run is this action printed (actionText); nothing reads a command back from its text.
+export type ActionKind = "run" | "ask_owner" | "done";
+
+export interface StepAction {
+  command: string;
+  args: string[];
+  kind: ActionKind;
+}
+
+export function act(command: string, args: string[], kind: ActionKind = "run"): StepAction {
+  return { command, args, kind };
+}
+
+// An argument as a shell reads it: names, refs, flags and <placeholders> as written, anything else
+// in double quotes.
+function shellArg(a: string): string {
+  return /^[\w@%+=:,./<>|-]+$/.test(a) ? a : `"${a.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
+// The action as the command line it runs: "sl <command> <args>".
+export function actionText(a: StepAction): string {
+  return ["sl", a.command, ...a.args.map(shellArg)].join(" ");
+}
+
+// The value an action passes for a flag, or undefined.
+export function flagValue(a: StepAction, flag: string): string | undefined {
+  const i = a.args.indexOf(flag);
+  return i >= 0 ? a.args[i + 1] : undefined;
+}
+
 export interface NextStep {
   phase: Phase;
   message: string;
+  // The action printed; see action.
   command: string;
+  action: StepAction;
   source?: string;
   // True when the command records the owner's approval (sl approve, sl goldens confirm):
   // it runs only after the owner says yes to its readback. A step that signs items off names
   // sl readback for them until the ledger holds the owner's yes to one as it stands, then sl approve.
   after_owner_yes: boolean;
-  // Set when the step waits on the owner rather than on a command: open_questions while access.yaml
-  // holds open questions. command then only explains the current file.
+  // Set when the step waits on the owner: open_questions while access.yaml or a model holds open
+  // questions, whatever the step (on the access step, command then only explains the current file).
   blocked_on?: "open_questions";
   // Present while a reported source is an export source: the sl setup that gives it a connection,
   // after which the steps waiting on a connection run.
@@ -209,12 +253,17 @@ export interface DefaultAudience {
   hidden_by_protected_tags: number;
 }
 
-// A next step before after_owner_yes is derived from its command.
-type Step = Omit<NextStep, "after_owner_yes">;
+// A next step before its command and after_owner_yes are derived from its action.
+type Step = Omit<NextStep, "after_owner_yes" | "command">;
 
-// Whether a command records the owner's approval, so it waits for their yes.
+// Whether a command line records the owner's approval, so it waits for their yes.
 export function needsOwnerYes(command: string): boolean {
   return /^sl (approve|goldens confirm)(\s|$)/.test(command);
+}
+
+// The same for an action.
+export function actionNeedsYes(a: StepAction): boolean {
+  return a.command === "approve" || (a.command === "goldens" && a.args[0] === "confirm");
 }
 
 export interface ProjectStatus {
@@ -341,8 +390,7 @@ function draftGoldenNames(goldens: LoadedGolden[]): string[] {
 // The draft metrics that can be read back as metric:<name>; a name sl approve cannot target is left
 // to sl validate.
 function draftMetricTargets(names: string[]): string[] {
-  const refs = names.filter((n) => /^[a-z][a-z0-9_]*$/.test(n)).map((n) => `metric:${n}`);
-  return refs.length ? refs : ["metric:<name>"];
+  return names.filter((n) => /^[a-z][a-z0-9_]*$/.test(n)).map((n) => `metric:${n}`);
 }
 
 function draftFields(m: LoadedModel["model"]): string[] {
@@ -353,7 +401,7 @@ function draftFields(m: LoadedModel["model"]): string[] {
 
 // Whether the CLI can open a live connection for the source, not only emit query plans. An export
 // source has none, whatever its connection block holds.
-function liveRunnable(config: SourceConfig): boolean {
+export function liveRunnable(config: SourceConfig): boolean {
   if (!canRun(config) || intakeMode(config) === "export") return false;
   return config.dialect === "duckdb" || !!config.connection?.env || config.connection?.env_prefix !== undefined;
 }
@@ -555,6 +603,7 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
     unmodeled_tables: unmodeled,
     unprofiled_tables: unprofiled,
     partially_profiled_tables: partial,
+    profile_skipped: scoped.flatMap((t) => (t.profile_skipped && profileState(t) !== "yes" ? [{ table: qualifiedName(t), reason: t.profile_skipped.reason }] : [])),
     draft_models: active.filter((m) => m.status !== "approved").map((m) => m.model),
     models_with_draft_fields: active.filter((m) => m.status === "approved" && draftFields(m).length > 0).map((m) => m.model),
     draft_fields: active.flatMap(draftFields),
@@ -595,8 +644,13 @@ function connectStep(s: SourceStatus): Step {
       "profiles, join evidence, goldens and drift from data, so the layer is not done. Ask the owner whether a read-only connection " +
       "is possible now (sl setup --print-role-sql prints a role for their database administrator); with one, upgrade the source with " +
       "the command below and the waiting steps run.",
-    command: upgradeCommand(s.source, s.dialect),
+    action: act("setup", ["--source", s.source, "--dialect", s.dialect, ...(s.dialect === "duckdb" ? ["--database", "<path>"] : ["--env", "<VAR>"])], "ask_owner"),
   };
+}
+
+// --tables with the names when tablesFlag would name them, else nothing.
+function tablesArgs(names: string[]): string[] {
+  return tablesFlag(names) ? ["--tables", names.join(",")] : [];
 }
 
 // The profile step's message: the in-scope tables with no profile, and apart from them those whose
@@ -612,6 +666,33 @@ function profileMessage(s: SourceStatus): string {
     );
   }
   return parts.join(" ");
+}
+
+// The profile step's message and action. Tables never tried are profiled; once only tables the last
+// run skipped are left, the same run would fail on them again, so a missing permission becomes the
+// question for the owner (a grant, or leaving them out of scope with the reason) and any other
+// reason a retry of just those tables, with what to change named.
+function profileStep(s: SourceStatus): { message: string; action: StepAction } {
+  const skipped = new Map(s.profile_skipped.map((g) => [g.table, g.reason]));
+  const gaps = s.unprofiled_tables.filter((t) => skipped.has(t));
+  if (gaps.length < s.unprofiled_tables.length) return { message: profileMessage(s), action: act("profile", ["--source", s.source]) };
+  const denied = gaps.filter((t) => skipped.get(t) === NO_SELECT_REASON);
+  const other = gaps.filter((t) => skipped.get(t) !== NO_SELECT_REASON);
+  if (other.length) {
+    const why = other.map((t) => `${t} (${skipped.get(t)})`);
+    return {
+      message: `The last sl profile run on "${s.source}" skipped ${other.length} in-scope table(s): ${preview(why)}. Make the change each reason names, then profile just those tables again.`,
+      action: act("profile", ["--source", s.source, "--tables", other.join(",")]),
+    };
+  }
+  return {
+    message:
+      `The last sl profile run on "${s.source}" could not read ${denied.length} in-scope table(s) (${NO_SELECT_REASON}): ${preview(denied)}. ` +
+      "Running it again fails the same way. Ask the owner whether their database administrator can grant SELECT on them " +
+      `(sl setup --print-role-sql --dialect ${s.dialect} --schemas <schemas> prints the grants), then run sl profile --source ${s.source} again; ` +
+      "or whether to leave them out of scope, recording the owner's reason with the command below.",
+    action: act("scope", ["--source", s.source, ...denied.flatMap((t) => ["--exclude", t]), "--reason", "<owner's reason>", "--write"], "ask_owner"),
+  };
 }
 
 // Longest open question quoted in a next step; sl access and access.yaml hold the full text.
@@ -647,7 +728,9 @@ interface StepContext {
   accessQuestions: string[];
   // The command that signs off the targets: sl approve of the first one the owner's latest reply in
   // the ledger is a yes to as it stands, else sl readback of them all.
-  signOff: (refs: string[]) => string;
+  signOff: (refs: string[]) => StepAction;
+  // For each golden of the reported goldens by name, the source its request names.
+  goldenSources: Map<string, string | undefined>;
 }
 
 const OPEN_BASELINE = "everyone sees every approved model, field and metric except those tagged pii or sensitive";
@@ -659,7 +742,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     return {
       phase: "add-source",
       message: "No data sources yet. Ask the owner which database, warehouse or lake to start with.",
-      command: "sl add-source --name <source> --dialect <dialect>",
+      action: act("add-source", ["--name", "<source>", "--dialect", "<dialect>"], "ask_owner"),
     };
   }
 
@@ -670,7 +753,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       phase: "introspect",
       source: s,
       message: `Source "${s}" is an export source with no snapshot. Import its schema export (intake.export.file).`,
-      command: `sl import --source ${s}`,
+      action: act("import", ["--source", s]),
     };
   }
   if (noSnap) {
@@ -680,7 +763,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
           phase: "introspect",
           source: s,
           message: `Source "${s}" has no snapshot. Introspect it, or import shared schema context with sl import.`,
-          command: `sl introspect --source ${s}`,
+          action: act("introspect", ["--source", s]),
         }
       : {
           phase: "introspect",
@@ -688,7 +771,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
           message:
             `Source "${s}" (${noSnap.dialect}) has no snapshot. Emit the introspection plan and run it with your own tool, ` +
             `or import an information_schema export, dbt manifest or DDL with sl import --source ${s}.`,
-          command: `sl introspect --source ${s} --emit-sql`,
+          action: act("introspect", ["--source", s, "--emit-sql"]),
         };
   }
 
@@ -701,7 +784,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       message:
         `The snapshot of "${s}" holds no tables. Check that the connection or the imported file covers the schemas the owner means, ` +
         `then introspect again or import with sl import --source ${s}.`,
-      command: empty.runnable ? `sl introspect --source ${s}` : `sl introspect --source ${s} --emit-sql`,
+      action: act("introspect", ["--source", s, ...(empty.runnable ? [] : ["--emit-sql"])]),
     };
   }
 
@@ -730,7 +813,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         `The table changed: ${parts.join(" ")} ` +
         "Read the affected items back to the owner: revoke each with sl approve --revoke, point it at the column or table that " +
         "replaced it or remove it, and approve it again only after the owner confirms the readback.",
-      command: "sl validate",
+      action: act("validate", []),
     };
   }
 
@@ -750,7 +833,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       message:
         `${parts.join(" ")} Read each back to the owner as it now stands and approve it again only after they confirm, or restore ` +
         "the approved definition; sl validate names each one. Until then tools treat each one as a draft (sl access lists them).",
-      command: ctx.signOff([...changed, ...missing]),
+      action: ctx.signOff([...changed, ...missing]),
     };
   }
 
@@ -771,7 +854,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         `table back into scope (${flag ? "preview with the command below" : `preview with sl scope --source ${s} --tables <table>`}, then add ` +
         "--write; remove an exclude that matches it with --remove), or restore the pattern or the intake.schemas entry that selected it; " +
         `otherwise revoke it with sl approve --target ${s}.<model> --revoke, or remove its model file.`,
-      command: `sl scope --source ${s}${flag}`,
+      action: act("scope", ["--source", s, ...tablesArgs(tables)]),
     };
   }
 
@@ -784,7 +867,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       message:
         `The scope of "${s}" selects none of its ${unscoped.snapshot!.tables} tables. Preview the groups and ask the owner again ` +
         `which schemas, prefixes (fct_*), suffixes (*_daily) or names to focus on, then save it with sl scope --source ${s} --include <pattern> --write.`,
-      command: `sl tables --source ${s} --groups`,
+      action: act("tables", ["--source", s, "--groups"]),
     };
   }
 
@@ -798,7 +881,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         `Source "${s}" has ${wide.snapshot!.in_scope} tables in scope, more than the focus threshold of ${status.settings.focus_threshold}. ` +
         "Ask the owner which tables to focus on: by schema, prefix (fct_*), suffix (*_daily) or name. Preview the groups, then save " +
         `the choice with sl scope --source ${s} --include <pattern> --write. To keep them all, raise settings.focus_threshold in semantic.yaml.`,
-      command: `sl tables --source ${s} --groups`,
+      action: act("tables", ["--source", s, "--groups"]),
     };
   }
 
@@ -808,8 +891,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     return {
       phase: "profile",
       source: s,
-      message: profileMessage(unprofiled),
-      command: `sl profile --source ${s}`,
+      ...profileStep(unprofiled),
     };
   }
 
@@ -825,14 +907,14 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         message:
           `${fresh.length} table(s) in "${s}" are new in scope and have no model: ${preview(fresh)}. Draft them, then interview the owner about them.` +
           (others > 0 ? ` ${others} other in-scope table(s) have no model either; sl status names them next.` : ""),
-        command: `sl draft --source ${s}${tablesFlag(fresh)}`,
+        action: act("draft", ["--source", s, ...tablesArgs(fresh)]),
       };
     }
     return {
       phase: "draft",
       source: s,
       message: `${unmodeled.tables_without_model} in-scope table(s) in "${s}" have no model: ${preview(unmodeled.unmodeled_tables)}.`,
-      command: `sl draft --source ${s}`,
+      action: act("draft", ["--source", s]),
     };
   }
 
@@ -846,7 +928,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       message:
         `${cols.length} column(s) of modeled tables in "${s}" have no field and are not in ignored_columns: ${preview(cols)}. ` +
         "Draft them as new fields; approved items stay as they are. A column the owner left out on purpose goes in the model's ignored_columns instead.",
-      command: `sl draft --source ${s} --new-columns`,
+      action: act("draft", ["--source", s, "--new-columns"]),
     };
   }
 
@@ -873,8 +955,8 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         `Interview the owner about ${what}. Read each dimension, measure and join back in plain English and approve it ` +
         "on its own only after the owner confirms that readback; then settle the model's open questions, grain and key, " +
         "read the model back and approve it once they confirm. Fields the owner leaves for later stay draft and go in the handoff.",
-      command: join
-        ? `sl check-join --source ${s} --model ${join.split(".")[0]} --join ${join.split(".")[1]}`
+      action: join
+        ? act("check-join", ["--source", s, "--model", join.split(".")[0]!, "--join", join.split(".")[1]!])
         : ctx.signOff([...drafty.draft_fields.filter((f) => f.startsWith(`${target}.`)).map((f) => `${s}.${f}`), `${s}.${target}`]),
     };
   }
@@ -887,7 +969,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       phase: "check-join",
       source: s,
       message: `${unchecked.joins_without_evidence} join(s) in "${s}" have no evidence: ${preview(unchecked.unchecked_joins)}.`,
-      command: `sl check-join --source ${s} --model ${model} --join ${join}`,
+      action: act("check-join", ["--source", s, "--model", model!, "--join", join!]),
     };
   }
 
@@ -899,7 +981,12 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         status.metrics.draft > 0
           ? `${status.metrics.draft} metric(s) in metrics.yaml are drafts. Read them back to the owner and approve what they confirm.`
           : "No metrics yet. Ask the owner which ratios and derived figures they report, and add each as a draft with sl add-metric (sl add-metric --help lists its flags).",
-      command: status.metrics.draft > 0 ? ctx.signOff(draftMetricTargets(status.draft_metrics)) : "sl validate",
+      action:
+        status.metrics.draft === 0
+          ? act("add-metric", ["--name", "<metric>", "--type", "ratio|derived"], "ask_owner")
+          : draftMetricTargets(status.draft_metrics).length
+            ? ctx.signOff(draftMetricTargets(status.draft_metrics))
+            : act("validate", []),
     };
   }
 
@@ -917,7 +1004,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
           `No access.yaml, so access is open: ${OPEN_BASELINE}. Ask the owner the exceptions question: ${EXCEPTIONS_QUESTION} ` +
           "Write access.yaml as a draft with mode open (or closed for an allowlist) and the roles, restrictions and tags they name, " +
           "even when there are none, then read it back and approve it once they confirm.",
-        command: "sl validate",
+        action: act("set", ["access", "mode", "open|closed"], "ask_owner"),
       };
     }
     if (!ctx.accessReadable) {
@@ -928,7 +1015,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
           `nobody sees anything, and it has no roles yet. Ask the owner the exceptions question: ${EXCEPTIONS_QUESTION} ` +
           "Write mode open (or closed for an allowlist) and the roles, restrictions and tags they name as a draft, " +
           "then read it back and approve it once they confirm.",
-        command: "sl validate",
+        action: act("validate", []),
       };
     }
     // Open questions wait on the owner's answers: nothing is approved until they are answered.
@@ -950,7 +1037,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
           `.${extra} Raise the questions with the owner and record their answers; do not push the approval. ` +
           "The owner may approve with remaining questions (notes for tool builders, or ones waiting on someone) named in the whole-file readback. " +
           "sl access explains what the draft file gives each role meanwhile.",
-        command: "sl access",
+        action: act("access", []),
       };
     }
     if (ctx.accessProblem !== null) {
@@ -959,7 +1046,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         message:
           `${approved}${ctx.accessProblem} Ask the owner what they meant, fix access.yaml until sl validate reports no access issue, ` +
           "then read the mode, every role and every restriction back to them and approve it once they confirm.",
-        command: "sl validate",
+        action: act("validate", []),
       };
     }
     if (closedEmpty) {
@@ -967,8 +1054,8 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         phase: "access",
         message:
           `${access.state === "approved" ? "access.yaml is approved, but it" : "access.yaml"} is closed and has no roles yet, so nobody sees anything. Ask the owner who may see what: roles with allow.models, ` +
-          "row filters and denied fields or tags. Write them as a draft.",
-        command: "sl validate",
+          "row filters and denied fields or tags. Write them as a draft with sl add-role.",
+        action: act("add-role", ["--name", "<role>", "--allow-models", "<pattern>"], "ask_owner"),
       };
     }
     if (access.roles === 0 && access.restrictions === 0) {
@@ -977,7 +1064,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         message:
           `access.yaml is open and has no roles yet: ${OPEN_BASELINE}. Ask the owner the exceptions question: ${EXCEPTIONS_QUESTION} ` +
           "Write the roles, restrictions and tags they name as a draft; when there are none, read the open baseline back and approve access.yaml once they confirm.",
-        command: ctx.signOff(["access"]),
+        action: ctx.signOff(["access"]),
       };
     }
     return {
@@ -985,7 +1072,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       message:
         `access.yaml is a draft in ${access.mode} mode with ${access.roles} role(s) and ${access.restrictions} restriction(s). ` +
         "Read the mode, every role and every restriction back to the owner and approve it once they confirm.",
-      command: ctx.signOff(["access"]),
+      action: ctx.signOff(["access"]),
     };
   }
 
@@ -996,13 +1083,28 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
   const uncovered = status.roles_without_goldens;
   const roleNote = uncovered.length ? ` Roles without an approved golden: ${uncovered.join(", ")}.` : "";
   if (status.goldens.approved < MIN_APPROVED_GOLDENS) {
+    const counts = goldenCounts(status.goldens);
+    const draft = status.draft_goldens.find((n) => /^[a-z][a-z0-9_]*$/.test(n));
+    if (draft) {
+      // A golden on a source sl cannot run is read back from a plan of its rows.
+      const src = ctx.goldenSources.get(draft);
+      const planned = !!src && sources.some((s) => s.source === src && !s.runnable);
+      return {
+        phase: "verify",
+        message:
+          `${counts}. Draft golden ${draft} is next: read its rows back to the owner and confirm it once they say yes.` +
+          (planned ? ` sl cannot run its source "${src}": write its plan first, store the rows with sl results add, then read it back with that plan.` : "") +
+          roleNote,
+        action: planned ? act("goldens", ["run", "--name", draft, "--emit-sql"]) : act("readback", ["--targets", `golden:${draft}`]),
+      };
+    }
     return {
       phase: "verify",
       message:
-        `${status.goldens.approved} of ${MIN_APPROVED_GOLDENS} approved goldens. Ask the owner for questions with known answers, ` +
-        "run each golden and record it once they confirm the rows." +
+        `${counts}. Ask the owner for a question they know the answer to (a figure from a report they trust), write it as a draft golden ` +
+        "with the command below, then read its rows back to them and confirm it once they say yes." +
         roleNote,
-      command: `sl goldens run --name <golden>`,
+      action: act("goldens", ["new", "--name", "<golden>", "--question", "<question>", "--request", "<request>"], "ask_owner"),
     };
   }
 
@@ -1016,7 +1118,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         `Role ${role} has no approved golden: write and confirm a golden that runs as role ${role} (role: ${role}), ` +
         "reading its rows back to the owner before confirming." +
         (others.length ? ` Then do the same for ${others.map((r) => `role ${r}`).join(", ")}.` : ""),
-      command: `sl goldens run --name <golden>`,
+      action: act("goldens", ["new", "--name", "<golden>", "--role", role, "--question", "<question>", "--request", "<request>"], "ask_owner"),
     };
   }
 
@@ -1039,7 +1141,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       "Every phase the CLI can measure is complete. Rerun sl validate after any change." +
       (left.length ? ` Name in the handoff the ${left.join("; ")}.` : "") +
       " Before the handoff, tick the coverage checklist in references/verification.md; every figure the owner gave needs a golden, draft or approved.",
-    command: "sl validate",
+    action: act("validate", [], "done"),
   };
 }
 
@@ -1203,19 +1305,13 @@ export interface TargetState {
 }
 
 // The status with what sl next reads beside it: every approve target of the project by ref, and the
-// kind: reply lines of the ledger (lines it cannot read are skipped; sl validate reports them).
+// kind: reply lines of the ledger as sl approve reads them (lib/ledger.ts ledgerState): none, with
+// ledger_problem saying why, when sl approve would refuse the ledger.
 export interface StatusDetail {
   status: ProjectStatus;
   targets: Map<string, TargetState>;
   replies: LedgerReply[];
-}
-
-// The ledger's reply lines, or none when it is missing, not a plain file or reached through a linked
-// .sl directory, which sl approve refuses (lib/ledger.ts readReplies).
-function readLedger(root: string): LedgerReply[] {
-  const file = join(root, LEDGER_FILE);
-  const plain = lstatSync(dirname(file), { throwIfNoEntry: false })?.isDirectory() && lstatSync(file, { throwIfNoEntry: false })?.isFile();
-  return plain ? ledgerReplies(readFileSync(file, "utf8")) : [];
+  ledger_problem: string | null;
 }
 
 // Reads the project and every source (or only `only`) and works out where the layer stands.
@@ -1265,7 +1361,8 @@ export function statusDetail(root: string, only?: string): StatusDetail {
   const goldenLayer = approvedLayer(loadAccessLayer(root));
   const approvedGoldens = goldens.filter((g): g is Golden => isRecord(g) && g.status === "approved");
   const goldenRoles = new Set(approvedGoldens.flatMap((g) => goldenRunsAs(goldenLayer, g)));
-  const replies = readLedger(root);
+  const ledger = ledgerState(root);
+  const replies = ledger.replies;
   const targets = new Map<string, TargetState>();
   for (const e of [...reports.flatMap((r) => r.approvals), ...allMetricEntries, ...accessEntries]) {
     if (!targets.has(e.ref)) targets.set(e.ref, { hash: e.hash, state: integrity(e, projectHashed) });
@@ -1315,18 +1412,29 @@ export function statusDetail(root: string, only?: string): StatusDetail {
         const t = targets.get(ref);
         return !!t && !!currentYes(replies, ref, t.hash);
       });
-      return ready ? `sl approve --target ${ready}` : `sl readback --targets ${refs.join(",")}`;
+      return ready ? act("approve", ["--target", ready]) : act("readback", ["--targets", refs.join(",")]);
     },
+    goldenSources: new Map(
+      loadedGoldens.flatMap(({ path, golden }) => {
+        const g: Record<string, unknown> = isRecord(golden) ? golden : {};
+        const name = typeof g.name === "string" && g.name !== "" ? g.name : stem(basename(path));
+        const src = isRecord(g.request) && typeof g.request.source === "string" ? g.request.source : undefined;
+        return [[name, src] as const];
+      }),
+    ),
   });
+  // Open questions in any file, access.yaml or a model, wait on the owner whatever the step: the step
+  // can be taken meanwhile.
+  if (!found.blocked_on && base.open_questions > 0) found.blocked_on = "open_questions";
   // A draft that records the approval a revoke set aside says which version keeps applying.
   if (found.phase === "access" && lastApproved) found.message += ` ${lastApprovedNote(lastApproved)}`;
   const exportSource = sources.find((s) => s.intake_mode === "export");
-  const step: NextStep = { ...found, after_owner_yes: needsOwnerYes(found.command), ...(exportSource ? { connection_upgrade: upgradeCommand(exportSource.source, exportSource.dialect) } : {}) };
+  const step: NextStep = { ...found, command: actionText(found.action), after_owner_yes: actionNeedsYes(found.action), ...(exportSource ? { connection_upgrade: upgradeCommand(exportSource.source, exportSource.dialect) } : {}) };
   const batchSource = sources.find((s) => s.source === step.source && s.next_batch.length) ?? sources.find((s) => s.next_batch.length);
   const status: ProjectStatus = {
     ...base,
     next_batch: batchSource ? { source: batchSource.source, tables: batchSource.next_batch } : null,
     next_step: step,
   };
-  return { status, targets, replies };
+  return { status, targets, replies, ledger_problem: ledger.problem };
 }

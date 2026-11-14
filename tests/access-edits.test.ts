@@ -504,7 +504,7 @@ describe("who sees an item is decided once, in the access phase", () => {
     // The table's content has nothing to change, and an access edit does not change the table.
     await ok(root, ["add-restriction", "--name", "regions_finance_only", "--targets", REGIONS, "--roles", "finance"]);
     const stuck = await next(root);
-    expect(stuck).toMatchObject({ kind: "run", phase: "interview", run: { command: `sl set ${REGIONS} <key> <value>` } });
+    expect(stuck).toMatchObject({ kind: "ask_owner", phase: "interview", action: { command: "set", args: [REGIONS, "<key>", "<value>"], kind: "ask_owner" } });
     // Both the reply and sl next now name the way out: the change is about access, and the table takes its own answer.
     expect(r.out).toContain(`If the change is only to who sees ${REGIONS}, record that as well with --verdict change --about access`);
     expect(stuck.why).toContain('record it with sl reply --readback rb_0001 --item 1 --text "<owner\'s words>" --verdict change --about access --by "<owner>"');
