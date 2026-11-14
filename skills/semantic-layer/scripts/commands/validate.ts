@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import type { CommandSpec } from "../lib/command.ts";
-import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
+import { noLayer } from "../lib/project.ts";
 import { type Issue, validateProject } from "../lib/validate.ts";
 
 function plural(n: number, word: string): string {
@@ -17,7 +17,7 @@ const spec: CommandSpec = {
   usage: "validate",
   options: {},
   async run(_input, ctx) {
-    if (!existsSync(ctx.root)) throw new UserError(`No semantic layer at ${ctx.root}. Run \`sl init --name <name>\` first, or pass --root.`);
+    if (!existsSync(ctx.root)) throw noLayer(ctx.root);
     const issues = validateProject(ctx.root);
     const errors = issues.filter((i) => i.level === "error").length;
     const warnings = issues.length - errors;

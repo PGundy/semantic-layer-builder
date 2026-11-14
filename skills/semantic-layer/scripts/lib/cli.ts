@@ -56,6 +56,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     io.err(`Unknown command "${name}". Run \`sl help\` for the list.`);
     return 1;
   }
+  let json = false;
   try {
     const spec = (await load()).default;
     const parsed = parseArgs({
@@ -65,6 +66,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
       strict: true,
     });
     const values = parsed.values as Record<string, string | boolean | string[] | undefined>;
+    json = values.json === true;
     if (values.help) {
       io.out(`${spec.summary}\n\nUsage: sl ${spec.usage}\n\n${GLOBAL_HELP}`);
       return 0;
@@ -73,7 +75,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
       root: resolveRoot(values.root as string | undefined, io.env, io.cwd),
       cwd: io.cwd,
       env: io.env,
-      json: values.json === true,
+      json,
       now: clock(io.env),
       out: io.out,
       err: io.err,
@@ -81,6 +83,10 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     return await spec.run({ values, positionals: parsed.positionals }, ctx);
   } catch (e) {
     if (e instanceof UserError || (e as { code?: string }).code?.startsWith("ERR_PARSE_ARGS")) {
+      // A refusal is one plain line on stderr. One that carries the command that fixes it (a
+      // malformed file, a directory with no layer) is also, with --json, one JSON object on stdout.
+      const next = e instanceof UserError ? e.next : undefined;
+      if (json && next) io.out(JSON.stringify({ error: (e as Error).message, next }, null, 2));
       io.err(`sl ${name}: ${(e as Error).message}`);
       return 1;
     }

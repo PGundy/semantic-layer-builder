@@ -19,7 +19,7 @@ import {
   renderReviewMarkdown,
   reviewPath,
 } from "../lib/review.ts";
-import { schemaIssues } from "../lib/validate.ts";
+import { schemaIssues } from "../lib/schema.ts";
 
 const USAGE =
   'Usage: sl review export --readback <readback_id> --format md|json [--out <path>] [--force], or sl review apply <file> --by "<owner>".';
