@@ -9,6 +9,7 @@ import {
   holdsRawValues,
   isHashedValue,
   LOW_CARDINALITY_MAX,
+  profileGaps,
   protectedColumns,
   redactProfile,
   redactSnapshot,
@@ -441,7 +442,9 @@ describe("profile plan", () => {
     expect(out.profiled.map((p) => p.table)).toEqual(["s.b"]);
     expect(out.skipped).toEqual([{ table: "s.a", reason: "its sample read no rows" }]);
     const s = snap(t.root, "pg");
-    expect(s.tables[0]).toEqual(a);
+    // The earlier profile is kept, and the skip is recorded beside it for the next run and sl next.
+    expect(s.tables[0]).toEqual({ ...a, profile_skipped: { at: FIXED_NOW, reason: "its sample read no rows" } });
+    expect(profileGaps(t.root, "pg")).toEqual([{ table: "s.a", reason: "its sample read no rows" }]);
     expect(col(s, "b", "kind").profile!.top_values).toEqual([{ value: "y", count: 60 }, { value: "z", count: 40 }]);
   });
 
