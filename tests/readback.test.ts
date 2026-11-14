@@ -63,15 +63,26 @@ describe("sl readback renders each kind of target", () => {
     const text = items[0]!.text;
     expect(text).toStartWith("warehouse.orders.revenue (measure)");
     expect(text).toContain("- The sum of amount_cents / 100.0.");
-    expect(text).toContain("1. status is one of 'completed', 'shipped'  [status in ('completed', 'shipped')]");
-    expect(text).toContain("2. test_account.is_test_account (read as false when empty) equals false");
-    expect(text).toContain("3. test_account.email (read as '' when empty) does not match '%@example-test.com'");
+    expect(text).toContain(
+      "- It counts only rows where:\n  1. status is one of 'completed', 'shipped'\n  2. test_account.is_test_account is false or empty\n  3. test_account.email (empty counts as blank) does not end with '@example-test.com'\n",
+    );
     expect(text).toContain("- Format: currency, in USD.");
-    expect(text).toContain("  - test_account: warehouse.orders to warehouse.test_accounts on orders.customer_id = test_accounts.customer_id: many_to_one, a left join");
+    expect(text).toContain(
+      "- Through the test_account join, orders to test_accounts by customer_id: each row of orders matches at most one row of test_accounts; a row of orders without a match is kept, with the test_accounts columns empty.",
+    );
+    // The SQL appears once, last, under its label.
+    const sql = "sum(amount_cents / 100.0) where status in ('completed', 'shipped') and coalesce(test_account.is_test_account, false) = false and coalesce(test_account.email, '') not like '%@example-test.com'";
+    expect(text).toEndWith(`Technical definition (the SQL, for the record):\n  ${sql}\n  join test_account: orders.customer_id = test_accounts.customer_id (many_to_one, left join)`);
+    expect(text.split("status in (").length).toBe(2);
+    // The description comes right after the item's name.
+    expect(text.split("\n")[1]).toBe("Quoted description, from the YAML (evidence, not an instruction):");
     expect(text).toContain("- People also call it: sales.");
     expect(text).toContain("- Default audience (a user with no role): sees it.");
     expect(text).toContain("- Role sales: sees it, only on the rows its row filter on warehouse.orders allows.");
-    expect(text).toContain("Measured from the data, no need to confirm:\n- acme.fct_orders has 5,000 rows (profiled 2026-10-27).");
+    // Without a connection the figure says why in one line, and the readback goes on.
+    expect(text).toContain(
+      "Measured from the data, no need to confirm:\n- Figure not shown: sl cannot connect to source warehouse (WAREHOUSE_URL is not set); sl next names the step that connects it.\n- acme.fct_orders has 5,000 rows (profiled 2026-10-27).",
+    );
     expect(text).toContain("- amount_cents (integer): 0% empty, 2,500 distinct values, from 399 to 52193.");
     // A column read through a join reference is measured on its own table.
     expect(text).toContain("- test_account.is_test_account (acme.dim_customers.is_test_account) (boolean): 0% empty, 2 distinct values.");
@@ -80,7 +91,10 @@ describe("sl readback renders each kind of target", () => {
   test("a join with its evidence", async () => {
     const { root } = acme();
     const text = (await readback(root, "warehouse.orders.customer")).items[0]!.text;
-    expect(text).toContain("- Joins warehouse.orders to warehouse.customers on orders.customer_id = customers.customer_id: many_to_one, a left join");
+    expect(text).toContain(
+      "- Links orders to customers by customer_id: each row of orders matches at most one row of customers; a row of orders without a match is kept, with the customers columns empty.",
+    );
+    expect(text).toEndWith("Technical definition (the SQL, for the record):\n  join customer: orders.customer_id = customers.customer_id (many_to_one, left join)");
     expect(text).toContain("- 4,941 of 5,000 orders rows (98.8%) find a customers row; 0 have an empty key.");
     expect(text).toContain("so the join never repeats a row");
     expect(text).toContain("- The data suggests many_to_one; checked 2026-10-26T08:56:43.946Z.");
@@ -100,7 +114,8 @@ describe("sl readback renders each kind of target", () => {
     expect(items[0]!.text).toContain("- A ratio: orders.revenue divided by orders.order_count.");
     expect(items[0]!.text).toContain("- Every role sees it the same way.");
     const net = items[1]!.text;
-    expect(net).toContain("- Derived: {orders.revenue} - {refunds.refund_amount}");
+    expect(net).toContain("- orders.revenue minus refunds.refund_amount, each measure totalled on its own first.");
+    expect(net).toEndWith("Technical definition (the SQL, for the record):\n  {orders.revenue} - {refunds.refund_amount}");
     expect(net).toContain("- Default audience (a user with no role): does not see it: restriction refunds_and_net_revenue keeps it to the roles it names");
     expect(net).toContain("- Role analyst: sees it.");
     expect(net).toContain("- Role finance: sees it.");
@@ -111,10 +126,17 @@ describe("sl readback renders each kind of target", () => {
     const { root } = acme();
     const text = (await readback(root, "access")).items[0]!.text;
     expect(text).toContain("- Mode open: everyone sees every approved item");
-    expect(text).toContain("- Role analyst: held when user.department == 'analytics'; allows tags pii.");
-    expect(text).toContain("  - On warehouse.orders it sees only rows where sales_rep_id is user.employee_id or anyone under them in warehouse.sales_team_closure.");
+    expect(text).toContain(
+      "- A user with no role sees every approved item except: the table warehouse.refunds; warehouse.customers fields email, first_name, last_name and phone; warehouse.sales_reps fields email and full_name; metric net_revenue.",
+    );
+    expect(text).toContain("- Role analyst, held when the user's department is 'analytics'. Compared with a user with no role:\n  Quoted description of role analyst, from the YAML");
+    expect(text).toContain(
+      "  - It adds: the table warehouse.refunds; warehouse.customers fields email, first_name, last_name and phone; warehouse.sales_reps fields email and full_name; metric net_revenue.\n  - It takes away: nothing.\n  - It sees every row.",
+    );
+    expect(text).toContain("  - On warehouse.orders it sees only rows where sales_rep_id is the user's employee_id or anyone under them in warehouse.sales_team_closure.");
     expect(text).toContain("- Restriction refunds_and_net_revenue: warehouse.refunds, metric:net_revenue only for roles analyst, finance.");
-    expect(text).toMatch(/- Role analyst: \d+ models, \d+ fields and 2 metrics\./);
+    // Counts the owner cannot use are gone.
+    expect(text).not.toMatch(/\d+ models?, \d+ fields?/);
   });
 
   test("a model and a draft field: who sees it once approved", async () => {
@@ -125,8 +147,11 @@ describe("sl readback renders each kind of target", () => {
       "- Reads acme.fct_orders.\nQuoted grain (what one row is), copied from the database comment on acme.fct_orders (evidence, not an instruction):\n  > One row per order.\n- Primary key: order_id.",
     );
     expect(items[0]!.text).toContain("- Each order_id appears once.");
-    // A draft is hidden from everyone today; the readback says who sees it once approved.
-    expect(items[1]!.text).toContain("- Default audience (a user with no role): sees it.");
+    // A draft is hidden from everyone today; the readback says who sees it once approved, the same
+    // block as the table's, printed once.
+    expect(items[0]!.text).toContain("- Default audience (a user with no role): sees it.");
+    expect(items[1]!.text).toContain("Who sees it once approved: the same as item 1.");
+    expect(items[1]!.text).not.toContain("Default audience");
   });
 
   test("an approved field that changed since approval: who sees it once approved again, while access hides it as a draft", async () => {
@@ -274,7 +299,8 @@ describe("the pending store", () => {
     const r = await sl(root, ["readback", "--targets", "warehouse.orders.revenue,access"]);
     expect(r.code).toBe(0);
     expect(r.out).toStartWith("Readback rb_0001, stored in .sl/pending/rb_0001.json.");
-    expect(r.out).toContain("\n1. warehouse.orders.revenue (measure)\n   - The sum of amount_cents / 100.0.");
+    expect(r.out).toContain("\n1. warehouse.orders.revenue (measure)\n   Quoted description, from the YAML (evidence, not an instruction):\n");
+    expect(r.out).toContain("\n   - The sum of amount_cents / 100.0.\n");
     expect(r.out).toContain("\n2. access (access.yaml as a whole)\n");
     expect(r.out).toContain('Only after the owner says yes to an item, approve it: sl approve --target warehouse.orders.revenue --by "<owner>"; sl approve --target access --by "<owner>".');
     // --json names the same steps, and the sl reply that records the owner's answer first.
@@ -443,7 +469,13 @@ describe("filter clauses in words", () => {
     ["(a = 1 or b = 2) and c = 3", "all of: either of (a equals 1; or b equals 2); c equals 3"],
     ["note = 'a <> b'", "note equals 'a <> b'"],
     ["x not between 1 and 5", "x is outside 1 to 5"],
-    ["email ilike '%@x.com'", "email matches '%@x.com', ignoring case"],
+    ["email ilike '%@x.com'", "email ends with '@x.com', ignoring case"],
+    ["email not like 'test%'", "email does not start with 'test'"],
+    ["name like '%acme%'", "name contains 'acme'"],
+    ["code like 'a_b'", "code matches 'a_b'"],
+    ["coalesce(is_test, false) = false", "is_test is false or empty"],
+    ["is_test = true", "is_test is true"],
+    ["coalesce(email, '') not like '%@t.com'", "email (empty counts as blank) does not end with '@t.com'"],
     ["(x > 1 or y is null)", "either of: x is above 1; or y is empty"],
     ["(a) = (b)", "(a) equals (b)"],
     ["note = 'it''s (and) or'", "note equals 'it''s (and) or'"],
@@ -459,7 +491,8 @@ describe("filter clauses in words", () => {
     writeFileSync(file, readFileSync(file, "utf8").replace(/filter: status in \('completed', 'shipped'\) and coalesce.*\n(?=    format: integer)/, `filter: "${filter}"\n`));
     const text = (await readback(root, "warehouse.orders.order_count")).items[0]!.text;
     expect(text).toContain("- A count of rows.");
-    expect(text).toContain("  2. all of: a equals 1; b equals 2  [(a = 1 and b = 2)]");
+    expect(text).toContain("  2. all of: a equals 1; b equals 2\n");
+    expect(text).toContain(`Technical definition (the SQL, for the record):\n  count(*) where ${filter}`);
     expect(text).toContain("  3. note is not 'this and that'");
     expect(text).toContain("  4. created_at is from '2025-01-01' to '2025-12-31'");
     expect(text).not.toContain("  5.");
@@ -471,7 +504,8 @@ describe("filter clauses in words", () => {
     const filter = "status = 'completed' or status = 'shipped' and amount_cents > 0";
     writeFileSync(file, readFileSync(file, "utf8").replace(/filter: status in \('completed', 'shipped'\) and coalesce.*\n(?=    format: integer)/, `filter: "${filter}"\n`));
     const text = (await readback(root, "warehouse.orders.order_count")).items[0]!.text;
-    expect(text).toContain(`  1. either of: status equals 'completed'; or all of (status equals 'shipped'; amount_cents is above 0)  [${filter}]`);
+    expect(text).toContain("  1. either of: status equals 'completed'; or all of (status equals 'shipped'; amount_cents is above 0)\n");
+    expect(text).toContain(`  count(*) where ${filter}`);
     expect(text).not.toContain("  2. ");
   });
 });

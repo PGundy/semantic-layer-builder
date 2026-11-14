@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { isMap, type Document, type YAMLMap } from "yaml";
 import { goldenHash } from "./approval-hash.ts";
-import { commitEdit, itemMap, oneLine, placeKey, relFile } from "./edit.ts";
+import { batchWrite, blamed, commitEdit, deferValidation, itemMap, oneLine, placeKey, relFile } from "./edit.ts";
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { DEFAULT_TOLERANCE } from "./goldens.ts";
@@ -37,8 +37,12 @@ export function createAccess(root: string, mode: string): SetOutcome {
   const file = paths(root).access;
   const text = `mode: ${mode}\nstatus: draft\n`;
   const key = (i: { file: string; path: string; message: string }) => `${i.file}\0${i.path}\0${i.message}`;
-  const known = new Set(validateProject(root).filter((i) => i.level === "error").map(key));
-  const added = validateProject(root, new Map([[file, text]])).filter((i) => i.level === "error" && !known.has(key(i)));
+  // Inside sl apply the batch validates the project once, at its end.
+  const added = deferValidation() ? [] : validateProject(root, new Map([[file, text]])).filter((i) => i.level === "error");
+  if (added.length) {
+    const known = new Set(validateProject(root).filter((i) => i.level === "error").map(key));
+    added.splice(0, added.length, ...blamed(added.filter((i) => !known.has(key(i)))));
+  }
   if (added.length) {
     const lines = added.map((i) => `  - ${i.file}${i.path ? ` ${i.path}` : ""}: ${i.message}`);
     // A golden's role or user waits for access.yaml; anything else is what the mode lets nobody see.
@@ -57,6 +61,7 @@ export function createAccess(root: string, mode: string): SetOutcome {
   } catch {}
   // A link at the path, even one to nothing, could point outside the semantic root.
   if (exists) throw new UserError(`Refusing to create access.yaml: something is already at ${file} (a link, or a file written meanwhile). Nothing was written. Remove it or run sl validate.`);
+  batchWrite(file);
   writeFileAtomic(file, text, { exclusive: true });
   const notes = [
     `Created access.yaml as a draft with mode ${mode}${mode === "open" ? ": everyone sees every approved item, minus protected tags, restrictions and role denials" : ": a user sees only what a role's allow.models grants, and it has no roles yet, so nobody sees anything until roles are added"}.`,

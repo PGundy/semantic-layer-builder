@@ -123,7 +123,7 @@ describe("acme-multi", () => {
     expect(effort).toMatchObject({ passed: false, score: null });
     expect(effort.metrics!.interviewer_tokens_vs_reference).toBe(1.0685);
     expect(effort.details.at(-1)).toBe(
-      "The interviewer holds 106.9% of acme-structured's interviewer tokens, above the scenario's max_interviewer_share of 80%; dispatch more of the reading to the role agents (agents/sl-*.md).",
+      "The interviewer holds 109% of acme-structured's interviewer tokens, above the scenario's max_interviewer_share of 80%; dispatch more of the reading to the role agents (agents/sl-*.md).",
     );
     expect(r.grades.passed).toBe(false);
 

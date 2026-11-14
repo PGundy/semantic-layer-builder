@@ -134,6 +134,9 @@ export async function openDuckDB(root: string, source: SourceConfig, _opts: Adap
         prepared.destroySync();
       }
     },
+    interrupt() {
+      c.interrupt();
+    },
     async close() {
       c.closeSync();
       instance.closeSync();

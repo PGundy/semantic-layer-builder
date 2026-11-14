@@ -108,7 +108,7 @@ describe("sl readback --targets golden:<name>", () => {
   test("the default tolerance is named as the default, and the same golden and rows give the same hash", async () => {
     const t = await setup();
     const a = await sl(t.root, ["readback", "--targets", TARGET]);
-    expect(a.out).toContain("Tolerance: 0.005 (0.5% either way on later runs), the default; agree one with the owner and read it back with --tolerance <t>.");
+    expect(a.out).toContain("Tolerance: 0.005 (the default; agree one with the owner and read it back with --tolerance <t>): on later runs a figure with decimals may move up to 0.5% either way; whole numbers and grouping columns must match exactly.");
     const [first, second] = [(await readback(t.root)).items[0]!, (await readback(t.root)).items[0]!];
     expect(first.content_hash).toBe(second.content_hash);
     expect((await readback(t.root, ["--tolerance", "0"])).items[0]!.content_hash).not.toBe(first.content_hash);

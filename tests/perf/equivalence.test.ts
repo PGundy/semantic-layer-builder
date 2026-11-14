@@ -11,7 +11,7 @@ import { openAdapter } from "../../skills/semantic-layer/scripts/lib/adapters/in
 import { normalizeDecimal, normalizeInteger } from "../../skills/semantic-layer/scripts/lib/adapters/normalize.ts";
 import { UserError } from "../../skills/semantic-layer/scripts/lib/errors.ts";
 import { parseCsvRecords } from "../../skills/semantic-layer/scripts/lib/importers/csv.ts";
-import { qualifiedName } from "../../skills/semantic-layer/scripts/lib/naming.ts";
+import { findTable, qualifiedName } from "../../skills/semantic-layer/scripts/lib/naming.ts";
 import {
   checkPattern,
   filterInScope,
@@ -26,7 +26,7 @@ import {
 import { saveSnapshot } from "../../skills/semantic-layer/scripts/lib/project.ts";
 import { diffSnapshots } from "../../skills/semantic-layer/scripts/lib/snapshot-diff.ts";
 import type { Scope, Snapshot, SnapshotColumn, SnapshotTable } from "../../skills/semantic-layer/scripts/lib/types.ts";
-import { writeYaml } from "../../skills/semantic-layer/scripts/lib/yaml.ts";
+import { parseYaml, writeYaml } from "../../skills/semantic-layer/scripts/lib/yaml.ts";
 import { duckdbSource, initProject, sl, tempRoot } from "../helpers.ts";
 
 type Named = { schema?: string | null; name: string };
@@ -511,5 +511,46 @@ describe("DuckDB adapter", () => {
     } finally {
       await a.close();
     }
+  });
+});
+
+describe("table lookup and YAML parsing", () => {
+  // findTable before its index: a scan for the qualified name, then a unique bare name.
+  function findTableRef(tables: SnapshotTable[], ref: string): SnapshotTable | undefined {
+    const lower = ref.toLowerCase();
+    const exact = tables.find((t) => qualifiedName(t).toLowerCase() === lower);
+    if (exact) return exact;
+    if (ref.includes(".")) return undefined;
+    const byName = tables.filter((t) => t.name.toLowerCase() === lower);
+    return byName.length === 1 ? byName[0] : undefined;
+  }
+
+  test("findTable agrees with the scan it replaces, with repeated, case-varied and schema-less names", () => {
+    const rand = rng(11);
+    const names = ["orders", "Orders", "customers", "events", "a.b", "refunds"];
+    const schemas = [null, "sales", "Sales", "ops"];
+    const tables: SnapshotTable[] = Array.from({ length: 300 }, () => ({
+      schema: schemas[Math.floor(rand() * schemas.length)]!,
+      name: `${names[Math.floor(rand() * names.length)]!}${rand() < 0.5 ? "" : Math.floor(rand() * 20)}`,
+      kind: "table",
+      columns: [],
+    }));
+    const refs = [...tables.map(qualifiedName), ...tables.map((t) => t.name), "nope", "sales.nope", "ORDERS", "Sales.Orders3", "a.b"];
+    for (const ref of refs) expect(findTable(tables, ref)).toBe(findTableRef(tables, ref));
+    // A list that grows after its first lookup is indexed again.
+    tables.push({ schema: "late", name: "added_later", kind: "table", columns: [] });
+    expect(findTable(tables, "added_later")).toBe(tables.at(-1));
+    expect(findTable(tables, "late.added_later")).toBe(tables.at(-1));
+  });
+
+  test("parseYaml gives each caller its own copy of a text it parsed before, and throws as parse does", () => {
+    const text = "model: orders\ndimensions:\n  - name: a\n    synonyms: [x]\n";
+    const one = parseYaml(text) as { dimensions: { synonyms: string[] }[] };
+    one.dimensions[0]!.synonyms.push("changed");
+    expect(parseYaml(text)).toEqual({ model: "orders", dimensions: [{ name: "a", synonyms: ["x"] }] });
+    expect(parseYaml("")).toBeNull();
+    expect(parseYaml("just text")).toBe("just text");
+    expect(() => parseYaml("a: [1")).toThrow();
+    expect(() => parseYaml("a: [1")).toThrow();
   });
 });

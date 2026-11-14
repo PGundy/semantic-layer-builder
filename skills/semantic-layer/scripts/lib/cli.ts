@@ -12,6 +12,8 @@ export interface CliIO {
   env: Record<string, string | undefined>;
   out: (text: string) => void;
   err: (text: string) => void;
+  // Standard input, for a command that reads it (sl apply --file -).
+  stdin?: () => Promise<string>;
 }
 
 export const GLOBAL_OPTIONS = {
@@ -117,6 +119,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
       out: json ? (text) => io.out(withConnectionFrom(text, uses)) : io.out,
       err: io.err,
       lock,
+      stdin: io.stdin,
     };
     const input = { values, positionals: parsed.positionals };
     // A command that reads, changes and writes holds the root's lock from before its first read.

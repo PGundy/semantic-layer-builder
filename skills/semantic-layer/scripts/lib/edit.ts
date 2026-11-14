@@ -18,7 +18,7 @@ import { matchesDotted } from "./patterns.ts";
 import { incomingKeyColumns, referencedColumns } from "./snapshot-diff.ts";
 import { sqlNames } from "./sql-names.ts";
 import { type Issue, SCHEMAS_DIR, validateProject } from "./validate.ts";
-import { editYamlText, parseYamlText, readYamlIfExists } from "./yaml.ts";
+import { editYamlText, parseYaml, parseYamlText, readYamlIfExists } from "./yaml.ts";
 
 // Keys only sl approve writes.
 export const APPROVAL_FIELDS = ["status", "approved_by", "approved_at", "approved_hash", "last_approved"];
@@ -255,16 +255,58 @@ export function commitEdits(
   if (!after.size) return { changed: false, files: [], reapprove: [] };
   const reapprove = changedApprovals(root, after, renamed, removed);
   guard?.(reapprove);
-  // An error the project already has in a moved file counts as known in the file it moves to.
-  const moved = move ? [relFile(root, move.from), relFile(root, move.to)] : undefined;
-  const key = (i: { file: string; path: string; message: string }) => `${moved && i.file === moved[0] ? moved[1] : i.file}\0${i.path}\0${i.message}`;
-  const was = validateProject(root);
-  const now = validateProject(root, after, removed);
-  const known = new Set(was.filter((i) => i.level === "error").map(key));
-  const added = now.filter(
-    (i) => i.level === "error" && !known.has(key(i)) && !reapprove.some((r) => i.message.startsWith(`${r} changed since it was approved`)),
+  const moves: [string, string][] = move ? [[relFile(root, move.from), relFile(root, move.to)]] : [];
+  if (!batch?.deferred) {
+    const added = blamed(addedIssues(validateProject(root, after, removed), () => validateProject(root), { moves, reapprove, warnings: opts.warnings, refuse: opts.refuse }));
+    if (added.length) throw invalid(what, added);
+  }
+  if (batch) {
+    // Inside sl apply: the batch validates once at its end and puts every file back on any failure.
+    for (const file of [...after.keys(), ...removed]) batchWrite(file);
+    batch.moves.push(...moves);
+    for (const r of reapprove) batch.reapprove.add(r);
+    if (opts.warnings) for (const file of after.keys()) batch.warningFiles.add(relFile(root, file));
+    if (opts.refuse) batch.refuse.push(opts.refuse);
+  }
+  // A created or moved file is written only where nothing is, and the moved file is removed last.
+  for (const [file, text] of after) writeFileAtomic(file, text, { exclusive: create?.has(file) || move?.to === file });
+  for (const file of removed) unlinkSync(file);
+  // Inside a batch the approved items it changed are listed once, at its end.
+  return { changed: true, files: [...after.keys(), ...removed].map((f) => relFile(root, f)).sort(), reapprove: batch ? [] : reapprove };
+}
+
+function invalid(what: string, added: Issue[]): UserError {
+  const lines = added.map((i) => `  - ${i.file}${i.path ? ` ${i.path}` : ""}: ${i.message}`);
+  return new UserError(
+    `Cannot ${what}: the result would not validate, so nothing was written:\n${lines.join("\n")}\nFix the value and run it again; sl validate lists the project's errors.`,
   );
-  if (opts.warnings) {
+}
+
+interface AddedOptions {
+  // Files the edits moved, from and to, relative to the root, in order.
+  moves: [string, string][];
+  // Approved items the edits changed: their "changed since it was approved" errors are expected.
+  reapprove: Iterable<string>;
+  warnings?: Issue[];
+  refuse?: (warning: Issue) => boolean;
+}
+
+// The errors of `now` (the project as the edits leave it) that `before` (the project as it was) did
+// not have, plus the warnings `refuse` matches among the warnings it adds; the other added warnings
+// go to `warnings`. The project as it was is validated only when the edits leave an error, or a
+// warning to sort, so an edit that leaves the project valid validates it once.
+function addedIssues(now: Issue[], before: () => Issue[], o: AddedOptions): Issue[] {
+  const reapprove = [...o.reapprove];
+  const errors = now.filter((i) => i.level === "error" && !reapprove.some((r) => i.message.startsWith(`${r} changed since it was approved`)));
+  const sortWarnings = !!o.warnings && now.some((i) => i.level === "warning");
+  if (!errors.length && !sortWarnings) return [];
+  // An error the project already has in a moved file counts as known in the file it moves to.
+  const fileNow = (file: string) => o.moves.reduce((f, [from, to]) => (f === from ? to : f), file);
+  const key = (i: Issue) => `${fileNow(i.file)}\0${i.path}\0${i.message}`;
+  const was = before();
+  const known = new Set(was.filter((i) => i.level === "error").map(key));
+  const added = errors.filter((i) => !known.has(key(i)));
+  if (sortWarnings) {
     const left = new Map<string, number>();
     const same = (i: Issue) => `${i.file}\0${i.message}`;
     for (const i of was) if (i.level === "warning") left.set(same(i), (left.get(same(i)) ?? 0) + 1);
@@ -273,20 +315,140 @@ export function commitEdits(
       const n = left.get(same(i)) ?? 0;
       left.set(same(i), n - 1);
       if (n > 0) continue;
-      if (opts.refuse?.(i)) added.push(i);
-      else opts.warnings.push(i);
+      if (o.refuse?.(i)) added.push(i);
+      else o.warnings!.push(i);
     }
   }
-  if (added.length) {
-    const lines = added.map((i) => `  - ${i.file}${i.path ? ` ${i.path}` : ""}: ${i.message}`);
-    throw new UserError(
-      `Cannot ${what}: the result would not validate, so nothing was written:\n${lines.join("\n")}\nFix the value and run it again; sl validate lists the project's errors.`,
-    );
+  return added;
+}
+
+// A batch of typed edits (sl apply). While one is open, commitEdits writes each edit as it comes,
+// keeping each file's text from before the batch's first write to it (null for a file the batch
+// creates). In the deferred pass it skips each edit's validation, which the batch does once at its end.
+interface Batch {
+  deferred: boolean;
+  originals: Map<string, string | null>;
+  moves: [string, string][];
+  reapprove: Set<string>;
+  // The files of the edits that ask for the warnings they add (the access edits).
+  warningFiles: Set<string>;
+  refuse: ((warning: Issue) => boolean)[];
+  // In the check pass: whether an error an edit adds is one the batch ends with.
+  blame?: (issue: Issue) => boolean;
+}
+
+let batch: Batch | undefined;
+
+// Whether an edit is inside a batch's deferred pass, so it leaves its validation to the batch's end;
+// a writer outside commitEdits that validates checks this and records its file with batchWrite.
+export function deferValidation(): boolean {
+  return !!batch?.deferred;
+}
+
+// The errors an edit adds that count against it: inside a batch's check pass, only those the batch
+// ends with, so an entry whose error a later entry fixes runs on.
+export function blamed(added: Issue[]): Issue[] {
+  return batch?.blame ? added.filter(batch.blame) : added;
+}
+
+// Records a file a writer is about to create, change or remove inside a batch.
+export function batchWrite(file: string): void {
+  if (batch && !batch.originals.has(file)) batch.originals.set(file, existsSync(file) ? readFileSync(file, "utf8") : null);
+}
+
+export interface BatchOutcome {
+  // The approved items the batch changed, as its end leaves them.
+  reapprove: string[];
+  // The warnings the batch added in the files of the edits that ask for them (the access edits).
+  warnings: Issue[];
+  // Set when access.yaml was approved before the batch and its end leaves it a draft.
+  access_draft?: { last_approved?: LastApproval };
+}
+
+function openBatch(deferred: boolean, blame?: Batch["blame"]): Batch {
+  if (batch) throw new UserError("sl apply cannot run inside another sl apply.");
+  batch = { deferred, originals: new Map(), moves: [], reapprove: new Set(), warningFiles: new Set(), refuse: [], blame };
+  return batch;
+}
+
+// Runs `edits` as one batch: each typed edit inside writes as it goes, and at the end the project
+// is validated once. On any failure every file the batch touched is put back as it was. When the end
+// finds an error, the edits run once more, each validated as on its own, so the error thrown is the
+// first edit that adds an error the batch ends with (`edits` names its entry); an edit whose error a
+// later one fixes runs on. The files are put back after that pass too.
+// `what` names the batch in an error no single edit explains.
+export async function runBatch(root: string, what: string, edits: () => Promise<void>): Promise<BatchOutcome> {
+  const open = openBatch(true);
+  let added: Issue[];
+  const warnings: Issue[] = [];
+  try {
+    await edits();
+    const before = new Map([...open.originals].filter((e): e is [string, string] => e[1] !== null));
+    const created = new Set([...open.originals].filter(([, t]) => t === null).map(([f]) => f));
+    added = addedIssues(validateProject(root), () => validateProject(root, before, created), {
+      moves: open.moves,
+      reapprove: open.reapprove,
+      warnings: open.warningFiles.size ? warnings : undefined,
+      refuse: open.refuse.length ? (i) => open.refuse.some((r) => r(i)) : undefined,
+    });
+    if (!added.length) {
+      const access_draft = accessDrafted(root, open.originals);
+      return { reapprove: stillChanged(root, open.reapprove), warnings: warnings.filter((w) => open.warningFiles.has(w.file)), ...(access_draft ? { access_draft } : {}) };
+    }
+  } catch (e) {
+    restore(open.originals);
+    throw e;
+  } finally {
+    batch = undefined;
   }
-  // A created or moved file is written only where nothing is, and the moved file is removed last.
-  for (const [file, text] of after) writeFileAtomic(file, text, { exclusive: create?.has(file) || move?.to === file });
-  for (const file of removed) unlinkSync(file);
-  return { changed: true, files: [...after.keys(), ...removed].map((f) => relFile(root, f)).sort(), reapprove };
+  restore(open.originals);
+  // An edit's error is keyed by the file it ends in after the batch's moves, its path and message.
+  const fileAtEnd = (file: string) => open.moves.reduce((f, [from, to]) => (f === from ? to : f), file);
+  const key = (i: Issue) => `${fileAtEnd(i.file)}\0${i.path}\0${i.message}`;
+  const ends = new Set(added.map(key));
+  const check = openBatch(false, (i) => ends.has(key(i)));
+  try {
+    await edits();
+  } finally {
+    batch = undefined;
+    restore(check.originals);
+  }
+  throw invalid(what, added);
+}
+
+// What the batch left of an approved access.yaml it changed: a draft, with its last approval kept.
+function accessDrafted(root: string, originals: ReadonlyMap<string, string | null>): { last_approved?: LastApproval } | undefined {
+  const file = paths(root).access;
+  const was = originals.get(file);
+  if (!was || !existsSync(file)) return undefined;
+  const read = (text: string): { status?: unknown; last_approved?: LastApproval } | null => {
+    try {
+      return parseYaml(text) as { status?: unknown; last_approved?: LastApproval } | null;
+    } catch {
+      return null;
+    }
+  };
+  const now = read(readFileSync(file, "utf8"));
+  if (read(was)?.status !== "approved" || now?.status === "approved") return undefined;
+  return now?.last_approved ? { last_approved: now.last_approved } : {};
+}
+
+// Puts each file back as the batch found it: its text, or no file.
+function restore(originals: ReadonlyMap<string, string | null>): void {
+  for (const [file, text] of originals) {
+    if (text !== null) writeFileAtomic(file, text);
+    else if (existsSync(file)) unlinkSync(file);
+  }
+}
+
+// Which of `refs` are approved items whose content no longer matches their approval.
+function stillChanged(root: string, refs: Iterable<string>): string[] {
+  const wanted = new Set(refs);
+  if (!wanted.size) return [];
+  return projectEntries(root, new Map())
+    .filter((e) => wanted.has(e.ref) && e.item.status === "approved" && (!carriesHash(e.item) || String(e.item.approved_hash).trim() !== e.hash))
+    .map((e) => e.ref)
+    .sort();
 }
 
 // commitEdits for one file.

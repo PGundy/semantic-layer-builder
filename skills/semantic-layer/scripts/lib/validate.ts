@@ -1,7 +1,6 @@
 // Structural (JSON Schema) and semantic (cross-reference) validation of a semantic root.
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
-import { parseDocument } from "yaml";
 import { type AccessLayer, type AccessVisibility, checkRequest, evaluateLayer, metricMeasureRefs } from "./access.ts";
 import {
   type ApprovalEntry,
@@ -26,6 +25,7 @@ import { intakeIssues, intakeMode, upgradeCommand } from "./intake.ts";
 import { DEFAULT_TOLERANCE } from "./goldens.ts";
 import { countedReplies, currentYes } from "./ledger.ts";
 import { findTable } from "./naming.ts";
+import { parseYaml } from "./yaml.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
 import { isHashedValue, protectedColumns } from "./profile.ts";
 import { parseRequestField } from "./refs.ts";
@@ -237,12 +237,12 @@ class Validator {
         return undefined;
       }
     } else {
-      const doc = parseDocument(text);
-      if (doc.errors.length) {
-        this.error(file, "", `invalid YAML: ${parserLine(doc.errors[0])}`);
+      try {
+        data = parseYaml(text);
+      } catch (e) {
+        this.error(file, "", `invalid YAML: ${parserLine(e)}`);
         return undefined;
       }
-      data = doc.toJS();
     }
     const structural = schemaIssues(kind, data, file);
     this.issues.push(...structural);
@@ -378,6 +378,23 @@ class Validator {
       this.tablesCache.set(source, tables);
     }
     return tables;
+  }
+
+  namesCache = new Map<string, Set<string>>();
+
+  // The names SQL could use for a table of the source: its snapshot's table and schema names,
+  // lower case, and its models' names. Built once per source.
+  tableNames(source: string): Set<string> {
+    let names = this.namesCache.get(source);
+    if (names) return names;
+    names = new Set<string>();
+    for (const t of this.snapshotTables(source) ?? []) {
+      names.add(t.name.toLowerCase());
+      if (t.schema) names.add(t.schema.toLowerCase());
+    }
+    for (const name of this.models.get(source)?.keys() ?? []) names.add(name);
+    this.namesCache.set(source, names);
+    return names;
   }
 
   snapshotTable(source: string, table: string): { snapshot: boolean; table?: SnapshotTable } {
@@ -578,12 +595,7 @@ class Validator {
     const own = table?.columns.length ? table.columns : undefined;
     const isOwn = (name: string) => !!own?.some((c) => c.name.toLowerCase() === name.toLowerCase());
     const joins = named<Join>(model.joins);
-    const otherTables = new Set<string>();
-    for (const t of this.snapshotTables(model.source) ?? []) {
-      otherTables.add(t.name.toLowerCase());
-      if (t.schema) otherTables.add(t.schema.toLowerCase());
-    }
-    for (const name of this.models.get(model.source)?.keys() ?? []) otherTables.add(name);
+    const otherTables = this.tableNames(model.source);
     const seen = new Set<string>();
     const report = (level: Issue["level"], message: string) => {
       if (seen.has(message)) return;

@@ -431,6 +431,24 @@ export interface ReadbackItem {
   content_hash: string;
   // A golden:<name> item only: the tolerance it was read back with, which sl goldens confirm records.
   tolerance?: number;
+  // A measure or metric item: its figure on today's data and the rows behind it, or why it is not
+  // shown. Evidence only: it is outside content_hash.
+  evidence?: FigureEvidence;
+}
+
+// A measure's or metric's figure in a readback: its total on today's data and the rows behind it,
+// or why it is not shown. A metric also lists each measure it combines.
+export interface FigurePart {
+  ref: string; // model.measure
+  figure: number | string | null;
+  row_count: number | string | null;
+}
+
+export interface FigureEvidence {
+  figure?: number | string | null;
+  row_count?: number | string | null;
+  parts?: FigurePart[];
+  not_shown?: string;
 }
 
 export interface PendingReadback {
