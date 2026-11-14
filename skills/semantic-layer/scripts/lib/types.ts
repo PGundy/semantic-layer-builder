@@ -431,6 +431,8 @@ export interface ReadbackItem {
   content_hash: string;
   // A golden:<name> item only: the tolerance it was read back with, which sl goldens confirm records.
   tolerance?: number;
+  // A golden:<name> item read back from stored rows: the --results <file> or --plan <plan_id> it took.
+  rows_from?: string;
   // A measure or metric item: its figure on today's data and the rows behind it, or why it is not
   // shown. Evidence only: it is outside content_hash.
   evidence?: FigureEvidence;

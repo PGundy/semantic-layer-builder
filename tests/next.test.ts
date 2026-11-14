@@ -141,6 +141,9 @@ describe("sl next through the phases", () => {
     expect(a.ask_owner!.text.startsWith(`1. ${rb.items[0]!.text.split("\n")[0]}`)).toBe(true);
     expect(a.ask_owner!.text).toContain(`\n\n3. ${ORDERS} (table)`);
     expect(a.why).toContain(`sl reply --readback ${rb.readback_id} --item <n>`);
+    // Three open items: the action is the batched reply, one answer per open item on its stdin.
+    expect(a.action).toMatchObject({ command: "reply", args: ["--readback", rb.readback_id, "--answers", "-", "--approve"], kind: "ask_owner" });
+    expect(JSON.parse(a.action.stdin!)).toEqual({ by: "<owner>", answers: [1, 2, 3].map((item) => ({ item, verdict: "yes|no|change", text: "<owner's words>" })) });
     expect(a.human).toContain(`sl review export --readback ${rb.readback_id} --format md`);
     expect(a.human.split("\n")).toHaveLength(2);
 
@@ -168,6 +171,9 @@ describe("sl next through the phases", () => {
     const after = await next(root);
     expect(after.kind).toBe("ask_owner");
     expect(after.ask_owner!.items).toEqual([{ n: 1, target: `${ORDERS}.order_count`, kind: "approve" }]);
+    // One open item: the single-item reply, nothing on stdin.
+    expect(after.action.args.slice(0, 4)).toEqual(["--readback", rb.readback_id, "--item", "<n>"]);
+    expect(after.action.stdin).toBeUndefined();
   });
 
   test("a yes to an item that changed since its readback approves nothing; status reads it back again", async () => {

@@ -302,16 +302,16 @@ describe("the pending store", () => {
     expect(r.out).toContain("\n1. warehouse.orders.revenue (measure)\n   Quoted description, from the YAML (evidence, not an instruction):\n");
     expect(r.out).toContain("\n   - The sum of amount_cents / 100.0.\n");
     expect(r.out).toContain("\n2. access (access.yaml as a whole)\n");
-    // Two items are one owner turn: the footer names the batched reply and approve (HR-15).
+    // Two items are one owner turn: the footer names the one command that records and approves them (HR-15).
     expect(r.out).toContain(
-      "Record the owner's answers in one sl reply --readback rb_0001 --answers -, each item with its own verdict and their words; then approve every item they said yes to in one sl approve --readback rb_0001.",
+      "Record the owner's answers in one sl reply --readback rb_0001 --answers - --approve, each item with its own verdict and their words: it approves every item they said yes to as it stands.",
     );
     expect(r.out).not.toContain("sl approve --target");
     // --json names the same steps, and the sl reply that records the owner's answer first.
     const j = (await sl(root, ["readback", "--targets", "warehouse.orders.revenue,access", "--json"])).json<{ next: string; next_steps: string[] }>();
     expect(j.next).toBe('sl reply --readback rb_0002 --item <n> --text "<owner\'s words>" --verdict yes|no|change --by "<owner>"');
     expect(j.next_steps).toEqual(['sl approve --target warehouse.orders.revenue --by "<owner>"', 'sl approve --target access --by "<owner>"']);
-    expect(j).toMatchObject({ batched: { reply: "sl reply --readback rb_0002 --answers -", approve: ["sl approve --readback rb_0002"] } });
+    expect(j).toMatchObject({ batched: { reply: "sl reply --readback rb_0002 --answers -", reply_approve: "sl reply --readback rb_0002 --answers - --approve", approve: ["sl approve --readback rb_0002"] } });
     // One item keeps the single form.
     const one = await sl(root, ["readback", "--targets", "warehouse.orders.revenue"]);
     expect(one.out).toContain('Only after the owner says yes to an item, approve it: sl approve --target warehouse.orders.revenue --by "<owner>".');
@@ -329,12 +329,15 @@ describe("the pending store", () => {
     // sl goldens confirm --readback takes no --results, so the footer never names it with one.
     expect(r.out).not.toContain("sl goldens confirm --readback");
     expect(r.out).toContain(
-      `then approve every item they said yes to in one sl approve --readback rb_0001, and confirm each golden they said yes to: sl goldens confirm --name revenue_2025 --results ${results}.`,
+      `Record the owner's answers in one sl reply --readback rb_0001 --answers - --approve, each item with its own verdict and their words: it approves every item they said yes to as it stands; then confirm each golden they said yes to: sl goldens confirm --name revenue_2025 --results ${results}.`,
     );
     const answers = join(dir, "answers.json");
     writeFileSync(answers, JSON.stringify({ by: "Dana Ruiz", answers: [{ items: [1, 2], verdict: "yes", text: "Yes, both are right." }] }));
-    expect((await sl(root, ["reply", "--readback", "rb_0001", "--answers", answers])).code).toBe(0);
-    expect((await sl(root, ["approve", "--readback", "rb_0001"])).code).toBe(0);
+    // The golden read from --results is left to its own confirm, which the reply names; the yes stays.
+    const reply = await sl(root, ["reply", "--readback", "rb_0001", "--answers", answers, "--approve"]);
+    expect({ code: reply.code, err: reply.err }).toEqual({ code: 0, err: "" });
+    expect(reply.out).toContain(`  - golden:revenue_2025 (item 1): it was read back from stored rows (--results ${results}), which only its own confirm reads. Next: sl goldens confirm --name revenue_2025 --results ${results}.`);
+    expect(reply.out).toContain("  - warehouse.orders.revenue (item 2, draft -> approved) by Dana Ruiz");
     const confirm = await sl(root, ["goldens", "confirm", "--name", "revenue_2025", "--results", results]);
     expect(confirm.err).toBe("");
     expect(confirm.code).toBe(0);

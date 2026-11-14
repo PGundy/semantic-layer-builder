@@ -2695,7 +2695,7 @@ describe("time zones on time dimensions", () => {
         "warning",
         ORDERS,
         "dimensions[0].time_zone",
-        "names the zone timestamps without a time zone are stored in, but column created_at is timestamp with time zone, which carries its own; remove time_zone, and convert in expr to bucket days in another zone",
+        "names the zone timestamps without a time zone are stored in, but column created_at is timestamp with time zone, which carries its own; remove time_zone, and to count days in America/New_York write the expr as created_at at time zone 'America/New_York' (without it, days are counted in UTC when sl runs the query)",
       ],
     ]);
   });

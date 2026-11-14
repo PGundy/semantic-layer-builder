@@ -42,6 +42,11 @@
             "minimum": 0,
             "description": "golden:<name> items only: the tolerance read back, which sl goldens confirm records when it is not given --tolerance."
           },
+          "rows_from": {
+            "type": "string",
+            "minLength": 1,
+            "description": "golden:<name> items read back from stored rows only: the --results <file> or --plan <plan_id> the readback took, which that golden's sl goldens confirm --name takes too."
+          },
           "evidence": {
             "type": "object",
             "additionalProperties": false,

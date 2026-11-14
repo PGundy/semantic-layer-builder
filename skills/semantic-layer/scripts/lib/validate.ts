@@ -146,6 +146,16 @@ function usableTable(t: unknown): SnapshotTable | undefined {
   return { ...(t as unknown as SnapshotTable), columns: named<SnapshotTable["columns"][number]>(t.columns) };
 }
 
+// A zoned column's value as wall-clock time in `zone`, in the dialect's SQL: the expr that counts days there.
+function zonedExpr(expr: string, zone: string, dialect: Dialect | undefined): string {
+  const z = `'${zone.replace(/'/g, "''")}'`;
+  const col = expr.trim();
+  if (dialect === "bigquery") return `datetime(${col}, ${z})`;
+  if (dialect === "snowflake") return `convert_timezone(${z}, ${col})`;
+  if (dialect === "databricks") return `from_utc_timestamp(${col}, ${z})`;
+  return `${col} at time zone ${z}`;
+}
+
 // How a source's SQL resolves an identifier against the column names in its snapshot. Folding is
 // enforced only when the snapshot was read from the live catalog, whose names carry the true case.
 interface IdentRules {
@@ -924,7 +934,8 @@ class Validator {
         f,
         path,
         `names the zone timestamps without a time zone are stored in, but column ${col.name} is ${col.type}, which carries its own; ` +
-          "remove time_zone, and convert in expr to bucket days in another zone",
+          `remove time_zone, and to count days in ${zone} write the expr as ${zonedExpr(d.expr as string, zone, rules.dialect)} ` +
+          "(without it, days are counted in UTC when sl runs the query)",
       );
   }
 

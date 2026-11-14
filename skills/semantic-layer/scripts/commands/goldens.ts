@@ -893,15 +893,16 @@ async function newCommand(ctx: CommandContext, values: OptionValues): Promise<nu
 
 // sl goldens confirm --readback <id>: each golden of the readback confirmed as --name confirms it,
 // only on the owner's latest reply to it being a yes to it with these rows and this tolerance. Exits
-// 0 when every golden the owner said yes to was confirmed, 1 when one was not.
-async function confirmReadback(ctx: CommandContext, values: OptionValues, rb: string): Promise<number> {
+// 0 when every golden the owner said yes to was confirmed, 1 when one was not. `only`, when given,
+// keeps the goldens with those targets (sl reply --answers --approve: the ones it answered).
+export async function confirmReadback(ctx: CommandContext, values: OptionValues, rb: string, only?: ReadonlySet<string>): Promise<number> {
   for (const flag of ["name", "tolerance", "results", "plan"] as const)
     if (str(values, flag) !== undefined) throw new UserError(`--readback takes no --${flag}: each golden is confirmed with the tolerance its readback stated. Run sl goldens confirm --name <g> --${flag} ... for one golden.`);
   if (bool(values, "emit-sql")) throw new UserError("--readback takes no --emit-sql; write one golden's plan with sl goldens confirm --name <g> --emit-sql.");
   const by = str(values, "by")?.trim();
   if (by === "") throw new UserError(`--by is empty. Leave it out to record the owner whose yes is in ${LEDGER_FILE}, or give that owner's name.`);
   const pending = readPending(ctx.root, rb.trim());
-  const items = pending.items.filter((i) => i.target.startsWith("golden:"));
+  const items = pending.items.filter((i) => i.target.startsWith("golden:") && (!only || only.has(i.target)));
   if (!items.length) throw new UserError(`Readback ${pending.readback_id} reads back no golden, so there is nothing to confirm. Approve its items with sl approve --readback ${pending.readback_id}.`);
   const replies = readReplies(ctx.root);
   type Result = { name: string; item: number; confirmed: boolean; said_yes: boolean; reason?: string; next?: string; result?: Record<string, unknown> };
@@ -951,7 +952,7 @@ async function confirmReadback(ctx: CommandContext, values: OptionValues, rb: st
     );
     return code;
   }
-  const lines = [`Confirmed ${done.length} of the ${results.length} goldens of ${pending.readback_id}, each on the owner's own yes to its rows and tolerance${done.length ? ":" : "."}`];
+  const lines = [`Confirmed ${done.length} of the ${results.length} goldens of ${pending.readback_id}${only ? " answered now" : ""}, each on the owner's own yes to its rows and tolerance${done.length ? ":" : "."}`];
   for (const r of done) {
     const x = r.result as { rows?: unknown[]; tolerance?: number; confirmed_by?: string; confirmed_at?: string; ledger?: string };
     lines.push(`  - golden:${r.name} (item ${r.item}): ${x.rows?.length ?? 0} expected row(s), tolerance ${x.tolerance}, confirmed by ${x.confirmed_by} on ${x.confirmed_at} (reply ${x.ledger})`);

@@ -1,9 +1,11 @@
 import type { CommandContext, CommandSpec } from "../lib/command.ts";
-import { str } from "../lib/command.ts";
+import { bool, str } from "../lib/command.ts";
 import { oneLine } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { afterYesSteps, goldenExportSource, goldenUpgradeNext } from "../lib/export-goldens.ts";
 import { readJsonObject, unknownKeys } from "../lib/json-input.ts";
+import { approveMany } from "./approve.ts";
+import { confirmReadback } from "./goldens.ts";
 import { LEDGER_FILE, latestReply, openLedger, ownerText, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
@@ -14,7 +16,7 @@ const VERDICTS: readonly ReplyVerdict[] = ["yes", "no", "change"];
 const USAGE = 'sl reply --readback <readback_id> --item <n> --text "<owner\'s words>" [--verdict yes|no|change] [--about access] --by "<owner>"';
 const ANSWERS_USAGE =
   'sl reply --readback <readback_id> --answers <file | -> holding {"by": "<owner>", "answers": [{"item": 1, "verdict": "yes", "text": "<owner\'s words>"}, ' +
-  '{"items": [2, 3], "verdict": "change", "text": "<owner\'s words>"}]}';
+  '{"items": [2, 3], "verdict": "change", "text": "<owner\'s words>"}]} [--approve]';
 
 // One reply as the ledger records it, the single form and --answers alike: the same keys from the
 // same inputs, so a batch writes the lines the single form would, apart from ids and times.
@@ -54,7 +56,7 @@ function afterYes(root: string, target: string, by: string): { next: string; wai
 
 // The --answers form: every entry is checked before any line is written, then one ledger line per
 // item, in one write, each the line the single form writes for it.
-async function replyAnswers(ctx: CommandContext, rb: string, file: string): Promise<number> {
+async function replyAnswers(ctx: CommandContext, rb: string, file: string, approve: boolean): Promise<number> {
   const data = await readJsonObject(ctx, "answers", file, `Usage: ${ANSWERS_USAGE}.`);
   const fail = (why: string): never => {
     throw new UserError(`${why} Nothing was written. Fix it and run the same command again. Usage: ${ANSWERS_USAGE}.`);
@@ -64,6 +66,8 @@ async function replyAnswers(ctx: CommandContext, rb: string, file: string): Prom
   const by = typeof data.by === "string" ? ownerText(oneLine(data.by)).text : "";
   if (!by) fail('"by" is missing or empty; give the name of the owner who answered.');
   if (!Array.isArray(data.answers) || !data.answers.length) fail('"answers" is missing or empty; give one entry per answer the owner gave.');
+  // Recorded, and approved, under the lock; --approve releases it before a golden's query runs.
+  const release = approve ? await ctx.lock() : () => {};
   const pending = readPending(ctx.root, rb.trim());
   const list = pending.items.map((i) => `${i.n} (${i.target})`).join(", ");
   const named = new Map<number, number>();
@@ -128,12 +132,15 @@ async function replyAnswers(ctx: CommandContext, rb: string, file: string): Prom
   const redo = [...new Set([...edits, ...stale])];
   if (edits.length) steps.push(["sl apply --file -", `make the changes the owner asked for to ${edits.join(", ")} with one sl apply --file -, then sl readback --targets ${redo.join(",")}`]);
   else if (stale.length) steps.push([`sl readback --targets ${stale.join(",")}`, ""]);
+  // --approve: the approve and confirm the yeses allow, run here as their own commands run them.
+  const done = approve ? await approveAnswered(ctx, pending, picked, by, entries, release) : undefined;
+  if (done) steps.splice(0, steps.length, ...done.steps);
   if (!steps.length) steps.push(["sl next", ""]);
   const next = steps[0]![0];
   const stepText = steps.map(([cmd, text]) => text || cmd);
   if (ctx.json) {
-    ctx.out(formatJson({ readback_id: pending.readback_id, path: LEDGER_FILE, ids: entries.map((e) => e.id), entries, warnings, next, next_steps: stepText }));
-    return 0;
+    ctx.out(formatJson({ readback_id: pending.readback_id, path: LEDGER_FILE, ids: entries.map((e) => e.id), entries, warnings, next, next_steps: stepText, ...(done ? done.json : {}) }));
+    return done?.code ?? 0;
   }
   const counts = (["yes", "no", "change"] as const)
     .map((v) => [v, picked.filter((p) => p.verdict === v && !p.about).map((p) => p.item.n)] as const)
@@ -145,16 +152,93 @@ async function replyAnswers(ctx: CommandContext, rb: string, file: string): Prom
   const lines = [`Recorded ${span} in ${LEDGER_FILE}: ${by}'s replies to ${entries.length} item${entries.length === 1 ? "" : "s"} of ${pending.readback_id}, ${counts.join("; ")}.`];
   lines.push(...warnings.map((w) => `Warning: ${w}`));
   if (access.length) lines.push(`Who sees ${access.join(", ")} is decided in the access phase: sl next brings ${access.length === 1 ? "that change" : "those changes"} up there, and ${access.length === 1 ? "it does" : "they do"} not hold the items' sign-off.`);
+  if (done) lines.push(...done.text);
   lines.push(`Next: ${stepText.join("; then ")}.`);
   ctx.out(lines.join("\n"));
-  return 0;
+  return done?.code ?? 0;
+}
+
+type Picked = { item: ReadbackItem; verdict: ReplyVerdict; about?: "access" };
+
+// After sl reply --answers has recorded a turn, --approve approves each item of it the owner said
+// yes to with sl approve --readback's own code (approveMany) and confirms each such golden with sl
+// goldens confirm --readback's (confirmReadback), both kept to the items this turn answered: each
+// rests on its item's own recorded yes to it as it stands, with the same refusals. A golden read
+// back from --results or --plan, or one whose export source waits on an upgrade, is left to its own
+// sl goldens confirm --name, named. The exit code is theirs: 1 when a yes was not acted on.
+async function approveAnswered(ctx: CommandContext, pending: PendingReadback, picked: Picked[], by: string, entries: LedgerReply[], release: () => void) {
+  const yes = picked.filter((p) => p.verdict === "yes" && !p.about);
+  const answered = picked.filter((p) => !p.about);
+  const rowsFrom = yes.filter((p) => p.item.target.startsWith("golden:") && p.item.rows_from);
+  const waits = yes.filter((p) => p.item.target.startsWith("golden:") && !p.item.rows_from && afterYes(ctx.root, p.item.target, by).waits);
+  const own = new Set([...rowsFrom, ...waits].map((p) => p.item.target));
+  const approveSet = new Set(answered.map((p) => p.item.target).filter((t) => !t.startsWith("golden:")));
+  const confirmSet = new Set(answered.map((p) => p.item.target).filter((t) => t.startsWith("golden:") && !own.has(t)));
+  const text: string[] = [];
+  const json: Record<string, unknown> = {};
+  let code = 0;
+  const steps: [string, string][] = [];
+  const recorded = `The answers stay recorded (${entries[0]!.id}${entries.length > 1 ? ` to ${entries[entries.length - 1]!.id}` : ""})`;
+  // Each runs as its command does, its output captured: the report is that command's own, its
+  // closing Next: left to the one line this command ends with.
+  const run = async (key: "approval" | "confirmation", what: string, again: string, go: (c: CommandContext) => Promise<number>): Promise<{ code: number }> => {
+    const out: string[] = [];
+    try {
+      const c = await go({ ...ctx, out: (x) => out.push(x) });
+      if (ctx.json) json[key] = JSON.parse(out.join("\n"));
+      else text.push(...out.join("\n").replace(/ Next: [^\n]*\.$/, "").split("\n"));
+      return { code: c };
+    } catch (e) {
+      if (!(e instanceof UserError)) throw e;
+      throw new UserError(`${recorded}, but ${what} was refused: ${e.message} Next: ${again}.`, e.next);
+    }
+  };
+  if (yes.some((p) => approveSet.has(p.item.target))) {
+    const again = `sl approve --readback ${pending.readback_id}`;
+    code = Math.max(code, (await run("approval", "approving them", again, (c) => approveMany(c, {}, [], pending.readback_id, approveSet))).code);
+  }
+  release();
+  if (yes.some((p) => confirmSet.has(p.item.target))) {
+    const again = `sl goldens confirm --readback ${pending.readback_id}`;
+    code = Math.max(code, (await run("confirmation", "confirming the goldens", again, (c) => confirmReadback(c, {}, pending.readback_id, confirmSet))).code);
+  }
+  // A golden left to its own confirm: why, and the command.
+  const left = [
+    ...rowsFrom.map((p) => ({
+      name: p.item.target.slice(7),
+      item: p.item.n,
+      reason: `it was read back from stored rows (${p.item.rows_from}), which only its own confirm reads`,
+      next: `sl goldens confirm --name ${p.item.target.slice(7)} ${p.item.rows_from}`,
+    })),
+    ...waits.map((p) => ({ name: p.item.target.slice(7), item: p.item.n, reason: `its source ${afterYes(ctx.root, p.item.target, by).waits} has no connection yet`, next: afterYes(ctx.root, p.item.target, by).next })),
+  ];
+  if (left.length) {
+    if (ctx.json) json.confirm_each = left;
+    else {
+      text.push(`Not confirmed by --approve (${left.length}):`);
+      for (const l of left) text.push(`  - golden:${l.name} (item ${l.item}): ${l.reason}. Next: ${l.next}.`);
+    }
+    for (const s of [...new Set(left.map((l) => l.next))]) steps.push([s, ""]);
+  }
+  // The steps the turn's no, change and stale answers leave, as without --approve.
+  const edits = answered.filter((p) => p.verdict !== "yes" && p.verdict !== null).map((p) => p.item.target);
+  const changed = (p: Picked) => {
+    const now = currentHash(ctx.root, p.item.target, p.item.content_hash);
+    return now !== null && now !== p.item.content_hash;
+  };
+  const stale = answered.filter(changed).map((p) => p.item.target);
+  const redo = [...new Set([...edits, ...stale])];
+  if (edits.length) steps.push(["sl apply --file -", `make the changes the owner asked for to ${edits.join(", ")} with one sl apply --file -, then sl readback --targets ${redo.join(",")}`]);
+  else if (stale.length) steps.push([`sl readback --targets ${stale.join(",")}`, ""]);
+  if (!steps.length && confirmSet.size && code === 0) steps.push(["sl goldens check", ""]);
+  return { text, json, code, steps };
 }
 
 const spec: CommandSpec = {
   summary: "Record the owner's answers to the items of a readback in the answer ledger, .sl/ledger.jsonl.",
   usage:
     'reply --readback <readback_id> --item <n> --text "<owner\'s words>" [--verdict yes|no|change] [--about access] --by "<owner>"\n' +
-    "       reply --readback <readback_id> --answers <file | ->\n\n" +
+    "       reply --readback <readback_id> --answers <file | -> [--approve]\n\n" +
     "Appends one line to .sl/ledger.jsonl with the item's target and the content hash it had when it was read\n" +
     "back, the owner's words (credentials redacted), the verdict and the time. Never rewrites earlier lines.\n" +
     "--about access records a change to who sees the item, not to the item: it is settled in the access phase\n" +
@@ -164,7 +248,11 @@ const spec: CommandSpec = {
     '                                {"items": [2, 3], "verdict": "change", "text": "<owner\'s words>", "about": "access"}]}\n' +
     "Every entry is checked first (each item exists and is named once, a verdict, words, about only on a change);\n" +
     "on any error nothing is written. Then each item gets the line the single form writes for it. \"items\" shares\n" +
-    "one answer only when the owner said those words of each of those items.",
+    "one answer only when the owner said those words of each of those items.\n" +
+    "--approve, with --answers only, then approves each item answered yes as sl approve --readback would and confirms\n" +
+    "each golden answered yes as sl goldens confirm --readback would, on that item's own yes to it as it stands, and lists\n" +
+    "every other with why; a golden read back from --results or --plan is left to its own sl goldens confirm --name. The\n" +
+    "answers stay recorded when an approval is refused; it exits 1 when an item answered yes was not approved or confirmed.",
   options: {
     readback: { type: "string" },
     item: { type: "string" },
@@ -173,17 +261,22 @@ const spec: CommandSpec = {
     about: { type: "string" },
     by: { type: "string" },
     answers: { type: "string", mcp: "omit" },
+    approve: { type: "boolean", mcp: "omit" },
   },
-  writes: "whole",
+  // --approve confirms goldens, whose queries run outside the lock: it takes the lock itself.
+  writes: ({ values }) => (values.approve === true ? "late" : "whole"),
   async run({ values }, ctx) {
+    const approve = bool(values, "approve");
     loadProject(ctx.root);
     const answers = str(values, "answers");
+    if (approve && answers === undefined)
+      throw new UserError(`--approve goes with --answers, which records the turn's answers first: ${ANSWERS_USAGE}. One answer is recorded with sl reply --item, then approved with sl approve --target <ref>.`);
     if (answers !== undefined) {
       const rb = str(values, "readback");
       if (rb === undefined) throw new UserError(`--answers needs --readback <readback_id>. Usage: ${ANSWERS_USAGE}.`);
       const mixed = ["item", "text", "verdict", "about", "by"].filter((f) => str(values, f) !== undefined);
       if (mixed.length) throw new UserError(`--answers takes no ${mixed.map((f) => `--${f}`).join(", ")}: the answers file holds the owner's name, each item, its verdict and words. Nothing was written. Usage: ${ANSWERS_USAGE}.`);
-      return replyAnswers(ctx, rb, answers);
+      return replyAnswers(ctx, rb, answers, approve);
     }
     const [rb, itemRaw, raw, byRaw] = [str(values, "readback"), str(values, "item"), str(values, "text"), str(values, "by")];
     if (rb === undefined || itemRaw === undefined || raw === undefined || byRaw === undefined) throw new UserError(`Usage: ${USAGE}.`);

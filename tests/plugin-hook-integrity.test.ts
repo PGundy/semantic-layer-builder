@@ -338,6 +338,27 @@ describe("what sl and git write is kept", () => {
     expect(stateEntries(p)).toEqual([]);
   });
 
+  // HR-15 exit condition 4: the one-command form of a readback turn is an sl command like the
+  // two-step form, and the answers and approvals it writes stay.
+  test("sl reply --answers --approve keeps what it records and approves", async () => {
+    const p = await project();
+    const id = await readback(p);
+    const replies = JSON.stringify({ by: "Dana", answers: [{ item: 1, verdict: "yes", text: "Yes, that is revenue." }] });
+    const command = `bun ${SL} reply --readback ${id} --answers - --approve --root ${p.root} <<'JSON'\n${replies}\nJSON`;
+    const call = payload(p, command);
+    expect(before(p, call)).toEqual({ block: false });
+    expect(stateEntries(p)).toEqual(["sl"]);
+    const out: string[] = [];
+    const args = ["reply", "--readback", id, "--answers", "-", "--approve", "--root", p.root];
+    const code = await runCli(args, { cwd: p.root, env: { SL_NOW: "2026-01-15T12:00:00.000Z" }, out: (t) => out.push(t), err: (t) => out.push(t), stdin: async () => replies });
+    expect({ code, out: out.join("\n") }).toEqual({ code: 0, out: expect.stringContaining("Approved 1 of the 1 items") });
+    expect(after(p, call)).toEqual({ block: false });
+    const ledger = read(p.ledger)!;
+    expect(ledger.split("\n").filter(Boolean).map((l) => (JSON.parse(l) as { kind: string }).kind)).toEqual(["reply"]);
+    expect(readFileSync(join(p.root, "models", "wh", "orders.yaml"), "utf8")).toContain("approved_by: Dana");
+    expect(stateEntries(p)).toEqual([]);
+  });
+
   test("sl with a cd, a pipe to head, tail or tee, an echo, a test and a redirection is still a plain sl command; anything else is copied", async () => {
     const p = await project();
     const kind = (command: string, o: CallOptions = {}) => {

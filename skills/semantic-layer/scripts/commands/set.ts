@@ -75,7 +75,11 @@ const spec: CommandSpec = {
     `       sl set source:<name> ${SOURCE_KEYS.join(" | ")} (<value> | --unset)\n\n` +
     "With no access.yaml, sl set access mode open|closed creates a draft one holding that mode.\n" +
     `Keys of a role: ${Object.keys(ENTRY_KEYS.role).join(", ")}; of a restriction: ${Object.keys(ENTRY_KEYS.restriction).join(", ")};\n` +
-    `of an attribute: ${Object.keys(ENTRY_KEYS.attribute).join(", ")}. A list is written a,b. An edit to an approved access.yaml makes it a draft again.`,
+    `of an attribute: ${Object.keys(ENTRY_KEYS.attribute).join(", ")}. A list of names (primary_key, tags, synonyms, time_grains, a role's\n` +
+    "allow_models, ...) is written a,b or [a, b]: primary_key order_id,line_no and primary_key '[order_id, line_no]' write the same.\n" +
+    "One name is written [a], as primary_key '[order_id]'. An edit to an approved access.yaml makes it a draft again.\n" +
+    "A model has no filter: a rule for every figure of a model goes on each measure's filter, and\n" +
+    "sl set <s>.<m> filter \"<rule>\" prints the one sl apply that writes it on every measure.",
   options: { unset: { type: "boolean" } },
   positionals: true,
   writes: "whole",
@@ -124,6 +128,15 @@ const spec: CommandSpec = {
     if (OWNED[key] && key in props) throw new UserError(`sl set does not change ${key}: ${OWNED[key](ref)}.`);
     if (loc.kind === "access" && !ACCESS_KEYS.includes(key)) {
       throw new UserError(`sl set access takes ${ACCESS_KEYS.join(" or ")} at the top level. ${ACCESS_COMMANDS}. sl access shows the result.`);
+    }
+    // A rule for every figure of a model is written on each of its measures, joined to a filter it has.
+    if (!(key in props) && key === "filter" && loc.kind === "model") {
+      const rule = unset ? "<rule>" : raw!.trim();
+      const measures = ((loc.item.measures as { name?: unknown; filter?: unknown }[] | undefined) ?? []).filter((m) => typeof m.name === "string");
+      const edits = measures.length
+        ? measures.map((m) => ["set", `${ref}.${m.name}`, "filter", typeof m.filter === "string" && m.filter.trim() ? `(${m.filter.trim()}) and (${rule})` : rule])
+        : [["set", `${ref}.<measure>`, "filter", rule]];
+      throw new UserError(`A model has no filter: a rule that holds for every figure of ${ref} goes on each measure's filter. Write it on every measure ${inTurnApply(edits)}.`);
     }
     if (!(key in props)) {
       const known = Object.keys(props).filter((k) => !APPROVAL_FIELDS.includes(k) && !OWNED[k]);

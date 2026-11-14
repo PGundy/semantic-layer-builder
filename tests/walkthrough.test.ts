@@ -76,6 +76,19 @@ describe("count.ts", () => {
     expect(c.sl_by_command).toMatchObject({ next: 1, apply: 1, approve: 1, "question list": 1, "question resolve": 1, readback: 1, reply: 1, setup: 1, tag: 1 });
   });
 
+  // HR-15 exit condition 4: the one-command form of a readback turn is one command.
+  test("a turn of sl apply, sl question resolve --answers and sl reply --answers --approve counts three", () => {
+    const dir = tempDir("walk-log");
+    let n = 0;
+    write(dir, ++n, { kind: "owner", text: "Yes to all eight; refunds do not count; is tax in?", exit: 0, bytes: 50, refused: false, changed_layer: false });
+    write(dir, ++n, run(`${SL} reply --readback rb_0009 --answers - --approve <<'ANSWERS'\n{"by": "Dana", "answers": []}\nANSWERS`, 0, { changed_layer: true }));
+    write(dir, ++n, run(`${SL} question resolve --answers - <<'ANSWERS'\n{"by": "Dana", "answers": []}\nANSWERS`, 0, { changed_layer: true }));
+    write(dir, ++n, run(`${SL} apply --file - <<'EDITS'\n{"edits": [["question", "add", "wh.orders", "--text", "Is tax in?"]]}\nEDITS`, 0, { changed_layer: true }));
+    const c = count(dir, SECRET);
+    expect(c.commands_per_owner_turn).toEqual([3]);
+    expect(answerCommands({ n: "0002", ...run(`${SL} reply --readback rb_0009 --answers - --approve`) })).toEqual(["reply"]);
+  });
+
   test("a --help call, a list, a readback, a failed, refused or undone command records no answer", () => {
     const yes = (text: string, extra: Partial<Entry> = {}) => recordsAnswers({ n: "0001", ...run(text), ...extra });
     for (const t of ["sl apply --file -", "sl set wh.orders grain x", "sl question add wh.orders --text q", "sl goldens confirm --readback rb_0003", `${SL} add-join --source wh`])

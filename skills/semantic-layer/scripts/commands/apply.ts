@@ -49,13 +49,82 @@ interface Entry {
   input: { values: Record<string, string | boolean | string[] | undefined>; positionals: string[] };
 }
 
+interface Failure {
+  i: number;
+  words: string[] | undefined;
+  // With others: the entry's own message. Alone: the whole refusal, when it differs from the list form.
+  text: string;
+  alone?: string;
+  next?: string;
+}
+
+// One refusal for every refused entry, nothing written. An entry that names what an earlier refused
+// entry would have created (a field, metric, join, role, attribute, golden or a new name) is listed
+// as not checked, not with its own error, which follows from the first.
+function refusal(refused: Failure[]): UserError {
+  const made: { i: number; names: Set<string> }[] = [];
+  const own: Failure[] = [];
+  const after = new Map<number, number[]>();
+  for (const f of refused) {
+    const from = f.words && made.find((m) => dependsOn(f.words!, m.names));
+    if (from) after.set(from.i, [...(after.get(from.i) ?? []), f.i]);
+    else own.push(f);
+    if (f.words) made.push({ i: f.i, names: creates(f.words) });
+  }
+  const one = own[0]!;
+  if (own.length === 1 && !after.size && one.alone) return new UserError(one.alone, one.next);
+  const lines = own.map((f) => f.text);
+  let skipped = 0;
+  for (const [i, later] of after) {
+    skipped += later.length;
+    lines.push(`Entr${later.length === 1 ? "y" : "ies"} ${later.map((n) => n + 1).join(", ")} ${later.length === 1 ? "was" : "were"} not checked: ${later.length === 1 ? "it reads" : "they read"} what entry ${i + 1} would have created.`);
+  }
+  const counted = `${own.length === 1 ? "An entry is" : `${own.length} entries are`} refused${skipped ? ` and ${skipped} not checked` : ""}`;
+  return new UserError(`${counted}, so nothing was written:\n${lines.join("\n")}\nRemove or fix each entry named and run sl apply again.`);
+}
+
+// The names a typed edit would create, as later entries name them.
+function creates(words: string[]): Set<string> {
+  const [command, first, second] = words;
+  const flag = (f: string) => {
+    const at = words.indexOf(`--${f}`);
+    if (at >= 0) return words[at + 1];
+    return words.find((w) => w.startsWith(`--${f}=`))?.slice(f.length + 3);
+  };
+  const out = new Set<string>();
+  const name = flag("name");
+  if (command === "add-field" && first && name) {
+    out.add(`${first}.${name}`);
+    out.add(`${first.split(".").slice(1).join(".")}.${name}`);
+  } else if (command === "add-join" && first && name) out.add(`${first}.${name}`);
+  else if (command === "add-metric" && name) [name, `metric:${name}`].forEach((n) => out.add(n));
+  else if ((command === "add-role" || command === "add-attribute" || command === "add-restriction") && name) [name, `${command.slice(4)}:${name}`].forEach((n) => out.add(n));
+  else if (command === "goldens" && first === "new" && name) [name, `golden:${name}`].forEach((n) => out.add(n));
+  else if (command === "rename" && first && second) {
+    const parts = first.split(".");
+    out.add(first.startsWith("metric:") ? `metric:${second}` : [...parts.slice(0, -1), second].join("."));
+    if (first.startsWith("metric:")) out.add(second);
+  }
+  return out;
+}
+
+// Whether an entry's words name one of `names`: a whole word (a positional or a flag's value, as
+// --metric total), or a ref inside a word (a dotted ref, a metric:, role: or golden: form, or a
+// {model.measure} placeholder). A bare word inside free text, as a description, is not a reference.
+function dependsOn(words: string[], names: Set<string>): boolean {
+  if (!names.size) return false;
+  const named = (t: string) => names.has(t) || names.has(t.replace(/^user\./, ""));
+  return words.some((w) => named(w) || w.split(/[\s,=()'"\[\]{}]+/).some((t) => /[.:]\w/.test(t) && named(t.replace(/[.:]+$/, ""))));
+}
+
 const spec: CommandSpec = {
   summary: "Run several typed edits as one: one lock, one validation at the end, and all of them land or none do.",
   usage:
     'apply --file <path | ->\n\n' +
     'The file (or stdin, with -) holds {"edits": [[...], ...]}: each entry is the words of one typed edit after "sl",\n' +
     'as ["set", "warehouse.orders.revenue", "description", "Order value."]. Entries run in order, each seeing the ones before;\n' +
-    "the project is validated once, at the end. On any failure no file changes, and the error names the entry and gives its own message.\n" +
+    "the project is validated once, at the end. Every entry is checked: on any failure no file changes, and one error names every\n" +
+    "refused entry with its own message (an entry that reads what a refused one would create is listed as not checked).\n" +
     `Entries: ${APPLY_COMMANDS.map((c) => `sl ${c}`).join(", ")}.\n` +
     "An entry that records an owner answer or approval, or reads a database, is refused: run it on its own.",
   options: { file: { type: "string" } },
@@ -65,53 +134,76 @@ const spec: CommandSpec = {
     const file = str(values, "file");
     if (!file) throw new UserError(USAGE);
     const raw = await readEdits(file, ctx);
-    // Every entry is checked and parsed before any runs.
-    const entries: Entry[] = [];
+    // Every entry is checked and parsed before any runs; one that does not parse is refused with the
+    // others below, and does not run.
+    const entries: (Entry | undefined)[] = [];
+    const failed: Failure[] = [];
     for (const [i, e] of raw.entries()) {
       const why = applyEntryRefusal(e);
-      const label = Array.isArray(e) && e.every((w) => typeof w === "string") ? ` (${shown(e)})` : "";
-      if (why) throw new UserError(`Entry ${i + 1}${label} ${why} Nothing was written.`);
-      const words = e as string[];
-      const command = (await COMMANDS[words[0]!]!()).default;
-      let parsed;
-      try {
-        parsed = parseArgs({ args: words.slice(1), options: command.options, allowPositionals: command.positionals ?? false, strict: true });
-      } catch (err) {
-        throw new UserError(`Entry ${i + 1}${label}: ${(err as Error).message}. Nothing was written. Fix the entry (sl ${words[0]} --help shows its usage) and run sl apply again.`);
+      const words = Array.isArray(e) && e.every((w) => typeof w === "string") ? (e as string[]) : undefined;
+      const label = words ? ` (${shown(words)})` : "";
+      if (why) {
+        failed.push({ i, words, text: `Entry ${i + 1}${label} ${why}`, alone: `Entry ${i + 1}${label} ${why} Nothing was written.` });
+        entries.push(undefined);
+        continue;
       }
-      entries.push({ words, spec: command, input: { values: parsed.values as Entry["input"]["values"], positionals: parsed.positionals } });
+      const command = (await COMMANDS[words![0]!]!()).default;
+      try {
+        const parsed = parseArgs({ args: words!.slice(1), options: command.options, allowPositionals: command.positionals ?? false, strict: true });
+        entries.push({ words: words!, spec: command, input: { values: parsed.values as Entry["input"]["values"], positionals: parsed.positionals } });
+      } catch (err) {
+        const message = (err as Error).message;
+        failed.push({
+          i,
+          words,
+          text: `Entry ${i + 1}${label}: ${message}. Fix the entry (sl ${words![0]} --help shows its usage).`,
+          alone: `Entry ${i + 1}${label}: ${message}. Nothing was written. Fix the entry (sl ${words![0]} --help shows its usage) and run sl apply again.`,
+        });
+        entries.push(undefined);
+      }
     }
     let results: string[][] = [];
+    // The refusal for the entries the last run stepped over, which runBatch throws once it has
+    // checked the rest (an error only the final validation finds names its entries on a second run).
+    let stepped: UserError | undefined;
     const outcome = await runBatch(ctx.root, `apply the ${entries.length} edits`, async () => {
       results = [];
-      // An entry refused for a value that can never be right is named with every other such entry.
-      const refused: string[] = [];
-      const allRefused = (more = "") =>
-        new UserError(
-          `${refused.length === 1 ? "An entry is" : `${refused.length} entries are`} refused, so nothing was written:\n${[...refused, more].filter(Boolean).join("\n")}\n` +
-            "Remove or fix each entry named and run sl apply again.",
-        );
+      stepped = undefined;
+      // Every entry runs, each seeing the ones before, so one refusal names every refused entry; an
+      // entry that reads what a refused one would have made is not checked (dependsOn).
+      const refused: Failure[] = [...failed];
       for (const [i, e] of entries.entries()) {
         batchEntry(i);
+        if (!e) {
+          results.push([]);
+          continue;
+        }
         const out: string[] = [];
         let code: number;
         try {
           code = await e.spec.run(e.input, { ...ctx, out: (t) => out.push(t) });
         } catch (err) {
           if (!(err instanceof UserError)) throw err;
-          if (err instanceof ValueRefusal) {
-            refused.push(`Entry ${i + 1} (${shown(e.words)}): ${err.message.split("\n").filter((l) => !l.startsWith("Leave the key out")).join("\n")}`);
-            results.push([]);
-            continue;
-          }
-          if (refused.length) throw allRefused(`Entry ${i + 1} (${shown(e.words)}) failed: ${err.message}`);
-          throw new UserError(`Entry ${i + 1} (${shown(e.words)}) failed, so nothing was written: ${err.message}\nFix entry ${i + 1} and run sl apply again.`, err.next);
+          const text = err instanceof ValueRefusal ? err.message.split("\n").filter((l) => !l.startsWith("Leave the key out")).join("\n") : err.message;
+          refused.push({
+            i,
+            words: e.words,
+            text: `Entry ${i + 1} (${shown(e.words)}): ${text}`,
+            ...(err instanceof ValueRefusal ? {} : { alone: `Entry ${i + 1} (${shown(e.words)}) failed, so nothing was written: ${err.message}\nFix entry ${i + 1} and run sl apply again.`, next: err.next }),
+          });
+          results.push([]);
+          continue;
         }
-        if (code !== 0) throw new UserError(`Entry ${i + 1} (${shown(e.words)}) failed, so nothing was written:\n${out.join("\n")}\nFix entry ${i + 1} and run sl apply again.`);
+        if (code !== 0) {
+          const said = out.join("\n");
+          refused.push({ i, words: e.words, text: `Entry ${i + 1} (${shown(e.words)}): ${said}`, alone: `Entry ${i + 1} (${shown(e.words)}) failed, so nothing was written:\n${said}\nFix entry ${i + 1} and run sl apply again.` });
+          results.push([]);
+          continue;
+        }
         results.push(out);
       }
-      if (refused.length) throw allRefused();
-    });
+      if (refused.length) stepped = refusal(refused.sort((a, b) => a.i - b.i));
+    }, () => stepped);
     const warnings = outcome.warnings.map(issueLine);
     const entryWarnings = (i: number) => (outcome.byEntry.get(i) ?? []).map(issueLine);
     const placed = new Set([...outcome.byEntry.values()].flat().map(issueLine));
@@ -124,7 +216,7 @@ const spec: CommandSpec = {
           result = JSON.parse(text);
         } catch {}
         const own = entryWarnings(i);
-        return { entry: i + 1, command: e.words, result, ...(own.length ? { warnings: own } : {}) };
+        return { entry: i + 1, command: e!.words, result, ...(own.length ? { warnings: own } : {}) };
       });
       const drafted = outcome.access_draft ? { returned_to_draft: true, ...outcome.access_draft } : {};
       ctx.out(formatJson({ applied, reapprove: outcome.reapprove, warnings, ...drafted }));

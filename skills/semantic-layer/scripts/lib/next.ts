@@ -40,7 +40,7 @@ export interface NextStepAction {
   command: string;
   args: string[];
   kind: NextKind;
-  // What the command reads on its standard input (sl apply --file -), with <placeholders> for the owner's answers.
+  // What the command reads on its standard input (sl apply --file -, sl reply --answers -), with <placeholders> for the owner's answers.
   stdin?: string;
 }
 
@@ -252,10 +252,22 @@ function askOwner(root: string, d: StatusDetail): NextAction | undefined {
       phase: targetPhase(d.status, open[0]!.target),
       why:
         `Readback ${p.readback_id} has ${open.length} item(s) waiting for the owner's answer: ${open.map((i) => `${i.n} (${i.target})`).join(", ")}. ` +
-        `Read each to the owner as written, ending with "Approve?", then record each answer in their words with ${REPLY(p.readback_id)}. ` +
+        `Read each to the owner as written, ending with "Approve?", then ` +
+        (open.length > 1
+          ? `record the turn's answers, each item with its own verdict and their words, and approve each yes in one sl reply --readback ${p.readback_id} --answers - --approve (one answer alone: ${REPLY(p.readback_id)}). `
+          : `record the answer in their words with ${REPLY(p.readback_id)}. `) +
         `A change only to who sees an item is recorded with ${ABOUT_ACCESS} and never holds the item.${kept}${asked} ` +
         `A readback the owner will not answer is set aside with sl readback --discard ${p.readback_id}.`,
-      action: { command: "reply", args: ["--readback", p.readback_id, "--item", "<n>", "--text", "<owner's words>", "--verdict", "yes|no|change", "--by", "<owner>"], kind: "ask_owner" },
+      // More than one open item: the batched reply, its answers on stdin, one entry per item.
+      action:
+        open.length > 1
+          ? {
+              command: "reply",
+              args: ["--readback", p.readback_id, "--answers", "-", "--approve"],
+              kind: "ask_owner",
+              stdin: JSON.stringify({ by: "<owner>", answers: open.map((i) => ({ item: i.n, verdict: "yes|no|change", text: "<owner's words>" })) }),
+            }
+          : { command: "reply", args: ["--readback", p.readback_id, "--item", "<n>", "--text", "<owner's words>", "--verdict", "yes|no|change", "--by", "<owner>"], kind: "ask_owner" },
       ask_owner: { readback_id: p.readback_id, text, items: open.map((i) => ({ n: i.n, target: i.target, kind: i.kind })) },
       blocked_on: d.status.next_step.blocked_on ?? null,
     };
