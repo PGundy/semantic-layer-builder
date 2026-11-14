@@ -14,7 +14,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { accessEntry, carriesHash, metricEntries, modelEntries, type ApprovalEntry } from "../lib/approval-hash.ts";
-import { commandList, DENIED_FLAGS, roleOf, slRefusal, type Role } from "../lib/roles.ts";
+import { applyFileRefusals, commandList, DENIED_FLAGS, roleOf, slRefusal, type Role } from "../lib/roles.ts";
 import { DIALECTS, type Dialect, type Model } from "../lib/types.ts";
 import { parseYamlText } from "../lib/yaml.ts";
 import { envFileRefusal, realPath, runBefore, semanticRoot } from "./integrity.ts";
@@ -565,8 +565,25 @@ function roleShell(role: Role, command: string, cwd: string): string[] {
     }
     const why = slRefusal(role, args.map((a) => a.word));
     if (why && !(flag && args.some((a) => isDenied(a.word)))) out.push(why);
+    else if (!why && args[0]?.word === "apply") out.push(...applyRefusals(role, args.map((a) => a.word), dirs[dirs.length - 1]!));
   }
   return [...new Set(out)];
+}
+
+// For a role that runs only some commands: each entry of an sl apply file is held to them, as if run
+// on its own. Entries on stdin cannot be read here, so such a role passes --file <path>.
+function applyRefusals(role: Role, args: string[], cwd: string): string[] {
+  if (role.commands === "every") return [];
+  const at = args.findIndex((a) => a === "--file" || a.startsWith("--file="));
+  const file = at < 0 ? undefined : args[at]!.startsWith("--file=") ? args[at]!.slice(7) : args[at + 1];
+  if (!file || file === "-") return [`it gives sl apply its entries on stdin, which the hook cannot check entry by entry; the ${role.title.toLowerCase()} passes --file <path>.`];
+  let text: string;
+  try {
+    text = readFileSync(resolve(cwd, expandHome(file)), "utf8");
+  } catch {
+    return [`it names an sl apply file the hook cannot read (${file}); the ${role.title.toLowerCase()} passes a file that exists.`];
+  }
+  return applyFileRefusals(role, text);
 }
 
 const ROLE_TYPED = `Change it with a typed edit (${TYPED}, sl draft, or sl setup --view for a source's connection.views).`;
