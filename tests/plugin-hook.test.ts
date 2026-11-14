@@ -475,8 +475,8 @@ describe("the plugin registers the hook", () => {
   };
   const entry = plugin.hooks.PreToolUse[0]!;
 
-  test("for every tool that writes files", () => {
-    expect(entry.matcher.split("|").sort()).toEqual(["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"]);
+  test("for every tool that writes files, and for Read", () => {
+    expect(entry.matcher.split("|").sort()).toEqual(["Bash", "Edit", "MultiEdit", "NotebookEdit", "Read", "Write"]);
     expect(entry.hooks[0]!.type).toBe("command");
   });
 

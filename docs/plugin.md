@@ -9,7 +9,8 @@ The `semantic-layer-builder` plugin packages this repository for Claude Code. Th
 | The `semantic-layer` skill | `skills/semantic-layer/` | The procedure, the references and the `sl` CLI. Claude loads it when you ask for a semantic layer. |
 | Five agents | `agents/sl-*.md` | `sl-interviewer`, `sl-connector-runner`, `sl-batch-analyst`, `sl-readback-verifier` and `sl-golden-builder`, the roles of a multi-agent build (spec: Agent roles). Claude Code names them `semantic-layer-builder:<agent>`. |
 | The MCP server `semantic-layer` | `skills/semantic-layer/scripts/mcp/server.ts --role interviewer` | Every `sl` command as an MCP tool, in `./semantic` under the directory you start Claude Code in (or `SEMANTIC_ROOT`). No tool takes `--show-protected`. When Claude Code supports MCP elicitation, the owner answers approvals in its dialog. |
-| Two `PreToolUse` hooks | `skills/semantic-layer/scripts/hooks/guard-edits.ts`, `skills/semantic-layer/scripts/mcp/guard.ts` | Refuse hand edits to approval fields, approved items, the ledger and pending readbacks, and hold each role agent to the commands its role runs, through `Bash` and through the MCP server's tools alike (spec: Hand edits, Agent roles). |
+| The `PreToolUse` checks | `skills/semantic-layer/scripts/hooks/guard-edits.ts`, `skills/semantic-layer/scripts/mcp/guard.ts` | Refuse hand edits to approval fields, approved items, the ledger and pending readbacks, refuse to read the `.env` file that holds the connection, and hold each role agent to the commands its role runs, through `Bash` and through the MCP server's tools alike (spec: Hand edits, Agent roles). |
+| The ledger comparison | `skills/semantic-layer/scripts/hooks/integrity.ts`, on `PostToolUse` and `PostToolUseFailure` for `Bash` and the MCP server's tools; its before half runs in the `PreToolUse` hooks | Copies the answer ledger and the pending readbacks before a `Bash` call that is not `sl` or git on its own, compares them after it, and puts back a change `sl` did not make, so a yes exists only when `sl reply` recorded it (spec: Hand edits). The copies live in the plugin's data directory, `${CLAUDE_PLUGIN_DATA}/ledger-guard`, until the call is checked. |
 | A `SessionStart` hook | `skills/semantic-layer/scripts/hooks/check-install.sh` | Checks that Bun and the plugin's dependencies are installed and, when one is missing, prints the command that installs it. It installs nothing. |
 
 ## Install
@@ -35,7 +36,7 @@ Claude Code's own dependency install skips a plugin whose `package.json` uses wo
 
 ```sh
 claude plugin list                                  # semantic-layer-builder@semantic-layer-builder, enabled
-claude plugin details semantic-layer-builder        # Skills (1), Agents (5), Hooks (2) PreToolUse, SessionStart, MCP servers (1) semantic-layer
+claude plugin details semantic-layer-builder        # Skills (1), Agents (5), Hooks (4) PreToolUse, PostToolUse, PostToolUseFailure, SessionStart, MCP servers (1) semantic-layer
 bun "<plugin root>/skills/semantic-layer/scripts/sl.ts" --help
 ```
 

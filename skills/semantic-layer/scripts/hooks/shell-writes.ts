@@ -320,7 +320,21 @@ const PREFIX_VALUES: Record<string, string[]> = {
   nice: ["-n"],
   time: ["-f", "-o"],
 };
-const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+export const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+
+// Where a simple command's own name sits among its words: after its variable assignments and after
+// command prefixes (sudo -u x, env A=b, timeout 5) with their options.
+export function commandStart(words: { word: string }[]): number {
+  let k = 0;
+  while (k < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]!.word)) k++;
+  while (k < words.length && PREFIXES.has(basename(words[k]!.word))) {
+    const values = PREFIX_VALUES[basename(words[k]!.word)] ?? [];
+    k++;
+    while (k < words.length && (words[k]!.word.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]!.word) || /^\d+[smhd]?$/.test(words[k]!.word)))
+      k += values.includes(words[k]!.word) ? 2 : 1;
+  }
+  return k;
+}
 
 // Every file the command plainly writes. A relative path is resolved against `cwd` and against every
 // directory a `cd` or `pushd` earlier in the command names, since a subshell, `cd -` or `popd` may
@@ -359,14 +373,7 @@ export function shellWrites(command: string, cwd: string, depth = 0, bases: stri
       words.push(t);
     }
     i++;
-    let k = 0;
-    while (k < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]!.word)) k++;
-    while (k < words.length && PREFIXES.has(basename(words[k]!.word))) {
-      const values = PREFIX_VALUES[basename(words[k]!.word)] ?? [];
-      k++;
-      while (k < words.length && (words[k]!.word.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]!.word) || /^\d+[smhd]?$/.test(words[k]!.word)))
-        k += values.includes(words[k]!.word) ? 2 : 1;
-    }
+    const k = commandStart(words);
     const cmd = words[k];
     if (!cmd) continue;
     const name = basename(cmd.word);
