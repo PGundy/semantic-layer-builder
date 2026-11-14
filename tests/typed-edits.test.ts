@@ -179,8 +179,9 @@ describe("sl set", () => {
     expect(text(ORDERS)).toContain("    synonyms: [region, sales region, sales territory]\n    tags: [finance_only]\n    status: approved\n");
   });
 
-  // Invariants 3 and 5: tools apply approved items and an approved access.yaml as they stand.
-  test("refuses tags that loosen an approved field and any key of an approved access.yaml, naming the revoke", async () => {
+  // Invariants 3 and 5: tools apply approved items and an approved access.yaml as they stand, so no
+  // edit leaves looser content under an approval the owner gave to something else.
+  test("refuses tags that loosen an approved field, and writes an edit of an approved access.yaml as a draft, as a revoke does", async () => {
     const customers = text("models/warehouse/customers.yaml");
     const tags = await sl(root, ["set", "warehouse.customers.email", "tags", "[]"]);
     expect(tags.code).toBe(1);
@@ -189,17 +190,31 @@ describe("sl set", () => {
     expect((await sl(root, ["set", "warehouse.customers.email", "tags", "--unset"])).code).toBe(1);
     expect(text("models/warehouse/customers.yaml")).toBe(customers);
 
+    // An edit that would not validate leaves the approved file as it is.
     const access = text("access.yaml");
-    const r = await sl(root, ["set", "access", "default_role", "finance"]);
-    expect(r.code).toBe(1);
-    expect(r.err).toContain("while access.yaml is approved");
-    expect(r.err).toContain("sl approve --target access --revoke");
+    expect((await sl(root, ["set", "access", "default_role", "nobody"])).code).toBe(1);
     expect(text("access.yaml")).toBe(access);
     expect((await sl(root, ["access", "--json"])).json()).toMatchObject({ access_file: "approved" });
-    // As a draft, the edit is written and tools serve nothing until it is approved again.
+    // A valid one is written with the file made a draft in the same write: the approval is set aside
+    // as last_approved, exactly as sl approve --revoke and then the edit would leave it, and tools
+    // serve nothing under it until the owner approves it again.
+    const r = await sl(root, ["set", "access", "default_role", "finance"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("access.yaml was approved, so this edit made it a draft again");
+    expect(r.out).toContain("sl readback --targets access");
+    const edited = text("access.yaml");
+    expectOnly(access, edited, [
+      ["status: approved\napproved_by: Dana Ruiz\napproved_at: 2026-10-27\napproved_hash: sha256:658c5db219cf4c4f248ca78dad580a759b66f9db79dba8a80da8b444008ac76d\nmode: open\n", "status: draft\nlast_approved:\n  by: Dana Ruiz\n  at: 2026-10-27\nmode: open\ndefault_role: finance\n"],
+    ]);
+    expect((await sl(root, ["access", "--json"])).json()).toMatchObject({ access_file: "draft", last_approved: { by: "Dana Ruiz", at: "2026-10-27" } });
+    writeFileSync(join(root, "access.yaml"), access);
     expect((await sl(root, ["approve", "--target", "access", "--revoke"])).code).toBe(0);
     expect((await sl(root, ["set", "access", "default_role", "finance"])).code).toBe(0);
-    expect((await sl(root, ["access", "--json"])).json()).toMatchObject({ access_file: "draft" });
+    expect(text("access.yaml")).toBe(edited);
+    // The owner's earlier yes was to other rules, so approving again takes a new readback and yes.
+    const again = await sl(root, ["approve", "--target", "access"]);
+    expect(again.code).toBe(1);
+    expect(text("access.yaml")).toBe(edited);
   });
 });
 

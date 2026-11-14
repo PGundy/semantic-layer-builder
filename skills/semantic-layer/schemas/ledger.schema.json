@@ -27,6 +27,7 @@
     "question": { "type": "string", "minLength": 1, "description": "kind question: the open question as the file held it." },
     "text": { "type": "string", "minLength": 1, "description": "The owner's words, with credentials redacted and control characters removed." },
     "verdict": { "enum": ["yes", "no", "change", null], "description": "kind reply: yes, no or change, or null when the words were recorded without one." },
+    "about": { "const": "access", "description": "kind reply, verdict change: the change is to who sees the item (sl reply --about access). It is settled in the access phase and is not a verdict on the item's content, so sl approve reads the latest reply without it." },
     "by": { "type": "string", "minLength": 1, "description": "The owner who answered." },
     "at": { "type": "string", "minLength": 1, "description": "When the answer was recorded, as an ISO timestamp from the command's clock." }
   },
@@ -37,7 +38,11 @@
     },
     {
       "if": { "properties": { "kind": { "const": "question" } }, "required": ["kind"] },
-      "then": { "required": ["question"], "properties": { "readback_id": false, "item": false, "content_hash": false, "verdict": false } }
+      "then": { "required": ["question"], "properties": { "readback_id": false, "item": false, "content_hash": false, "verdict": false, "about": false } }
+    },
+    {
+      "if": { "required": ["about"] },
+      "then": { "properties": { "verdict": { "const": "change" } } }
     }
   ]
 }

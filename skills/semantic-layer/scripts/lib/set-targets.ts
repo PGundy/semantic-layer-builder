@@ -61,7 +61,8 @@ export function createAccess(root: string, mode: string): SetOutcome {
   const notes = [
     `Created access.yaml as a draft with mode ${mode}${mode === "open" ? ": everyone sees every approved item, minus protected tags, restrictions and role denials" : ": a user sees only what a role's allow.models grants, and it has no roles yet, so nobody sees anything until roles are added"}.`,
     "Tools serve nothing under a draft access.yaml until it is approved.",
-    "Next: sl access shows what the default audience sees; record exceptions with sl question add access --text \"<question>\", then read the file back with sl readback --targets access and approve it only on the owner's yes.",
+    "Next: sl access shows what the default audience sees; add what the owner names with sl add-attribute, sl add-role, sl add-restriction and sl add-row-filter (each --help shows its flags), " +
+      "record what is unsettled with sl question add access --text \"<question>\", then read the file back with sl readback --targets access and approve it only on the owner's yes.",
   ];
   return { changed: true, created: true, file: relFile(root, file), reapprove: [], value: mode, notes };
 }

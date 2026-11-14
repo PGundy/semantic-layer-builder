@@ -26,7 +26,7 @@
     },
     {
       "text": "Thanks; I wrote your answers into the two models. Sign-offs, read back from the files:\n\n1. lake.sessions (table): reads main.sessions, one row per visit, anonymous visits included; primary key session_id. Measured: 8,000 rows, each session_id appears once. Approve?\n2. lake.sessions.session_count (measure): a count of rows, every session counted, anonymous ones included, as an integer. Approve?\n3. lake.sessions.started_at (dimension): when the visit started, a time with its zone, with days counted in UTC; hour to year. Measured: never empty. Approve?\n4. lake.marketing_spend (table): reads main.marketing_spend, one row per day per paid channel; primary key spend_date and channel. Measured: 3,655 rows. Approve?\n5. lake.marketing_spend.spend (measure): the sum of spend_cents * 0.01, US dollars. Approve?\n6. lake.marketing_spend.spend_date (dimension): the day the spend is for, a date; day to year. Measured: never empty. Approve?\n\nStop here or continue?",
-      "tokens": 2841,
+      "tokens": 3026,
       "sl": [
         ["question", "resolve", "lake.sessions", "--match", "What does one row", "--text", "Yes: one row per visit, and session_id is unique. About 60% of sessions are anonymous, and they count.", "--by", "Dana Ruiz"],
         ["question", "resolve", "lake.sessions", "--match", "primary_key [session_id]", "--text", "Yes: one row per visit, and session_id is unique. About 60% of sessions are anonymous, and they count.", "--by", "Dana Ruiz"],

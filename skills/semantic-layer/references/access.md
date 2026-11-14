@@ -10,7 +10,7 @@ Access is open by default. In `mode: open`, and with no `access.yaml` at all, ev
 
 Draft items are never exposed, in either mode. In `mode: closed` the layer is an allowlist: a user sees only what `allow.models` of a role they hold matches, minus the same denials, protected tags and restrictions, and every role needs `allow.models`. `allow.models` has no effect in open mode, and `sl validate` warns when it is set there.
 
-So approving a model is also deciding that everyone may see it. The interview carries that through: every table readback in open mode says "everyone will be able to see this once approved; is that right?" (`interview-guide.md`), and a no there is an access exception you write down at once (Exceptions found during the interview).
+So approving a model in open mode also makes it visible to everyone, and who sees what is decided once, in this phase, never table by table. Every table, field and metric readback states who will see the item once it is approved and does not ask (`interview-guide.md`); a change the owner asks for there is recorded for this phase and does not hold the item's sign-off (Exceptions found during the interview).
 
 Run the access phase after the important models are approved, so you can name real tables and columns. Access is about what the semantic layer exposes to tools built on it; it does not change permissions in the database itself. Say so to the owner. `sl status` holds `next_step` at `access` until `access.yaml` exists and is approved, even when the answer is "everyone sees everything": an approved `access.yaml` with `mode: open` and no roles is a complete access phase, and it records that the owner said so.
 
@@ -19,13 +19,13 @@ Run the access phase after the important models are approved, so you can name re
 Tools serve only an approved `access.yaml`. A tool that loads an `access.yaml` in draft serves nothing and says access is awaiting sign-off. So a change to access is edited in version control (a branch or the working copy) while the approved version that is deployed keeps applying, and it reaches users only once the new version is approved and deployed. `sl access` still explains a draft file, labelled as a draft awaiting sign-off, so you can read it back before approval. Tell the owner which applies:
 
 - A first `access.yaml`, still a draft: "Until you approve it, tools that read this file serve nothing."
-- A revoke to edit an approved file: "The last approved version keeps applying where it is deployed until you approve the new one." Never say "nobody is shown anything" without saying under which version. The revoke keeps the sign-off as `last_approved: { by, at }`, and on such a draft `sl access` says "This explains a draft. The version approved by <by> on <at> keeps applying where it is deployed; tools that load this draft serve nothing."
+- An edit to an approved file, which makes it a draft again in the same write (as `sl approve --target access --revoke` does on its own): "The last approved version keeps applying where it is deployed until you approve the new one." Never say "nobody is shown anything" without saying under which version. The edit keeps the sign-off as `last_approved: { by, at }`, and on such a draft `sl access` says "This explains a draft. The version approved by <by> on <at> keeps applying where it is deployed; tools that load this draft serve nothing."
 
 ## The access interview
 
 Start from the exceptions, not from a list of roles. Batch it like the rest of the interview: numbered items, one topic each, each with a suggestion, except the default-role question, which is asked open; up to about 8 per message. The roles, models, attributes and values in this file's examples are illustrative, not defaults: the owner's answers decide. The topics, in order:
 
-1. **Exceptions.** "Once a table is approved, everyone who uses these tools can see it. Is there anything some people should not see?" Suggest from the layer: the columns tagged `pii` or `sensitive`, money that looks like pay or margin, tables the owner hesitated over in the interview. When the answer is "nothing", write `access.yaml` with `status: draft`, `mode: open` and no roles, read the open baseline back (Readback) and approve it. When most of the layer is an exception ("only finance should see most of this", a layer shared with customers or partners), suggest `mode: closed`, where nothing is visible unless a role allows it.
+1. **Exceptions.** "Once a table is approved, everyone who uses these tools can see it. Is there anything some people should not see?" Suggest from the layer: the columns tagged `pii` or `sensitive`, money that looks like pay or margin, tables the owner hesitated over in the interview. When the answer is "nothing", create `access.yaml` with `sl set access mode open` (a draft in open mode with no roles), read the open baseline back (Readback) and approve it. When most of the layer is an exception ("only finance should see most of this", a layer shared with customers or partners), suggest `mode: closed`, where nothing is visible unless a role allows it.
 2. **Protected tags.** Confirm every `pii` and `sensitive` tag, and who may see each (Protected tags).
 3. **Roles from attributes.** For each group that should see more (a protected tag, a restriction) or less (a denial, fewer rows), a role, held by an attribute the calling tool knows about the user (Roles).
 4. **The default.** Ask it open (Roles, The default role).
@@ -48,7 +48,13 @@ Once the roles are named, one item per role can carry a fill-in template. The br
 
 ### Exceptions found during the interview
 
-When the owner says no to "everyone will be able to see this once approved; is that right?", or names a column only some people may see, write the exception down: a `pii` or `sensitive` tag on the field or model in the model file, or a restriction or a role's denial in `access.yaml` (create it with `sl set access mode open` if it does not exist yet, which writes `mode: open` and `status: draft`, and say that tools serve nothing under it until it is approved; see Draft and approved access). Do it before you run `sl approve` on the table or field, and check with `sl access` that the default audience sees it hidden for a reason other than `draft` (`protected_tag`, `restricted` or `denied`); before approval everything is hidden as `draft`, which proves nothing. The table's definition can still be approved; the exception decides who sees it.
+A readback states who will see the item and does not ask, so an exception arrives as the owner's own remark: "only finance should see this table", "hide that from sales". Record it in their words on that readback item, as a change to who sees it and not to the item:
+
+```
+sl reply --readback rb_0003 --item 2 --text "Only finance should see this table." --verdict change --about access --by "Dana Ruiz"
+```
+
+It does not hold the item: the table or field is approved on the owner's yes to the item itself, recorded in its own `sl reply`. `sl next` brings the change up in the access phase (in `why`, and as `access_changes` in `--json`), and when `access.yaml` is already approved it reopens the phase. There, make the change with an access command (Writing access.yaml) and read the whole file back; the owner's yes to that readback settles it. A column the owner calls personal or sensitive is tagged at once, a `pii` or `sensitive` tag on the field or model in the model file (`sl tag <ref> pii`), since a tag is part of the item. Check with `sl access` that the default audience sees an excepted item hidden for a reason other than `draft` (`protected_tag`, `restricted` or `denied`); before approval everything is hidden as `draft`, which proves nothing.
 
 ### "Totals only"
 
@@ -171,7 +177,7 @@ A row filter limits only its own model. A model that reaches a row-filtered mode
 
 - a row filter of its own that reads the filtered model through its join (`order.ship_region = {{ user.region }}`, or a hierarchy whose `column` is `order.sales_rep_id`);
 - deny the model to the role (`deny.models`);
-- or record why it stays unfiltered in the role's `open_questions`, naming the model.
+- or record why it stays unfiltered in the role's `open_questions`, naming the model (`sl question add access.roles.<role> --text "<model>: <why>"`).
 
 `sl validate` warns until each is settled: "rows of <N> that belong to <M> are not limited by <M>'s row filter for role <R>; add a row filter on <N> (it may read <join>.<column>), deny <N> to <R>, or record why in the role's open_questions". A role's `open_questions` entry naming the model silences it.
 
@@ -194,7 +200,7 @@ with recursive lines (manager_id, member_id) as (
 select manager_id, member_id from lines;
 ```
 
-Model the closure table like any other (grain: one row per manager and member pair), approve it, and settle who may see it as a model: in open mode everyone could browse the org chart through it, so ask, and tag it `sensitive` or restrict it if not. Then write the filter:
+Model the closure table like any other (grain: one row per manager and member pair), approve it, and settle who may see it as a model: in open mode everyone could browse the org chart through it, so ask, and tag it `sensitive` or restrict it if not. Then add the filter, `sl add-row-filter --role support_manager --model warehouse.tickets --column assignee_id --via warehouse.reporting_lines --manager manager_id --member member_id --user employee_id`, which writes:
 
 ```yaml
 row_filters:
@@ -224,7 +230,18 @@ A dimension that reads through a join to a model the role may see but row-filter
 
 ## Writing access.yaml
 
-Write the file yourself with `status: draft`:
+Build the file with the access commands, never by hand. Each validates the project with the edit before it writes, keeps the file's comments, refuses a name already taken and a removal something still names, and makes an approved file a draft again:
+
+| Rule | Command |
+|---|---|
+| the mode, the default role | `sl set access mode open` (or `closed`; with no file it creates a draft one), `sl set access default_role <role>` |
+| a user attribute | `sl add-attribute --name <n> --type string`, `sl remove-attribute <name>`, `sl set access attribute:<name> description "<text>"` |
+| a role | `sl add-role --name <n> --assign-when "<condition>" --allow-tags pii`, `sl remove-role <name>`, `sl set access role:<name> <key> <value>` |
+| a restriction | `sl add-restriction --name <n> --targets <ref>,... --roles <role>,...` (or `--when "<condition>"`), `sl remove-restriction <name>`, `sl set access restriction:<name> <key> <value>` |
+| a row filter | `sl add-row-filter --role <r> --model <source.model> --expr "<predicate>"`, or with `--column`, `--via`, `--manager`, `--member` and `--user` for a span of control; `sl remove-row-filter --role <r> --model <source.model>` |
+| an open question | `sl question add access --text "<question>"`, or on one role `sl question add access.roles.<role> --text "<question>"` |
+
+`sl <command> --help` shows each one's flags and the condition syntax; `references/phases/access.md` has the same table with the keys `sl set access` takes. This is the file they write, as a draft:
 
 ```yaml
 status: draft
@@ -335,6 +352,6 @@ sl approve --target access --by "Dana Ruiz"
 sl validate
 ```
 
-Approval covers the whole file. Any later change (a new role, a new restriction, a tag granted, a new source in closed mode) needs a new approval; deleting an answered open question or adding one does not, and you mention it in the next message, but writing its answer into a role is a change. For a change: run `sl approve --target access --revoke`, edit the file, and read the whole file back before approving again. Tell the owner, when you revoke, that the last approved version keeps applying where it is deployed until the new one is approved (Draft and approved access); while you rewrite, each table readback says who will see the table under the draft file. A new model or field approved later needs no new access approval in open mode, but its own readback says that everyone will be able to see it.
+Approval covers the whole file. Any later change (a new role, a new restriction, a tag granted, a new source in closed mode) needs a new approval; deleting an answered open question or adding one does not, and you mention it in the next message, but writing its answer into a role is a change. For a change: make it with an access command, which makes the approved file a draft again and keeps its sign-off as `last_approved`, and read the whole file back before approving again. Tell the owner that the last approved version keeps applying where it is deployed until the new one is approved (Draft and approved access); while the file is a draft, each table readback says who will see the table under it. A new model or field approved later needs no new access approval in open mode, but its own readback says that everyone will be able to see it.
 
 A role often relies on fields that are still draft (marketing's agreed breakdown by `orders.status`). Before approving access, check each role's agreed breakdowns against `draft_fields` in `sl status --json`; read those fields back and approve them, or name them in the handoff.

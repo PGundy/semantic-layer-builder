@@ -128,12 +128,19 @@ describe("sl set access mode with no access.yaml", () => {
     expect(existsSync(outside)).toBe(false);
   });
 
-  test("with access.yaml present, behaves as before: an approved file is refused until revoked", async () => {
+  test("with access.yaml present it changes the mode: validated first, and an approved file becomes a draft", async () => {
     const before = text("access.yaml");
+    // Closed mode needs an allowlist on every role, so the example's roles do not validate under it.
     const r = await sl(root, ["set", "access", "mode", "closed"]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain("sl approve --target access --revoke");
+    expect(r.err).toContain("roles[0].allow.models: is required in closed mode");
     expect(text("access.yaml")).toBe(before);
+    // The example's goldens without a role run as the default audience, which a closed mode shows nothing.
+    rmSync(join(root, "goldens"), { recursive: true });
+    for (const role of ["analyst", "finance", "sales"]) expect((await sl(root, ["set", "access", `role:${role}`, "allow.models", "warehouse.*"])).code).toBe(0);
+    const closed = await sl(root, ["set", "access", "mode", "closed", "--json"]);
+    expect(closed.json()).toMatchObject({ changed: true, ref: "access", key: "mode", value: "closed" });
+    expect(readYaml<Record<string, unknown>>(join(root, "access.yaml"))).toMatchObject({ status: "draft", mode: "closed", last_approved: { by: "Dana Ruiz", at: "2026-10-27" } });
   });
 });
 
