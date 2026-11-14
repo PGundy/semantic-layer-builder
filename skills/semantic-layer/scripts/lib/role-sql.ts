@@ -81,7 +81,7 @@ function postgres(input: RoleSqlInput): Omit<RoleSql, "text"> & { lines: string[
   if (!redshift) statements.push(`ALTER ROLE ${r} SET default_transaction_read_only = on;`);
   const lines = [
     ...header(input, "--", redshift ? "user" : "role"),
-    "-- Replace <password> with a new password; it goes in the connection URL's environment variable, never in a file.",
+    "-- Replace <password> with a new password; it goes in an environment variable or the project's env file, never in the layer's files or the chat.",
     ...statements,
     "-- ALTER DEFAULT PRIVILEGES covers tables the administrator running it creates later; for tables another role",
     "-- creates, run it again with FOR ROLE <that role> after ALTER DEFAULT PRIVILEGES.",

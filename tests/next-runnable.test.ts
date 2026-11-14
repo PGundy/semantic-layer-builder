@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { COMMANDS } from "../skills/semantic-layer/scripts/commands/index.ts";
+import { approvalLacks } from "../skills/semantic-layer/scripts/lib/approve-checks.ts";
 import { checkToolUse } from "../skills/semantic-layer/scripts/hooks/guard-edits.ts";
 import { GLOBAL_OPTIONS } from "../skills/semantic-layer/scripts/lib/cli.ts";
 import type { NextAction } from "../skills/semantic-layer/scripts/lib/next.ts";
@@ -12,7 +13,7 @@ import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { loadScenario, loadScript, REPO_ROOT, SCENARIOS_DIR, scriptWritePath } from "../evals/runner/files.ts";
 import { runScenario, slIn, steppingClock } from "../evals/runner/runner.ts";
 import type { Driver } from "../evals/runner/types.ts";
-import { initProject, sl, tempDir } from "./helpers.ts";
+import { duckdbSource, initProject, sl, tempDir } from "./helpers.ts";
 
 // HR-12: sl next never names a step that cannot run. Each bullet of HR-12 is a test below, and a
 // walk drives the Acme states and checks the command named at each. All data is synthetic.
@@ -70,6 +71,8 @@ async function expectRunnable(root: string, a: NextAction, human: string): Promi
   if (source) expect(existsSync(join(root, "sources", `${source}.yaml`)), text).toBe(true);
   const exists = (ref: string) => (ref.startsWith("golden:") ? existsSync(join(root, "goldens", `${ref.slice(7)}.yaml`)) : d.targets.has(ref));
   for (const ref of [flag(act, "--target"), ...(flag(act, "--targets")?.split(",") ?? [])].filter((r): r is string => !!r)) expect(exists(ref), `${text}: ${ref}`).toBe(true);
+  // A readback it names is not one sl readback refuses for what its items lack (HR-15).
+  if (act.command === "readback") expect(approvalLacks(root, flag(act, "--targets")!.split(",")), text).toEqual([]);
   if (act.command === "goldens" && flag(act, "--name") && act.args[0] !== "new") expect(existsSync(join(root, "goldens", `${flag(act, "--name")}.yaml`)), text).toBe(true);
   const model = flag(act, "--model");
   if (model) {
@@ -400,17 +403,52 @@ describe("HR-12: sl next never names a step that cannot run", () => {
 });
 
 describe("HR-12 walk: the command sl next names at each state runs", () => {
-  test("an empty directory names sl init, a root with no source asks the owner for one", async () => {
+  test("an empty directory names sl init as a step the owner names, a root with no source asks the owner for one", async () => {
     const dir = tempDir();
     const root = join(dir, "semantic");
-    const empty = await sl(root, ["next", "--json"]);
-    expect(empty.code).toBe(1);
-    const next0 = empty.json<{ next: string }>().next;
-    const [, name, ...args] = next0.split(" ");
-    expect(name).toBe("init");
-    expect(() => parseArgs({ args, options: { ...GLOBAL_OPTIONS, name: { type: "string" } }, strict: true })).not.toThrow();
-    await initProject(root);
+    // HR-15: the first command of a fresh agent is a step, not an error, and writes nothing.
+    const first = await next(root);
+    expect(first).toMatchObject({ kind: "ask_owner", phase: "init", action: { command: "init", args: ["--name", "<name>"], kind: "ask_owner" }, blocked_on: null });
+    expect(first.why).toContain("propose a default <name> for the layer from the company or the source (a short name such as acme");
+    expect(first.why).toContain("if one exists elsewhere, pass --root <dir>");
+    expect(first.ask_owner!.text).toStartWith("Which database should the layer read, through a read-only connection?");
+    expect(first.ask_owner!.text).toContain("I suggest calling the layer <name>");
+    expect(first.human).toEndWith("\n  Ask the owner, then: sl init --name <name>");
+    expect(existsSync(dir) ? readdirSync(dir) : []).toEqual([]);
+    // The owner's answer in place of <name> runs.
+    await ok(root, ["init", ...first.action.args.map((a) => (a === "<name>" ? "acme" : a))]);
     expect(await next(root)).toMatchObject({ kind: "ask_owner", phase: "add-source" });
+  });
+
+  test("a model drafted from a catalog with no comments: sl next names the one sl apply that gives what the readback needs, then the readback runs", async () => {
+    const dir = tempDir();
+    const root = join(dir, "semantic");
+    await initProject(root, "shop");
+    await duckdbSource(root, dir, "wh", [
+      "CREATE SCHEMA shop",
+      "CREATE TABLE shop.orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, amount DECIMAL(12,2), created_at TIMESTAMP)",
+      "INSERT INTO shop.orders SELECT i, i % 7, (i * 13 % 500) / 10.0, TIMESTAMP '2026-01-01' + to_days(i % 90) FROM range(1, 60) t(i)",
+    ]);
+    // Follow sl next through intake, profile and draft until it reaches the interview.
+    let a = await next(root);
+    for (let i = 0; i < 12 && a.phase !== "interview"; i++) {
+      expect(a.kind, `${a.phase}: ${a.why}`).toBe("run");
+      await ok(root, a.action.args.length ? [a.action.command, ...a.action.args] : [a.action.command]);
+      a = await next(root);
+    }
+    expect(a).toMatchObject({ kind: "ask_owner", phase: "interview", action: { command: "apply", args: ["--file", "-"], kind: "ask_owner" } });
+    expect(a.why).toContain("sl readback would refuse these items first");
+    expect(a.why).toContain("wh.orders: wh.orders has no grain");
+    // The owner's words in place of each <placeholder> make the edits run.
+    const edits = JSON.parse(/standard input: (\{.*?\})\. Then read/.exec(a.why)![1]!) as { edits: string[][] };
+    expect(edits.edits).toContainEqual(["set", "wh.orders", "grain", "<what one row is, in the owner's words>"]);
+    const filled = edits.edits.map((e) => e.map((w) => (w.startsWith("<") ? "One order as the shop records it." : w)));
+    const file = join(dir, "edits.json");
+    writeFileSync(file, JSON.stringify({ edits: filled }));
+    await ok(root, ["apply", "--file", file]);
+    const b = await next(root);
+    expect(b).toMatchObject({ kind: "run", phase: "interview", action: { command: "readback" } });
+    await ok(root, [b.action.command, ...b.action.args]);
   });
 
   test("the Acme scripted scenario, state by state", async () => {

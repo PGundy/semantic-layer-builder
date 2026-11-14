@@ -2,6 +2,7 @@
 // ledger, the pending readbacks and the stored query plans. It reads files only and writes nothing.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { approvalLacks, lacksNote } from "./approve-checks.ts";
 import { type Env, resolveConnection } from "./env-file.ts";
 import { intakeMode } from "./intake.ts";
 import { latestReply, openAccessChanges } from "./ledger.ts";
@@ -428,16 +429,41 @@ function connectionBlock(root: string, env: Env, a: NextAction): NextAction | un
   };
 }
 
+// The first step, in a directory with no semantic layer yet: create it under the name the owner gives.
+function noLayerAction(root: string): NextAction {
+  const why =
+    `No semantic layer at ${root} yet, so the first step creates it (if one exists elsewhere, pass --root <dir>). Follow references/phases/intake.md, ` +
+    "First turn: ask the owner for a read-only connection to their data, and propose a default <name> for the layer from the company or the source " +
+    "(a short name such as acme, in lowercase letters, digits and _; it can be changed later in semantic.yaml). Once they name the connection, " +
+    "sl setup with --name <name> creates the layer and its first source in one command; without a connection, run the command below.";
+  const ask =
+    "Which database should the layer read, through a read-only connection? Name the environment variable or env file that holds it, never its value. " +
+    "I suggest calling the layer <name> (a short name from the company or the source, such as acme); say if you prefer another.";
+  return { kind: "ask_owner", phase: "init", why, action: { command: "init", args: ["--name", "<name>"], kind: "ask_owner" }, ask_owner: { text: ask, items: [] }, blocked_on: null };
+}
+
 // The one action the skill takes next: approve what the owner said yes to, ask the owner what a
 // pending readback holds, dispatch a plan that waits on results, else sl status's next step. A
 // ledger sl approve would refuse comes first, and a step whose connection is not set waits on it.
 // record_reply is not returned yet: an answer the owner gave in chat is the agent's to record.
 export function nextAction(root: string, env: Env = {}): NextAction {
+  if (!existsSync(paths(root).project)) return noLayerAction(root);
   const d = statusDetail(root);
   if (d.ledger_problem !== null) return fromAction(act("validate", []), d.status.next_step.phase, d.ledger_problem, d.status.next_step.blocked_on ?? null);
   const first = approvalReady(root, d) ?? askOwner(root, d) ?? dispatchRunner(root, d);
-  const action = withAccessChanges(d, first ?? fromStatus(root, d), !first);
+  const action = lacking(root, withAccessChanges(d, first ?? fromStatus(root, d), !first));
   return connectionBlock(root, env, action) ?? action;
+}
+
+// A readback of items sl readback would refuse for what their files lack (a description, a grain, a
+// primary_key, a metric's measure) becomes the one sl apply that gives it, the owner's words in
+// place of each <placeholder>, so the command named runs.
+function lacking(root: string, a: NextAction): NextAction {
+  if (a.kind !== "run" || a.action.command !== "readback") return a;
+  const lacks = approvalLacks(root, (flagValue(a.action as StepAction, "--targets") ?? "").split(","));
+  if (!lacks.length) return a;
+  const why = `${a.why} ${lacksNote(lacks)}`;
+  return { ...fromAction(act("apply", ["--file", "-"], "ask_owner"), a.phase, why, a.blocked_on), ...(a.access_changes ? { access_changes: a.access_changes } : {}) };
 }
 
 // Routes the owner's changes to who sees an item to the access phase: an action of that phase names

@@ -374,7 +374,11 @@ export async function goldenRun(ctx: CommandContext, values: OptionValues, name:
     );
   }
   const { rows, from: fromQuery, cross_checked, mask } = await runGolden(ctx, golden, source, input, tolerance);
-  return { rows, tolerance, from, from_query: fromQuery, cross_checked, masked: mask.columns };
+  // The readback shows currency figures as sl goldens run and confirm print them, with the full figure recorded.
+  // A source file whose name is not a string names no models: sl validate reports it.
+  const layer = typeof source.source === "string" ? readLayer(ctx, source) : { models: [], metrics: [] };
+  const currency = currencyColumns(golden, layer.models, layer.metrics, resultColumns(rows));
+  return { rows, tolerance, from, from_query: fromQuery, cross_checked, masked: mask.columns, ...(currency.length ? { currency } : {}) };
 }
 
 // The tolerance the readback item a reply answers stated, when that readback is still stored.
@@ -616,7 +620,9 @@ interface Planned {
 
 // The one plan of every golden goldens check runs: refused when they read more than one source
 // or one of them cannot be loaded. A golden the compiler refuses is not planned; it fails the check.
-function checkPlan(bySource: Map<string, { source: SourceConfig; goldens: Planned[] }>, problems: GoldenCheck[]): QueryPlan {
+// A refusal that stops the plan carries the command that fixes the first problem (`next`), so --json
+// prints it as { error, next }.
+function checkPlan(bySource: Map<string, { source: SourceConfig; goldens: Planned[] }>, problems: GoldenCheck[], next = "sl validate"): QueryPlan {
   if (bySource.size > 1) {
     throw new UserError(
       `The goldens to check read sources ${[...bySource.keys()].join(", ")}. A plan covers one source: pass --source <s> or --name <g> with --emit-sql or --plan <plan_id>.`,
@@ -625,6 +631,7 @@ function checkPlan(bySource: Map<string, { source: SourceConfig; goldens: Planne
   if (problems.length) {
     throw new UserError(
       `Cannot plan every golden: ${problems.map((c) => `${c.name}: ${c.diffs[0]}`).join(" ")} Fix them, or pass --source <s> to plan the others.`,
+      next,
     );
   }
   const [group] = bySource.values();
@@ -642,12 +649,15 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
   const selected = selectForCheck(ctx, values);
   const checks: GoldenCheck[] = [];
   const problems: GoldenCheck[] = [];
+  // The command a refusal of the first problem named, for a plan that stops on it.
+  let fixWith: string | undefined;
   const bySource = new Map<string, { source: SourceConfig; goldens: Planned[] }>();
   for (const loaded of selected) {
     const g = loaded.golden;
     const problem = goldenProblem(loaded);
     if (problem) {
       problems.push({ name: stem(basename(loaded.path)), ok: false, diffs: [problem] });
+      fixWith ??= "sl validate";
       continue;
     }
     let source: SourceConfig;
@@ -666,6 +676,7 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
       if (!(e instanceof UserError)) throw e;
       const next = `Fix what this says in goldens/${g.name}.yaml or the layer, then run sl validate and sl goldens check --name ${g.name}.`;
       problems.push({ name: g.name, ok: false, diffs: [`Cannot plan this golden: ${e.message.split("\n")[0]}`], next });
+      fixWith ??= e.next;
       continue;
     }
     const group = bySource.get(source.source) ?? { source, goldens: [] };
@@ -675,14 +686,14 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
 
   const { resultsFile, planId } = resultsInput(ctx, values);
   if (bool(values, "emit-sql")) {
-    const plan = checkPlan(bySource, problems);
+    const plan = checkPlan(bySource, problems, fixWith);
     for (const c of checks) ctx.err(plainText(`Not planned: ${c.name}. ${c.diffs[0]} ${c.next}`));
     ctx.out(formatJson(emitPlan(ctx, plan, { name: "goldens", positionals: ["check"], values })));
     return 0;
   }
   checks.push(...problems);
   // With --plan, every golden's rows come from the stored plan of the whole check.
-  const stored: PlanResults | undefined = planId !== undefined ? planResults(ctx.root, planId, checkPlan(bySource, problems)) : undefined;
+  const stored: PlanResults | undefined = planId !== undefined ? planResults(ctx.root, planId, checkPlan(bySource, problems, fixWith)) : undefined;
 
   for (const { source } of bySource.values()) {
     if (!canRun(source) && !resultsFile && !stored) {

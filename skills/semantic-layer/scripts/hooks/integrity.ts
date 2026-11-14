@@ -9,7 +9,9 @@
 // After the call it compares. A difference no sl or git command could have made is put back and
 // reported; one made while sl or git ran at the same time is left and reported. A call whose
 // after-check never ran is compared at the next before-call. The state directory is
-// ${CLAUDE_PLUGIN_DATA}/ledger-guard, or a private directory under the system temp directory.
+// ${CLAUDE_PLUGIN_DATA}/ledger-guard, or a private directory under the system temp directory. It
+// also holds, per project directory, the evidence that the project uses this plugin, which extends
+// the env file refusal to a project with no semantic root yet.
 // An error of the hook's own never refuses a call: it warns on stderr and lets the call through.
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -135,13 +137,67 @@ function nearRoot(dir: string): boolean {
 }
 
 // Whether a file is an env file a semantic root would load: .env or .env.<name> (not .env.example)
-// in a semantic root or the directory holding one, or the file SL_ENV_FILE names. sl's own lookup
-// is lib/env-file.ts; this is the short path rule the hook needs, and it reads no file.
+// in a semantic root or the directory holding one, or the file SL_ENV_FILE names; and, in a project
+// that has shown it uses this plugin (inUse), one in the project directory or the working directory,
+// where sl looks before a root exists. sl's own lookup is lib/env-file.ts; this is the short path
+// rule the hook needs, and it reads no file.
 function isEnvFile(abs: string, cwd: string, env: Env): boolean {
   if (!existsSync(abs)) return false;
   const real = realPath(abs);
   if (env.SL_ENV_FILE && realPath(resolve(cwd, expandHome(env.SL_ENV_FILE))) === real) return true;
-  return [abs, real].some((p) => isEnvName(basename(p)) && nearRoot(dirname(p)));
+  return [abs, real].some((p) => isEnvName(basename(p)) && (nearRoot(dirname(p)) || inUse(dirname(p), cwd, env)));
+}
+
+// --- Evidence that a project uses this plugin --------------------------------------------------
+
+// The skill directory this hook ships in (skills/semantic-layer).
+const SKILL_DIR = join(import.meta.dir, "..", "..");
+const projectOf = (cwd: string, env: Env) => realPath(env.CLAUDE_PROJECT_DIR ? resolve(cwd, expandHome(env.CLAUDE_PROJECT_DIR)) : cwd);
+// The file that records the evidence for a project: in the state directory, named by the project's path.
+const evidenceFile = (project: string, env: Env, dir = stateDir(env)) => join(dir, `project-${createHash("sha256").update(project).digest("hex").slice(0, 32)}`);
+
+// Whether `dir` is the project directory or the working directory of a project with evidence that
+// it uses this plugin: an sl command ran there, or a file of this skill was read through a hooked tool.
+// A call that is itself evidence counts (SELF_EVIDENCE, set by envFileRefusal), since the hook checks
+// it before runBefore records the evidence.
+function inUse(dir: string, cwd: string, env: Env): boolean {
+  const project = projectOf(cwd, env);
+  const real = realPath(dir);
+  return (real === project || real === realPath(cwd)) && (env[SELF_EVIDENCE] === "1" || existsSync(evidenceFile(project, env)));
+}
+const SELF_EVIDENCE = "__SL_HOOK_CALL_IS_EVIDENCE";
+
+// Whether a call is evidence that its project uses this plugin: an sl command in either form (this
+// plugin's sl.ts, a command named sl, or one of the MCP server's sl tools), or a Read, Grep or shell
+// command that names a file under this skill's directory.
+function isEvidence(tool: string, args: unknown, cwd: string): boolean {
+  if (/^mcp__.*__sl_[a-z0-9_]+$/.test(tool)) return true;
+  if (!isObject(args)) return false;
+  const skill = [SKILL_DIR, realPath(SKILL_DIR)];
+  const under = (p: unknown) => {
+    if (typeof p !== "string" || !p) return false;
+    const real = realPath(resolve(cwd, expandHome(p)));
+    return skill.some((d) => real === d || real.startsWith(d + sep));
+  };
+  if (tool === "Read") return under(args.file_path);
+  if (tool === "Grep") return under(args.path);
+  const command = args.command;
+  if (tool !== "Bash" || typeof command !== "string") return false;
+  return classify(command, cwd).ran.sl || skill.some((d) => command.includes(d));
+}
+
+// Records the evidence for the call's project when the call is evidence and a directory sl would
+// read an env file from (the project directory, the working directory) holds no semantic root yet:
+// once one does, the root's own rule covers its env files.
+function noteEvidence(input: Obj, dir: string, env: Env): void {
+  const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
+  if (!isEvidence(String(input.tool_name), input.tool_input, cwd)) return;
+  const project = projectOf(cwd, env);
+  if (nearRoot(project) && nearRoot(realPath(cwd))) return;
+  const file = evidenceFile(project, env, dir);
+  if (existsSync(file)) return;
+  openState(dir);
+  writeFileSync(file, `${project}\n`);
 }
 
 // The env files in a directory, for a pattern or a recursive search that names the directory,
@@ -281,7 +337,8 @@ function envFilesSearched(input: Obj, cwd: string, env: Env): EnvRead[] {
 }
 
 // The refusal for a Read call, a Grep call or a shell command that reads an env file, or undefined.
-export function envFileRefusal(tool: string, input: Obj, cwd: string, env: Env = process.env): string | undefined {
+export function envFileRefusal(tool: string, input: Obj, cwd: string, processEnv: Env = process.env): string | undefined {
+  const env = isEvidence(tool, input, cwd) ? { ...processEnv, [SELF_EVIDENCE]: "1" } : processEnv;
   let reads: EnvRead[] = [];
   if (tool === "Read" && typeof input.file_path === "string" && input.file_path) {
     const abs = resolve(cwd, expandHome(input.file_path));
@@ -757,6 +814,7 @@ export function runBefore(stdin: string, note = true, opts: Options = {}): Outco
     const env = opts.env ?? process.env;
     const dir = opts.stateDir ?? stateDir(env);
     const stream = streamOf(input);
+    noteEvidence(input, dir, env);
     const reports = sweep(dir, now, stream);
     if (!reports.length && note) record(input, dir, now, stream, env);
     tidy(dir, now);

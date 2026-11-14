@@ -35,8 +35,8 @@ const spec: CommandSpec = {
     return 0;
   },
 };
-// Query plans and their results (.sl/plans/) and the lock a writing command holds (.sl/lock) are
-// working files, never committed: init adds them to the root's .gitignore, appending to one that exists.
+// Query plans and their results (.sl/plans/), the lock a writing command holds (.sl/lock and
+// .sl/lock.takeover) and a whole-file write's temp file (*.sl-tmp) are working files, never committed: init adds them to the root's .gitignore, appending to one that exists.
 const PLANS_IGNORE = ".sl/plans/";
 function ignorePlans(root: string): void {
   const file = join(root, ".gitignore");

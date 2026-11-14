@@ -23,7 +23,7 @@ Run `bun install` once in the skill directory (the directory holding this file).
 bun <skill dir>/scripts/sl.ts <command> [flags]
 ```
 
-Below, `sl` is short for that; from a clone of the repository it is `bun skills/semantic-layer/scripts/sl.ts`. Every command takes `--root <dir>` (or `SEMANTIC_ROOT`) and `--json`; `--root` is the semantic directory itself, the one holding `semantic.yaml` (default `./semantic`), and relative paths in source files resolve from it. Use `--json` whenever you read output yourself and plain output when you show it to the owner. `sl <command> --help` prints the flags.
+Below, `sl` is short for that; from a clone of the repository it is `bun skills/semantic-layer/scripts/sl.ts`. Run every command in that full form: the plugin's hook treats only it as `sl` for the commands that record answers, so an alias or a shim named `sl` gets its ledger writes undone. Every command takes `--root <dir>` (or `SEMANTIC_ROOT`) and `--json`; `--root` is the semantic directory itself, the one holding `semantic.yaml` (default `./semantic`), and relative paths in source files resolve from it. Use `--json` whenever you read output yourself and plain output when you show it to the owner. `sl <command> --help` prints the flags.
 
 ## Principles
 
@@ -42,15 +42,15 @@ Below, `sl` is short for that; from a clone of the repository it is `bun skills/
 
 ## Start or resume
 
-**Checklist:** 1. `sl status --json`. 2. No `semantic.yaml`: load `references/phases/intake.md` (First turn). 3. Otherwise `sl validate`, fix new warnings and every `changed since it was approved` error, then take `sl next --json`'s action with the card for its phase.
+**Checklist:** 1. `sl next --json`. 2. Phase `init` (no `semantic.yaml` yet): load `references/phases/intake.md` (First turn). 3. Otherwise `sl validate`, fix new warnings and every `changed since it was approved` error, then take `sl next --json`'s action with the card for its phase.
 
-**A turn that only signs off.** When the owner has said stop, or that nothing is needed until they return, a later message that only closes or thanks you gets a one-line acknowledgement with no question; run no commands and send no summary. The resume checks below (`sl status`, `sl validate`) run on the first turn in which the owner asks to continue.
+**A turn that only signs off.** When the owner has said stop, or that nothing is needed until they return, a later message that only closes or thanks you gets a one-line acknowledgement with no question; run no commands and send no summary. The resume checks below (`sl next`, `sl validate`) run on the first turn in which the owner asks to continue.
 
 ```
-sl status --json
+sl next --json
 ```
 
-**Otherwise** run `sl validate` first and fix every new warning: new warnings surface rules added since the last session (such as exact cents on duckdb, `<col> * 0.01`). A warning stands only when its reason is written in the file it points at (`references/phases/handoff.md`); fix every other one. Two warnings never stand, whatever the file says: `round()` in a golden's SQL and a duckdb measure dividing by a numeric literal; fix them. A fix to an approved model, field or metric goes through `sl approve --revoke`, the edit, a readback and approval. After fixing a warning on an approved measure or golden (a `round()` removed), run `sl goldens check`; when the rows changed, show the new figure and confirm again only on the owner's yes. Then read the per-source progress (a source with `needs_focus: true` must be scoped before anything else; it clears once the owner has chosen a focus and the scope is at or under `settings.focus_threshold`, or the threshold was raised to the count the owner agreed, see `references/phases/scope.md`), `next_step` (its `phase`, a `message` and a suggested `command`) and `next_batch` (the tables to interview next, with the reasons they rank first), then continue from `sl next`. Re-check every open question, and anything the owner was told needs engineering or waits on the tool, against capabilities the skill has gained since; say what is now possible in the numbered items. The `drift` phase, an approved field reading a column the table no longer has, comes first after intake (`references/phases/drift.md`). The plain status output names the access mode and what the default audience sees in one line; its counts are the tool's, so tell the owner what is hidden rather than repeating them.
+**Otherwise** run `sl validate` first and fix every new warning: new warnings surface rules added since the last session (such as exact cents on duckdb, `<col> * 0.01`). A warning stands only when its reason is written in the file it points at (`references/phases/handoff.md`); fix every other one. Two warnings never stand, whatever the file says: `round()` in a golden's SQL and a duckdb measure dividing by a numeric literal; fix them. A fix to an approved model, field or metric goes through `sl approve --revoke`, the edit, a readback and approval. After fixing a warning on an approved measure or golden (a `round()` removed), run `sl goldens check`; when the rows changed, show the new figure and confirm again only on the owner's yes. Then read the per-source progress in `sl status --json` (a source with `needs_focus: true` must be scoped before anything else; it clears once the owner has chosen a focus and the scope is at or under `settings.focus_threshold`, or the threshold was raised to the count the owner agreed, see `references/phases/scope.md`), `next_step` (its `phase`, a `message` and a suggested `command`) and `next_batch` (the tables to interview next, with the reasons they rank first), then continue from `sl next`. Re-check every open question, and anything the owner was told needs engineering or waits on the tool, against capabilities the skill has gained since; say what is now possible in the numbered items. The `drift` phase, an approved field reading a column the table no longer has, comes first after intake (`references/phases/drift.md`). The plain status output names the access mode and what the default audience sees in one line; its counts are the tool's, so tell the owner what is hidden rather than repeating them.
 
 ## Reading `sl next`
 
@@ -72,7 +72,7 @@ Load the card for the `phase` that `sl next` (or `sl status`'s `next_step`) name
 
 | Phase | Card |
 |---|---|
-| `add-source`, `introspect`, `connect` | `references/phases/intake.md` |
+| `init`, `add-source`, `introspect`, `connect` | `references/phases/intake.md` |
 | `scope` | `references/phases/scope.md` |
 | `profile` | `references/phases/profile.md` |
 | `draft` | `references/phases/draft.md` |

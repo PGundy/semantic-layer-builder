@@ -326,17 +326,23 @@ export async function acquireLock(root: string, who: { command: string; started:
   };
 }
 
-// Adds .sl/lock to the root's .gitignore, creating the file when the root has none: sl init calls
-// it, and a root made before gets the rule when its first locked command ends. A .gitignore that is
-// a link, or cannot be written, is left alone.
+// The working files of the lock and of whole-file writes, kept out of version control: the lock, the
+// takeover file beside it and the temporary file a write goes through.
+export const LOCK_IGNORE = [LOCK_FILE, `${LOCK_FILE}.takeover`, `*${TEMP_SUFFIX}`];
+
+// Adds the LOCK_IGNORE lines the root's .gitignore lacks, creating the file when the root has none:
+// sl init calls it, and a root made before gets them when its first locked command ends. A
+// .gitignore that is a link, or cannot be written, is left alone.
 export function ignoreLock(root: string): void {
   const file = join(root, ".gitignore");
   try {
     const stat = lstatSync(file, { throwIfNoEntry: false });
     if (stat && !stat.isFile()) return;
     const text = stat ? readFileSync(file, "utf8") : "";
-    if (text.split(/\r?\n/).some((l) => l.trim() === LOCK_FILE)) return;
-    writeFileAtomic(file, `${text}${text && !text.endsWith("\n") ? "\n" : ""}${LOCK_FILE}\n`);
+    const have = new Set(text.split(/\r?\n/).map((l) => l.trim()));
+    const missing = LOCK_IGNORE.filter((l) => !have.has(l));
+    if (!missing.length) return;
+    writeFileAtomic(file, `${text}${text && !text.endsWith("\n") ? "\n" : ""}${missing.join("\n")}\n`);
   } catch {
     // The rule is a convenience: a root whose .gitignore cannot be written still locks.
   }

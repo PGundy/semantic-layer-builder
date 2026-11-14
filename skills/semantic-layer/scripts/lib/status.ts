@@ -730,6 +730,9 @@ interface StepContext {
   signOff: (refs: string[]) => StepAction;
   // For each golden of the reported goldens by name, the source its request names.
   goldenSources: Map<string, string | undefined>;
+  // The typed edits (the words after "sl") that declare the roles and user attributes the goldens
+  // name, which access.yaml must define once it exists.
+  goldenAccessEdits: string[][];
 }
 
 const OPEN_BASELINE = "everyone sees every approved model, field and metric except those tagged pii or sensitive";
@@ -996,6 +999,20 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
   if (access.state !== "approved" || ctx.accessProblem !== null || closedEmpty) {
     const questions = access.open_questions;
     const approved = access.state === "approved" ? "access.yaml is approved, but " : "access.yaml is a draft, and ";
+    if (access.state === "missing" && ctx.goldenAccessEdits.length) {
+      // sl set access mode alone is refused while goldens name roles or user attributes it lacks: one
+      // sl apply creates the file with them.
+      const edits = [["set", "access", "mode", "<open|closed>"], ...ctx.goldenAccessEdits];
+      return {
+        phase: "access",
+        message:
+          `No access.yaml, so access is open: ${OPEN_BASELINE}. Ask the owner the exceptions question: ${EXCEPTIONS_QUESTION} ` +
+          "The goldens name roles or user attributes, which access.yaml must define, so sl set access mode alone is refused. " +
+          `Create it with them in one command: run the command below with this on its standard input, <open|closed> as the owner says: ${JSON.stringify({ edits })}. ` +
+          "Then add the restrictions and tags they name, read it back and approve it once they confirm.",
+        action: act("apply", ["--file", "-"], "ask_owner"),
+      };
+    }
     if (access.state === "missing") {
       return {
         phase: "access",
@@ -1173,6 +1190,28 @@ function defaultAudience(v: AccessVisibility, sourceNames: Set<string>): Default
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+// The add-attribute and add-role edits for the user attributes and roles the goldens name, each
+// attribute typed from the values the goldens give it (a string or a number, or a list of either).
+function goldenAccessEdits(goldens: { golden: Golden }[]): string[][] {
+  const roles = new Set<string>();
+  const attributes = new Map<string, string>();
+  for (const { golden } of goldens) {
+    if (!isRecord(golden)) continue;
+    if (typeof golden.role === "string" && golden.role) roles.add(golden.role);
+    if (!isRecord(golden.user)) continue;
+    for (const [name, value] of Object.entries(golden.user)) {
+      const list = Array.isArray(value);
+      const first: unknown = list ? value[0] : value;
+      const type = `${typeof first === "number" ? "number" : "string"}${list ? "_list" : ""}`;
+      if (!attributes.has(name)) attributes.set(name, type);
+    }
+  }
+  return [
+    ...[...attributes].sort().map(([name, type]) => ["add-attribute", "--name", name, "--type", type]),
+    ...[...roles].sort().map((name) => ["add-role", "--name", name]),
+  ];
+}
 
 // The layer with every model, field, metric and access.yaml taken as approved, as sl validate
 // checks goldens: draft items have their own steps, and this asks only what a role may see.
@@ -1410,6 +1449,7 @@ export function statusDetail(root: string, only?: string): StatusDetail {
       });
       return ready ? act("approve", ["--target", ready]) : act("readback", ["--targets", refs.join(",")]);
     },
+    goldenAccessEdits: goldenAccessEdits(loadedGoldens),
     goldenSources: new Map(
       loadedGoldens.flatMap(({ path, golden }) => {
         const g: Record<string, unknown> = isRecord(golden) ? golden : {};

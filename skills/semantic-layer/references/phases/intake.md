@@ -1,6 +1,6 @@
 # Phase card: intake
 
-Load this card when `sl next` names phase `add-source`, `introspect` or `connect`, when there is no `semantic.yaml` yet, or when the owner adds a source. It holds the first turn, intake per source, the export fallback and its upgrade, and the baseline that follows intake. It is enough for a live postgres or duckdb source. Load `references/intake.md` only when the source is a warehouse dialect run through your own SQL tool, a lake of files, a schema export or other shared context, or the CLI warns about the role.
+Load this card when `sl next` names phase `init`, `add-source`, `introspect` or `connect`, when there is no `semantic.yaml` yet, or when the owner adds a source. It holds the first turn, intake per source, the export fallback and its upgrade, and the baseline that follows intake. It is enough for a live postgres or duckdb source. Load `references/intake.md` only when the source is a warehouse dialect run through your own SQL tool, a lake of files, a schema export or other shared context, or the CLI warns about the role.
 
 ## First turn
 

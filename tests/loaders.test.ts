@@ -319,7 +319,8 @@ describe("the four cases of the gap review", () => {
 });
 
 describe("no semantic root", () => {
-  for (const command of ["status", "next", "validate"]) {
+  // sl next names sl init as its first step instead (tests/next-runnable.test.ts).
+  for (const command of ["status", "validate"]) {
     test(`sl ${command} --json prints a JSON error naming sl init`, async () => {
       const { root } = tempRoot();
       const r = await sl(root, [command, "--json"]);
@@ -334,6 +335,13 @@ describe("no semantic root", () => {
       expect(plain).toMatchObject({ code: 1, out: "", err: r.err });
     });
   }
+
+  test("sl next --json is a step: exit 0, the action sl init --name <name> for the owner to name", async () => {
+    const { root } = tempRoot();
+    const r = await sl(root, ["next", "--json"]);
+    expect(r).toMatchObject({ code: 0, err: "" });
+    expect(r.json<{ kind: string; phase: string; action: unknown }>()).toMatchObject({ kind: "ask_owner", phase: "init", action: { command: "init", args: ["--name", "<name>"], kind: "ask_owner" } });
+  });
 
   test("a refusal that names no next command stays one plain line under --json", async () => {
     const r = await sl(layer(), ["status", "--source", "nope", "--json"]);

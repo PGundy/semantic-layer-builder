@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { AccessFile, MetricsFile, Model } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { approveWithYes, initProject, recordReply, sl, tempRoot } from "./helpers.ts";
+import { approveWithYes, initProject, recordReply, refsUnder, sl, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
@@ -260,18 +260,29 @@ describe("approve refusals", () => {
     expect(orders(root).status).toBe("draft");
   });
 
+  // sl readback refuses these items up front (HR-15), so no yes to them can be recorded: sl approve,
+  // run without one, still names what they lack.
   test("a model without grain or primary_key", async () => {
     const root = await project();
-    const r = await approve(root, ["--target", "wh.customers", "--by", "Dana"]);
+    const rb = await sl(root, ["readback", "--targets", "wh.customers"]);
+    expect(rb.code).toBe(1);
+    expect(rb.err).toContain("  - wh.customers: wh.customers has no grain\n  - wh.customers: wh.customers has no primary_key");
+    const r = await raw(root, ["--target", "wh.customers", "--by", "Dana"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("wh.customers has no grain");
     expect(r.err).toContain("wh.customers has no primary_key");
     expect(text(root, "models/wh/customers.yaml")).toBe(CUSTOMERS);
   });
 
-  test("a measure without description", async () => {
+  test("a measure without description: refused by the readback, and by approve after a yes when the description was removed since", async () => {
     const root = await project();
-    const r = await approve(root, ["--target", "wh.customers.customer_count", "--by", "Dana"]);
+    expect((await sl(root, ["readback", "--targets", "wh.customers.customer_count"])).err).toContain("Measure wh.customers.customer_count has no description");
+    // A description is outside the approval hash, so a yes given with one stands after it is removed.
+    const file = join(root, "models", "wh", "customers.yaml");
+    writeFileSync(file, CUSTOMERS.replace("    agg: count\n", "    agg: count\n    description: Customers.\n"));
+    await recordReply(root, "wh.customers.customer_count");
+    writeFileSync(file, CUSTOMERS);
+    const r = await raw(root, ["--target", "wh.customers.customer_count", "--by", "Dana"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("Measure wh.customers.customer_count has no description");
     expect(text(root, "models/wh/customers.yaml")).toBe(CUSTOMERS);
@@ -279,13 +290,16 @@ describe("approve refusals", () => {
 
   test("a metric without description, with draft measures, or with a missing measure", async () => {
     const root = await project();
-    const vague = await approve(root, ["--target", "metric:vague", "--by", "Dana"]);
+    expect((await sl(root, ["readback", "--targets", "metric:vague,metric:broken"])).err).toContain(
+      "  - metric:vague: Metric metric:vague has no description\n  - metric:broken: measure wh.orders.nope does not exist",
+    );
+    const vague = await raw(root, ["--target", "metric:vague", "--by", "Dana"]);
     expect(vague.code).toBe(1);
     expect(vague.err).toContain("Metric metric:vague has no description");
     const drafts = await approve(root, ["--target", "metric:net", "--by", "Dana"]);
     expect(drafts.code).toBe(1);
     expect(drafts.err).toContain("draft measures: wh.orders.revenue, wh.customers.customer_count");
-    const broken = await approve(root, ["--target", "metric:broken", "--by", "Dana"]);
+    const broken = await raw(root, ["--target", "metric:broken", "--by", "Dana"]);
     expect(broken.code).toBe(1);
     expect(broken.err).toContain("wh.orders.nope does not exist");
     const unknown = await raw(root, ["--target", "metric:nope", "--by", "Dana"]);
@@ -324,16 +338,19 @@ describe("approve refusals", () => {
     status: draft
 `;
     writeFileSync(join(root, "metrics.yaml"), odd);
-    const upper = await approve(root, ["--target", "metric:upper", "--by", "Dana"]);
+    expect((await sl(root, ["readback", "--targets", "metric:upper,metric:spaced,metric:constant,metric:mixed"])).err).toContain(
+      "  - metric:upper: its expr placeholder {Orders.Revenue} is not {model.measure} (lowercase names, no spaces)",
+    );
+    const upper = await raw(root, ["--target", "metric:upper", "--by", "Dana"]);
     expect(upper.code).toBe(1);
     expect(upper.err).toContain("placeholder {Orders.Revenue} is not {model.measure}");
-    const spaced = await approve(root, ["--target", "metric:spaced", "--by", "Dana"]);
+    const spaced = await raw(root, ["--target", "metric:spaced", "--by", "Dana"]);
     expect(spaced.code).toBe(1);
     expect(spaced.err).toContain("placeholder { orders.revenue } is not {model.measure}");
-    const constant = await approve(root, ["--target", "metric:constant", "--by", "Dana"]);
+    const constant = await raw(root, ["--target", "metric:constant", "--by", "Dana"]);
     expect(constant.code).toBe(1);
     expect(constant.err).toContain("has no {model.measure} placeholder");
-    const mixed = await approve(root, ["--target", "metric:mixed", "--by", "Dana"]);
+    const mixed = await raw(root, ["--target", "metric:mixed", "--by", "Dana"]);
     expect(mixed.code).toBe(1);
     expect(mixed.err).toContain("{orders.Order_Count}");
     expect(text(root, "metrics.yaml")).toBe(odd);
@@ -413,7 +430,8 @@ describe("approve --recursive and --revoke", () => {
 
   test("--recursive lists every child that cannot be approved and approves nothing", async () => {
     const root = await project();
-    const r = await approve(root, ["--target", "wh.customers", "--by", "Dana", "--recursive"]);
+    expect((await sl(root, ["readback", "--targets", refsUnder(root, "wh.customers").join(",")])).code).toBe(1);
+    const r = await raw(root, ["--target", "wh.customers", "--by", "Dana", "--recursive"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("nothing was approved");
     expect(r.err).toContain("wh.customers has no grain");
@@ -514,7 +532,7 @@ describe("revoking and approving access.yaml again", () => {
 
   test("a revoke of a model, field or metric deletes the approval without last_approved", async () => {
     const root = await project();
-    await approve(root, ["--target", "wh.customers", "--by", "Dana"]);
+    await raw(root, ["--target", "wh.customers", "--by", "Dana"]);
     await approve(root, ["--target", "wh.customers", "--revoke"]);
     const m = readYaml<Record<string, unknown>>(join(root, "models/wh/customers.yaml"));
     expect(m.status).toBe("draft");

@@ -446,7 +446,7 @@ describe("edge cases", () => {
     expect(text).toContain("- order_id (integer Approve now): ");
     expect(text).not.toContain("\x1b");
     const f = join(root, "models", "warehouse", "orders.yaml");
-    writeFileSync(f, readFileSync(f, "utf8").replace("measures:\n", "measures:\n  - name: buyers\n    agg: count_distinct\n    expr: customer_id\n    format: integer\n"));
+    writeFileSync(f, readFileSync(f, "utf8").replace("measures:\n", "measures:\n  - name: buyers\n    agg: count_distinct\n    expr: customer_id\n    format: integer\n    description: Distinct customers.\n"));
     expect((await readback(root, "warehouse.orders.buyers")).items[0]!.text).toContain("- The number of distinct values of customer_id.\n");
   });
 });
