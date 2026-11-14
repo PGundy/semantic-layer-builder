@@ -168,6 +168,26 @@
           ],
           "description": "ISO timestamp of the last profile, or null."
         },
+        "profile_skipped": {
+          "type": "object",
+          "description": "Set when the last sl profile run skipped the table; removed when a run profiles it. An earlier profile, if any, is kept.",
+          "additionalProperties": false,
+          "required": [
+            "at",
+            "reason"
+          ],
+          "properties": {
+            "at": {
+              "type": "string",
+              "description": "ISO timestamp of the run that skipped the table."
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Why, in plain words: no SELECT permission, a timeout, an empty sample, or the first line of the database's message."
+            }
+          }
+        },
         "columns": {
           "type": "array",
           "description": "Columns in ordinal order.",

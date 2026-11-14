@@ -11,7 +11,7 @@ import { loadSource, paths } from "./project.ts";
 import { PENDING_DIR } from "./readback.ts";
 import { type ProjectStatus, type StatusDetail, statusDetail } from "./status.ts";
 import type { Golden, LedgerReply, PendingReadback, ReadbackItem, SourceConfig } from "./types.ts";
-import { schemaIssues } from "./validate.ts";
+import { schemaIssues } from "./schema.ts";
 import { readYaml } from "./yaml.ts";
 
 export const NEXT_KINDS = ["run", "ask_owner", "record_reply", "dispatch", "done"] as const;

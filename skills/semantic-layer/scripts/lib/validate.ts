@@ -1,8 +1,6 @@
 // Structural (JSON Schema) and semantic (cross-reference) validation of a semantic root.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
-import Ajv2020 from "ajv/dist/2020.js";
-import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
 import { parseDocument } from "yaml";
 import { type AccessLayer, type AccessVisibility, checkRequest, evaluateLayer, metricMeasureRefs } from "./access.ts";
 import {
@@ -31,6 +29,7 @@ import { findTable } from "./naming.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
 import { isHashedValue, protectedColumns } from "./profile.ts";
 import { parseRequestField } from "./refs.ts";
+import { type Issue, parserLine, type SchemaKind, schemaIssues } from "./schema.ts";
 import { type Sensitivity, sensitivityOf } from "./sensitivity.ts";
 import { incomingKeyColumns, referencedColumns } from "./snapshot-diff.ts";
 import { sourceSafetyIssues } from "./source-safety.ts";
@@ -66,146 +65,9 @@ import type {
 } from "./types.ts";
 import { DIALECTS, PROTECTED_TAGS, PUBLIC_TAG, TIME_GRAINS, TO_ONE_RELATIONSHIPS } from "./types.ts";
 
-export interface Issue {
-  level: "error" | "warning";
-  file: string;
-  path: string;
-  message: string;
-}
-
-export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden", "pending", "plan", "ledger", "review"] as const;
-export type SchemaKind = (typeof SCHEMA_KINDS)[number];
-
-export const SCHEMAS_DIR = join(import.meta.dir, "..", "..", "schemas");
-
-let validators: Map<SchemaKind, ValidateFunction> | undefined;
-
-function getValidator(kind: SchemaKind): ValidateFunction {
-  if (!validators) {
-    const ajv = new Ajv2020({ allErrors: true, strictTypes: false, strictTuples: false, verbose: true });
-    ajv.addFormat("date", { type: "string", validate: isCalendarDate });
-    validators = new Map();
-    for (const k of SCHEMA_KINDS) {
-      const schema = JSON.parse(readFileSync(join(SCHEMAS_DIR, `${k}.schema.json`), "utf8")) as object;
-      validators.set(k, ajv.compile(schema));
-    }
-  }
-  return validators.get(kind)!;
-}
-
-// True unless the string has the YYYY-MM-DD shape and names no real day; the shape itself is the schema pattern's job.
-function isCalendarDate(value: string): boolean {
-  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return true;
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  const date = new Date(Date.UTC(y, mo - 1, d));
-  return date.getUTCFullYear() === y && date.getUTCMonth() === mo - 1 && date.getUTCDate() === d;
-}
-
-// Turns a JSON pointer such as /measures/2/agg into measures[2].agg.
-export function dottedPath(pointer: string, child?: string): string {
-  const parts = pointer
-    .split("/")
-    .slice(1)
-    .map((p) => p.replace(/~1/g, "/").replace(/~0/g, "~"));
-  if (child !== undefined) parts.push(child);
-  let out = "";
-  for (const p of parts) out += /^\d+$/.test(p) ? `[${p}]` : out ? `.${p}` : p;
-  return out;
-}
-
-function schemaMessage(e: ErrorObject): { path: string; message: string } | null {
-  const params = e.params as Record<string, unknown>;
-  // A oneOf branch only requires a key; the oneOf error itself says which keys are alternatives.
-  if (/\/oneOf\/\d+\//.test(e.schemaPath)) return null;
-  switch (e.keyword) {
-    case "if":
-      return null;
-    case "oneOf": {
-      const keys = (Array.isArray(e.schema) ? e.schema : []).flatMap((b: { required?: string[] }) => b.required ?? []);
-      if (!keys.length) return { path: dottedPath(e.instancePath), message: e.message ?? e.keyword };
-      const message = params.passingSchemas === null ? `needs one of ${keys.join(", ")}` : `has more than one of ${keys.join(", ")}; give exactly one`;
-      return { path: dottedPath(e.instancePath), message };
-    }
-    case "required":
-      return { path: dottedPath(e.instancePath, String(params.missingProperty)), message: "is required" };
-    case "additionalProperties":
-      return { path: dottedPath(e.instancePath, String(params.additionalProperty)), message: "is not a known property" };
-    case "enum":
-      return { path: dottedPath(e.instancePath), message: `must be one of: ${(params.allowedValues as unknown[]).map(String).join(", ")}` };
-    case "const":
-      return { path: dottedPath(e.instancePath), message: `must be ${JSON.stringify(params.allowedValue)}` };
-    case "false schema":
-      return { path: dottedPath(e.instancePath), message: "is not allowed here" };
-    case "pattern":
-      return { path: dottedPath(e.instancePath), message: `must match ${String(params.pattern)}` };
-    case "format":
-      return { path: dottedPath(e.instancePath), message: "must be a real calendar date (YYYY-MM-DD)" };
-    case "not":
-      return { path: dottedPath(e.instancePath), message: "must be a single value, not a list or object" };
-    default:
-      return { path: dottedPath(e.instancePath), message: e.message ?? e.keyword };
-  }
-}
-
-// Hints added to a schema message, by file kind and property path.
-const SCHEMA_HINTS: Partial<Record<SchemaKind, Record<string, string>>> = {
-  model: {
-    dimensions: "write dimensions: [] when the model has none",
-    measures: "write measures: [] when the model has none",
-  },
-  golden: {
-    "request.metrics":
-      "there is no metrics key: request.measures lists measures as model.measure and metrics by bare name, as in measures: [orders.revenue, average_order_value]",
-  },
-};
-
-// Checks one parsed document against the schema for its kind.
-export function schemaIssues(kind: SchemaKind, data: unknown, file: string): Issue[] {
-  const validate = getValidator(kind);
-  if (validate(data)) return [];
-  const seen = new Set<string>();
-  const out: Issue[] = [];
-  for (const e of validate.errors ?? []) {
-    const m = schemaMessage(e);
-    if (!m) continue;
-    const hint = SCHEMA_HINTS[kind]?.[m.path];
-    if (hint) m.message = `${m.message}; ${hint}`;
-    const key = `${m.path}\0${m.message}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({ level: "error", file, ...m });
-  }
-  return out;
-}
-
-// The eval harness's files (evals/runner), each with a schema under schemas/ (spec.md, Eval runs).
-export const EVAL_SCHEMA_KINDS = ["eval-scenario", "eval-script", "eval-transcript-turn", "eval-summary", "eval-figures", "eval-grades", "eval-baseline"] as const;
-export type EvalSchemaKind = (typeof EVAL_SCHEMA_KINDS)[number];
-
-let evalValidators: Map<EvalSchemaKind, ValidateFunction> | undefined;
-
-// Checks one eval harness file against its schema, worded as schemaIssues words a layer file.
-export function evalSchemaIssues(kind: EvalSchemaKind, data: unknown, file: string): Issue[] {
-  if (!evalValidators) {
-    const ajv = new Ajv2020({ allErrors: true, strictTypes: false, verbose: true });
-    evalValidators = new Map();
-    for (const k of EVAL_SCHEMA_KINDS) {
-      evalValidators.set(k, ajv.compile(JSON.parse(readFileSync(join(SCHEMAS_DIR, `${k}.schema.json`), "utf8")) as object));
-    }
-  }
-  const validate = evalValidators.get(kind)!;
-  if (validate(data)) return [];
-  const seen = new Set<string>();
-  const out: Issue[] = [];
-  for (const e of validate.errors ?? []) {
-    const m = schemaMessage(e);
-    if (!m || seen.has(`${m.path}\0${m.message}`)) continue;
-    seen.add(`${m.path}\0${m.message}`);
-    out.push({ level: "error", file, ...m });
-  }
-  return out;
-}
+// The schema check lives in lib/schema.ts, which the loaders share; these names stay importable from here.
+export { dottedPath, EVAL_SCHEMA_KINDS, evalSchemaIssues, SCHEMA_KINDS, SCHEMAS_DIR, schemaIssues } from "./schema.ts";
+export type { EvalSchemaKind, Issue, SchemaKind } from "./schema.ts";
 
 export { callsRound, dividesByLiteral, sqlNames } from "./sql-names.ts";
 
@@ -359,19 +221,25 @@ class Validator {
   // Reads and schema-checks one file; returns undefined when it cannot be parsed into an object.
   load<T>(abs: string, kind: SchemaKind, stem: string): Loaded<T> | undefined {
     const file = this.rel(abs);
-    const text = this.overrides?.get(abs) ?? readFileSync(abs, "utf8");
+    let text = this.overrides?.get(abs);
+    try {
+      text ??= readFileSync(abs, "utf8");
+    } catch (e) {
+      this.error(file, "", (e as { code?: string }).code === "EISDIR" ? "is a directory, not a file" : `cannot be read (${(e as { code?: string }).code ?? "unknown error"})`);
+      return undefined;
+    }
     let data: unknown;
     if (abs.endsWith(".json")) {
       try {
         data = JSON.parse(text);
       } catch (e) {
-        this.error(file, "", `invalid JSON: ${(e as Error).message.split("\n")[0]!.replace(/:$/, "")}`);
+        this.error(file, "", `invalid JSON: ${parserLine(e)}`);
         return undefined;
       }
     } else {
       const doc = parseDocument(text);
       if (doc.errors.length) {
-        this.error(file, "", `invalid YAML: ${doc.errors[0]!.message.split("\n")[0]!.replace(/:$/, "")}`);
+        this.error(file, "", `invalid YAML: ${parserLine(doc.errors[0])}`);
         return undefined;
       }
       data = doc.toJS();
@@ -473,7 +341,7 @@ class Validator {
       try {
         data = JSON.parse(line);
       } catch (e) {
-        return this.error(file, at, `is not valid JSON (${(e as Error).message.split("\n")[0]}); ${fix}`);
+        return this.error(file, at, `is not valid JSON (${parserLine(e)}); ${fix}`);
       }
       const issues = schemaIssues("ledger", data, file);
       for (const issue of issues) this.issues.push({ ...issue, path: issue.path ? `${at} ${issue.path}` : at });

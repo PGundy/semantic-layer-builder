@@ -14,7 +14,7 @@ import { sqlNames } from "../sql-names.ts";
 import { sqlTextProblem, type TextRole } from "../sql-text.ts";
 import type { Dimension, FilterOp, Measure, Model, QueryRequest, Snapshot, SourceConfig, TimeGrain } from "../types.ts";
 import { AGGREGATIONS, NAME_PATTERN, TIME_GRAINS } from "../types.ts";
-import { schemaIssues } from "../validate.ts";
+import { schemaIssues } from "../schema.ts";
 import { type Instance, JoinPlan, type PlannedJoin, readsJoin } from "./joins.ts";
 import { compileMetrics } from "./metrics.ts";
 import { type AppliedRows, rowsPredicate } from "./rowfilters.ts";
