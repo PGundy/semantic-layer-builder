@@ -4,14 +4,12 @@ import { basename, dirname, join, relative } from "node:path";
 import { type AccessLayer, type AccessVisibility, checkRequest, evaluateLayer, metricMeasureRefs } from "./access.ts";
 import {
   type ApprovalEntry,
-  accessEntry,
   changedMessage,
-  goldenHash,
   holdsHashes,
   integrity,
-  metricEntries,
+  itemApprovals,
+  listApprovals,
   missingMessage,
-  modelEntries,
   pathText,
   UNHASHED_MESSAGE,
 } from "./approval-hash.ts";
@@ -22,7 +20,6 @@ import { quoteIdent } from "./dialect.ts";
 import { type Env, envFilesInRoot, rootEnvFile, trackedEnvFiles } from "./env-file.ts";
 import { UserError } from "./errors.ts";
 import { intakeIssues, intakeMode, upgradeCommand } from "./intake.ts";
-import { DEFAULT_TOLERANCE } from "./goldens.ts";
 import { countedReplies, currentYes } from "./ledger.ts";
 import { findTable } from "./naming.ts";
 import { parseYaml } from "./yaml.ts";
@@ -857,7 +854,7 @@ class Validator {
         }
       });
       const source = m.source;
-      this.checkApprovals(f, modelEntries(source, m, (name) => this.model(source, name), this.sourceDialect(source)));
+      this.checkApprovals(f, itemApprovals(listApprovals({ models: [{ source, model: m, lookup: (name) => this.model(source, name), dialect: this.sourceDialect(source) }] })));
     }
   }
 
@@ -871,12 +868,9 @@ class Validator {
   projectHashedCache?: boolean;
   projectHashed(): boolean {
     if (this.projectHashedCache !== undefined) return this.projectHashedCache;
-    const entries: ApprovalEntry[] = [];
-    for (const l of this.modelList) if (isObject(l.data)) entries.push(...modelEntries(String(l.data.source), l.data, () => undefined));
-    if (isObject(this.metrics?.data)) entries.push(...metricEntries(this.metrics.data.metrics));
-    const access = accessEntry(this.access?.data);
-    if (access) entries.push(access);
-    this.projectHashedCache = holdsHashes(entries);
+    const models = this.modelList.filter((l) => isObject(l.data)).map((l) => ({ source: String(l.data.source), model: l.data, lookup: () => undefined }));
+    const metrics = isObject(this.metrics?.data) ? this.metrics.data.metrics : undefined;
+    this.projectHashedCache = holdsHashes(itemApprovals(listApprovals({ models, metrics, access: this.access?.data })));
     return this.projectHashedCache;
   }
 
@@ -1003,7 +997,7 @@ class Validator {
         }
       }
     });
-    this.checkApprovals(f, metricEntries(l.data.metrics));
+    this.checkApprovals(f, itemApprovals(listApprovals({ metrics: l.data.metrics })));
   }
 
   // Resolves source.model.field to a dimension or measure.
@@ -1106,8 +1100,8 @@ class Validator {
       this.checkChildTables(r, p, mode);
     });
     this.checkRestrictions(f, arr<Restriction>(a.restrictions), roleNames, attrs);
-    const entry = accessEntry(a);
-    if (entry) this.checkApprovals(f, [entry]);
+    const entries = itemApprovals(listApprovals({ access: a }));
+    if (entries.length) this.checkApprovals(f, entries);
   }
 
   // Errors when a condition does not parse or reads an undeclared attribute; warns on a test whose
@@ -1685,7 +1679,7 @@ class Validator {
           if (!attrs.has(key)) this.error(f, `user.${key}`, `"${key}" is not a declared user attribute`);
       }
       if (g.status === "approved" && !g.expected?.rows.length) this.error(f, "expected.rows", "an approved golden needs at least one expected row");
-      else if (g.status === "approved" && !currentYes(this.replies(), `golden:${g.name}`, goldenHash(g as unknown as Record<string, unknown>, g.expected!.rows, g.expected!.tolerance ?? DEFAULT_TOLERANCE)))
+      else if (g.status === "approved" && !currentYes(this.replies(), `golden:${g.name}`, listApprovals({ goldens: [{ golden: g }] })[0]!.hash))
         this.warn(f, "", unconfirmedGoldenMessage(g.name));
       const crossKey = crossCheckKey(g);
       if (typeof g.sql === "string" && typeof g.cross_check_sql === "string")

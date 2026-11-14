@@ -14,8 +14,7 @@ import {
   metricMeasureRefs,
 } from "./access.ts";
 import { canRun } from "./adapters/index.ts";
-import { accessEntry, type ApprovalEntry, goldenHash, holdsHashes, type Integrity, integrity, metricEntries, modelEntries } from "./approval-hash.ts";
-import { DEFAULT_TOLERANCE } from "./goldens.ts";
+import { type ApprovalEntry, holdsHashes, type Integrity, integrity, itemApprovals, listApprovals } from "./approval-hash.ts";
 import { currentYes, ledgerState } from "./ledger.ts";
 import { findTable, qualifiedName } from "./naming.ts";
 import { inScope } from "./patterns.ts";
@@ -436,7 +435,7 @@ function refsIn(entries: ApprovalEntry[], state: "changed" | "missing", projectH
 function modelApprovals(source: string, config: SourceConfig, models: LoadedModel["model"][]): ApprovalEntry[] {
   const byName = new Map(models.filter((m) => isRecord(m) && typeof m.model === "string").map((m) => [m.model, m]));
   const dialect = typeof config.dialect === "string" && (DIALECTS as readonly string[]).includes(config.dialect) ? config.dialect : undefined;
-  return [...byName.values()].flatMap((m) => modelEntries(source, m, (name) => byName.get(name), dialect));
+  return itemApprovals(listApprovals({ models: [...byName.values()].map((m) => ({ source, model: m, lookup: (name: string) => byName.get(name), dialect })) }));
 }
 
 // The rule sl validate applies to an expr that is one column: a bare identifier that is not a SQL
@@ -1334,8 +1333,9 @@ export function statusDetail(root: string, only?: string): StatusDetail {
   const metrics: Metric[] = Array.isArray(metricsFile?.metrics) ? metricsFile.metrics : [];
   const access = loadAccess(root);
   // The approvals of the reported sources' models, fields and joins, their metrics and access.yaml.
-  const allMetricEntries = metricEntries(metrics);
-  const accessEntries = [accessEntry(access)].filter((e): e is ApprovalEntry => !!e);
+  const listed = listApprovals({ metrics, access });
+  const allMetricEntries = itemApprovals(listed).filter((e) => e.kind === "metric");
+  const accessEntries = itemApprovals(listed).filter((e) => e.kind === "access");
   const approvals = [
     ...reports.flatMap((r) => r.approvals),
     ...allMetricEntries.filter((e) => typeof e.item.source === "string" && reported.has(e.item.source)),
@@ -1367,11 +1367,7 @@ export function statusDetail(root: string, only?: string): StatusDetail {
   for (const e of [...reports.flatMap((r) => r.approvals), ...allMetricEntries, ...accessEntries]) {
     if (!targets.has(e.ref)) targets.set(e.ref, { hash: e.hash, state: integrity(e, projectHashed) });
   }
-  for (const g of approvedGoldens) {
-    if (typeof g.name !== "string" || !Array.isArray(g.expected?.rows)) continue;
-    const hash = goldenHash(g as unknown as Record<string, unknown>, g.expected.rows, g.expected.tolerance ?? DEFAULT_TOLERANCE);
-    targets.set(`golden:${g.name}`, { hash, state: "current" });
-  }
+  for (const g of listApprovals({ goldens: loadedGoldens })) if (g.kind === "golden" && g.complete && g.status === "approved") targets.set(g.ref, { hash: g.hash, state: "current" });
   const withoutYes = (refs: string[]) =>
     refs.filter((ref) => {
       const t = targets.get(ref);

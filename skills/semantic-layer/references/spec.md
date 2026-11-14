@@ -111,6 +111,8 @@ Tools only ever write `status: draft`. The `sl approve` command sets `approved`,
 - a metric: its `name` and definition, `source`, `type`, `numerator`, `denominator` or `expr`, `format`, `currency`, `synonyms` and `tags`;
 - `access.yaml`: the whole file but its approval (`status`, `approved_by`, `approved_at`, `approved_hash`, `last_approved`) and its `open_questions`, top level and per role.
 
+Every command that reads approvals lists the same entries: each model with its dimensions, measures and joins, the metrics, `access.yaml` and the goldens, each with its target, status, recorded hash and current hash.
+
 Because the identity is part of the content, swapping the names of two approved measures, moving one into another model, or pointing a model at another `table` changes the hash of every field it touches. Normalizing trims text at its ends, sorts lists whose order means nothing (tags, synonyms, grains, keys) by code point and reads a join without `type` as `left`, so YAML layout (key order, flow or block style, trailing whitespace) changes no hash; whitespace inside an `expr` or `filter` does. Descriptions are not part of it, so rewording one needs no new approval. Goldens carry no `approved_hash`: `sl goldens confirm` records their rows, and the owner's yes is to the golden's own content hash (see Confirming a golden requires a recorded yes).
 
 - `sl validate` errors on an approved item whose content no longer matches its hash: "<ref> changed since it was approved by <by> on <at>: ...". Read it back to the owner as it now stands and approve it again on their yes, or restore the approved definition. A change to a join an approved field reads through is a change to that field too.
