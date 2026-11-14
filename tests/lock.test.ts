@@ -538,10 +538,10 @@ describe(".sl/lock is ignored by git", () => {
   test("sl init writes the rule", async () => {
     const root = join(tempDir(), "semantic");
     await initProject(root);
-    expect(read(root, ".gitignore")).toBe("# Query plans and their results, written by --emit-sql and sl results add.\n.sl/plans/\n.sl/lock\n");
+    expect(read(root, ".gitignore")).toBe("# Query plans and their results, written by --emit-sql and sl results add.\n.sl/plans/\n.sl/lock\n.sl/lock.takeover\n*.sl-tmp\n");
     // The next locked command finds it and adds nothing.
     expect((await sl(root, ["add-source", "--name", "wh", "--dialect", "duckdb"])).code).toBe(0);
-    expect(read(root, ".gitignore")).toBe("# Query plans and their results, written by --emit-sql and sl results add.\n.sl/plans/\n.sl/lock\n");
+    expect(read(root, ".gitignore")).toBe("# Query plans and their results, written by --emit-sql and sl results add.\n.sl/plans/\n.sl/lock\n.sl/lock.takeover\n*.sl-tmp\n");
   });
 
   test("a root made before gets it on its first locked command, once, and read-only commands leave it alone", async () => {
@@ -550,14 +550,14 @@ describe(".sl/lock is ignored by git", () => {
     for (const args of [["status"], ["validate"], ["next"]]) expect((await sl(root, args)).code).toBe(0);
     expect(read(root, ".gitignore")).toBe("# ours\n.sl/plans/");
     expect((await spawnSl(root, ["set", "warehouse.orders.revenue", "description", "First locked command."])).code).toBe(0);
-    expect(read(root, ".gitignore")).toBe("# ours\n.sl/plans/\n.sl/lock\n");
+    expect(read(root, ".gitignore")).toBe("# ours\n.sl/plans/\n.sl/lock\n.sl/lock.takeover\n*.sl-tmp\n");
     expect((await spawnSl(root, ["set", "warehouse.orders.revenue", "description", "Second."])).code).toBe(0);
-    expect(read(root, ".gitignore")).toBe("# ours\n.sl/plans/\n.sl/lock\n");
+    expect(read(root, ".gitignore")).toBe("# ours\n.sl/plans/\n.sl/lock\n.sl/lock.takeover\n*.sl-tmp\n");
 
     // A root with no .gitignore gets one.
     rmSync(join(root, ".gitignore"));
     expect((await spawnSl(root, ["set", "warehouse.orders.revenue", "description", "Third."])).code).toBe(0);
-    expect(read(root, ".gitignore")).toBe(".sl/lock\n");
+    expect(read(root, ".gitignore")).toBe(".sl/lock\n.sl/lock.takeover\n*.sl-tmp\n");
   });
 
   test("a .gitignore that is a link is left alone", async () => {

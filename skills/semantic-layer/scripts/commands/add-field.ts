@@ -16,7 +16,7 @@ const FLAGS = { dimension: ["expr", "type", "description"], measure: ["expr", "a
 
 // Words a computed expr uses that are not columns.
 const SQL_WORDS = new Set(
-  "and or not in is null true false case when then else end between like ilike similar escape distinct as filter where over partition by order asc desc nulls first last any all some exists interval extract from cast"
+  "and or not in is null true false case when then else end between like ilike similar escape distinct as filter where over partition by order asc desc nulls first last any all some exists interval extract from cast at time zone"
     .split(" "),
 );
 

@@ -9,6 +9,7 @@ import { type ApprovalEntry, goldenHash, itemApprovals, listApprovals } from "./
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { findTable, qualifiedName } from "./naming.ts";
+import { displayRows, twoDecimals } from "./goldens.ts";
 import { formatTable, maskRows, PROTECTED_VALUE, plainText } from "./output.ts";
 import { protectedColumns } from "./profile.ts";
 import { listModels, loadAccess, loadFile, loadMetrics, loadSnapshot, paths } from "./project.ts";
@@ -21,7 +22,9 @@ import { conditionWords, parseCondition } from "./conditions.ts";
 import { readYamlIfExists } from "./yaml.ts";
 
 export const PENDING_DIR = join(".sl", "pending");
-const ID_FILE = /^rb_(\d{4,})\.json$/;
+// A readback's file, or the marker sl readback --discard leaves in its place so its id is never issued again.
+const ID_FILE = /^rb_(\d{4,})\.(json|discarded)$/;
+export const DISCARDED = ".discarded";
 const MEASURED = "Measured from the data, no need to confirm:";
 
 type Obj = Record<string, unknown>;
@@ -688,6 +691,9 @@ export interface GoldenRun {
   // the request does not compile; and whether cross_check_sql ran too and gave the same rows.
   from_query?: "compiled" | "cross_check_sql";
   cross_checked?: boolean;
+  // The result columns of currency measures and metrics, shown to two decimals as sl goldens run and
+  // confirm print them; the rows, the hash and what confirm records keep the full figures.
+  currency?: string[];
 }
 
 const OP_WORDS: Record<string, string> = {
@@ -745,14 +751,31 @@ function renderGolden(g: Golden, run: GoldenRun): string[] {
       ? quoted("", "figure the owner trusts (reference), from the YAML", g.reference)
       : ["- No reference yet: write in reference where the owner's trusted figure comes from."]),
     `- ${rowsFrom(g, run)} ${num(n)} row${n === 1 ? "" : "s"}:`,
-    ...(n ? quoted("  ", "rows, from the data", formatTable(maskRows(run.rows, run.masked))) : ["  (no rows: a golden needs at least one, so it cannot be confirmed)"]),
+    ...(n ? quoted("  ", "rows, from the data", formatTable(maskRows(displayRows(run.rows, run.currency ?? []), run.masked))) : ["  (no rows: a golden needs at least one, so it cannot be confirmed)"]),
   ];
+  // A currency figure shown to two decimals is recorded and compared in full: each is named with its full figure.
+  const full = roundedFigures(run);
   if (run.cross_checked) out.push("- Its cross_check_sql gives the same rows.");
   if (run.masked.length) out.push(`- Protected columns shown as ${PROTECTED_VALUE}: ${run.masked.map(flat).join(", ")}.`);
+  if (full.length)
+    out.push(`- Money is shown to two decimals; sl goldens confirm records and later runs compare the full figure: ${full.slice(0, 10).join(", ")}${full.length > 10 ? ` and ${full.length - 10} more` : ""}.`);
   out.push(
     `- Tolerance: ${run.tolerance}${run.from === "default" ? " (the default; agree one with the owner and read it back with --tolerance <t>)" : ""}: ${rule}.`,
-    "- Say yes only when these rows match the figure the owner trusts; sl goldens confirm then records exactly them.",
+    `- Say yes only when these rows match the figure the owner trusts; sl goldens confirm then records exactly them${full.length ? ", with the full figures above" : ""}.`,
   );
+  return out;
+}
+
+// Each currency figure of a golden's rows that two decimals do not show in full, as "<column> <shown> is <full>".
+function roundedFigures(run: GoldenRun): string[] {
+  const masked = new Set(run.masked.map((c) => c.toLowerCase()));
+  const out: string[] = [];
+  for (const row of run.rows)
+    for (const c of run.currency ?? []) {
+      if (!(c in row) || masked.has(c.toLowerCase())) continue;
+      const shown = twoDecimals(row[c]);
+      if (typeof shown === "string" && Number(shown) !== Number(row[c])) out.push(`${flat(c)} ${shown} is ${String(row[c])}`);
+    }
   return out;
 }
 

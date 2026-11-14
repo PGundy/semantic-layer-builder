@@ -29,7 +29,8 @@ const spec: CommandSpec = {
     "next\n\n" +
     "Reads sl status, the answer ledger, .sl/pending/, .sl/plans/ and where each connection variable is set (never its\n" +
     "value), and writes nothing. --json prints { kind, phase, why, action, run?, ask_owner?, dispatch?, blocked_on,\n" +
-    "connection? } with kind run, ask_owner, dispatch or done; action is { command, args, kind }, the command printed.",
+    "connection? } with kind run, ask_owner, dispatch or done; action is { command, args, kind }, the command printed.\n" +
+    "With no semantic layer yet the action is sl init --name <name>, kind ask_owner (phase init): the owner names the layer.",
   options: {},
   writes: false,
   async run(_input, ctx) {

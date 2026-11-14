@@ -1149,8 +1149,8 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["SKILL.md", "a stop is acknowledged in one line", "your next message only acknowledges it in one line, with no question, and runs no commands"],
   ["interview-guide.md", "a stop is acknowledged in one line", "your next message only acknowledges it in one line, with no question, and runs no commands"],
   ["SKILL.md", "a sign-off turn runs nothing", "**A turn that only signs off.**"],
-  ["SKILL.md", "resume checks wait for continue", "The resume checks below (`sl status`, `sl validate`) run on the first turn in which the owner asks to continue"],
-  ["interview-guide.md", "resume checks wait for continue", "The resume checks (`sl status`, `sl validate`) run on the first turn in which the owner asks to continue"],
+  ["SKILL.md", "resume checks wait for continue", "The resume checks below (`sl next`, `sl validate`) run on the first turn in which the owner asks to continue"],
+  ["interview-guide.md", "resume checks wait for continue", "The resume checks (`sl next`, `sl validate`) run on the first turn in which the owner asks to continue"],
   ["interview-guide.md", "later closing messages get no checks", "no checks, no summary, no stop-or-continue line"],
   // Counts and plain language.
   ["SKILL.md", "status counts come from json", "Every count in a status line comes from `--json` output"],

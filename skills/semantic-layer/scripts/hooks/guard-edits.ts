@@ -642,7 +642,8 @@ export function checkToolUse(stdin: string, fallbackCwd = process.cwd(), env: Re
   if (!isObject(input) || typeof input.tool_name !== "string" || !isObject(input.tool_input))
     return { allow: true, message: "semantic-layer hook: the hook input has no tool_name or tool_input; not checked." };
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : fallbackCwd;
-  // The env file a semantic root loads holds the connection secret: no agent reads it. A failure of
+  // The env file a semantic root loads, or sl would load in a project that uses this plugin before
+  // its root exists, holds the connection secret: no agent reads it. A failure of
   // this check leaves the checks below to decide, and a call they allow carries its warning.
   let secret: string | undefined;
   let unchecked: string | undefined;

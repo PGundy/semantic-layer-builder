@@ -1,6 +1,6 @@
 -- A read-only role for the semantic layer CLI, limited to schemas acme, marts.
 -- Run by an administrator. sl setup printed this and ran nothing.
--- Replace <password> with a new password; it goes in the connection URL's environment variable, never in a file.
+-- Replace <password> with a new password; it goes in an environment variable or the project's env file, never in the layer's files or the chat.
 CREATE ROLE "sl_reader" LOGIN PASSWORD '<password>';
 GRANT CONNECT ON DATABASE "warehouse" TO "sl_reader";
 GRANT USAGE ON SCHEMA "acme" TO "sl_reader";

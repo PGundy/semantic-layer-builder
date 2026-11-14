@@ -139,9 +139,9 @@ describe("a figure that is not shown says why and blocks nothing", () => {
     const root = acme();
     const f = join(root, "models", "warehouse", "customers.yaml");
     const extra =
-      "  - name: last_email\n    agg: max\n    expr: email\n    format: integer\n" +
-      "  - name: tagged_count\n    agg: count\n    tags: [pii]\n    format: integer\n" +
-      "  - name: emails\n    agg: count_distinct\n    expr: email\n    format: integer\n";
+      "  - name: last_email\n    agg: max\n    expr: email\n    format: integer\n    description: The latest email.\n" +
+      "  - name: tagged_count\n    agg: count\n    tags: [pii]\n    format: integer\n    description: Customers, counted.\n" +
+      "  - name: emails\n    agg: count_distinct\n    expr: email\n    format: integer\n    description: Distinct emails.\n";
     writeFileSync(f, readFileSync(f, "utf8").replace("measures: []\n", `measures:\n${extra}`));
     const r = await sl(root, ["readback", "--targets", "warehouse.customers.last_email,warehouse.customers.tagged_count,warehouse.customers.emails", "--json"]);
     expect(r.err).toBe("");
@@ -161,7 +161,7 @@ describe("a figure that is not shown says why and blocks nothing", () => {
   test("a failed query names its reason and the other items still get theirs; a missing database is one line", async () => {
     const root = acme();
     const f = join(root, "models", "warehouse", "orders.yaml");
-    writeFileSync(f, readFileSync(f, "utf8").replace("measures:\n", "measures:\n  - name: broken\n    agg: sum\n    expr: no_such_column\n    format: integer\n"));
+    writeFileSync(f, readFileSync(f, "utf8").replace("measures:\n", "measures:\n  - name: broken\n    agg: sum\n    expr: no_such_column\n    format: integer\n    description: A sum over a column the table lacks.\n"));
     const [broken, revenue] = await readback(root, "warehouse.orders.broken,warehouse.orders.revenue");
     // The database's message, its quoted text left out: it may quote a value (failureReason).
     expect(broken!.evidence!.not_shown).toStartWith("Binder Error: Referenced column");
@@ -198,7 +198,7 @@ describe("a figure that is not shown says why and blocks nothing", () => {
   }, 30_000);
 });
 
-const BIG = "model: big\ntable: acme.big\nstatus: draft\nprimary_key: [x]\ndimensions: []\nmeasures:\n  - name: total\n    agg: count\n    filter: x % 7 = 3\n    format: integer\n";
+const BIG = "model: big\ntable: acme.big\nstatus: draft\nprimary_key: [x]\ndimensions: []\nmeasures:\n  - name: total\n    agg: count\n    filter: x % 7 = 3\n    format: integer\n    description: Rows whose x leaves 3 over 7.\n";
 const BY_HAND = `sl sql --source warehouse --request '{"measures":["big.total"]}' prints its query, and sl run --source warehouse --sql runs it with a longer timeout`;
 
 describe("the readback reads as the owner's words", () => {

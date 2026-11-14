@@ -3,11 +3,13 @@ import { join, resolve, sep } from "node:path";
 import type { CommandSpec, CommandContext, OptionValues } from "../lib/command.ts";
 import { list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
+import { readbackGate } from "../lib/approve-checks.ts";
 import { afterYesSteps } from "../lib/export-goldens.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
 import { ledgerState } from "../lib/ledger.ts";
-import { type GoldenRun, nextReadbackId, PENDING_DIR, renderReadbacks, writePending } from "../lib/readback.ts";
+import { DISCARDED, type GoldenRun, nextReadbackId, PENDING_DIR, renderReadbacks, writePending } from "../lib/readback.ts";
+import { writeFileAtomic } from "../lib/lock.ts";
 import { readbackFigures } from "../lib/readback-figures.ts";
 import { parseTarget } from "../lib/refs.ts";
 import { goldenRun, passedFlags } from "./goldens.ts";
@@ -21,8 +23,9 @@ function freshReadbackId(root: string): string {
   return `rb_${String(Math.max(fromFiles, ...answered.map((n) => n + 1))).padStart(4, "0")}`;
 }
 
-// sl readback --discard <id>: sets a pending readback aside by removing its file. The answers
-// already recorded from it stay in the ledger.
+// sl readback --discard <id>: sets a pending readback aside by removing its file and leaving the
+// empty marker <id>.discarded in its place, which nextReadbackId counts, so the id is never issued
+// again. The answers already recorded from it stay in the ledger.
 function discard(ctx: CommandContext, values: OptionValues, id: string): number {
   const other = ["targets", "tolerance", "results", "plan"].find((f) => values[f] !== undefined);
   if (other) throw new UserError(`--discard takes no --${other}: run sl readback --discard ${id} on its own.`);
@@ -35,9 +38,10 @@ function discard(ctx: CommandContext, values: OptionValues, id: string): number 
   const dir = realpathSync(join(ctx.root, PENDING_DIR));
   const root = realpathSync(ctx.root);
   if (!stat.isFile() || !dir.startsWith(root + sep)) throw new UserError(`${rel} is not a plain file inside the semantic root ${resolve(ctx.root)}; nothing was removed. Run sl validate.`, "sl validate");
+  writeFileAtomic(join(ctx.root, PENDING_DIR, `${id}${DISCARDED}`), "");
   rmSync(file);
   if (ctx.json) ctx.out(formatJson({ discarded: id, path: rel, next: "sl next" }));
-  else ctx.out(`Set aside readback ${id}: removed ${rel}. Answers already recorded from it stay in the ledger. Next: sl next.`);
+  else ctx.out(`Set aside readback ${id}: removed ${rel}; its id is not given to another readback. Answers already recorded from it stay in the ledger. Next: sl next.`);
   return 0;
 }
 
@@ -48,9 +52,11 @@ const spec: CommandSpec = {
     "Each ref is an approve target: source.model, source.model.field, metric:<name> or access, or a golden to\n" +
     "confirm, golden:<name>, whose request it compiles and runs with its cross_check_sql (live, or from --results\n" +
     "or --plan) to read back the rows and tolerance sl goldens confirm would record (--tolerance, else the\n" +
-    "file's, else the default). Writes\n" +
+    "file's, else the default). A target sl approve would refuse for what its file lacks (a description, a grain,\n" +
+    "a primary_key, a metric's measure) is refused first, naming the one sl apply that supplies it. Writes\n" +
     ".sl/pending/<readback_id>.json with the numbered items and each item's content hash. --discard <readback_id> sets\n" +
-    "a pending readback the owner will not answer aside: it removes its file, and answers recorded from it stay in the ledger.",
+    "a pending readback the owner will not answer aside: it removes its file, leaving <readback_id>.discarded so the id is\n" +
+    "never issued again, and answers recorded from it stay in the ledger.",
   options: {
     targets: { type: "string", multiple: true },
     tolerance: { type: "string" },
@@ -70,6 +76,8 @@ const spec: CommandSpec = {
     const names = refs.map(parseTarget).flatMap((t) => (t.kind === "golden" ? [t.name] : []));
     const flags = (["tolerance", "results", "plan"] as const).filter((f) => str(values, f) !== undefined);
     if (flags.length && !names.length) throw new UserError(`--${flags[0]} applies only to golden:<name> targets, which read back a golden's rows.`);
+    // An item sl approve would refuse after the owner's yes is not read back: the lack is fixed first.
+    readbackGate(ctx.root, refs);
     // A golden's rows come from compiling and running its request, before anything is written.
     const goldens = new Map<string, GoldenRun>();
     for (const name of names) if (!goldens.has(name)) goldens.set(name, await goldenRun(ctx, values, name));

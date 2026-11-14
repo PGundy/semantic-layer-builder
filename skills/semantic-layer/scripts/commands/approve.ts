@@ -5,6 +5,7 @@ import type { LastApproval } from "../lib/access.ts";
 import { type ApprovalEntry, carriesHash, holdsHashes, integrity, itemApprovals, itemHash, type LayerModel, listApprovals } from "../lib/approval-hash.ts";
 import type { CommandSpec } from "../lib/command.ts";
 import { bool, str } from "../lib/command.ts";
+import { describedProblem, metricProblems, modelProblems } from "../lib/approve-checks.ts";
 import { UserError } from "../lib/errors.ts";
 import { LEDGER_FILE, latestReply, readReplies, shellQuote } from "../lib/ledger.ts";
 import { formatJson } from "../lib/output.ts";
@@ -168,17 +169,6 @@ function applyEdit(doc: Document, edit: Edit, mode: Mode): LastApproval | undefi
   return undefined;
 }
 
-function modelProblems(ref: string, m: Model): string[] {
-  const out: string[] = [];
-  if (!m.grain || !String(m.grain).trim()) out.push(`${ref} has no grain`);
-  if (!m.primary_key || !m.primary_key.length) out.push(`${ref} has no primary_key`);
-  return out;
-}
-
-function describedProblem(ref: string, kind: string, item: { description?: string }): string | null {
-  return item.description && item.description.trim() ? null : `${kind} ${ref} has no description`;
-}
-
 function joinWarning(source: string, model: string, join: string): string {
   return `Join ${source}.${model}.${join} has no evidence. Run sl check-join --source ${source} --model ${model} --join ${join} before relying on it.`;
 }
@@ -213,34 +203,6 @@ function fanoutWarning(ref: string, j: Join): string | null {
     `Join ${ref} is ${j.relationship}, but its evidence shows fan-out (${why.join(", and ")}); sl validate errors on it ` +
     'until the keys or the relationship are fixed, or fanout_override: "<reason>" records why the owner accepts it.'
   );
-}
-
-// Whether a reference is exactly model.measure, the form sl validate accepts.
-function isMeasureRef(r: string): boolean {
-  const parts = r.split(".");
-  return parts.length === 2 && parts.every((p) => NAME_PATTERN.test(p));
-}
-
-// The model.measure references of a metric, and problems with references that are not in that form.
-function metricMeasureRefs(m: Metric): { refs: string[]; problems: string[] } {
-  const refs: string[] = [];
-  const problems: string[] = [];
-  if (m.type === "ratio") {
-    for (const side of ["numerator", "denominator"] as const) {
-      const r: unknown = m[side];
-      if (typeof r === "string" && isMeasureRef(r)) refs.push(r);
-      else problems.push(`its ${side} ${JSON.stringify(r ?? null)} is not a model.measure reference`);
-    }
-    return { refs, problems };
-  }
-  const expr = String(m.expr ?? "");
-  const groups = [...expr.matchAll(/\{([^}]*)\}/g)].map((x) => x[1]!);
-  if (!groups.length) problems.push("its expr has no {model.measure} placeholder");
-  for (const g of groups) {
-    if (isMeasureRef(g)) refs.push(g);
-    else problems.push(`its expr placeholder {${g}} is not {model.measure} (lowercase names, no spaces)`);
-  }
-  return { refs, problems };
 }
 
 // Names compared the way an owner's name is: trimmed, ignoring case.
@@ -520,21 +482,8 @@ const spec: CommandSpec = {
         }
         const metricHash = itemHash("metric", obj(metric));
         if (!revoke && !isSettled(metric, metricHash)) {
-          const own: string[] = [];
-          const missing = describedProblem(`metric:${metric.name}`, "Metric", metric);
-          if (missing) own.push(missing);
-          const draft: string[] = [];
-          const { refs, problems: refProblems } = metricMeasureRefs(metric);
-          own.push(...refProblems);
-          for (const r of refs) {
-            const [modelName, measureName] = r.split(".") as [string, string];
-            const modelPath = paths(ctx.root).model(metric.source, modelName);
-            const model = existsSync(modelPath) ? readYaml<Model>(modelPath) : null;
-            const measure = model?.measures?.find((x) => x.name === measureName);
-            if (!measure) own.push(`measure ${metric.source}.${r} does not exist`);
-            else if (measure.status !== "approved") draft.push(`${metric.source}.${r}`);
-          }
-          if (draft.length) own.push(`it references draft measures: ${[...new Set(draft)].join(", ")}. Approve them first.`);
+          const { problems: own, drafts } = metricProblems(ctx.root, metric);
+          if (drafts.length) own.push(`it references draft measures: ${drafts.join(", ")}. Approve them first.`);
           problems.push(...own.map((text) => ({ target: `metric:${metric.name}`, text })));
         }
         consider(`metric:${metric.name}`, ["metrics", index], metric, metricHash);
