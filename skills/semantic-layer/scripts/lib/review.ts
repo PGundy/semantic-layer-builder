@@ -18,7 +18,7 @@ import { loadAccess, loadMetrics, paths } from "./project.ts";
 import { currentHash, PENDING_DIR } from "./readback.ts";
 import { parseTarget } from "./refs.ts";
 import type { LedgerEntry, LedgerQuestion, LedgerReply, PendingReadback } from "./types.ts";
-import { schemaIssues } from "./validate.ts";
+import { schemaIssues } from "./schema.ts";
 import { readYamlIfExists } from "./yaml.ts";
 
 export const REVIEWS_DIR = join(".sl", "reviews");
@@ -74,7 +74,7 @@ export function loadPending(root: string, id: string): PendingReadback {
     data = undefined;
   }
   if (data === undefined || schemaIssues("pending", data, file).length || (data as PendingReadback).readback_id !== id)
-    throw new UserError(`.sl/pending/${id}.json is not a valid readback. Run sl validate to see why, then sl readback again.`);
+    throw new UserError(`.sl/pending/${id}.json is not a valid readback. Run sl validate to see why, then sl readback again.`, "sl validate");
   return data as PendingReadback;
 }
 
