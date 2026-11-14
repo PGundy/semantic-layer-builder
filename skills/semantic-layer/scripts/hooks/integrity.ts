@@ -117,11 +117,17 @@ const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", 
 const SCAN_HINT = "To search the other files, name a subdirectory or add --exclude='.env*'.";
 const isEnvName = (name: string) => /^\.env(\..+)?$/.test(name) && name !== ".env.example";
 
+// A directory's first 500 entries by name. The order a filesystem lists them in differs from one
+// machine to the next, so every listing here is sorted.
+function listDirs(dir: string) {
+  return readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)).slice(0, 500);
+}
+
 // Whether a directory is a semantic root or directly holds one.
 function nearRoot(dir: string): boolean {
   if (existsSync(join(dir, "semantic.yaml")) || existsSync(join(dir, "semantic", "semantic.yaml"))) return true;
   try {
-    return readdirSync(dir, { withFileTypes: true }).slice(0, 500).some((e) => !e.isFile() && existsSync(join(dir, e.name, "semantic.yaml")));
+    return listDirs(dir).some((e) => !e.isFile() && existsSync(join(dir, e.name, "semantic.yaml")));
   } catch {
     return false;
   }
@@ -142,7 +148,7 @@ function isEnvFile(abs: string, cwd: string, env: Env): boolean {
 function envFilesIn(dir: string, cwd: string, env: Env, pattern?: string, skip?: (name: string) => boolean): string[] {
   let names: string[];
   try {
-    names = readdirSync(dir);
+    names = readdirSync(dir).sort();
   } catch {
     return [];
   }
@@ -368,7 +374,7 @@ function findRoots(cwd: string, dirs: string[], command: string, env: Env): stri
   for (const d of from) {
     add(join(d, "semantic"));
     try {
-      for (const e of readdirSync(d, { withFileTypes: true }).slice(0, 500)) if (!e.isFile() && e.name !== "node_modules" && e.name !== ".git") add(join(d, e.name));
+      for (const e of listDirs(d)) if (!e.isFile() && e.name !== "node_modules" && e.name !== ".git") add(join(d, e.name));
     } catch {
       continue;
     }
@@ -433,7 +439,7 @@ interface Entry {
 function entries(dir: string, now: number): Entry[] {
   let names: string[];
   try {
-    names = readdirSync(dir);
+    names = readdirSync(dir).sort();
   } catch {
     return [];
   }
