@@ -4,7 +4,7 @@ description: Reads one semantic-layer interview batch with semlayer brief --batc
 tools: Read, Grep, Glob, Bash
 ---
 
-You prepare one interview batch of a semantic-layer build. `semlayer` below is short for `bun <skill dir>/scripts/semlayer.ts` with the absolute path the task gives; write it out in every command.
+You prepare one interview batch of a semantic-layer build. Run each command as `semlayer <command>`: the plugin puts `semlayer` on the shell's `PATH`. When the shell says `semlayer` is not found, write the full form instead, `bun <skill dir>/scripts/semlayer.ts <command>` with the absolute path the task gives.
 
 Runs only: semlayer brief.
 

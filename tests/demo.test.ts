@@ -68,7 +68,7 @@ describe("semlayer demo", () => {
     expect(run.out).toContain("synthetic");
     expect(run.out).toContain("Next: cd semlayer-demo && claude");
     expect(run.out).toContain('"help me build a semantic layer for the data in this folder"');
-    expect(run.out).not.toMatch(/\/semlayer\b/);
+    expect(run.out).toContain("Then type /semlayer (or say: ");
     expect(readdirSync(dir).sort()).toEqual([".gitignore", "OWNER.md", "data", "semantic"]);
   });
 
@@ -173,7 +173,7 @@ describe("semlayer demo", () => {
       tables: 25,
       owner_sheet: "OWNER.md",
       synthetic: true,
-      next: { cd: join(cwd, "try"), run: "claude", say: "help me build a semantic layer for the data in this folder" },
+      next: { cd: join(cwd, "try"), run: "claude", type: "/semlayer", say: "help me build a semantic layer for the data in this folder" },
     });
   });
 
@@ -318,15 +318,18 @@ describe("semlayer demo finds the data from its own real path", () => {
   });
 });
 
-describe("the README's Try it without a warehouse section", () => {
+describe("the README's Try it on sample data section", () => {
   const readme = readFileSync(join(REPO, "README.md"), "utf8");
-  const section = readme.slice(readme.indexOf("## Try it without a warehouse"), readme.indexOf("## Run the CLI"));
+  const section = readme.slice(readme.indexOf("### Try it on sample data"), readme.indexOf("### On your own warehouse"));
 
-  test("comes right after Install and its commands run as written", () => {
-    const headings = [...readme.matchAll(/^## (.+)$/gm)].map((m) => m[1]);
-    expect(headings.indexOf("Try it without a warehouse")).toBe(headings.indexOf("Install") + 1);
-    const block = /```sh\n([\s\S]*?)```/.exec(section)![1]!;
-    const lines = block.split("\n").map((l) => l.replace(/\s+#.*$/, "").trim()).filter(Boolean);
+  test("is in the quick start, names /semlayer demo, and its clone commands run as written", () => {
+    const quick = readme.slice(readme.indexOf("## Quick start"), readme.indexOf("\n## ", readme.indexOf("## Quick start") + 1));
+    expect(quick).toContain("### Try it on sample data");
+    expect(section).toContain("type `/semlayer demo`; it makes `semlayer-demo/`");
+    const blocks = [...section.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]!.split("\n").map((l) => l.replace(/\s+#.*$/, "").trim()).filter(Boolean));
+    expect(blocks[0]).toEqual(["cd semlayer-demo", "claude"]);
+    expect(section).toContain("claude    # then type: /semlayer");
+    const lines = blocks[1]!;
     expect(lines).toEqual([
       `git clone ${REPOSITORY}`,
       "(cd semantic-layer-builder && bun install)",
@@ -340,6 +343,7 @@ describe("the README's Try it without a warehouse section", () => {
     const [, ...args] = lines[2]!.split(" ");
     const r = spawn(args, cwd);
     expect(r.code).toBe(0);
+    expect(r.out).toContain("Then type /semlayer");
     expect(existsSync(join(cwd, "semlayer-demo", "OWNER.md"))).toBe(true);
     expect(spawn([SCRIPT, "next"], join(cwd, "semlayer-demo")).code).toBe(0);
     expect(section).toContain('"help me build a semantic layer for the data in this folder"');

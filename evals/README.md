@@ -1,6 +1,6 @@
 # Evals
 
-The eval harness plays the semantic-layer skill against a simulated data owner and records what happened, so a change to the skill or the CLI can be measured (docs/PRD.md, FR-6.1). A run takes one scenario: a fixture, an intake path, an owner persona, and a turn and token budget.
+The eval harness plays the semlayer skill against a simulated data owner and records what happened, so a change to the skill or the CLI can be measured (docs/PRD.md, FR-6.1). A run takes one scenario: a fixture, an intake path, an owner persona, and a turn and token budget.
 
 - `runner/`: the runner (`run.ts` is the command), the two drivers and the persona prompts (`runner/personas/`: structured, terse, hedging, contradicting, credential, busy).
 - `graders/`: the deterministic graders (`grade.ts` is the command).

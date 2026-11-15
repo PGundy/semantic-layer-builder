@@ -109,7 +109,7 @@ const spec: CommandSpec = {
           tables,
           owner_sheet: DEMO_SHEET,
           synthetic: true,
-          next: { cd: target, run: "claude", say: DEMO_PROMPT },
+          next: { cd: target, run: "claude", type: "/semlayer", say: DEMO_PROMPT },
         }),
       );
       return 0;
@@ -119,7 +119,7 @@ const spec: CommandSpec = {
         `Made ${cd}: data/ holds a made-up online store (${tables} tables as CSV and Parquet; every value is synthetic),`,
         `semantic/ is a semantic layer set up over it with no connection or secret, and ${DEMO_SHEET} is your cheat sheet as the data owner.`,
         `Next: cd ${cd} && claude`,
-        `Then say: "${DEMO_PROMPT}", and answer the agent's questions as the owner, from ${DEMO_SHEET}.`,
+        `Then type /semlayer (or say: "${DEMO_PROMPT}"), and answer the agent's questions as the owner, from ${DEMO_SHEET}.`,
       ].join("\n"),
     );
     return 0;

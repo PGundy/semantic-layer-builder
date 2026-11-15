@@ -27,7 +27,7 @@
     {
       "agent": "batch_analyst",
       "text": "Batch 1 of lake (web_events, sessions, marketing_spend): the draft questions, each with its measured fact.\n\n1. sessions: one row per visit? session_id is never empty and never repeats (8,000 rows).\n2. marketing_spend: one row per day per paid channel, keyed by spend_date and channel? 3,655 rows: five channels over 731 days.\n3. spend_cents: cents, and which currency? The draft divides by 100.\n\nweb_events has 2 open questions; leave it for a later batch.",
-      "tokens": 3628,
+      "tokens": 3657,
       "semlayer": [
         ["brief", "--source", "lake", "--batch", "1", "--json"]
       ]
@@ -51,7 +51,7 @@
     {
       "agent": "readback_verifier",
       "text": "Wrote rb_0001 with six items. The draft message matches it item by item: no clause missing, none extra; each item ends with \"Approve?\", and the measured facts stay apart from the definitions. ok: true.",
-      "tokens": 2134,
+      "tokens": 2163,
       "semlayer": [
         ["readback", "--targets", "lake.sessions,lake.sessions.session_count,lake.sessions.started_at,lake.marketing_spend,lake.marketing_spend.spend,lake.marketing_spend.spend_date", "--json"]
       ]
@@ -77,7 +77,7 @@
     {
       "agent": "golden_builder",
       "text": "Wrote draft goldens sessions_2025 and marketing_spend_2025 from their requests and ran them: sessions_2025 returns session_count 4,551; marketing_spend_2025 returns spend 16,502.34. Both compile; nothing to report as a gap.",
-      "tokens": 1268,
+      "tokens": 1297,
       "semlayer": [
         ["goldens", "new", "--name", "sessions_2025", "--question", "How many sessions were there in 2025?", "--request", "{\"source\":\"lake\",\"measures\":[\"sessions.session_count\"],\"filters\":[{\"field\":\"sessions.started_at\",\"op\":\"gte\",\"value\":\"2025-01-01\"},{\"field\":\"sessions.started_at\",\"op\":\"lt\",\"value\":\"2026-01-01\"}]}"],
         ["goldens", "new", "--name", "marketing_spend_2025", "--question", "How much did we spend on marketing in 2025?", "--request", "{\"source\":\"lake\",\"measures\":[\"marketing_spend.spend\"],\"filters\":[{\"field\":\"marketing_spend.spend_date\",\"op\":\"gte\",\"value\":\"2025-01-01\"},{\"field\":\"marketing_spend.spend_date\",\"op\":\"lt\",\"value\":\"2026-01-01\"}]}"],
@@ -96,7 +96,7 @@
     {
       "agent": "readback_verifier",
       "text": "Wrote rb_0002 with the two goldens, their rows and tolerance 0. The draft message matches it: no clause missing, none extra. ok: true.",
-      "tokens": 1230,
+      "tokens": 1259,
       "semlayer": [
         ["readback", "--targets", "golden:sessions_2025,golden:marketing_spend_2025", "--tolerance", "0", "--json"]
       ]
@@ -117,7 +117,7 @@
     {
       "agent": "golden_builder",
       "text": "Checked the approved goldens: sessions_2025 and marketing_spend_2025 both match their recorded rows.",
-      "tokens": 541,
+      "tokens": 570,
       "semlayer": [
         ["goldens", "check"]
       ]

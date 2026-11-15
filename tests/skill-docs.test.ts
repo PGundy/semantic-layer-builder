@@ -1722,7 +1722,7 @@ describe("the README", () => {
   });
 
   test("says how to run the CLI, with a quickstart and what --root points at", () => {
-    expect(readme).toContain("## Run the CLI");
+    expect(readme).toContain("## Running semlayer yourself");
     expect(readme).toContain("bun skills/semantic-layer/scripts/semlayer.ts --help");
     for (const cmd of ["setup", "export-sql", "import", "baseline", "status"]) {
       expect(shown.some((i) => i.text.startsWith(`semlayer ${cmd} `) || i.text === `semlayer ${cmd}`)).toBe(true);
@@ -1754,7 +1754,7 @@ describe("the README", () => {
 
   // docs/PRD-hardening.md HR-14: the quickstart shows the env file the connection goes in.
   test("the quickstart puts the connection in the env file, and its psql does not rely on that file", () => {
-    const quick = readme.slice(readme.indexOf("## Run the CLI"), readme.indexOf("## Trust model"));
+    const quick = readme.slice(readme.indexOf("## Running semlayer yourself"), readme.indexOf("## What it builds"));
     expect(quick).toContain("Put the connection in .env beside ./semantic yourself");
     expect(quick).toContain("WAREHOUSE_URL=postgres://<user>:<password>@<host>:5432/<database>?sslmode=require");
     expect(quick).toContain("--env-file <path>");
