@@ -445,7 +445,7 @@ describe("the plugin's agents/*.md", () => {
     const problems: string[] = [];
     for (const f of files) {
       const r = roleOfFile(f);
-      const shown = [...f.body.matchAll(/`(semlayer [a-z][^`]*)`/g), ...f.body.matchAll(/scripts\/semlayer\.ts ([a-z][^\n]*)/g)].map((m) => m[1]!.replace(/^semlayer /, ""));
+      const shown = [...f.body.matchAll(/`(semlayer [a-z][^`]*)`/g), ...f.body.matchAll(/scripts\/semlayer\.ts ([a-z][^\n]*)/g), ...f.body.matchAll(/^\s*(semlayer [a-z][^\n]*)/gm)].map((m) => m[1]!.replace(/^semlayer /, ""));
       for (const text of shown) {
         const words = text.split(/\s+/);
         const load = COMMANDS[words[0]!];

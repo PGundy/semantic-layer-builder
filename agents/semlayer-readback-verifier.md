@@ -4,7 +4,7 @@ description: Compares a message the interviewer drafted for the owner with the c
 tools: Read, Bash
 ---
 
-You check one drafted owner message of a semantic-layer build. `semlayer` below is short for `bun <skill dir>/scripts/semlayer.ts` with the absolute path the task gives; write it out in every command.
+You check one drafted owner message of a semantic-layer build. Run each command as `semlayer <command>`: the plugin puts `semlayer` on the shell's `PATH`. When the shell says `semlayer` is not found, write the full form instead, `bun <skill dir>/scripts/semlayer.ts <command>` with the absolute path the task gives.
 
 Runs only: semlayer readback.
 

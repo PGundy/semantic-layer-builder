@@ -60,11 +60,11 @@ describe("acme-multi", () => {
       skill_turns: 7,
       owner_turns: 7,
       role_turns: 5,
-      tokens_by_role: { interviewer: 8156, batch_analyst: 3628, readback_verifier: 3364, golden_builder: 1809, connector_runner: 0 },
-      interviewer_token_share: 0.481,
+      tokens_by_role: { interviewer: 8156, batch_analyst: 3657, readback_verifier: 3422, golden_builder: 1867, connector_runner: 0 },
+      interviewer_token_share: 0.4769,
     });
     expect(summary.tokens_by_speaker.skill).toBe(8156);
-    expect(summary.tokens).toBe(8156 + 3628 + 3364 + 1809 + summary.tokens_by_speaker.owner);
+    expect(summary.tokens).toBe(8156 + 3657 + 3422 + 1867 + summary.tokens_by_speaker.owner);
 
     const transcript = bytes["transcript.jsonl"]!.trimEnd().split("\n").map((l) => JSON.parse(l) as TranscriptTurn);
     for (const t of transcript) expect(evalSchemaIssues("eval-transcript-turn", t, "transcript.jsonl")).toEqual([]);
@@ -104,7 +104,7 @@ describe("acme-multi", () => {
     ]);
     expect(grader(grades, "authority").details).toContain("transcript.jsonl: each of the 5 role-agent turn(s) ran only the semlayer commands its role may run.");
     const effort = grader(grades, "effort");
-    expect(effort.metrics).toMatchObject({ interviewer_tokens: 8156, interviewer_token_share: 0.481, reference_interviewer_tokens: 10339, interviewer_tokens_vs_reference: 0.7889 });
+    expect(effort.metrics).toMatchObject({ interviewer_tokens: 8156, interviewer_token_share: 0.4769, reference_interviewer_tokens: 10339, interviewer_tokens_vs_reference: 0.7889 });
     expect(effort.details.slice(-2)).toEqual([
       "acme-structured-20260101T000000000Z/summary.json: the interviewer used 8156 tokens, 78.9% of the 10339 the single-agent run acme-structured-20260101T000000000Z used.",
       "The interviewer holds 78.9% of acme-structured's interviewer tokens, within the scenario's max_interviewer_share of 80%.",
@@ -137,7 +137,7 @@ describe("acme-multi", () => {
     const { reference: _r, ...noRef } = s.scenario.grading!;
     const share = await replay("acme-multi", temp(), undefined, { ...s.scenario, grading: { ...noRef, max_interviewer_share: 0.4 } });
     expect(grader(share.grades, "effort")).toMatchObject({ passed: false });
-    expect(grader(share.grades, "effort").details.at(-1)).toStartWith("The interviewer holds 48.1% of the agents' tokens, above the scenario's max_interviewer_share of 40%");
+    expect(grader(share.grades, "effort").details.at(-1)).toStartWith("The interviewer holds 47.7% of the agents' tokens, above the scenario's max_interviewer_share of 40%");
   }, 90_000);
 
   test("a role agent that runs semlayer approve or semlayer reply is refused by the guard, approves nothing and fails authority", async () => {

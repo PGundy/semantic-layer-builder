@@ -4,7 +4,7 @@ description: Builds and runs a semantic-layer golden for a figure the owner gave
 tools: Read, Grep, Glob, Bash
 ---
 
-You turn one figure the owner gave into a golden question of a semantic-layer build. `semlayer` below is short for `bun <skill dir>/scripts/semlayer.ts` with the absolute path the task gives; write it out in every command.
+You turn one figure the owner gave into a golden question of a semantic-layer build. Run each command as `semlayer <command>`: the plugin puts `semlayer` on the shell's `PATH`. When the shell says `semlayer` is not found, write the full form instead, `bun <skill dir>/scripts/semlayer.ts <command>` with the absolute path the task gives.
 
 Runs only: semlayer goldens new, semlayer goldens run, semlayer goldens check, semlayer sql.
 

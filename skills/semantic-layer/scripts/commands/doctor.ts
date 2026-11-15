@@ -42,7 +42,7 @@ export function olderThan(version: string, min: string): boolean {
 }
 
 // The packages no node_modules under `dirs` holds. They are looked for on disk, as bin/semlayer and
-// check-install.sh do: Bun's resolver would fall back to its auto-install, which needs the network
+// session-start.sh do: Bun's resolver would fall back to its auto-install, which needs the network
 // and does not follow bun.lock.
 export function missingPackages(dirs: string[] = [join(PLUGIN_ROOT, "skills", "semantic-layer"), PLUGIN_ROOT]): string[] {
   return PACKAGES.filter((p) => !dirs.some((d) => existsSync(join(d, "node_modules", p, "package.json"))));
@@ -167,6 +167,16 @@ function pathCheck(ctx: CommandContext): Check {
   return { check: "command", status: "warn", text: `A bare semlayer here is not the plugin's: ${bare.reason}. The hooks then treat it as another program.`, fix: `remove or rename ${bare.found}, or run bun ${quote(join(PLUGIN_ROOT, "skills", "semantic-layer", "scripts", "semlayer.ts"))} <command>` };
 }
 
+// The permission rule a person may add so Claude Code stops asking before each semlayer command, and
+// the settings files it can go in. semlayer prints it and never writes it.
+export const PERMISSION_RULE = "Bash(semlayer *)";
+export const PERMISSION_FILES = [
+  { file: ".claude/settings.local.json", scope: "this project, not committed" },
+  { file: ".claude/settings.json", scope: "this project, shared" },
+  { file: "~/.claude/settings.json", scope: "every project" },
+];
+const permissionLine = `To stop Claude Code asking before each semlayer command, you may add the rule ${PERMISSION_RULE} under permissions.allow in ${PERMISSION_FILES.map((f) => `${f.file} (${f.scope})`).join(", ").replace(/, ([^,]*)$/, " or $1")}; semlayer never adds it.`;
+
 const spec: CommandSpec = {
   summary: "Check that semlayer can run here: Bun, packages, the project, each connection and its role, git, the command on PATH, and the next step.",
   usage:
@@ -174,7 +184,7 @@ const spec: CommandSpec = {
     "Read-only. One line per check with a mark ([ok], [warn], [fail], [--]); each line that is not ok names its fix.\n" +
     "Connections are named by variable and file, never by value; each runs one read-only query with a short timeout.\n" +
     "Exits 1 only when Bun or the packages stop semlayer from running. --json: { ok, checks: [{ check, status, text, fix? }],\n" +
-    "shell_line, next }.",
+    "shell_line, permission_rule: { rule, files: [{ file, scope }] }, next }.",
   options: {},
   writes: false,
   async run(_input, ctx) {
@@ -207,10 +217,12 @@ const spec: CommandSpec = {
       checks.push({ check: "next", status: "fail", text: `semlayer next cannot say the next step: ${(e as Error).message}` });
     }
     const ok = runs;
-    if (ctx.json) ctx.out(formatJson({ ok, checks: checks.map(({ blocking: _b, ...c }) => c), shell_line: shellLine, next }));
+    if (ctx.json) ctx.out(formatJson({ ok, checks: checks.map(({ blocking: _b, ...c }) => c), shell_line: shellLine, permission_rule: { rule: PERMISSION_RULE, files: PERMISSION_FILES }, next }));
     else {
       const lines = checks.map((c) => `${MARK[c.status]} ${c.text}${c.fix ? `\n       Fix: ${c.fix}` : ""}`);
-      lines.push("", `To run semlayer in your own terminal, add this line to your shell profile: ${shellLine}`);
+      // An installed plugin lives in a folder named for its version, so the line goes stale on an update.
+      const versioned = /[\\/]plugins[\\/]cache[\\/]/.test(PLUGIN_ROOT) ? " (that folder belongs to this plugin version: after a plugin update, run semlayer doctor again for the new line)" : "";
+      lines.push("", `To run semlayer in your own terminal, add this line to your shell profile: ${shellLine}${versioned}`, permissionLine);
       if (next) lines.push(`Next: ${next.command} (${next.why})`);
       ctx.out(lines.join("\n"));
     }

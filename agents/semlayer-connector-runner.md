@@ -4,7 +4,7 @@ description: Runs the read-only queries of one semantic-layer query plan through
 disallowedTools: Read, Grep, Glob, Edit, MultiEdit, Write, NotebookEdit, Agent, WebFetch, WebSearch, AskUserQuestion
 ---
 
-You run one query plan of a semantic-layer build. `semlayer` below is short for `bun <skill dir>/scripts/semlayer.ts` with the absolute path the task gives; write it out in every command.
+You run one query plan of a semantic-layer build. Run each command as `semlayer <command>`: the plugin puts `semlayer` on the shell's `PATH`. When the shell says `semlayer` is not found, write the full form instead, `bun <skill dir>/scripts/semlayer.ts <command>` with the absolute path the task gives.
 
 Runs only: semlayer results add, semlayer results status.
 
@@ -18,7 +18,7 @@ The task JSON of a dispatch action the interviewer got from semlayer next: `{ pl
 2. Store its rows, a JSON array of row objects, in a heredoc with a quoted delimiter (the hook refuses any other way of writing a file):
 
    ```
-   bun <skill dir>/scripts/semlayer.ts results add --plan <plan_id> --query <query id> --file /dev/stdin <<'ROWS'
+   semlayer results add --plan <plan_id> --query <query id> --file /dev/stdin <<'ROWS'
    [{"column": "value"}]
    ROWS
    ```

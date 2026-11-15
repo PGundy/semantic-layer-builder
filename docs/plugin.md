@@ -6,13 +6,13 @@ The `semantic-layer-builder` plugin packages this repository for Claude Code. Th
 
 | Part | Where | What it does |
 |---|---|---|
-| The `semantic-layer` skill | `skills/semantic-layer/` | The procedure, the references and the `semlayer` CLI. Claude loads it when you ask for a semantic layer. |
+| The `semlayer` skill | `skills/semantic-layer/` | The procedure, the references and the `semlayer` CLI. Claude loads it when you ask for a semantic layer, or you invoke it as `/semlayer` (see Slash command). |
 | Five agents | `agents/semlayer-*.md` | `semlayer-interviewer`, `semlayer-connector-runner`, `semlayer-batch-analyst`, `semlayer-readback-verifier` and `semlayer-golden-builder`, the roles of a multi-agent build (spec: Agent roles). Claude Code names them `semantic-layer-builder:<agent>`. |
 | The MCP server `semantic-layer` | `skills/semantic-layer/scripts/mcp/server.ts --role interviewer` | Every `semlayer` command as an MCP tool, in `./semantic` under the directory you start Claude Code in (or `SEMANTIC_ROOT`). No tool takes `--show-protected`. When Claude Code supports MCP elicitation, the owner answers approvals in its dialog. |
 | The `PreToolUse` checks | `skills/semantic-layer/scripts/hooks/guard-edits.ts`, `skills/semantic-layer/scripts/mcp/guard.ts` | Refuse hand edits to approval fields, approved items, the ledger and pending readbacks, refuse to read the `.env` file that holds the connection or to search it with `Grep`, and hold each role agent to the commands its role runs, through `Bash` and through the MCP server's tools alike (spec: Hand edits, Agent roles). |
 | The ledger comparison | `skills/semantic-layer/scripts/hooks/integrity.ts`, on `PostToolUse` and `PostToolUseFailure` for `Bash` and the MCP server's tools; its before half runs in the `PreToolUse` hooks | Copies the answer ledger and the pending readbacks before a `Bash` call that is not `semlayer` or git on its own, compares them after it, and puts back a change `semlayer` did not make, so a yes exists only when `semlayer reply` recorded it (spec: Hand edits). The copies live in the plugin's data directory, `${CLAUDE_PLUGIN_DATA}/ledger-guard`, until the call is checked. |
 | The `semlayer` command | `bin/semlayer` | On the agent's `PATH` while the plugin is enabled: runs the CLI with Bun from the plugin it ships in. `semlayer doctor` checks the setup. |
-| A `SessionStart` hook | `skills/semantic-layer/scripts/hooks/check-install.sh` | Checks that Bun and the plugin's dependencies are installed and, when one is missing, prints the command that installs it and `semlayer doctor` to check it. It installs nothing. |
+| A `SessionStart` hook | `skills/semantic-layer/scripts/hooks/session-start.sh` | Checks that Bun and the plugin's dependencies are installed and, when one is missing, prints the command that installs it and `semlayer doctor` to check it; that message is the only one it then shows. When the install is sound and the project holds a semantic layer, it tells the agent where, and on startup and resume shows you one line naming `/semlayer` (see Session start). It installs nothing. |
 
 ## Install
 
@@ -39,15 +39,15 @@ For a marketplace on GitHub the plugin root is usually the `installPath` that `c
 
 ```sh
 claude plugin list                                  # semantic-layer-builder@semantic-layer-builder, enabled
-claude plugin details semantic-layer-builder        # Skills (1), Agents (5), Hooks (4) PreToolUse, PostToolUse, PostToolUseFailure, SessionStart, MCP servers (1) semantic-layer
+claude plugin details semantic-layer-builder        # Skills (1) semantic-layer (its directory), Agents (5), Hooks (4) PreToolUse, PostToolUse, PostToolUseFailure, SessionStart, MCP servers (1) semantic-layer
 bun "<plugin root>/skills/semantic-layer/scripts/semlayer.ts" doctor
 ```
 
-In a session, ask Claude to run `semlayer doctor`. It checks Bun, the packages, the project in the current directory, each source's connection (by variable and file name, never the value), whether the role can write, whether git keeps the env file out, and whether `semlayer` on `PATH` is the plugin's, with a fix on every line that is not ok and the next step last. It also prints, once, the line that puts the plugin's `bin/` on your own shell's `PATH`, so you can run `semlayer` yourself; the line names this version's directory, so run `semlayer doctor` again for a new line after an update. `/agents` lists the five `semlayer-` agents, `/mcp` lists `plugin:semantic-layer-builder:semantic-layer` as connected, and a new session shows no message from `semantic-layer-builder`.
+In a session, ask Claude to run `semlayer doctor`. It checks Bun, the packages, the project in the current directory, each source's connection (by variable and file name, never the value), whether the role can write, whether git keeps the env file out, and whether `semlayer` on `PATH` is the plugin's, with a fix on every line that is not ok and the next step last. It also prints, once, the line that puts the plugin's `bin/` on your own shell's `PATH`, so you can run `semlayer` yourself; the line names this version's directory, so run `semlayer doctor` again for a new line after an update. `/agents` lists the five `semlayer-` agents, `/mcp` lists `plugin:semantic-layer-builder:semantic-layer` as connected, and a new session shows no message from `semantic-layer-builder` in a folder without a semantic layer.
 
 ## Use it
 
-Start Claude Code in the directory that holds, or will hold, the `semantic/` directory, and ask something like "help me build a semantic layer for our warehouse". The skill loads and runs the CLI for you.
+Start Claude Code in the directory that holds, or will hold, the `semantic/` directory, and type `/semlayer` or ask something like "help me build a semantic layer for our warehouse". The skill loads and runs the CLI for you.
 
 The agent asks which database it is and where the connection lives. Put it in `.env` in that same directory, one line you write yourself, such as `WAREHOUSE_URL=postgres://<user>:<password>@<host>:5432/<database>?sslmode=require` for a SELECT-only role, or set the variable in the shell you start Claude Code from (it wins over the file); a file elsewhere is passed with `--env-file <path>` or `SEMLAYER_ENV_FILE`. `semlayer` reads the file itself and keeps it out of git, the hook refuses to read it, and you never paste the secret into the chat.
 
@@ -58,6 +58,25 @@ claude --agent semantic-layer-builder:semlayer-interviewer
 ```
 
 It is the one role that talks to the owner, and it hands the other agents their tasks. The hook holds each of them to its role (spec: Agent roles).
+
+## Slash command
+
+The skill's front matter names it `semlayer`, so the slash command depends on how the skill is installed ([skills documentation](https://code.claude.com/docs/en/skills)):
+
+| Installed as | Slash command |
+|---|---|
+| This plugin | `/semantic-layer-builder:semlayer`, and the bare `/semlayer` unless another command already uses that name |
+| A copy of `skills/semantic-layer/` in a project's or your own `.claude/skills/` | `/semlayer`; the directory name, `/semantic-layer`, also invokes it |
+
+`/semlayer` alone starts or resumes the build; `/semlayer status` shows where it stands, `/semlayer doctor` checks the setup and explains each failed line, `/semlayer demo` makes the sample project, and any other words are your request.
+
+## Session start
+
+In a project whose folder holds a semantic layer (`semantic/semantic.yaml`, or the root `SEMANTIC_ROOT` names), the `SessionStart` hook adds one or two sentences to the agent's context: that a layer is there, at its path, and that the `semlayer` skill and `semlayer next` apply when you ask about it. On startup and resume, not after `/clear` or a compaction, it also shows you `semantic-layer-builder: a semantic layer is here, at "semantic". /semlayer continues it; /semlayer status shows where it stands.` It reads no file in the project, so the folder path is the only project text it repeats, with control characters, characters that reorder or hide text, and quotes replaced. In every other project it says nothing. Measured here, the whole hook runs in about 20 milliseconds with a layer, about 10 of them for the layer check.
+
+## Permission prompts
+
+Claude Code asks before each `semlayer` command it has not been allowed. The rule `Bash(semlayer *)` under `permissions.allow` in `.claude/settings.local.json` (this project, not committed), `.claude/settings.json` (this project, shared) or `~/.claude/settings.json` (every project) allows them all ([permissions documentation](https://code.claude.com/docs/en/permissions)); `semlayer doctor` prints it. A plugin cannot ship the rule, and neither `semlayer` nor the agent adds it.
 
 ## The MCP server in Claude Code
 
@@ -77,4 +96,4 @@ Keep `semantic-layer` in the name of a server you add by hand: the plugin's role
 
 ## Without the plugin
 
-Copy `skills/semantic-layer/` into a project's `.claude/skills/` and install the CLI's packages in that copy: `bun add --exact yaml@2.9.1 ajv@8.20.0 @duckdb/node-api@2.0.0-r.1`. You get the skill and the CLI, run as `bun <skill dir>/scripts/semlayer.ts`, but not the `semlayer` command, the agents or the hooks.
+Copy `skills/semantic-layer/` into a project's `.claude/skills/` and install the CLI's packages in that copy: `bun add --exact yaml@2.9.1 ajv@8.20.0 @duckdb/node-api@2.0.0-r.1`. You get the skill, invoked as `/semlayer` (see Slash command), and the CLI, run as `bun <skill dir>/scripts/semlayer.ts`, but not the `semlayer` command, the agents or the hooks.
