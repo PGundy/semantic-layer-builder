@@ -76,7 +76,12 @@ describe("semlayer doctor", () => {
     expect(role.fix).toContain("semlayer setup --print-role-sql --dialect postgres --schemas");
     const url = new URL(PG_URL!);
     expect(all).not.toContain(PG_URL!);
-    if (url.password) expect(all).not.toContain(decodeURIComponent(url.password));
+    // The password never appears beside the user as in a URL; nor on its own, unless it is the same
+    // word as the role name doctor prints (a test database's postgres:postgres).
+    if (url.password) {
+      expect(all).not.toContain(`:${url.password}@`);
+      if (decodeURIComponent(url.password) !== decodeURIComponent(url.username)) expect(all).not.toContain(decodeURIComponent(url.password));
+    }
   });
 
   test.skipIf(!hasGit)("with a tracked .env: it names git rm --cached, the failed connection names its fix, and the secret never shows", async () => {
