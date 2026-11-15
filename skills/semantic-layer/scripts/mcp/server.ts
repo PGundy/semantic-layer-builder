@@ -119,7 +119,7 @@ export class Server {
           const tool = toolOf(command, spec);
           out.set(tool.name, { command, spec, tool, validate: ajv.compile(tool.inputSchema) });
         } catch (e) {
-          this.opts.log(`sl ${command} is unavailable as a tool: ${(e as Error).message}`);
+          this.opts.log(`semlayer ${command} is unavailable as a tool: ${(e as Error).message}`);
         }
       }
       return out;
@@ -168,7 +168,7 @@ export class Server {
           protocolVersion: typeof asked === "string" && SUPPORTED_VERSIONS.has(asked) ? asked : PROTOCOL_VERSION,
           capabilities: { tools: {} },
           serverInfo: SERVER_INFO,
-          instructions: `Each tool runs one sl command with --json in the semantic root ${this.root}. ${this.role.commands === "every" ? "Start with sl_status, which names the next step." : `This server runs as the ${this.role.title.toLowerCase()} and serves only ${commandList(this.role)}.`} A call cannot name another root: to work in one, start the server again with --root <dir>. Pass absolute paths for file flags; relative ones resolve from the server's working directory.`,
+          instructions: `Each tool runs one semlayer command with --json in the semantic root ${this.root}. ${this.role.commands === "every" ? "Start with semlayer_status, which names the next step." : `This server runs as the ${this.role.title.toLowerCase()} and serves only ${commandList(this.role)}.`} A call cannot name another root: to work in one, start the server again with --root <dir>. Pass absolute paths for file flags; relative ones resolve from the server's working directory.`,
         };
       }
       case "ping":
@@ -230,7 +230,7 @@ export class Server {
     return toolResult(entry.command, await this.exec(argv));
   }
 
-  // Runs one sl command in-process, collecting what it prints. The command resolves its connection
+  // Runs one semlayer command in-process, collecting what it prints. The command resolves its connection
   // variables during the call (lib/env-file.ts), not when the server started.
   private async exec(argv: string[]): Promise<Run> {
     const out: string[] = [];
@@ -246,7 +246,7 @@ function failure(id: Id, code: number, message: string): Message {
 
 const USAGE = `Usage: bun skills/semantic-layer/scripts/mcp/server.ts [--root <dir>] [--role <role>] [--elicit-timeout <seconds>]
 
-Serves every sl command as an MCP tool over stdio. The semantic root is --root, else SEMANTIC_ROOT,
+Serves every semlayer command as an MCP tool over stdio. The semantic root is --root, else SEMANTIC_ROOT,
 else ./semantic; a tool call cannot name another root. --role (${ROLE_NAMES.join(", ")}; default
 interviewer) limits the tools to that role's commands. No tool takes --show-protected. When the client
 declares elicitation, the owner answers approvals in the client; --elicit-timeout is how long to wait
@@ -263,17 +263,17 @@ async function main(): Promise<number> {
       strict: true,
     }).values;
   } catch (e) {
-    log(`sl mcp: ${(e as Error).message}\n\n${USAGE}`);
+    log(`semlayer mcp: ${(e as Error).message}\n\n${USAGE}`);
     return 1;
   }
   const seconds = flags["elicit-timeout"] === undefined ? ELICIT_TIMEOUT_MS / 1000 : Number(flags["elicit-timeout"]);
   if (!Number.isFinite(seconds) || seconds <= 0) {
-    log(`sl mcp: --elicit-timeout is a number of seconds above 0, not ${JSON.stringify(flags["elicit-timeout"])}.\n\n${USAGE}`);
+    log(`semlayer mcp: --elicit-timeout is a number of seconds above 0, not ${JSON.stringify(flags["elicit-timeout"])}.\n\n${USAGE}`);
     return 1;
   }
   const role = flags.role ?? "interviewer";
   if (!(ROLE_NAMES as readonly string[]).includes(role)) {
-    log(`sl mcp: --role is one of ${ROLE_NAMES.join(", ")}, not ${JSON.stringify(flags.role)}.\n\n${USAGE}`);
+    log(`semlayer mcp: --role is one of ${ROLE_NAMES.join(", ")}, not ${JSON.stringify(flags.role)}.\n\n${USAGE}`);
     return 1;
   }
   if (flags.help) {
@@ -288,7 +288,7 @@ async function main(): Promise<number> {
   // env files as they are at that moment, so a .env written or changed after the server started is seen.
   const env = processEnvironment(process.env, process.cwd());
   const server = new Server({ root: resolveRoot(flags.root, env, process.cwd()), cwd: process.cwd(), env, log, send, elicitTimeoutMs: seconds * 1000, role: role as RoleName });
-  log(`sl mcp: serving the semantic root ${server.root} over stdio as the ${server.role.title.toLowerCase()}`);
+  log(`semlayer mcp: serving the semantic root ${server.root} over stdio as the ${server.role.title.toLowerCase()}`);
   const pending = new Set<Promise<void>>();
   for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
     if (!line.trim()) continue;

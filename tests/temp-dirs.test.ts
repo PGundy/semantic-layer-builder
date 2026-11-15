@@ -12,7 +12,7 @@ const REPO = join(import.meta.dir, "..");
 const IMPORT = `import { tempDir, tempRoot } from ${JSON.stringify(join(import.meta.dir, "helpers.ts"))};`;
 
 // Writes throwaway test files and returns the command that runs them from the repository root with
-// a temp directory of their own, and a function that lists the sl-test-* entries left in it.
+// a temp directory of their own, and a function that lists the semlayer-test-* entries left in it.
 function nested(files: Record<string, string>): { cmd: string[]; env: Record<string, string | undefined>; dir: string; left: () => string[] } {
   const dir = tempDir("nested");
   const tmp = join(dir, "tmp");
@@ -21,20 +21,20 @@ function nested(files: Record<string, string>): { cmd: string[]; env: Record<str
     writeFileSync(join(dir, name), `${IMPORT}\n${body}`);
     return join(dir, name);
   });
-  return { cmd: ["bun", "test", ...paths], env: { ...process.env, TMPDIR: tmp }, dir, left: () => readdirSync(tmp).filter((n) => n.startsWith("sl-test-")) };
+  return { cmd: ["bun", "test", ...paths], env: { ...process.env, TMPDIR: tmp }, dir, left: () => readdirSync(tmp).filter((n) => n.startsWith("semlayer-test-")) };
 }
 
 describe("tempDir and tempRoot", () => {
-  test("make a directory named sl-test-* directly under the system temp directory", () => {
+  test("make a directory named semlayer-test-* directly under the system temp directory", () => {
     const plain = tempDir();
     const labelled = tempDir("label");
     const { dir, root } = tempRoot();
     for (const d of [plain, labelled, dir]) {
       expect(statSync(d).isDirectory()).toBe(true);
       expect(dirname(d)).toBe(tmpdir());
-      expect(basename(d)).toStartWith("sl-test-");
+      expect(basename(d)).toStartWith("semlayer-test-");
     }
-    expect(basename(labelled)).toStartWith("sl-test-label-");
+    expect(basename(labelled)).toStartWith("semlayer-test-label-");
     expect(root).toBe(join(dir, "semantic"));
   });
 
@@ -68,7 +68,7 @@ describe("tempDir and tempRoot", () => {
         import { basename } from "node:path";
         const mine = tempDir("second");
         test("only this file's directory is left", () => {
-          expect(readdirSync(tmpdir()).filter((n) => n.startsWith("sl-test-"))).toEqual([basename(mine)]);
+          expect(readdirSync(tmpdir()).filter((n) => n.startsWith("semlayer-test-"))).toEqual([basename(mine)]);
         });`,
     });
     const r = Bun.spawnSync(run.cmd, { cwd: REPO, env: run.env, stdout: "pipe", stderr: "pipe" });

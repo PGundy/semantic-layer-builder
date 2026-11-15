@@ -16,7 +16,7 @@ import {
 import { classifyTable, noiseReason, rankTables, stagingReasons } from "../skills/semantic-layer/scripts/lib/rank.ts";
 import type { Snapshot, SnapshotTable } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { initProject, sl, tempRoot } from "./helpers.ts";
+import { initProject, semlayer, tempRoot } from "./helpers.ts";
 
 const t = (schema: string | null, name: string) => ({ schema, name });
 
@@ -117,7 +117,7 @@ describe("selection grammar", () => {
     expect(problem).not.toBeNull();
     expect({ kind: problem!.kind, offset: problem!.offset }).toEqual({ kind, offset });
     expect(problem!.message).toContain(`character ${offset + 1}`);
-    expect(problem!.message).toContain("run the command again; sl validate");
+    expect(problem!.message).toContain("run the command again; semlayer validate");
     expect(validatePattern(pattern)).toBe(problem!.message);
     expect(() => matchesPattern(pattern, t(null, "a"))).toThrow(UserError);
   });
@@ -126,7 +126,7 @@ describe("selection grammar", () => {
     expect(validatePattern("re:(a+)+")).toBe(
       'Unsafe regex in pattern "re:(a+)+": the "+" at character 8 repeats a part that holds another repeat (the "+" at character 6), ' +
         'and that can make matching extremely slow. Keep only one of the two repeats, for example "x+" instead of "(x+)+". ' +
-        "Fix the pattern and run the command again; sl validate lists every pattern problem in the project.",
+        "Fix the pattern and run the command again; semlayer validate lists every pattern problem in the project.",
     );
     expect(validatePattern("re:(a|aa)+")).toContain('options "a" at character 5 and "aa" at character 7 can start with the same character');
     expect(validatePattern("re:web_(.*")).toStartWith('Invalid regex in pattern "re:web_(.*": the "(" at character 8 is never closed; add a ")".');
@@ -244,7 +244,7 @@ describe("selection grammar", () => {
     expect(() => parseEntry(" ! ")).toThrow('write the table or pattern to exclude, for example "!*_tmp"');
   });
 
-  test("sl scope warns on a pattern that matches nothing and refuses an unsafe one", async () => {
+  test("semlayer scope warns on a pattern that matches nothing and refuses an unsafe one", async () => {
     const tmp = tempRoot();
     try {
       await initProject(tmp.root);
@@ -258,12 +258,12 @@ describe("selection grammar", () => {
         tables: [{ schema: "a", name: "fct_orders", kind: "table", row_count: 1, columns: [] }],
       };
       writeJson(join(tmp.root, "snapshots", "wh.json"), snapshot);
-      const human = await sl(tmp.root, ["scope", "--source", "wh", "--include", "fct_*", "--include", "mart_*"]);
+      const human = await semlayer(tmp.root, ["scope", "--source", "wh", "--include", "fct_*", "--include", "mart_*"]);
       expect(human.code).toBe(0);
-      expect(human.out).toContain('Warning: Pattern "mart_*" matches no table in the snapshot; check its spelling against `sl tables --source wh --all`.');
-      const json = (await sl(tmp.root, ["scope", "--source", "wh", "--include", "fct_*", "--exclude", "mart_*", "--json"])).json<{ unmatched_patterns: string[] }>();
+      expect(human.out).toContain('Warning: Pattern "mart_*" matches no table in the snapshot; check its spelling against `semlayer tables --source wh --all`.');
+      const json = (await semlayer(tmp.root, ["scope", "--source", "wh", "--include", "fct_*", "--exclude", "mart_*", "--json"])).json<{ unmatched_patterns: string[] }>();
       expect(json.unmatched_patterns).toEqual(["mart_*"]);
-      const unsafe = await sl(tmp.root, ["scope", "--source", "wh", "--include", "re:(a+)+"]);
+      const unsafe = await semlayer(tmp.root, ["scope", "--source", "wh", "--include", "re:(a+)+"]);
       expect(unsafe.code).toBe(1);
       expect(unsafe.err).toContain('the "+" at character 8 repeats a part that holds another repeat');
 
@@ -273,7 +273,7 @@ describe("selection grammar", () => {
         connection: { database: ":memory:" },
         scope: { include: ["re:(\\w+\\s?)*", "re:" + "b".repeat(513)], exclude: ['"tmp'] },
       });
-      const v = await sl(tmp.root, ["validate"]);
+      const v = await semlayer(tmp.root, ["validate"]);
       expect(v.code).toBe(1);
       for (const s of ["scope.include[0]", "character 12", "scope.include[1]", "the limit is 512", "scope.exclude[0]", "the quote at character 1 is never closed"]) {
         expect(v.out + v.err).toContain(s);
@@ -284,7 +284,7 @@ describe("selection grammar", () => {
   });
 });
 
-test("sl scope --tables saves a name holding a quote or a wildcard as an exact pattern", async () => {
+test("semlayer scope --tables saves a name holding a quote or a wildcard as an exact pattern", async () => {
   const tmp = tempRoot();
   try {
     await initProject(tmp.root);
@@ -299,7 +299,7 @@ test("sl scope --tables saves a name holding a quote or a wildcard as an exact p
       tables: [mk("a", 'odd"name'), mk("a", "plain"), mk('"q', "x"), mk("a", "fct_*"), mk("a", "fct_orders")],
     };
     writeJson(join(tmp.root, "snapshots", "wh.json"), snapshot);
-    const r = await sl(tmp.root, ["scope", "--source", "wh", "--tables", 'a.odd"name,"q.x,a.fct_*', "--write", "--json"]);
+    const r = await semlayer(tmp.root, ["scope", "--source", "wh", "--tables", 'a.odd"name,"q.x,a.fct_*', "--write", "--json"]);
     expect([r.code, r.err]).toEqual([0, ""]);
     expect(r.json<{ tables: { table: string }[]; unmatched_patterns: string[] }>()).toMatchObject({
       scope: { include: ['a."odd""name"', '"""q".x', 'a."fct_*"'] },

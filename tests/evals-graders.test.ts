@@ -12,7 +12,7 @@ import { protectedValues } from "../evals/graders/secrets.ts";
 import type { GradeReport, GraderResult } from "../evals/graders/types.ts";
 import type { Golden, Metric } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
-import { approveWithYes, duckdbSource, sl, tempDir } from "./helpers.ts";
+import { approveWithYes, duckdbSource, semlayer, tempDir } from "./helpers.ts";
 
 // The deterministic graders (evals/graders, FR-6.3): both scripted scenarios grade clean, and
 // synthetic run directories built from a scripted run fail each grader the way the spec says.
@@ -20,7 +20,7 @@ import { approveWithYes, duckdbSource, sl, tempDir } from "./helpers.ts";
 const START = "2026-01-01T00:00:00.000Z";
 const temp = () => tempDir("grades");
 
-// The scenario's script, or with draftOnly its first three skill turns, ending after sl draft with
+// The scenario's script, or with draftOnly its first three skill turns, ending after semlayer draft with
 // nothing approved, which the synthetic run directories below start from.
 async function scripted(name: string, out = temp(), draftOnly = false) {
   const file = scenarioPath(name);
@@ -62,7 +62,7 @@ async function approveLake(root: string) {
     // Approving never adds a validate issue: a currency-format measure needs its currency first.
     ["lake.marketing_spend.spend", "currency", "USD"],
   ];
-  for (const [ref, key, value] of edits) expect((await sl(root, ["set", ref, key, value])).code).toBe(0);
+  for (const [ref, key, value] of edits) expect((await semlayer(root, ["set", ref, key, value])).code).toBe(0);
   for (const t of ["sessions", "sessions.session_count", "sessions.started_at", "marketing_spend", "marketing_spend.spend", "marketing_spend.channel", "marketing_spend.spend_date"]) {
     const r = await approveWithYes(root, ["--target", `lake.${t}`, "--by", "Dana Ruiz"]);
     expect(r.err).toBe("");
@@ -94,7 +94,7 @@ function withMapping(figures: unknown[]) {
 }
 // A draft warehouse orders model the compiler refuses.
 async function draftWarehouse(root: string) {
-  expect((await sl(root, ["add-source", "--name", "warehouse", "--dialect", "postgres", "--env", "WAREHOUSE_URL"])).code).toBe(0);
+  expect((await semlayer(root, ["add-source", "--name", "warehouse", "--dialect", "postgres", "--env", "WAREHOUSE_URL"])).code).toBe(0);
   const model = "model: orders\nsource: warehouse\ntable: acme.fct_orders\nstatus: draft\nmeasures:\n  - { name: revenue, expr: amount_cents / 100.0, agg: sum, status: draft }\n";
   write(join(root, "models", "warehouse", "orders.yaml"), model);
 }
@@ -149,7 +149,7 @@ describe("both scripted scenarios grade clean", () => {
 
   test("without the ledger's yes for an approved item, the approvals grader fails on the scripted run", async () => {
     const r = await scripted("acme-terse");
-    const ledger = join(r.runDir, "semantic", ".sl", "ledger.jsonl");
+    const ledger = join(r.runDir, "semantic", ".semlayer", "ledger.jsonl");
     const lines = readFileSync(ledger, "utf8").trimEnd().split("\n");
     const isYes = (l: string) => (JSON.parse(l) as { kind: string; target?: string; verdict?: string }).verdict === "yes";
     const dropped = lines.find((l) => isYes(l) && JSON.parse(l).target === "lake.sessions.session_count")!;
@@ -158,7 +158,7 @@ describe("both scripted scenarios grade clean", () => {
     const g = grader(await gradeRun(r.runDir), "approvals");
     expect(g).toMatchObject({ passed: false, score: 7 / 8 });
     expect(g.details).toEqual([
-      `semantic/models/lake/sessions.yaml: lake.sessions.session_count is approved, but the ledger holds no yes for it with hash ${JSON.parse(dropped).content_hash}; read it back and ask the owner again: sl readback --targets lake.sessions.session_count.`,
+      `semantic/models/lake/sessions.yaml: lake.sessions.session_count is approved, but the ledger holds no yes for it with hash ${JSON.parse(dropped).content_hash}; read it back and ask the owner again: semlayer readback --targets lake.sessions.session_count.`,
     ]);
     // A confirmed golden without its yes fails too: the grader counts golden:<name> like any approval.
     const goldenYes = lines.find((l) => isYes(l) && JSON.parse(l).target === "golden:marketing_spend_2025")!;
@@ -167,16 +167,16 @@ describe("both scripted scenarios grade clean", () => {
     const gg = grader(await gradeRun(r.runDir), "approvals");
     expect(gg).toMatchObject({ passed: false, score: 7 / 8 });
     expect(gg.details).toEqual([
-      `semantic/goldens/marketing_spend_2025.yaml: golden:marketing_spend_2025 is confirmed, but the ledger holds no yes for it with hash ${JSON.parse(goldenYes).content_hash}; read it back and ask the owner again: sl readback --targets golden:marketing_spend_2025.`,
+      `semantic/goldens/marketing_spend_2025.yaml: golden:marketing_spend_2025 is confirmed, but the ledger holds no yes for it with hash ${JSON.parse(goldenYes).content_hash}; read it back and ask the owner again: semlayer readback --targets golden:marketing_spend_2025.`,
     ]);
     // With no yes left at all, nothing approved is backed and the grader scores 0.
     writeFileSync(ledger, lines.filter((l) => !isYes(l)).map((l) => `${l}\n`).join(""));
     expect(grader(await gradeRun(r.runDir), "approvals")).toMatchObject({ passed: false, score: 0 });
   });
 
-  test("a later no or change from the owner supersedes the scripted run's yes, as sl validate reads it", async () => {
+  test("a later no or change from the owner supersedes the scripted run's yes, as semlayer validate reads it", async () => {
     const r = await scripted("acme-terse");
-    const ledger = join(r.runDir, "semantic", ".sl", "ledger.jsonl");
+    const ledger = join(r.runDir, "semantic", ".semlayer", "ledger.jsonl");
     const text = readFileSync(ledger, "utf8");
     const yes = text.trimEnd().split("\n").find((l) => JSON.parse(l).target === "golden:marketing_spend_2025" && JSON.parse(l).verdict === "yes")!;
     expect(yes).toBeDefined();
@@ -186,14 +186,14 @@ describe("both scripted scenarios grade clean", () => {
       const g = grader(await gradeRun(r.runDir), "approvals");
       expect(g).toMatchObject({ passed: false, score: 7 / 8 });
       expect(g.details).toEqual([
-        `semantic/goldens/marketing_spend_2025.yaml: golden:marketing_spend_2025 is confirmed, but the owner's latest reply to it is a ${verdict} (ans_9001 by Sam Lee at 2026-06-02T00:00:00.000Z), which supersedes the earlier yes; read it back and ask the owner again: sl readback --targets golden:marketing_spend_2025.`,
+        `semantic/goldens/marketing_spend_2025.yaml: golden:marketing_spend_2025 is confirmed, but the owner's latest reply to it is a ${verdict} (ans_9001 by Sam Lee at 2026-06-02T00:00:00.000Z), which supersedes the earlier yes; read it back and ask the owner again: semlayer readback --targets golden:marketing_spend_2025.`,
       ]);
-      // sl validate reads the same ledger the same way.
-      const v = await sl(join(r.runDir, "semantic"), ["validate"]);
+      // semlayer validate reads the same ledger the same way.
+      const v = await semlayer(join(r.runDir, "semantic"), ["validate"]);
       expect(`${v.out}\n${v.err}`).toContain("golden:marketing_spend_2025");
     }
     writeFileSync(ledger, text);
-    const v = await sl(join(r.runDir, "semantic"), ["validate"]);
+    const v = await semlayer(join(r.runDir, "semantic"), ["validate"]);
     expect(`${v.out}\n${v.err}`).not.toContain("golden:marketing_spend_2025");
   });
 
@@ -262,9 +262,9 @@ describe("figures", () => {
     const g = grader(await gradeRun(dir), "figures");
     expect(g).toMatchObject({ score: 0, passed: false });
     const refused = (name: string) =>
-      "sl sql refuses its request: measures[0] names orders.revenue, which is held back because it is a draft and model orders is a draft; " +
-      'it is served once orders.revenue and model orders are read back and approved: sl readback --targets warehouse.orders.revenue,warehouse.orders, then sl approve --target warehouse.orders.revenue --by "<owner>" and sl approve --target warehouse.orders --by "<owner>" after the owner\'s yes. ' +
-      `Read warehouse.orders.revenue and warehouse.orders back to the owner with sl readback --targets warehouse.orders.revenue,warehouse.orders and approve them on their yes, then run sl goldens check --name ${name}; ` +
+      "semlayer sql refuses its request: measures[0] names orders.revenue, which is held back because it is a draft and model orders is a draft; " +
+      'it is served once orders.revenue and model orders are read back and approved: semlayer readback --targets warehouse.orders.revenue,warehouse.orders, then semlayer approve --target warehouse.orders.revenue --by "<owner>" and semlayer approve --target warehouse.orders --by "<owner>" after the owner\'s yes. ' +
+      `Read warehouse.orders.revenue and warehouse.orders back to the owner with semlayer readback --targets warehouse.orders.revenue,warehouse.orders and approve them on their yes, then run semlayer goldens check --name ${name}; ` +
       "if its rows changed, confirm again only on the owner's yes.";
     expect(g.details).toEqual([
       `semantic/goldens/revenue_2025.yaml: revenue_2025 is not checked: ${refused("revenue_2025")}`,
@@ -298,7 +298,7 @@ describe("figures", () => {
     expect(g).toMatchObject({ score: 0, passed: false });
     expect(g.details).toEqual([
       "semantic/goldens/revenue_2025.yaml: revenue_2025 is not checked: its request compiles, but warehouse is postgres and the grader runs compiled SQL only on duckdb sources, whose data it reads from files; " +
-        "run sl goldens check --name revenue_2025 against warehouse instead",
+        "run semlayer goldens check --name revenue_2025 against warehouse instead",
     ]);
   });
 
@@ -310,7 +310,7 @@ describe("figures", () => {
     writeFileSync(path, readFileSync(path, "utf8").replace(/^request: .*\n/m, ""));
     const g = grader(await gradeRun(dir), "figures");
     expect(g).toMatchObject({ score: 0, passed: false });
-    expect(g.details).toEqual(["semantic/goldens/revenue_2025.yaml: it has no request to compile; run sl validate and give revenue_2025 a request"]);
+    expect(g.details).toEqual(["semantic/goldens/revenue_2025.yaml: it has no request to compile; run semlayer validate and give revenue_2025 a request"]);
   });
 
   test("a golden whose measure is a metric maps through the metric's first measure", async () => {
@@ -339,7 +339,7 @@ describe("figures", () => {
     const g = grader(await gradeRun(dir), "figures");
     expect(g).toMatchObject({ score: 0, passed: false });
     expect(g.details).toHaveLength(1);
-    expect(g.details[0]).toStartWith("semantic/goldens/gross_revenue_2025.yaml: revenue_2025 is not checked: sl sql refuses its request: ");
+    expect(g.details[0]).toStartWith("semantic/goldens/gross_revenue_2025.yaml: revenue_2025 is not checked: semlayer sql refuses its request: ");
     expect(g.details[0]).toContain("rev_metric");
   });
 
@@ -479,7 +479,7 @@ describe("selection", () => {
     const file = join(root, "sources", "lake.yaml");
     const text = readFileSync(file, "utf8").replace("scope:\n  exclude:\n    - web_events_2024_archive\n", "scope:\n  include: [sessions, web_events*]\n  exclude:\n");
     writeFileSync(file, text);
-    expect((await sl(root, ["validate"])).code).toBe(0);
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
     const g = grader(await gradeRun(dir), "selection");
     expect(g).toMatchObject({ score: 0, passed: false });
     expect(g.details).toEqual([
@@ -493,12 +493,12 @@ describe("selection", () => {
     const { dir, root } = copyRun();
     rmSync(join(root, "snapshots"), { recursive: true });
     expect(grader(await gradeRun(dir), "selection").details[0]).toBe(
-      "semantic/snapshots/lake.json is missing, so lake has no scope to grade; the skill never ran sl introspect --source lake.",
+      "semantic/snapshots/lake.json is missing, so lake has no scope to grade; the skill never ran semlayer introspect --source lake.",
     );
   });
 });
 
-// A ledger reply line as sl reply writes it, at a deterministic time from its number.
+// A ledger reply line as semlayer reply writes it, at a deterministic time from its number.
 function reply(n: number, target: string, content_hash: string, verdict: "yes" | "no" | "change" | null, by = "Dana Ruiz"): string {
   const id = `ans_${String(n).padStart(4, "0")}`;
   const at = new Date(Date.parse("2026-06-01T00:00:00.000Z") + n * 1000).toISOString();
@@ -509,7 +509,7 @@ describe("approvals", () => {
   test("a run with no ledger yet is not graded, and neither are its figures without an approved golden", async () => {
     const { dir } = copyRun();
     const g = await gradeRun(dir);
-    expect(grader(g, "approvals")).toMatchObject({ score: null, passed: true, details: ["not graded: no ledger yet (semantic/.sl/ledger.jsonl)"] });
+    expect(grader(g, "approvals")).toMatchObject({ score: null, passed: true, details: ["not graded: no ledger yet (semantic/.semlayer/ledger.jsonl)"] });
     expect(grader(g, "figures")).toMatchObject({ score: null, passed: true, details: ["not graded: the run has no approved golden (semantic/goldens/)"] });
   });
 
@@ -525,24 +525,24 @@ describe("approvals", () => {
     const refs = ["lake.sessions", "lake.sessions.session_count", "lake.sessions.started_at", "lake.marketing_spend", "lake.marketing_spend.spend", "lake.marketing_spend.channel"];
     const lines = refs.map((target, i) => reply(i + 1, target, hashOf(target), "yes"));
     lines.push(reply(7, "lake.marketing_spend.spend_date", "sha256:0", "yes"));
-    write(join(root, ".sl", "ledger.jsonl"), `${lines.join("\n")}\n`);
+    write(join(root, ".semlayer", "ledger.jsonl"), `${lines.join("\n")}\n`);
     const g = grader(await gradeRun(dir), "approvals");
     expect(g).toMatchObject({ passed: false, score: 6 / 7 });
     expect(g.details).toEqual([
-      `semantic/models/lake/marketing_spend.yaml: lake.marketing_spend.spend_date is approved, but the owner's latest reply to it is a yes to other content (ans_0007 by Dana Ruiz at 2026-06-01T00:00:07.000Z, hash sha256:0, not ${hashOf("lake.marketing_spend.spend_date")}); read it back and ask the owner again: sl readback --targets lake.marketing_spend.spend_date.`,
+      `semantic/models/lake/marketing_spend.yaml: lake.marketing_spend.spend_date is approved, but the owner's latest reply to it is a yes to other content (ans_0007 by Dana Ruiz at 2026-06-01T00:00:07.000Z, hash sha256:0, not ${hashOf("lake.marketing_spend.spend_date")}); read it back and ask the owner again: semlayer readback --targets lake.marketing_spend.spend_date.`,
     ]);
     // A yes at an old hash followed by a yes at the current hash is backed.
-    appendFileSync(join(root, ".sl", "ledger.jsonl"), `${reply(8, "lake.marketing_spend.spend_date", hashOf("lake.marketing_spend.spend_date"), "yes")}\n`);
+    appendFileSync(join(root, ".semlayer", "ledger.jsonl"), `${reply(8, "lake.marketing_spend.spend_date", hashOf("lake.marketing_spend.spend_date"), "yes")}\n`);
     expect(grader(await gradeRun(dir), "approvals")).toMatchObject({ passed: true, score: 1, details: ["All 7 approved item(s) have the owner's latest reply as a yes with a matching hash."] });
     // A later yes to other content supersedes it again: only the latest reply counts.
-    appendFileSync(join(root, ".sl", "ledger.jsonl"), `${reply(9, "lake.marketing_spend.spend_date", "sha256:1", "yes")}\n`);
+    appendFileSync(join(root, ".semlayer", "ledger.jsonl"), `${reply(9, "lake.marketing_spend.spend_date", "sha256:1", "yes")}\n`);
     expect(grader(await gradeRun(dir), "approvals").details[0]).toContain("latest reply to it is a yes to other content (ans_0009 by Dana Ruiz");
   });
 
   test("the owner's latest reply decides: a later no or change fails the item, a later yes after a no passes", async () => {
     const { dir, root } = copyRun();
     await approveLake(root);
-    const ledger = join(root, ".sl", "ledger.jsonl");
+    const ledger = join(root, ".semlayer", "ledger.jsonl");
     const target = "lake.sessions.session_count";
     const base = readFileSync(ledger, "utf8");
     const hash = base.trimEnd().split("\n").map((l) => JSON.parse(l)).filter((e) => e.target === target && e.verdict === "yes").at(-1)!.content_hash as string;
@@ -552,14 +552,14 @@ describe("approvals", () => {
       expect(g).toMatchObject({ passed: false, score: 6 / 7 });
       const said = verdict ? `a ${verdict}` : "a reply without a verdict";
       expect(g.details).toEqual([
-        `semantic/models/lake/sessions.yaml: ${target} is approved, but the owner's latest reply to it is ${said} (ans_9001 by Sam Lee at 2026-06-01T02:30:01.000Z), which supersedes the earlier yes; read it back and ask the owner again: sl readback --targets ${target}.`,
+        `semantic/models/lake/sessions.yaml: ${target} is approved, but the owner's latest reply to it is ${said} (ans_9001 by Sam Lee at 2026-06-01T02:30:01.000Z), which supersedes the earlier yes; read it back and ask the owner again: semlayer readback --targets ${target}.`,
       ]);
-      // sl validate reads the same ledger the same way and names the item as lacking the owner's yes.
-      const v = await sl(root, ["validate"]);
+      // semlayer validate reads the same ledger the same way and names the item as lacking the owner's yes.
+      const v = await semlayer(root, ["validate"]);
       expect(`${v.out}\n${v.err}`).toContain(target);
     }
     writeFileSync(ledger, base);
-    const v = await sl(root, ["validate"]);
+    const v = await semlayer(root, ["validate"]);
     expect(`${v.out}\n${v.err}`).not.toContain(target);
     // A later yes to the same content after the no is backed again.
     writeFileSync(ledger, `${base}${reply(9001, target, hash, "no", "Sam Lee")}\n${reply(9002, target, hash, "yes")}\n`);
@@ -572,16 +572,16 @@ describe("approvals", () => {
   test("a reply line without the fields an approval needs records no answer and fails the grader", async () => {
     const { dir, root } = copyRun();
     await approveLake(root);
-    const ledger = join(root, ".sl", "ledger.jsonl");
+    const ledger = join(root, ".semlayer", "ledger.jsonl");
     const n = readFileSync(ledger, "utf8").trimEnd().split("\n").length;
     appendFileSync(ledger, `${JSON.stringify({ kind: "reply", target: "lake.sessions", content_hash: "sha256:0", verdict: "no" })}\nnot json\n`);
     const g = grader(await gradeRun(dir), "approvals");
     expect(g).toMatchObject({ passed: false, score: 1 });
-    const restore = "the ledger is append-only: restore it from version control (git checkout -- .sl/ledger.jsonl), then run sl validate";
-    // The all-backed summary is left out while a line records no answer: sl approve would refuse this ledger.
+    const restore = "the ledger is append-only: restore it from version control (git checkout -- .semlayer/ledger.jsonl), then run semlayer validate";
+    // The all-backed summary is left out while a line records no answer: semlayer approve would refuse this ledger.
     expect(g.details).toEqual([
-      `semantic/.sl/ledger.jsonl line ${n + 1} is not a reply or question line with the fields an approval needs (kind, id, target, content_hash, verdict, a non-empty by and at); it records no answer, and ${restore}.`,
-      `semantic/.sl/ledger.jsonl line ${n + 2} is not JSON; it records no answer, and ${restore}.`,
+      `semantic/.semlayer/ledger.jsonl line ${n + 1} is not a reply or question line with the fields an approval needs (kind, id, target, content_hash, verdict, a non-empty by and at); it records no answer, and ${restore}.`,
+      `semantic/.semlayer/ledger.jsonl line ${n + 2} is not JSON; it records no answer, and ${restore}.`,
     ]);
     // Grading is deterministic: the same files give the same result.
     expect(grader(await gradeRun(dir), "approvals")).toEqual(g);
@@ -590,7 +590,7 @@ describe("approvals", () => {
   test("odd JSON lines and a cut-off last line fail the grader; a question line and CRLF endings do not", async () => {
     const { dir, root } = copyRun();
     await approveLake(root);
-    const ledger = join(root, ".sl", "ledger.jsonl");
+    const ledger = join(root, ".semlayer", "ledger.jsonl");
     const base = readFileSync(ledger, "utf8");
     for (const bad of ["[]", "null", "5", '"yes"', '{"kind":"reply","verdict":"YES"}']) {
       writeFileSync(ledger, `${base}${bad}\n`);
@@ -599,7 +599,7 @@ describe("approvals", () => {
     writeFileSync(ledger, base.trimEnd());
     const cut = grader(await gradeRun(dir), "approvals");
     expect(cut).toMatchObject({ passed: false, score: 1 });
-    expect(cut.details).toEqual(["The last line of semantic/.sl/ledger.jsonl has no line break (an append was cut off); the ledger is append-only: restore it from version control (git checkout -- .sl/ledger.jsonl), then run sl validate."]);
+    expect(cut.details).toEqual(["The last line of semantic/.semlayer/ledger.jsonl has no line break (an append was cut off); the ledger is append-only: restore it from version control (git checkout -- .semlayer/ledger.jsonl), then run semlayer validate."]);
     writeFileSync(ledger, `${base}${JSON.stringify({ kind: "question", id: "ans_9998", text: "q" })}\n`);
     expect(grader(await gradeRun(dir), "approvals")).toMatchObject({ passed: true, score: 1 });
     writeFileSync(ledger, base.replace(/\n/g, "\r\n"));
@@ -609,7 +609,7 @@ describe("approvals", () => {
     const model = join(root, "models", "lake", "sessions.yaml");
     writeFileSync(model, readFileSync(model, "utf8").replace(/\n\s*approved_hash: sha256:[0-9a-f]{64}/, ""));
     expect(grader(await gradeRun(dir), "approvals").details).toEqual([
-      "semantic/models/lake/sessions.yaml: lake.sessions is approved without an approved_hash, so no ledger yes can match it; read it back and ask the owner again: sl readback --targets lake.sessions.",
+      "semantic/models/lake/sessions.yaml: lake.sessions is approved without an approved_hash, so no ledger yes can match it; read it back and ask the owner again: semlayer readback --targets lake.sessions.",
     ]);
   });
 });
@@ -639,9 +639,9 @@ describe("connection first", () => {
     expect(grader(await gradeRun(dir), "connection_first")).toMatchObject({ passed: true, details: ["transcript.jsonl: the skill never offers an export."] });
   });
 
-  test("an sl export-sql run counts as an offer", async () => {
+  test("a semlayer export-sql run counts as an offer", async () => {
     const { dir } = copyRun();
-    setTranscript(dir, [{ speaker: "owner", text: "hi" }, { speaker: "skill", text: "Here you go.", commands: [{ command: "sl export-sql --dialect postgres", exit_code: 0 }] }]);
+    setTranscript(dir, [{ speaker: "owner", text: "hi" }, { speaker: "skill", text: "Here you go.", commands: [{ command: "semlayer export-sql --dialect postgres", exit_code: 0 }] }]);
     expect(grader(await gradeRun(dir), "connection_first").passed).toBe(false);
   });
 
@@ -652,7 +652,7 @@ describe("connection first", () => {
       ask,
       { speaker: "owner", text: "IT says we can't connect anything to the warehouse." },
       offer,
-      { speaker: "skill", text: "Confirmed.", commands: [{ command: "sl goldens confirm --name g", exit_code: 0 }] },
+      { speaker: "skill", text: "Confirmed.", commands: [{ command: "semlayer goldens confirm --name g", exit_code: 0 }] },
     ]);
     expect(grader(await gradeRun(dir), "connection_first")).toMatchObject({ passed: true, score: 1 });
     const summary = JSON.parse(readFileSync(join(dir, "summary.json"), "utf8"));
@@ -663,8 +663,8 @@ describe("connection first", () => {
     expect(g).toMatchObject({ passed: false, score: 1 / 3 });
     expect(g.details.slice(1)).toEqual([
       "semantic/goldens/: an export scenario has no data to confirm against, but g is confirmed.",
-      "transcript.jsonl turn 5: sl goldens confirm succeeded on an export scenario.",
-      "semantic/sources/: no source is a schema export at the end of this export scenario (never set up with sl setup --export, or upgraded).",
+      "transcript.jsonl turn 5: semlayer goldens confirm succeeded on an export scenario.",
+      "semantic/sources/: no source is a schema export at the end of this export scenario (never set up with semlayer setup --export, or upgraded).",
     ]);
   });
 });
@@ -682,9 +682,9 @@ describe("effort", () => {
       owner_words: 35,
       owner_turns_per_approved_item: 0.25,
       owner_words_per_approved_item: 4.38,
-      tokens: 2678,
-      tokens_per_approved_item: 334.75,
-      skill_tokens_per_approved_item: 327.25,
+      tokens: 2691,
+      tokens_per_approved_item: 336.38,
+      skill_tokens_per_approved_item: 328.88,
       wall_time_seconds: 9,
     });
   });
@@ -734,7 +734,7 @@ describe("the grade command", () => {
     for (const leak of [email, "Fake-Pw-0042", dir, REPO_ROOT]) expect(text).not.toContain(leak);
     const r = JSON.parse(text) as GradeReport;
     expect(grader(r, "figures")).toMatchObject({ passed: false, score: 0 });
-    expect(grader(r, "figures").details).toEqual([expect.stringMatching(/^could not grade: goldens\/broken\.yaml: is not valid YAML \([^\n]* at line \d+, column \d+\)\. Fix the file, or run sl validate for the full list\.$/)]);
+    expect(grader(r, "figures").details).toEqual([expect.stringMatching(/^could not grade: goldens\/broken\.yaml: is not valid YAML \([^\n]* at line \d+, column \d+\)\. Fix the file, or run semlayer validate for the full list\.$/)]);
     expect(grader(r, "effort")).toMatchObject({ passed: true, score: null, details: [expect.stringMatching(/^could not measure: goldens\/broken\.yaml: is not valid YAML \(/)] });
     expect(grader(r, "selection").passed).toBe(true);
     // The secrets grader finds the planted email and password in the file, without quoting them.

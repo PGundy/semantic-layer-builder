@@ -279,7 +279,7 @@ export async function main(argv: string[], io: SmokeIO): Promise<number> {
     }
 
     // Runs go to --out, kept, or to a temporary directory removed afterwards; never to the repository.
-    const outRoot = values.out ? resolve(values.out) : (tempDir = mkdtempSync(join(tmpdir(), "sl-smoke-")));
+    const outRoot = values.out ? resolve(values.out) : (tempDir = mkdtempSync(join(tmpdir(), "semlayer-smoke-")));
     const run = io.runOne ?? runOne;
     const observed: Observed[] = [];
     for (const name of SMOKE_SCENARIOS) {

@@ -83,13 +83,13 @@ export function assertDistinctColumns(columns: string[], ignoreCase = false): vo
 
 // Why a query failed, in one plain line for a skipped table or join --------------------------
 
-// The reason for a query the role may not run. sl next routes on it (profileGaps).
+// The reason for a query the role may not run. semlayer next routes on it (profileGaps).
 export const NO_SELECT_REASON = "no SELECT permission";
 // The longest reason kept: a database message is evidence and is cut here.
 const REASON_MAX = 200;
 
 export interface ReasonOptions {
-  // The statement timeout the query ran under, in milliseconds, when sl ran it on Postgres.
+  // The statement timeout the query ran under, in milliseconds, when semlayer ran it on Postgres.
   timeoutMs?: number;
   // What else a timeout can be answered with besides a longer one, e.g. "lower profile.sample_rows".
   timeoutHint?: string;
@@ -139,9 +139,9 @@ export function failureReason(e: unknown, o: ReasonOptions = {}): string {
   const said = state === undefined ? message.replace(PAIRED_QUOTES, " ") : "";
   if (state === "42501" || /permission denied|insufficient privilege|not authorized/i.test(said)) return NO_SELECT_REASON;
   if ((state === "57014" && /statement timeout/i.test(message)) || /\bstatement timeout\b|\btimed out\b|\btimeout of\b/i.test(said)) {
-    // SL_STATEMENT_TIMEOUT_MS applies only where sl ran the query under it.
+    // SEMLAYER_STATEMENT_TIMEOUT_MS applies only where semlayer ran the query under it.
     const after = o.timeoutMs === undefined ? "" : ` after ${Number((o.timeoutMs / 1000).toFixed(3))} s`;
-    const raise = o.timeoutMs === undefined ? "raise the timeout of the tool that ran the query" : "raise SL_STATEMENT_TIMEOUT_MS";
+    const raise = o.timeoutMs === undefined ? "raise the timeout of the tool that ran the query" : "raise SEMLAYER_STATEMENT_TIMEOUT_MS";
     return `timed out${after} (${raise}${o.timeoutHint ? ` or ${o.timeoutHint}` : ""})`;
   }
   const lines = plainText(message)
@@ -216,7 +216,7 @@ async function openForPlan(opts: ExecuteOptions): Promise<Adapter> {
   if (!canRun(opts.source)) {
     throw new UserError(
       `Source "${opts.source.source}" is ${opts.source.dialect}. Rerun with --emit-sql, run each query with your own ` +
-        "tool, store each result with sl results add --plan <plan_id> --query <query id> --file <rows.json> and rerun with " +
+        "tool, store each result with semlayer results add --plan <plan_id> --query <query id> --file <rows.json> and rerun with " +
         "--plan <plan_id>; or save {\"<query id>\": [rows...]} to a JSON file and rerun with --results <file>.",
     );
   }
@@ -276,7 +276,7 @@ export async function executePlanPartial(plan: QueryPlan, opts: PartialOptions):
   const adapter = await openForPlan(opts);
   if (opts.source.dialect === "postgres") {
     const { statementTimeout } = await import("./adapters/postgres.ts");
-    reason.timeoutMs = statementTimeout(opts.env.SL_STATEMENT_TIMEOUT_MS);
+    reason.timeoutMs = statementTimeout(opts.env.SEMLAYER_STATEMENT_TIMEOUT_MS);
   }
   const out: PlanOutcome = { results: {}, failed: {} };
   const failedGroups = new Map<string, string>();
@@ -303,8 +303,8 @@ export async function executePlanPartial(plan: QueryPlan, opts: PartialOptions):
 
 // Stored query plans (spec: Query-plan protocol) ---------------------------------------------
 //
-// --emit-sql writes .sl/plans/<plan_id>.json under the semantic root; sl results add stores each
-// query's rows under .sl/plans/<plan_id>/results/; the command finishes with --plan <plan_id>.
+// --emit-sql writes .semlayer/plans/<plan_id>.json under the semantic root; semlayer results add stores each
+// query's rows under .semlayer/plans/<plan_id>/results/; the command finishes with --plan <plan_id>.
 
 export const PLAN_ID_PATTERN = /^[0-9a-f]{12}$/;
 
@@ -347,7 +347,7 @@ export function planId(plan: QueryPlan): string {
 }
 
 function plansDir(root: string): string {
-  return join(root, ".sl", "plans");
+  return join(root, ".semlayer", "plans");
 }
 
 function planPath(root: string, id: string): string {
@@ -370,7 +370,7 @@ function shellWord(s: string): string {
 
 // The invocation as a command line, without --emit-sql, --results, --plan and the global flags.
 export function commandLine(name: string, positionals: string[], values: OptionValues): string {
-  const parts = ["sl", name, ...positionals.map(shellWord)];
+  const parts = ["semlayer", name, ...positionals.map(shellWord)];
   for (const [k, v] of Object.entries(values)) {
     if (NOT_IN_FINISH.has(k) || v === undefined) continue;
     for (const x of Array.isArray(v) ? v : [v]) {
@@ -392,7 +392,7 @@ export interface Invocation {
 
 export type EmittedPlan = QueryPlan & { queries: CappedQuery[]; plan_id: string; path: string };
 
-// Writes the plan --emit-sql prints to .sl/plans/<plan_id>.json and returns what it prints: the
+// Writes the plan --emit-sql prints to .semlayer/plans/<plan_id>.json and returns what it prints: the
 // plan, max_rows on each query, its plan_id and path. Results stored for the same plan stay.
 export function emitPlan(ctx: CommandContext, plan: QueryPlan, how: Invocation): EmittedPlan {
   const full = withMaxRows(plan);
@@ -401,14 +401,14 @@ export function emitPlan(ctx: CommandContext, plan: QueryPlan, how: Invocation):
   const stored: StoredPlan = { version: 1, plan_id: id, finish, ...full };
   const path = planPath(ctx.root, id);
   writeJson(path, stored);
-  // Plans and results are working files: ignored even in a root sl init did not write.
+  // Plans and results are working files: ignored even in a root semlayer init did not write.
   const ignore = join(plansDir(ctx.root), ".gitignore");
   if (!existsSync(ignore)) writeFileAtomic(ignore, "*\n");
   ctx.err(
     full.queries.length
       ? `Wrote plan ${id} to ${path}. Run each query with a row limit of its max_rows, store each result with ` +
-          `sl results add --plan ${id} --query <query id> --file <rows.json>, then finish with ${finish}. ` +
-          `sl results status --plan ${id} shows what remains.` +
+          `semlayer results add --plan ${id} --query <query id> --file <rows.json>, then finish with ${finish}. ` +
+          `semlayer results status --plan ${id} shows what remains.` +
           (how.keepsPartial
             ? ` If the database refuses a query, finish with --results <file> in place of --plan ${id}: a JSON object of each ` +
               `query id to its rows, with {"error": "<the database's message>"} for the one that failed.`
@@ -429,16 +429,16 @@ export function resultsInput(ctx: CommandContext, values: OptionValues): { resul
   return { resultsFile: file ? resolve(ctx.cwd, file) : undefined, planId: id };
 }
 
-// A finish command as emitPlan writes it: sl, the plan's command, words as shellWord quotes them,
+// A finish command as emitPlan writes it: semlayer, the plan's command, words as shellWord quotes them,
 // and --plan <id>. finish is outside the plan id, so an edited one is caught here.
 const FINISH_WORD = "(?:[A-Za-z0-9_.,:/=@%+-]+|'(?:[^']|'\\\\'')*')";
 
 function finishIsSafe(plan: StoredPlan, id: string): boolean {
   if (!/^[a-z][a-z-]*$/.test(plan.command)) return false;
-  return new RegExp(`^sl ${plan.command}(?: ${FINISH_WORD})* --plan ${id}$`).test(plan.finish);
+  return new RegExp(`^semlayer ${plan.command}(?: ${FINISH_WORD})* --plan ${id}$`).test(plan.finish);
 }
 
-// Reads .sl/plans/<id>.json, refusing an id that is not a plan id, a missing plan, and a file that
+// Reads .semlayer/plans/<id>.json, refusing an id that is not a plan id, a missing plan, and a file that
 // is not a valid plan or whose content no longer gives its id.
 export function loadStoredPlan(root: string, id: string): StoredPlan {
   if (!PLAN_ID_PATTERN.test(id)) {
@@ -448,7 +448,7 @@ export function loadStoredPlan(root: string, id: string): StoredPlan {
   if (!existsSync(path)) {
     throw new UserError(
       `No query plan ${id} in ${plansDir(root)}. Emit one with the command's --emit-sql flag (for example ` +
-        "sl introspect --source <s> --emit-sql) and use the plan_id it prints.",
+        "semlayer introspect --source <s> --emit-sql) and use the plan_id it prints.",
     );
   }
   const raw = readJson<unknown>(path);
@@ -467,7 +467,7 @@ function readRows(path: string, id: string, query: string): ResultRows {
   if (!existsSync(path)) {
     throw new UserError(
       `No file ${path}. Save the rows of query "${query}" there as a JSON array of row objects, then rerun ` +
-        `sl results add --plan ${id} --query ${shellWord(query)} --file <rows.json>.`,
+        `semlayer results add --plan ${id} --query ${shellWord(query)} --file <rows.json>.`,
     );
   }
   const raw = readJson<unknown>(path);
@@ -487,7 +487,7 @@ function storedRows(root: string, id: string, query: string): ResultRows | undef
   if (!existsSync(path)) return undefined;
   const raw = readJson<{ query?: unknown; rows?: unknown }>(path);
   if (!raw || raw.query !== query || !Array.isArray(raw.rows)) {
-    throw new UserError(`${path} is not a stored result of query "${query}". Store it again with sl results add --plan ${id} --query ${query} --file <rows.json>.`);
+    throw new UserError(`${path} is not a stored result of query "${query}". Store it again with semlayer results add --plan ${id} --query ${query} --file <rows.json>.`);
   }
   return raw.rows as ResultRows;
 }
@@ -513,27 +513,27 @@ export interface AddedResult {
   state: "added" | "replaced" | "unchanged";
 }
 
-// sl results add: stores the rows in `file` as the result of one query of a stored plan.
+// semlayer results add: stores the rows in `file` as the result of one query of a stored plan.
 export function addResult(root: string, id: string, query: string, file: string): AddedResult {
   const plan = loadStoredPlan(root, id);
   const q = plan.queries.find((x) => x.id === query);
   if (!q) {
     throw new UserError(
       `Plan ${id} has no query "${query}". Its queries are ${plan.queries.map((x) => x.id).join(", ") || "none"}; ` +
-        `sl results status --plan ${id} lists them.`,
+        `semlayer results status --plan ${id} lists them.`,
     );
   }
   const rows = readRows(file, id, query);
   if (rows.length === q.max_rows) {
     throw new UserError(
       `The result of "${query}" has ${rows.length} rows, exactly its max_rows, so the tool that ran it may have cut it off. ` +
-        `Run the query again so it returns every row (a row limit above ${q.max_rows}), then rerun sl results add.`,
+        `Run the query again so it returns every row (a row limit above ${q.max_rows}), then rerun semlayer results add.`,
     );
   }
   const masked = protectedGoldenColumns(root, plan, q, rows);
   if (masked.length) {
     throw new UserError(
-      `The result of "${query}" has protected column${masked.length === 1 ? "" : "s"} ${masked.map(plainText).join(", ")}, and .sl/plans keeps no ` +
+      `The result of "${query}" has protected column${masked.length === 1 ? "" : "s"} ${masked.map(plainText).join(", ")}, and .semlayer/plans keeps no ` +
         `protected values, so it is not stored. Save the plan's rows as {"<query id>": [rows...]} to a scratch JSON file, finish with ` +
         `${plan.finish.replace(/ --plan [0-9a-f]{12}$/, " --results <file>")}, then delete the file.`,
     );
@@ -559,7 +559,7 @@ export interface PlanStatus {
   next: string;
 }
 
-// sl results status: which queries of a stored plan have results and which remain.
+// semlayer results status: which queries of a stored plan have results and which remain.
 export function planStatus(root: string, id: string): PlanStatus {
   const plan = loadStoredPlan(root, id);
   const queries = plan.queries.map((q) => {
@@ -568,7 +568,7 @@ export function planStatus(root: string, id: string): PlanStatus {
   });
   const remaining = queries.filter((q) => !q.stored).map((q) => q.id);
   const next = remaining.length
-    ? `Next: run query "${remaining[0]}" and store its rows with sl results add --plan ${id} --query ${shellWord(remaining[0]!)} --file <rows.json>.`
+    ? `Next: run query "${remaining[0]}" and store its rows with semlayer results add --plan ${id} --query ${shellWord(remaining[0]!)} --file <rows.json>.`
     : `Next: ${plan.finish}`;
   return {
     plan_id: id,
@@ -603,8 +603,8 @@ export function planResults(root: string, id: string, plan: QueryPlan): PlanResu
   }
   if (missing.length) {
     throw new UserError(
-      `Plan ${id} still needs results for: ${missing.join(", ")}. Store each with sl results add --plan ${id} --query <query id> ` +
-        `--file <rows.json>; sl results status --plan ${id} shows what remains.`,
+      `Plan ${id} still needs results for: ${missing.join(", ")}. Store each with semlayer results add --plan ${id} --query <query id> ` +
+        `--file <rows.json>; semlayer results status --plan ${id} shows what remains.`,
     );
   }
   return out;

@@ -1,12 +1,12 @@
 // The intake block of sources/<source>.yaml (docs/PRD.md FR-1.1, FR-1.0): its schema, the checks
-// sl validate makes and sl add-source --schemas.
+// semlayer validate makes and semlayer add-source --schemas.
 import { describe, expect, test } from "bun:test";
 import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { intakeMode, isSchemaName } from "../skills/semantic-layer/scripts/lib/intake.ts";
 import { type Issue, schemaIssues, validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { parseYamlText, readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { initProject, sl, tempDir, tempRoot } from "./helpers.ts";
+import { initProject, semlayer, tempDir, tempRoot } from "./helpers.ts";
 
 const REPO = join(import.meta.dir, "..");
 const FIXTURE = join(import.meta.dir, "fixtures", "valid");
@@ -83,7 +83,7 @@ describe("intake schema", () => {
   });
 });
 
-describe("intake checks in sl validate", () => {
+describe("intake checks in semlayer validate", () => {
   test("a source without intake is valid and means mode connection", () => {
     const { root } = copyFixture();
     expect(validateProject(root).filter((i) => i.file === FILE)).toEqual([]);
@@ -98,7 +98,7 @@ describe("intake checks in sl validate", () => {
       const [level, path, message] = issues[0]!;
       expect([level, path]).toEqual(["warning", "intake.reason"]);
       expect(message).toContain("asks for a connection first");
-      expect(message).toContain("sl validate");
+      expect(message).toContain("semlayer validate");
     }
     expect(validateIntake("intake:\n  mode: export\n  reason: The warehouse is on a private network.\n")).toEqual([]);
     expect(validateIntake("intake:\n  mode: connection\n")).toEqual([]);
@@ -109,7 +109,7 @@ describe("intake checks in sl validate", () => {
     expect(issues.map(([l, p]) => [l, p])).toEqual([2, 3, 4, 5, 6, 7, 8].map((i) => ["error", `intake.schemas[${i}]`]));
     for (const [, , message] of issues) {
       expect(message).toContain("is not a schema name; write a plain identifier");
-      expect(message).toContain("then run sl validate");
+      expect(message).toContain("then run semlayer validate");
     }
   });
 
@@ -138,7 +138,7 @@ describe("intake checks in sl validate", () => {
 
   test("an empty schemas list warns that it reads every schema", () => {
     expect(validateIntake("intake:\n  schemas: []\n")).toEqual([
-      ["warning", "intake.schemas", "is empty, which reads every schema; list the schemas to read or remove intake.schemas, then run sl validate."],
+      ["warning", "intake.schemas", "is empty, which reads every schema; list the schemas to read or remove intake.schemas, then run semlayer validate."],
     ]);
   });
 
@@ -160,7 +160,7 @@ describe("intake checks in sl validate", () => {
   test("a repeated schema is an error, one differing only in case a warning", () => {
     const issues = validateIntake("intake:\n  schemas: [acme, marts, acme, ACME]\n");
     expect(issues).toEqual([
-      ["error", "intake.schemas[2]", 'repeats intake.schemas[0] ("acme"); remove one of them, then run sl validate.'],
+      ["error", "intake.schemas[2]", 'repeats intake.schemas[0] ("acme"); remove one of them, then run semlayer validate.'],
       ["warning", "intake.schemas[3]", expect.stringContaining('differs from intake.schemas[0] ("acme") only in case')],
     ]);
   });
@@ -242,15 +242,15 @@ describe("intake checks in sl validate", () => {
   });
 });
 
-describe("sl add-source --schemas", () => {
+describe("semlayer add-source --schemas", () => {
   test("writes intake.schemas with mode connection, and the file validates", async () => {
     const t = tempRoot();
     try {
       await initProject(t.root);
-      const r = await sl(t.root, ["add-source", "--name", "wh", "--dialect", "postgres", "--env", "WAREHOUSE_URL", "--schemas", "acme, marts", "--schemas", "core"]);
+      const r = await semlayer(t.root, ["add-source", "--name", "wh", "--dialect", "postgres", "--env", "WAREHOUSE_URL", "--schemas", "acme, marts", "--schemas", "core"]);
       expect(r.code).toBe(0);
       expect(r.out).toContain("schemas acme, marts, core");
-      expect(r.out).toContain("Next: sl introspect --source wh --schemas acme,marts,core");
+      expect(r.out).toContain("Next: semlayer introspect --source wh --schemas acme,marts,core");
       const text = readFileSync(join(t.root, "sources", "wh.yaml"), "utf8");
       expect(text).toBe(
         "source: wh\ndialect: postgres\nconnection:\n  env: WAREHOUSE_URL\nintake:\n  mode: connection\n  schemas:\n    - acme\n    - marts\n    - core\n",
@@ -265,12 +265,12 @@ describe("sl add-source --schemas", () => {
     const t = tempRoot();
     try {
       await initProject(t.root);
-      const r = await sl(t.root, ["add-source", "--name", "bq", "--dialect", "bigquery", "--schemas", "my-project.acme", "--json"]);
+      const r = await semlayer(t.root, ["add-source", "--name", "bq", "--dialect", "bigquery", "--schemas", "my-project.acme", "--json"]);
       expect(r.code).toBe(0);
       const out = r.json<{ schemas: string[]; next: string }>();
       expect(out.schemas).toEqual(["my-project.acme"]);
-      expect(out.next).toStartWith("sl introspect --source bq --schemas my-project.acme --emit-sql");
-      const plain = await sl(t.root, ["add-source", "--name", "lake", "--dialect", "duckdb", "--json"]);
+      expect(out.next).toStartWith("semlayer introspect --source bq --schemas my-project.acme --emit-sql");
+      const plain = await semlayer(t.root, ["add-source", "--name", "lake", "--dialect", "duckdb", "--json"]);
       expect(plain.json<{ schemas: string[] }>().schemas).toEqual([]);
       expect(readYaml<Record<string, unknown>>(join(t.root, "sources", "lake.yaml")).intake).toBeUndefined();
     } finally {
@@ -283,19 +283,19 @@ describe("sl add-source --schemas", () => {
     try {
       await initProject(t.root);
       const base = ["add-source", "--name", "wh", "--dialect", "postgres", "--env", "WAREHOUSE_URL"];
-      const bad = await sl(t.root, [...base, "--schemas", "acme,a.b.c"]);
+      const bad = await semlayer(t.root, [...base, "--schemas", "acme,a.b.c"]);
       expect(bad.code).not.toBe(0);
       expect(bad.err).toContain("--schemas: name 2 is not a schema name");
-      expect(bad.err).toContain("run sl add-source again");
-      const dup = await sl(t.root, [...base, "--schemas", "acme,acme"]);
+      expect(bad.err).toContain("run semlayer add-source again");
+      const dup = await semlayer(t.root, [...base, "--schemas", "acme,acme"]);
       expect(dup.err).toContain('--schemas: name 2 repeats name 1 ("acme")');
-      const empty = await sl(t.root, [...base, "--schemas", " , "]);
+      const empty = await semlayer(t.root, [...base, "--schemas", " , "]);
       expect(empty.err).toContain("--schemas needs at least one schema name");
-      const hyphen = await sl(t.root, [...base, "--schemas", "my-project.acme"]);
+      const hyphen = await semlayer(t.root, [...base, "--schemas", "my-project.acme"]);
       expect(hyphen.err).toContain("is not a schema name");
       expect(validateProject(t.root).some((i) => i.file === "sources/wh.yaml")).toBe(false);
       expect(() => readFileSync(join(t.root, "sources", "wh.yaml"))).toThrow();
-      const caseOnly = await sl(t.root, [...base, "--schemas", "acme,ACME"]);
+      const caseOnly = await semlayer(t.root, [...base, "--schemas", "acme,ACME"]);
       expect(caseOnly.code).toBe(0);
       expect(caseOnly.out).toContain("--schemas: name 2 differs from name 1");
     } finally {
@@ -307,10 +307,10 @@ describe("sl add-source --schemas", () => {
     const t = tempRoot();
     try {
       await initProject(t.root);
-      const pg = await sl(t.root, ["add-source", "--name", "wh", "--dialect", "postgres", "--env", "WAREHOUSE_URL", "--schemas", "memory.main"]);
+      const pg = await semlayer(t.root, ["add-source", "--name", "wh", "--dialect", "postgres", "--env", "WAREHOUSE_URL", "--schemas", "memory.main"]);
       expect(pg.code).not.toBe(0);
       expect(pg.err).toContain("--schemas: name 1 names another database's schema");
-      const dd = await sl(t.root, ["add-source", "--name", "dd", "--dialect", "duckdb", "--schemas", "memory.main"]);
+      const dd = await semlayer(t.root, ["add-source", "--name", "dd", "--dialect", "duckdb", "--schemas", "memory.main"]);
       expect(dd.code).toBe(0);
       expect(dd.out).toContain("--schemas: name 1 names a schema of the database this source opens (memory)");
       expect(dd.out).toContain("write main");
@@ -323,10 +323,10 @@ describe("sl add-source --schemas", () => {
     const t = tempRoot();
     try {
       await initProject(t.root);
-      const r = await sl(t.root, ["add-source", "--name", "wh", "--dialect", "postgres", "--env", "WAREHOUSE_URL", "--schemas", "Sales$1,core"]);
+      const r = await semlayer(t.root, ["add-source", "--name", "wh", "--dialect", "postgres", "--env", "WAREHOUSE_URL", "--schemas", "Sales$1,core"]);
       expect(r.code).toBe(0);
-      expect(r.out).toContain("Next: sl introspect --source wh --schemas 'Sales$1,core'");
-      const secret = await sl(t.root, ["add-source", "--name", "wh2", "--dialect", "postgres", "--env", "WAREHOUSE_URL", "--schemas", "acme,postgres://u:hunter2@h/db"]);
+      expect(r.out).toContain("Next: semlayer introspect --source wh --schemas 'Sales$1,core'");
+      const secret = await semlayer(t.root, ["add-source", "--name", "wh2", "--dialect", "postgres", "--env", "WAREHOUSE_URL", "--schemas", "acme,postgres://u:hunter2@h/db"]);
       expect(secret.code).not.toBe(0);
       expect(secret.err + secret.out).not.toContain("hunter2");
     } finally {
@@ -336,7 +336,7 @@ describe("sl add-source --schemas", () => {
 
   test("a later edit of the source keeps the owner's comments in the intake block", async () => {
     const { root } = withIntake("intake:  # how the catalog reaches us\n  mode: connection   # the owner can connect\n  schemas: [public]  # only public\n");
-    const r = await sl(root, ["scope", "--source", "warehouse", "--exclude", "*_old", "--write"]);
+    const r = await semlayer(root, ["scope", "--source", "warehouse", "--exclude", "*_old", "--write"]);
     expect(r.code).toBe(0);
     const text = readFileSync(join(root, FILE), "utf8");
     expect(text).toContain("intake:  # how the catalog reaches us\n  mode: connection   # the owner can connect\n  schemas: [public]  # only public\n");

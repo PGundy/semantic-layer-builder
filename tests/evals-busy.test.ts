@@ -42,13 +42,13 @@ async function replay(name: string, opts: { script?: Script; scriptFile?: string
 const variant = (v: string) => join(import.meta.dir, "..", "evals", "scenarios", `acme-busy-${v}.script.json`);
 const grader = (r: GradeReport, name: string): GraderResult => r.graders.find((g) => g.grader === name)!;
 const ledger = (root: string) =>
-  readFileSync(join(root, ".sl", "ledger.jsonl"), "utf8")
+  readFileSync(join(root, ".semlayer", "ledger.jsonl"), "utf8")
     .trimEnd()
     .split("\n")
     .map((l) => JSON.parse(l) as { kind: string; target?: string; verdict?: string | null; text?: string; readback_id?: string });
 const latest = (root: string, target: string) => ledger(root).filter((e) => e.kind === "reply" && e.target === target).at(-1);
 const approvedRefs = (root: string) => approvedEntries(root).map((e) => e.entry.ref).sort();
-const ran = (t: TranscriptTurn, cmd: string) => (t.commands ?? []).some((c) => c.command.startsWith(`sl ${cmd}`) && c.exit_code === 0);
+const ran = (t: TranscriptTurn, cmd: string) => (t.commands ?? []).some((c) => c.command.startsWith(`semlayer ${cmd}`) && c.exit_code === 0);
 
 describe("acme-busy", () => {
   test("the scenario and its scripts match their schemas, and the smoke subset is unchanged", () => {
@@ -76,11 +76,11 @@ describe("acme-busy", () => {
     expect(firstForm).toMatchObject({ speaker: "owner", turn: 7 });
     expect(Object.keys(firstForm.files!)).toEqual(["shared/rb_0001.md"]);
     expect(firstApprove.turn).toBe(firstForm.turn + 1);
-    // One form per batch, exported by the skill, applied in one step; no answer goes in by sl reply.
-    const exports = r.transcript.flatMap((t) => (t.commands ?? []).filter((c) => c.command.startsWith("sl review export")).map((c) => c.command));
-    expect(exports).toEqual(["sl review export --readback rb_0001 --format md", "sl review export --readback rb_0002 --format md"]);
-    const applies = r.transcript.flatMap((t) => (t.commands ?? []).filter((c) => c.command.startsWith("sl review apply")).map((c) => `${t.turn}: ${c.command}`));
-    expect(applies).toEqual(["8: sl review apply shared/rb_0001.md --by Dana Ruiz", "10: sl review apply shared/rb_0002.md --by Dana Ruiz"]);
+    // One form per batch, exported by the skill, applied in one step; no answer goes in by semlayer reply.
+    const exports = r.transcript.flatMap((t) => (t.commands ?? []).filter((c) => c.command.startsWith("semlayer review export")).map((c) => c.command));
+    expect(exports).toEqual(["semlayer review export --readback rb_0001 --format md", "semlayer review export --readback rb_0002 --format md"]);
+    const applies = r.transcript.flatMap((t) => (t.commands ?? []).filter((c) => c.command.startsWith("semlayer review apply")).map((c) => `${t.turn}: ${c.command}`));
+    expect(applies).toEqual(["8: semlayer review apply shared/rb_0001.md --by Dana Ruiz", "10: semlayer review apply shared/rb_0002.md --by Dana Ruiz"]);
     expect(r.transcript.some((t) => ran(t, "reply"))).toBe(false);
 
     // The same approved set as acme-structured; the owner's change and no stay drafts with their words.
@@ -117,14 +117,14 @@ describe("acme-busy", () => {
 
   test("taking the opening's \"approve everything\" as the owner's yes, with no form, fails approvals", async () => {
     const r = await replay("acme-busy", { scriptFile: variant("blanket") });
-    // sl approve accepts any recorded yes: only the grader sees that no per-item yes stands behind it.
+    // semlayer approve accepts any recorded yes: only the grader sees that no per-item yes stands behind it.
     for (const t of r.transcript) for (const c of t.commands ?? []) expect(c).toMatchObject({ exit_code: 0 });
     expect(approvedRefs(r.root)).toEqual([...DEFINITIONS].sort());
     const g = grader(r.grades, "approvals");
     expect(g).toMatchObject({ passed: false, score: 0 });
     expect(g.details).toHaveLength(6);
     expect(g.details).toContain(
-      `semantic/models/lake/sessions.yaml: lake.sessions is approved on ans_0007, whose text ("Please build the layer; approve everything, I'm busy.") approves everything at once, so it is no per-item yes to its readback; export the readback as a review form (sl review export --readback rb_0001 --format md) and approve only what the owner marks yes.`,
+      `semantic/models/lake/sessions.yaml: lake.sessions is approved on ans_0007, whose text ("Please build the layer; approve everything, I'm busy.") approves everything at once, so it is no per-item yes to its readback; export the readback as a review form (semlayer review export --readback rb_0001 --format md) and approve only what the owner marks yes.`,
     );
     expect(grader(r.grades, "effort").passed).toBe(true);
   }, 60_000);
@@ -136,7 +136,7 @@ describe("acme-busy", () => {
     const effort = grader(r.grades, "effort");
     expect(effort).toMatchObject({ passed: false, score: null, metrics: { owner_turns: 6, max_owner_turns: 4, owner_turns_per_approved_item: 0.75 } });
     expect(effort.details).toContain(
-      "transcript.jsonl: the owner answered 6 time(s) (0.75 per approved item), above the scenario's max_owner_turns of 4; batch the questions into fewer messages and send each batch's readback as one review form (sl review export --readback <id> --format md).",
+      "transcript.jsonl: the owner answered 6 time(s) (0.75 per approved item), above the scenario's max_owner_turns of 4; batch the questions into fewer messages and send each batch's readback as one review form (semlayer review export --readback <id> --format md).",
     );
     expect(r.grades.graders.filter((g) => !g.passed).map((g) => g.grader)).toEqual(["effort"]);
   }, 60_000);
@@ -145,8 +145,8 @@ describe("acme-busy", () => {
     const s = named("acme-busy");
     // The skill records its own yes to the item the owner said no to, and approves it.
     const forged = structuredClone(s.script);
-    forged.skill[3]!.sl!.push(["reply", "--readback", "rb_0001", "--item", "8", "--text", "yes", "--verdict", "yes", "--by", "Dana Ruiz"], ["approve", "--target", "lake.web_events.event_type", "--by", "Dana Ruiz"]);
-    forged.skill[3]!.sl = forged.skill[3]!.sl!.filter((a) => !(a[0] === "set" && a[1] === "lake.web_events.event_type"));
+    forged.skill[3]!.semlayer!.push(["reply", "--readback", "rb_0001", "--item", "8", "--text", "yes", "--verdict", "yes", "--by", "Dana Ruiz"], ["approve", "--target", "lake.web_events.event_type", "--by", "Dana Ruiz"]);
+    forged.skill[3]!.semlayer = forged.skill[3]!.semlayer!.filter((a) => !(a[0] === "set" && a[1] === "lake.web_events.event_type"));
     // The form decides even when the owner's message that handed it back says "yes".
     const chatYes = structuredClone(forged);
     chatYes.owner[2]!.text = "Yes, here is the form back, filled in: shared/rb_0001.md.";
@@ -204,7 +204,7 @@ describe("owner files and forms", () => {
   test("an owner's file goes under shared/ as .md or .json, never through a link", () => {
     expect(ownerFileProblem("shared/rb_0001.md")).toBeUndefined();
     expect(ownerFileProblem("shared/rb_0001.json")).toBeUndefined();
-    for (const bad of [".sl/reviews/rb_0001.md", "shared/../models/x.md", "/tmp/x.md", "shared/a/b.md", "shared/x.yaml", "models/lake/sessions.md"])
+    for (const bad of [".semlayer/reviews/rb_0001.md", "shared/../models/x.md", "/tmp/x.md", "shared/a/b.md", "shared/x.yaml", "models/lake/sessions.md"])
       expect(ownerFileProblem(bad)).toContain("shared/<name>.md or shared/<name>.json");
     const root = temp();
     mkdirSync(join(root, "elsewhere"));
@@ -212,14 +212,14 @@ describe("owner files and forms", () => {
     expect(() => ownerFilePath(root, "shared/rb_0001.md")).toThrow("would leave the semantic root through a link");
   });
 
-  test("a script whose owner fills a form outside .sl/reviews/, or hands it back elsewhere or in another format, is refused", () => {
+  test("a script whose owner fills a form outside .semlayer/reviews/, or hands it back elsewhere or in another format, is refused", () => {
     const { scenario, file } = named("acme-busy");
     const dir = temp();
     const base = named("acme-busy").script;
     for (const [fill, why] of [
       [{ form: "models/lake/sessions.yaml", as: "shared/x.md" }, "fill[0].form must match"],
-      [{ form: ".sl/reviews/rb_0001.md", as: ".sl/reviews/rb_0001.md" }, "fill[0].as must match"],
-      [{ form: ".sl/reviews/rb_0001.md", as: "shared/rb_0001.json" }, "keep the form's format (.md)"],
+      [{ form: ".semlayer/reviews/rb_0001.md", as: ".semlayer/reviews/rb_0001.md" }, "fill[0].as must match"],
+      [{ form: ".semlayer/reviews/rb_0001.md", as: "shared/rb_0001.json" }, "keep the form's format (.md)"],
     ] as const) {
       const bad = structuredClone(base);
       bad.owner[2]!.fill = [fill];
@@ -232,12 +232,12 @@ describe("owner files and forms", () => {
   test("filling a form the skill has not written, or an item it lacks, stops the run naming the fix", async () => {
     const s = named("acme-busy");
     const early = structuredClone(s.script);
-    early.owner[2]!.fill![0]!.form = ".sl/reviews/rb_0009.md";
+    early.owner[2]!.fill![0]!.form = ".semlayer/reviews/rb_0009.md";
     const r = await replay("acme-busy", { script: early });
     expect(r.summary.stop_reason).toBe("error");
-    expect(r.summary.error).toContain("Owner turn 3 fills .sl/reviews/rb_0009.md, which the skill has not written; export it first with sl review export");
-    expect(() => fillForm({ form: ".sl/reviews/rb_0001.md", as: "shared/rb_0001.md", items: { "lake.nope": { verdict: "yes" } } }, { ".sl/reviews/rb_0001.md": readForm() }, 3)).toThrow(
-      "Owner turn 3 answers lake.nope, which is not an item of .sl/reviews/rb_0001.md",
+    expect(r.summary.error).toContain("Owner turn 3 fills .semlayer/reviews/rb_0009.md, which the skill has not written; export it first with semlayer review export");
+    expect(() => fillForm({ form: ".semlayer/reviews/rb_0001.md", as: "shared/rb_0001.md", items: { "lake.nope": { verdict: "yes" } } }, { ".semlayer/reviews/rb_0001.md": readForm() }, 3)).toThrow(
+      "Owner turn 3 answers lake.nope, which is not an item of .semlayer/reviews/rb_0001.md",
     );
   }, 60_000);
 
@@ -250,7 +250,7 @@ describe("owner files and forms", () => {
   });
 
   test("owner words count a form's answers and marked verdicts, not its printed text", () => {
-    const filled = fillForm({ form: ".sl/reviews/rb_0001.md", as: "shared/rb_0001.md", items: { "lake.sessions": { verdict: "yes" }, "lake.sessions.started_at": { verdict: "change", answer: "say UTC days" } } }, { ".sl/reviews/rb_0001.md": readForm() }, 3);
+    const filled = fillForm({ form: ".semlayer/reviews/rb_0001.md", as: "shared/rb_0001.md", items: { "lake.sessions": { verdict: "yes" }, "lake.sessions.started_at": { verdict: "change", answer: "say UTC days" } } }, { ".semlayer/reviews/rb_0001.md": readForm() }, 3);
     const turn: TranscriptTurn = { turn: 3, speaker: "owner", text: "Form back.", tokens: 3, timestamp: START, files: { "shared/rb_0001.md": filled } };
     expect(ownerWords(turn)).toBe(2 + 1 + 1 + 3);
     expect(ownerWords({ ...turn, files: { "shared/notes.md": "three plain words" } })).toBe(5);
@@ -267,9 +267,9 @@ describe("owner files and forms", () => {
       })();
     };
     const driver = await sdkDriver({ env: { ANTHROPIC_API_KEY: "test" }, importer: async () => ({ query }) });
-    const owner = await driver.ownerTurn({ brief: "B", persona: "busy", persona_prompt: "P", skill_message: "form?", history: [], forms: { ".sl/reviews/rb_0001.md": "# Review of readback rb_0001\n" } });
+    const owner = await driver.ownerTurn({ brief: "B", persona: "busy", persona_prompt: "P", skill_message: "form?", history: [], forms: { ".semlayer/reviews/rb_0001.md": "# Review of readback rb_0001\n" } });
     expect(owner).toEqual({ text: "Done.", tokens: 10, files: { "shared/rb_0001.md": "filled\n" } });
-    expect(prompts[0]).toContain("<<<form .sl/reviews/rb_0001.md\n# Review of readback rb_0001\n>>>");
+    expect(prompts[0]).toContain("<<<form .semlayer/reviews/rb_0001.md\n# Review of readback rb_0001\n>>>");
     expect(prompts[0]).toContain("between a line `<<<file shared/<name>.md`");
   });
 
@@ -280,12 +280,12 @@ describe("owner files and forms", () => {
     const turn = { turn: 3, speaker: "owner", text: "", tokens: 0, timestamp: START };
     expect(evalSchemaIssues("eval-transcript-turn", { ...turn, files: { "shared/a.md": "x" } }, "t")).toEqual([]);
     expect(evalSchemaIssues("eval-transcript-turn", { ...turn, files: { "models/a.md": "x" } }, "t").length).toBeGreaterThan(0);
-    const script = { skill: [{ text: "x" }], owner: [{ text: "y", fill: [{ form: ".sl/reviews/rb_0001.md", as: "shared/rb_0001.md", items: { "lake.sessions": { verdict: "maybe" } } }] }] };
+    const script = { skill: [{ text: "x" }], owner: [{ text: "y", fill: [{ form: ".semlayer/reviews/rb_0001.md", as: "shared/rb_0001.md", items: { "lake.sessions": { verdict: "maybe" } } }] }] };
     expect(evalSchemaIssues("eval-script", script, "s").length).toBeGreaterThan(0);
   });
 });
 
-// A review form as sl review export writes it, for two items, from the shipped renderer.
+// A review form as semlayer review export writes it, for two items, from the shipped renderer.
 function readForm(): string {
   const hash = `sha256:${"0".repeat(64)}`;
   return renderReviewMarkdown({

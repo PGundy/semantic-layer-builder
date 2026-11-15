@@ -7,7 +7,7 @@ import { formatJson } from "./output.ts";
 
 export const ROLE_SQL_DIALECTS = ["postgres", "redshift", "snowflake", "bigquery", "databricks"] as const;
 export type RoleSqlDialect = (typeof ROLE_SQL_DIALECTS)[number];
-export const DEFAULT_ROLE_NAME = "sl_reader";
+export const DEFAULT_ROLE_NAME = "semlayer_reader";
 
 // A plain identifier: letters, digits and underscores, not starting with a digit. Anything else is
 // refused, so no name can close a quote or start another statement.
@@ -47,7 +47,7 @@ const bt = (name: string) => `\`${name}\``;
 function plain(flag: string, value: string): string {
   if (!PLAIN.test(value)) {
     throw new UserError(
-      `${flag} is not a plain identifier (letters, digits and underscores, not starting with a digit), so sl setup does not ` +
+      `${flag} is not a plain identifier (letters, digits and underscores, not starting with a digit), so semlayer setup does not ` +
         "print statements for it. Rename it in the command, or write the grants for that name by hand.",
     );
   }
@@ -61,7 +61,7 @@ function need(flag: string, value: string | undefined, dialect: string, what: st
 
 const header = (input: RoleSqlInput, c: string, what: string) => [
   `${c} A read-only ${what} for the semantic layer CLI, limited to ${input.dialect === "bigquery" ? "dataset" : "schema"}${input.schemas.length === 1 ? "" : "s"} ${input.schemas.join(", ")}.`,
-  `${c} Run by an administrator. sl setup printed this and ran nothing.`,
+  `${c} Run by an administrator. semlayer setup printed this and ran nothing.`,
 ];
 
 function postgres(input: RoleSqlInput): Omit<RoleSql, "text"> & { lines: string[] } {
@@ -189,14 +189,14 @@ export function roleSql(raw: RoleSqlInput): RoleSql {
 // The flags --print-role-sql takes; any other setup flag is refused with it.
 export const ROLE_SQL_FLAGS = new Set(["print-role-sql", "dialect", "schemas", "role-name", "database", "warehouse", "catalog", "project"]);
 
-// sl setup --print-role-sql: checks the flags, prints the statements and the next step, and writes
+// semlayer setup --print-role-sql: checks the flags, prints the statements and the next step, and writes
 // nothing. It needs no project and never opens a connection.
 export function printRoleSql(values: OptionValues, ctx: CommandContext): number {
   const other = Object.keys(values).filter((k) => values[k] !== undefined && !ROLE_SQL_FLAGS.has(k) && !["root", "json", "help"].includes(k));
   if (other.length) {
     throw new UserError(
       `--print-role-sql only prints statements, so it takes no ${other.map((k) => `--${k}`).join(", ")}. ` +
-        "Run sl setup --print-role-sql --dialect <d> --schemas a,b alone, then sl setup with the connection once the role exists.",
+        "Run semlayer setup --print-role-sql --dialect <d> --schemas a,b alone, then semlayer setup with the connection once the role exists.",
     );
   }
   const dialect = str(values, "dialect");
@@ -238,10 +238,10 @@ export function printRoleSql(values: OptionValues, ctx: CommandContext): number 
   const list_ = out.schemas.join(",");
   const next =
     d === "postgres"
-      ? `${who}the owner puts its connection URL in an environment variable and the CLI connects with sl setup --source <source> --dialect postgres --env <VAR> --schemas ${list_}.`
+      ? `${who}the owner puts its connection URL in an environment variable and the CLI connects with semlayer setup --source <source> --dialect postgres --env <VAR> --schemas ${list_}.`
       : d === "redshift"
-        ? `${who}your warehouse connector logs in as it and runs the read-only queries; for a schema export instead, sl export-sql --dialect redshift --schemas ${list_}.`
-        : `${who}your warehouse connector logs in with it and runs the CLI's query plans: sl setup --source <source> --dialect ${d} --env <VAR> --schemas ${list_}.`;
+        ? `${who}your warehouse connector logs in as it and runs the read-only queries; for a schema export instead, semlayer export-sql --dialect redshift --schemas ${list_}.`
+        : `${who}your warehouse connector logs in with it and runs the CLI's query plans: semlayer setup --source <source> --dialect ${d} --env <VAR> --schemas ${list_}.`;
   if (ctx.json) {
     ctx.out(formatJson({ dialect: out.dialect, role: out.role, schemas: out.schemas, language: out.language, statements: out.statements, text: out.text, placeholders: out.placeholders, next }));
   } else {
@@ -269,6 +269,6 @@ export function roleNote(source: { source: string; intake?: { schemas?: unknown 
       : "can do more than read the schemas the layer covers";
   return (
     `The role that source "${source.source}" connects as ${what} (see the warning above). Tell the owner; their database administrator can create a ` +
-    `read-only role from the statements sl setup --print-role-sql --dialect postgres --schemas ${roleSqlSchemasFlag(source.intake?.schemas)} prints.`
+    `read-only role from the statements semlayer setup --print-role-sql --dialect postgres --schemas ${roleSqlSchemasFlag(source.intake?.schemas)} prints.`
   );
 }

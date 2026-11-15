@@ -13,9 +13,9 @@ import { currentHash } from "../lib/readback.ts";
 import type { LedgerReply, PendingReadback, ReadbackItem, ReplyVerdict } from "../lib/types.ts";
 
 const VERDICTS: readonly ReplyVerdict[] = ["yes", "no", "change"];
-const USAGE = 'sl reply --readback <readback_id> --item <n> --text "<owner\'s words>" [--verdict yes|no|change] [--about access] --by "<owner>"';
+const USAGE = 'semlayer reply --readback <readback_id> --item <n> --text "<owner\'s words>" [--verdict yes|no|change] [--about access] --by "<owner>"';
 const ANSWERS_USAGE =
-  'sl reply --readback <readback_id> --answers <file | -> holding {"by": "<owner>", "answers": [{"item": 1, "verdict": "yes", "text": "<owner\'s words>"}, ' +
+  'semlayer reply --readback <readback_id> --answers <file | -> holding {"by": "<owner>", "answers": [{"item": 1, "verdict": "yes", "text": "<owner\'s words>"}, ' +
   '{"items": [2, 3], "verdict": "change", "text": "<owner\'s words>"}]} [--approve]';
 
 // One reply as the ledger records it, the single form and --answers alike: the same keys from the
@@ -41,17 +41,17 @@ function aboutRefusal(item: ReadbackItem, verdict: ReplyVerdict | null, answers 
   const change = answers ? '"verdict": "change"' : "--verdict change";
   const without = answers ? 'without "about"' : "without --about";
   if (verdict !== "change")
-    return `${answers ? '"about": "access"' : "--about access"} records a change to who sees the item, so it goes with ${change}. Record the owner's ${verdict} to the item itself in its own ${answers ? "entry" : "sl reply"}, ${without}.`;
+    return `${answers ? '"about": "access"' : "--about access"} records a change to who sees the item, so it goes with ${change}. Record the owner's ${verdict} to the item itself in its own ${answers ? "entry" : "semlayer reply"}, ${without}.`;
   if (item.target === "access") return `This item is access.yaml itself, so a change to who sees what is a change to it: record it with ${change}, ${without}.`;
   return undefined;
 }
 
 // The step after a yes to a target: its approve or confirm, or the upgrade an export source's golden waits on.
 function afterYes(root: string, target: string, by: string): { next: string; waits?: string } {
-  if (!target.startsWith("golden:")) return { next: `sl approve --target ${target} --by ${shellQuote(by)}` };
+  if (!target.startsWith("golden:")) return { next: `semlayer approve --target ${target} --by ${shellQuote(by)}` };
   // Decision D2: an export source's golden is confirmed only once its source has a connection.
   const waits = goldenExportSource(root, target.slice(7));
-  return waits ? { next: goldenUpgradeNext(waits.source, waits.dialect, [target.slice(7)]), waits: waits.source } : { next: `sl goldens confirm --name ${target.slice(7)}` };
+  return waits ? { next: goldenUpgradeNext(waits.source, waits.dialect, [target.slice(7)]), waits: waits.source } : { next: `semlayer goldens confirm --name ${target.slice(7)}` };
 }
 
 // The --answers form: every entry is checked before any line is written, then one ledger line per
@@ -122,20 +122,20 @@ async function replyAnswers(ctx: CommandContext, rb: string, file: string, appro
       else (t.startsWith("golden:") ? yesGolden : yesApprove).push(p.item.n);
     } else edits.push(t);
   }
-  if (gone.length) warnings.push(`${gone.join(", ")} no longer exist${gone.length === 1 ? "s" : ""} in the YAML, so ${gone.length === 1 ? "its reply" : "their replies"} cannot approve anything; run sl status to see the current targets.`);
-  if (stale.length) warnings.push(`${stale.join(", ")} changed since ${stale.length === 1 ? "it was" : "they were"} read back; read ${stale.length === 1 ? "it" : "them"} back again with sl readback --targets ${stale.join(",")}, and record the owner's answers to the new readback.`);
+  if (gone.length) warnings.push(`${gone.join(", ")} no longer exist${gone.length === 1 ? "s" : ""} in the YAML, so ${gone.length === 1 ? "its reply" : "their replies"} cannot approve anything; run semlayer status to see the current targets.`);
+  if (stale.length) warnings.push(`${stale.join(", ")} changed since ${stale.length === 1 ? "it was" : "they were"} read back; read ${stale.length === 1 ? "it" : "them"} back again with semlayer readback --targets ${stale.join(",")}, and record the owner's answers to the new readback.`);
   // Each step with the command it starts with, which --json gives as next.
   const steps: [string, string][] = [];
-  if (yesApprove.length) steps.push([`sl approve --readback ${pending.readback_id}`, ""]);
-  if (yesGolden.length) steps.push([`sl goldens confirm --readback ${pending.readback_id}`, ""]);
+  if (yesApprove.length) steps.push([`semlayer approve --readback ${pending.readback_id}`, ""]);
+  if (yesGolden.length) steps.push([`semlayer goldens confirm --readback ${pending.readback_id}`, ""]);
   for (const s of afterYesSteps(ctx.root, waiting, (t) => afterYes(ctx.root, t, by).next)) steps.push([s, ""]);
   const redo = [...new Set([...edits, ...stale])];
-  if (edits.length) steps.push(["sl apply --file -", `make the changes the owner asked for to ${edits.join(", ")} with one sl apply --file -, then sl readback --targets ${redo.join(",")}`]);
-  else if (stale.length) steps.push([`sl readback --targets ${stale.join(",")}`, ""]);
+  if (edits.length) steps.push(["semlayer apply --file -", `make the changes the owner asked for to ${edits.join(", ")} with one semlayer apply --file -, then semlayer readback --targets ${redo.join(",")}`]);
+  else if (stale.length) steps.push([`semlayer readback --targets ${stale.join(",")}`, ""]);
   // --approve: the approve and confirm the yeses allow, run here as their own commands run them.
   const done = approve ? await approveAnswered(ctx, pending, picked, by, entries, release) : undefined;
   if (done) steps.splice(0, steps.length, ...done.steps);
-  if (!steps.length) steps.push(["sl next", ""]);
+  if (!steps.length) steps.push(["semlayer next", ""]);
   const next = steps[0]![0];
   const stepText = steps.map(([cmd, text]) => text || cmd);
   if (ctx.json) {
@@ -151,7 +151,7 @@ async function replyAnswers(ctx: CommandContext, rb: string, file: string, appro
   const span = entries.length === 1 ? entries[0]!.id : `${entries[0]!.id} to ${entries[entries.length - 1]!.id}`;
   const lines = [`Recorded ${span} in ${LEDGER_FILE}: ${by}'s replies to ${entries.length} item${entries.length === 1 ? "" : "s"} of ${pending.readback_id}, ${counts.join("; ")}.`];
   lines.push(...warnings.map((w) => `Warning: ${w}`));
-  if (access.length) lines.push(`Who sees ${access.join(", ")} is decided in the access phase: sl next brings ${access.length === 1 ? "that change" : "those changes"} up there, and ${access.length === 1 ? "it does" : "they do"} not hold the items' sign-off.`);
+  if (access.length) lines.push(`Who sees ${access.join(", ")} is decided in the access phase: semlayer next brings ${access.length === 1 ? "that change" : "those changes"} up there, and ${access.length === 1 ? "it does" : "they do"} not hold the items' sign-off.`);
   if (done) lines.push(...done.text);
   lines.push(`Next: ${stepText.join("; then ")}.`);
   ctx.out(lines.join("\n"));
@@ -160,12 +160,12 @@ async function replyAnswers(ctx: CommandContext, rb: string, file: string, appro
 
 type Picked = { item: ReadbackItem; verdict: ReplyVerdict; about?: "access" };
 
-// After sl reply --answers has recorded a turn, --approve approves each item of it the owner said
-// yes to with sl approve --readback's own code (approveMany) and confirms each such golden with sl
+// After semlayer reply --answers has recorded a turn, --approve approves each item of it the owner said
+// yes to with semlayer approve --readback's own code (approveMany) and confirms each such golden with semlayer
 // goldens confirm --readback's (confirmReadback), both kept to the items this turn answered: each
 // rests on its item's own recorded yes to it as it stands, with the same refusals. A golden read
 // back from --results or --plan, or one whose export source waits on an upgrade, is left to its own
-// sl goldens confirm --name, named. The exit code is theirs: 1 when a yes was not acted on.
+// semlayer goldens confirm --name, named. The exit code is theirs: 1 when a yes was not acted on.
 async function approveAnswered(ctx: CommandContext, pending: PendingReadback, picked: Picked[], by: string, entries: LedgerReply[], release: () => void) {
   const yes = picked.filter((p) => p.verdict === "yes" && !p.about);
   const answered = picked.filter((p) => !p.about);
@@ -194,12 +194,12 @@ async function approveAnswered(ctx: CommandContext, pending: PendingReadback, pi
     }
   };
   if (yes.some((p) => approveSet.has(p.item.target))) {
-    const again = `sl approve --readback ${pending.readback_id}`;
+    const again = `semlayer approve --readback ${pending.readback_id}`;
     code = Math.max(code, (await run("approval", "approving them", again, (c) => approveMany(c, {}, [], pending.readback_id, approveSet))).code);
   }
   release();
   if (yes.some((p) => confirmSet.has(p.item.target))) {
-    const again = `sl goldens confirm --readback ${pending.readback_id}`;
+    const again = `semlayer goldens confirm --readback ${pending.readback_id}`;
     code = Math.max(code, (await run("confirmation", "confirming the goldens", again, (c) => confirmReadback(c, {}, pending.readback_id, confirmSet))).code);
   }
   // A golden left to its own confirm: why, and the command.
@@ -208,7 +208,7 @@ async function approveAnswered(ctx: CommandContext, pending: PendingReadback, pi
       name: p.item.target.slice(7),
       item: p.item.n,
       reason: `it was read back from stored rows (${p.item.rows_from}), which only its own confirm reads`,
-      next: `sl goldens confirm --name ${p.item.target.slice(7)} ${p.item.rows_from}`,
+      next: `semlayer goldens confirm --name ${p.item.target.slice(7)} ${p.item.rows_from}`,
     })),
     ...waits.map((p) => ({ name: p.item.target.slice(7), item: p.item.n, reason: `its source ${afterYes(ctx.root, p.item.target, by).waits} has no connection yet`, next: afterYes(ctx.root, p.item.target, by).next })),
   ];
@@ -228,30 +228,30 @@ async function approveAnswered(ctx: CommandContext, pending: PendingReadback, pi
   };
   const stale = answered.filter(changed).map((p) => p.item.target);
   const redo = [...new Set([...edits, ...stale])];
-  if (edits.length) steps.push(["sl apply --file -", `make the changes the owner asked for to ${edits.join(", ")} with one sl apply --file -, then sl readback --targets ${redo.join(",")}`]);
-  else if (stale.length) steps.push([`sl readback --targets ${stale.join(",")}`, ""]);
-  if (!steps.length && confirmSet.size && code === 0) steps.push(["sl goldens check", ""]);
+  if (edits.length) steps.push(["semlayer apply --file -", `make the changes the owner asked for to ${edits.join(", ")} with one semlayer apply --file -, then semlayer readback --targets ${redo.join(",")}`]);
+  else if (stale.length) steps.push([`semlayer readback --targets ${stale.join(",")}`, ""]);
+  if (!steps.length && confirmSet.size && code === 0) steps.push(["semlayer goldens check", ""]);
   return { text, json, code, steps };
 }
 
 const spec: CommandSpec = {
-  summary: "Record the owner's answers to the items of a readback in the answer ledger, .sl/ledger.jsonl.",
+  summary: "Record the owner's answers to the items of a readback in the answer ledger, .semlayer/ledger.jsonl.",
   usage:
     'reply --readback <readback_id> --item <n> --text "<owner\'s words>" [--verdict yes|no|change] [--about access] --by "<owner>"\n' +
     "       reply --readback <readback_id> --answers <file | -> [--approve]\n\n" +
-    "Appends one line to .sl/ledger.jsonl with the item's target and the content hash it had when it was read\n" +
+    "Appends one line to .semlayer/ledger.jsonl with the item's target and the content hash it had when it was read\n" +
     "back, the owner's words (credentials redacted), the verdict and the time. Never rewrites earlier lines.\n" +
     "--about access records a change to who sees the item, not to the item: it is settled in the access phase\n" +
-    "(sl next brings it up there) and does not hold the item's sign-off, which still takes its own yes.\n" +
+    "(semlayer next brings it up there) and does not hold the item's sign-off, which still takes its own yes.\n" +
     "--answers records one owner turn: the file, or stdin with -, holds\n" +
     '  {"by": "<owner>", "answers": [{"item": 1, "verdict": "yes", "text": "<owner\'s words>"},\n' +
     '                                {"items": [2, 3], "verdict": "change", "text": "<owner\'s words>", "about": "access"}]}\n' +
     "Every entry is checked first (each item exists and is named once, a verdict, words, about only on a change);\n" +
     "on any error nothing is written. Then each item gets the line the single form writes for it. \"items\" shares\n" +
     "one answer only when the owner said those words of each of those items.\n" +
-    "--approve, with --answers only, then approves each item answered yes as sl approve --readback would and confirms\n" +
-    "each golden answered yes as sl goldens confirm --readback would, on that item's own yes to it as it stands, and lists\n" +
-    "every other with why; a golden read back from --results or --plan is left to its own sl goldens confirm --name. The\n" +
+    "--approve, with --answers only, then approves each item answered yes as semlayer approve --readback would and confirms\n" +
+    "each golden answered yes as semlayer goldens confirm --readback would, on that item's own yes to it as it stands, and lists\n" +
+    "every other with why; a golden read back from --results or --plan is left to its own semlayer goldens confirm --name. The\n" +
     "answers stay recorded when an approval is refused; it exits 1 when an item answered yes was not approved or confirmed.",
   options: {
     readback: { type: "string" },
@@ -270,7 +270,7 @@ const spec: CommandSpec = {
     loadProject(ctx.root);
     const answers = str(values, "answers");
     if (approve && answers === undefined)
-      throw new UserError(`--approve goes with --answers, which records the turn's answers first: ${ANSWERS_USAGE}. One answer is recorded with sl reply --item, then approved with sl approve --target <ref>.`);
+      throw new UserError(`--approve goes with --answers, which records the turn's answers first: ${ANSWERS_USAGE}. One answer is recorded with semlayer reply --item, then approved with semlayer approve --target <ref>.`);
     if (answers !== undefined) {
       const rb = str(values, "readback");
       if (rb === undefined) throw new UserError(`--answers needs --readback <readback_id>. Usage: ${ANSWERS_USAGE}.`);
@@ -299,7 +299,7 @@ const spec: CommandSpec = {
     const item = pending.items.find((i) => i.n === n);
     if (!item) {
       const items = pending.items.map((i) => `${i.n} (${i.target})`).join(", ");
-      throw new UserError(`Readback ${pending.readback_id} has no item ${JSON.stringify(itemRaw)}; its items are ${items}. To ask about something else, read it back first with sl readback --targets <ref>.`);
+      throw new UserError(`Readback ${pending.readback_id} has no item ${JSON.stringify(itemRaw)}; its items are ${items}. To ask about something else, read it back first with semlayer readback --targets <ref>.`);
     }
     if (about) {
       const why = aboutRefusal(item, verdict);
@@ -310,10 +310,10 @@ const spec: CommandSpec = {
     const changed = now !== item.content_hash;
     const entry = ledger.append(replyLine(pending, item, text, verdict, about ? "access" : undefined, by, ctx.now().toISOString()));
     const t = item.target;
-    const again = `sl readback --targets ${t}`;
+    const again = `semlayer readback --targets ${t}`;
     const warnings: string[] = [];
     if (redacted) warnings.push("The owner's words held what looks like a credential; it was stored as [redacted]. Ask the owner to change that credential, since it was shared in the conversation.");
-    if (now === null) warnings.push(`${t} no longer exists in the YAML, so this reply cannot approve anything; run sl status to see the current targets.`);
+    if (now === null) warnings.push(`${t} no longer exists in the YAML, so this reply cannot approve anything; run semlayer status to see the current targets.`);
     else if (changed) warnings.push(`${t} changed since it was read back; read it back again with ${again}, and record the owner's answer to the new readback.`);
     let next: string;
     let advice: string;
@@ -322,16 +322,16 @@ const spec: CommandSpec = {
       const own = latestReply(readReplies(ctx.root), t);
       const yes = !changed && own?.verdict === "yes" && own.content_hash === item.content_hash;
       next = yes
-        ? t.startsWith("golden:") ? `sl goldens confirm --name ${t.slice(7)}` : `sl approve --target ${t} --by ${shellQuote(by)}`
-        : `sl reply --readback ${pending.readback_id} --item ${item.n} --text "<owner's words>" --verdict yes|no|change --by ${shellQuote(by)}`;
+        ? t.startsWith("golden:") ? `semlayer goldens confirm --name ${t.slice(7)}` : `semlayer approve --target ${t} --by ${shellQuote(by)}`
+        : `semlayer reply --readback ${pending.readback_id} --item ${item.n} --text "<owner's words>" --verdict yes|no|change --by ${shellQuote(by)}`;
       advice =
-        `Recorded as a change to who sees ${t}. Who sees what is decided once, in the access phase: sl next brings this change up there, and it does not hold ${t}'s sign-off. ` +
+        `Recorded as a change to who sees ${t}. Who sees what is decided once, in the access phase: semlayer next brings this change up there, and it does not hold ${t}'s sign-off. ` +
         (yes ? `The owner's yes to ${t} itself stands. Next: ${next}.` : `Ask the owner whether the rest of the item is right as read back, and record that answer: ${next}.`);
     } else if (verdict === null) {
-      next = `sl reply --readback ${pending.readback_id} --item ${item.n} --text "<owner's words>" --verdict yes|no|change --by ${shellQuote(by)}`;
+      next = `semlayer reply --readback ${pending.readback_id} --item ${item.n} --text "<owner's words>" --verdict yes|no|change --by ${shellQuote(by)}`;
       advice = `The reply has no verdict, so no approval can use it. Ask the owner whether that is a yes, a no or a change, then record it: ${next}.`;
     } else if (changed) {
-      next = now === null ? "sl status" : again;
+      next = now === null ? "semlayer status" : again;
       advice = `Next: ${next}.`;
     } else if (verdict === "yes") {
       const step = afterYes(ctx.root, t, by);
@@ -341,7 +341,7 @@ const spec: CommandSpec = {
         : `The owner said yes to the item as read back. Next: ${next}.`;
     } else {
       next = again;
-      advice = `Make the ${verdict === "no" ? "correction" : "change"} the owner asked for with a typed edit (sl set, sl tag, sl ignore-column or sl question add), then read it back again: ${next}.`;
+      advice = `Make the ${verdict === "no" ? "correction" : "change"} the owner asked for with a typed edit (semlayer set, semlayer tag, semlayer ignore-column or semlayer question add), then read it back again: ${next}.`;
       // Who sees an item is not part of the item: such a change waits for the access phase and the item goes on.
       if (t !== "access" && !t.startsWith("golden:"))
         advice += ` If the change is only to who sees ${t}, record that as well with --verdict change --about access, then the owner's answer to the item itself: who sees what is decided in the access phase and does not hold this item.`;

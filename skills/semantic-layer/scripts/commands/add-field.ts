@@ -52,11 +52,11 @@ const spec: CommandSpec = {
     const kind = str(values, "kind");
     const name = str(values, "name")?.trim();
     if (!ref || extra.length || !kind || !name) {
-      throw new UserError("Usage: sl add-field <source.model> --kind dimension|measure --name <n> --expr <e> ..., for example sl add-field warehouse.orders --kind dimension --name channel --expr channel --type string.");
+      throw new UserError("Usage: semlayer add-field <source.model> --kind dimension|measure --name <n> --expr <e> ..., for example semlayer add-field warehouse.orders --kind dimension --name channel --expr channel --type string.");
     }
-    if (kind !== "dimension" && kind !== "measure") throw new UserError(`--kind is dimension or measure, not ${kind}. A join comes from sl draft or is written with the owner and checked with sl check-join.`);
+    if (kind !== "dimension" && kind !== "measure") throw new UserError(`--kind is dimension or measure, not ${kind}. A join comes from semlayer draft or is written with the owner and checked with semlayer check-join.`);
     const loc = locate(ctx.root, ref);
-    if (loc.kind !== "model") throw new UserError(`sl add-field adds to a model: name it as source.model (${ref.split(".").slice(0, 2).join(".")}), not ${ref}.`);
+    if (loc.kind !== "model") throw new UserError(`semlayer add-field adds to a model: name it as source.model (${ref.split(".").slice(0, 2).join(".")}), not ${ref}.`);
     if (!NAME_PATTERN.test(name)) throw new UserError(`"${name}" is not a name: a name is lowercase and matches ^[a-z][a-z0-9_]*$, such as order_channel.`);
     const model = loc.model!;
     const taken = findField(model, name);
@@ -75,7 +75,7 @@ const spec: CommandSpec = {
       const eq = s.indexOf("=");
       const key = eq < 0 ? s.trim() : s.slice(0, eq).trim();
       if (eq < 0) throw new UserError(`--set takes key=value, for example --set synonyms="[sales, gmv]"; got "${s}".`);
-      if (APPROVAL_FIELDS.includes(key)) throw new UserError(`${key} is an approval field: a new field is always a draft, and only sl approve approves it after the owner's yes.`);
+      if (APPROVAL_FIELDS.includes(key)) throw new UserError(`${key} is an approval field: a new field is always a draft, and only semlayer approve approves it after the owner's yes.`);
       if (key === "name" || key in field) throw new UserError(`${key} is given twice: use --${key} or --set ${key}=..., once.`);
       if (!(key in props)) {
         const known = Object.keys(props).filter((k) => !APPROVAL_FIELDS.includes(k) && k !== "name");
@@ -97,10 +97,10 @@ const spec: CommandSpec = {
     const warnings: string[] = [];
     const expr = typeof field.expr === "string" ? field.expr : undefined;
     const column = expr === undefined ? undefined : bareColumn(expr);
-    if (!table) warnings.push(`The snapshot has no table ${model.table}, so its columns were not checked; run sl introspect --source ${source}, then sl validate.`);
+    if (!table) warnings.push(`The snapshot has no table ${model.table}, so its columns were not checked; run semlayer introspect --source ${source}, then semlayer validate.`);
     else if (column !== undefined) {
       if (!table.columns.some((c) => c.name === column || c.name.toLowerCase() === column.toLowerCase())) {
-        throw new UserError(`${column} is not a column of ${model.table} in the snapshot. Run sl tables --source ${source} to see its tables, or sl introspect --source ${source} if it is new.`);
+        throw new UserError(`${column} is not a column of ${model.table} in the snapshot. Run semlayer tables --source ${source} to see its tables, or semlayer introspect --source ${source} if it is new.`);
       }
     } else {
       const joins = new Set((model.joins ?? []).map((j) => j.name.toLowerCase()));
@@ -114,14 +114,14 @@ const spec: CommandSpec = {
       if (unknown.length) {
         warnings.push(
           `${unknown.join(", ")} ${unknown.length === 1 ? "is not a column" : "are not columns"} of ${model.table} in the snapshot. The expr is computed, so it was written anyway; ` +
-            `if a column is misspelled, fix it with sl set ${ref}.${name} ${field.filter !== undefined && !expr ? "filter" : "expr"} "<sql>".`,
+            `if a column is misspelled, fix it with semlayer set ${ref}.${name} ${field.filter !== undefined && !expr ? "filter" : "expr"} "<sql>".`,
         );
       }
     }
     const ignored = (model.ignored_columns ?? []).map(String);
     const reads = fieldColumns(model, kind, field, table, config.dialect).map((c) => c.toLowerCase());
     // Ignored columns the field reads: its own model's, which --unignore takes back in the same edit,
-    // and those of models its join references reach, which sl ignore-column --remove takes back.
+    // and those of models its join references reach, which semlayer ignore-column --remove takes back.
     const texts = [expr, field.filter].filter((t): t is string => typeof t === "string");
     const through = ignoredReads(model, listModels(ctx.root, source).map((l) => l.model), texts);
     const own = new Set(through.filter((r) => r.model === model.model).map((r) => r.column.toLowerCase()));
@@ -170,9 +170,9 @@ const spec: CommandSpec = {
     }
     const lines = [`Added draft ${kind} ${name} to ${ref} in ${outcome.file}.`];
     if (unignored.length) lines.push(`Removed ${unignored.join(", ")} from ${ref}'s ignored_columns.`);
-    if (redact) lines.push(`The field is protected and the snapshot holds sample values of a column it reads: run sl profile --source ${source} --redact to keep counts only.`);
+    if (redact) lines.push(`The field is protected and the snapshot holds sample values of a column it reads: run semlayer profile --source ${source} --redact to keep counts only.`);
     lines.push(...warnings, ...reapproveLines(outcome.reapprove));
-    lines.push(`Next: read ${fieldRef} back to the owner, and approve it only on their yes (sl approve --target ${fieldRef} --by "<owner>").`);
+    lines.push(`Next: read ${fieldRef} back to the owner, and approve it only on their yes (semlayer approve --target ${fieldRef} --by "<owner>").`);
     ctx.out(lines.join("\n"));
     return 0;
   },

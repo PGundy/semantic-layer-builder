@@ -1,5 +1,5 @@
-// The answer ledger, .sl/ledger.jsonl under the semantic root: one JSON object per line, added by
-// sl reply and sl question resolve, whose earlier lines never change. Each line holds the owner's
+// The answer ledger, .semlayer/ledger.jsonl under the semantic root: one JSON object per line, added by
+// semlayer reply and semlayer question resolve, whose earlier lines never change. Each line holds the owner's
 // words, with credentials redacted, never data values. The commands that add a line hold the root's
 // lock (lib/lock.ts) from reading the ledger for the next id to writing the line.
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -12,9 +12,9 @@ import { PENDING_DIR } from "./readback.ts";
 import type { LedgerEntry, LedgerQuestion, LedgerReply, PendingReadback } from "./types.ts";
 import { schemaIssues } from "./schema.ts";
 
-export const LEDGER_FILE = ".sl/ledger.jsonl";
+export const LEDGER_FILE = ".semlayer/ledger.jsonl";
 const ID = /^ans_(\d{4,})$/;
-const RESTORE = `restore it from version control (git checkout -- ${LEDGER_FILE}), then run sl validate`;
+const RESTORE = `restore it from version control (git checkout -- ${LEDGER_FILE}), then run semlayer validate`;
 
 // Owner text as stored: line breaks and tabs as spaces, control characters and ANSI escapes removed,
 // then every credential lib/credentials.ts recognises replaced by [redacted].
@@ -27,14 +27,14 @@ export function readPending(root: string, id: string): PendingReadback {
   const rel = `${PENDING_DIR.split("\\").join("/")}/${id}.json`;
   const file = join(root, rel);
   if (!/^rb_\d{4,}$/.test(id) || !existsSync(file))
-    throw new UserError(`There is no readback ${JSON.stringify(id)} in ${PENDING_DIR.split("\\").join("/")}/. Read the item to the owner first with sl readback --targets <ref>, and use the readback id it prints.`);
+    throw new UserError(`There is no readback ${JSON.stringify(id)} in ${PENDING_DIR.split("\\").join("/")}/. Read the item to the owner first with semlayer readback --targets <ref>, and use the readback id it prints.`);
   let data: unknown;
   try {
     data = JSON.parse(readFileSync(file, "utf8"));
   } catch {
-    throw new UserError(`${rel} is not valid JSON; run sl validate, then sl readback --targets <ref> again.`, "sl validate");
+    throw new UserError(`${rel} is not valid JSON; run semlayer validate, then semlayer readback --targets <ref> again.`, "semlayer validate");
   }
-  if (schemaIssues("pending", data, rel).length) throw new UserError(`${rel} does not match its schema; run sl validate, then sl readback --targets <ref> again.`, "sl validate");
+  if (schemaIssues("pending", data, rel).length) throw new UserError(`${rel} does not match its schema; run semlayer validate, then semlayer readback --targets <ref> again.`, "semlayer validate");
   return data as PendingReadback;
 }
 
@@ -44,7 +44,7 @@ export function ledgerLine(entry: LedgerEntry): string {
   return `${JSON.stringify(Object.fromEntries(Object.keys(obj).sort().map((k) => [k, obj[k]])))}\n`;
 }
 
-// .sl may be a link to a directory inside the root; a link that points nowhere is refused, since
+// .semlayer may be a link to a directory inside the root; a link that points nowhere is refused, since
 // creating its target could write anywhere. The ledger file itself is never a link (see openLedger).
 function assertInside(root: string, path: string): void {
   if (!lstatSync(path, { throwIfNoEntry: false })) return;
@@ -60,7 +60,7 @@ export type NewLedgerEntry = Omit<LedgerReply, "id"> | Omit<LedgerQuestion, "id"
 export interface LedgerAppender {
   // The id the next line gets.
   id: string;
-  // Appends the entry under that id, creating .sl/ and the file when missing.
+  // Appends the entry under that id, creating .semlayer/ and the file when missing.
   append(entry: NewLedgerEntry): LedgerEntry;
   // Appends the entries in order under that id and the ones after it, in one write: all of them
   // land or none do. Each line is the one append would write for its entry.
@@ -79,7 +79,7 @@ export function openLedger(root: string): LedgerAppender {
   if (existsSync(file)) {
     if (!lstatSync(file).isFile()) throw new UserError(`${LEDGER_FILE} is not a file, so the answer cannot be recorded; nothing was written. Move it aside and run this again.`);
     const text = readFileSync(file, "utf8");
-    if (text && !text.endsWith("\n")) throw new UserError(`The last line of ${LEDGER_FILE} has no line break (an append was cut off); nothing was written. The ledger is append-only: ${RESTORE}.`, "sl validate");
+    if (text && !text.endsWith("\n")) throw new UserError(`The last line of ${LEDGER_FILE} has no line break (an append was cut off); nothing was written. The ledger is append-only: ${RESTORE}.`, "semlayer validate");
     text.split("\n").slice(0, -1).forEach((line, i) => {
       let data: unknown;
       try {
@@ -88,7 +88,7 @@ export function openLedger(root: string): LedgerAppender {
         data = undefined;
       }
       if (typeof data !== "object" || data === null || Array.isArray(data))
-        throw new UserError(`Line ${i + 1} of ${LEDGER_FILE} is not a JSON object; nothing was written. The ledger is append-only: ${RESTORE}.`, "sl validate");
+        throw new UserError(`Line ${i + 1} of ${LEDGER_FILE} is not a JSON object; nothing was written. The ledger is append-only: ${RESTORE}.`, "semlayer validate");
       const m = ID.exec(String((data as { id?: unknown }).id));
       if (m) max = Math.max(max, Number(m[1]));
     });
@@ -101,7 +101,7 @@ export function openLedger(root: string): LedgerAppender {
     // whole. A link put at the path after openLedger's check is refused here, and one put there
     // after this check is replaced by the rename, never followed.
     const stat = lstatSync(file, { throwIfNoEntry: false });
-    if (stat && !stat.isFile()) throw new UserError(`${LEDGER_FILE} is no longer a plain file inside the semantic root, so the answer was not recorded; nothing was written. Run sl validate, then run this again.`);
+    if (stat && !stat.isFile()) throw new UserError(`${LEDGER_FILE} is no longer a plain file inside the semantic root, so the answer was not recorded; nothing was written. Run semlayer validate, then run this again.`);
     writeFileAtomic(file, (stat ? readFileSync(file, "utf8") : "") + full.map(ledgerLine).join(""), { replaceLink: true });
     return full;
   };
@@ -137,13 +137,13 @@ function isReply(data: unknown): data is LedgerReply {
   );
 }
 
-// The kind: reply lines of ledger text, in file order. Strict, as sl approve reads it, a line that is
+// The kind: reply lines of ledger text, in file order. Strict, as semlayer approve reads it, a line that is
 // not JSON, a reply line without the fields an approval needs, or a last line without a line break
 // is an error, since skipping it could let an earlier yes stand over a later no. Otherwise such lines
-// are skipped (sl validate reports them on its own).
+// are skipped (semlayer validate reports them on its own).
 export function ledgerReplies(text: string, strict = false): LedgerReply[] {
   const fail = (why: string) => {
-    throw new UserError(`${LEDGER_FILE} cannot be read: ${why}, so no approval can rely on it; nothing was approved. ${RESTORE[0]!.toUpperCase()}${RESTORE.slice(1)}.`, "sl validate");
+    throw new UserError(`${LEDGER_FILE} cannot be read: ${why}, so no approval can rely on it; nothing was approved. ${RESTORE[0]!.toUpperCase()}${RESTORE.slice(1)}.`, "semlayer validate");
   };
   if (strict && text && !text.endsWith("\n")) fail("its last line has no line break (an append was cut off)");
   const out: LedgerReply[] = [];
@@ -164,8 +164,8 @@ export function ledgerReplies(text: string, strict = false): LedgerReply[] {
   return out;
 }
 
-// The reply lines of ledger text as every reader counts them: read strictly, as sl approve reads
-// them, or none with the reason when a line would make sl approve refuse, so a yes approve would not
+// The reply lines of ledger text as every reader counts them: read strictly, as semlayer approve reads
+// them, or none with the reason when a line would make semlayer approve refuse, so a yes approve would not
 // accept counts nowhere.
 export function countedReplies(text: string): { replies: LedgerReply[]; problem: string | null } {
   try {
@@ -176,8 +176,8 @@ export function countedReplies(text: string): { replies: LedgerReply[]; problem:
   }
 }
 
-// The semantic root's ledger as sl status, sl next and the typed edits count it: readReplies, or no
-// replies with the reason sl approve would give for refusing it.
+// The semantic root's ledger as semlayer status, semlayer next and the typed edits count it: readReplies, or no
+// replies with the reason semlayer approve would give for refusing it.
 export function ledgerState(root: string): { replies: LedgerReply[]; problem: string | null } {
   try {
     return { replies: readReplies(root), problem: null };
@@ -191,8 +191,8 @@ export function ledgerState(root: string): { replies: LedgerReply[]; problem: st
 export function readReplies(root: string): LedgerReply[] {
   const file = join(root, LEDGER_FILE);
   if (!existsSync(file)) return [];
-  // The ledger, and the .sl directory holding it, must lie inside the semantic root, not behind a link.
-  if (!lstatSync(dirname(file)).isDirectory() || !lstatSync(file).isFile()) throw new UserError(`${LEDGER_FILE} is not a plain file inside the semantic root (the ledger or its .sl directory is a link, or the ledger is not a file), so no approval can rely on it; nothing was approved. ${RESTORE[0]!.toUpperCase()}${RESTORE.slice(1)}.`);
+  // The ledger, and the .semlayer directory holding it, must lie inside the semantic root, not behind a link.
+  if (!lstatSync(dirname(file)).isDirectory() || !lstatSync(file).isFile()) throw new UserError(`${LEDGER_FILE} is not a plain file inside the semantic root (the ledger or its .semlayer directory is a link, or the ledger is not a file), so no approval can rely on it; nothing was approved. ${RESTORE[0]!.toUpperCase()}${RESTORE.slice(1)}.`);
   return ledgerReplies(readFileSync(file, "utf8"), true);
 }
 
@@ -204,7 +204,7 @@ export function latestReply(replies: LedgerReply[], target: string): LedgerReply
   return undefined;
 }
 
-// The owner's changes to who sees an item (sl reply --about access) that are still open: no yes to
+// The owner's changes to who sees an item (semlayer reply --about access) that are still open: no yes to
 // access.yaml was recorded after them. That yes follows a readback of the whole file, so it settles them.
 export function openAccessChanges(replies: LedgerReply[]): LedgerReply[] {
   let settled = -1;

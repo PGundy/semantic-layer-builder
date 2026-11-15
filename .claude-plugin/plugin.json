@@ -26,7 +26,7 @@
         ]
       },
       {
-        "matcher": "mcp__.*semantic-layer.*__sl_.*",
+        "matcher": "mcp__.*semantic-layer.*__semlayer_.*",
         "hooks": [
           {
             "type": "command",
@@ -43,7 +43,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|mcp__.*semantic-layer.*__sl_.*",
+        "matcher": "Bash|mcp__.*semantic-layer.*__semlayer_.*",
         "hooks": [
           {
             "type": "command",
@@ -55,7 +55,7 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "Bash|mcp__.*semantic-layer.*__sl_.*",
+        "matcher": "Bash|mcp__.*semantic-layer.*__semlayer_.*",
         "hooks": [
           {
             "type": "command",

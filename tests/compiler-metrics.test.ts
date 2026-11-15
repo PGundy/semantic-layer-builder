@@ -7,7 +7,7 @@ import { type Compiled, type CompileResult, compileRequest, type Refused } from 
 import { parseFormula } from "../skills/semantic-layer/scripts/lib/compiler/metrics.ts";
 import type { Model, QueryRequest } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, duckdbSource, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, duckdbSource, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 type Row = Record<string, unknown>;
 
@@ -321,7 +321,7 @@ describe("metric refusals", () => {
         ref: "orders.status",
         message:
           "the request groups by orders.status, but its measures come from orders and visits, each aggregated on its own model, so each of them needs to reach orders through one path of to-one joins or have a dimension named status; visits has neither",
-        next: "Add a many_to_one join from visits toward orders (sl check-join measures it), or a dimension status to visits that gives the same value, approve it after its readback, and run sl sql again; or leave orders.status out of the request.",
+        next: "Add a many_to_one join from visits toward orders (semlayer check-join measures it), or a dimension status to visits that gives the same value, approve it after its readback, and run semlayer sql again; or leave orders.status out of the request.",
       },
     ]);
     const f = refused(compileRequest(root, req({ measures: ["conversion"], filters: [{ field: "orders.created", op: "gte", value: "2025-01-01" }] })));
@@ -331,7 +331,7 @@ describe("metric refusals", () => {
         "a filter of the request is on orders.created, but its measures come from orders and visits, each aggregated on its own model, so each of them needs to reach orders through one path of to-one joins or have a dimension named created; visits has neither",
       ],
     ]);
-    const cli = await sl(root, ["sql", "--request", JSON.stringify(req({ measures: ["conversion"], dimensions: ["orders.status"] }))]);
+    const cli = await semlayer(root, ["sql", "--request", JSON.stringify(req({ measures: ["conversion"], dimensions: ["orders.status"] }))]);
     expect(cli.code).toBe(1);
     expect(cli.err).toContain("Add a many_to_one join from visits toward orders");
   });
@@ -350,7 +350,7 @@ describe("metric refusals", () => {
     expect(order.reason).toContain("order_by[0] names net_revenue, which the request does not select");
   });
 
-  test("a metric type sl sql does not compile is refused by name, a metric that reads a missing measure as hidden, and an unreadable expr as a layer error", async () => {
+  test("a metric type semlayer sql does not compile is refused by name, a metric that reads a missing measure as hidden, and an unreadable expr as a layer error", async () => {
     const { root } = await shop();
     writeYaml(join(root, "metrics.yaml"), {
       metrics: [
@@ -360,13 +360,13 @@ describe("metric refusals", () => {
       ],
     });
     expect(refused(compileRequest(root, req({ measures: ["running"] }))).refusals).toEqual([
-      { code: "unsupported_metric", ref: "running", message: "metric running is of type cumulative, and sl sql compiles ratio and derived metrics only; run sl validate" },
+      { code: "unsupported_metric", ref: "running", message: "metric running is of type cumulative, and semlayer sql compiles ratio and derived metrics only; run semlayer validate" },
     ]);
     const ghost = refused(compileRequest(root, req({ measures: ["ghost"] })));
     // checkRequest hides a metric whose measure does not exist, before the compiler reads it.
     expect(ghost.refusals.map((x) => x.code)).toEqual(["not_visible"]);
     expect(ghost.reason).toContain("measures[0] names ghost, which this user may not see");
-    expect(refused(compileRequest(root, req({ measures: ["odd"] }))).reason).toContain("metric odd has an expr sl sql cannot read");
+    expect(refused(compileRequest(root, req({ measures: ["odd"] }))).reason).toContain("metric odd has an expr semlayer sql cannot read");
   });
 
   test("a draft metric is refused", async () => {
@@ -433,7 +433,7 @@ describe("metrics and the user's row filters", () => {
     expect(c.sql).not.toContain("1=1");
     expect(c.params).toEqual([hostile, "x", hostile, hostile, "x"]);
     expect(plain(await runDuckdb(file, c))).toEqual([]);
-    const out = await sl(root, ["sql", "--request", JSON.stringify(byRegion(["net_revenue"])), "--user", JSON.stringify({ region: hostile })]);
+    const out = await semlayer(root, ["sql", "--request", JSON.stringify(byRegion(["net_revenue"])), "--user", JSON.stringify({ region: hostile })]);
     expect(out.code).toBe(0);
     expect(out.out).toContain('Row filters of role rep limit orders in WHERE of the part "orders measures"');
     expect(out.out).toContain('Row filters of role rep limit orders in the ON clause of its join refunds.order of the part "refunds measures"');
@@ -519,7 +519,7 @@ describe("compiled metrics on postgres", () => {
     "give the rows duckdb gives, and a ratio of two counts divides as a fraction",
     async () => {
       assertLocalPg(PG_URL);
-      const schema = uniqueSchema("sl_metrics");
+      const schema = uniqueSchema("semlayer_metrics");
       const db = new SQL({ url: PG_URL!, max: 1 });
       try {
         await db.unsafe(`create schema ${schema}`);
@@ -675,7 +675,7 @@ describe("metrics and hierarchy row filters", () => {
     const c = compiled(compileRequest(root, req({ measures: ["refund_rate"] }), { role: "sales", user: {} }));
     expect(c.row_filters.every((x) => x.rows === "none")).toBe(true);
     expect(plain(await runDuckdb(file, c))).toEqual([{ refund_rate: null }]);
-    const out = await sl(root, ["sql", "--request", JSON.stringify(req({ measures: ["refund_rate"] })), "--role", "sales", "--user", "{}"]);
+    const out = await semlayer(root, ["sql", "--request", JSON.stringify(req({ measures: ["refund_rate"] })), "--role", "sales", "--user", "{}"]);
     expect(out.code).toBe(0);
     expect(out.out).toContain('so the SQL reads false in WHERE of the part "orders measures"');
     expect(out.out).toContain('so the SQL reads false in WHERE of the part "refunds measures"');
@@ -694,7 +694,7 @@ describe("metrics and hierarchy row filters", () => {
 
   test.skipIf(!PG_URL)("on postgres, the manager's two-model metric gives the same rows", async () => {
     assertLocalPg(PG_URL);
-    const schema = uniqueSchema("slmh");
+    const schema = uniqueSchema("semlayer_mh");
     const db = new SQL({ url: PG_URL!, max: 1 });
     const t = tempRoot();
     try {

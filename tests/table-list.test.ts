@@ -6,7 +6,7 @@ import { checkPattern, filterInScope } from "../skills/semantic-layer/scripts/li
 import { combineScope, parseTableList, renderTableList } from "../skills/semantic-layer/scripts/lib/table-list.ts";
 import type { Snapshot, SnapshotTable } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { initProject, sl, tempRoot } from "./helpers.ts";
+import { initProject, semlayer, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -61,7 +61,7 @@ interface ScopeJson {
 }
 
 async function scopeJson(root: string, args: string[]): Promise<ScopeJson> {
-  const r = await sl(root, ["scope", ...args, "--json"]);
+  const r = await semlayer(root, ["scope", ...args, "--json"]);
   if (r.code !== 0) throw new Error(r.err);
   return r.json<ScopeJson>();
 }
@@ -207,18 +207,18 @@ describe("a 500-line file selects what the equivalent include and exclude lists 
     expect(fromFile).toEqual(fromLists);
     expect([...fromFile].sort()).toEqual(direct);
     expect(preview.tables.map((t) => t.table)).toEqual(fromFile);
-    expect((await sl(root, ["tables", "--source", "wf", "--json"])).json<{ in_scope: number }>().in_scope).toBe(fromFile.length);
-    expect((await sl(root, ["validate"])).code).toBe(0);
+    expect((await semlayer(root, ["tables", "--source", "wf", "--json"])).json<{ in_scope: number }>().in_scope).toBe(fromFile.length);
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
   });
 });
 
-describe("sl scope --from-file", () => {
+describe("semlayer scope --from-file", () => {
   const TABLES = [table("analytics", "fct_orders"), table("analytics", "fct_orders_backup"), table("analytics", "dim_customers"), table("raw", "stg_orders"), table("raw", "stg_payments")];
 
   test("--write copies the file, sets scope.tables_file and keeps the source file's comments", async () => {
     const { root, dir } = await project({ wh: TABLES });
     writeFileSync(join(dir, "list.txt"), "# staging we model\nraw.stg_orders\n!analytics.dim_customers\n");
-    const r = await sl(root, ["scope", "--source", "wh", "--from-file", join(dir, "list.txt"), "--write"]);
+    const r = await semlayer(root, ["scope", "--source", "wh", "--from-file", join(dir, "list.txt"), "--write"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("tables file: scope/wh.txt (1 include, 1 exclude)");
     expect(r.out).toContain("Copied");
@@ -228,7 +228,7 @@ describe("sl scope --from-file", () => {
     const now = await scopeJson(root, ["--source", "wh"]);
     expect(now.tables.map((t) => t.table)).toEqual(["analytics.fct_orders", "raw.stg_orders"]);
     // The same file again changes nothing.
-    const again = await sl(root, ["scope", "--source", "wh", "--from-file", join(dir, "list.txt"), "--write"]);
+    const again = await semlayer(root, ["scope", "--source", "wh", "--from-file", join(dir, "list.txt"), "--write"]);
     expect(again.code).toBe(0);
     expect(readFileSync(join(root, "sources", "wh.yaml"), "utf8")).toContain("tables_file: scope/wh.txt\n");
   });
@@ -238,13 +238,13 @@ describe("sl scope --from-file", () => {
     mkdirSync(join(root, "scope"));
     writeFileSync(join(root, "scope", "wh.txt"), "raw.stg_payments\n");
     writeFileSync(join(dir, "list.txt"), "raw.stg_orders\n");
-    const refused = await sl(root, ["scope", "--source", "wh", "--from-file", join(dir, "list.txt"), "--write"]);
+    const refused = await semlayer(root, ["scope", "--source", "wh", "--from-file", join(dir, "list.txt"), "--write"]);
     expect(refused.code).not.toBe(0);
     expect(refused.err).toContain("already exists with other contents");
     expect(refused.err).toContain("--force");
     expect(readFileSync(join(root, "scope", "wh.txt"), "utf8")).toBe("raw.stg_payments\n");
     expect(readFileSync(join(root, "sources", "wh.yaml"), "utf8")).toBe(SOURCE_YAML("wh"));
-    const forced = await sl(root, ["scope", "--source", "wh", "--from-file", join(dir, "list.txt"), "--write", "--force"]);
+    const forced = await semlayer(root, ["scope", "--source", "wh", "--from-file", join(dir, "list.txt"), "--write", "--force"]);
     expect(forced.code).toBe(0);
     expect(readFileSync(join(root, "scope", "wh.txt"), "utf8")).toBe("raw.stg_orders\n");
   });
@@ -252,7 +252,7 @@ describe("sl scope --from-file", () => {
   test("a file with bad entries is refused with each line and character, and nothing is written", async () => {
     const { root, dir } = await project({ wh: TABLES });
     writeFileSync(join(dir, "bad.txt"), "raw.stg_orders\n# ok\nre:(a|aa)+\n!\n");
-    const r = await sl(root, ["scope", "--source", "wh", "--from-file", join(dir, "bad.txt"), "--write"]);
+    const r = await semlayer(root, ["scope", "--source", "wh", "--from-file", join(dir, "bad.txt"), "--write"]);
     expect(r.code).not.toBe(0);
     expect(r.err).toContain("has 2 problems");
     expect(r.err).toMatch(/bad\.txt line 3, character \d+: /);
@@ -264,7 +264,7 @@ describe("sl scope --from-file", () => {
   test("unmatched file entries are warnings naming their line; --remove of a file entry says to edit the file", async () => {
     const { root, dir } = await project({ wh: TABLES });
     writeFileSync(join(dir, "list.txt"), "raw.stg_orders\n\nraw.no_such_table\n");
-    await sl(root, ["scope", "--source", "wh", "--from-file", join(dir, "list.txt"), "--write"]);
+    await semlayer(root, ["scope", "--source", "wh", "--from-file", join(dir, "list.txt"), "--write"]);
     const j = await scopeJson(root, ["--source", "wh", "--remove", "raw.stg_orders"]);
     expect(j.unmatched_patterns).toEqual(["raw.no_such_table"]);
     expect(j.warnings.join("\n")).toContain('Pattern "raw.no_such_table" (scope/wh.txt line 3) matches no table');
@@ -274,14 +274,14 @@ describe("sl scope --from-file", () => {
   test("--clear drops scope.tables_file", async () => {
     const { root, dir } = await project({ wh: TABLES });
     writeFileSync(join(dir, "list.txt"), "raw.stg_orders\n");
-    await sl(root, ["scope", "--source", "wh", "--from-file", join(dir, "list.txt"), "--write"]);
+    await semlayer(root, ["scope", "--source", "wh", "--from-file", join(dir, "list.txt"), "--write"]);
     const j = await scopeJson(root, ["--source", "wh", "--clear", "--include", "dim_*", "--write"]);
     expect(j.scope).toEqual({ include: ["dim_*"] });
     expect(readFileSync(join(root, "sources", "wh.yaml"), "utf8")).not.toContain("tables_file");
   });
 });
 
-describe("sl scope --to-file", () => {
+describe("semlayer scope --to-file", () => {
   // Names a plain spelling would misread, and two tables that differ only in case.
   const TRICKY = [
     table("analytics", "fct_orders"),
@@ -306,7 +306,7 @@ describe("sl scope --to-file", () => {
     expect(selected).not.toContain("sales.orderbook");
     expect(selected).not.toContain("analytics.fct_orders_tmp");
 
-    const out = await sl(root, ["scope", "--source", "wh", "--to-file", "scope/agreed.txt"]);
+    const out = await semlayer(root, ["scope", "--source", "wh", "--to-file", "scope/agreed.txt"]);
     expect(out.code).toBe(0);
     expect(out.out).toContain(`Wrote ${selected.length} tables to scope/agreed.txt.`);
     expect(out.out).toContain("--from-file");
@@ -317,7 +317,7 @@ describe("sl scope --to-file", () => {
     expect(lines).toEqual([...lines].sort());
     expect(lines.length).toBe(selected.length);
     // Deterministic: the same selection writes the same bytes, so a rerun needs no --force.
-    expect((await sl(root, ["scope", "--source", "wh", "--to-file", "scope/agreed.txt"])).code).toBe(0);
+    expect((await semlayer(root, ["scope", "--source", "wh", "--to-file", "scope/agreed.txt"])).code).toBe(0);
 
     // The YAML of wl has the same include and exclude as SOURCE_YAML; the file alone must not widen it.
     const back = await scopeJson(root, ["--source", "wl", "--clear", "--from-file", join(root, "scope", "agreed.txt"), "--write"]);
@@ -348,40 +348,40 @@ describe("sl scope --to-file", () => {
 
   test("writes a file whose name starts with .., keeps a plain file, and refuses a symbolic link", async () => {
     const { root, dir } = await project({ wh: TRICKY });
-    const dots = await sl(root, ["scope", "--source", "wh", "--to-file", "..notes.txt"]);
+    const dots = await semlayer(root, ["scope", "--source", "wh", "--to-file", "..notes.txt"]);
     expect(dots.code).toBe(0);
     expect(existsSync(join(root, "..notes.txt"))).toBe(true);
     writeFileSync(join(dir, "outside.txt"), "x\n");
     symlinkSync(join(dir, "outside.txt"), join(root, "link.txt"));
     symlinkSync(join(dir, "nope.txt"), join(root, "dangling.txt"));
     for (const target of ["link.txt", "dangling.txt"]) {
-      const r = await sl(root, ["scope", "--source", "wh", "--to-file", target, "--force"]);
+      const r = await semlayer(root, ["scope", "--source", "wh", "--to-file", target, "--force"]);
       expect(r.code).not.toBe(0);
     }
     expect(readFileSync(join(dir, "outside.txt"), "utf8")).toBe("x\n");
     expect(existsSync(join(dir, "nope.txt"))).toBe(false);
   });
 
-  test("refuses outside the root, the files sl manages, an empty selection and a different existing file", async () => {
+  test("refuses outside the root, the files semlayer manages, an empty selection and a different existing file", async () => {
     const { root } = await project({ wh: TRICKY });
     for (const [path, message] of [
       ["../out.txt", "outside the semantic root"],
       ["/tmp/out.txt", "absolute path"],
-      ["sources/wh.yaml", "files sl manages"],
-      ["semantic.yaml", "files sl manages"],
+      ["sources/wh.yaml", "files semlayer manages"],
+      ["semantic.yaml", "files semlayer manages"],
     ] as const) {
-      const r = await sl(root, ["scope", "--source", "wh", "--to-file", path]);
+      const r = await semlayer(root, ["scope", "--source", "wh", "--to-file", path]);
       expect(r.code).not.toBe(0);
       expect(r.err).toContain(message);
     }
-    const empty = await sl(root, ["scope", "--source", "wh", "--clear", "--include", "nothing_*", "--to-file", "x.txt"]);
+    const empty = await semlayer(root, ["scope", "--source", "wh", "--clear", "--include", "nothing_*", "--to-file", "x.txt"]);
     expect(empty.err).toContain("nothing to write");
     writeFileSync(join(root, "x.txt"), "keep me\n");
-    const r = await sl(root, ["scope", "--source", "wh", "--to-file", "x.txt"]);
+    const r = await semlayer(root, ["scope", "--source", "wh", "--to-file", "x.txt"]);
     expect(r.err).toContain("already exists with other contents");
     expect(readFileSync(join(root, "x.txt"), "utf8")).toBe("keep me\n");
-    expect((await sl(root, ["scope", "--source", "wh", "--to-file", "x.txt", "--force"])).code).toBe(0);
-    const both = await sl(root, ["scope", "--source", "wh", "--to-file", "y.txt", "--from-file", "x.txt"]);
+    expect((await semlayer(root, ["scope", "--source", "wh", "--to-file", "x.txt", "--force"])).code).toBe(0);
+    const both = await semlayer(root, ["scope", "--source", "wh", "--to-file", "y.txt", "--from-file", "x.txt"]);
     expect(both.err).toContain("not both");
   });
 });
@@ -392,10 +392,10 @@ describe("table-list files stay inside the semantic root", () => {
     mkdirSync(join(dir, "elsewhere"));
     symlinkSync(join(dir, "elsewhere"), join(root, "scope"));
     writeFileSync(join(dir, "list.txt"), "raw.stg_orders\n");
-    const from = await sl(root, ["scope", "--source", "wh", "--from-file", join(dir, "list.txt"), "--write"]);
+    const from = await semlayer(root, ["scope", "--source", "wh", "--from-file", join(dir, "list.txt"), "--write"]);
     expect(from.code).not.toBe(0);
     expect(from.err).toContain("through a link");
-    const to = await sl(root, ["scope", "--source", "wh", "--to-file", "scope/out.txt"]);
+    const to = await semlayer(root, ["scope", "--source", "wh", "--to-file", "scope/out.txt"]);
     expect(to.err).toContain("through a link");
     expect(readdirSync(join(dir, "elsewhere"))).toEqual([]);
     expect(readFileSync(join(root, "sources", "wh.yaml"), "utf8")).toBe(SOURCE_YAML("wh"));
@@ -406,15 +406,15 @@ describe("validate checks scope.tables_file", () => {
   const TABLES = [table("analytics", "fct_orders"), table("raw", "stg_orders")];
   const withFile = (file: string) => (name: string) => `${SOURCE_YAML(name).replace("# Profile settings", `  tables_file: ${file}\n# Profile settings`)}`;
 
-  test("a missing file is an error naming sl scope --from-file, and commands stop with the same fix", async () => {
+  test("a missing file is an error naming semlayer scope --from-file, and commands stop with the same fix", async () => {
     const { root } = await project({ wh: TABLES }, withFile("scope/wh.txt"));
-    const v = await sl(root, ["validate", "--json"]);
+    const v = await semlayer(root, ["validate", "--json"]);
     expect(v.code).toBe(1);
     const issue = v.json<{ issues: { file: string; path: string; message: string }[] }>().issues.find((i) => i.path === "scope.tables_file")!;
     expect(issue.file).toBe("sources/wh.yaml");
-    expect(issue.message).toContain("sl scope --source wh --from-file <path> --write");
+    expect(issue.message).toContain("semlayer scope --source wh --from-file <path> --write");
     for (const args of [["tables", "--source", "wh"], ["status"], ["draft", "--source", "wh"], ["baseline", "--source", "wh"], ["scope", "--source", "wh"]]) {
-      const r = await sl(root, args);
+      const r = await semlayer(root, args);
       expect(r.code).not.toBe(0);
       expect(r.err).toContain("--from-file <path> --write");
     }
@@ -424,11 +424,11 @@ describe("validate checks scope.tables_file", () => {
     const { root } = await project({ wh: TABLES }, withFile("scope/wh.txt"));
     mkdirSync(join(root, "scope"));
     writeFileSync(join(root, "scope", "wh.txt"), "# list\nraw.stg_orders\n\n  re:(a*)*\n");
-    const v = await sl(root, ["validate", "--json"]);
+    const v = await semlayer(root, ["validate", "--json"]);
     expect(v.code).toBe(1);
     const issues = v.json<{ issues: { file: string; path: string; message: string }[] }>().issues.filter((i) => i.file === "scope/wh.txt");
     expect(issues.map((i) => i.path)).toEqual([`line 4, character ${3 + checkPattern("re:(a*)*")!.offset}`]);
-    const r = await sl(root, ["tables", "--source", "wh"]);
+    const r = await semlayer(root, ["tables", "--source", "wh"]);
     expect(r.err).toContain("scope/wh.txt line 4, character");
   });
 
@@ -436,20 +436,20 @@ describe("validate checks scope.tables_file", () => {
     for (const value of ["scope", "5", "[a, b]"]) {
       const { root } = await project({ wh: TABLES }, withFile(value));
       mkdirSync(join(root, "scope"), { recursive: true });
-      const v = await sl(root, ["validate", "--json"]);
+      const v = await semlayer(root, ["validate", "--json"]);
       expect(v.code).toBe(1);
       const issue = v.json<{ issues: { path: string; message: string }[] }>().issues.find((i) => i.path === "scope.tables_file")!;
       expect(issue.message).toMatch(value === "scope" ? /is not a file/ : /must be string/);
       for (const args of [["tables", "--source", "wh"], ["status"], ["scope", "--source", "wh"]]) {
-        const r = await sl(root, args);
+        const r = await semlayer(root, args);
         expect(r.code).toBe(1);
         expect(r.err).not.toMatch(/unexpected error|EISDIR|TypeError/);
-        expect(r.err).toContain("sl scope --source wh --clear --write");
+        expect(r.err).toContain("semlayer scope --source wh --clear --write");
       }
-      const c = await sl(root, ["scope", "--source", "wh", "--clear", "--write"]);
+      const c = await semlayer(root, ["scope", "--source", "wh", "--clear", "--write"]);
       expect(c.code).toBe(0);
       expect(readFileSync(join(root, "sources", "wh.yaml"), "utf8")).not.toContain("tables_file");
-      expect((await sl(root, ["validate"])).code).toBe(0);
+      expect((await semlayer(root, ["validate"])).code).toBe(0);
       cleanup?.();
       cleanup = undefined;
     }
@@ -459,18 +459,18 @@ describe("validate checks scope.tables_file", () => {
     const plain = (name: string) => `# top\nsource: ${name}\ndialect: duckdb\nconnection:\n  database: ":memory:"\n# end comment\n`;
     const { root, dir } = await project({ wh: TABLES }, plain);
     writeFileSync(join(dir, "l.txt"), "raw.stg_orders\n");
-    expect((await sl(root, ["scope", "--source", "wh", "--from-file", join(dir, "l.txt"), "--write"])).code).toBe(0);
+    expect((await semlayer(root, ["scope", "--source", "wh", "--from-file", join(dir, "l.txt"), "--write"])).code).toBe(0);
     const y = readFileSync(join(root, "sources", "wh.yaml"), "utf8");
     expect(y).toContain("# top");
     expect(y).toContain("# end comment");
     expect(y).toContain("tables_file: scope/wh.txt");
     expect((await scopeJson(root, ["--source", "wh"])).tables.map((t) => t.table)).toEqual(["raw.stg_orders"]);
-    expect((await sl(root, ["validate"])).code).toBe(0);
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
   });
 
   test("a path outside the root is an error", async () => {
     const { root } = await project({ wh: TABLES }, withFile("../outside.txt"));
-    const v = await sl(root, ["validate", "--json"]);
+    const v = await semlayer(root, ["validate", "--json"]);
     const issue = v.json<{ issues: { path: string; message: string }[] }>().issues.find((i) => i.path === "scope.tables_file")!;
     expect(issue.message).toContain("outside the semantic root");
   });
@@ -491,15 +491,15 @@ describe("every command that decides scope reads the table-list file", () => {
     mkdirSync(join(root, "scope"));
     writeFileSync(join(root, "scope", "wh.txt"), "dim_*\n!analytics.dim_products\nraw.stg_payments\n");
     const want = ["analytics.dim_customers", "analytics.fct_orders", "raw.stg_payments"];
-    expect((await sl(root, ["tables", "--source", "wh", "--json"])).json<{ in_scope: number }>().in_scope).toBe(3);
-    const status = (await sl(root, ["status", "--json"])).json<{ sources: { snapshot: { in_scope: number } }[] }>();
+    expect((await semlayer(root, ["tables", "--source", "wh", "--json"])).json<{ in_scope: number }>().in_scope).toBe(3);
+    const status = (await semlayer(root, ["status", "--json"])).json<{ sources: { snapshot: { in_scope: number } }[] }>();
     expect(status.sources[0]!.snapshot.in_scope).toBe(3);
-    expect((await sl(root, ["baseline", "--source", "wh", "--json"])).json<{ in_scope: number }>().in_scope).toBe(3);
-    const draft = await sl(root, ["draft", "--source", "wh"]);
+    expect((await semlayer(root, ["baseline", "--source", "wh", "--json"])).json<{ in_scope: number }>().in_scope).toBe(3);
+    const draft = await semlayer(root, ["draft", "--source", "wh"]);
     expect(draft.code).toBe(0);
     const drafted = readdirSync(join(root, "models", "wh")).sort();
     expect(drafted.length).toBe(want.length);
-    const profile = await sl(root, ["profile", "--source", "wh", "--tables", "analytics.dim_products"]);
+    const profile = await semlayer(root, ["profile", "--source", "wh", "--tables", "analytics.dim_products"]);
     expect(profile.err).toContain("out of scope");
   });
 

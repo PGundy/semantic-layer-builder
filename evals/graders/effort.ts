@@ -89,7 +89,7 @@ export function gradeEffort(run: RunFiles): GraderResult {
     details.push(
       within
         ? `The interviewer holds ${pct(measured)} ${of}, within the scenario's max_interviewer_share of ${pct(max)}.`
-        : `The interviewer holds ${pct(measured)} ${of}, above the scenario's max_interviewer_share of ${pct(max)}; dispatch more of the reading to the role agents (agents/sl-*.md).`,
+        : `The interviewer holds ${pct(measured)} ${of}, above the scenario's max_interviewer_share of ${pct(max)}; dispatch more of the reading to the role agents (agents/semlayer-*.md).`,
     );
   }
   return { grader: "effort", score: null, passed, details, metrics };

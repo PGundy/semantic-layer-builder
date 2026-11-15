@@ -1,7 +1,7 @@
 // Orders tables by how much an interview about them is worth: size, how many
 // other tables point at them, fact and dimension naming, minus likely noise and staging.
-// classifyTable is the one noise and staging judgement that sl tables --groups, its suggested
-// scope, sl baseline and this ranking share.
+// classifyTable is the one noise and staging judgement that semlayer tables --groups, its suggested
+// scope, semlayer baseline and this ranking share.
 import { qualifiedName } from "./naming.ts";
 import type { SnapshotTable } from "./types.ts";
 

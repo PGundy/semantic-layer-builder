@@ -7,7 +7,7 @@ import { refusalNext } from "../skills/semantic-layer/scripts/lib/goldens.ts";
 import type { ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
 import type { Golden } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { approveWithYes, sl, tempRoot } from "./helpers.ts";
+import { approveWithYes, semlayer, tempRoot } from "./helpers.ts";
 
 // The access evaluator treats an approved item whose content no longer matches its approved_hash as
 // a draft, on a copy of examples/acme, whose items are approved with content hashes. This guards
@@ -82,17 +82,17 @@ describe("approved items that changed since approval", () => {
     expect(check.problems[0]).toMatchObject({ position: "measures", ref: "orders.revenue", reasons: ["draft"] });
     // The refusal says the measure changed since approval and names the readback, not an access rule or a reason code.
     expect(check.problems[0]!.message).toBe(
-      `measures[0] names orders.revenue, which ${NOTE}: sl readback --targets warehouse.orders.revenue, then sl approve --target warehouse.orders.revenue --by "<owner>" after the owner's yes`,
+      `measures[0] names orders.revenue, which ${NOTE}: semlayer readback --targets warehouse.orders.revenue, then semlayer approve --target warehouse.orders.revenue --by "<owner>" after the owner's yes`,
     );
     expect(check.problems[0]!.awaits).toEqual(["warehouse.orders.revenue"]);
 
-    const human = await sl(root, ["access"]);
+    const human = await semlayer(root, ["access"]);
     expect(human.code).toBe(0);
     expect(human.out).toContain("measure warehouse.orders.revenue: hidden (draft: changed since approval)");
     expect(human.out).toContain(
-      `Approved items that changed since approval:\n  warehouse.orders.revenue: ${NOTE} (sl approve --target warehouse.orders.revenue --by "<owner>" after the owner's yes)`,
+      `Approved items that changed since approval:\n  warehouse.orders.revenue: ${NOTE} (semlayer approve --target warehouse.orders.revenue --by "<owner>" after the owner's yes)`,
     );
-    const json = (await sl(root, ["access", "--json"])).json<AccessVisibility>();
+    const json = (await semlayer(root, ["access", "--json"])).json<AccessVisibility>();
     expect(json.changed_since_approval).toEqual(["warehouse.orders.revenue"]);
     expect(json.access_file).toBe("approved");
 
@@ -102,21 +102,21 @@ describe("approved items that changed since approval", () => {
     expect(restored.changed_since_approval).toEqual([]);
     expect(field(restored, "warehouse.orders.revenue")).toMatchObject({ status: "approved", visible: true });
     expect(checkRequest(restored, revenueRequest).ok).toBe(true);
-    expect((await sl(root, ["access"])).out).not.toContain("changed since approval");
+    expect((await semlayer(root, ["access"])).out).not.toContain("changed since approval");
   });
 
   test("a typed edit to an approved measure's expr takes effect only after a new approval", async () => {
-    const set = await sl(root, ["set", "warehouse.orders.revenue", "expr", "amount_cents * 10", "--json"]);
+    const set = await semlayer(root, ["set", "warehouse.orders.revenue", "expr", "amount_cents * 10", "--json"]);
     expect(set.code).toBe(0);
     expect(set.json()).toMatchObject({ changed: true, reapprove: ["warehouse.orders.revenue"] });
     const v = evaluateAccess(root);
     expect(field(v, "warehouse.orders.revenue")).toMatchObject({ visible: false, reasons: ["draft"], changed_since_approval: true });
     expect(checkRequest(v, revenueRequest).ok).toBe(false);
-    // sl status still routes to reapprove, and says what tools do meanwhile.
-    const st = (await sl(root, ["status", "--json"])).json<ProjectStatus>();
+    // semlayer status still routes to reapprove, and says what tools do meanwhile.
+    const st = (await semlayer(root, ["status", "--json"])).json<ProjectStatus>();
     expect(st.next_step.phase).toBe("reapprove");
-    expect(st.next_step.message).toContain("Until then tools treat each one as a draft (sl access lists them).");
-    // The owner's yes, recorded by sl approve, makes it visible again.
+    expect(st.next_step.message).toContain("Until then tools treat each one as a draft (semlayer access lists them).");
+    // The owner's yes, recorded by semlayer approve, makes it visible again.
     expect((await approveWithYes(root, ["--target", "warehouse.orders.revenue", "--by", "Dana Ruiz"])).code).toBe(0);
     const after = evaluateAccess(root);
     expect(after.changed_since_approval).toEqual([]);
@@ -141,7 +141,7 @@ describe("approved items that changed since approval", () => {
     // The table is part of every field's identity, so each approved field changed too.
     expect(m.changed_since_approval).toContain("warehouse.orders");
     expect(m.changed_since_approval).toContain("warehouse.orders.revenue");
-    expect((await sl(root, ["access"])).out).toContain("model warehouse.orders: hidden (draft: changed since approval)");
+    expect((await semlayer(root, ["access"])).out).toContain("model warehouse.orders: hidden (draft: changed since approval)");
 
     cpSync(join(ACME, ORDERS), join(root, ORDERS));
     editItem(ORDERS, "test_account", "relationship: many_to_one", "relationship: one_to_one");
@@ -158,9 +158,9 @@ describe("approved items that changed since approval", () => {
     expect(metric(v, "average_order_value")).toMatchObject({ status: "draft", visible: false, reasons: ["draft"], changed_since_approval: true });
     const r = checkRequest(v, { source: "warehouse", measures: ["average_order_value"] });
     expect(r.problems[0]!.message).toBe(
-      `measures[0] names average_order_value, which ${NOTE}: sl readback --targets metric:average_order_value, then sl approve --target metric:average_order_value --by "<owner>" after the owner's yes`,
+      `measures[0] names average_order_value, which ${NOTE}: semlayer readback --targets metric:average_order_value, then semlayer approve --target metric:average_order_value --by "<owner>" after the owner's yes`,
     );
-    expect((await sl(root, ["access"])).out).toContain("metric average_order_value: hidden (draft: changed since approval)");
+    expect((await semlayer(root, ["access"])).out).toContain("metric average_order_value: hidden (draft: changed since approval)");
   });
 
   test("an approved item whose hash was removed in a project with hashes is a draft too", async () => {
@@ -173,15 +173,15 @@ describe("approved items that changed since approval", () => {
     const r = checkRequest(v, { source: "warehouse", measures: ["orders.order_count"], dimensions: ["customers.email"] });
     expect(r.ok).toBe(false);
     expect(r.problems[0]!.message).toBe(
-      `dimensions[0] names customers.email, which is ${MISSING}: sl readback --targets warehouse.customers.email, then sl approve --target warehouse.customers.email --by "<owner>" after the owner's yes`,
+      `dimensions[0] names customers.email, which is ${MISSING}: semlayer readback --targets warehouse.customers.email, then semlayer approve --target warehouse.customers.email --by "<owner>" after the owner's yes`,
     );
-    const human = (await sl(root, ["access"])).out;
+    const human = (await semlayer(root, ["access"])).out;
     expect(human).toContain("dimension warehouse.customers.email: hidden (draft: approved_hash missing)");
-    expect(human).toContain(`Approved items without approved_hash:\n  warehouse.customers.email: ${MISSING} (sl approve --target warehouse.customers.email --by "<owner>" after the owner's yes)`);
-    expect((await sl(root, ["access", "--json"])).json<AccessVisibility>().hash_missing).toEqual(["warehouse.customers.email"]);
-    // sl validate warns on the missing hash and, reading the layer as it would be once approved
+    expect(human).toContain(`Approved items without approved_hash:\n  warehouse.customers.email: ${MISSING} (semlayer approve --target warehouse.customers.email --by "<owner>" after the owner's yes)`);
+    expect((await semlayer(root, ["access", "--json"])).json<AccessVisibility>().hash_missing).toEqual(["warehouse.customers.email"]);
+    // semlayer validate warns on the missing hash and, reading the layer as it would be once approved
     // again, that the field is visible to everyone and looks sensitive.
-    const { issues } = (await sl(root, ["validate", "--json"])).json<{ issues: { level: string; message: string }[] }>();
+    const { issues } = (await semlayer(root, ["validate", "--json"])).json<{ issues: { level: string; message: string }[] }>();
     expect(issues.some((i) => i.level === "warning" && i.message.includes("approved_hash is missing while other approved items carry one"))).toBe(true);
     expect(issues.some((i) => i.level === "warning" && i.message.startsWith("warehouse.customers.email is visible to everyone and looks sensitive"))).toBe(true);
 
@@ -190,8 +190,8 @@ describe("approved items that changed since approval", () => {
     writeFileSync(join(root, "access.yaml"), text("access.yaml").replace(/^ *approved_hash: .*\n/gm, ""));
     const a = evaluateAccess(root);
     expect(a).toMatchObject({ access_file: "draft", hash_missing: ["access"], last_approved: { by: "Dana Ruiz", at: "2026-10-27" } });
-    expect(checkRequest(a, revenueRequest).problems[0]!.message).toBe(`access.yaml ${MISSING} (sl approve --target access --by "<owner>" after the owner's yes); nothing is served until then`);
-    expect((await sl(root, ["access"])).out).toContain(`access.yaml ${MISSING} (sl approve --target access --by "<owner>" after the owner's yes). This explains a draft.`);
+    expect(checkRequest(a, revenueRequest).problems[0]!.message).toBe(`access.yaml ${MISSING} (semlayer approve --target access --by "<owner>" after the owner's yes); nothing is served until then`);
+    expect((await semlayer(root, ["access"])).out).toContain(`access.yaml ${MISSING} (semlayer approve --target access --by "<owner>" after the owner's yes). This explains a draft.`);
   });
 
   test("an approved item in a project approved before content hashes keeps applying as approved", () => {
@@ -210,9 +210,9 @@ describe("approved items that changed since approval", () => {
     expect(legacy.access_file).toBe("approved");
   });
 
-  test("a changed approved field keeps its sensitivity warning in sl validate", async () => {
+  test("a changed approved field keeps its sensitivity warning in semlayer validate", async () => {
     edit(CUSTOMERS, "    tags:\n      - pii\n    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n    approved_hash: sha256:1993", "    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n    approved_hash: sha256:1993");
-    const res = await sl(root, ["validate", "--json"]);
+    const res = await semlayer(root, ["validate", "--json"]);
     expect(res.code).toBe(1);
     const { issues } = res.json<{ issues: { level: string; message: string }[] }>();
     expect(issues.filter((i) => i.level === "error").map((i) => i.message.split(":")[0])).toEqual(["warehouse.customers.email changed since it was approved by Dana Ruiz on 2026-10-26"]);
@@ -258,18 +258,18 @@ describe("approved items that changed since approval", () => {
         index: 0,
         ref: "access.yaml",
         reasons: ["access_draft"],
-        message: `access.yaml ${NOTE} (sl approve --target access --by "<owner>" after the owner's yes); nothing is served until then`,
+        message: `access.yaml ${NOTE} (semlayer approve --target access --by "<owner>" after the owner's yes); nothing is served until then`,
       },
     ]);
-    const human = await sl(root, ["access"]);
+    const human = await semlayer(root, ["access"]);
     expect(human.out).toContain("Access mode open (access.yaml draft)");
     expect(human.out).toContain(
-      `access.yaml ${NOTE} (sl approve --target access --by "<owner>" after the owner's yes). This explains a draft. ` +
+      `access.yaml ${NOTE} (semlayer approve --target access --by "<owner>" after the owner's yes). This explains a draft. ` +
         "The version approved by Dana Ruiz on 2026-10-27 keeps applying where it is deployed; tools that load this draft serve nothing.",
     );
     expect(human.out).not.toContain("Approved items that changed since approval:");
-    // sl validate reports the change once and checks goldens against the file as written, not as a draft.
-    const { issues } = (await sl(root, ["validate", "--json"])).json<{ issues: { level: string; file: string; message: string }[] }>();
+    // semlayer validate reports the change once and checks goldens against the file as written, not as a draft.
+    const { issues } = (await semlayer(root, ["validate", "--json"])).json<{ issues: { level: string; file: string; message: string }[] }>();
     const errors = issues.filter((i) => i.level === "error");
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toStartWith("access changed since it was approved by Dana Ruiz on 2026-10-27");
@@ -296,7 +296,7 @@ describe("refusals for items held back for approval", () => {
     expect(r.ok).toBe(false);
     return { golden, r: r as Refused };
   };
-  const STEPS = `sl readback --targets warehouse.orders.revenue, then sl approve --target warehouse.orders.revenue --by "<owner>" after the owner's yes`;
+  const STEPS = `semlayer readback --targets warehouse.orders.revenue, then semlayer approve --target warehouse.orders.revenue --by "<owner>" after the owner's yes`;
 
   test("a metric golden reading a changed measure names the measure and its readback, with the codes in reasons and awaits", async () => {
     changeRevenue();
@@ -312,25 +312,25 @@ describe("refusals for items held back for approval", () => {
     ]);
     expect(r.reason).not.toMatch(/may not see|measure_hidden/);
     expect(refusalNext(golden, r)).toBe(
-      "Read warehouse.orders.revenue back to the owner with sl readback --targets warehouse.orders.revenue and approve it on their yes, " +
-        "then run sl goldens check --name net_revenue_2025; if its rows changed, confirm again only on the owner's yes.",
+      "Read warehouse.orders.revenue back to the owner with semlayer readback --targets warehouse.orders.revenue and approve it on their yes, " +
+        "then run semlayer goldens check --name net_revenue_2025; if its rows changed, confirm again only on the owner's yes.",
     );
     const { r: revenue } = refusedFor("revenue_2025");
     expect(revenue.refusals[0]).toMatchObject({ ref: "orders.revenue", reasons: ["draft"], awaits: ["warehouse.orders.revenue"] });
     expect(revenue.refusals[0]!.message).toBe(`measures[0] names orders.revenue, which ${NOTE}: ${STEPS}`);
 
-    // sl sql --json carries the same codes; its plain output carries none.
+    // semlayer sql --json carries the same codes; its plain output carries none.
     const request = JSON.stringify({ source: "warehouse", measures: ["net_revenue"] });
-    const json = (await sl(root, ["sql", "--request", request, "--role", "analyst", "--json"])).json<Refused & { next: string }>();
+    const json = (await semlayer(root, ["sql", "--request", request, "--role", "analyst", "--json"])).json<Refused & { next: string }>();
     expect(json.refusals[0]).toMatchObject({ code: "not_visible", reasons: ["measure_hidden:orders.revenue"], awaits: ["warehouse.orders.revenue"] });
-    // The next step is the readback, not sl access: no access rule hides it.
-    const next = "Read warehouse.orders.revenue back to the owner with sl readback --targets warehouse.orders.revenue and approve it on their yes, then run sl sql again.";
+    // The next step is the readback, not semlayer access: no access rule hides it.
+    const next = "Read warehouse.orders.revenue back to the owner with semlayer readback --targets warehouse.orders.revenue and approve it on their yes, then run semlayer sql again.";
     expect(json.next).toBe(next);
-    const plain = await sl(root, ["sql", "--request", request, "--role", "analyst"]);
+    const plain = await semlayer(root, ["sql", "--request", request, "--role", "analyst"]);
     expect(plain.code).toBe(1);
-    expect(plain.err).toContain("sl readback --targets warehouse.orders.revenue");
+    expect(plain.err).toContain("semlayer readback --targets warehouse.orders.revenue");
     expect(plain.err).toContain(next);
-    expect(plain.err).not.toMatch(/may (not )?see|measure_hidden|sl access/);
+    expect(plain.err).not.toMatch(/may (not )?see|measure_hidden|semlayer access/);
   });
 
   test("a metric part's refusal keeps its reasons and awaits", () => {
@@ -371,12 +371,12 @@ describe("refusals for items held back for approval", () => {
     expect(r.refusals[0]).toMatchObject({ reasons: ["draft", "model_hidden"], awaits: ["warehouse.orders.revenue", "warehouse.orders"] });
     expect(r.refusals[0]!.message).toBe(
       "measures[0] names orders.revenue, which is held back because it is a draft and model orders is a draft; it is served once orders.revenue and model orders are read back and approved: " +
-        'sl readback --targets warehouse.orders.revenue,warehouse.orders, then sl approve --target warehouse.orders.revenue --by "<owner>" and sl approve --target warehouse.orders --by "<owner>" after the owner\'s yes',
+        'semlayer readback --targets warehouse.orders.revenue,warehouse.orders, then semlayer approve --target warehouse.orders.revenue --by "<owner>" and semlayer approve --target warehouse.orders --by "<owner>" after the owner\'s yes',
     );
     const golden = { name: "revenue_check", question: "q", request: revenueRequest, sql: "-", status: "approved" } as unknown as Golden;
     expect(refusalNext(golden, r)).toBe(
-      "Read warehouse.orders.revenue and warehouse.orders back to the owner with sl readback --targets warehouse.orders.revenue,warehouse.orders and approve them on their yes, " +
-        "then run sl goldens run --name revenue_check.",
+      "Read warehouse.orders.revenue and warehouse.orders back to the owner with semlayer readback --targets warehouse.orders.revenue,warehouse.orders and approve them on their yes, " +
+        "then run semlayer goldens run --name revenue_check.",
     );
   });
 });

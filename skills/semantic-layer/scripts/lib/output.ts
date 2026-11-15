@@ -141,14 +141,14 @@ export function protectedNote(columns: string[]): string {
 // How a column the draft protected comes out of protection, once the owner says it is not personal
 // or sensitive data: its field tagged public in place of pii or sensitive, then profiled again.
 export const UNPROTECT =
-  'A column the owner says is not personal or sensitive data comes out of protection when its field is tagged public: in the turn\'s sl apply, ' +
-  '["tag", "<s>.<m>.<field>", "pii", "--remove"] (or "sensitive"), then ["tag", "<s>.<m>.<field>", "public"]; then sl profile --source <s> --tables <table> --refresh measures its values. ' +
+  'A column the owner says is not personal or sensitive data comes out of protection when its field is tagged public: in the turn\'s semlayer apply, ' +
+  '["tag", "<s>.<m>.<field>", "pii", "--remove"] (or "sensitive"), then ["tag", "<s>.<m>.<field>", "public"]; then semlayer profile --source <s> --tables <table> --refresh measures its values. ' +
   'An approved field has its approval revoked first, as the tag edit\'s refusal names, and is read back after.';
 
 
 // Protected values under another name ----------------------------------------------------------
 //
-// SQL the compiler did not write (sl run, a golden's cross_check_sql) can rename or wrap a column:
+// SQL the compiler did not write (semlayer run, a golden's cross_check_sql) can rename or wrap a column:
 // `select email as e`, `lower(email)`, a subquery that renames it, `select c from customers c`.
 // sqlMask reads the statement's tokens, not its grammar, and fails closed. A value reaches a result
 // only through a select list, a VALUES list or the arguments of a function in FROM. When a name

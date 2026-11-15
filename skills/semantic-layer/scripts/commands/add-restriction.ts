@@ -28,7 +28,7 @@ const spec: CommandSpec = {
       "allow.when": str(values, "when"),
     });
     if (ctx.json) ctx.out(formatJson({ ...o, restriction: o.entry.name }));
-    else ctx.out([`Added restriction ${o.entry.name} to ${o.file}.`, ...accessEditLines(o, `sl access shows what the default audience no longer sees; ${READBACK_NEXT}`)].join("\n"));
+    else ctx.out([`Added restriction ${o.entry.name} to ${o.file}.`, ...accessEditLines(o, `semlayer access shows what the default audience no longer sees; ${READBACK_NEXT}`)].join("\n"));
     return 0;
   },
 };

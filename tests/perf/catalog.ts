@@ -75,10 +75,10 @@ export function* catalogTables(tables: number, seed = DEFAULT_SEED): Generator<C
   }
 }
 
-// Where cached catalogs live: SL_PERF_CACHE, else a directory under the system temp directory
+// Where cached catalogs live: SEMLAYER_PERF_CACHE, else a directory under the system temp directory
 // named for the generator version.
 export function cacheDir(): string {
-  return process.env.SL_PERF_CACHE ?? join(tmpdir(), `sl-perf-g${GENERATOR_VERSION}`);
+  return process.env.SEMLAYER_PERF_CACHE ?? join(tmpdir(), `semlayer-perf-g${GENERATOR_VERSION}`);
 }
 
 // Writes `path` through a temporary file renamed into place, so an interrupted run leaves no
@@ -157,7 +157,7 @@ export function pgSchemas(tables: number): string[] {
 }
 
 function pgPrefix(tables: number): string {
-  return `slperf_g${GENERATOR_VERSION}_${tables}_`;
+  return `semlayerperf_g${GENERATOR_VERSION}_${tables}_`;
 }
 
 // Creates the catalog in Postgres unless a complete copy is already there, marked by a comment on
@@ -165,7 +165,7 @@ function pgPrefix(tables: number): string {
 // stay inside the server's lock table. Returns the schema names and whether they were reused.
 export async function ensurePgCatalog(url: string, tables: number, seed = DEFAULT_SEED): Promise<{ schemas: string[]; reused: boolean }> {
   const schemas = pgSchemas(tables);
-  const marker = `sl perf catalog g${GENERATOR_VERSION} seed ${seed} tables ${tables}`;
+  const marker = `semlayer perf catalog g${GENERATOR_VERSION} seed ${seed} tables ${tables}`;
   const sql = new SQL({ url, max: 1 });
   try {
     const found = await sql`select obj_description(n.oid, 'pg_namespace') as note from pg_namespace n where n.nspname = ${schemas[0]!}`;
@@ -203,11 +203,11 @@ async function dropSchema(sql: SQL, schema: string): Promise<void> {
   await sql.unsafe(`drop schema if exists "${schema}" cascade`);
 }
 
-// Drops every cached catalog's schemas, those named slperf_*, from the database at `url`.
+// Drops every cached catalog's schemas, those named semlayerperf_*, from the database at `url`.
 async function dropPgCatalogs(url: string): Promise<string[]> {
   const sql = new SQL({ url, max: 1 });
   try {
-    const rows = await sql`select nspname from pg_namespace where nspname like 'slperf\_%' order by nspname`;
+    const rows = await sql`select nspname from pg_namespace where nspname like 'semlayerperf\_%' order by nspname`;
     const names = rows.map((r: { nspname: string }) => r.nspname);
     for (const s of names) await dropSchema(sql, s);
     return names;
@@ -221,5 +221,5 @@ if (import.meta.main && process.argv.includes("--drop-pg")) {
   const url = process.env.PG_URL;
   if (!url) throw new Error("Set PG_URL to the database the performance suite used, then run this again.");
   const dropped = await dropPgCatalogs(url);
-  console.log(dropped.length ? `Dropped ${dropped.length} schemas: ${dropped.join(", ")}.` : "No slperf_* schemas to drop.");
+  console.log(dropped.length ? `Dropped ${dropped.length} schemas: ${dropped.join(", ")}.` : "No semlayerperf_* schemas to drop.");
 }

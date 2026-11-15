@@ -3,7 +3,7 @@ import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { scriptedDriver } from "../evals/runner/drivers/scripted.ts";
 import { agentDefinitions, DONE_MARKER, guardHook, sdkDriver } from "../evals/runner/drivers/sdk.ts";
-import { SL } from "../evals/runner/drivers/guard.ts";
+import { SEMLAYER } from "../evals/runner/drivers/guard.ts";
 import { agentTurnProblem, loadScenario, loadScript, readTree, scenarioPath, type Script } from "../evals/runner/files.ts";
 import { main } from "../evals/runner/run.ts";
 import { runScenario, steppingClock } from "../evals/runner/runner.ts";
@@ -60,11 +60,11 @@ describe("acme-multi", () => {
       skill_turns: 7,
       owner_turns: 7,
       role_turns: 5,
-      tokens_by_role: { interviewer: 8060, batch_analyst: 3616, readback_verifier: 3307, golden_builder: 1725, connector_runner: 0 },
-      interviewer_token_share: 0.4824,
+      tokens_by_role: { interviewer: 8156, batch_analyst: 3628, readback_verifier: 3364, golden_builder: 1809, connector_runner: 0 },
+      interviewer_token_share: 0.481,
     });
-    expect(summary.tokens_by_speaker.skill).toBe(8060);
-    expect(summary.tokens).toBe(8060 + 3616 + 3307 + 1725 + summary.tokens_by_speaker.owner);
+    expect(summary.tokens_by_speaker.skill).toBe(8156);
+    expect(summary.tokens).toBe(8156 + 3628 + 3364 + 1809 + summary.tokens_by_speaker.owner);
 
     const transcript = bytes["transcript.jsonl"]!.trimEnd().split("\n").map((l) => JSON.parse(l) as TranscriptTurn);
     for (const t of transcript) expect(evalSchemaIssues("eval-transcript-turn", t, "transcript.jsonl")).toEqual([]);
@@ -75,11 +75,11 @@ describe("acme-multi", () => {
       "skill", "golden_builder", "owner", "skill", "readback_verifier", "owner", "skill", "golden_builder",
     ]);
     const ran = (speaker: string) => transcript.filter((t) => t.speaker === speaker).flatMap((t) => (t.commands ?? []).map((c) => c.command.split(" ").slice(0, 3).join(" ")));
-    expect(ran("batch_analyst")).toEqual(["sl brief --source"]);
-    expect(ran("readback_verifier")).toEqual(["sl readback --targets", "sl readback --targets"]);
-    expect(ran("golden_builder")).toEqual(["sl goldens new", "sl goldens new", "sl goldens run", "sl goldens run", "sl goldens check"]);
+    expect(ran("batch_analyst")).toEqual(["semlayer brief --source"]);
+    expect(ran("readback_verifier")).toEqual(["semlayer readback --targets", "semlayer readback --targets"]);
+    expect(ran("golden_builder")).toEqual(["semlayer goldens new", "semlayer goldens new", "semlayer goldens run", "semlayer goldens run", "semlayer goldens check"]);
     // Replies, approvals and confirms stay with the interviewer.
-    for (const cmd of ["sl reply", "sl approve", "sl goldens confirm"]) {
+    for (const cmd of ["semlayer reply", "semlayer approve", "semlayer goldens confirm"]) {
       const who = new Set(transcript.filter((t) => (t.commands ?? []).some((c) => c.command.startsWith(cmd))).map((t) => t.speaker));
       expect([...who]).toEqual(["skill"]);
     }
@@ -88,8 +88,8 @@ describe("acme-multi", () => {
     const root = join(runDir, "semantic");
     expect(yaml<Model>(root, "models/lake/sessions.yaml")).toMatchObject({ status: "approved", approved_by: "Dana Ruiz" });
     expect(yaml<Golden>(root, "goldens/sessions_2025.yaml")).toMatchObject({ status: "approved", expected: { tolerance: 0, rows: [{ session_count: 4551 }] } });
-    // The golden builder wrote the drafts with sl goldens new; the readback verifier wrote both readbacks.
-    expect(JSON.parse(bytes["semantic/.sl/pending/rb_0002.json"]!).items.map((i: { target: string }) => i.target)).toEqual(["golden:sessions_2025", "golden:marketing_spend_2025"]);
+    // The golden builder wrote the drafts with semlayer goldens new; the readback verifier wrote both readbacks.
+    expect(JSON.parse(bytes["semantic/.semlayer/pending/rb_0002.json"]!).items.map((i: { target: string }) => i.target)).toEqual(["golden:sessions_2025", "golden:marketing_spend_2025"]);
 
     const grades = JSON.parse(bytes["grades.json"]!) as GradeReport;
     expect(grades.passed).toBe(true);
@@ -102,11 +102,11 @@ describe("acme-multi", () => {
       ["authority", 1],
       ["effort", null],
     ]);
-    expect(grader(grades, "authority").details).toContain("transcript.jsonl: each of the 5 role-agent turn(s) ran only the sl commands its role may run.");
+    expect(grader(grades, "authority").details).toContain("transcript.jsonl: each of the 5 role-agent turn(s) ran only the semlayer commands its role may run.");
     const effort = grader(grades, "effort");
-    expect(effort.metrics).toMatchObject({ interviewer_tokens: 8060, interviewer_token_share: 0.4824, reference_interviewer_tokens: 10220, interviewer_tokens_vs_reference: 0.7886 });
+    expect(effort.metrics).toMatchObject({ interviewer_tokens: 8156, interviewer_token_share: 0.481, reference_interviewer_tokens: 10339, interviewer_tokens_vs_reference: 0.7889 });
     expect(effort.details.slice(-2)).toEqual([
-      "acme-structured-20260101T000000000Z/summary.json: the interviewer used 8060 tokens, 78.9% of the 10220 the single-agent run acme-structured-20260101T000000000Z used.",
+      "acme-structured-20260101T000000000Z/summary.json: the interviewer used 8156 tokens, 78.9% of the 10339 the single-agent run acme-structured-20260101T000000000Z used.",
       "The interviewer holds 78.9% of acme-structured's interviewer tokens, within the scenario's max_interviewer_share of 80%.",
     ]);
   }, 60_000);
@@ -121,9 +121,9 @@ describe("acme-multi", () => {
     const r = await replay("acme-multi", out, heavy);
     const effort = grader(r.grades, "effort");
     expect(effort).toMatchObject({ passed: false, score: null });
-    expect(effort.metrics!.interviewer_tokens_vs_reference).toBe(1.0925);
+    expect(effort.metrics!.interviewer_tokens_vs_reference).toBe(1.0892);
     expect(effort.details.at(-1)).toBe(
-      "The interviewer holds 109.3% of acme-structured's interviewer tokens, above the scenario's max_interviewer_share of 80%; dispatch more of the reading to the role agents (agents/sl-*.md).",
+      "The interviewer holds 108.9% of acme-structured's interviewer tokens, above the scenario's max_interviewer_share of 80%; dispatch more of the reading to the role agents (agents/semlayer-*.md).",
     );
     expect(r.grades.passed).toBe(false);
 
@@ -137,23 +137,23 @@ describe("acme-multi", () => {
     const { reference: _r, ...noRef } = s.scenario.grading!;
     const share = await replay("acme-multi", temp(), undefined, { ...s.scenario, grading: { ...noRef, max_interviewer_share: 0.4 } });
     expect(grader(share.grades, "effort")).toMatchObject({ passed: false });
-    expect(grader(share.grades, "effort").details.at(-1)).toStartWith("The interviewer holds 48.2% of the agents' tokens, above the scenario's max_interviewer_share of 40%");
+    expect(grader(share.grades, "effort").details.at(-1)).toStartWith("The interviewer holds 48.1% of the agents' tokens, above the scenario's max_interviewer_share of 40%");
   }, 90_000);
 
-  test("a role agent that runs sl approve or sl reply is refused by the guard, approves nothing and fails authority", async () => {
+  test("a role agent that runs semlayer approve or semlayer reply is refused by the guard, approves nothing and fails authority", async () => {
     const s = named("acme-multi");
     const broken = structuredClone(s.script);
     // The golden builder approves an item and records a yes; the interviewer approves nothing itself.
     const builder = broken.skill[7]!;
-    builder.sl = [...builder.sl!, ["reply", "--readback", "rb_0001", "--item", "1", "--text", "yes", "--verdict", "yes", "--by", "Dana Ruiz"], ["approve", "--target", "lake.sessions", "--by", "Dana Ruiz"]];
-    broken.skill[6]!.sl = broken.skill[6]!.sl!.filter((a) => !(a[0] === "approve" && a[2] === "lake.sessions"));
+    builder.semlayer = [...builder.semlayer!, ["reply", "--readback", "rb_0001", "--item", "1", "--text", "yes", "--verdict", "yes", "--by", "Dana Ruiz"], ["approve", "--target", "lake.sessions", "--by", "Dana Ruiz"]];
+    broken.skill[6]!.semlayer = broken.skill[6]!.semlayer!.filter((a) => !(a[0] === "approve" && a[2] === "lake.sessions"));
     const r = await replay("acme-multi", temp(), broken);
     const refused = r.transcript.find((t) => t.speaker === "golden_builder")!.commands!.filter((c) => c.refused);
     expect(refused.map((c) => [c.command.split(" ").slice(0, 2).join(" "), c.exit_code])).toEqual([
-      ["sl reply", 1],
-      ["sl approve", 1],
+      ["semlayer reply", 1],
+      ["semlayer approve", 1],
     ]);
-    expect(refused[1]!.refused).toContain("sl approve acts on the owner's recorded answers, and only the interviewer, who talks to the owner, runs it.");
+    expect(refused[1]!.refused).toContain("semlayer approve acts on the owner's recorded answers, and only the interviewer, who talks to the owner, runs it.");
     // The refused commands did not run: lake.sessions stays a draft and the ledger holds no extra yes.
     expect(yaml<Model>(r.root, "models/lake/sessions.yaml").status).toBe("draft");
     const authority = grader(r.grades, "authority");
@@ -168,7 +168,7 @@ describe("acme-multi", () => {
     writeFileSync(join(forged, "transcript.jsonl"), lines);
     const again = grader(await gradeRun(forged), "authority");
     expect(again.passed).toBe(false);
-    expect(again.details.filter((d) => d.includes("golden_builder ran sl approve"))).toHaveLength(1);
+    expect(again.details.filter((d) => d.includes("golden_builder ran semlayer approve"))).toHaveLength(1);
   }, 60_000);
 
   test("the runner refuses role turns that write, end the session, come first or sit in a single-agent scenario", () => {
@@ -189,11 +189,11 @@ describe("acme-multi", () => {
 
 test("the scripted driver holds the interviewer to its role too: --show-protected is refused and does not run", async () => {
   const s = named("acme-terse");
-  const script: Script = { skill: [{ text: "Status?", done: true, sl: [["status"], ["status", "--show-protected"]] }], owner: [] };
+  const script: Script = { skill: [{ text: "Status?", done: true, semlayer: [["status"], ["status", "--show-protected"]] }], owner: [] };
   const r = await replay("acme-terse", temp(), script, s.scenario);
   expect(r.transcript[1]!.commands).toEqual([
-    { command: "sl status", exit_code: 0 },
-    { command: "sl status --show-protected", exit_code: 1, refused: expect.stringContaining("it passes --show-protected to sl status") },
+    { command: "semlayer status", exit_code: 0 },
+    { command: "semlayer status --show-protected", exit_code: 1, refused: expect.stringContaining("it passes --show-protected to semlayer status") },
   ]);
 });
 
@@ -203,12 +203,12 @@ describe("the sdk driver in a multi-agent run", () => {
     const query = (args: { prompt: string; options: Record<string, unknown> }) => {
       calls.push(args);
       return (async function* () {
-        yield { type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "t1", name: "Task", input: { subagent_type: "sl-batch-analyst", prompt: "batch 1" } }], usage: { input_tokens: 10 } } };
+        yield { type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "t1", name: "Task", input: { subagent_type: "semlayer-batch-analyst", prompt: "batch 1" } }], usage: { input_tokens: 10 } } };
         // One response in two messages that share its id and usage, counted once.
         yield { type: "assistant", parent_tool_use_id: "t1", message: { id: "m2", content: [{ type: "text", text: "Reading the brief." }], usage: { input_tokens: 300, output_tokens: 40 } } };
-        yield { type: "assistant", parent_tool_use_id: "t1", message: { id: "m2", content: [{ type: "tool_use", id: "b1", name: "Bash", input: { command: `cd . && bun ${SL} brief --source lake --batch 1 --json --root .` } }], usage: { input_tokens: 300, output_tokens: 40 } } };
+        yield { type: "assistant", parent_tool_use_id: "t1", message: { id: "m2", content: [{ type: "tool_use", id: "b1", name: "Bash", input: { command: `cd . && bun ${SEMLAYER} brief --source lake --batch 1 --json --root .` } }], usage: { input_tokens: 300, output_tokens: 40 } } };
         yield { type: "user", parent_tool_use_id: "t1", message: { content: [{ type: "tool_result", tool_use_id: "b1", content: "{}" }] } };
-        // A command other than sl is not an sl command run.
+        // A command other than semlayer is not a semlayer command run.
         yield { type: "assistant", parent_tool_use_id: "t1", message: { id: "m3", content: [{ type: "tool_use", id: "b2", name: "Bash", input: { command: "ls" } }] } };
         yield { type: "user", parent_tool_use_id: "t1", message: { content: [{ type: "tool_result", tool_use_id: "b2", content: "denied", is_error: true }] } };
         yield { type: "assistant", parent_tool_use_id: "t1", message: { content: [{ type: "text", text: "1. one row per visit?" }], usage: { input_tokens: 400, output_tokens: 60 } } };
@@ -223,15 +223,15 @@ describe("the sdk driver in a multi-agent run", () => {
       text: "Is one row one visit?",
       tokens: 1600 - 800,
       done: true,
-      dispatches: [{ agent: "batch_analyst", text: "1. one row per visit?", tokens: 800, commands: [{ command: "sl brief --source lake --batch 1 --json", exit_code: 0 }] }],
+      dispatches: [{ agent: "batch_analyst", text: "1. one row per visit?", tokens: 800, commands: [{ command: "semlayer brief --source lake --batch 1 --json", exit_code: 0 }] }],
     });
     const options = calls[0]!.options;
     expect(options.allowedTools).toEqual(expect.arrayContaining(["Task", "Bash"]));
     expect(options.disallowedTools).not.toContain("Task");
     const agents = options.agents as Record<string, { tools: string[]; prompt: string }>;
-    expect(Object.keys(agents).sort()).toEqual(["sl-batch-analyst", "sl-connector-runner", "sl-golden-builder", "sl-readback-verifier"]);
+    expect(Object.keys(agents).sort()).toEqual(["semlayer-batch-analyst", "semlayer-connector-runner", "semlayer-golden-builder", "semlayer-readback-verifier"]);
     for (const a of Object.values(agents)) expect(a.tools).not.toEqual(expect.arrayContaining(["Write"]));
-    expect(agents["sl-batch-analyst"]!.prompt).toContain(`bun ${SL} <command> --root .`);
+    expect(agents["semlayer-batch-analyst"]!.prompt).toContain(`bun ${SEMLAYER} <command> --root .`);
     expect(agentDefinitions() as unknown).toEqual(agents);
 
     // A single-agent run keeps the dispatch tool out.
@@ -245,31 +245,31 @@ describe("the sdk driver in a multi-agent run", () => {
     const root = "/tmp/root";
     const hook = guardHook(root, true);
     const denied = async (i: Record<string, unknown>) => ((await hook(i)) as { hookSpecificOutput?: { permissionDecisionReason: string } }).hookSpecificOutput?.permissionDecisionReason;
-    expect(await denied({ tool_name: "Task", tool_input: { subagent_type: "sl-batch-analyst" } })).toBeUndefined();
-    expect(await denied({ tool_name: "Task", tool_input: {}, agent_type: "sl-batch-analyst" })).toContain("only the interviewer edits files and dispatches tasks");
-    expect(await denied({ tool_name: "Write", tool_input: { file_path: "models/lake/x.yaml" }, agent_type: "semantic-layer-builder:sl-golden-builder" })).toContain("may not use Write");
-    expect(await denied({ tool_name: "Bash", tool_input: { command: `bun ${SL} brief --source lake --batch 1 --root .` }, agent_type: "sl-batch-analyst" })).toBeUndefined();
-    expect(await denied({ tool_name: "Bash", tool_input: { command: `bun ${SL} approve --target lake.sessions --by "Dana Ruiz" --root .` }, agent_type: "sl-batch-analyst" })).toContain(
-      "sl approve acts on the owner's recorded answers",
+    expect(await denied({ tool_name: "Task", tool_input: { subagent_type: "semlayer-batch-analyst" } })).toBeUndefined();
+    expect(await denied({ tool_name: "Task", tool_input: {}, agent_type: "semlayer-batch-analyst" })).toContain("only the interviewer edits files and dispatches tasks");
+    expect(await denied({ tool_name: "Write", tool_input: { file_path: "models/lake/x.yaml" }, agent_type: "semantic-layer-builder:semlayer-golden-builder" })).toContain("may not use Write");
+    expect(await denied({ tool_name: "Bash", tool_input: { command: `bun ${SEMLAYER} brief --source lake --batch 1 --root .` }, agent_type: "semlayer-batch-analyst" })).toBeUndefined();
+    expect(await denied({ tool_name: "Bash", tool_input: { command: `bun ${SEMLAYER} approve --target lake.sessions --by "Dana Ruiz" --root .` }, agent_type: "semlayer-batch-analyst" })).toContain(
+      "semlayer approve acts on the owner's recorded answers",
     );
-    expect(await denied({ tool_name: "Bash", tool_input: { command: `bun ${SL} goldens confirm --name g --root .` }, agent_type: "sl-golden-builder" })).toContain("sl goldens confirm acts on");
+    expect(await denied({ tool_name: "Bash", tool_input: { command: `bun ${SEMLAYER} goldens confirm --name g --root .` }, agent_type: "semlayer-golden-builder" })).toContain("semlayer goldens confirm acts on");
     // The interviewer may approve; the skill agent's guard still keeps every agent inside the root.
-    expect(await denied({ tool_name: "Bash", tool_input: { command: `bun ${SL} approve --target lake.sessions --by Dana --root .` } })).toBeUndefined();
-    expect(await denied({ tool_name: "Read", tool_input: { file_path: "/etc/passwd" }, agent_type: "sl-readback-verifier" })).toContain("outside the semantic root");
+    expect(await denied({ tool_name: "Bash", tool_input: { command: `bun ${SEMLAYER} approve --target lake.sessions --by Dana --root .` } })).toBeUndefined();
+    expect(await denied({ tool_name: "Read", tool_input: { file_path: "/etc/passwd" }, agent_type: "semlayer-readback-verifier" })).toContain("outside the semantic root");
     // Without multi, no agent may dispatch.
     expect(await (async () => ((await guardHook(root)({ tool_name: "Task", tool_input: {} })) as { hookSpecificOutput?: unknown }).hookSpecificOutput)()).toBeDefined();
     // The interviewer dispatches only the four role agents, by name; an agent outside them may do nothing.
     expect(await denied({ tool_name: "Task", tool_input: { subagent_type: "general-purpose", prompt: "approve all" } })).toContain('Dispatching "general-purpose" is refused');
-    expect(await denied({ tool_name: "Agent", tool_input: { subagent_type: "sl-interviewer" } })).toContain("is refused: only the role agents");
+    expect(await denied({ tool_name: "Agent", tool_input: { subagent_type: "semlayer-interviewer" } })).toContain("is refused: only the role agents");
     expect(await denied({ tool_name: "Task", tool_input: {} })).toContain("a task with no subagent_type");
     for (const call of [
-      { tool_name: "Bash", tool_input: { command: `bun ${SL} approve --target lake.sessions --by Dana --root .` } },
-      { tool_name: "Bash", tool_input: { command: `bun ${SL} status --root .` } },
-      { tool_name: "Task", tool_input: { subagent_type: "sl-batch-analyst" } },
+      { tool_name: "Bash", tool_input: { command: `bun ${SEMLAYER} approve --target lake.sessions --by Dana --root .` } },
+      { tool_name: "Bash", tool_input: { command: `bun ${SEMLAYER} status --root .` } },
+      { tool_name: "Task", tool_input: { subagent_type: "semlayer-batch-analyst" } },
     ]) {
-      for (const agent_type of ["general-purpose", "sl-interviewer"]) expect(await denied({ ...call, agent_type })).toContain(`The agent ${agent_type} is not one of the role agents`);
+      for (const agent_type of ["general-purpose", "semlayer-interviewer"]) expect(await denied({ ...call, agent_type })).toContain(`The agent ${agent_type} is not one of the role agents`);
     }
     // In a single-agent run a subagent may do nothing either.
-    expect(((await guardHook(root)({ tool_name: "Read", tool_input: { file_path: "semantic.yaml" }, agent_type: "sl-batch-analyst" })) as { hookSpecificOutput?: unknown }).hookSpecificOutput).toBeDefined();
+    expect(((await guardHook(root)({ tool_name: "Read", tool_input: { file_path: "semantic.yaml" }, agent_type: "semlayer-batch-analyst" })) as { hookSpecificOutput?: unknown }).hookSpecificOutput).toBeDefined();
   });
 });

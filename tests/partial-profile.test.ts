@@ -1,6 +1,6 @@
-// HR-5: sl profile and sl check-join keep what succeeded. A table or join the database refuses is
-// skipped with a plain reason, the rest is saved, a rerun takes only what is missing, and sl draft
-// after sl profile leaves no protected sample value behind.
+// HR-5: semlayer profile and semlayer check-join keep what succeeded. A table or join the database refuses is
+// skipped with a plain reason, the rest is saved, a rerun takes only what is missing, and semlayer draft
+// after semlayer profile leaves no protected sample value behind.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -14,7 +14,7 @@ import { listModels, loadSnapshot, saveSnapshot } from "../skills/semantic-layer
 import type { Dialect, Join, Snapshot, SnapshotColumn, SnapshotTable } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { schemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, duckdbSource, FIXED_NOW, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, duckdbSource, FIXED_NOW, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 const LATER = "2026-02-01T09:00:00.000Z";
 const LATEST = "2026-03-01T09:00:00.000Z";
@@ -91,10 +91,10 @@ describe("failureReason", () => {
     expect(failureReason(new Error("permission denied for schema finance"))).toBe(NO_SELECT_REASON);
     const timeout = new Error("canceling statement due to statement timeout");
     expect(failureReason(timeout, { timeoutMs: 30_000, timeoutHint: "lower profile.sample_rows" })).toBe(
-      "timed out after 30 s (raise SL_STATEMENT_TIMEOUT_MS or lower profile.sample_rows)",
+      "timed out after 30 s (raise SEMLAYER_STATEMENT_TIMEOUT_MS or lower profile.sample_rows)",
     );
-    expect(failureReason(timeout, { timeoutMs: 1500 })).toBe("timed out after 1.5 s (raise SL_STATEMENT_TIMEOUT_MS)");
-    // A query sl did not run was not under SL_STATEMENT_TIMEOUT_MS, so the reason does not name it.
+    expect(failureReason(timeout, { timeoutMs: 1500 })).toBe("timed out after 1.5 s (raise SEMLAYER_STATEMENT_TIMEOUT_MS)");
+    // A query semlayer did not run was not under SEMLAYER_STATEMENT_TIMEOUT_MS, so the reason does not name it.
     expect(failureReason(timeout)).toBe("timed out (raise the timeout of the tool that ran the query)");
     expect(failureReason(new Error("Query timed out"), { timeoutHint: "set profile.sample_rows" })).toBe(
       "timed out (raise the timeout of the tool that ran the query or set profile.sample_rows)",
@@ -108,7 +108,7 @@ describe("failureReason", () => {
     expect(failureReason(pg('relation "s.timeouts" does not exist', "42P01"), o)).toBe('relation "s.timeouts" does not exist');
     expect(failureReason(pg('column "timeout" does not exist', "42703"), o)).toBe('column "timeout" does not exist');
     expect(failureReason(pg('relation "permission denied" does not exist', "42P01"))).toBe('relation "…" does not exist');
-    // Only the statement timeout is one SL_STATEMENT_TIMEOUT_MS answers.
+    // Only the statement timeout is one SEMLAYER_STATEMENT_TIMEOUT_MS answers.
     expect(failureReason(pg("canceling statement due to lock timeout", "55P03"), o)).toBe("canceling statement due to lock timeout");
     expect(failureReason(pg("canceling statement due to user request", "57014"), o)).toBe("canceling statement due to user request");
     expect(failureReason(pg("canceling statement due to statement timeout", "57014"), o)).toStartWith("timed out after 120 s (");
@@ -203,7 +203,7 @@ describe("profile keeps what succeeded (duckdb)", () => {
 
   test("a table whose query fails is skipped with the database's first line, and the rest are saved", async () => {
     const t = await shop();
-    const r = await sl(t.root, ["profile", "--source", "shop", "--json"]);
+    const r = await semlayer(t.root, ["profile", "--source", "shop", "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<ProfileJson>();
     expect(out.profiled.map((p) => [p.table, p.row_count])).toEqual([["main.a", 30], ["main.b", 10]]);
@@ -225,21 +225,21 @@ describe("profile keeps what succeeded (duckdb)", () => {
 
   test("the plain output lists what was skipped, why, and the next command", async () => {
     const t = await shop();
-    const r = await sl(t.root, ["profile", "--source", "shop"]);
+    const r = await semlayer(t.root, ["profile", "--source", "shop"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Profiled 2 tables into ");
     expect(r.out).toContain("Skipped 1 table the database did not answer for; the rest are saved:\n  main.gone: ");
-    expect(r.out).toContain("then run sl profile --source shop again, which profiles only the tables still missing.");
-    expect(r.out).toContain("sl scope --source shop --exclude <table> --write");
+    expect(r.out).toContain("then run semlayer profile --source shop again, which profiles only the tables still missing.");
+    expect(r.out).toContain("semlayer scope --source shop --exclude <table> --write");
     expect(r.err).not.toContain("Query failed");
   });
 
   test("a rerun profiles only what is missing or skipped; --all and --refresh redo everything", async () => {
     const t = await shop();
-    await sl(t.root, ["profile", "--source", "shop", "--json"]);
+    await semlayer(t.root, ["profile", "--source", "shop", "--json"]);
 
     // Still failing: only the skipped table is tried, nothing succeeds, and the exit code says so.
-    const again = await sl(t.root, ["profile", "--source", "shop", "--json"], { SL_NOW: LATER });
+    const again = await semlayer(t.root, ["profile", "--source", "shop", "--json"], { SEMLAYER_NOW: LATER });
     expect(again.code).toBe(1);
     const stuck = again.json<ProfileJson>();
     expect(stuck.profiled).toEqual([]);
@@ -253,7 +253,7 @@ describe("profile keeps what succeeded (duckdb)", () => {
     await c.run("create table gone as select g as id, 'n' || g as note from range(1, 4) t(g)");
     c.closeSync();
     db.closeSync();
-    const fixed = await sl(t.root, ["profile", "--source", "shop", "--json"], { SL_NOW: LATER });
+    const fixed = await semlayer(t.root, ["profile", "--source", "shop", "--json"], { SEMLAYER_NOW: LATER });
     expect(fixed.code).toBe(0);
     expect(fixed.json<ProfileJson>().profiled.map((p) => p.table)).toEqual(["main.gone"]);
     let s = snap(t.root, "shop");
@@ -261,13 +261,13 @@ describe("profile keeps what succeeded (duckdb)", () => {
     expect(tableOf(s, "gone").profile_skipped).toBeUndefined();
     expect(profileGaps(t.root, "shop")).toEqual([]);
 
-    const nothing = await sl(t.root, ["profile", "--source", "shop"], { SL_NOW: LATEST });
+    const nothing = await semlayer(t.root, ["profile", "--source", "shop"], { SEMLAYER_NOW: LATEST });
     expect(nothing.code).toBe(0);
     expect(nothing.out).toContain("Nothing to profile");
 
     for (const flag of ["--all", "--refresh"]) {
       const at = flag === "--all" ? LATEST : "2026-04-01T09:00:00.000Z";
-      const all = await sl(t.root, ["profile", "--source", "shop", flag, "--json"], { SL_NOW: at });
+      const all = await semlayer(t.root, ["profile", "--source", "shop", flag, "--json"], { SEMLAYER_NOW: at });
       expect(all.code).toBe(0);
       expect(all.json<ProfileJson>().profiled.map((p) => p.table)).toEqual(["main.a", "main.b", "main.gone"]);
       s = snap(t.root, "shop");
@@ -280,27 +280,27 @@ describe("profile keeps what succeeded (duckdb)", () => {
     const db = await DuckDBInstance.create(join(t.dir, "shop.duckdb"));
     const c = await db.connect();
     await c.run("create table gone as select g as id, 'n' || g as note from range(1, 4) t(g)");
-    await sl(t.root, ["profile", "--source", "shop"]);
+    await semlayer(t.root, ["profile", "--source", "shop"]);
     await c.run("drop table gone");
     c.closeSync();
     db.closeSync();
 
-    const redo = await sl(t.root, ["profile", "--source", "shop", "--all", "--json"], { SL_NOW: LATER });
+    const redo = await semlayer(t.root, ["profile", "--source", "shop", "--all", "--json"], { SEMLAYER_NOW: LATER });
     expect(redo.code).toBe(0);
     const gone = tableOf(snap(t.root, "shop"), "gone");
     expect(gone.profiled_at).toBe(FIXED_NOW);
     expect(gone.columns[0]!.profile!.distinct_count).toBe(3);
     expect(gone.profile_skipped!.at).toBe(LATER);
-    const next = await sl(t.root, ["profile", "--source", "shop", "--json"], { SL_NOW: LATEST });
+    const next = await semlayer(t.root, ["profile", "--source", "shop", "--json"], { SEMLAYER_NOW: LATEST });
     expect(next.json<ProfileJson>().skipped.filter((x) => x.reason !== "already profiled").map((x) => x.table)).toEqual(["main.gone"]);
   });
 
   test("profileGaps lists only in-scope tables and is empty without a snapshot", async () => {
     const t = await shop();
     expect(profileGaps(t.root, "nosuch")).toEqual([]);
-    await sl(t.root, ["profile", "--source", "shop"]);
+    await semlayer(t.root, ["profile", "--source", "shop"]);
     expect(profileGaps(t.root, "shop").map((g) => g.table)).toEqual(["main.gone"]);
-    const scoped = await sl(t.root, ["scope", "--source", "shop", "--exclude", "main.gone", "--write"]);
+    const scoped = await semlayer(t.root, ["scope", "--source", "shop", "--exclude", "main.gone", "--write"]);
     expect(scoped.code).toBe(0);
     expect(profileGaps(t.root, "shop")).toEqual([]);
   });
@@ -320,7 +320,7 @@ describe("a results file with failed queries gives the same partial result", () 
   }
   const row = { row_count: 5, c0_nulls: 0, c0_distinct: 5, c0_min: "1", c0_max: "5" };
 
-  test("sl profile --results skips the tables whose queries are recorded as failed", async () => {
+  test("semlayer profile --results skips the tables whose queries are recorded as failed", async () => {
     const t = await lake();
     const file = join(t.dir, "results.json");
     writeFileSync(
@@ -331,7 +331,7 @@ describe("a results file with failed queries gives the same partial result", () 
         "stats:PUBLIC.C": { error: "Statement reached its statement or warehouse timeout of 60 second(s) and was canceled." },
       }),
     );
-    const r = await sl(t.root, ["profile", "--source", "sf", "--results", file, "--json"]);
+    const r = await semlayer(t.root, ["profile", "--source", "sf", "--results", file, "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<ProfileJson>();
     expect(out.profiled.map((p) => p.table)).toEqual(["PUBLIC.A"]);
@@ -342,7 +342,7 @@ describe("a results file with failed queries gives the same partial result", () 
     expect(profileGaps(t.root, "sf").map((g) => g.table)).toEqual(["PUBLIC.B", "PUBLIC.C"]);
 
     // The rerun's plan holds only the two tables still missing, and its note says how to record a refused query.
-    const plan = await sl(t.root, ["profile", "--source", "sf", "--emit-sql"]);
+    const plan = await semlayer(t.root, ["profile", "--source", "sf", "--emit-sql"]);
     expect(plan.json<{ queries: { id: string }[] }>().queries.map((q) => q.id)).toEqual(["stats:PUBLIC.B", "stats:PUBLIC.C"]);
     expect(plan.err).toContain('If the database refuses a query, finish with --results <file> in place of --plan ');
     expect(plan.err).toContain('{"error": "<the database\'s message>"} for the one that failed.');
@@ -352,11 +352,11 @@ describe("a results file with failed queries gives the same partial result", () 
     const t = await lake();
     const file = join(t.dir, "results.json");
     writeFileSync(file, JSON.stringify({ "stats:PUBLIC.A": [row] }));
-    const missing = await sl(t.root, ["profile", "--source", "sf", "--results", file]);
+    const missing = await semlayer(t.root, ["profile", "--source", "sf", "--results", file]);
     expect(missing.code).toBe(1);
     expect(missing.err).toContain('is missing results for: stats:PUBLIC.B, stats:PUBLIC.C. Add each query\'s rows, or {"error": "<message>"} for one that failed.');
     writeFileSync(file, JSON.stringify({ "stats:PUBLIC.A": [row], "stats:PUBLIC.B": "failed", "stats:PUBLIC.C": [row] }));
-    const bad = await sl(t.root, ["profile", "--source", "sf", "--results", file]);
+    const bad = await semlayer(t.root, ["profile", "--source", "sf", "--results", file]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain('"stats:PUBLIC.B" must be an array of row objects, or {"error": "<message>"} for a query that failed.');
     expect(tableOf(snap(t.root, "sf"), "A").profiled_at).toBeUndefined();
@@ -366,16 +366,16 @@ describe("a results file with failed queries gives the same partial result", () 
     const t = tempRoot();
     await initProject(t.root);
     writeYaml(join(t.root, "sources", "sf.yaml"), { source: "sf", dialect: "snowflake" });
-    const plan = (await sl(t.root, ["introspect", "--source", "sf", "--emit-sql"])).json<{ queries: { id: string }[] }>();
+    const plan = (await semlayer(t.root, ["introspect", "--source", "sf", "--emit-sql"])).json<{ queries: { id: string }[] }>();
     const file = join(t.dir, "results.json");
     writeFileSync(file, JSON.stringify(Object.fromEntries(plan.queries.map((q, i) => [q.id, i === 0 ? { error: "boom" } : []]))));
-    const r = await sl(t.root, ["introspect", "--source", "sf", "--results", file]);
+    const r = await semlayer(t.root, ["introspect", "--source", "sf", "--results", file]);
     expect(r.code).toBe(1);
     expect(r.err).toContain(`records that query "${plan.queries[0]!.id}" failed (boom). This command needs every query's rows`);
     expect(loadSnapshot(t.root, "sf")).toBeNull();
   });
 
-  test("sl check-join --results skips the join recorded as failed and writes the other", async () => {
+  test("semlayer check-join --results skips the join recorded as failed and writes the other", async () => {
     const t = tempRoot();
     await initProject(t.root);
     writeYaml(join(t.root, "sources", "sf.yaml"), { source: "sf", dialect: "snowflake" });
@@ -390,7 +390,7 @@ describe("a results file with failed queries gives the same partial result", () 
         "join:orders.region": { error: "permission denied for table REGIONS" },
       }),
     );
-    const r = await sl(t.root, ["check-join", "--source", "sf", "--all", "--results", file, "--json"]);
+    const r = await semlayer(t.root, ["check-join", "--source", "sf", "--all", "--results", file, "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<JoinJson>();
     expect(out.checks.map((c) => c.join)).toEqual(["customer"]);
@@ -416,7 +416,7 @@ describe("check-join keeps what succeeded (duckdb)", () => {
 
   test("--all with one failing join writes the others' evidence and lists the failed one", async () => {
     const t = await shop();
-    const r = await sl(t.root, ["check-join", "--source", "shop", "--all", "--json"]);
+    const r = await semlayer(t.root, ["check-join", "--source", "shop", "--all", "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<JoinJson>();
     expect(out.checks.map((c) => [c.model, c.join, c.evidence?.match_rate])).toEqual([["orders", "customer", 1]]);
@@ -425,16 +425,16 @@ describe("check-join keeps what succeeded (duckdb)", () => {
     expect(out.skipped[0]!.reason).toContain("Table with name regions does not exist");
     expect(joinsOf(t.orders).map((j) => [j.name, j.evidence !== undefined])).toEqual([["customer", true], ["region", false]]);
 
-    const plain = await sl(t.root, ["check-join", "--source", "shop", "--all"]);
+    const plain = await semlayer(t.root, ["check-join", "--source", "shop", "--all"]);
     expect(plain.code).toBe(0);
     expect(plain.out).toContain("Skipped 1 join the database did not answer for; the others are checked:\n  orders.region: ");
-    expect(plain.out).toContain("sl check-join --source shop --model orders --join region");
+    expect(plain.out).toContain("semlayer check-join --source shop --model orders --join region");
     expect(plain.out).toContain("Wrote evidence to 1 join.");
   });
 
   test("a single join that fails exits non-zero, since nothing succeeded", async () => {
     const t = await shop();
-    const r = await sl(t.root, ["check-join", "--source", "shop", "--model", "orders", "--join", "region"]);
+    const r = await semlayer(t.root, ["check-join", "--source", "shop", "--model", "orders", "--join", "region"]);
     expect(r.code).toBe(1);
     // Nothing was reported above it, so the output starts at the list.
     expect(r.out).toStartWith("Skipped 1 join the database did not answer for:\n  orders.region: ");
@@ -499,7 +499,7 @@ describe.skipIf(!PG_URL)("profile and check-join keep what succeeded (postgres l
   test("a role with SELECT on two of three tables profiles the two and names the third; a rerun touches only it; --all redoes all", async () => {
     const t = await project([table(schema, "customers", CUSTOMERS), table(schema, "orders", ORDERS), table(schema, "regions", REGIONS)]);
     const env = { PGTEST_URL: as(role) };
-    const r = await sl(t.root, ["profile", "--source", "pg", "--json"], env);
+    const r = await semlayer(t.root, ["profile", "--source", "pg", "--json"], env);
     expect(r.code).toBe(0);
     const out = r.json<ProfileJson>();
     expect(out.profiled.map((p) => [p.table, p.row_count])).toEqual([[`${schema}.customers`, 3], [`${schema}.orders`, 12]]);
@@ -511,17 +511,17 @@ describe.skipIf(!PG_URL)("profile and check-join keep what succeeded (postgres l
     expect(profileGaps(t.root, "pg")).toEqual([{ table: `${schema}.regions`, reason: "no SELECT permission" }]);
 
     // Still no grant: the rerun tries regions alone, and nothing succeeded, so it exits 1.
-    const stuck = await sl(t.root, ["profile", "--source", "pg"], { ...env, SL_NOW: LATER });
+    const stuck = await semlayer(t.root, ["profile", "--source", "pg"], { ...env, SEMLAYER_NOW: LATER });
     expect(stuck.code).toBe(1);
     expect(stuck.out).toContain(`Skipped 1 table the database did not answer for:\n  ${schema}.regions: no SELECT permission`);
     expect(stuck.out).toContain("ask the database's owner for SELECT on the table and USAGE on its schema");
-    expect(stuck.out).toContain("then run sl profile --source pg again");
+    expect(stuck.out).toContain("then run semlayer profile --source pg again");
     expect(snap(t.root, "pg").tables.map((x) => x.profiled_at)).toEqual([FIXED_NOW, FIXED_NOW, undefined]);
 
     // Once the owner grants it, the rerun profiles the missing table and leaves the other two alone.
     await admin!.unsafe(`grant select on ${schema}.regions to ${role}`);
     try {
-      const rerun = await sl(t.root, ["profile", "--source", "pg", "--json"], { ...env, SL_NOW: LATER });
+      const rerun = await semlayer(t.root, ["profile", "--source", "pg", "--json"], { ...env, SEMLAYER_NOW: LATER });
       expect(rerun.code).toBe(0);
       const again = rerun.json<ProfileJson>();
       expect(again.profiled.map((p) => p.table)).toEqual([`${schema}.regions`]);
@@ -534,7 +534,7 @@ describe.skipIf(!PG_URL)("profile and check-join keep what succeeded (postgres l
       expect(tableOf(s, "regions").profile_skipped).toBeUndefined();
       expect(profileGaps(t.root, "pg")).toEqual([]);
 
-      const all = await sl(t.root, ["profile", "--source", "pg", "--all", "--json"], { ...env, SL_NOW: LATEST });
+      const all = await semlayer(t.root, ["profile", "--source", "pg", "--all", "--json"], { ...env, SEMLAYER_NOW: LATEST });
       expect(all.code).toBe(0);
       expect(all.json<ProfileJson>().profiled.map((p) => p.table)).toEqual([`${schema}.customers`, `${schema}.orders`, `${schema}.regions`]);
       expect(snap(t.root, "pg").tables.map((x) => x.profiled_at)).toEqual([LATEST, LATEST, LATEST]);
@@ -545,18 +545,18 @@ describe.skipIf(!PG_URL)("profile and check-join keep what succeeded (postgres l
 
   test("a table whose profile times out is skipped with the timeout hint, and the others are saved", async () => {
     const t = await project([table(schema, "orders", ORDERS), table(schema, "slow", [["id", "integer"]], "view")], { sample_rows: 100000 });
-    const r = await sl(t.root, ["profile", "--source", "pg", "--json"], { PGTEST_URL: as(role), SL_STATEMENT_TIMEOUT_MS: "2500" });
+    const r = await semlayer(t.root, ["profile", "--source", "pg", "--json"], { PGTEST_URL: as(role), SEMLAYER_STATEMENT_TIMEOUT_MS: "2500" });
     expect(r.code).toBe(0);
     const out = r.json<ProfileJson>();
     expect(out.profiled.map((p) => p.table)).toEqual([`${schema}.orders`]);
-    expect(out.skipped).toEqual([{ table: `${schema}.slow`, reason: "timed out after 2.5 s (raise SL_STATEMENT_TIMEOUT_MS or lower profile.sample_rows)" }]);
+    expect(out.skipped).toEqual([{ table: `${schema}.slow`, reason: "timed out after 2.5 s (raise SEMLAYER_STATEMENT_TIMEOUT_MS or lower profile.sample_rows)" }]);
     expect(tableOf(snap(t.root, "pg"), "slow").profile_skipped!.reason).toStartWith("timed out after 2.5 s");
     expect(tableOf(snap(t.root, "pg"), "orders").profiled_at).toBe(FIXED_NOW);
   }, 30_000);
 
   test("invariant 3: a value the database quotes in its error reaches neither the output nor the snapshot, quote character and all", async () => {
     const t = await project([table(schema, "badcast", [["n", "integer"]], "view"), table(schema, "orders", ORDERS)]);
-    const r = await sl(t.root, ["profile", "--source", "pg"], { PGTEST_URL: as(role) });
+    const r = await semlayer(t.root, ["profile", "--source", "pg"], { PGTEST_URL: as(role) });
     expect(r.code).toBe(0);
     expect(r.out).toContain(`  ${schema}.badcast: invalid input syntax for type integer: "…"\n`);
     const stored = readFileSync(join(t.root, "snapshots", "pg.json"), "utf8");
@@ -569,7 +569,7 @@ describe.skipIf(!PG_URL)("profile and check-join keep what succeeded (postgres l
 
   test("a missing table named timeouts is reported as missing, not as a timeout", async () => {
     const t = await project([table(schema, "orders", ORDERS), table(schema, "timeouts", [["id", "integer"]])]);
-    const r = await sl(t.root, ["profile", "--source", "pg", "--json"], { PGTEST_URL: as(role), SL_STATEMENT_TIMEOUT_MS: "2500" });
+    const r = await semlayer(t.root, ["profile", "--source", "pg", "--json"], { PGTEST_URL: as(role), SEMLAYER_STATEMENT_TIMEOUT_MS: "2500" });
     expect(r.code).toBe(0);
     expect(r.json<ProfileJson>().skipped).toEqual([{ table: `${schema}.timeouts`, reason: `relation "${schema}.timeouts" does not exist` }]);
   });
@@ -578,7 +578,7 @@ describe.skipIf(!PG_URL)("profile and check-join keep what succeeded (postgres l
     const t = await project([table(schema, "orders", ORDERS)]);
     await admin!.unsafe(`revoke usage on schema ${schema} from ${role}`);
     try {
-      const r = await sl(t.root, ["profile", "--source", "pg"], { PGTEST_URL: as(role) });
+      const r = await semlayer(t.root, ["profile", "--source", "pg"], { PGTEST_URL: as(role) });
       expect(r.code).toBe(1);
       expect(r.out).toContain(`  ${schema}.orders: no SELECT permission\n`);
       expect(r.out).toContain("ask the database's owner for SELECT on the table and USAGE on its schema");
@@ -593,17 +593,17 @@ describe.skipIf(!PG_URL)("profile and check-join keep what succeeded (postgres l
     writeModel(t.root, "pg", "customers", `${schema}.customers`);
     writeModel(t.root, "pg", "regions", `${schema}.regions`);
     const env = { PGTEST_URL: as(role) };
-    const r = await sl(t.root, ["check-join", "--source", "pg", "--all", "--json"], env);
+    const r = await semlayer(t.root, ["check-join", "--source", "pg", "--all", "--json"], env);
     expect(r.code).toBe(0);
     const out = r.json<JoinJson>();
     expect(out.checks.map((c) => [c.model, c.join, c.evidence?.suggested_relationship])).toEqual([["orders", "customer", "many_to_one"]]);
     expect(out.skipped).toEqual([{ model: "orders", join: "region", reason: "no SELECT permission" }]);
     expect(joinsOf(orders).map((j) => [j.name, j.evidence !== undefined])).toEqual([["customer", true], ["region", false]]);
 
-    const one = await sl(t.root, ["check-join", "--source", "pg", "--model", "orders", "--join", "region"], env);
+    const one = await semlayer(t.root, ["check-join", "--source", "pg", "--model", "orders", "--join", "region"], env);
     expect(one.code).toBe(1);
     expect(one.out).toContain("  orders.region: no SELECT permission");
-    expect(one.out).toContain("sl check-join --source pg --model orders --join region");
+    expect(one.out).toContain("semlayer check-join --source pg --model orders --join region");
   });
 
   test("a join whose check times out is skipped with the timeout hint", async () => {
@@ -611,20 +611,20 @@ describe.skipIf(!PG_URL)("profile and check-join keep what succeeded (postgres l
     const orders = writeModel(t.root, "pg", "orders", `${schema}.orders`, [["customer", "customers", "customer_id"], ["late", "slow", "region_id"]]);
     writeModel(t.root, "pg", "customers", `${schema}.customers`);
     writeModel(t.root, "pg", "slow", `${schema}.slow`);
-    const r = await sl(t.root, ["check-join", "--source", "pg", "--all", "--json"], { PGTEST_URL: as(role), SL_STATEMENT_TIMEOUT_MS: "2500" });
+    const r = await semlayer(t.root, ["check-join", "--source", "pg", "--all", "--json"], { PGTEST_URL: as(role), SEMLAYER_STATEMENT_TIMEOUT_MS: "2500" });
     expect(r.code).toBe(0);
-    expect(r.json<JoinJson>().skipped).toEqual([{ model: "orders", join: "late", reason: "timed out after 2.5 s (raise SL_STATEMENT_TIMEOUT_MS)" }]);
+    expect(r.json<JoinJson>().skipped).toEqual([{ model: "orders", join: "late", reason: "timed out after 2.5 s (raise SEMLAYER_STATEMENT_TIMEOUT_MS)" }]);
     expect(joinsOf(orders).map((j) => [j.name, j.evidence !== undefined])).toEqual([["customer", true], ["late", false]]);
   }, 30_000);
 });
 
-// sl profile, then sl draft, on the Acme warehouse: the draft protects columns the profile did not
+// semlayer profile, then semlayer draft, on the Acme warehouse: the draft protects columns the profile did not
 // (it leaves the near-unique sku out into ignored_columns), and their sample values go with it.
-describe("sl draft after sl profile needs no --redact", () => {
+describe("semlayer draft after semlayer profile needs no --redact", () => {
   async function profileThenDraft(root: string, schema: string, env: Record<string, string | undefined>) {
-    const introspected = await sl(root, ["introspect", "--source", "warehouse"], env);
+    const introspected = await semlayer(root, ["introspect", "--source", "warehouse"], env);
     expect(introspected.code).toBe(0);
-    const profiled = await sl(root, ["profile", "--source", "warehouse"], env);
+    const profiled = await semlayer(root, ["profile", "--source", "warehouse"], env);
     expect(profiled.code).toBe(0);
     const before = snap(root, "warehouse");
     const sku = tableOf(before, "dim_products").columns.find((c) => c.name === "sku")!;
@@ -632,12 +632,12 @@ describe("sl draft after sl profile needs no --redact", () => {
     const skuValues = (sku.profile!.top_values ?? []).map((v) => String(v.value));
     expect(skuValues.length).toBeGreaterThan(0);
 
-    const drafted = await sl(root, ["draft", "--source", "warehouse", "--json"], env);
+    const drafted = await semlayer(root, ["draft", "--source", "warehouse", "--json"], env);
     expect(drafted.code).toBe(0);
     expect(drafted.json<{ redacted: string[] }>().redacted).toContain(`${schema}.dim_products.sku`);
     expect(`${drafted.out}\n${drafted.err}`).not.toContain("--redact");
 
-    // No protected column of the snapshot holds a sample value, so sl validate has nothing to warn about.
+    // No protected column of the snapshot holds a sample value, so semlayer validate has nothing to warn about.
     const after = snap(root, "warehouse");
     const models = listModels(root, "warehouse").map((l) => l.model as unknown);
     const protect = protectedColumns(after.tables, models, after.dialect);
@@ -645,7 +645,7 @@ describe("sl draft after sl profile needs no --redact", () => {
     for (const t of after.tables) {
       for (const c of t.columns) if (protect.get(`${schema}.${t.name}`)?.has(c.name)) expect([t.name, c.name, holdsRawValues(c.profile, c)]).toEqual([t.name, c.name, false]);
     }
-    const validated = await sl(root, ["validate"], env);
+    const validated = await semlayer(root, ["validate"], env);
     expect(validated.code).toBe(0);
     expect(`${validated.out}\n${validated.err}`).not.toContain("protected but the snapshot holds");
     expect(validated.out).toContain("Valid: 0 warnings.");
@@ -669,7 +669,7 @@ describe("sl draft after sl profile needs no --redact", () => {
     }
 
     // Read as text, the next draft says the same in plain words.
-    const again = await sl(root, ["draft", "--source", "warehouse"], env);
+    const again = await semlayer(root, ["draft", "--source", "warehouse"], env);
     expect(again.out).not.toContain("--redact");
   }
 

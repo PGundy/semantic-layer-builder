@@ -21,7 +21,7 @@ beforeAll(() => cpSync(ACME, t.root, { recursive: true }));
 afterAll(() => t.cleanup());
 
 function server(role?: RoleName): Server {
-  return new Server({ root: t.root, cwd: t.dir, env: { ...process.env, SL_NOW: FIXED_NOW }, log: () => {}, ...(role ? { role } : {}) });
+  return new Server({ root: t.root, cwd: t.dir, env: { ...process.env, SEMLAYER_NOW: FIXED_NOW }, log: () => {}, ...(role ? { role } : {}) });
 }
 let nextId = 1;
 async function request(s: Server, method: string, params: Message = {}): Promise<Msg> {
@@ -34,10 +34,10 @@ async function listed(s: Server): Promise<Msg[]> {
 
 // The tools each role lists, written out from the spec's Roles table.
 const EXPECTED: Record<Exclude<RoleName, "interviewer">, string[]> = {
-  connector_runner: ["sl_results"],
-  batch_analyst: ["sl_brief"],
-  readback_verifier: ["sl_readback"],
-  golden_builder: ["sl_goldens", "sl_sql"],
+  connector_runner: ["semlayer_results"],
+  batch_analyst: ["semlayer_brief"],
+  readback_verifier: ["semlayer_readback"],
+  golden_builder: ["semlayer_goldens", "semlayer_sql"],
 };
 
 describe("--show-protected", () => {
@@ -52,7 +52,7 @@ describe("--show-protected", () => {
         expect(Object.keys(tool.inputSchema.properties).some((k) => /show.?protected/i.test(k))).toBe(false);
       }
     }
-    const run = (await listed(server())).find((x) => x.name === "sl_run")!;
+    const run = (await listed(server())).find((x) => x.name === "semlayer_run")!;
     expect(run.description).toContain("This server never passes --show-protected: protected values stay masked (invariant 3).");
   });
 
@@ -60,8 +60,8 @@ describe("--show-protected", () => {
     const s = server();
     for (const key of ["show-protected", "show_protected", "showProtected", "--show-protected", "SHOW_PROTECTED"]) {
       for (const [tool, args] of [
-        ["sl_run", { source: "warehouse", sql: "select 1" }],
-        ["sl_goldens", { positionals: ["run"], name: "g" }],
+        ["semlayer_run", { source: "warehouse", sql: "select 1" }],
+        ["semlayer_goldens", { positionals: ["run"], name: "g" }],
       ] as const) {
         const r = await call(s, tool, { ...args, [key]: true });
         expect(r.result).toBeUndefined();
@@ -72,7 +72,7 @@ describe("--show-protected", () => {
       }
     }
     // Refused for every role, before the role check.
-    const g = await call(server("golden_builder"), "sl_status", { show_protected: false });
+    const g = await call(server("golden_builder"), "semlayer_status", { show_protected: false });
     expect(g.error.message).toContain("invariant 3");
   });
 
@@ -85,7 +85,7 @@ describe("--show-protected", () => {
   test("a positional that reads --show-protected is refused as invariant 3, with no role hint", async () => {
     for (const role of [undefined, "golden_builder"] as const) {
       for (const positionals of [["--show-protected"], ["run", "--show-protected=1"]]) {
-        const r = await call(server(role), "sl_goldens", { positionals });
+        const r = await call(server(role), "semlayer_goldens", { positionals });
         expect(r.error.code).toBe(INVALID_PARAMS);
         expect(r.error.message).toContain('a positional in "positionals" asks for --show-protected');
         expect(r.error.message).toContain("invariant 3");
@@ -105,23 +105,23 @@ describe("--role", () => {
       expect(`${role}: ${got.map((x) => x.name).sort().join(",")}`).toBe(`${role}: ${[...tools].sort().join(",")}`);
       for (const tool of got) expect(tool.description).toContain(`(--role ${role}) and accepts only`);
     }
-    const golden = (await listed(server("golden_builder"))).find((x) => x.name === "sl_goldens")!;
-    expect(golden.description).toContain("accepts only sl goldens new, sl goldens run, sl goldens check, sl sql.");
+    const golden = (await listed(server("golden_builder"))).find((x) => x.name === "semlayer_goldens")!;
+    expect(golden.description).toContain("accepts only semlayer goldens new, semlayer goldens run, semlayer goldens check, semlayer sql.");
   });
 
   test("initialize says which role the server runs as", async () => {
     const init = (s: Server) => request(s, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "x", version: "1" } });
-    expect((await init(server())).result.instructions).toContain("Start with sl_status");
-    expect((await init(server("batch_analyst"))).result.instructions).toContain("runs as the batch analyst and serves only sl brief");
+    expect((await init(server())).result.instructions).toContain("Start with semlayer_status");
+    expect((await init(server("batch_analyst"))).result.instructions).toContain("runs as the batch analyst and serves only semlayer brief");
   });
 
   test("a call outside the role is refused with a plain error naming the role and --role, and nothing runs", async () => {
     for (const role of Object.keys(EXPECTED) as RoleName[]) {
-      const r = await call(server(role), "sl_status");
+      const r = await call(server(role), "semlayer_status");
       expect(r.error.code).toBe(INVALID_PARAMS);
-      expect(r.error.message).toContain(`sl_status refused: this server runs as the`);
+      expect(r.error.message).toContain(`semlayer_status refused: this server runs as the`);
       expect(r.error.message).toContain(`(--role ${role})`);
-      expect(r.error.message).toContain("may not run sl status");
+      expect(r.error.message).toContain("may not run semlayer status");
       expect(r.error.message).toContain("start the server again with --role <role>");
     }
   });
@@ -129,9 +129,9 @@ describe("--role", () => {
   test("owner commands are the interviewer's only; a subcommand outside the role is refused", async () => {
     for (const role of Object.keys(EXPECTED) as RoleName[]) {
       for (const [tool, args] of [
-        ["sl_reply", { readback: "000000000000", item: "1", text: "yes", verdict: "yes", by: "Test Owner" }],
-        ["sl_approve", { target: "warehouse.orders" }],
-        ["sl_goldens", { positionals: ["confirm"], name: "g" }],
+        ["semlayer_reply", { readback: "000000000000", item: "1", text: "yes", verdict: "yes", by: "Test Owner" }],
+        ["semlayer_approve", { target: "warehouse.orders" }],
+        ["semlayer_goldens", { positionals: ["confirm"], name: "g" }],
       ] as const) {
         const r = await call(server(role), tool, args);
         expect(`${role} ${tool}: ${r.error?.code}`).toBe(`${role} ${tool}: ${INVALID_PARAMS}`);
@@ -139,21 +139,21 @@ describe("--role", () => {
       }
     }
     const golden = server("golden_builder");
-    expect((await call(golden, "sl_goldens", { positionals: ["list"] })).error.message).toContain("may not run sl goldens list");
-    expect((await call(golden, "sl_goldens", { positionals: ["--help", "confirm"] })).error.message).toContain("needs its subcommand");
-    expect((await call(server("connector_runner"), "sl_results", { plan: "abc" })).error.message).toContain("needs its subcommand");
+    expect((await call(golden, "semlayer_goldens", { positionals: ["list"] })).error.message).toContain("may not run semlayer goldens list");
+    expect((await call(golden, "semlayer_goldens", { positionals: ["--help", "confirm"] })).error.message).toContain("needs its subcommand");
+    expect((await call(server("connector_runner"), "semlayer_results", { plan: "abc" })).error.message).toContain("needs its subcommand");
   });
 
   test("a call the role runs reaches the command", async () => {
-    const golden = await call(server("golden_builder"), "sl_goldens", { positionals: ["check"] });
+    const golden = await call(server("golden_builder"), "semlayer_goldens", { positionals: ["check"] });
     expect(golden.error).toBeUndefined();
     expect(golden.result.content[0].type).toBe("text");
-    const runner = await call(server("connector_runner"), "sl_results", { positionals: ["status"], plan: "000000000000" });
+    const runner = await call(server("connector_runner"), "semlayer_results", { positionals: ["status"], plan: "000000000000" });
     expect(runner.error).toBeUndefined();
     expect(runner.result.isError).toBe(true); // no such plan: the command's own plain error
-    const verifier = await call(server("readback_verifier"), "sl_readback", { targets: ["warehouse.nope"] });
+    const verifier = await call(server("readback_verifier"), "semlayer_readback", { targets: ["warehouse.nope"] });
     expect(verifier.error).toBeUndefined();
-    const reply = await call(server(), "sl_reply", { readback: "000000000000", item: "1", text: "no", verdict: "no", by: "Test Owner" });
+    const reply = await call(server(), "semlayer_reply", { readback: "000000000000", item: "1", text: "no", verdict: "no", by: "Test Owner" });
     expect(reply.error).toBeUndefined();
     expect(reply.result.isError).toBe(true); // no such readback: the command's own plain error
   });
@@ -175,7 +175,7 @@ describe("--role", () => {
     await proc.stdin.end();
     const out = await new Response(proc.stdout).text();
     expect(await proc.exited).toBe(0);
-    expect((JSON.parse(out.trim()).result.tools as Msg[]).map((x) => x.name)).toEqual(["sl_readback"]);
+    expect((JSON.parse(out.trim()).result.tools as Msg[]).map((x) => x.name)).toEqual(["semlayer_readback"]);
     expect(await new Response(proc.stderr).text()).toContain("as the readback verifier");
   });
 });
@@ -186,44 +186,44 @@ describe("the plugin's MCP hook", () => {
     checkMcpCall(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: tool, tool_input: input, ...(agent ? { agent_type: agent } : {}) }));
 
   test("reads the command from the tool name, whatever the server is called", () => {
-    expect(commandOfTool(PLUGIN_TOOL("sl_check_join"))).toBe("check-join");
-    expect(commandOfTool("mcp__semantic-layer__sl_status")).toBe("status");
-    expect(commandOfTool("mcp__semantic-layer__sl_nope")).toBeUndefined();
+    expect(commandOfTool(PLUGIN_TOOL("semlayer_check_join"))).toBe("check-join");
+    expect(commandOfTool("mcp__semantic-layer__semlayer_status")).toBe("status");
+    expect(commandOfTool("mcp__semantic-layer__semlayer_nope")).toBeUndefined();
   });
 
   test("holds each role agent to its role, with or without the plugin prefix", () => {
-    const runner = "semantic-layer-builder:sl-connector-runner";
-    const refused = hook(PLUGIN_TOOL("sl_reply"), runner, { readback: "abc", item: "1", verdict: "yes" });
+    const runner = "semantic-layer-builder:semlayer-connector-runner";
+    const refused = hook(PLUGIN_TOOL("semlayer_reply"), runner, { readback: "abc", item: "1", verdict: "yes" });
     expect(refused.allow).toBe(false);
-    expect(refused.message).toContain(`refused ${PLUGIN_TOOL("sl_reply")} for the connector runner (sl-connector-runner)`);
+    expect(refused.message).toContain(`refused ${PLUGIN_TOOL("semlayer_reply")} for the connector runner (semlayer-connector-runner)`);
     expect(refused.message).toContain("only the interviewer");
-    expect(refused.message).toContain("the connector runner may run sl results add, sl results status.");
+    expect(refused.message).toContain("the connector runner may run semlayer results add, semlayer results status.");
     expect(refused.message).not.toContain("It may run");
-    expect(hook(PLUGIN_TOOL("sl_status"), "sl-connector-runner").allow).toBe(false);
-    expect(hook(PLUGIN_TOOL("sl_results"), runner, { positionals: ["add"], plan: "abc" }).allow).toBe(true);
-    expect(hook(PLUGIN_TOOL("sl_goldens"), "sl-golden-builder", { positionals: ["confirm"] }).allow).toBe(false);
-    expect(hook(PLUGIN_TOOL("sl_goldens"), "sl-golden-builder", { positionals: ["run"] }).allow).toBe(true);
-    expect(hook(PLUGIN_TOOL("sl_approve"), "semantic-layer-builder:sl-interviewer").allow).toBe(true);
+    expect(hook(PLUGIN_TOOL("semlayer_status"), "semlayer-connector-runner").allow).toBe(false);
+    expect(hook(PLUGIN_TOOL("semlayer_results"), runner, { positionals: ["add"], plan: "abc" }).allow).toBe(true);
+    expect(hook(PLUGIN_TOOL("semlayer_goldens"), "semlayer-golden-builder", { positionals: ["confirm"] }).allow).toBe(false);
+    expect(hook(PLUGIN_TOOL("semlayer_goldens"), "semlayer-golden-builder", { positionals: ["run"] }).allow).toBe(true);
+    expect(hook(PLUGIN_TOOL("semlayer_approve"), "semantic-layer-builder:semlayer-interviewer").allow).toBe(true);
   });
 
   test("names the role's commands once, and odd tool_input shapes do not open a role's limits", () => {
-    const status = hook(PLUGIN_TOOL("sl_status"), "sl-golden-builder");
-    expect(status.message!.split("sl goldens new, sl goldens run, sl goldens check, sl sql").length - 1).toBe(1);
-    for (const input of ["confirm", null, { positionals: "confirm" }]) expect(hook(PLUGIN_TOOL("sl_goldens"), "sl-golden-builder", input).allow).toBe(false);
-    expect(hook(PLUGIN_TOOL("sl_approve"), "sl-readback-verifier", null).allow).toBe(false);
-    expect(hook(PLUGIN_TOOL("sl_readback"), "sl-batch-analyst").allow).toBe(false);
-    expect(hook(PLUGIN_TOOL("sl_goldens"), "sl-golden-builder", { positionals: ["--show-protected"] }).message).toContain("invariant 3");
+    const status = hook(PLUGIN_TOOL("semlayer_status"), "semlayer-golden-builder");
+    expect(status.message!.split("semlayer goldens new, semlayer goldens run, semlayer goldens check, semlayer sql").length - 1).toBe(1);
+    for (const input of ["confirm", null, { positionals: "confirm" }]) expect(hook(PLUGIN_TOOL("semlayer_goldens"), "semlayer-golden-builder", input).allow).toBe(false);
+    expect(hook(PLUGIN_TOOL("semlayer_approve"), "semlayer-readback-verifier", null).allow).toBe(false);
+    expect(hook(PLUGIN_TOOL("semlayer_readback"), "semlayer-batch-analyst").allow).toBe(false);
+    expect(hook(PLUGIN_TOOL("semlayer_goldens"), "semlayer-golden-builder", { positionals: ["--show-protected"] }).message).toContain("invariant 3");
   });
 
   test("refuses --show-protected from every caller; leaves other agents and other tools alone", () => {
-    for (const agent of [undefined, "sl-interviewer", "general-purpose"]) {
-      const v = hook(PLUGIN_TOOL("sl_run"), agent, { source: "warehouse", show_protected: true });
+    for (const agent of [undefined, "semlayer-interviewer", "general-purpose"]) {
+      const v = hook(PLUGIN_TOOL("semlayer_run"), agent, { source: "warehouse", show_protected: true });
       expect(v.allow).toBe(false);
       expect(v.message).toContain("invariant 3");
     }
-    expect(hook(PLUGIN_TOOL("sl_approve"), undefined)).toEqual({ allow: true });
-    expect(hook(PLUGIN_TOOL("sl_approve"), "general-purpose")).toEqual({ allow: true });
-    expect(hook("mcp__warehouse__query", "sl-connector-runner", { show_protected: true })).toEqual({ allow: true });
+    expect(hook(PLUGIN_TOOL("semlayer_approve"), undefined)).toEqual({ allow: true });
+    expect(hook(PLUGIN_TOOL("semlayer_approve"), "general-purpose")).toEqual({ allow: true });
+    expect(hook("mcp__warehouse__query", "semlayer-connector-runner", { show_protected: true })).toEqual({ allow: true });
     expect(checkMcpCall("not json").allow).toBe(true);
   });
 });

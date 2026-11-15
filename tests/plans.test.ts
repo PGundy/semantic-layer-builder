@@ -5,7 +5,7 @@ import { openQueryAdapter, planId } from "../skills/semantic-layer/scripts/lib/p
 import { loadSource } from "../skills/semantic-layer/scripts/lib/project.ts";
 import type { QueryPlan, StoredPlan } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { duckdbSource, initProject, sl, tempRoot } from "./helpers.ts";
+import { duckdbSource, initProject, semlayer, tempRoot } from "./helpers.ts";
 
 // Resumable query plans (spec: Query-plan protocol, Stored plans). All data is synthetic.
 
@@ -69,14 +69,14 @@ function filesUnder(dir: string): string[] {
 }
 
 async function emit(root: string, args: string[]): Promise<Emitted> {
-  const r = await sl(root, [...args, "--emit-sql"]);
+  const r = await semlayer(root, [...args, "--emit-sql"]);
   expect(r.code).toBe(0);
   return r.json<Emitted>();
 }
 
 async function addAll(root: string, plan: Emitted, files: Map<string, string>): Promise<void> {
   for (const q of plan.queries) {
-    const r = await sl(root, ["results", "add", "--plan", plan.plan_id, "--query", q.id, "--file", files.get(q.id)!]);
+    const r = await semlayer(root, ["results", "add", "--plan", plan.plan_id, "--query", q.id, "--file", files.get(q.id)!]);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
   }
@@ -87,45 +87,45 @@ describe("emit, add each result, status, finish", () => {
     const t = await setup();
     const plan = await emit(t.root, ["introspect", "--source", "wh"]);
     expect(plan.plan_id).toMatch(/^[0-9a-f]{12}$/);
-    expect(plan.path).toBe(join(t.root, ".sl", "plans", `${plan.plan_id}.json`));
+    expect(plan.path).toBe(join(t.root, ".semlayer", "plans", `${plan.plan_id}.json`));
     const stored = JSON.parse(readFileSync(plan.path, "utf8")) as StoredPlan;
-    expect(stored.finish).toBe(`sl introspect --source wh --plan ${plan.plan_id}`);
+    expect(stored.finish).toBe(`semlayer introspect --source wh --plan ${plan.plan_id}`);
     expect(stored.queries).toEqual(plan.queries);
 
     const files = await runQueries(t.root, t.dir, plan);
-    const before = await sl(t.root, ["results", "status", "--plan", plan.plan_id, "--json"]);
+    const before = await semlayer(t.root, ["results", "status", "--plan", plan.plan_id, "--json"]);
     expect(before.json<StatusJson>()).toMatchObject({ complete: false, remaining: plan.queries.map((q) => q.id) });
-    expect(before.json<StatusJson>().next).toContain(`sl results add --plan ${plan.plan_id} --query tables`);
+    expect(before.json<StatusJson>().next).toContain(`semlayer results add --plan ${plan.plan_id} --query tables`);
 
     const [first, ...rest] = plan.queries;
-    const partial = await sl(t.root, ["results", "add", "--plan", plan.plan_id, "--query", first!.id, "--file", files.get(first!.id)!, "--json"]);
+    const partial = await semlayer(t.root, ["results", "add", "--plan", plan.plan_id, "--query", first!.id, "--file", files.get(first!.id)!, "--json"]);
     expect(partial.json<{ state: string; remaining: string[] }>()).toMatchObject({ state: "added", remaining: rest.map((q) => q.id) });
-    const early = await sl(t.root, ["introspect", "--source", "wh", "--plan", plan.plan_id]);
+    const early = await semlayer(t.root, ["introspect", "--source", "wh", "--plan", plan.plan_id]);
     expect(early.code).toBe(1);
     expect(early.err).toContain(`still needs results for: ${rest.map((q) => q.id).join(", ")}`);
-    expect(early.err).toContain(`sl results status --plan ${plan.plan_id}`);
+    expect(early.err).toContain(`semlayer results status --plan ${plan.plan_id}`);
 
     await addAll(t.root, plan, files);
-    const done = await sl(t.root, ["results", "status", "--plan", plan.plan_id, "--json"]);
+    const done = await semlayer(t.root, ["results", "status", "--plan", plan.plan_id, "--json"]);
     expect(done.json<StatusJson>()).toMatchObject({ complete: true, remaining: [], next: `Next: ${stored.finish}` });
-    const human = await sl(t.root, ["results", "status", "--plan", plan.plan_id]);
+    const human = await semlayer(t.root, ["results", "status", "--plan", plan.plan_id]);
     expect(human.out).toContain(`${plan.queries.length} of ${plan.queries.length} results stored`);
-    expect(human.out).toContain(`Next: sl introspect --source wh --plan ${plan.plan_id}`);
+    expect(human.out).toContain(`Next: semlayer introspect --source wh --plan ${plan.plan_id}`);
 
-    const finished = await sl(t.root, ["introspect", "--source", "wh", "--plan", plan.plan_id, "--json"]);
+    const finished = await semlayer(t.root, ["introspect", "--source", "wh", "--plan", plan.plan_id, "--json"]);
     expect(finished.code).toBe(0);
     const fromPlan = readFileSync(join(t.root, "snapshots", "wh.json"), "utf8");
-    const live = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const live = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(live.code).toBe(0);
     expect(readFileSync(join(t.root, "snapshots", "wh.json"), "utf8")).toBe(fromPlan);
     expect(JSON.parse(fromPlan).tables.map((x: { name: string }) => x.name)).toEqual(["customers", "orders"]);
     // Introspect keeps its plan: finishing again gives the same snapshot.
-    expect((await sl(t.root, ["introspect", "--source", "wh", "--plan", plan.plan_id])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh", "--plan", plan.plan_id])).code).toBe(0);
   });
 
   test("profile: the finished snapshot equals a live run's, and the plan is removed", async () => {
     const t = await setup();
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
     const introspected = readFileSync(join(t.root, "snapshots", "wh.json"), "utf8");
     const plan = await emit(t.root, ["profile", "--source", "wh"]);
     expect(plan.queries.map((q) => q.id)).toEqual(["stats:main.customers", "top:main.customers", "stats:main.orders", "top:main.orders"]);
@@ -134,17 +134,17 @@ describe("emit, add each result, status, finish", () => {
 
     const files = await runQueries(t.root, t.dir, plan);
     await addAll(t.root, plan, files);
-    const finished = await sl(t.root, ["profile", "--source", "wh", "--plan", plan.plan_id]);
+    const finished = await semlayer(t.root, ["profile", "--source", "wh", "--plan", plan.plan_id]);
     expect(finished.code).toBe(0);
     expect(finished.out).toContain(`Removed plan ${plan.plan_id}`);
     expect(existsSync(plan.path)).toBe(false);
-    expect(existsSync(join(t.root, ".sl", "plans", plan.plan_id))).toBe(false);
+    expect(existsSync(join(t.root, ".semlayer", "plans", plan.plan_id))).toBe(false);
     const fromPlan = readFileSync(join(t.root, "snapshots", "wh.json"), "utf8");
 
     writeFileSync(join(t.root, "snapshots", "wh.json"), introspected);
-    expect((await sl(t.root, ["profile", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["profile", "--source", "wh"])).code).toBe(0);
     expect(readFileSync(join(t.root, "snapshots", "wh.json"), "utf8")).toBe(fromPlan);
-    const status = await sl(t.root, ["results", "status", "--plan", plan.plan_id]);
+    const status = await semlayer(t.root, ["results", "status", "--plan", plan.plan_id]);
     expect(status.code).toBe(1);
     expect(status.err).toContain(`No query plan ${plan.plan_id}`);
   });
@@ -153,24 +153,24 @@ describe("emit, add each result, status, finish", () => {
 describe("max_rows", () => {
   test("a result of exactly max_rows rows is refused as possibly cut off; more or fewer are stored", async () => {
     const t = await setup();
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
     const plan = await emit(t.root, ["profile", "--source", "wh", "--tables", "orders"]);
     const top = plan.queries.find((q) => q.id === "top:main.orders")!;
     expect(top.max_rows).toBe(11);
     const file = join(t.dir, "cut.json");
     const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ column_index: 2, value: `v${i}`, n: 1, rank_in_column: i + 1 }));
     writeFileSync(file, JSON.stringify(rows(11)));
-    const cut = await sl(t.root, ["results", "add", "--plan", plan.plan_id, "--query", top.id, "--file", file]);
+    const cut = await semlayer(t.root, ["results", "add", "--plan", plan.plan_id, "--query", top.id, "--file", file]);
     expect(cut.code).toBe(1);
     expect(cut.err).toContain('The result of "top:main.orders" has 11 rows, exactly its max_rows');
-    expect(cut.err).toContain("sl results add");
-    expect(existsSync(join(t.root, ".sl", "plans", plan.plan_id))).toBe(false);
+    expect(cut.err).toContain("semlayer results add");
+    expect(existsSync(join(t.root, ".semlayer", "plans", plan.plan_id))).toBe(false);
 
     writeFileSync(file, JSON.stringify(rows(10)));
-    expect((await sl(t.root, ["results", "add", "--plan", plan.plan_id, "--query", top.id, "--file", file])).code).toBe(0);
+    expect((await semlayer(t.root, ["results", "add", "--plan", plan.plan_id, "--query", top.id, "--file", file])).code).toBe(0);
     const stats = join(t.dir, "stats.json");
     writeFileSync(stats, JSON.stringify([{ row_count: 1 }, { row_count: 2 }]));
-    const two = await sl(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "stats:main.orders", "--file", stats]);
+    const two = await semlayer(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "stats:main.orders", "--file", stats]);
     expect(two.code).toBe(1);
     expect(two.err).toContain("exactly its max_rows");
   });
@@ -194,26 +194,26 @@ describe("refusals", () => {
     const file = join(t.dir, "rows.json");
     writeFileSync(file, "[]");
 
-    const unknown = await sl(t.root, ["results", "status", "--plan", "0123456789ab"]);
+    const unknown = await semlayer(t.root, ["results", "status", "--plan", "0123456789ab"]);
     expect(unknown.code).toBe(1);
     expect(unknown.err).toContain("No query plan 0123456789ab");
     expect(unknown.err).toContain("--emit-sql");
     for (const bad of ["../../x", "ABC", "0123456789abc"]) {
-      const r = await sl(t.root, ["results", "add", "--plan", bad, "--query", "tables", "--file", file]);
+      const r = await semlayer(t.root, ["results", "add", "--plan", bad, "--query", "tables", "--file", file]);
       expect(r.code).toBe(1);
       expect(r.err).toContain("is not a plan id");
     }
-    const finish = await sl(t.root, ["introspect", "--source", "wh", "--plan", "0123456789ab"]);
+    const finish = await semlayer(t.root, ["introspect", "--source", "wh", "--plan", "0123456789ab"]);
     expect(finish.code).toBe(1);
     expect(finish.err).toContain("No query plan 0123456789ab");
 
-    const query = await sl(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "nope", "--file", file]);
+    const query = await semlayer(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "nope", "--file", file]);
     expect(query.code).toBe(1);
     expect(query.err).toContain(`Plan ${plan.plan_id} has no query "nope"`);
     expect(query.err).toContain("tables, columns, primary_keys, foreign_keys");
-    expect(filesUnder(join(t.root, ".sl", "plans")).map((f) => f.slice(t.root.length))).toEqual([
-      `/.sl/plans/${plan.plan_id}.json`,
-      "/.sl/plans/.gitignore",
+    expect(filesUnder(join(t.root, ".semlayer", "plans")).map((f) => f.slice(t.root.length))).toEqual([
+      `/.semlayer/plans/${plan.plan_id}.json`,
+      "/.semlayer/plans/.gitignore",
     ].sort());
   });
 
@@ -221,7 +221,7 @@ describe("refusals", () => {
     const t = await setup();
     const plan = await emit(t.root, ["introspect", "--source", "wh"]);
     const file = join(t.dir, "rows.json");
-    const add = () => sl(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "tables", "--file", file]);
+    const add = () => semlayer(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "tables", "--file", file]);
     writeFileSync(file, JSON.stringify({ tables: [] }));
     expect((await add()).err).toContain("must hold a JSON array of row objects");
     writeFileSync(file, JSON.stringify([{ a: 1 }, [1]]));
@@ -230,22 +230,22 @@ describe("refusals", () => {
     expect((await add()).err).toContain("more than one column named");
     writeFileSync(file, "not json");
     expect((await add()).err).toContain("invalid JSON");
-    const missing = await sl(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "tables", "--file", join(t.dir, "missing.json")]);
+    const missing = await semlayer(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "tables", "--file", join(t.dir, "missing.json")]);
     expect(missing.err).toContain(`missing.json. Save the rows of query "tables" there as a JSON array of row objects`);
-    expect(missing.err).toContain(`sl results add --plan ${plan.plan_id} --query tables`);
+    expect(missing.err).toContain(`semlayer results add --plan ${plan.plan_id} --query tables`);
   });
 
   test("--plan with --results or --emit-sql, a stale plan and an edited plan file", async () => {
     const t = await setup();
     const plan = await emit(t.root, ["introspect", "--source", "wh"]);
-    const both = await sl(t.root, ["introspect", "--source", "wh", "--plan", plan.plan_id, "--results", "x.json"]);
+    const both = await semlayer(t.root, ["introspect", "--source", "wh", "--plan", plan.plan_id, "--results", "x.json"]);
     expect(both.err).toContain("Pass --plan <id> or --results <file>, not both.");
-    const emitToo = await sl(t.root, ["introspect", "--source", "wh", "--plan", plan.plan_id, "--emit-sql"]);
+    const emitToo = await semlayer(t.root, ["introspect", "--source", "wh", "--plan", plan.plan_id, "--emit-sql"]);
     expect(emitToo.code).toBe(1);
     expect(emitToo.err).toContain("pass one of them");
 
     await addAll(t.root, plan, await runQueries(t.root, t.dir, plan));
-    const stale = await sl(t.root, ["introspect", "--source", "wh", "--schemas", "main", "--plan", plan.plan_id]);
+    const stale = await semlayer(t.root, ["introspect", "--source", "wh", "--schemas", "main", "--plan", plan.plan_id]);
     expect(stale.code).toBe(1);
     expect(stale.err).toContain(`Plan ${plan.plan_id} is not the plan this command builds now`);
     expect(stale.err).toContain("--emit-sql");
@@ -253,31 +253,31 @@ describe("refusals", () => {
     const stored = JSON.parse(readFileSync(plan.path, "utf8")) as StoredPlan;
     stored.queries[0]!.sql = "select 1";
     writeFileSync(plan.path, JSON.stringify(stored));
-    const edited = await sl(t.root, ["results", "status", "--plan", plan.plan_id]);
+    const edited = await semlayer(t.root, ["results", "status", "--plan", plan.plan_id]);
     expect(edited.code).toBe(1);
     expect(edited.err).toContain(`no longer gives plan id ${plan.plan_id}`);
-    // finish is outside the plan id; an edited one that is not an sl command line is refused.
+    // finish is outside the plan id; an edited one that is not a semlayer command line is refused.
     await emit(t.root, ["introspect", "--source", "wh"]);
     const original = JSON.parse(readFileSync(plan.path, "utf8")) as StoredPlan;
-    for (const finish of [`sl introspect --source wh; touch x --plan ${plan.plan_id}`, `sl run --sql 'select 1' --plan ${plan.plan_id}`]) {
+    for (const finish of [`semlayer introspect --source wh; touch x --plan ${plan.plan_id}`, `semlayer run --sql 'select 1' --plan ${plan.plan_id}`]) {
       writeFileSync(plan.path, JSON.stringify({ ...original, finish }));
-      const r = await sl(t.root, ["results", "status", "--plan", plan.plan_id]);
+      const r = await semlayer(t.root, ["results", "status", "--plan", plan.plan_id]);
       expect(r.code).toBe(1);
       expect(r.err).toContain("changed after it was written");
     }
-    writeFileSync(plan.path, JSON.stringify({ ...original, finish: `sl introspect --source wh --tables 'a b'\\'' c' --plan ${plan.plan_id}` }));
-    expect((await sl(t.root, ["results", "status", "--plan", plan.plan_id])).code).toBe(0);
+    writeFileSync(plan.path, JSON.stringify({ ...original, finish: `semlayer introspect --source wh --tables 'a b'\\'' c' --plan ${plan.plan_id}` }));
+    expect((await semlayer(t.root, ["results", "status", "--plan", plan.plan_id])).code).toBe(0);
     writeFileSync(plan.path, JSON.stringify({ ...stored, max_rows: 3 }));
-    expect((await sl(t.root, ["results", "status", "--plan", plan.plan_id])).err).toContain("is not a valid query plan");
+    expect((await semlayer(t.root, ["results", "status", "--plan", plan.plan_id])).err).toContain("is not a valid query plan");
   });
 
   test("results needs a subcommand and its flags", async () => {
     const t = await setup();
-    expect((await sl(t.root, ["results"])).err).toContain("Pass a subcommand: add, status.");
-    expect((await sl(t.root, ["results", "add", "--plan", "0123456789ab"])).err).toContain("results add needs --query");
-    expect((await sl(t.root, ["results", "status"])).err).toContain("results status needs --plan");
-    const extra = await sl(t.root, ["results", "status", "extra", "--plan", "0123456789ab"]);
-    expect(extra.err).toContain('Unexpected argument "extra". Run sl results add --plan <plan_id>');
+    expect((await semlayer(t.root, ["results"])).err).toContain("Pass a subcommand: add, status.");
+    expect((await semlayer(t.root, ["results", "add", "--plan", "0123456789ab"])).err).toContain("results add needs --query");
+    expect((await semlayer(t.root, ["results", "status"])).err).toContain("results status needs --plan");
+    const extra = await semlayer(t.root, ["results", "status", "extra", "--plan", "0123456789ab"]);
+    expect(extra.err).toContain('Unexpected argument "extra". Run semlayer results add --plan <plan_id>');
   });
 });
 
@@ -286,14 +286,14 @@ describe("re-adding and re-emitting", () => {
     const t = await setup();
     const plan = await emit(t.root, ["introspect", "--source", "wh"]);
     const files = await runQueries(t.root, t.dir, plan);
-    const add = (file: string) => sl(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "tables", "--file", file, "--json"]);
+    const add = (file: string) => semlayer(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "tables", "--file", file, "--json"]);
     expect((await add(files.get("tables")!)).json<{ state: string }>().state).toBe("added");
-    const [stored] = filesUnder(join(t.root, ".sl", "plans", plan.plan_id));
+    const [stored] = filesUnder(join(t.root, ".semlayer", "plans", plan.plan_id));
     const bytes = readFileSync(stored!, "utf8");
     const again = await add(files.get("tables")!);
     expect(again.json<{ state: string; rows: number }>()).toMatchObject({ state: "unchanged", rows: 2 });
     expect(readFileSync(stored!, "utf8")).toBe(bytes);
-    const human = await sl(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "tables", "--file", files.get("tables")!]);
+    const human = await semlayer(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "tables", "--file", files.get("tables")!]);
     expect(human.out).toContain('The same 2 rows were already stored for "tables"; nothing changed.');
     expect(human.out).toContain("3 of 4 queries still need results.");
     expect(human.out).toContain("Next: run query \"columns\"");
@@ -312,7 +312,7 @@ describe("re-adding and re-emitting", () => {
     const again = await emit(t.root, ["introspect", "--source", "wh"]);
     expect(again.plan_id).toBe(plan.plan_id);
     expect(readFileSync(plan.path, "utf8")).toBe(bytes);
-    expect((await sl(t.root, ["results", "status", "--plan", plan.plan_id, "--json"])).json<StatusJson>().complete).toBe(true);
+    expect((await semlayer(t.root, ["results", "status", "--plan", plan.plan_id, "--json"])).json<StatusJson>().complete).toBe(true);
     expect(planId(again)).toBe(plan.plan_id);
     const other = await emit(t.root, ["introspect", "--source", "wh", "--schemas", "main"]);
     expect(other.plan_id).not.toBe(plan.plan_id);
@@ -322,14 +322,14 @@ describe("re-adding and re-emitting", () => {
 describe("backward compatibility", () => {
   test("the emitted JSON keeps every field and gains plan_id, path and max_rows; a note names the next commands", async () => {
     const t = await setup();
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--emit-sql"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--emit-sql"]);
     const plan = r.json<Emitted>();
     expect(Object.keys(plan)).toEqual(["command", "source", "dialect", "queries", "plan_id", "path"]);
     expect(plan).toMatchObject({ command: "introspect", source: "wh", dialect: "duckdb" });
     for (const q of plan.queries) expect(Object.keys(q)).toEqual(["id", "purpose", "sql", "max_rows"]);
     expect(r.err).toContain(`Wrote plan ${plan.plan_id}`);
-    expect(r.err).toContain(`sl results add --plan ${plan.plan_id} --query <query id> --file <rows.json>`);
-    expect(r.err).toContain(`sl introspect --source wh --plan ${plan.plan_id}`);
+    expect(r.err).toContain(`semlayer results add --plan ${plan.plan_id} --query <query id> --file <rows.json>`);
+    expect(r.err).toContain(`semlayer introspect --source wh --plan ${plan.plan_id}`);
   });
 
   test("--results <file> works unchanged, and ignores max_rows", async () => {
@@ -339,11 +339,11 @@ describe("backward compatibility", () => {
     const results = Object.fromEntries([...files].map(([id, f]) => [id, JSON.parse(readFileSync(f, "utf8"))]));
     const file = join(t.dir, "results.json");
     writeFileSync(file, JSON.stringify(results));
-    const fromFile = await sl(t.root, ["introspect", "--source", "wh", "--results", file, "--json"]);
+    const fromFile = await semlayer(t.root, ["introspect", "--source", "wh", "--results", file, "--json"]);
     expect(fromFile.code).toBe(0);
     expect(fromFile.err).toBe("");
     const snapshot = readFileSync(join(t.root, "snapshots", "wh.json"), "utf8");
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
     expect(readFileSync(join(t.root, "snapshots", "wh.json"), "utf8")).toBe(snapshot);
   });
 });
@@ -351,7 +351,7 @@ describe("backward compatibility", () => {
 describe("other commands finish from a plan", () => {
   test("check-join and goldens run", async () => {
     const t = await setup();
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), {
       model: "orders",
       source: "wh",
@@ -376,11 +376,11 @@ describe("other commands finish from a plan", () => {
     const joinPlan = await emit(t.root, ["check-join", "--source", "wh", "--all", "--no-write"]);
     expect(joinPlan.queries.map((q) => [q.id, q.max_rows])).toEqual([["join:orders.customer", 2]]);
     await addAll(t.root, joinPlan, await runQueries(t.root, t.dir, joinPlan));
-    const joinStatus = await sl(t.root, ["results", "status", "--plan", joinPlan.plan_id, "--json"]);
-    expect(joinStatus.json<StatusJson>().finish).toBe(`sl check-join --source wh --all --no-write --plan ${joinPlan.plan_id}`);
-    const fromPlan = await sl(t.root, ["check-join", "--source", "wh", "--all", "--no-write", "--plan", joinPlan.plan_id, "--json"]);
+    const joinStatus = await semlayer(t.root, ["results", "status", "--plan", joinPlan.plan_id, "--json"]);
+    expect(joinStatus.json<StatusJson>().finish).toBe(`semlayer check-join --source wh --all --no-write --plan ${joinPlan.plan_id}`);
+    const fromPlan = await semlayer(t.root, ["check-join", "--source", "wh", "--all", "--no-write", "--plan", joinPlan.plan_id, "--json"]);
     expect(fromPlan.code).toBe(0);
-    const live = await sl(t.root, ["check-join", "--source", "wh", "--all", "--no-write", "--json"]);
+    const live = await semlayer(t.root, ["check-join", "--source", "wh", "--all", "--no-write", "--json"]);
     expect(fromPlan.json()).toEqual(live.json());
 
     writeYaml(join(t.root, "goldens", "orders_by_status.yaml"), {
@@ -397,7 +397,7 @@ describe("other commands finish from a plan", () => {
       ["golden:orders_by_status:cross_check", 10_000],
     ]);
     await addAll(t.root, goldenPlan, await runQueries(t.root, t.dir, goldenPlan));
-    const run = await sl(t.root, ["goldens", "run", "--name", "orders_by_status", "--plan", goldenPlan.plan_id, "--json"]);
+    const run = await semlayer(t.root, ["goldens", "run", "--name", "orders_by_status", "--plan", goldenPlan.plan_id, "--json"]);
     expect(run.code).toBe(0);
     expect(run.json<{ rows: unknown[] }>().rows).toEqual([
       { status: "cancelled", orders: 15 },
@@ -416,9 +416,9 @@ describe("other commands finish from a plan", () => {
     expect(checkPlan.queries.map((q) => q.id)).toEqual(["golden:orders_by_status", "golden:orders_by_status:cross_check"]);
     // The same query as goldens run's plan: the same plan, whose results are stored already.
     expect(checkPlan.plan_id).toBe(goldenPlan.plan_id);
-    const status = await sl(t.root, ["results", "status", "--plan", checkPlan.plan_id, "--json"]);
-    expect(status.json<StatusJson>().next).toBe(`Next: sl goldens check --source wh --plan ${checkPlan.plan_id}`);
-    const check = await sl(t.root, ["goldens", "check", "--source", "wh", "--plan", checkPlan.plan_id, "--json"]);
+    const status = await semlayer(t.root, ["results", "status", "--plan", checkPlan.plan_id, "--json"]);
+    expect(status.json<StatusJson>().next).toBe(`Next: semlayer goldens check --source wh --plan ${checkPlan.plan_id}`);
+    const check = await semlayer(t.root, ["goldens", "check", "--source", "wh", "--plan", checkPlan.plan_id, "--json"]);
     expect(check.json()).toEqual({ passed: 1, failed: 0, results: [{ name: "orders_by_status", ok: true, diffs: [], compiled: "pass", cross_check: "pass" }] });
   });
 });
@@ -426,7 +426,7 @@ describe("other commands finish from a plan", () => {
 describe("protected values", () => {
   test("a profile plan reads protected text only through counts and a protected date through counts, min and max", async () => {
     const t = await setup();
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
     // email is protected by its name; segment is tagged pii in a model.
     writeYaml(join(t.root, "models", "wh", "customers.yaml"), {
       model: "customers",
@@ -451,16 +451,16 @@ describe("protected values", () => {
       expect(q.sql.replace(aggregated, "")).not.toMatch(/\bbirth_date\b/);
     }
     await addAll(t.root, plan, await runQueries(t.root, t.dir, plan));
-    for (const f of filesUnder(join(t.root, ".sl", "plans"))) {
+    for (const f of filesUnder(join(t.root, ".semlayer", "plans"))) {
       const text = readFileSync(f, "utf8");
       expect(text).not.toContain("@example.test");
       expect(text).not.toContain("enterprise");
     }
   });
 
-  test("a golden result with a protected column is refused and not stored; no file under .sl/plans holds one", async () => {
+  test("a golden result with a protected column is refused and not stored; no file under .semlayer/plans holds one", async () => {
     const t = await setup();
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
     const golden = (name: string, sql: string) =>
       writeYaml(join(t.root, "goldens", `${name}.yaml`), {
         name,
@@ -473,44 +473,44 @@ describe("protected values", () => {
     const plan = await emit(t.root, ["goldens", "run", "--name", "emails"]);
     const files = await runQueries(t.root, t.dir, plan);
     // The request names nothing to compile, so the plan runs the golden's cross_check_sql alone.
-    const refused = await sl(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "golden:emails:cross_check", "--file", files.get("golden:emails:cross_check")!]);
+    const refused = await semlayer(t.root, ["results", "add", "--plan", plan.plan_id, "--query", "golden:emails:cross_check", "--file", files.get("golden:emails:cross_check")!]);
     expect(refused.code).toBe(1);
     expect(refused.err).toContain('The result of "golden:emails:cross_check" has protected column email');
-    expect(refused.err).toContain("sl goldens run --name emails --results <file>");
-    expect(existsSync(join(t.root, ".sl", "plans", plan.plan_id))).toBe(false);
+    expect(refused.err).toContain("semlayer goldens run --name emails --results <file>");
+    expect(existsSync(join(t.root, ".semlayer", "plans", plan.plan_id))).toBe(false);
 
     golden("segments", "select segment, count(*) as customers from main.customers group by segment order by segment");
     const ok = await emit(t.root, ["goldens", "run", "--name", "segments"]);
     await addAll(t.root, ok, await runQueries(t.root, t.dir, ok));
-    expect((await sl(t.root, ["goldens", "run", "--name", "segments", "--plan", ok.plan_id])).code).toBe(0);
-    const stored = filesUnder(join(t.root, ".sl", "plans"));
+    expect((await semlayer(t.root, ["goldens", "run", "--name", "segments", "--plan", ok.plan_id])).code).toBe(0);
+    const stored = filesUnder(join(t.root, ".semlayer", "plans"));
     expect(stored.some((f) => f.includes(`${ok.plan_id}/results/`))).toBe(true);
     for (const f of stored) expect(readFileSync(f, "utf8")).not.toContain("@example.test");
   });
 });
 
-describe(".sl/plans is gitignored", () => {
-  test("sl init writes a .gitignore naming it, and emitting writes one inside it", async () => {
+describe(".semlayer/plans is gitignored", () => {
+  test("semlayer init writes a .gitignore naming it, and emitting writes one inside it", async () => {
     const t = await setup();
-    expect(readFileSync(join(t.root, ".gitignore"), "utf8").split("\n")).toContain(".sl/plans/");
+    expect(readFileSync(join(t.root, ".gitignore"), "utf8").split("\n")).toContain(".semlayer/plans/");
     await emit(t.root, ["introspect", "--source", "wh"]);
-    expect(readFileSync(join(t.root, ".sl", "plans", ".gitignore"), "utf8")).toBe("*\n");
+    expect(readFileSync(join(t.root, ".semlayer", "plans", ".gitignore"), "utf8")).toBe("*\n");
   });
 
-  test("sl init appends to a .gitignore that exists, once", async () => {
+  test("semlayer init appends to a .gitignore that exists, once", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     const { mkdirSync } = await import("node:fs");
     mkdirSync(t.root, { recursive: true });
     writeFileSync(join(t.root, ".gitignore"), "# mine\n*.tmp");
     await initProject(t.root);
-    // sl init also names the lock a writing command holds (tests/lock.test.ts).
-    expect(readFileSync(join(t.root, ".gitignore"), "utf8")).toBe("# mine\n*.tmp\n.sl/plans/\n.sl/lock\n.sl/lock.takeover\n*.sl-tmp\n");
+    // semlayer init also names the lock a writing command holds (tests/lock.test.ts).
+    expect(readFileSync(join(t.root, ".gitignore"), "utf8")).toBe("# mine\n*.tmp\n.semlayer/plans/\n.semlayer/lock\n.semlayer/lock.takeover\n*.semlayer-tmp\n");
   });
 
   test("the example layer ignores it", () => {
     const example = join(import.meta.dir, "..", "examples", "acme", "semantic");
-    expect(readFileSync(join(example, ".gitignore"), "utf8").split("\n")).toContain(".sl/plans/");
+    expect(readFileSync(join(example, ".gitignore"), "utf8").split("\n")).toContain(".semlayer/plans/");
     expect(readYaml<{ name: string }>(join(example, "semantic.yaml")).name).toBeTruthy();
   });
 });

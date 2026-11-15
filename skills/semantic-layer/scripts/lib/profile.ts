@@ -195,7 +195,7 @@ export function applyProfile(
   return { snapshot: { ...snapshot, tables }, empty_samples: empty, failed: failedTables };
 }
 
-// The in-scope tables of a source that the last sl profile run skipped, with the reason it gave
+// The in-scope tables of a source that the last semlayer profile run skipped, with the reason it gave
 // (NO_SELECT_REASON in lib/plan.ts, "timed out ...", EMPTY_SAMPLE_REASON, or the database's
 // message), in the snapshot's order. A table that was never tried is not a gap. Empty when the
 // source has no snapshot.
@@ -238,8 +238,8 @@ export function summarizeTable(table: SnapshotTable, dialect?: Dialect): TableSu
 
 // Protected columns ------------------------------------------------------------
 
-// A hashed value: "sha256:" and 16 hex characters, the form an earlier version of sl profile stored
-// for the top values of protected columns. Profiles no longer hold any: `sl profile --redact`
+// A hashed value: "sha256:" and 16 hex characters, the form an earlier version of semlayer profile stored
+// for the top values of protected columns. Profiles no longer hold any: `semlayer profile --redact`
 // removes them.
 const HASHED_VALUE = /^sha256:[0-9a-f]{16}$/;
 

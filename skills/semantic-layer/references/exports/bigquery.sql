@@ -1,4 +1,4 @@
--- Schema export for BigQuery (GoogleSQL), for `sl import`.
+-- Schema export for BigQuery (GoogleSQL), for `semlayer import`.
 --
 -- Reads only metadata (each dataset's INFORMATION_SCHEMA views and __TABLES__): no table data is
 -- read and nothing is written; metadata queries scan no table bytes. Returns one row per column,
@@ -6,20 +6,20 @@
 -- it belongs to (a column in several foreign keys appears once per key; BigQuery keys are
 -- unenforced). table_schema is the dataset.
 --
--- Datasets: INFORMATION_SCHEMA is read per dataset, and each block between sl:per-dataset and
--- sl:end-per-dataset reads `my_dataset`. Replace `my_dataset` with your dataset (or
+-- Datasets: INFORMATION_SCHEMA is read per dataset, and each block between semlayer:per-dataset and
+-- semlayer:end-per-dataset reads `my_dataset`. Replace `my_dataset` with your dataset (or
 -- `project`.`dataset`), or print the query for several datasets, with each block repeated and
--- joined by UNION ALL: sl export-sql --dialect bigquery --schemas ds1,ds2
+-- joined by UNION ALL: semlayer export-sql --dialect bigquery --schemas ds1,ds2
 -- All datasets in one query must share a location.
 --
--- Restrict tables: sl export-sql --include/--exclude prints this query with a table filter at the
--- line marked sl:table-filter (a pattern the dialect cannot express is applied by sl import).
+-- Restrict tables: semlayer export-sql --include/--exclude prints this query with a table filter at the
+-- line marked semlayer:table-filter (a pattern the dialect cannot express is applied by semlayer import).
 --
 -- Run it and save CSV:
 --   bq --quiet query --use_legacy_sql=false --format=csv --max_rows=1000000 < bigquery.sql > schema.csv
 -- (bq reads the query from stdin; passed as an argument, its opening "--" comment reads as a flag.)
 -- Then import it:
---   sl import --source <source> --file schema.csv
+--   semlayer import --source <source> --file schema.csv
 --
 -- row_count is __TABLES__.row_count; it is empty for views and external tables.
 -- A foreign key of several columns is paired with its referenced columns through the referenced
@@ -27,54 +27,54 @@
 -- dataset left out of the query is not listed.
 with
 cols as (
-  -- sl:per-dataset
+  -- semlayer:per-dataset
   select table_schema, table_name, column_name, ordinal_position, data_type, is_nullable
   from `my_dataset`.INFORMATION_SCHEMA.COLUMNS
-  -- sl:end-per-dataset
+  -- semlayer:end-per-dataset
 ),
 fields as (
-  -- sl:per-dataset
+  -- semlayer:per-dataset
   select table_schema, table_name, column_name, description
   from `my_dataset`.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS
   where field_path = column_name
-  -- sl:end-per-dataset
+  -- semlayer:end-per-dataset
 ),
 tabs as (
-  -- sl:per-dataset
+  -- semlayer:per-dataset
   select table_schema, table_name, table_type
   from `my_dataset`.INFORMATION_SCHEMA.TABLES
-  -- sl:end-per-dataset
+  -- semlayer:end-per-dataset
 ),
 opts as (
-  -- sl:per-dataset
+  -- semlayer:per-dataset
   select table_schema, table_name, option_value
   from `my_dataset`.INFORMATION_SCHEMA.TABLE_OPTIONS
   where option_name = 'description'
-  -- sl:end-per-dataset
+  -- semlayer:end-per-dataset
 ),
 counts as (
-  -- sl:per-dataset
+  -- semlayer:per-dataset
   select dataset_id as table_schema, table_id as table_name, row_count
   from `my_dataset`.__TABLES__
-  -- sl:end-per-dataset
+  -- semlayer:end-per-dataset
 ),
 tc as (
-  -- sl:per-dataset
+  -- semlayer:per-dataset
   select constraint_schema, constraint_name, table_schema, table_name, constraint_type
   from `my_dataset`.INFORMATION_SCHEMA.TABLE_CONSTRAINTS
-  -- sl:end-per-dataset
+  -- semlayer:end-per-dataset
 ),
 kcu as (
-  -- sl:per-dataset
+  -- semlayer:per-dataset
   select constraint_schema, constraint_name, table_schema, table_name, column_name, ordinal_position, position_in_unique_constraint
   from `my_dataset`.INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-  -- sl:end-per-dataset
+  -- semlayer:end-per-dataset
 ),
 ccu as (
-  -- sl:per-dataset
+  -- semlayer:per-dataset
   select constraint_schema, constraint_name, table_schema, table_name, column_name
   from `my_dataset`.INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE
-  -- sl:end-per-dataset
+  -- semlayer:end-per-dataset
 ),
 pk as (
   select k.table_schema, k.table_name, k.column_name, k.ordinal_position as pk_ordinal
@@ -130,5 +130,5 @@ left join opts o on o.table_schema = c.table_schema and o.table_name = c.table_n
 left join counts n on n.table_schema = c.table_schema and n.table_name = c.table_name
 left join pk on pk.table_schema = c.table_schema and pk.table_name = c.table_name and pk.column_name = c.column_name
 left join fk on fk.table_schema = c.table_schema and fk.table_name = c.table_name and fk.column_name = c.column_name
--- sl:table-filter: sl export-sql --include/--exclude writes the table filter here
+-- semlayer:table-filter: semlayer export-sql --include/--exclude writes the table filter here
 order by table_schema, table_name, ordinal_position, fk_name;

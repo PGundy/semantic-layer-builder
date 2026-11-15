@@ -43,7 +43,7 @@ function outPath(root: string, out: string): string {
   const own = projectEntries(base);
   if (own.files.includes(rel)) throw new UserError(`--out ${out} is one of the project's own files; give another path, such as baseline.md.`);
   const dir0 = own.dirs.find((d) => rel === d || rel.startsWith(`${d}/`));
-  if (dir0) throw new UserError(`--out ${out} is inside the project's ${dir0}/ directory, which sl manages; give another path, such as baseline.md.`);
+  if (dir0) throw new UserError(`--out ${out} is inside the project's ${dir0}/ directory, which semlayer manages; give another path, such as baseline.md.`);
   for (let parent = dirname(target); parent !== base && inside(base, parent); parent = dirname(parent)) {
     let pstat: ReturnType<typeof statSync> | undefined;
     try {
@@ -76,7 +76,7 @@ function outPath(root: string, out: string): string {
   return target;
 }
 
-// The phase sl next names, or null when the project's status cannot be read (the brief needs only the snapshot).
+// The phase semlayer next names, or null when the project's status cannot be read (the brief needs only the snapshot).
 function currentPhase(root: string): string | null {
   try {
     return computeStatus(root).next_step.phase;
@@ -89,7 +89,7 @@ const spec: CommandSpec = {
   summary:
     "Write a read-only baseline brief from the snapshot: per table its likely role, grain, keys, relationships, candidate measures and splits, " +
     "and the questions to ask the owner, plus a star-schema sketch. Reads no database. " +
-    "--json is scoped to the phase sl next names: in the metrics phase " + VIEW_GIVES.metrics + "; in every other phase " + VIEW_GIVES.tables + ". " +
+    "--json is scoped to the phase semlayer next names: in the metrics phase " + VIEW_GIVES.metrics + "; in every other phase " + VIEW_GIVES.tables + ". " +
     "--full --json gives every table's whole reading; the plain brief is always whole, so --full applies only with --json.",
   usage: "baseline --source <source> [--tables t,...] [--out <file>] [--full]",
   options: {
@@ -130,7 +130,7 @@ const spec: CommandSpec = {
         return 0;
       }
       const tablesFlag = list(values, "tables");
-      const full = `sl baseline --source ${sourceName}${tablesFlag.length ? ` --tables ${tablesFlag.join(",")}` : ""} --full --json`;
+      const full = `semlayer baseline --source ${sourceName}${tablesFlag.length ? ` --tables ${tablesFlag.join(",")}` : ""} --full --json`;
       const usage = loadUsage(ctx.root, sourceName);
       const names = usage ? namesFor(ctx.root, sourceName, snapshot) : undefined;
       const block = usage && names ? (table: string) => usageBlock(table, usage, names) : undefined;

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { writeYaml } from "../../skills/semantic-layer/scripts/lib/yaml.ts";
 import { FIXED_NOW, initProject, tempRoot } from "../helpers.ts";
 import { SCHEMAS, writeInformationSchemaCsv } from "./catalog.ts";
-import { ok, report, SL, tableListText, timedSl } from "./harness.ts";
+import { ok, report, SEMLAYER, tableListText, timedSl } from "./harness.ts";
 
 const TABLES = 5_000;
 const BUDGET_MS = 15_000;
@@ -37,20 +37,20 @@ afterAll(() => cleanup?.());
 
 describe("5,000 tables", () => {
   test("import plus scope preview stay within a generous bound", async () => {
-    const imported = ok(await timedSl(root, ["import", "--source", "wh", "--file", csv, "--json"]), "sl import");
+    const imported = ok(await timedSl(root, ["import", "--source", "wh", "--file", csv, "--json"]), "semlayer import");
     report("smoke: import 5,000 tables", imported);
     const j = JSON.parse(imported.out) as { tables: number; columns: number };
     expect(j).toMatchObject({ tables: TABLES, columns: TABLES * 20 });
-    const preview = ok(await timedSl(root, ["scope", "--source", "wh"]), "sl scope");
+    const preview = ok(await timedSl(root, ["scope", "--source", "wh"]), "semlayer scope");
     report("smoke: scope preview", preview);
     expect(preview.out).toContain(`of ${TABLES} (was`);
     expect(imported.ms + preview.ms).toBeLessThan(BUDGET_MS);
   }, 60_000);
 
   test("a large --json result reaches a reader that starts late, whole", async () => {
-    const proc = Bun.spawn(["bun", SL, "scope", "--source", "wh", "--json", "--root", root], {
+    const proc = Bun.spawn(["bun", SEMLAYER, "scope", "--source", "wh", "--json", "--root", root], {
       cwd: root,
-      env: { ...process.env, SL_NOW: FIXED_NOW },
+      env: { ...process.env, SEMLAYER_NOW: FIXED_NOW },
       stdout: "pipe",
       stderr: "pipe",
     });

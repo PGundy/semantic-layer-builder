@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { AccessFile, MetricsFile, Model } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { approveWithYes, initProject, recordReply, refsUnder, sl, tempRoot } from "./helpers.ts";
+import { approveWithYes, initProject, recordReply, refsUnder, semlayer, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
@@ -113,15 +113,15 @@ interface Result {
   warnings: string[];
 }
 
-// sl approve after the owner's recorded yes to the target (approve-ledger.test.ts covers approving
+// semlayer approve after the owner's recorded yes to the target (approve-ledger.test.ts covers approving
 // without one); a revoke and --stamp-hashes need none.
 async function approve(root: string, args: string[], opts: { now?: string } = {}) {
   return args.includes("--stamp-hashes") ? raw(root, args) : approveWithYes(root, args, opts);
 }
 
-// sl approve with no reply recorded first.
+// semlayer approve with no reply recorded first.
 async function raw(root: string, args: string[]) {
-  return sl(root, ["approve", ...args]);
+  return semlayer(root, ["approve", ...args]);
 }
 
 describe("approve targets", () => {
@@ -160,7 +160,7 @@ describe("approve targets", () => {
     expect(j.code).toBe(0);
     const jr = j.json<Result>();
     expect(jr.changed).toEqual([{ target: "wh.orders.customer", from: "draft", to: "approved" }]);
-    expect(jr.warnings[0]).toContain("sl check-join --source wh --model orders --join customer");
+    expect(jr.warnings[0]).toContain("semlayer check-join --source wh --model orders --join customer");
     const o = orders(root);
     expect(o.dimensions[0]).toMatchObject({ status: "approved", approved_by: "Dana", approved_at: "2026-01-15" });
     expect(o.measures[0]).toMatchObject({ status: "approved", approved_by: "Dana" });
@@ -234,7 +234,7 @@ measures:
     const root = await project();
     const r = await raw(root, ["--by", "Dana"]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain("sl goldens confirm");
+    expect(r.err).toContain("semlayer goldens confirm");
   });
 
   test("already approved is a no-op", async () => {
@@ -260,11 +260,11 @@ describe("approve refusals", () => {
     expect(orders(root).status).toBe("draft");
   });
 
-  // sl readback refuses these items up front (HR-15), so no yes to them can be recorded: sl approve,
+  // semlayer readback refuses these items up front (HR-15), so no yes to them can be recorded: semlayer approve,
   // run without one, still names what they lack.
   test("a model without grain or primary_key", async () => {
     const root = await project();
-    const rb = await sl(root, ["readback", "--targets", "wh.customers"]);
+    const rb = await semlayer(root, ["readback", "--targets", "wh.customers"]);
     expect(rb.code).toBe(1);
     expect(rb.err).toContain("  - wh.customers: wh.customers has no grain\n  - wh.customers: wh.customers has no primary_key");
     const r = await raw(root, ["--target", "wh.customers", "--by", "Dana"]);
@@ -276,7 +276,7 @@ describe("approve refusals", () => {
 
   test("a measure without description: refused by the readback, and by approve after a yes when the description was removed since", async () => {
     const root = await project();
-    expect((await sl(root, ["readback", "--targets", "wh.customers.customer_count"])).err).toContain("Measure wh.customers.customer_count has no description");
+    expect((await semlayer(root, ["readback", "--targets", "wh.customers.customer_count"])).err).toContain("Measure wh.customers.customer_count has no description");
     // A description is outside the approval hash, so a yes given with one stands after it is removed.
     const file = join(root, "models", "wh", "customers.yaml");
     writeFileSync(file, CUSTOMERS.replace("    agg: count\n", "    agg: count\n    description: Customers.\n"));
@@ -290,7 +290,7 @@ describe("approve refusals", () => {
 
   test("a metric without description, with draft measures, or with a missing measure", async () => {
     const root = await project();
-    expect((await sl(root, ["readback", "--targets", "metric:vague,metric:broken"])).err).toContain(
+    expect((await semlayer(root, ["readback", "--targets", "metric:vague,metric:broken"])).err).toContain(
       "  - metric:vague: Metric metric:vague has no description\n  - metric:broken: measure wh.orders.nope does not exist",
     );
     const vague = await raw(root, ["--target", "metric:vague", "--by", "Dana"]);
@@ -308,7 +308,7 @@ describe("approve refusals", () => {
     expect(text(root, "metrics.yaml")).toBe(METRICS);
   });
 
-  test("a metric with placeholders sl validate rejects, or none at all", async () => {
+  test("a metric with placeholders semlayer validate rejects, or none at all", async () => {
     const root = await project();
     await approve(root, ["--target", "wh.orders.revenue", "--by", "Dana"]);
     const odd = `metrics:
@@ -338,7 +338,7 @@ describe("approve refusals", () => {
     status: draft
 `;
     writeFileSync(join(root, "metrics.yaml"), odd);
-    expect((await sl(root, ["readback", "--targets", "metric:upper,metric:spaced,metric:constant,metric:mixed"])).err).toContain(
+    expect((await semlayer(root, ["readback", "--targets", "metric:upper,metric:spaced,metric:constant,metric:mixed"])).err).toContain(
       "  - metric:upper: its expr placeholder {Orders.Revenue} is not {model.measure} (lowercase names, no spaces)",
     );
     const upper = await raw(root, ["--target", "metric:upper", "--by", "Dana"]);
@@ -369,16 +369,16 @@ describe("approve refusals", () => {
     expect(text(root, "metrics.yaml")).toBe(before);
   });
 
-  test("a golden points to sl goldens confirm", async () => {
+  test("a golden points to semlayer goldens confirm", async () => {
     const root = await project();
     const r = await raw(root, ["--target", "golden:revenue_2025", "--by", "Dana"]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain("sl goldens confirm --name revenue_2025");
+    expect(r.err).toContain("semlayer goldens confirm --name revenue_2025");
   });
 
   test("the usage lists the targets approve takes and leaves goldens out", async () => {
     const root = await project();
-    const r = await sl(root, ["approve", "--help"]);
+    const r = await semlayer(root, ["approve", "--help"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("approve --target <source.model | source.model.field | metric:<name> | access>");
     expect(r.out).not.toContain("golden");
@@ -430,7 +430,7 @@ describe("approve --recursive and --revoke", () => {
 
   test("--recursive lists every child that cannot be approved and approves nothing", async () => {
     const root = await project();
-    expect((await sl(root, ["readback", "--targets", refsUnder(root, "wh.customers").join(",")])).code).toBe(1);
+    expect((await semlayer(root, ["readback", "--targets", refsUnder(root, "wh.customers").join(",")])).code).toBe(1);
     const r = await raw(root, ["--target", "wh.customers", "--by", "Dana", "--recursive"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("nothing was approved");
@@ -504,10 +504,10 @@ describe("revoking and approving access.yaml again", () => {
     expect(again.json<Result>().changed).toEqual([]);
     expect(readYaml<Record<string, unknown>>(join(root, "access.yaml")).last_approved).toEqual({ by: "Dana", at: "2026-02-01" });
     // The access schema allows last_approved.
-    const issues = (await sl(root, ["validate", "--json"])).json<{ issues: unknown[] }>().issues;
+    const issues = (await semlayer(root, ["validate", "--json"])).json<{ issues: unknown[] }>().issues;
     expect(issues.filter((i) => JSON.stringify(i).includes("last_approved"))).toEqual([]);
     writeFileSync(join(root, "access.yaml"), ACCESS.replace("status: draft\n", "status: draft\nlast_approved:\n  by: Dana\n  on: 2026-02-01\n"));
-    const bad = (await sl(root, ["validate", "--json"])).json<{ issues: unknown[] }>().issues;
+    const bad = (await semlayer(root, ["validate", "--json"])).json<{ issues: unknown[] }>().issues;
     expect(bad.filter((i) => JSON.stringify(i).includes("last_approved")).length).toBeGreaterThan(0);
   });
 

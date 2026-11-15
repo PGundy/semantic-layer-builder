@@ -119,17 +119,17 @@ export function compileMetrics(input: CompileInput, request: QueryRequest, prior
     if (m.type === "ratio") {
       const [n, d] = [m.numerator, m.denominator].map((x) => (typeof x === "string" ? parseRequestField(x.trim()) : undefined));
       if (n && d && !n.grain && !d.grain) f = { k: "bin", op: "/", a: { k: "ref", model: n.model, measure: n.field }, b: { k: "ref", model: d.model, measure: d.field } };
-      else add("invalid_layer", `metric ${metric.name} needs a numerator and a denominator, each model.measure; run sl validate`, metric.name);
+      else add("invalid_layer", `metric ${metric.name} needs a numerator and a denominator, each model.measure; run semlayer validate`, metric.name);
     } else if (m.type === "derived") {
       const node = typeof m.expr === "string" ? parseFormula(m.expr) : undefined;
       if (node && refs(node).length) f = node;
-      else add("invalid_layer", `metric ${metric.name} has an expr sl sql cannot read: it combines {model.measure} placeholders with numbers and + - * / ( ) only; run sl validate`, metric.name);
+      else add("invalid_layer", `metric ${metric.name} has an expr semlayer sql cannot read: it combines {model.measure} placeholders with numbers and + - * / ( ) only; run semlayer validate`, metric.name);
     } else {
-      add("unsupported_metric", `metric ${metric.name} is of type ${String(m.type)}, and sl sql compiles ratio and derived metrics only; run sl validate`, metric.name);
+      add("unsupported_metric", `metric ${metric.name} is of type ${String(m.type)}, and semlayer sql compiles ratio and derived metrics only; run semlayer validate`, metric.name);
     }
     for (const r of f ? refs(f) : [])
       if (!measureOf(r.model, r.measure)) {
-        add("invalid_layer", `metric ${metric.name} reads ${r.model}.${r.measure}, which is not a measure of source ${source.source}; run sl validate`, metric.name);
+        add("invalid_layer", `metric ${metric.name} reads ${r.model}.${r.measure}, which is not a measure of source ${source.source}; run semlayer validate`, metric.name);
         f = undefined;
       }
     formulas.set(metric.name, f);
@@ -221,7 +221,7 @@ export function compileMetrics(input: CompileInput, request: QueryRequest, prior
       "no_shared_dimension",
       `${what} ${ref}, but its measures come from ${across}, each aggregated on its own model, so each of them needs to reach ${p.model} through one path of to-one joins or have a dimension named ${p.field}; ${model} has neither`,
       ref,
-      `Add a many_to_one join from ${model} toward ${p.model} (sl check-join measures it), or a dimension ${p.field} to ${model} that gives the same value, approve it after its readback, and run sl sql again; or leave ${ref} out of the request.`,
+      `Add a many_to_one join from ${model} toward ${p.model} (semlayer check-join measures it), or a dimension ${p.field} to ${model} that gives the same value, approve it after its readback, and run semlayer sql again; or leave ${ref} out of the request.`,
     );
     return undefined;
   };
@@ -318,7 +318,7 @@ export function compileMetrics(input: CompileInput, request: QueryRequest, prior
     const root = input.root;
     assertReadOnly(sql, root ? { globAllowed: (p) => globInsideViews(root, source, p) } : {});
   } catch (e) {
-    refusals.push({ code: "invalid_layer", message: `the compiled SQL is not read-only (${(e as Error).message}); run sl validate` });
+    refusals.push({ code: "invalid_layer", message: `the compiled SQL is not read-only (${(e as Error).message}); run semlayer validate` });
     return refuse();
   }
   return {

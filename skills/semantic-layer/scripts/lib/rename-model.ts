@@ -1,4 +1,4 @@
-// sl rename <source.model> <new_name>: every place outside the model's own file name that names a
+// semlayer rename <source.model> <new_name>: every place outside the model's own file name that names a
 // model, for a rename that moves models/<source>/<model>.yaml to <new_name>.yaml in one write.
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -81,7 +81,7 @@ export function modelReferenceSites(root: string, source: string, from: string, 
     for (const key of ["filters", "order_by"]) arr(request[key]).forEach((v, i) => check(["request", key, i, "field"], obj(v).field));
   }
 
-  // access.yaml, read as sl access reads it: names compare in any case, patterns as scope patterns.
+  // access.yaml, read as semlayer access reads it: names compare in any case, patterns as scope patterns.
   const accessFile = paths(root).access;
   const access = obj(readYamlIfExists<unknown>(accessFile));
   const oldModel = `${source}.${from}`;

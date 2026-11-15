@@ -8,7 +8,7 @@ import { matchesPattern } from "../skills/semantic-layer/scripts/lib/patterns.ts
 import { noiseReason } from "../skills/semantic-layer/scripts/lib/rank.ts";
 import type { Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { initProject, sl, tempRoot } from "./helpers.ts";
+import { initProject, semlayer, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
@@ -264,7 +264,7 @@ describe("groupTables edge cases", () => {
     expect(noise.reason).toContain("underscore");
   });
 
-  test("the suggested scope excludes the tables sl baseline calls noise or staging", () => {
+  test("the suggested scope excludes the tables semlayer baseline calls noise or staging", () => {
     const tabs = [
       table("shop", "sales", 3000),
       table("shop", "products", 42),
@@ -324,7 +324,7 @@ describe("groupTables edge cases", () => {
 
   test("the suggested scope command quotes patterns for the shell", () => {
     expect(scopeCommand("wh", { include: ["fct_*", "dim_*"], exclude: ["p.it's_tmp", "a.b"] })).toBe(
-      "sl scope --source wh --include 'fct_*' --include 'dim_*' --exclude 'p.it'\\''s_tmp' --exclude a.b",
+      "semlayer scope --source wh --include 'fct_*' --include 'dim_*' --exclude 'p.it'\\''s_tmp' --exclude a.b",
     );
   });
 
@@ -382,10 +382,10 @@ describe("groupTables edge cases", () => {
   });
 });
 
-describe("sl tables", () => {
+describe("semlayer tables", () => {
   test("JSON lists ranked in-scope tables and flags the need to focus", async () => {
     const { root } = await setup();
-    const r = await sl(root, ["tables", "--source", "wh", "--json"]);
+    const r = await semlayer(root, ["tables", "--source", "wh", "--json"]);
     expect(r.code).toBe(0);
     const j = r.json<{
       total: number;
@@ -410,7 +410,7 @@ describe("sl tables", () => {
     expect(last).toContain("analytics.schema_migrations");
   });
 
-  test("profiled is yes, partial or no by the rule sl status applies", async () => {
+  test("profiled is yes, partial or no by the rule semlayer status applies", async () => {
     const { root } = await setup();
     const path = join(root, "snapshots", "wh.json");
     const snap = JSON.parse(readFileSync(path, "utf8")) as Snapshot;
@@ -418,20 +418,20 @@ describe("sl tables", () => {
     const payments = snap.tables.find((t) => t.name === "fct_payments")!;
     payments.columns[0]!.profile = { null_fraction: 0, distinct_count: 8000 };
     writeJson(path, snap);
-    const j = (await sl(root, ["tables", "--source", "wh", "--json"])).json<{
+    const j = (await semlayer(root, ["tables", "--source", "wh", "--json"])).json<{
       tables: { table: string; profiled: boolean; profile_state: string }[];
     }>();
     const row = (name: string) => j.tables.find((t) => t.table === `analytics.${name}`);
     expect(row("fct_orders")).toMatchObject({ profiled: true, profile_state: "yes" });
     expect(row("fct_payments")).toMatchObject({ profiled: false, profile_state: "partial" });
     expect(row("fct_sessions")).toMatchObject({ profiled: false, profile_state: "no" });
-    const human = await sl(root, ["tables", "--source", "wh"]);
+    const human = await semlayer(root, ["tables", "--source", "wh"]);
     const line = (name: string) => human.out.split("\n").find((l) => l.startsWith(`analytics.${name} `))!;
     expect(line("fct_orders").trimEnd().endsWith("yes")).toBe(true);
     expect(line("fct_payments").trimEnd().endsWith("partial")).toBe(true);
     expect(line("fct_sessions").trimEnd().endsWith("no")).toBe(true);
-    // sl status counts the partial table as needing a profile.
-    const st = (await sl(root, ["status", "--json"])).json<{ sources: { unprofiled_tables: string[]; partially_profiled_tables: string[] }[] }>();
+    // semlayer status counts the partial table as needing a profile.
+    const st = (await semlayer(root, ["status", "--json"])).json<{ sources: { unprofiled_tables: string[]; partially_profiled_tables: string[] }[] }>();
     expect(st.sources[0]!.unprofiled_tables).toContain("analytics.fct_payments");
     expect(st.sources[0]!.unprofiled_tables).not.toContain("analytics.fct_orders");
     expect(st.sources[0]!.partially_profiled_tables).toEqual(["analytics.fct_payments"]);
@@ -439,56 +439,56 @@ describe("sl tables", () => {
 
   test("human output has the focus hint, and --groups adds the groups", async () => {
     const { root } = await setup();
-    const r = await sl(root, ["tables", "--source", "wh", "--groups"]);
+    const r = await semlayer(root, ["tables", "--source", "wh", "--groups"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("25 tables in wh, 25 in scope.");
     expect(r.out).toContain("focus threshold of 12");
-    expect(r.out).toContain("sl tables --source wh --groups");
+    expect(r.out).toContain("semlayer tables --source wh --groups");
     expect(r.out).toContain("orders (draft)");
     expect(r.out).toContain("raw_stripe_*");
     expect(r.out).toContain("Suggested scope (the include-suggested groups, less the noise and staging tables they would select):");
-    expect(r.out).toContain("  sl scope --source wh --include 'dim_*' --include 'fct_*'\n");
+    expect(r.out).toContain("  semlayer scope --source wh --include 'dim_*' --include 'fct_*'\n");
     expect(r.out).toContain("add --write to save it");
-    const j = (await sl(root, ["tables", "--source", "wh", "--groups", "--json"])).json<{
+    const j = (await semlayer(root, ["tables", "--source", "wh", "--groups", "--json"])).json<{
       groups: { pattern: string; total_rows: number | null; rows_unknown: number }[];
       suggested_scope: { include: string[]; exclude: string[] };
     }>();
     expect(j.groups.map((g) => g.pattern)).toContain("fct_*");
     expect(j.groups.find((g) => g.pattern === "fct_*")).toMatchObject({ total_rows: 78000, rows_unknown: 0 });
     expect(j.suggested_scope).toEqual({ include: ["dim_*", "fct_*"], exclude: [] });
-    const plain = (await sl(root, ["tables", "--source", "wh", "--json"])).json<{ suggested_scope?: unknown }>();
+    const plain = (await semlayer(root, ["tables", "--source", "wh", "--json"])).json<{ suggested_scope?: unknown }>();
     expect(plain.suggested_scope).toBeUndefined();
   });
 
   test("scope narrows the list, --all shows every table, and a small scope needs no focus", async () => {
     const { root } = await setup();
-    await sl(root, ["scope", "--source", "wh", "--include", "fct_*", "--include", "dim_*", "--exclude", "*_v2", "--write"]);
-    const j = (await sl(root, ["tables", "--source", "wh", "--json"])).json<{ in_scope: number; needs_focus: boolean; tables: { in_scope: boolean }[] }>();
+    await semlayer(root, ["scope", "--source", "wh", "--include", "fct_*", "--include", "dim_*", "--exclude", "*_v2", "--write"]);
+    const j = (await semlayer(root, ["tables", "--source", "wh", "--json"])).json<{ in_scope: number; needs_focus: boolean; tables: { in_scope: boolean }[] }>();
     expect(j.in_scope).toBe(6);
     expect(j.needs_focus).toBe(false);
     expect(j.tables).toHaveLength(6);
-    const all = (await sl(root, ["tables", "--source", "wh", "--all", "--json"])).json<{ tables: { in_scope: boolean }[] }>();
+    const all = (await semlayer(root, ["tables", "--source", "wh", "--all", "--json"])).json<{ tables: { in_scope: boolean }[] }>();
     expect(all.tables).toHaveLength(25);
     expect(all.tables.filter((t) => t.in_scope)).toHaveLength(6);
-    const human = await sl(root, ["tables", "--source", "wh"]);
+    const human = await semlayer(root, ["tables", "--source", "wh"]);
     expect(human.out).not.toContain("focus threshold");
   });
 
   test("long group patterns are shortened in human output", async () => {
     const { root } = await setup();
-    const r = await sl(root, ["tables", "--source", "wh", "--groups"]);
+    const r = await semlayer(root, ["tables", "--source", "wh", "--groups"]);
     const groupLines = r.out.slice(r.out.indexOf("Groups")).split("\n");
     expect(Math.max(...groupLines.map((l) => l.length))).toBeLessThan(300);
     expect(r.out).toContain(`${NOISE_PATTERN.slice(0, 60)}…`);
     expect(r.out).toContain("pass --json for the full text");
-    const j = (await sl(root, ["tables", "--source", "wh", "--groups", "--json"])).json<{ groups: { kind: string; pattern: string }[] }>();
+    const j = (await semlayer(root, ["tables", "--source", "wh", "--groups", "--json"])).json<{ groups: { kind: string; pattern: string }[] }>();
     expect(j.groups.find((g) => g.kind === "noise")?.pattern).toBe(NOISE_PATTERN);
   });
 
   test("a --source name that is not a spec name is rejected", async () => {
     const { root } = await setup();
     for (const cmd of [["tables"], ["scope", "--include", "a", "--write"]]) {
-      const r = await sl(root, [...cmd, "--source", "../../outside"]);
+      const r = await semlayer(root, [...cmd, "--source", "../../outside"]);
       expect(r.code).toBe(1);
       expect(r.err).toContain("must match");
     }
@@ -497,18 +497,18 @@ describe("sl tables", () => {
   test("a missing snapshot is a user error", async () => {
     const { root } = await setup();
     writeYaml(join(root, "sources", "lake.yaml"), { source: "lake", dialect: "duckdb" });
-    const r = await sl(root, ["tables", "--source", "lake"]);
+    const r = await semlayer(root, ["tables", "--source", "lake"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain('No snapshot for "lake"');
-    const s = await sl(root, ["scope", "--source", "lake", "--include", "x"]);
+    const s = await semlayer(root, ["scope", "--source", "lake", "--include", "x"]);
     expect(s.code).toBe(1);
   });
 });
 
-describe("sl scope", () => {
+describe("semlayer scope", () => {
   test("preview writes nothing; --write saves and keeps comments", async () => {
     const { root, sourcePath } = await setup();
-    const preview = await sl(root, ["scope", "--source", "wh", "--include", "fct_*,dim_*", "--exclude", "*_v2", "--json"]);
+    const preview = await semlayer(root, ["scope", "--source", "wh", "--include", "fct_*,dim_*", "--exclude", "*_v2", "--json"]);
     expect(preview.code).toBe(0);
     const p = preview.json<ScopeJson>();
     expect(p.written).toBe(false);
@@ -520,10 +520,10 @@ describe("sl scope", () => {
     expect(p.needs_focus).toBe(false);
     expect(p.tables.find((t) => t.table === "analytics.fct_sessions")?.rows).toBe(50000);
     expect(readFileSync(sourcePath, "utf8")).toBe(SOURCE_YAML);
-    const human = await sl(root, ["scope", "--source", "wh", "--include", "fct_*"]);
+    const human = await semlayer(root, ["scope", "--source", "wh", "--include", "fct_*"]);
     expect(human.out).toContain("Preview only; nothing was written.");
 
-    const w = await sl(root, ["scope", "--source", "wh", "--include", "fct_*", "--include", "dim_*", "--exclude", "*_v2", "--write", "--json"]);
+    const w = await semlayer(root, ["scope", "--source", "wh", "--include", "fct_*", "--include", "dim_*", "--exclude", "*_v2", "--write", "--json"]);
     expect(w.json<ScopeJson>().written).toBe(true);
     const text = readFileSync(sourcePath, "utf8");
     expect(text).toContain("# Warehouse replica. Owner: Dana.");
@@ -532,7 +532,7 @@ describe("sl scope", () => {
     expect(readSource(sourcePath).scope).toEqual({ include: ["fct_*", "dim_*"], exclude: ["*_v2"] });
     expect(readSource(sourcePath).profile).toEqual({ top_values: 5 });
 
-    const again = (await sl(root, ["scope", "--source", "wh", "--include", "stg_*", "--json"])).json<ScopeJson>();
+    const again = (await semlayer(root, ["scope", "--source", "wh", "--include", "stg_*", "--json"])).json<ScopeJson>();
     expect(again.before_count).toBe(6);
     expect(again.scope.include).toEqual(["fct_*", "dim_*", "stg_*"]);
     expect(again.added).toEqual(["raw.stg_customers", "raw.stg_orders", "raw.stg_payments", "raw.stg_products"]);
@@ -541,8 +541,8 @@ describe("sl scope", () => {
 
   test("--remove drops a pattern from either list", async () => {
     const { root, sourcePath } = await setup();
-    await sl(root, ["scope", "--source", "wh", "--include", "fct_*", "--include", "dim_*", "--exclude", "*_v2", "--write"]);
-    const r = (await sl(root, ["scope", "--source", "wh", "--remove", "*_v2", "--remove", "dim_*", "--write", "--json"])).json<ScopeJson>();
+    await semlayer(root, ["scope", "--source", "wh", "--include", "fct_*", "--include", "dim_*", "--exclude", "*_v2", "--write"]);
+    const r = (await semlayer(root, ["scope", "--source", "wh", "--remove", "*_v2", "--remove", "dim_*", "--write", "--json"])).json<ScopeJson>();
     expect(r.scope).toEqual({ include: ["fct_*"] });
     expect(r.after_count).toBe(4);
     expect(r.removed.sort()).toEqual(["analytics.dim_customers", "analytics.dim_dates", "analytics.dim_products"]);
@@ -550,18 +550,18 @@ describe("sl scope", () => {
     const text = readFileSync(sourcePath, "utf8");
     expect(text).not.toContain("exclude");
     expect(text).toContain("# Warehouse replica. Owner: Dana.");
-    const human = await sl(root, ["scope", "--source", "wh", "--remove", "nope_*"]);
+    const human = await semlayer(root, ["scope", "--source", "wh", "--remove", "nope_*"]);
     expect(human.out).toContain('"nope_*" is not in the scope');
   });
 
   test("--clear starts over and an empty scope removes the key", async () => {
     const { root, sourcePath } = await setup();
-    await sl(root, ["scope", "--source", "wh", "--include", "fct_*", "--write"]);
-    const fresh = (await sl(root, ["scope", "--source", "wh", "--clear", "--include", "dim_*", "--json"])).json<ScopeJson>();
+    await semlayer(root, ["scope", "--source", "wh", "--include", "fct_*", "--write"]);
+    const fresh = (await semlayer(root, ["scope", "--source", "wh", "--clear", "--include", "dim_*", "--json"])).json<ScopeJson>();
     expect(fresh.scope).toEqual({ include: ["dim_*"] });
     expect(fresh.before_count).toBe(4);
     expect(fresh.after_count).toBe(4);
-    const cleared = (await sl(root, ["scope", "--source", "wh", "--clear", "--write", "--json"])).json<ScopeJson>();
+    const cleared = (await semlayer(root, ["scope", "--source", "wh", "--clear", "--write", "--json"])).json<ScopeJson>();
     expect(cleared.scope).toEqual({});
     expect(cleared.after_count).toBe(25);
     expect(cleared.needs_focus).toBe(true);
@@ -572,32 +572,32 @@ describe("sl scope", () => {
 
   test("--tables adds exact qualified names and rejects unknown ones", async () => {
     const { root } = await setup();
-    const r = (await sl(root, ["scope", "--source", "wh", "--tables", "fct_orders,raw.stg_orders", "--json"])).json<ScopeJson>();
+    const r = (await semlayer(root, ["scope", "--source", "wh", "--tables", "fct_orders,raw.stg_orders", "--json"])).json<ScopeJson>();
     expect(r.scope.include).toEqual(["analytics.fct_orders", "raw.stg_orders"]);
     expect(r.after_count).toBe(2);
     expect(r.tables.map((t) => t.table)).toEqual(["analytics.fct_orders", "raw.stg_orders"]);
-    const bad = await sl(root, ["scope", "--source", "wh", "--tables", "nope"]);
+    const bad = await semlayer(root, ["scope", "--source", "wh", "--tables", "nope"]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain('"nope"');
   });
 
   test("regex patterns, unmatched warnings and invalid patterns", async () => {
     const { root } = await setup();
-    const re = (await sl(root, ["scope", "--source", "wh", "--include", "re:dim_(customer|product)s(_v\\d+)?", "--json"])).json<ScopeJson>();
+    const re = (await semlayer(root, ["scope", "--source", "wh", "--include", "re:dim_(customer|product)s(_v\\d+)?", "--json"])).json<ScopeJson>();
     expect(re.tables.map((t) => t.table)).toEqual(["analytics.dim_customers", "analytics.dim_customers_v2", "analytics.dim_products"]);
-    const comma = (await sl(root, ["scope", "--source", "wh", "--include", "re:events_\\d{4}(_\\d{2}){0,1}", "--json"])).json<ScopeJson>();
+    const comma = (await semlayer(root, ["scope", "--source", "wh", "--include", "re:events_\\d{4}(_\\d{2}){0,1}", "--json"])).json<ScopeJson>();
     expect(comma.scope.include).toEqual(["re:events_\\d{4}(_\\d{2}){0,1}"]);
     expect(comma.after_count).toBe(2);
-    const qualified = (await sl(root, ["scope", "--source", "wh", "--include", "re:raw\\.raw_.*", "--json"])).json<ScopeJson>();
+    const qualified = (await semlayer(root, ["scope", "--source", "wh", "--include", "re:raw\\.raw_.*", "--json"])).json<ScopeJson>();
     expect(qualified.after_count).toBe(4);
 
-    const unmatched = await sl(root, ["scope", "--source", "wh", "--include", "fct_*", "--include", "mart_*", "--json"]);
+    const unmatched = await semlayer(root, ["scope", "--source", "wh", "--include", "fct_*", "--include", "mart_*", "--json"]);
     expect(unmatched.json<ScopeJson>().unmatched_patterns).toEqual(["mart_*"]);
-    const human = await sl(root, ["scope", "--source", "wh", "--include", "mart_*"]);
+    const human = await semlayer(root, ["scope", "--source", "wh", "--include", "mart_*"]);
     expect(human.out).toContain('Pattern "mart_*" matches no table');
     expect(human.out).toContain("No table is in scope.");
 
-    const invalid = await sl(root, ["scope", "--source", "wh", "--include", "re:(unclosed"]);
+    const invalid = await semlayer(root, ["scope", "--source", "wh", "--include", "re:(unclosed"]);
     expect(invalid.code).toBe(1);
     expect(invalid.err).toContain("Invalid regex");
   });
@@ -609,14 +609,14 @@ describe("sl scope", () => {
       SOURCE_YAML +
         "# Focus agreed with Dana.\nscope:\n  # facts and dims\n  include: [\"fct_*\", \"stg_*\"] # facts\n  # noise\n  exclude:\n    - \"*_tmp\" # temp\n    - \"*_v2\" # versions\n",
     );
-    await sl(root, ["scope", "--source", "wh", "--include", "dim_*", "--write"]);
+    await semlayer(root, ["scope", "--source", "wh", "--include", "dim_*", "--write"]);
     let text = readFileSync(sourcePath, "utf8");
     for (const c of ["# Focus agreed with Dana.", "# facts and dims", "# facts", "# noise", "# temp", "# versions"]) expect(text).toContain(c);
     expect(text).toContain("include: [\"fct_*\", \"stg_*\", dim_*]");
     expect(text).toContain('- "*_tmp" # temp');
     expect(readSource(sourcePath).scope).toEqual({ include: ["fct_*", "stg_*", "dim_*"], exclude: ["*_tmp", "*_v2"] });
 
-    await sl(root, ["scope", "--source", "wh", "--remove", "*_v2", "--remove", "stg_*", "--write"]);
+    await semlayer(root, ["scope", "--source", "wh", "--remove", "*_v2", "--remove", "stg_*", "--write"]);
     text = readFileSync(sourcePath, "utf8");
     expect(text).toContain('- "*_tmp" # temp');
     expect(text).not.toContain("# versions");
@@ -629,24 +629,24 @@ describe("sl scope", () => {
     const snap = JSON.parse(readFileSync(join(root, "snapshots", "wh.json"), "utf8")) as Snapshot;
     snap.tables.push(table("raw", "fct_orders", 1));
     writeJson(join(root, "snapshots", "wh.json"), snap);
-    const r = await sl(root, ["scope", "--source", "wh", "--tables", "fct_orders"]);
+    const r = await semlayer(root, ["scope", "--source", "wh", "--tables", "fct_orders"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain('"fct_orders" is in several schemas (analytics.fct_orders, raw.fct_orders); pass the qualified name.');
   });
 
   test("glob patterns dedupe and remove case-insensitively; regex bodies stay exact", async () => {
     const { root } = await setup();
-    const d = (await sl(root, ["scope", "--source", "wh", "--include", "fct_*", "--include", "FCT_*", "--include", "re:dim_\\w+", "--include", "re:DIM_\\w+", "--json"])).json<ScopeJson>();
+    const d = (await semlayer(root, ["scope", "--source", "wh", "--include", "fct_*", "--include", "FCT_*", "--include", "re:dim_\\w+", "--include", "re:DIM_\\w+", "--json"])).json<ScopeJson>();
     expect(d.scope.include).toEqual(["fct_*", "re:dim_\\w+", "re:DIM_\\w+"]);
-    await sl(root, ["scope", "--source", "wh", "--tables", "analytics.fct_orders", "--write"]);
-    const r = (await sl(root, ["scope", "--source", "wh", "--remove", "ANALYTICS.FCT_ORDERS", "--json"])).json<ScopeJson & { warnings: string[] }>();
+    await semlayer(root, ["scope", "--source", "wh", "--tables", "analytics.fct_orders", "--write"]);
+    const r = (await semlayer(root, ["scope", "--source", "wh", "--remove", "ANALYTICS.FCT_ORDERS", "--json"])).json<ScopeJson & { warnings: string[] }>();
     expect(r.scope).toEqual({});
     expect(r.warnings.some((w) => w.includes("not in the scope"))).toBe(false);
   });
 
   test("a scope still above the threshold warns", async () => {
     const { root } = await setup();
-    const r = await sl(root, ["scope", "--source", "wh", "--exclude", "*_tmp"]);
+    const r = await semlayer(root, ["scope", "--source", "wh", "--exclude", "*_tmp"]);
     expect(r.out).toContain("23 tables are in scope, more than the focus threshold of 12");
     expect(r.out).toContain("Removed (2): analytics.orders_tmp, analytics.payments_tmp");
   });

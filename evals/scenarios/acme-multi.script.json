@@ -2,16 +2,16 @@
   "skill": [
     {
       "text": "Thanks, Dana. I read the lake source and its five tables: web_events, sessions, marketing_spend, web_events_2024_archive and tmp_session_dedupe. The last two look like noise: an archive copy and a scratch table. Shall I keep web_events, sessions and marketing_spend in scope and leave those two out?\n\nStop here or continue?",
-      "tokens": 720,
-      "sl": [
+      "tokens": 726,
+      "semlayer": [
         ["status"],
         ["introspect", "--source", "lake"]
       ]
     },
     {
       "text": "Done: three tables are in scope, measured and drafted. Before we go through the drafts: are the timestamps in these tables stored in UTC, and do your reports count days in UTC?\n\nStop here or continue?",
-      "tokens": 962,
-      "sl": [
+      "tokens": 968,
+      "semlayer": [
         ["scope", "--source", "lake", "--exclude", "web_events_2024_archive", "--exclude", "tmp_session_dedupe", "--write"],
         ["profile", "--source", "lake"],
         ["draft", "--source", "lake"]
@@ -19,26 +19,26 @@
     },
     {
       "text": "I drafted the three models with UTC days; every item stays a draft until you confirm its readback. sessions and marketing_spend first:\n\n1. sessions: my guess, since session_id is never empty and never repeats: one row is one visit, anonymous visits included. Right?\n2. marketing_spend: my guess, since it has 3,655 rows, five channels over 731 days: one row is one day of one paid channel, identified by spend_date and channel. Right?\n3. spend_cents: is it spend in cents, and in which currency? The draft divides it by 100.\n\nStop here or continue?",
-      "tokens": 1053,
-      "sl": [
+      "tokens": 1054,
+      "semlayer": [
         ["status"]
       ]
     },
     {
       "agent": "batch_analyst",
       "text": "Batch 1 of lake (web_events, sessions, marketing_spend): the draft questions, each with its measured fact.\n\n1. sessions: one row per visit? session_id is never empty and never repeats (8,000 rows).\n2. marketing_spend: one row per day per paid channel, keyed by spend_date and channel? 3,655 rows: five channels over 731 days.\n3. spend_cents: cents, and which currency? The draft divides by 100.\n\nweb_events has 2 open questions; leave it for a later batch.",
-      "tokens": 3616,
-      "sl": [
+      "tokens": 3628,
+      "semlayer": [
         ["brief", "--source", "lake", "--batch", "1", "--json"]
       ]
     },
     {
       "text": "Thanks; I wrote your answers into the two models. Sign-offs, read back from the files:\n\n1. lake.sessions (table): reads main.sessions, one row per visit, anonymous visits included; primary key session_id. Measured: 8,000 rows, each session_id appears once. Approve?\n2. lake.sessions.session_count (measure): a count of rows, every session counted, anonymous ones included, as an integer. Approve?\n3. lake.sessions.started_at (dimension): when the visit started, a time with its zone, with days counted in UTC; hour to year. Measured: never empty. Approve?\n4. lake.marketing_spend (table): reads main.marketing_spend, one row per day per paid channel; primary key spend_date and channel. Measured: 3,655 rows. Approve?\n5. lake.marketing_spend.spend (measure): the sum of spend_cents * 0.01, US dollars. Approve?\n6. lake.marketing_spend.spend_date (dimension): the day the spend is for, a date; day to year. Measured: never empty. Approve?\n\nStop here or continue?",
-      "tokens": 1781,
+      "tokens": 1836,
       "write": {
         "edits/interview-1.json": "{\"edits\": [\n  [\"set\", \"lake.sessions\", \"grain\", \"One row per visit (session), anonymous visits included.\"],\n  [\"set\", \"lake.sessions.session_count\", \"description\", \"Sessions: the number of visits, anonymous ones included, dated by started_at in UTC.\"],\n  [\"set\", \"lake.sessions.started_at\", \"description\", \"When the visit started. Stored with its time zone; a day is a UTC day.\"],\n  [\"set\", \"lake.marketing_spend\", \"grain\", \"One row per day per paid channel.\"],\n  [\"set\", \"lake.marketing_spend\", \"primary_key\", \"[spend_date, channel]\"],\n  [\"set\", \"lake.marketing_spend.spend\", \"description\", \"Marketing spend: the sum of spend_cents / 100, in US dollars.\"],\n  [\"set\", \"lake.marketing_spend.spend\", \"currency\", \"USD\"],\n  [\"set\", \"lake.marketing_spend.spend_date\", \"description\", \"The day the spend is for.\"]\n]}\n"
       },
-      "sl": [
+      "semlayer": [
         ["question", "resolve", "lake.sessions", "--match", "What does one row", "--text", "Yes: one row per visit, and session_id is unique. About 60% of sessions are anonymous, and they count.", "--by", "Dana Ruiz"],
         ["question", "resolve", "lake.sessions", "--match", "primary_key [session_id]", "--text", "Yes: one row per visit, and session_id is unique. About 60% of sessions are anonymous, and they count.", "--by", "Dana Ruiz"],
         ["question", "resolve", "lake.marketing_spend", "--match", "What does one row", "--text", "Yes: one row per day per paid channel, so spend_date and channel identify a row.", "--by", "Dana Ruiz"],
@@ -51,15 +51,15 @@
     {
       "agent": "readback_verifier",
       "text": "Wrote rb_0001 with six items. The draft message matches it item by item: no clause missing, none extra; each item ends with \"Approve?\", and the measured facts stay apart from the definitions. ok: true.",
-      "tokens": 2104,
-      "sl": [
+      "tokens": 2134,
+      "semlayer": [
         ["readback", "--targets", "lake.sessions,lake.sessions.session_count,lake.sessions.started_at,lake.marketing_spend,lake.marketing_spend.spend,lake.marketing_spend.spend_date", "--json"]
       ]
     },
     {
       "text": "Approved all six on your yes. To check the numbers, I wrote two draft goldens and ran them:\n\n1. sessions_2025: sessions in 2025, anonymous included, UTC days: 4,551.\n2. marketing_spend_2025: marketing spend in 2025, all paid channels: $16,502.34.\n\nDo both match your own reports? If they do, how much may they drift between runs before I flag it? I suggest 0 for figures you sign off.\n\nStop here or continue?",
-      "tokens": 1151,
-      "sl": [
+      "tokens": 1169,
+      "semlayer": [
         ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Yes, all six match how we count sessions and spend. Approve them.", "--verdict", "yes", "--by", "Dana Ruiz"],
         ["reply", "--readback", "rb_0001", "--item", "2", "--text", "Yes, all six match how we count sessions and spend. Approve them.", "--verdict", "yes", "--by", "Dana Ruiz"],
         ["reply", "--readback", "rb_0001", "--item", "3", "--text", "Yes, all six match how we count sessions and spend. Approve them.", "--verdict", "yes", "--by", "Dana Ruiz"],
@@ -77,8 +77,8 @@
     {
       "agent": "golden_builder",
       "text": "Wrote draft goldens sessions_2025 and marketing_spend_2025 from their requests and ran them: sessions_2025 returns session_count 4,551; marketing_spend_2025 returns spend 16,502.34. Both compile; nothing to report as a gap.",
-      "tokens": 1214,
-      "sl": [
+      "tokens": 1268,
+      "semlayer": [
         ["goldens", "new", "--name", "sessions_2025", "--question", "How many sessions were there in 2025?", "--request", "{\"source\":\"lake\",\"measures\":[\"sessions.session_count\"],\"filters\":[{\"field\":\"sessions.started_at\",\"op\":\"gte\",\"value\":\"2025-01-01\"},{\"field\":\"sessions.started_at\",\"op\":\"lt\",\"value\":\"2026-01-01\"}]}"],
         ["goldens", "new", "--name", "marketing_spend_2025", "--question", "How much did we spend on marketing in 2025?", "--request", "{\"source\":\"lake\",\"measures\":[\"marketing_spend.spend\"],\"filters\":[{\"field\":\"marketing_spend.spend_date\",\"op\":\"gte\",\"value\":\"2025-01-01\"},{\"field\":\"marketing_spend.spend_date\",\"op\":\"lt\",\"value\":\"2026-01-01\"}]}"],
         ["goldens", "run", "--name", "sessions_2025"],
@@ -96,16 +96,16 @@
     {
       "agent": "readback_verifier",
       "text": "Wrote rb_0002 with the two goldens, their rows and tolerance 0. The draft message matches it: no clause missing, none extra. ok: true.",
-      "tokens": 1203,
-      "sl": [
+      "tokens": 1230,
+      "semlayer": [
         ["readback", "--targets", "golden:sessions_2025,golden:marketing_spend_2025", "--tolerance", "0", "--json"]
       ]
     },
     {
       "text": "Confirmed both goldens on your yes, with tolerance 0, and the check passes. Where things stand: sessions and marketing_spend are signed off with their counts, spend and dates, and two goldens pin 2025's sessions and spend. Still draft: web_events and the other sessions and marketing_spend fields. There is no access.yaml yet, so access is open: everyone sees every approved item. That is all for this session; next time I will read back web_events first.\n\nStop here or continue?",
-      "tokens": 1279,
+      "tokens": 1289,
       "done": true,
-      "sl": [
+      "semlayer": [
         ["reply", "--readback", "rb_0002", "--item", "1", "--text", "Yes, both are right: 4,551 sessions and $16,502.34 of marketing spend in 2025, with a tolerance of 0. Approve them.", "--verdict", "yes", "--by", "Dana Ruiz"],
         ["reply", "--readback", "rb_0002", "--item", "2", "--text", "Yes, both are right: 4,551 sessions and $16,502.34 of marketing spend in 2025, with a tolerance of 0. Approve them.", "--verdict", "yes", "--by", "Dana Ruiz"],
         ["goldens", "confirm", "--name", "sessions_2025", "--by", "Dana Ruiz", "--tolerance", "0"],
@@ -117,8 +117,8 @@
     {
       "agent": "golden_builder",
       "text": "Checked the approved goldens: sessions_2025 and marketing_spend_2025 both match their recorded rows.",
-      "tokens": 511,
-      "sl": [
+      "tokens": 541,
+      "semlayer": [
         ["goldens", "check"]
       ]
     }

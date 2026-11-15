@@ -1,4 +1,4 @@
-// The pieces of sl setup (spec: Setup): the source file brought to the state the flags describe,
+// The pieces of semlayer setup (spec: Setup): the source file brought to the state the flags describe,
 // edited in place so the owner's comments survive, what changed, and the scope preview.
 import { basename, dirname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -15,7 +15,7 @@ export function projectName(root: string): string {
   return toSpecName(base === "semantic" ? basename(dirname(abs)) : base);
 }
 
-// The keys sl setup writes, in the order a new file has them. A missing key is inserted after the
+// The keys semlayer setup writes, in the order a new file has them. A missing key is inserted after the
 // keys that come before it, so an edited file keeps the shape of a new one.
 const ORDER: Record<string, string[]> = {
   "": ["source", "dialect", "description", "connection", "intake", "scope"],
@@ -66,7 +66,7 @@ function setKey(doc: Document, map: YAMLMap, key: string, value: unknown, order:
   map.items.splice(index, 0, doc.createPair(key, value));
 }
 
-// The parts of a source file sl setup decides. A key left undefined is left as the file has it;
+// The parts of a source file semlayer setup decides. A key left undefined is left as the file has it;
 // a scope or a views map, when given, replaces the file's.
 export interface SourceState {
   env?: string;
@@ -122,7 +122,7 @@ export function applySourceState(doc: Document, state: SourceState): void {
   }
 }
 
-// The identity of a scope pattern, as sl scope compares them: a glob matches case-insensitively,
+// The identity of a scope pattern, as semlayer scope compares them: a glob matches case-insensitively,
 // so it compares lowercased; a re: body or a "quoted" part matches case included, so it stays exact.
 export function patternKey(p: string): string {
   return p.startsWith("re:") || p.includes('"') ? p : p.toLowerCase();

@@ -1,5 +1,5 @@
-// Batch packets (sl brief): one interview batch as compact JSON for a batch analyst. Batches follow
-// the order sl status takes its next_batch by: the in-scope tables without an approved model, by
+// Batch packets (semlayer brief): one interview batch as compact JSON for a batch analyst. Batches follow
+// the order semlayer status takes its next_batch by: the in-scope tables without an approved model, by
 // rank, batch_size at a time. A packet holds each table's columns with counts, its model's fields,
 // joins and open questions, and the baseline brief's guesses, under a token budget. Text that comes
 // from the data (comments, dbt descriptions, column values) is fenced with where it came from, and
@@ -83,7 +83,7 @@ export interface BriefTable {
   joins: BriefJoin[];
   open_questions: string[];
   baseline_guesses?: BaselineGuesses;
-  // Only when the source has usage evidence (sl usage add).
+  // Only when the source has usage evidence (semlayer usage add).
   usage?: UsageBlock;
 }
 
@@ -128,8 +128,8 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
-// The source's tables to interview, in sl status's next_batch order: in scope, ranked, and without
-// an approved model (the last model file over a table decides, as in sl status).
+// The source's tables to interview, in semlayer status's next_batch order: in scope, ranked, and without
+// an approved model (the last model file over a table decides, as in semlayer status).
 function queue(snapshot: Snapshot, scopeOk: (t: SnapshotTable) => boolean, byTable: Map<string, Model>): SnapshotTable[] {
   return rankTables(snapshot.tables)
     .filter((r) => scopeOk(r.table) && byTable.get(r.qualified.toLowerCase())?.status !== "approved")
@@ -259,12 +259,12 @@ export function buildBrief(root: string, opts: BriefOptions): BriefPacket {
   } else {
     const n = opts.batch ?? 1;
     if (!todo.length) {
-      throw new UserError(`No table in "${opts.source}" is left to interview: every in-scope table has an approved model. Run \`sl next\` for the next step.`);
+      throw new UserError(`No table in "${opts.source}" is left to interview: every in-scope table has an approved model. Run \`semlayer next\` for the next step.`);
     }
     if (n > batches) {
       throw new UserError(
         `"${opts.source}" has ${batches} batch${batches === 1 ? "" : "es"} of up to ${batch_size} tables to interview (${todo.length} tables), so there is no batch ${n}. ` +
-          `Run \`sl brief --source ${opts.source} --batch ${batches}\`, or \`sl status\` for the order.`,
+          `Run \`semlayer brief --source ${opts.source} --batch ${batches}\`, or \`semlayer status\` for the order.`,
       );
     }
     picked = todo.slice((n - 1) * batch_size, n * batch_size);

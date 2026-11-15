@@ -4,14 +4,14 @@
 #
 # With PG_URL unset it starts its own cluster in a fresh directory and, on exit, stops it and
 # removes the directory, also when a step fails. A cluster PG_URL names is left alone.
-# It fails when the run leaves an sl-test-* or sl-pg-* entry in the temp directory.
+# It fails when the run leaves a semlayer-test-* or semlayer-pg-* entry in the temp directory.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 TMP="${TMPDIR:-/tmp}"
 TMP="${TMP%/}"
 temp_entries() {
-  find "$TMP/" -mindepth 1 -maxdepth 1 \( -name 'sl-test-*' -o -name 'sl-pg-*' \) 2>/dev/null | sort || true
+  find "$TMP/" -mindepth 1 -maxdepth 1 \( -name 'semlayer-test-*' -o -name 'semlayer-pg-*' \) 2>/dev/null | sort || true
 }
 # Reads two lists of entries with a "--" line between them and prints the entries of the second
 # that are not in the first. The lists arrive on a pipe: a long one does not fit in an argument.
@@ -36,7 +36,7 @@ BEFORE="$(temp_entries)"
 bun install --frozen-lockfile >/dev/null
 bun run typecheck
 if [ -z "${PG_URL:-}" ] && { ls -d /usr/lib/postgresql/*/bin >/dev/null 2>&1 || command -v pg_ctl >/dev/null; }; then
-  PG_DIR="$(mktemp -d "$TMP/sl-pg-verify.XXXXXX")"
+  PG_DIR="$(mktemp -d "$TMP/semlayer-pg-verify.XXXXXX")"
   # A cluster that does not start stops the run here, with pg-local.sh's own message.
   PG_EXPORT="$(PG_LOCAL_DIR="$PG_DIR" bash scripts/pg-local.sh)"
   eval "$PG_EXPORT"
@@ -45,7 +45,7 @@ fi
 [ -n "${PG_URL:-}" ] || echo "verify: PG_URL unset and no Postgres binaries; Postgres tests will skip" >&2
 bun test
 if [ -f examples/acme/semantic/semantic.yaml ]; then
-  bun skills/semantic-layer/scripts/sl.ts validate --root examples/acme/semantic
+  bun skills/semantic-layer/scripts/semlayer.ts validate --root examples/acme/semantic
 fi
 
 stop_own_cluster

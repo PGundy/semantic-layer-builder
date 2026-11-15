@@ -46,30 +46,30 @@ function parseUser(text: string): Record<string, unknown> {
   return v;
 }
 
-// The sl access command that shows what this user, with this role, may see.
+// The semlayer access command that shows what this user, with this role, may see.
 function accessCommand(user: Record<string, unknown>, role: string | undefined): string {
   const quoted = `'${JSON.stringify(user).replaceAll("'", "'\\''")}'`;
-  return `sl access --user ${quoted}${role ? ` --roles ${role}` : ""}`;
+  return `semlayer access --user ${quoted}${role ? ` --roles ${role}` : ""}`;
 }
 
 // The command to run after a refusal, by its first kind of problem.
 function nextStep(refusals: Refusal[], source: string, user: Record<string, unknown>, role: string | undefined, golden: string | undefined): string {
   const codes = refusals.map((r) => r.code);
   const who = accessCommand(user, role);
-  if (codes.includes("invalid_request")) return "Fix the request (the request format is in references/spec.md, goldens) and run sl sql again.";
-  if (codes.includes("invalid_layer")) return "Run sl validate and fix what it reports, then run sl sql again.";
+  if (codes.includes("invalid_request")) return "Fix the request (the request format is in references/spec.md, goldens) and run semlayer sql again.";
+  if (codes.includes("invalid_layer")) return "Run semlayer validate and fix what it reports, then run semlayer sql again.";
   // Only approval hides what the request names: the readback and the owner's yes resolve it.
   const held = refusals.filter((r) => r.code === "not_visible");
   if (!codes.includes("unknown_role") && held.length && held.every((r) => r.awaits?.length)) {
     const targets = [...new Set(held.flatMap((r) => r.awaits!))];
-    return `Read ${andList(targets)} back to the owner with sl readback --targets ${targets.join(",")} and approve ${targets.length > 1 ? "them" : "it"} on their yes, then run sl sql again.`;
+    return `Read ${andList(targets)} back to the owner with semlayer readback --targets ${targets.join(",")} and approve ${targets.length > 1 ? "them" : "it"} on their yes, then run semlayer sql again.`;
   }
   if (codes.includes("unknown_role") || codes.includes("not_visible"))
     return `Check each field name against the model YAML, and see what this user may see with ${who}.`;
   const own = refusals.find((r) => r.next);
   if (own) return own.next!;
-  const run = codes.includes("unsupported_dialect") ? "run it with your own tool" : `run it with sl run --source ${source} --file <query.sql>`;
-  const check = golden ? `sl goldens run --name ${golden}` : `write it from the model YAML and ${run}`;
+  const run = codes.includes("unsupported_dialect") ? "run it with your own tool" : `run it with semlayer run --source ${source} --file <query.sql>`;
+  const check = golden ? `semlayer goldens run --name ${golden}` : `write it from the model YAML and ${run}`;
   return `Until a later version compiles it, hand-written SQL computes this figure: ${check}.`;
 }
 
@@ -97,7 +97,7 @@ const spec: CommandSpec = {
       const next = nextStep(result.refusals, result.source, user, role, read.golden);
       if (ctx.json) ctx.out(formatJson({ ...result, next }));
       else {
-        ctx.err(plainText(`sl sql refused the request: ${result.refusals.length === 1 ? result.reason : ""}`).trimEnd());
+        ctx.err(plainText(`semlayer sql refused the request: ${result.refusals.length === 1 ? result.reason : ""}`).trimEnd());
         if (result.refusals.length > 1) for (const r of result.refusals) ctx.err(plainText(`  - ${r.message}`));
         ctx.err(plainText(next));
       }
@@ -123,8 +123,8 @@ const spec: CommandSpec = {
       );
     }
     ctx.out(
-      `Compiled for ${result.dialect} from model ${result.model}; sl sql never runs it. Run it with the parameters bound and the session time zone UTC, ` +
-        "and compare a golden's recorded rows with sl goldens check.",
+      `Compiled for ${result.dialect} from model ${result.model}; semlayer sql never runs it. Run it with the parameters bound and the session time zone UTC, ` +
+        "and compare a golden's recorded rows with semlayer goldens check.",
     );
     return 0;
   },

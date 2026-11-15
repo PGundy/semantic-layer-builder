@@ -9,7 +9,7 @@ export interface QueryResult {
 }
 
 // What the role a connection logs in as can do beyond reading, measured on connect (Postgres):
-// sl setup and sl introspect --json report it as role_report. Schema names come from the catalog.
+// semlayer setup and semlayer introspect --json report it as role_report. Schema names come from the catalog.
 export interface RoleReport {
   dialect: Dialect;
   role: string;

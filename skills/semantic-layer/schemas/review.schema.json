@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": ".sl/reviews/<readback_id>.json",
-  "description": "A review form written by sl review export --format json, or read back from the Markdown form: each item of a pending readback with an empty or filled verdict and answer, and the open questions of the models and access.yaml the items belong to.",
+  "title": ".semlayer/reviews/<readback_id>.json",
+  "description": "A review form written by semlayer review export --format json, or read back from the Markdown form: each item of a pending readback with an empty or filled verdict and answer, and the open questions of the models and access.yaml the items belong to.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "readback_id", "created_at", "items", "questions"],
@@ -10,7 +10,7 @@
     "readback_id": {
       "type": "string",
       "pattern": "^rb_[0-9]{4,}$",
-      "description": "The readback the form was exported from, .sl/pending/<readback_id>.json."
+      "description": "The readback the form was exported from, .semlayer/pending/<readback_id>.json."
     },
     "created_at": { "type": "string", "minLength": 1, "description": "When the form was exported, as an ISO timestamp." },
     "items": {
@@ -25,7 +25,7 @@
           "target": {
             "type": "string",
             "pattern": "^(access|(metric|golden):[a-z][a-z0-9_]*|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)?)$",
-            "description": "The approve target: source.model, source.model.field, metric:<name> or access, or golden:<name>, a golden sl goldens confirm records."
+            "description": "The approve target: source.model, source.model.field, metric:<name> or access, or golden:<name>, a golden semlayer goldens confirm records."
           },
           "content_hash": {
             "type": "string",

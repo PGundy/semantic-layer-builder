@@ -168,7 +168,7 @@ async function runGoldenQueries(ctx: CommandContext, g: Golden, source: SourceCo
   const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input, warn: ctx.err }).catch((e: unknown) => {
     const guarded = guardedFailure(ctx, source, g, e);
     if (guarded === undefined) throw e;
-    throw new UserError(`${guarded}\nCheck its casts and comparisons against each column's type, then run sl goldens run --name ${g.name}.`);
+    throw new UserError(`${guarded}\nCheck its casts and comparisons against each column's type, then run semlayer goldens run --name ${g.name}.`);
   });
   return {
     compiled,
@@ -188,8 +188,8 @@ function notCompiledNote(g: Golden, compiled: CompileResult): string {
 // The rows a golden records, from one run of its queries: the rows compiled from the YAML, or its
 // cross_check_sql's when its request does not compile. Refused when both ran and disagree at
 // `tolerance`, the tolerance the readback states and confirm records, so a yes is never to rows its
-// first goldens check would fail. sl readback reads back, and goldenHash covers, the rows of such a
-// run, and sl goldens confirm records the rows of its own run only when their hash matches the
+// first goldens check would fail. semlayer readback reads back, and goldenHash covers, the rows of such a
+// run, and semlayer goldens confirm records the rows of its own run only when their hash matches the
 // owner's yes.
 async function runGolden(
   ctx: CommandContext,
@@ -210,7 +210,7 @@ async function runGolden(
     if (!cmp.ok) {
       throw new UserError(
         `Golden "${g.name}": cross_check_sql gives other rows than the request compiled from the YAML at tolerance ${tolerance} (expected is the compiled, got is cross_check_sql): ` +
-          `${cmp.diffs.join(" ")} Fix cross_check_sql or the layer, then run sl goldens run --name ${g.name}.`,
+          `${cmp.diffs.join(" ")} Fix cross_check_sql or the layer, then run semlayer goldens run --name ${g.name}.`,
       );
     }
   }
@@ -256,7 +256,7 @@ interface Layer {
 }
 
 // The source's models and metrics.yaml, read for advisory use: a file that cannot be read is
-// skipped, with a notice on stderr pointing to sl validate when `purpose` names what it was read for.
+// skipped, with a notice on stderr pointing to semlayer validate when `purpose` names what it was read for.
 function readLayer(ctx: CommandContext, source: SourceConfig, purpose?: string): Layer {
   const unread: string[] = [];
   let firstError = "";
@@ -279,7 +279,7 @@ function readLayer(ctx: CommandContext, source: SourceConfig, purpose?: string):
   const metricsFile = attempt(paths(ctx.root).metrics, () => loadMetrics(ctx.root));
   const metrics = metricsFile && Array.isArray(metricsFile.metrics) ? metricsFile.metrics : [];
   if (unread.length && purpose) {
-    ctx.err(`Could not read ${unread.join(", ")} to ${purpose} (${firstError}); run sl validate.`);
+    ctx.err(`Could not read ${unread.join(", ")} to ${purpose} (${firstError}); run semlayer validate.`);
   }
   return { models, metrics };
 }
@@ -291,7 +291,7 @@ function shownRows(g: Golden, layer: Layer, rows: ResultRows, columns: string[])
   return displayRows(rows, currencyColumns(g, layer.models, layer.metrics, columns));
 }
 
-// The role and user a golden's file writes, which confirm records as confirmed_as and sl validate
+// The role and user a golden's file writes, which confirm records as confirmed_as and semlayer validate
 // compares with the file's role and user. A golden without a role records no role: confirmed_as
 // tracks the golden's own fields, not access.yaml's default_role.
 function runAs(g: Golden): GoldenRunAs {
@@ -303,7 +303,7 @@ function runAs(g: Golden): GoldenRunAs {
 
 // A warning when the role a golden runs as (its role, else access.yaml's default_role) is defined
 // only in a draft access.yaml, whose rules may still change before access is approved. An
-// access.yaml that cannot be read is left to sl validate.
+// access.yaml that cannot be read is left to semlayer validate.
 function draftRoleWarning(ctx: CommandContext, g: Golden): string | undefined {
   let access: ReturnType<typeof loadAccess>;
   try {
@@ -321,7 +321,7 @@ function draftRoleWarning(ctx: CommandContext, g: Golden): string | undefined {
   return (
     `Golden "${g.name}" runs as role ${role}${own ? "" : " (access.yaml's default_role)"}, which is defined only in a draft access.yaml: ` +
     "its rules may still change before access is approved. Confirm a golden that runs as a role after access.yaml is approved; " +
-    `confirmed now, rerun sl goldens check --name ${g.name} and read it back to the owner after every change to role ${role}.`
+    `confirmed now, rerun semlayer goldens check --name ${g.name} and read it back to the owner after every change to role ${role}.`
   );
 }
 
@@ -330,7 +330,7 @@ function draftRoleWarning(ctx: CommandContext, g: Golden): string | undefined {
 // owner says the rows match a figure they trust.
 export function runHint(golden: Golden): string {
   if (golden.status === "approved") {
-    return `Already confirmed; sl goldens check --name ${golden.name} compares these rows with the recorded ones.`;
+    return `Already confirmed; semlayer goldens check --name ${golden.name} compares these rows with the recorded ones.`;
   }
   return (
     "Confirm only once its measures are approved and the owner says these rows match a figure they trust: " +
@@ -338,12 +338,12 @@ export function runHint(golden: Golden): string {
   );
 }
 
-// The steps to a confirm: the readback, the owner's recorded yes, then sl goldens confirm with the
+// The steps to a confirm: the readback, the owner's recorded yes, then semlayer goldens confirm with the
 // same flags (the tolerance and where the rows come from).
 function confirmSteps(name: string, flags: string): string {
   return (
-    `sl readback --targets golden:${name}${flags}, read it to the owner, record their answer with ` +
-    `sl reply --readback <readback_id> --item <n> --text "<owner's words>" --verdict yes --by "<owner>", then sl goldens confirm --name ${name}${flags}`
+    `semlayer readback --targets golden:${name}${flags}, read it to the owner, record their answer with ` +
+    `semlayer reply --readback <readback_id> --item <n> --text "<owner's words>" --verdict yes --by "<owner>", then semlayer goldens confirm --name ${name}${flags}`
   );
 }
 
@@ -357,7 +357,7 @@ export function passedFlags(values: OptionValues, flags: readonly string[] = ["t
     .join("");
 }
 
-// A golden's rows for sl readback --targets golden:<name>: run as goldens run runs them (live, or
+// A golden's rows for semlayer readback --targets golden:<name>: run as goldens run runs them (live, or
 // from --results or --plan), with the tolerance confirm would record and its protected result
 // columns, which a readback always masks.
 export async function goldenRun(ctx: CommandContext, values: OptionValues, name: string): Promise<GoldenRun> {
@@ -367,15 +367,15 @@ export async function goldenRun(ctx: CommandContext, values: OptionValues, name:
   const input = resultsInput(ctx, values);
   if (!canRun(source) && input.planId === undefined && !input.resultsFile) {
     throw new UserError(
-      `golden:${name} runs on source "${source.source}", which is ${source.dialect}, so sl cannot run its queries; nothing was written. ` +
-        `Write its plan with sl goldens run --name ${name} --emit-sql, run the query with your own tool, store the rows with ` +
-        `sl results add --plan <plan_id> --query <query id> --file <rows.json>, then sl readback --targets golden:${name}${passedFlags(values, ["tolerance"])} --plan <plan_id> ` +
+      `golden:${name} runs on source "${source.source}", which is ${source.dialect}, so semlayer cannot run its queries; nothing was written. ` +
+        `Write its plan with semlayer goldens run --name ${name} --emit-sql, run the query with your own tool, store the rows with ` +
+        `semlayer results add --plan <plan_id> --query <query id> --file <rows.json>, then semlayer readback --targets golden:${name}${passedFlags(values, ["tolerance"])} --plan <plan_id> ` +
         `(or save {"<query id>": [rows...]} to a JSON file and pass --results <file>).`,
     );
   }
   const { rows, from: fromQuery, cross_checked, mask } = await runGolden(ctx, golden, source, input, tolerance);
-  // The readback shows currency figures as sl goldens run and confirm print them, with the full figure recorded.
-  // A source file whose name is not a string names no models: sl validate reports it.
+  // The readback shows currency figures as semlayer goldens run and confirm print them, with the full figure recorded.
+  // A source file whose name is not a string names no models: semlayer validate reports it.
   const layer = typeof source.source === "string" ? readLayer(ctx, source) : { models: [], metrics: [] };
   const currency = currencyColumns(golden, layer.models, layer.metrics, resultColumns(rows));
   return { rows, tolerance, from, from_query: fromQuery, cross_checked, masked: mask.columns, ...(currency.length ? { currency } : {}) };
@@ -408,12 +408,12 @@ function confirmGate(r: LedgerReply | undefined, values: OptionValues, golden: G
   else if (by !== undefined && by.toLowerCase() !== r.by.trim().toLowerCase()) {
     throw new UserError(
       `Cannot confirm ${target}: --by ${shellQuote(by)} is not the owner who said yes (${ref}), ${shellQuote(r.by)}; nothing was recorded. ` +
-        `Leave --by out to record the owner who said yes: sl goldens confirm --name ${golden.name}${flags}.`,
+        `Leave --by out to record the owner who said yes: semlayer goldens confirm --name ${golden.name}${flags}.`,
     );
-  } else if (!validDate(r.at.slice(0, 10))) reason = `the owner's yes (${ref}) has no ISO date in its at, ${JSON.stringify(r.at)}; run sl validate`;
+  } else if (!validDate(r.at.slice(0, 10))) reason = `the owner's yes (${ref}) has no ISO date in its at, ${JSON.stringify(r.at)}; run semlayer validate`;
   if (reason) {
     throw new UserError(
-      `Cannot confirm ${target}: ${reason}; nothing was recorded. sl goldens confirm needs the owner's yes in ${LEDGER_FILE} to the golden ` +
+      `Cannot confirm ${target}: ${reason}; nothing was recorded. semlayer goldens confirm needs the owner's yes in ${LEDGER_FILE} to the golden ` +
         `with the rows its request compiles to now. Next: ${confirmSteps(golden.name, flags)}.`,
     );
   }
@@ -469,7 +469,7 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
     else if (crossCheck) {
       ctx.out("cross_check_sql gives other rows (expected is the compiled, got is cross_check_sql):");
       for (const d of crossCheck.diffs) ctx.out(`  ${plainText(d)}`);
-      ctx.out(`Fix cross_check_sql or the layer before confirming, then run sl goldens run --name ${golden.name} again.`);
+      ctx.out(`Fix cross_check_sql or the layer before confirming, then run semlayer goldens run --name ${golden.name} again.`);
     }
     // Decision D2: an export source's golden is confirmed only after the upgrade, so its hint names that.
     ctx.out(
@@ -486,7 +486,7 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   const by = str(values, "by")?.trim();
   if (by === "") {
     throw new UserError(
-      `--by is empty. Leave it out to record the owner whose yes is in ${LEDGER_FILE}, or give that owner's name: sl goldens confirm --name ${golden.name} --by "<owner>".`,
+      `--by is empty. Leave it out to record the owner whose yes is in ${LEDGER_FILE}, or give that owner's name: semlayer goldens confirm --name ${golden.name} --by "<owner>".`,
     );
   }
   const parsed = parseTolerance(values, golden);
@@ -516,8 +516,8 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   if (draftFields.length && !ctx.json) {
     ctx.out(
       `This golden's request uses draft field(s): ${draftFields.join(", ")}. A golden is confirmed after its measures are ` +
-        `approved. Approve each field after its readback, then run sl goldens check --name ${golden.name}; if it passes the ` +
-        "recorded rows stand, and only changed rows need a new confirm. sl validate warns until then.",
+        `approved. Approve each field after its readback, then run semlayer goldens check --name ${golden.name}; if it passes the ` +
+        "recorded rows stand, and only changed rows need a new confirm. semlayer validate warns until then.",
     );
   }
   // A request naming a field that does not exist yet makes the approved golden invalid; say so before recording.
@@ -526,7 +526,7 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   );
   if (unknown.length && !ctx.json) {
     ctx.err(
-      `Golden "${golden.name}" names fields the layer does not have yet; sl validate errors on it once confirmed:\n` +
+      `Golden "${golden.name}" names fields the layer does not have yet; semlayer validate errors on it once confirmed:\n` +
         unknown.map((i) => `  ${i.path}: ${i.message}`).join("\n"),
     );
   }
@@ -540,7 +540,7 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   if (!isDeepStrictEqual(readYaml<Golden>(path), golden) || latestReply(readReplies(ctx.root), `golden:${golden.name}`)?.id !== yes.ledger) {
     throw new UserError(
       `Golden "${golden.name}" or the owner's reply to it changed while its query ran, so nothing was recorded. ` +
-        `Run sl goldens confirm --name ${golden.name}${passedFlags(values)} again.`,
+        `Run semlayer goldens confirm --name ${golden.name}${passedFlags(values)} again.`,
     );
   }
   updateYaml(path, (doc) => {
@@ -622,7 +622,7 @@ interface Planned {
 // or one of them cannot be loaded. A golden the compiler refuses is not planned; it fails the check.
 // A refusal that stops the plan carries the command that fixes the first problem (`next`), so --json
 // prints it as { error, next }.
-function checkPlan(bySource: Map<string, { source: SourceConfig; goldens: Planned[] }>, problems: GoldenCheck[], next = "sl validate"): QueryPlan {
+function checkPlan(bySource: Map<string, { source: SourceConfig; goldens: Planned[] }>, problems: GoldenCheck[], next = "semlayer validate"): QueryPlan {
   if (bySource.size > 1) {
     throw new UserError(
       `The goldens to check read sources ${[...bySource.keys()].join(", ")}. A plan covers one source: pass --source <s> or --name <g> with --emit-sql or --plan <plan_id>.`,
@@ -635,7 +635,7 @@ function checkPlan(bySource: Map<string, { source: SourceConfig; goldens: Planne
     );
   }
   const [group] = bySource.values();
-  if (!group) throw new UserError("No approved goldens to check that compile or have cross_check_sql; sl goldens check without --emit-sql says why.");
+  if (!group) throw new UserError("No approved goldens to check that compile or have cross_check_sql; semlayer goldens check without --emit-sql says why.");
   const plans = group.goldens.map((g) => g.plan);
   return { ...plans[0]!, queries: plans.flatMap((p) => p.queries) };
 }
@@ -657,7 +657,7 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
     const problem = goldenProblem(loaded);
     if (problem) {
       problems.push({ name: stem(basename(loaded.path)), ok: false, diffs: [problem] });
-      fixWith ??= "sl validate";
+      fixWith ??= "semlayer validate";
       continue;
     }
     let source: SourceConfig;
@@ -674,7 +674,7 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
       planned = { plan: goldenPlan(g, source, compiled), compiled };
     } catch (e) {
       if (!(e instanceof UserError)) throw e;
-      const next = `Fix what this says in goldens/${g.name}.yaml or the layer, then run sl validate and sl goldens check --name ${g.name}.`;
+      const next = `Fix what this says in goldens/${g.name}.yaml or the layer, then run semlayer validate and semlayer goldens check --name ${g.name}.`;
       problems.push({ name: g.name, ok: false, diffs: [`Cannot plan this golden: ${e.message.split("\n")[0]}`], next });
       fixWith ??= e.next;
       continue;
@@ -699,7 +699,7 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
     if (!canRun(source) && !resultsFile && !stored) {
       throw new UserError(
         `Source "${source.source}" is ${source.dialect}. Rerun with --emit-sql --source ${source.source}, run each query with your ` +
-          "own tool, store each result with sl results add --plan <plan_id> --query <query id> --file <rows.json> and rerun with " +
+          "own tool, store each result with semlayer results add --plan <plan_id> --query <query id> --file <rows.json> and rerun with " +
           "--plan <plan_id>; or save {\"<query id>\": [rows...]} to a JSON file and rerun with --results <file>.",
       );
     }
@@ -749,7 +749,7 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
   else {
     const lines: string[] = [];
     for (const c of checks) {
-      const note = c.compiled === "unsupported" ? "  (checked by cross_check_sql alone: sl sql compiles postgres and duckdb sources)" : "";
+      const note = c.compiled === "unsupported" ? "  (checked by cross_check_sql alone: semlayer sql compiles postgres and duckdb sources)" : "";
       lines.push(`${c.ok ? "pass" : "FAIL"}  ${c.name}${note}`);
       for (const d of c.diffs) lines.push(`      ${plainText(d)}`);
       if (c.next) lines.push(`      Next: ${plainText(c.next)}`);
@@ -758,7 +758,7 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
     const changed = checks.find((c) => !c.ok && !c.next);
     if (changed) {
       lines.push(
-        `Next: sl goldens run --name ${changed.name} shows its rows; read any change back to the owner, and confirm again only on their yes: ` +
+        `Next: semlayer goldens run --name ${changed.name} shows its rows; read any change back to the owner, and confirm again only on their yes: ` +
           `${confirmSteps(changed.name, "")}.`,
       );
     }
@@ -806,12 +806,12 @@ function parseUserFlag(text: string): Record<string, unknown> {
   return v as Record<string, unknown>;
 }
 
-// Why a new golden's role or user does not fit access.yaml, as sl validate reports it.
+// Why a new golden's role or user does not fit access.yaml, as semlayer validate reports it.
 function accessProblem(ctx: CommandContext, role: string | undefined, user: Record<string, unknown> | undefined): string | undefined {
   const access = loadAccess(ctx.root);
   if (!access || typeof access !== "object") return undefined;
   const roles = Array.isArray(access.roles) ? access.roles.map((r) => r?.name) : [];
-  if (role !== undefined && !roles.includes(role)) return `--role ${role} is not a role in access.yaml (roles: ${roles.join(", ") || "none"}); sl access lists them.`;
+  if (role !== undefined && !roles.includes(role)) return `--role ${role} is not a role in access.yaml (roles: ${roles.join(", ") || "none"}); semlayer access lists them.`;
   const attrs = Array.isArray(access.user_attributes) ? access.user_attributes.map((a) => a?.name) : [];
   const unknown = Object.keys(user ?? {}).filter((k) => !attrs.includes(k));
   if (unknown.length) return `--user names ${unknown.join(", ")}, which access.yaml does not declare as user attributes (declared: ${attrs.join(", ") || "none"}).`;
@@ -820,14 +820,14 @@ function accessProblem(ctx: CommandContext, role: string | undefined, user: Reco
 
 // goldens new: writes goldens/<name>.yaml as a draft golden holding the question and request, and
 // prints the SQL the request compiles to now. The SQL is not stored: the request is the golden, and
-// sl sql --request goldens/<name>.yaml prints it again from the YAML as it then stands.
+// semlayer sql --request goldens/<name>.yaml prints it again from the YAML as it then stands.
 async function newCommand(ctx: CommandContext, values: OptionValues): Promise<number> {
   const name = requireName(values, "new");
   const path = goldenPath(ctx, name);
   const file = relative(ctx.root, path);
   const taken = listGoldens(ctx.root).find((g) => stem(basename(g.path)) === name);
   if (taken) {
-    throw new UserError(`Golden "${name}" already exists (${relative(ctx.root, taken.path)}). Pick another --name, or see it with sl goldens run --name ${name}.`);
+    throw new UserError(`Golden "${name}" already exists (${relative(ctx.root, taken.path)}). Pick another --name, or see it with semlayer goldens run --name ${name}.`);
   }
   const question = str(values, "question")?.trim();
   if (!question) throw new UserError('goldens new needs --question "<the question in plain English>".');
@@ -842,28 +842,28 @@ async function newCommand(ctx: CommandContext, values: OptionValues): Promise<nu
   if (issues.length) {
     throw new UserError(
       `The golden would not be valid, so nothing was written:\n${issues.map((i) => `  ${i.path || "golden"}: ${i.message}`).join("\n")}\n` +
-        "Fix the request (the format is in references/spec.md, goldens) and run sl goldens new again.",
+        "Fix the request (the format is in references/spec.md, goldens) and run semlayer goldens new again.",
     );
   }
   const source = goldenSource(ctx, golden);
   const problem = accessProblem(ctx, role, user);
   if (problem) throw new UserError(`${problem} Nothing was written.`);
-  // The whole project as sl validate would read it with this golden written (JSON is YAML). Inside
-  // sl apply the batch validates once, at its end, and counts only the errors it ends with.
+  // The whole project as semlayer validate would read it with this golden written (JSON is YAML). Inside
+  // semlayer apply the batch validates once, at its end, and counts only the errors it ends with.
   const errors = deferValidation()
     ? []
     : blamed(validateProject(ctx.root, new Map([[paths(ctx.root).golden(name), JSON.stringify(golden)]])).filter((i) => i.level === "error" && i.file === file.split(sep).join("/")));
   if (errors.length) {
     throw new UserError(
-      `sl validate would report errors on the golden, so nothing was written:\n${errors.map((i) => `  ${i.path || "golden"}: ${i.message}`).join("\n")}\n` +
-        "Fix the request, --role or --user and run sl goldens new again.",
+      `semlayer validate would report errors on the golden, so nothing was written:\n${errors.map((i) => `  ${i.path || "golden"}: ${i.message}`).join("\n")}\n` +
+        "Fix the request, --role or --user and run semlayer goldens new again.",
     );
   }
   const compiled = compileGolden(ctx.root, golden);
   batchWrite(path);
   writeYaml(path, golden);
   const next =
-    `Run sl goldens run --name ${name} to see its rows; once its measures are approved, confirm it on the owner's yes: ` +
+    `Run semlayer goldens run --name ${name} to see its rows; once its measures are approved, confirm it on the owner's yes: ` +
     `${confirmSteps(name, " --tolerance <agreed tolerance>")}.`;
   const refused = compiled.ok ? undefined : { reason: compiled.reason, refusals: compiled.refusals, next: refusalNext(golden, compiled) };
   if (ctx.json) {
@@ -883,7 +883,7 @@ async function newCommand(ctx: CommandContext, values: OptionValues): Promise<nu
   }
   ctx.out(`Wrote ${file}, a draft golden.`);
   if (compiled.ok) {
-    ctx.out(`Its request compiles from the current YAML to this SQL, which the golden does not store (sl sql --request ${file} prints it again):`);
+    ctx.out(`Its request compiles from the current YAML to this SQL, which the golden does not store (semlayer sql --request ${file} prints it again):`);
     ctx.out(plainText(compiled.sql));
     ctx.out(plainText(`Parameters, bound in order: ${compiled.params.map((v, i) => `$${i + 1} = ${JSON.stringify(v)}`).join(", ") || "none"}`));
   } else ctx.out(plainText(`Its request does not compile from the current YAML yet: ${refused!.reason}. ${refused!.next}`));
@@ -891,19 +891,19 @@ async function newCommand(ctx: CommandContext, values: OptionValues): Promise<nu
   return 0;
 }
 
-// sl goldens confirm --readback <id>: each golden of the readback confirmed as --name confirms it,
+// semlayer goldens confirm --readback <id>: each golden of the readback confirmed as --name confirms it,
 // only on the owner's latest reply to it being a yes to it with these rows and this tolerance. Exits
 // 0 when every golden the owner said yes to was confirmed, 1 when one was not. `only`, when given,
-// keeps the goldens with those targets (sl reply --answers --approve: the ones it answered).
+// keeps the goldens with those targets (semlayer reply --answers --approve: the ones it answered).
 export async function confirmReadback(ctx: CommandContext, values: OptionValues, rb: string, only?: ReadonlySet<string>): Promise<number> {
   for (const flag of ["name", "tolerance", "results", "plan"] as const)
-    if (str(values, flag) !== undefined) throw new UserError(`--readback takes no --${flag}: each golden is confirmed with the tolerance its readback stated. Run sl goldens confirm --name <g> --${flag} ... for one golden.`);
-  if (bool(values, "emit-sql")) throw new UserError("--readback takes no --emit-sql; write one golden's plan with sl goldens confirm --name <g> --emit-sql.");
+    if (str(values, flag) !== undefined) throw new UserError(`--readback takes no --${flag}: each golden is confirmed with the tolerance its readback stated. Run semlayer goldens confirm --name <g> --${flag} ... for one golden.`);
+  if (bool(values, "emit-sql")) throw new UserError("--readback takes no --emit-sql; write one golden's plan with semlayer goldens confirm --name <g> --emit-sql.");
   const by = str(values, "by")?.trim();
   if (by === "") throw new UserError(`--by is empty. Leave it out to record the owner whose yes is in ${LEDGER_FILE}, or give that owner's name.`);
   const pending = readPending(ctx.root, rb.trim());
   const items = pending.items.filter((i) => i.target.startsWith("golden:") && (!only || only.has(i.target)));
-  if (!items.length) throw new UserError(`Readback ${pending.readback_id} reads back no golden, so there is nothing to confirm. Approve its items with sl approve --readback ${pending.readback_id}.`);
+  if (!items.length) throw new UserError(`Readback ${pending.readback_id} reads back no golden, so there is nothing to confirm. Approve its items with semlayer approve --readback ${pending.readback_id}.`);
   const replies = readReplies(ctx.root);
   type Result = { name: string; item: number; confirmed: boolean; said_yes: boolean; reason?: string; next?: string; result?: Record<string, unknown> };
   const results: Result[] = [];
@@ -915,8 +915,8 @@ export async function confirmReadback(ctx: CommandContext, values: OptionValues,
     if (!r || r.verdict !== "yes") {
       const reason = !r ? "no owner reply to it is recorded" : r.verdict === null ? `the owner's latest reply (${ref}) has no verdict` : `the owner's latest reply (${ref}) is "${r.verdict}", not yes`;
       const next = !r || r.verdict === null
-        ? `sl reply --readback ${pending.readback_id} --item ${it.n} --text "<owner's words>" --verdict yes|no|change --by "<owner>"`
-        : `make the ${r.verdict === "no" ? "correction" : "change"} the owner asked for (sl set golden:${name} ..., or the measure it reads), then sl goldens run --name ${name} and sl readback --targets golden:${name}`;
+        ? `semlayer reply --readback ${pending.readback_id} --item ${it.n} --text "<owner's words>" --verdict yes|no|change --by "<owner>"`
+        : `make the ${r.verdict === "no" ? "correction" : "change"} the owner asked for (semlayer set golden:${name} ..., or the measure it reads), then semlayer goldens run --name ${name} and semlayer readback --targets golden:${name}`;
       results.push({ ...base, reason, next });
       continue;
     }
@@ -933,7 +933,7 @@ export async function confirmReadback(ctx: CommandContext, values: OptionValues,
         ...base,
         said_yes: true,
         reason: (at >= 0 ? text.slice(0, at) : text).replace(/; nothing was recorded\..*$/s, "").trim().replace(/[.;:]$/, ""),
-        next: at >= 0 ? text.slice(at + 6).replace(/\.$/, "").trim() : `sl goldens confirm --name ${name}`,
+        next: at >= 0 ? text.slice(at + 6).replace(/\.$/, "").trim() : `semlayer goldens confirm --name ${name}`,
       });
     }
   }
@@ -965,8 +965,8 @@ export async function confirmReadback(ctx: CommandContext, values: OptionValues,
     failed.length
       ? `${failed.length} golden(s) the owner said yes to were not confirmed (listed above with why); fix each as its line says.`
       : !done.length
-        ? `The owner has said yes to none of these goldens yet; record their answers first: sl reply --readback ${pending.readback_id} --answers -.`
-        : `Every golden the owner said yes to is confirmed. Next: ${not.length ? "the steps above" : "sl goldens check"}.`,
+        ? `The owner has said yes to none of these goldens yet; record their answers first: semlayer reply --readback ${pending.readback_id} --answers -.`
+        : `Every golden the owner said yes to is confirmed. Next: ${not.length ? "the steps above" : "semlayer goldens check"}.`,
   );
   ctx.out(lines.join("\n"));
   return code;
@@ -979,8 +979,8 @@ const spec: CommandSpec = {
     "goldens check [--name <g>] [--source <s>]   (each takes --emit-sql, --results <file>, --plan <plan_id> and --show-protected; values of protected " +
     "columns show as [protected] unless --show-protected) | " +
     'goldens new --name <g> --question "<question>" --request <json|file> [--source <s>] [--role <role>] [--user <json>]\n\n' +
-    "confirm records the rows the request compiles to now only when the owner's latest reply to golden:<g> in .sl/ledger.jsonl\n" +
-    "is a yes to the golden with these rows and this tolerance (sl readback --targets golden:<g>, then sl reply --verdict yes);\n" +
+    "confirm records the rows the request compiles to now only when the owner's latest reply to golden:<g> in .semlayer/ledger.jsonl\n" +
+    "is a yes to the golden with these rows and this tolerance (semlayer readback --targets golden:<g>, then semlayer reply --verdict yes);\n" +
     "confirmed_by and confirmed_at come from that reply, and --by, when given, must name the same owner.\n" +
     "confirm --readback confirms each golden of that readback as --name would, at the tolerance read back, and lists every\n" +
     "other with why (a change, a no, no reply, changed since the yes); it exits 1 only when a golden the owner said yes to was not confirmed.\n" +
@@ -1019,7 +1019,7 @@ const spec: CommandSpec = {
     }
     if (rest.length) throw new UserError(`Unexpected argument "${rest[0]}".`);
     const rb = str(values, "readback");
-    if (rb !== undefined && sub !== "confirm") throw new UserError(`--readback goes with sl goldens confirm only (sl goldens confirm --readback <readback_id>), not sl goldens ${sub}.`);
+    if (rb !== undefined && sub !== "confirm") throw new UserError(`--readback goes with semlayer goldens confirm only (semlayer goldens confirm --readback <readback_id>), not semlayer goldens ${sub}.`);
     if (rb !== undefined) return confirmReadback(ctx, values, rb);
     switch (sub as Subcommand) {
       case "run":

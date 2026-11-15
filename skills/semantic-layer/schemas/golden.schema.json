@@ -110,7 +110,7 @@
     "sql": {
       "type": "string",
       "minLength": 1,
-      "description": "The older name of cross_check_sql, read as it; sl validate asks for it to be renamed."
+      "description": "The older name of cross_check_sql, read as it; semlayer validate asks for it to be renamed."
     },
     "expected": {
       "type": "object",
@@ -123,7 +123,7 @@
         "tolerance": {
           "type": "number",
           "minimum": 0,
-          "description": "Relative tolerance for figures with decimals, agreed with the owner and passed to sl goldens confirm --tolerance; 0 for figures finance signs off. The request's grouping columns and whole numbers always compare exactly."
+          "description": "Relative tolerance for figures with decimals, agreed with the owner and passed to semlayer goldens confirm --tolerance; 0 for figures finance signs off. The request's grouping columns and whole numbers always compare exactly."
         },
         "rows": {
           "type": "array",
@@ -158,7 +158,7 @@
     },
     "confirmed_as": {
       "type": "object",
-      "description": "The role and user the golden ran as when it was confirmed, written by sl goldens confirm; sl validate warns when role or user now differ.",
+      "description": "The role and user the golden ran as when it was confirmed, written by semlayer goldens confirm; semlayer validate warns when role or user now differ.",
       "additionalProperties": false,
       "properties": {
         "role": {

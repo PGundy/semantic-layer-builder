@@ -2,20 +2,20 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkToolUse, type Verdict } from "../skills/semantic-layer/scripts/hooks/guard-edits.ts";
-import { ROLES, slRefusal } from "../skills/semantic-layer/scripts/lib/roles.ts";
+import { ROLES, semlayerRefusal } from "../skills/semantic-layer/scripts/lib/roles.ts";
 import type { Snapshot, SnapshotTable } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { catalogFor, plainLiteral, type UsageFile } from "../skills/semantic-layer/scripts/lib/usage.ts";
 import { readStatement, splitStatements } from "../skills/semantic-layer/scripts/lib/usage-sql.ts";
 import { schemaValidator } from "../skills/semantic-layer/scripts/mcp/schema.ts";
-import { sl, tempDir, tempRoot } from "./helpers.ts";
+import { semlayer, tempDir, tempRoot } from "./helpers.ts";
 
-// sl usage (spec: Usage evidence): saved queries and query logs read as evidence, on a copy of the
+// semlayer usage (spec: Usage evidence): saved queries and query logs read as evidence, on a copy of the
 // Acme example layer and the synthetic fixture under fixtures/acme/usage. All data is synthetic.
 
 const REPO = join(import.meta.dir, "..");
 const ACME = join(REPO, "examples", "acme", "semantic");
 const FIXTURE = join(REPO, "fixtures", "acme", "usage");
-const SL = join(REPO, "skills", "semantic-layer", "scripts", "sl.ts");
+const SEMLAYER = join(REPO, "skills", "semantic-layer", "scripts", "semlayer.ts");
 const SCHEMA = JSON.parse(readFileSync(join(REPO, "skills", "semantic-layer", "schemas", "usage.schema.json"), "utf8")) as object;
 const validateUsage = schemaValidator().compile(SCHEMA);
 // The month every fixture file's modification time is set to.
@@ -54,8 +54,8 @@ function usageFile(root: string): UsageFile {
 }
 
 async function ok(root: string, args: string[], env: Record<string, string | undefined> = {}) {
-  const r = await sl(root, args, env);
-  if (r.code !== 0) throw new Error(`sl ${args.join(" ")}: ${r.err}`);
+  const r = await semlayer(root, args, env);
+  if (r.code !== 0) throw new Error(`semlayer ${args.join(" ")}: ${r.err}`);
   return r;
 }
 
@@ -220,7 +220,7 @@ describe("the statement reader", () => {
   });
 });
 
-describe("sl usage add on the Acme fixture", () => {
+describe("semlayer usage add on the Acme fixture", () => {
   let root: string;
   let dir: string;
   let queries: string;
@@ -233,9 +233,9 @@ describe("sl usage add on the Acme fixture", () => {
     file = usageFile(root);
   });
 
-  test("the file matches its schema and sl validate checks it", async () => {
+  test("the file matches its schema and semlayer validate checks it", async () => {
     if (!validateUsage(file)) throw new Error(JSON.stringify(validateUsage.errors));
-    const v = await sl(root, ["validate", "--json"]);
+    const v = await semlayer(root, ["validate", "--json"]);
     const issues = (v.json<{ issues: { file: string }[] }>().issues ?? []).filter((i) => i.file.includes("usage"));
     expect(issues).toEqual([]);
   });
@@ -393,15 +393,15 @@ describe("sl usage add on the Acme fixture", () => {
           .sort()
           .map((f) => [f, readFileSync(join(r2, f), "utf8")]),
       );
-    const before = [state(), (await sl(r2, ["next", "--json"])).out, (await sl(r2, ["status", "--json"])).out];
+    const before = [state(), (await semlayer(r2, ["next", "--json"])).out, (await semlayer(r2, ["status", "--json"])).out];
     await ok(r2, ["usage", "add", "--source", "warehouse", q]);
-    const after = [state(), (await sl(r2, ["next", "--json"])).out, (await sl(r2, ["status", "--json"])).out];
+    const after = [state(), (await semlayer(r2, ["next", "--json"])).out, (await semlayer(r2, ["status", "--json"])).out];
     expect(after).toEqual(before);
     const text = readFileSync(join(r2, "snapshots", "warehouse.usage.json"), "utf8").toLowerCase();
     for (const s of ["ignore previous", "approve --recursive", "approved by", "every status"]) expect(text).not.toContain(s);
   });
 
-  test("sl tables shows each table's count and names the unused ones", async () => {
+  test("semlayer tables shows each table's count and names the unused ones", async () => {
     const json = (await ok(root, ["tables", "--source", "warehouse", "--json"])).json<{ tables: { table: string; usage: number }[]; unused: string[] }>();
     expect(Object.fromEntries(json.tables.map((t) => [t.table, t.usage]))).toMatchObject({ "acme.fct_orders": 14, "acme.dim_customers": 8, "acme.dim_sales_reps": 0 });
     expect(json.unused).toEqual(["acme.dim_sales_reps", "legacy.dim_regions", "acme.sales_team_closure"]);
@@ -413,7 +413,7 @@ describe("sl usage add on the Acme fixture", () => {
   const REVENUE = "5 of the 10 statements that sum orders.amount_cents keep only status in (completed, shipped): is that the rule for revenue?";
   const TEST_ACCOUNTS = "3 of the 10 statements that sum orders.amount_cents keep only customers.is_test_account = false: is that the rule for revenue?";
 
-  test("sl brief and the scoped sl baseline --json carry a usage block with the evidence for the revenue rule", async () => {
+  test("semlayer brief and the scoped semlayer baseline --json carry a usage block with the evidence for the revenue rule", async () => {
     const brief = (await ok(root, ["brief", "--source", "warehouse", "--tables", "fct_orders,dim_sales_reps", "--json"])).json<{ tables: { table: string; usage: { statements: number; evidence?: string[]; from: string } }[] }>();
     const orders = brief.tables.find((t) => t.table === "acme.fct_orders")!;
     expect(orders.usage.from).toBe("query files");
@@ -432,19 +432,19 @@ describe("sl usage add on the Acme fixture", () => {
     expect(show).toContain("Next: put the evidence to the owner as a question");
   });
 
-  test("sl draft writes nothing from usage", async () => {
+  test("semlayer draft writes nothing from usage", async () => {
     const { root: r2, dir: d2 } = acme();
     const q = fixture(d2);
     const models = () => readdirSync(join(r2, "models", "warehouse")).sort().map((f) => readFileSync(join(r2, "models", "warehouse", f), "utf8"));
     const before = models();
     await ok(r2, ["usage", "add", "--source", "warehouse", q]);
-    await sl(r2, ["draft", "--source", "warehouse", "--tables", "dim_sales_reps,fct_orders"]);
+    await semlayer(r2, ["draft", "--source", "warehouse", "--tables", "dim_sales_reps,fct_orders"]);
     expect(models()).toEqual(before);
   });
 });
 
 describe("without a usage file every output is as before", () => {
-  test("sl tables, sl brief and sl baseline print the same bytes before an add and after a clear", async () => {
+  test("semlayer tables, semlayer brief and semlayer baseline print the same bytes before an add and after a clear", async () => {
     const { root, dir } = acme();
     const q = fixture(dir);
     const outputs = async () =>
@@ -478,8 +478,8 @@ describe("input forms", () => {
       writeFileSync(join(d, name), text);
       utimesSync(join(d, name), MTIME, MTIME);
     }
-    await sl(root, ["usage", "clear", "--source", "warehouse"]);
-    const r = await sl(root, ["usage", "add", "--source", "warehouse", ...extra, ...Object.keys(files).map((f) => join(d, f))]);
+    await semlayer(root, ["usage", "clear", "--source", "warehouse"]);
+    const r = await semlayer(root, ["usage", "add", "--source", "warehouse", ...extra, ...Object.keys(files).map((f) => join(d, f))]);
     return { r, file: existsSync(join(root, "snapshots", "warehouse.usage.json")) ? usageFile(root) : null };
   };
   const Q = "select sum(amount_cents) from acme.fct_orders where status = 'completed'";
@@ -509,7 +509,7 @@ describe("input forms", () => {
     expect(file!.tables["acme.fct_orders"]!.statements).toBe(1);
     const refused = await add({ "q.txt": Q });
     expect(refused.r.code).toBe(1);
-    expect(refused.r.err).toContain("q.txt is neither SQL nor a query log. sl usage add reads .sql");
+    expect(refused.r.err).toContain("q.txt is neither SQL nor a query log. semlayer usage add reads .sql");
     expect(refused.file).toBeNull();
   });
 
@@ -526,8 +526,8 @@ describe("input forms", () => {
     );
     const bytes: string[] = [];
     for (const tz of ["UTC", "America/Los_Angeles", "Asia/Tokyo"]) {
-      await sl(root, ["usage", "clear", "--source", "warehouse"]);
-      const r = Bun.spawnSync(["bun", SL, "usage", "add", "--source", "warehouse", d, "--root", root], { env: { ...process.env, TZ: tz }, cwd: root });
+      await semlayer(root, ["usage", "clear", "--source", "warehouse"]);
+      const r = Bun.spawnSync(["bun", SEMLAYER, "usage", "add", "--source", "warehouse", d, "--root", root], { env: { ...process.env, TZ: tz }, cwd: root });
       expect(r.exitCode).toBe(0);
       bytes.push(readFileSync(join(root, "snapshots", "warehouse.usage.json"), "utf8"));
     }
@@ -551,7 +551,7 @@ describe("input forms", () => {
   test("an add that keeps no statement says so and names the fixes", async () => {
     const { r } = await add({ "o.sql": "select * from sales.orders_x; select * from crm.accounts_x;" });
     expect(r.out).toContain("0 tables of warehouse appear in saved queries.");
-    expect(r.out).toContain("No statement read here reads a table warehouse keeps. If these queries are for another source, run sl usage clear --source warehouse");
+    expect(r.out).toContain("No statement read here reads a table warehouse keeps. If these queries are for another source, run semlayer usage clear --source warehouse");
   });
 
   test("--schema keeps every table of a schema whatever the scope, and a schema the snapshot lacks is refused", async () => {
@@ -564,27 +564,27 @@ describe("input forms", () => {
   });
 });
 
-describe("what sl usage add refuses to read", () => {
+describe("what semlayer usage add refuses to read", () => {
   test("the project's env file, by name or as the env file the lookup reads, and a path inside the semantic root", async () => {
     const { root, dir } = acme();
     const q = join(dir, "q");
     mkdirSync(q);
     writeFileSync(join(q, "a.sql"), "select 1 from acme.fct_orders;");
     writeFileSync(join(dir, ".env"), "WAREHOUSE_URL=postgres://u:secret@h/db\n");
-    const named = await sl(root, ["usage", "add", "--source", "warehouse", join(dir, ".env")]);
+    const named = await semlayer(root, ["usage", "add", "--source", "warehouse", join(dir, ".env")]);
     expect(named.code).toBe(1);
-    expect(named.err).toContain(".env is an env file, which holds the connection secret; sl usage add never reads it.");
+    expect(named.err).toContain(".env is an env file, which holds the connection secret; semlayer usage add never reads it.");
     writeFileSync(join(q, "conn.json"), "[]");
-    const viaFlag = await sl(root, ["usage", "add", "--source", "warehouse", q, "--env-file", join(q, "conn.json")]);
+    const viaFlag = await semlayer(root, ["usage", "add", "--source", "warehouse", q, "--env-file", join(q, "conn.json")]);
     expect(viaFlag.code).toBe(1);
     expect(viaFlag.err).toContain("is an env file");
-    const inside = await sl(root, ["usage", "add", "--source", "warehouse", join(root, "snapshots")]);
+    const inside = await semlayer(root, ["usage", "add", "--source", "warehouse", join(root, "snapshots")]);
     expect(inside.code).toBe(1);
     expect(inside.err).toContain("is inside the semantic root; query files stay outside it");
     expect(existsSync(join(root, "snapshots", "warehouse.usage.json"))).toBe(false);
     // A link with a query file's name that leads to the env file is refused too.
     symlinkSync(join(dir, ".env"), join(dir, "linked.sql"));
-    const linked = await sl(root, ["usage", "add", "--source", "warehouse", join(dir, "linked.sql")]);
+    const linked = await semlayer(root, ["usage", "add", "--source", "warehouse", join(dir, "linked.sql")]);
     expect(linked.code).toBe(1);
     expect(linked.err).toContain("linked.sql is an env file");
     // A hidden file in a folder is never read: the .env beside the queries stays unread.
@@ -592,10 +592,10 @@ describe("what sl usage add refuses to read", () => {
     const r = await ok(root, ["usage", "add", "--source", "warehouse", q, "--env-file", join(dir, ".env")]);
     expect(r.out).not.toContain(".env");
     expect(usageFile(root).inputs.map((i) => i.name)).toEqual(["a.sql", "conn.json"]);
-    // The env file SL_ENV_FILE names is refused whatever its name, and the refusal names the source.
-    const viaEnv = await sl(root, ["usage", "add", "--source", "warehouse", join(q, "a.sql")], { SL_ENV_FILE: join(q, "a.sql") });
+    // The env file SEMLAYER_ENV_FILE names is refused whatever its name, and the refusal names the source.
+    const viaEnv = await semlayer(root, ["usage", "add", "--source", "warehouse", join(q, "a.sql")], { SEMLAYER_ENV_FILE: join(q, "a.sql") });
     expect(viaEnv.code).toBe(1);
-    expect(viaEnv.err).toContain("a.sql is an env file, which holds the connection secret; sl usage add never reads it. Give the query files or their folder without it, as in sl usage add --source warehouse ./queries.");
+    expect(viaEnv.err).toContain("a.sql is an env file, which holds the connection secret; semlayer usage add never reads it. Give the query files or their folder without it, as in semlayer usage add --source warehouse ./queries.");
   });
 
   test("a model's pii tag keeps a literal out of every output even when the column name looks harmless", async () => {
@@ -631,21 +631,21 @@ describe("roles and the hook", () => {
     return checkToolUse(JSON.stringify(payload));
   };
 
-  test("the interviewer may run sl usage add, show and clear; no other role may", () => {
+  test("the interviewer may run semlayer usage add, show and clear; no other role may", () => {
     for (const sub of ["add --source wh ./queries", "show --source wh", "clear --source wh"]) {
       const args = ["usage", ...sub.split(" ")];
-      expect(slRefusal(ROLES.interviewer, args)).toBeUndefined();
-      for (const role of [ROLES.batch_analyst, ROLES.connector_runner, ROLES.readback_verifier, ROLES.golden_builder]) expect(slRefusal(role, args)).toContain("may not run sl usage");
+      expect(semlayerRefusal(ROLES.interviewer, args)).toBeUndefined();
+      for (const role of [ROLES.batch_analyst, ROLES.connector_runner, ROLES.readback_verifier, ROLES.golden_builder]) expect(semlayerRefusal(role, args)).toContain("may not run semlayer usage");
     }
     const dir = tempDir("usage-hook");
     mkdirSync(join(dir, "semantic"));
     writeFileSync(join(dir, "semantic", "semantic.yaml"), "name: hooktest\n");
-    const v = call("sl-interviewer", `bun ${SL} usage add --source wh ./queries --root semantic`, dir);
+    const v = call("semlayer-interviewer", `bun ${SEMLAYER} usage add --source wh ./queries --root semantic`, dir);
     expect(v.message ?? "").toBe("");
     expect(v.allow).toBe(true);
-    const b = call("sl-batch-analyst", `bun ${SL} usage show --source wh --root semantic`, dir);
+    const b = call("semlayer-batch-analyst", `bun ${SEMLAYER} usage show --source wh --root semantic`, dir);
     expect(b.allow).toBe(false);
-    expect(b.message).toContain("may not run sl usage");
+    expect(b.message).toContain("may not run semlayer usage");
   });
 
   test("the usage file is written by the command alone, as a whole file under the lock", async () => {
@@ -654,16 +654,16 @@ describe("roles and the hook", () => {
     // A live process that is not this one holds the lock.
     const other = Bun.spawn(["sleep", "30"]);
     try {
-      mkdirSync(join(root, ".sl"), { recursive: true });
-      writeFileSync(join(root, ".sl", "lock"), `${JSON.stringify({ pid: other.pid, command: "set", started: "2026-01-01T00:00:00Z" })}\n`);
-      const held = await sl(root, ["usage", "add", "--source", "warehouse", q], { SL_LOCK_WAIT_MS: "50" });
+      mkdirSync(join(root, ".semlayer"), { recursive: true });
+      writeFileSync(join(root, ".semlayer", "lock"), `${JSON.stringify({ pid: other.pid, command: "set", started: "2026-01-01T00:00:00Z" })}\n`);
+      const held = await semlayer(root, ["usage", "add", "--source", "warehouse", q], { SEMLAYER_LOCK_WAIT_MS: "50" });
       expect(held.code).toBe(1);
-      expect(held.err).toContain("sl set");
+      expect(held.err).toContain("semlayer set");
       expect(existsSync(join(root, "snapshots", "warehouse.usage.json"))).toBe(false);
     } finally {
       other.kill();
     }
-    rmSync(join(root, ".sl", "lock"));
+    rmSync(join(root, ".semlayer", "lock"));
     await ok(root, ["usage", "add", "--source", "warehouse", q]);
     // No temporary file is left beside it.
     expect(readdirSync(join(root, "snapshots")).sort()).toEqual(["lake.json", "warehouse.json", "warehouse.usage.json"]);
@@ -677,7 +677,7 @@ describe("the usage file stays inside the semantic root", () => {
     const outside = join(dir, "outside.json");
     writeFileSync(outside, "{}\n");
     symlinkSync(outside, join(root, "snapshots", "warehouse.usage.json"));
-    const r = await sl(root, ["usage", "add", "--source", "warehouse", q]);
+    const r = await semlayer(root, ["usage", "add", "--source", "warehouse", q]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("snapshots/warehouse.usage.json is a link");
     expect(readFileSync(outside, "utf8")).toBe("{}\n");
@@ -688,23 +688,23 @@ describe("the usage file stays inside the semantic root", () => {
   });
 });
 
-describe("sl validate on the usage file", () => {
+describe("semlayer validate on the usage file", () => {
   test("a usage file that does not match its schema, or names another source, is an error", async () => {
     const { root, dir } = acme();
     await ok(root, ["usage", "add", "--source", "warehouse", fixture(dir)]);
     const p = join(root, "snapshots", "warehouse.usage.json");
     const good = readFileSync(p, "utf8");
     writeFileSync(p, good.replace('"usage_version": 1', '"usage_version": 2'));
-    const v = await sl(root, ["validate", "--json"]);
+    const v = await semlayer(root, ["validate", "--json"]);
     expect(v.json<{ issues: { file: string; path: string; level: string }[] }>().issues.filter((i) => i.file === "snapshots/warehouse.usage.json")).toEqual([
       expect.objectContaining({ level: "error", path: "usage_version" }),
     ]);
     writeFileSync(p, good.replace('"source": "warehouse"', '"source": "lake"'));
-    const w = await sl(root, ["validate", "--json"]);
+    const w = await semlayer(root, ["validate", "--json"]);
     expect(w.json<{ issues: { file: string; path: string }[] }>().issues.filter((i) => i.file === "snapshots/warehouse.usage.json").map((i) => i.path)).toEqual(["source"]);
     // A malformed file is refused by the readers with the file named.
     writeFileSync(p, good.replace('"tables": {', '"tables": [').replace(/\}\s*\n\}\s*$/, "]\n}\n"));
-    const t = await sl(root, ["tables", "--source", "warehouse"]);
+    const t = await semlayer(root, ["tables", "--source", "warehouse"]);
     expect(t.code).toBe(1);
     expect(t.err).toContain("snapshots/warehouse.usage.json");
   });

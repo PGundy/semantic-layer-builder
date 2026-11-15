@@ -1,6 +1,6 @@
 // Decision D2: a golden whose source is an export source (intake.mode: export) cannot be confirmed
 // until that source has a connection, since a golden's rows come from the data. Every command that
-// names the steps for such a golden (sl readback, sl reply, sl review apply, sl goldens) takes their
+// names the steps for such a golden (semlayer readback, semlayer reply, semlayer review apply, semlayer goldens) takes their
 // wording from here, so the upgrade and what follows it read the same everywhere.
 import { intakeMode, upgradeCommand } from "./intake.ts";
 import { paths } from "./project.ts";
@@ -33,7 +33,7 @@ const joined = (xs: readonly string[]) => (xs.length < 2 ? xs.join("") : `${xs.s
 // The commands for goldens of one export source: the upgrade, then each golden's confirm (or its
 // run, before the owner has said yes to it).
 export function goldenUpgradeNext(source: string, dialect: Dialect, goldens: readonly string[], then: "confirm" | "run" = "confirm"): string {
-  return `${upgradeCommand(source, dialect)}, then ${joined(goldens.map((g) => `sl goldens ${then} --name ${g}`))}`;
+  return `${upgradeCommand(source, dialect)}, then ${joined(goldens.map((g) => `semlayer goldens ${then} --name ${g}`))}`;
 }
 
 // The step for yeses to goldens of one export source: why they wait, the upgrade, then each confirm.

@@ -28,9 +28,9 @@ export interface ConnectionIntake {
 
 // An export intake starts the working root with the project only and, at shared/<source>-schema.csv,
 // the schema export the owner shares when a connection is not possible: the fixture's views read
-// with sl export-sql's catalog query. The skill imports it (sl setup --export) only after asking
+// with semlayer export-sql's catalog query. The skill imports it (semlayer setup --export) only after asking
 // for a connection. export_upgrade starts the same way; later the owner gives the connection and
-// the script upgrades the source to the same views, written in its sl arguments with {fixture}.
+// the script upgrades the source to the same views, written in its semlayer arguments with {fixture}.
 export interface ExportIntake {
   path: "export" | "export_upgrade";
   source: string;
@@ -67,7 +67,7 @@ export const AGENT_ROLES: readonly AgentRole[] = ["connector_runner", "batch_ana
 export type Speaker = "skill" | "owner" | AgentRole;
 export type StopReason = "done" | "turn_budget" | "token_budget" | "error";
 
-// One sl command a skill turn ran, as written, without --root.
+// One semlayer command a skill turn ran, as written, without --root.
 export interface CommandRun {
   command: string;
   exit_code: number;
@@ -97,7 +97,7 @@ export interface TranscriptTurn {
 
 // Everything a skill turn starts from, and nothing else: a fresh context per owner turn.
 export interface SkillTurnInput {
-  // The per-run working copy of the semantic root; the agent works in it and may run sl status.
+  // The per-run working copy of the semantic root; the agent works in it and may run semlayer status.
   root: string;
   // Every file under root, by path relative to it (forward slashes), as it stands now.
   files: Record<string, string>;
@@ -123,7 +123,7 @@ export interface OwnerTurnInput {
   persona_prompt: string;
   skill_message: string;
   history: { speaker: Speaker; text: string }[];
-  // The review forms the skill has written for the owner (.sl/reviews/), by path in the working
+  // The review forms the skill has written for the owner (.semlayer/reviews/), by path in the working
   // root, as they stand: what the owner can open and fill in.
   forms?: Record<string, string>;
 }

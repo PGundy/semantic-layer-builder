@@ -5,7 +5,7 @@ This example starts where many owners do: with a schema export rather than a dat
 1. Get the export query for your database and run it. For Postgres:
 
    ```sh
-   bun skills/semantic-layer/scripts/sl.ts export-sql --dialect postgres --schemas acme > export.sql
+   bun skills/semantic-layer/scripts/semlayer.ts export-sql --dialect postgres --schemas acme > export.sql
    psql -X "$DATABASE_URL" --csv -f export.sql > schema.csv
    ```
 
@@ -15,7 +15,7 @@ This example starts where many owners do: with a schema export rather than a dat
 
    ```sh
    cd examples/acme-export
-   S="bun ../../skills/semantic-layer/scripts/sl.ts"
+   S="bun ../../skills/semantic-layer/scripts/semlayer.ts"
    $S init --name acme_export --root semantic
    $S add-source --name warehouse --dialect postgres --env WAREHOUSE_URL --root semantic
    $S import --source warehouse --file schema.csv --root semantic

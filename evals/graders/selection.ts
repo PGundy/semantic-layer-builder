@@ -28,7 +28,7 @@ export function gradeSelection(run: RunFiles): GraderResult {
     graded++;
     const snapshot = loadSnapshot(run.root, source);
     if (!snapshot) {
-      details.push(`semantic/snapshots/${source}.json is missing, so ${source} has no scope to grade; the skill never ran sl introspect --source ${source}.`);
+      details.push(`semantic/snapshots/${source}.json is missing, so ${source} has no scope to grade; the skill never ran semlayer introspect --source ${source}.`);
       continue;
     }
     const scope = filterInScope(loadSource(run.root, source).scope, snapshot.tables);

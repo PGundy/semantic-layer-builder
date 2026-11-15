@@ -8,15 +8,15 @@ You need [Bun](https://bun.sh) 1.4 or later (CI uses 1.4.4). From the repository
 
 ```sh
 bun install
-bun skills/semantic-layer/scripts/sl.ts --help    # or: bun run sl -- --help
+bun skills/semantic-layer/scripts/semlayer.ts --help    # or: bun run semlayer -- --help
 ```
 
 The root install also installs the skill's own dependencies (`skills/semantic-layer` is a workspace). The CLI's runtime dependencies are `@duckdb/node-api`, `ajv` and `yaml`; a change that needs another one should say why in its pull request.
 
 ## Layout
 
-- `skills/semantic-layer/SKILL.md`: the router the agent starts from (principles, how to read `sl next`, and which phase card to load); `references/phases/` holds one card per phase, the other files in `references/` the topic guides, and `references/spec.md` the file formats and the CLI table.
-- `skills/semantic-layer/scripts/`: the CLI (`sl.ts`, `commands/`, `lib/`), in strict TypeScript.
+- `skills/semantic-layer/SKILL.md`: the router the agent starts from (principles, how to read `semlayer next`, and which phase card to load); `references/phases/` holds one card per phase, the other files in `references/` the topic guides, and `references/spec.md` the file formats and the CLI table.
+- `skills/semantic-layer/scripts/`: the CLI (`semlayer.ts`, `commands/`, `lib/`), in strict TypeScript.
 - `skills/semantic-layer/schemas/`: JSON Schemas for the YAML files.
 - `tests/`: the test suites; `tests/skill-docs.test.ts` checks the docs against the CLI.
 - `fixtures/acme/`: the synthetic Acme dataset (`bun run fixtures` regenerates it); `examples/`: layers built from it.
@@ -37,9 +37,9 @@ bun test
 bash scripts/pg-local.sh --stop      # stops it
 ```
 
-`scripts/pg-local.sh` keeps the cluster in a directory only you can read (`${TMPDIR:-/tmp}/sl-pg-<uid>`, or `PG_LOCAL_DIR`), on a Unix socket only you can open, with no TCP listener. `PG_LOCAL_PORT` and `PG_BIN` override the port and the binaries; a cluster already running in the directory keeps its own port, and the printed `PG_URL` names it. Homebrew's `postgresql@16` is keg-only, so its `pg_ctl` is not on `PATH`: run `eval "$(PG_BIN="$(brew --prefix postgresql@16)/bin" bash scripts/pg-local.sh)"`.
+`scripts/pg-local.sh` keeps the cluster in a directory only you can read (`${TMPDIR:-/tmp}/semlayer-pg-<uid>`, or `PG_LOCAL_DIR`), on a Unix socket only you can open, with no TCP listener. `PG_LOCAL_PORT` and `PG_BIN` override the port and the binaries; a cluster already running in the directory keeps its own port, and the printed `PG_URL` names it. Homebrew's `postgresql@16` is keg-only, so its `pg_ctl` is not on `PATH`: run `eval "$(PG_BIN="$(brew --prefix postgresql@16)/bin" bash scripts/pg-local.sh)"`.
 
-The live tests create and drop schemas, each test in its own uniquely named schema, in the database `PG_URL` names. They refuse to run unless its host is `localhost`, `127.0.0.1`, `::1` or a socket path, or `SL_TEST_ALLOW_REMOTE=1` is set. Never point `PG_URL` at a database whose data you care about.
+The live tests create and drop schemas, each test in its own uniquely named schema, in the database `PG_URL` names. They refuse to run unless its host is `localhost`, `127.0.0.1`, `::1` or a socket path, or `SEMLAYER_TEST_ALLOW_REMOTE=1` is set. Never point `PG_URL` at a database whose data you care about.
 
 A test makes its temp directories with `tempDir()` or `tempRoot()` from `tests/helpers.ts`, never with `mkdtemp`. `bunfig.toml` preloads `tests/temp-dirs.ts`, which removes a test file's directories when the next file starts and the last file's when the run ends, whether the tests pass or fail, and whatever is left when a signal stops the run or a test exits the process. Run `bun test` from the repository root, where `bunfig.toml` is: from another directory only the first file's directories are removed. `bun test --bail` stops before the cleanup and leaves the failing file's directories.
 
@@ -48,12 +48,12 @@ A test makes its temp directories with `tempDir()` or `tempRoot()` from `tests/h
 `tests/perf/` checks the large-catalog targets (docs/PRD.md FR-1.7) on a seeded synthetic catalog of 50,000 tables and 1,000,000 columns:
 
 ```sh
-bun run perf    # SL_PERF=1 bun test tests/perf: import, scope, tables --groups, status, baseline, introspect, validate and typed edits
+bun run perf    # SEMLAYER_PERF=1 bun test tests/perf: import, scope, tables --groups, status, baseline, introspect, validate and typed edits
 ```
 
-It also checks validation and typed edits on a layer of 870 models over a 5,000-table catalog (`tests/perf/edits.test.ts`, the layer written by `tests/perf/layer.ts`): `sl validate` under 5 seconds, one typed edit under 8, and twelve edits through `sl apply` under 8.
+It also checks validation and typed edits on a layer of 870 models over a 5,000-table catalog (`tests/perf/edits.test.ts`, the layer written by `tests/perf/layer.ts`): `semlayer validate` under 5 seconds, one typed edit under 8, and twelve edits through `semlayer apply` under 8.
 
-Each command runs as its own process and the suite prints its wall time and peak memory. The catalog is written once per generator version under `${TMPDIR:-/tmp}/sl-perf-g<version>` (`SL_PERF_CACHE` overrides) as an information_schema CSV and a DuckDB database. With `PG_URL` set it also introspects 50,000 Postgres tables, created on the first run in schemas named `slperf_g<version>_50000_*` in the `PG_URL` database and kept for the next (creating them adds under a minute). `bun tests/perf/catalog.ts --drop-pg` drops them. `SL_PERF_CLI` points the suite at another copy of `sl.ts`, such as the base branch's, to compare. `bun test` runs only the quick 5,000-table check (`tests/perf/smoke.test.ts`) and the tests that compare the fast paths with the code they replace (`tests/perf/equivalence.test.ts`).
+Each command runs as its own process and the suite prints its wall time and peak memory. The catalog is written once per generator version under `${TMPDIR:-/tmp}/semlayer-perf-g<version>` (`SEMLAYER_PERF_CACHE` overrides) as an information_schema CSV and a DuckDB database. With `PG_URL` set it also introspects 50,000 Postgres tables, created on the first run in schemas named `semlayerperf_g<version>_50000_*` in the `PG_URL` database and kept for the next (creating them adds under a minute). `bun tests/perf/catalog.ts --drop-pg` drops them. `SEMLAYER_PERF_CLI` points the suite at another copy of `semlayer.ts`, such as the base branch's, to compare. `bun test` runs only the quick 5,000-table check (`tests/perf/smoke.test.ts`) and the tests that compare the fast paths with the code they replace (`tests/perf/equivalence.test.ts`).
 
 All test and fixture data is synthetic. Never add real data, real names or real credentials to tests, fixtures or examples.
 
@@ -63,13 +63,13 @@ All test and fixture data is synthetic. Never add real data, real names or real 
 bash scripts/verify.sh
 ```
 
-It installs from the lockfile, typechecks, runs every test and validates the example layer. When `PG_URL` is unset and Postgres binaries exist, it starts a cluster of its own with `scripts/pg-local.sh` in a fresh `sl-pg-verify.*` directory, and stops the cluster and removes the directory when it exits, also when a step fails. A cluster that does not start stops the run with `pg-local.sh`'s message. A cluster that `PG_URL` names is left running. It fails, and lists them, when the run leaves an `sl-test-*` or `sl-pg-*` entry in `${TMPDIR:-/tmp}` that was not there when it started; two runs at once in the same temp directory see each other's. CI runs the same script on every pull request and on pushes to `main` and `release/**`.
+It installs from the lockfile, typechecks, runs every test and validates the example layer. When `PG_URL` is unset and Postgres binaries exist, it starts a cluster of its own with `scripts/pg-local.sh` in a fresh `semlayer-pg-verify.*` directory, and stops the cluster and removes the directory when it exits, also when a step fails. A cluster that does not start stops the run with `pg-local.sh`'s message. A cluster that `PG_URL` names is left running. It fails, and lists them, when the run leaves an `semlayer-test-*` or `semlayer-pg-*` entry in `${TMPDIR:-/tmp}` that was not there when it started; two runs at once in the same temp directory see each other's. CI runs the same script on every pull request and on pushes to `main` and `release/**`.
 
 A change should:
 
 - add or update tests for what it changes; a fix comes with a test that reproduces the problem;
 - update `references/spec.md` and the JSON Schemas when it changes a file format, and the CLI table in `spec.md` when it adds or changes a command or flag (`tests/skill-docs.test.ts` fails when a doc shows a command or flag the CLI lacks, or the table and `--help` disagree);
-- keep `SKILL.md` under 120 lines and each phase card under 150: a phase's steps go in its card, detail in the topic reference, and a new phase `sl next` can name gets a row in `SKILL.md`'s router table and a card (`tests/skill-docs.test.ts` checks the caps, the table and every card's commands against `--help`);
+- keep `SKILL.md` under 120 lines and each phase card under 150: a phase's steps go in its card, detail in the topic reference, and a new phase `semlayer next` can name gets a row in `SKILL.md`'s router table and a card (`tests/skill-docs.test.ts` checks the caps, the table and every card's commands against `--help`);
 - write docs and comments in the present tense, describing what the code does.
 
 Before a release, run the exit walkthrough by hand (`evals/walkthrough/README.md`): a fresh agent builds a layer from an empty folder and a `.env` through the plugin's hooks, and `evals/walkthrough/count.ts` counts the exit conditions of `docs/PRD-hardening.md` section 2 from its log. It needs an agent and a Postgres, so CI does not run it.

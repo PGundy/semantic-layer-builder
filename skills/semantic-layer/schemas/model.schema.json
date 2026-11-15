@@ -33,7 +33,7 @@
         "draft",
         "approved"
       ],
-      "description": "Whether the owner has signed off this model as a whole. Tools only write draft; sl approve sets approved."
+      "description": "Whether the owner has signed off this model as a whole. Tools only write draft; semlayer approve sets approved."
     },
     "approved_by": {
       "type": "string",
@@ -49,7 +49,7 @@
     "approved_hash": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$",
-      "description": "sha256: and 64 hex characters, written by sl approve: the hash of the item's semantic content when it was approved. sl validate errors when the item no longer matches it, and warns when an approved item has none (sl approve --stamp-hashes records it)."
+      "description": "sha256: and 64 hex characters, written by semlayer approve: the hash of the item's semantic content when it was approved. semlayer validate errors when the item no longer matches it, and warns when an approved item has none (semlayer approve --stamp-hashes records it)."
     },
     "description": {
       "type": "string",
@@ -84,7 +84,7 @@
         "minLength": 1
       },
       "uniqueItems": true,
-      "description": "Columns of the table left out on purpose; sl draft --new-columns and sl status skip them."
+      "description": "Columns of the table left out on purpose; semlayer draft --new-columns and semlayer status skip them."
     },
     "open_questions": {
       "type": "array",
@@ -186,7 +186,7 @@
           "type": "string",
           "minLength": 1,
           "pattern": "^[A-Za-z][A-Za-z0-9_+\\-]*(/[A-Za-z0-9_+\\-]+)*$",
-          "description": "Only on type time: the IANA zone (America/New_York, UTC) the dimension's values are stored in, for a timestamp without a time zone. A timestamp with a time zone carries its own. sl validate errors on a zone it does not know."
+          "description": "Only on type time: the IANA zone (America/New_York, UTC) the dimension's values are stored in, for a timestamp without a time zone. A timestamp with a time zone carries its own. semlayer validate errors on a zone it does not know."
         },
         "description": {
           "type": "string",
@@ -214,7 +214,7 @@
             "draft",
             "approved"
           ],
-          "description": "Whether the owner has signed off this dimension. Tools only write draft; sl approve sets approved."
+          "description": "Whether the owner has signed off this dimension. Tools only write draft; semlayer approve sets approved."
         },
         "approved_by": {
           "type": "string",
@@ -230,7 +230,7 @@
         "approved_hash": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$",
-          "description": "sha256: and 64 hex characters, written by sl approve: the hash of the item's semantic content when it was approved. sl validate errors when the item no longer matches it, and warns when an approved item has none (sl approve --stamp-hashes records it)."
+          "description": "sha256: and 64 hex characters, written by semlayer approve: the hash of the item's semantic content when it was approved. semlayer validate errors when the item no longer matches it, and warns when an approved item has none (semlayer approve --stamp-hashes records it)."
         }
       },
       "allOf": [
@@ -330,7 +330,7 @@
             "draft",
             "approved"
           ],
-          "description": "Whether the owner has signed off this measure. Tools only write draft; sl approve sets approved."
+          "description": "Whether the owner has signed off this measure. Tools only write draft; semlayer approve sets approved."
         },
         "approved_by": {
           "type": "string",
@@ -346,7 +346,7 @@
         "approved_hash": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$",
-          "description": "sha256: and 64 hex characters, written by sl approve: the hash of the item's semantic content when it was approved. sl validate errors when the item no longer matches it, and warns when an approved item has none (sl approve --stamp-hashes records it)."
+          "description": "sha256: and 64 hex characters, written by semlayer approve: the hash of the item's semantic content when it was approved. semlayer validate errors when the item no longer matches it, and warns when an approved item has none (semlayer approve --stamp-hashes records it)."
         }
       },
       "allOf": [
@@ -469,7 +469,7 @@
             "draft",
             "approved"
           ],
-          "description": "Whether the owner has signed off this join. Tools only write draft; sl approve sets approved."
+          "description": "Whether the owner has signed off this join. Tools only write draft; semlayer approve sets approved."
         },
         "approved_by": {
           "type": "string",
@@ -485,11 +485,11 @@
         "approved_hash": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$",
-          "description": "sha256: and 64 hex characters, written by sl approve: the hash of the item's semantic content when it was approved. sl validate errors when the item no longer matches it, and warns when an approved item has none (sl approve --stamp-hashes records it)."
+          "description": "sha256: and 64 hex characters, written by semlayer approve: the hash of the item's semantic content when it was approved. semlayer validate errors when the item no longer matches it, and warns when an approved item has none (semlayer approve --stamp-hashes records it)."
         },
         "evidence": {
           "type": "object",
-          "description": "Measurements written by sl check-join.",
+          "description": "Measurements written by semlayer check-join.",
           "additionalProperties": false,
           "required": [
             "checked_at",
@@ -512,12 +512,12 @@
             "to": {
               "type": "string",
               "pattern": "^[a-z][a-z0-9_]*$",
-              "description": "Target model the check measured. When it differs from the join's to, sl validate warns."
+              "description": "Target model the check measured. When it differs from the join's to, semlayer validate warns."
             },
             "keys": {
               "type": "array",
               "minItems": 1,
-              "description": "Key pairs the check measured. When they differ from the join's keys, sl validate warns.",
+              "description": "Key pairs the check measured. When they differ from the join's keys, semlayer validate warns.",
               "items": {
                 "type": "object",
                 "description": "One key pair.",
@@ -593,7 +593,7 @@
         "fanout_override": {
           "type": "string",
           "minLength": 1,
-          "description": "Why an approved many_to_one or one_to_one join stands although its evidence shows fan-out (the target key is not unique or a row matches more than one target row), such as a known-dirty key the owner accepts. Without it sl validate errors on such a join."
+          "description": "Why an approved many_to_one or one_to_one join stands although its evidence shows fan-out (the target key is not unique or a row matches more than one target row), such as a known-dirty key the owner accepts. Without it semlayer validate errors on such a join."
         }
       },
       "allOf": [

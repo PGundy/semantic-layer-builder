@@ -12,15 +12,15 @@ export const PERSONAS_DIR = join(import.meta.dir, "personas");
 export interface ScriptTurn {
   text: string;
   tokens?: number;
-  sl?: string[][];
-  // Files the skill writes by hand, by path relative to the working root, before its sl commands run.
+  semlayer?: string[][];
+  // Files the skill writes by hand, by path relative to the working root, before its semlayer commands run.
   write?: Record<string, string>;
   done?: boolean;
   // A task the interviewer turn before it dispatched to this role agent (multi-agent scenarios).
   agent?: AgentRole;
 }
 
-// A review form the scripted owner fills in: the form the skill wrote (.sl/reviews/<id>.md or .json),
+// A review form the scripted owner fills in: the form the skill wrote (.semlayer/reviews/<id>.md or .json),
 // the path under shared/ the owner hands it back at, and the owner's verdict and words per item, by
 // target, and to the open questions, by text the question holds. An item or question left out stays
 // empty, as a person leaves a box unmarked.
@@ -108,9 +108,9 @@ export function loadScript(scenario: Scenario, scenarioFile: string, override?: 
       const problem = scriptWriteProblem(file, text);
       if (problem) throw new EvalError(`${relative(REPO_ROOT, path)}: ${problem}`);
     }
-    for (const args of turn.sl ?? []) {
+    for (const args of turn.semlayer ?? []) {
       if (args.some((a) => a === "--root" || a.startsWith("--root="))) {
-        throw new EvalError(`${relative(REPO_ROOT, path)}: an sl command passes --root; the driver runs every command in the run's working root, so remove it.`);
+        throw new EvalError(`${relative(REPO_ROOT, path)}: a semlayer command passes --root; the driver runs every command in the run's working root, so remove it.`);
       }
     }
   }
@@ -129,14 +129,14 @@ const plainPath = (file: string) => {
 };
 
 // Why the owner may not hand back a file at this path, or undefined: what the owner shares lands
-// under shared/ in the working root, as a review form (.md or .json), never in the files sl manages.
+// under shared/ in the working root, as a review form (.md or .json), never in the files semlayer manages.
 export function ownerFileProblem(file: string): string | undefined {
   if (!plainPath(file) || !/^shared\/[^\\/]+\.(md|json)$/.test(file))
     return `the owner hands back "${file}"; a file the owner shares goes at shared/<name>.md or shared/<name>.json in the semantic root, such as shared/rb_0001.md.`;
   return undefined;
 }
 
-// Why a scripted form fill cannot happen, or undefined (the schema holds the form under .sl/reviews/
+// Why a scripted form fill cannot happen, or undefined (the schema holds the form under .semlayer/reviews/
 // and the copy under shared/): the owner hands the form back in its own format.
 function fillProblem(f: FormFill): string | undefined {
   if (extname(f.form) !== extname(f.as)) return `an owner turn fills ${f.form} and hands it back as ${f.as}; keep the form's format (${extname(f.form)}).`;
@@ -159,7 +159,7 @@ export function agentTurnProblem(scenario: Scenario, script: Script): string | u
   return undefined;
 }
 
-// Keys only sl approve and sl goldens confirm write; a hand write that holds one would pose as an approval.
+// Keys only semlayer approve and semlayer goldens confirm write; a hand write that holds one would pose as an approval.
 const APPROVAL_KEYS = ["approved_by", "approved_at", "approved_hash", "last_approved", "confirmed_by", "confirmed_at", "confirmed_as"];
 
 // Whether a parsed document sets status: approved or an approval key on any map at any depth.
@@ -172,8 +172,8 @@ function approves(value: unknown): boolean {
 }
 
 // Why a scripted hand write may not happen, or undefined. A write stays inside the working root, never
-// touches .sl/ (the readbacks and the owner's answers, which only sl writes) and never approves:
-// only sl approve and sl goldens confirm set status: approved. The text is judged as the CLI reads it,
+// touches .semlayer/ (the readbacks and the owner's answers, which only semlayer writes) and never approves:
+// only semlayer approve and semlayer goldens confirm set status: approved. The text is judged as the CLI reads it,
 // parsed as YAML (JSON included), so no spelling of status: approved gets past; text that does not
 // parse is refused, since the CLI could not read it either.
 export function scriptWriteProblem(file: string, text: string): string | undefined {
@@ -181,14 +181,14 @@ export function scriptWriteProblem(file: string, text: string): string | undefin
   if (!plainPath(file)) {
     return `a scripted write names "${file}"; name a file by its plain path inside the semantic root, such as goldens/<name>.yaml.`;
   }
-  if (parts[0]!.toLowerCase() === ".sl") return `a scripted write names "${file}"; .sl/ holds the readbacks and the owner's answers, which only sl readback, sl reply and sl question write. Record an answer with sl reply instead.`;
+  if (parts[0]!.toLowerCase() === ".semlayer") return `a scripted write names "${file}"; .semlayer/ holds the readbacks and the owner's answers, which only semlayer readback, semlayer reply and semlayer question write. Record an answer with semlayer reply instead.`;
   let doc: unknown;
   try {
     doc = parseYamlText(text, file);
   } catch (e) {
-    return `a scripted write of "${file}" is not valid YAML (${(e as Error).message}); fix its text so sl can read it.`;
+    return `a scripted write of "${file}" is not valid YAML (${(e as Error).message}); fix its text so semlayer can read it.`;
   }
-  if (approves(doc)) return `a scripted write of "${file}" sets status: approved or an approval field; write it as a draft and approve it with sl approve or sl goldens confirm after the owner's recorded yes.`;
+  if (approves(doc)) return `a scripted write of "${file}" sets status: approved or an approval field; write it as a draft and approve it with semlayer approve or semlayer goldens confirm after the owner's recorded yes.`;
   return undefined;
 }
 

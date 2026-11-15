@@ -5,11 +5,11 @@ import { DuckDBInstance } from "@duckdb/node-api";
 import { applyEntryRefusal, applyFileRefusals, ROLES } from "../skills/semantic-layer/scripts/lib/roles.ts";
 import type { Model, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { approveWithYes, sl, tempRoot } from "./helpers.ts";
+import { approveWithYes, semlayer, tempRoot } from "./helpers.ts";
 
-// The commands the exit walkthrough lacked (docs/PRD-hardening.md HR-15): sl add-join and sl
-// remove-join, sl ignore-column --remove, one ignored-column check for every typed edit that takes
-// an expression, adding to a saved scope, and sl goldens new inside sl apply. On copies of
+// The commands the exit walkthrough lacked (docs/PRD-hardening.md HR-15): semlayer add-join and semlayer
+// remove-join, semlayer ignore-column --remove, one ignored-column check for every typed edit that takes
+// an expression, adding to a saved scope, and semlayer goldens new inside semlayer apply. On copies of
 // examples/acme and its synthetic fixture data.
 
 const REPO = join(import.meta.dir, "..");
@@ -22,7 +22,7 @@ beforeEach(async () => {
   ({ root, dir, cleanup } = tempRoot());
   cpSync(ACME, root, { recursive: true });
   // A locked command that changes nothing, so the lock's own .gitignore line is there before any tree is read.
-  expect((await sl(root, ["set", "warehouse.orders", "grain", "One row per order."])).code).toBe(0);
+  expect((await semlayer(root, ["set", "warehouse.orders", "grain", "One row per order."])).code).toBe(0);
 });
 afterEach(() => cleanup?.());
 
@@ -47,7 +47,7 @@ function tree(): Map<string, string> {
 // Runs a command that must refuse: exit 1, each phrase in its message, and no file changed.
 async function refused(args: string[], ...phrases: string[]): Promise<string> {
   const before = tree();
-  const r = await sl(root, args);
+  const r = await semlayer(root, args);
   expect({ args, code: r.code }).toEqual({ args, code: 1 });
   for (const p of phrases) expect(r.err).toContain(p);
   expect(tree()).toEqual(before);
@@ -71,24 +71,24 @@ async function duckWarehouse(): Promise<void> {
 
 const ADD_JOIN = ["add-join", "--source", "warehouse", "--model", "orders", "--name", "shipping_region", "--to", "regions", "--keys", "ship_region=region_code"];
 
-describe("sl add-join", () => {
-  test("the Acme orders to regions join is added, checked with sl check-join and approved after a readback", async () => {
+describe("semlayer add-join", () => {
+  test("the Acme orders to regions join is added, checked with semlayer check-join and approved after a readback", async () => {
     await duckWarehouse();
     // The owner's comment on the model stays where it is.
     writeFileSync(join(root, ORDERS), text(ORDERS).replace("joins:\n", "# Joins the owner named.\njoins:\n"));
     const before = text(ORDERS);
-    const r = await sl(root, ADD_JOIN);
+    const r = await semlayer(root, ADD_JOIN);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     expect(r.out).toContain("Added draft join shipping_region from warehouse.orders to regions on ship_region = region_code");
-    expect(r.out).toContain("Next: sl check-join --source warehouse --model orders --join shipping_region measures it; then read it back to the owner (sl readback --targets warehouse.orders.shipping_region)");
+    expect(r.out).toContain("Next: semlayer check-join --source warehouse --model orders --join shipping_region measures it; then read it back to the owner (semlayer readback --targets warehouse.orders.shipping_region)");
     const after = text(ORDERS);
     expect(after.startsWith(before)).toBe(true);
     expect(after.slice(before.length)).toBe(
       "  - name: shipping_region\n    to: regions\n    keys:\n      - from: ship_region\n        to: region_code\n    relationship: many_to_one\n    origin: owner\n    status: draft\n",
     );
 
-    const check = await sl(root, ["check-join", "--source", "warehouse", "--model", "orders", "--join", "shipping_region"]);
+    const check = await semlayer(root, ["check-join", "--source", "warehouse", "--model", "orders", "--join", "shipping_region"]);
     expect(check.err).toBe("");
     expect(check.code).toBe(0);
     const evidence = model(ORDERS).joins!.find((j) => j.name === "shipping_region")!.evidence!;
@@ -102,7 +102,7 @@ describe("sl add-join", () => {
   }, 60_000);
 
   test("--relationship, --type, --origin and --description are written; --json names the next command", async () => {
-    const r = await sl(root, [...ADD_JOIN, "--relationship", "one_to_one", "--type", "inner", "--origin", "inferred", "--description", "The region\nthe order ships to.", "--json"]);
+    const r = await semlayer(root, [...ADD_JOIN, "--relationship", "one_to_one", "--type", "inner", "--origin", "inferred", "--description", "The region\nthe order ships to.", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json()).toMatchObject({
       changed: true,
@@ -110,7 +110,7 @@ describe("sl add-join", () => {
       ref: "warehouse.orders.shipping_region",
       join: { name: "shipping_region", to: "regions", keys: [{ from: "ship_region", to: "region_code" }], relationship: "one_to_one", type: "inner", origin: "inferred", description: "The region the order ships to.", status: "draft" },
       warnings: [],
-      next: "sl check-join --source warehouse --model orders --join shipping_region",
+      next: "semlayer check-join --source warehouse --model orders --join shipping_region",
     });
   });
 
@@ -118,30 +118,30 @@ describe("sl add-join", () => {
     const base = ["add-join", "--source", "warehouse", "--model", "orders"];
     await refused([...base, "--name", "ship_to_region", "--to", "regions", "--keys", "ship_region=region_code"], 'already has a join "ship_to_region"', "Nothing was written");
     await refused([...base, "--name", "status", "--to", "regions", "--keys", "ship_region=region_code"], 'already has a dimension "status"');
-    await refused([...base, "--name", "warehouse_region", "--to", "warehouses", "--keys", "ship_region=region_code"], 'No model "warehouses" in source warehouse', "sl draft --source warehouse --tables <table>");
-    await refused([...base, "--name", "shipping_region", "--to", "regions", "--keys", "ship_regoin=region_code"], "ship_regoin is not a column of acme.fct_orders", "sl tables --source warehouse");
+    await refused([...base, "--name", "warehouse_region", "--to", "warehouses", "--keys", "ship_region=region_code"], 'No model "warehouses" in source warehouse', "semlayer draft --source warehouse --tables <table>");
+    await refused([...base, "--name", "shipping_region", "--to", "regions", "--keys", "ship_regoin=region_code"], "ship_regoin is not a column of acme.fct_orders", "semlayer tables --source warehouse");
     await refused([...base, "--name", "shipping_region", "--to", "regions", "--keys", "ship_region=code"], "code is not a column of acme.dim_regions");
-    await refused([...base, "--name", "gift", "--to", "regions", "--keys", "gift_message=region_code"], "reads orders.gift_message, which is in ignored_columns", "sl ignore-column --source warehouse --model orders --column gift_message --remove");
+    await refused([...base, "--name", "gift", "--to", "regions", "--keys", "gift_message=region_code"], "reads orders.gift_message, which is in ignored_columns", "semlayer ignore-column --source warehouse --model orders --column gift_message --remove");
     await refused([...base, "--name", "shipping_region", "--to", "regions", "--keys", "ship_region"], "--keys takes <left column>=<right column> pairs");
     await refused([...base, "--name", "shipping_region", "--to", "regions", "--keys", "ship_region=region_code", "--relationship", "many_to_many"], "--relationship is many_to_one, one_to_one, one_to_many");
     await refused([...base, "--name", "shipping_region", "--to", "regions", "--keys", "ship_region=region_code", "--type", "outer"], "--type is left or inner");
     await refused([...base, "--name", "Shipping", "--to", "regions", "--keys", "ship_region=region_code"], "is not a name");
-    await refused([...base, "--name", "shipping_region", "--to", "regions"], "Usage: sl add-join");
+    await refused([...base, "--name", "shipping_region", "--to", "regions"], "Usage: semlayer add-join");
   });
 
   test("an empty flow list becomes a block list, and a repeated key pair is written once", async () => {
     const file = "models/warehouse/test_accounts.yaml";
     expect(text(file)).toContain("joins: []\n");
     const args = ["add-join", "--source", "warehouse", "--model", "test_accounts", "--name", "customer", "--to", "customers", "--keys", "customer_id=customer_id,CUSTOMER_ID=customer_id"];
-    const r = await sl(root, args);
+    const r = await semlayer(root, args);
     expect(r.err).toBe("");
     expect(text(file)).toContain("joins:\n  - name: customer\n    to: customers\n    keys:\n");
     expect(model(file).joins).toEqual([expect.objectContaining({ name: "customer", keys: [{ from: "customer_id", to: "customer_id" }], status: "draft" })]);
-    expect((await sl(root, ["validate"])).code).toBe(0);
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
   });
 });
 
-describe("sl remove-join", () => {
+describe("semlayer remove-join", () => {
   test("refuses, naming the field, while a field reads through the join; removes a join nothing reads", async () => {
     await refused(
       ["remove-join", "--source", "warehouse", "--model", "orders", "--name", "ship_to_region"],
@@ -149,11 +149,11 @@ describe("sl remove-join", () => {
       "warehouse.orders.ship_region_name (its expr: ship_to_region.region_name)",
       "nothing was written",
     );
-    await refused(["remove-join", "--source", "warehouse", "--model", "orders", "--name", "status"], "warehouse.orders.status is a dimension, not a join; sl remove-field");
+    await refused(["remove-join", "--source", "warehouse", "--model", "orders", "--name", "status"], "warehouse.orders.status is a dimension, not a join; semlayer remove-field");
     await refused(["remove-join", "--source", "warehouse", "--model", "orders", "--name", "nope"], 'No dimension, measure or join "nope"');
     const before = text(ORDERS);
-    expect((await sl(root, ADD_JOIN)).code).toBe(0);
-    const r = await sl(root, ["remove-join", "--source", "warehouse", "--model", "orders", "--name", "shipping_region"]);
+    expect((await semlayer(root, ADD_JOIN)).code).toBe(0);
+    const r = await semlayer(root, ["remove-join", "--source", "warehouse", "--model", "orders", "--name", "shipping_region"]);
     expect(r.err).toBe("");
     expect(r.out).toContain("Removed join shipping_region from warehouse.orders");
     // ship_region is still read by a dimension, so nothing goes to ignored_columns and the file is as it was.
@@ -161,20 +161,20 @@ describe("sl remove-join", () => {
   });
 
   test("an approved join is removed only with --force, given on the owner's yes", async () => {
-    await refused(["remove-join", "--source", "warehouse", "--model", "orders", "--name", "sales_rep"], "is approved", "run sl remove-join --source warehouse --model orders --name sales_rep --force");
+    await refused(["remove-join", "--source", "warehouse", "--model", "orders", "--name", "sales_rep"], "is approved", "run semlayer remove-join --source warehouse --model orders --name sales_rep --force");
   });
 });
 
-describe("sl ignore-column --remove", () => {
-  test("un-ignoring customers.email without adding a field makes sl validate's warning go away", async () => {
+describe("semlayer ignore-column --remove", () => {
+  test("un-ignoring customers.email without adding a field makes semlayer validate's warning go away", async () => {
     // As the walkthrough's draft left it: the test-account rule reads email, and email is ignored.
     writeFileSync(join(root, CUSTOMERS), text(CUSTOMERS).replace("dimensions:\n", "ignored_columns:\n  - email # personal\ndimensions:\n"));
     const warning = async () =>
-      (await sl(root, ["validate", "--json"])).json<{ issues: { level: string; file: string; path: string }[] }>().issues.filter((i) => i.file === CUSTOMERS && i.path.startsWith("ignored_columns"));
+      (await semlayer(root, ["validate", "--json"])).json<{ issues: { level: string; file: string; path: string }[] }>().issues.filter((i) => i.file === CUSTOMERS && i.path.startsWith("ignored_columns"));
     expect((await warning()).length).toBe(1);
     const fields = model(CUSTOMERS).dimensions.map((d) => d.name);
     const before = text(CUSTOMERS);
-    const r = await sl(root, ["ignore-column", "--source", "warehouse", "--model", "customers", "--column", "EMAIL", "--remove"]);
+    const r = await semlayer(root, ["ignore-column", "--source", "warehouse", "--model", "customers", "--column", "EMAIL", "--remove"]);
     expect(r.err).toBe("");
     expect(r.out).toContain("Took email out of warehouse.customers's ignored_columns in models/warehouse/customers.yaml; no field was added.");
     expect(r.out).toContain("Next: run the edit the owner asked for");
@@ -182,13 +182,13 @@ describe("sl ignore-column --remove", () => {
     expect(model(CUSTOMERS).dimensions.map((d) => d.name)).toEqual(fields);
     expect(text(CUSTOMERS)).toBe(before.replace("ignored_columns:\n  - email # personal\n", ""));
     // Again, the column is not listed: nothing changes.
-    const again = await sl(root, ["ignore-column", "--source", "warehouse", "--model", "customers", "--column", "email", "--remove", "--json"]);
+    const again = await semlayer(root, ["ignore-column", "--source", "warehouse", "--model", "customers", "--column", "email", "--remove", "--json"]);
     expect(again.json()).toMatchObject({ changed: false, removed: true, ignored_columns: [] });
   });
 
   test("takes one entry out of a longer list, keeping the others and their comments", async () => {
     const before = text(ORDERS);
-    const r = await sl(root, ["ignore-column", "--source", "warehouse", "--model", "orders", "--column", "currency", "--remove", "--json"]);
+    const r = await semlayer(root, ["ignore-column", "--source", "warehouse", "--model", "orders", "--column", "currency", "--remove", "--json"]);
     expect(r.json()).toMatchObject({ changed: true, column: "currency", ignored_columns: ["shipping_cents", "gift_message"], removed: true });
     expect(text(ORDERS)).toBe(before.replace("  - currency\n", ""));
     await refused(["ignore-column", "--source", "warehouse", "--model", "orders", "--column", "gift_message", "--remove", "--reason", "x"], "run it without --reason");
@@ -201,7 +201,7 @@ describe("a typed edit reading an ignored column is refused the same way everywh
     writeFileSync(join(root, CUSTOMERS), text(CUSTOMERS).replace("dimensions:\n", "ignored_columns:\n  - email\ndimensions:\n"));
   });
   const RULE = "customer.email like '%@example-test.com'";
-  const NEXT = "sl ignore-column --source warehouse --model customers --column email --remove";
+  const NEXT = "semlayer ignore-column --source warehouse --model customers --column email --remove";
 
   test("add-field, set, check-rule and add-row-filter each refuse an expression reading it through a join", async () => {
     await refused(["add-field", "warehouse.orders", "--kind", "measure", "--name", "test_orders", "--agg", "count", "--filter", RULE], "reads customers.email, which is in ignored_columns", NEXT, "Nothing was written");
@@ -215,24 +215,24 @@ describe("a typed edit reading an ignored column is refused the same way everywh
   });
 
   test("an own column is refused the same way, naming ignore-column --remove, and add-field --unignore still takes it back", async () => {
-    const own = "sl ignore-column --source warehouse --model orders --column gift_message --remove";
+    const own = "semlayer ignore-column --source warehouse --model orders --column gift_message --remove";
     await refused(["add-field", "warehouse.orders", "--kind", "dimension", "--name", "has_gift", "--expr", "gift_message is not null", "--type", "boolean"], own, "or run this again with --unignore");
     await refused(["set", "warehouse.orders.ship_region", "expr", "coalesce(gift_message, ship_region)"], own);
     await refused(["check-rule", "--source", "warehouse", "--model", "orders", "--filter", "gift_message is null"], own);
     await refused(["set", "warehouse.orders.ship_to_region", "keys", "[{from: gift_message, to: region_code}]"], "The keys of warehouse.orders.ship_to_region reads orders.gift_message", own);
-    const ok = await sl(root, ["add-field", "warehouse.orders", "--kind", "dimension", "--name", "has_gift", "--expr", "gift_message is not null", "--type", "boolean", "--unignore", "--json"]);
+    const ok = await semlayer(root, ["add-field", "warehouse.orders", "--kind", "dimension", "--name", "has_gift", "--expr", "gift_message is not null", "--type", "boolean", "--unignore", "--json"]);
     expect(ok.json()).toMatchObject({ changed: true, unignored: ["gift_message"] });
   });
 
   test("a set that keeps reading a column it already read is not refused, and after --remove the edit goes through", async () => {
     // is_test_account already reads email: changing its expr in other ways stays allowed.
-    const kept = await sl(root, ["set", "warehouse.customers.is_test_account", "expr", "is_test_account or email like '%@example-test.org'"]);
+    const kept = await semlayer(root, ["set", "warehouse.customers.is_test_account", "expr", "is_test_account or email like '%@example-test.org'"]);
     expect(kept.err).toBe("");
     expect(kept.code).toBe(0);
-    expect((await sl(root, ["ignore-column", "--source", "warehouse", "--model", "customers", "--column", "email", "--remove"])).code).toBe(0);
-    const set = await sl(root, ["set", "warehouse.orders.ship_region", "description", "Unchanged rule."]);
+    expect((await semlayer(root, ["ignore-column", "--source", "warehouse", "--model", "customers", "--column", "email", "--remove"])).code).toBe(0);
+    const set = await semlayer(root, ["set", "warehouse.orders.ship_region", "description", "Unchanged rule."]);
     expect(set.code).toBe(0);
-    const added = await sl(root, ["add-field", "warehouse.orders", "--kind", "measure", "--name", "test_orders", "--agg", "count", "--filter", RULE]);
+    const added = await semlayer(root, ["add-field", "warehouse.orders", "--kind", "measure", "--name", "test_orders", "--agg", "count", "--filter", RULE]);
     expect(added.err).toBe("");
     expect(added.code).toBe(0);
   });
@@ -242,19 +242,19 @@ describe("adding to a saved scope", () => {
   test("one exclude with --write keeps every earlier pattern", async () => {
     const file = join(root, "sources", "warehouse.yaml");
     const saved = readYaml<SourceConfig>(file).scope!;
-    const r = await sl(root, ["scope", "--source", "warehouse", "--exclude", "acme.dim_products", "--write", "--json"]);
+    const r = await semlayer(root, ["scope", "--source", "warehouse", "--exclude", "acme.dim_products", "--write", "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<{ scope: { include: string[]; exclude: string[] }; kept_entries: number; removed: string[] }>();
     expect(out.scope).toEqual({ include: saved.include!, exclude: [...saved.exclude!, "acme.dim_products"] });
     expect(out.kept_entries).toBe(saved.include!.length + saved.exclude!.length);
     expect(out.removed).toEqual(["acme.dim_products"]);
     expect(readYaml<SourceConfig>(file).scope).toEqual({ include: saved.include!, exclude: [...saved.exclude!, "acme.dim_products"] });
-    const preview = await sl(root, ["scope", "--source", "warehouse", "--exclude", "acme.dim_regions"]);
+    const preview = await semlayer(root, ["scope", "--source", "warehouse", "--exclude", "acme.dim_regions"]);
     expect(preview.out).toContain("This adds to the saved scope, whose 7 entries stay; --remove <pattern> takes one out, --clear starts over.");
   });
 });
 
-describe("sl apply takes add-join, remove-join and goldens new", () => {
+describe("semlayer apply takes add-join, remove-join and goldens new", () => {
   const golden = (name: string, year: number) => [
     "goldens",
     "new",
@@ -275,25 +275,25 @@ describe("sl apply takes add-join, remove-join and goldens new", () => {
     const names = ["rev_2021", "rev_2022", "rev_2023", "rev_2024", "rev_2026"];
     const edits = [ADD_JOIN.slice(), ...names.map((n, i) => golden(n, [2021, 2022, 2023, 2024, 2026][i]!))];
     const before = tree();
-    const bad = await sl(root, ["apply", "--file", editsFile([...edits, golden("rev_bad", 2020).map((w) => w.replace('"op":"gte"', '"op":"after"'))])]);
+    const bad = await semlayer(root, ["apply", "--file", editsFile([...edits, golden("rev_bad", 2020).map((w) => w.replace('"op":"gte"', '"op":"after"'))])]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain("Entry 7");
     expect(tree()).toEqual(before);
 
-    const r = await sl(root, ["apply", "--file", editsFile(edits)]);
+    const r = await semlayer(root, ["apply", "--file", editsFile(edits)]);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     expect(r.out).toContain("Applied 6 edits.");
     for (const n of names) expect(readYaml<{ status: string }>(join(root, "goldens", `${n}.yaml`)).status).toBe("draft");
     expect(model(ORDERS).joins!.map((j) => j.name)).toContain("shipping_region");
-    const rm = await sl(root, ["apply", "--file", editsFile([["remove-join", "--source", "warehouse", "--model", "orders", "--name", "shipping_region"]])]);
+    const rm = await semlayer(root, ["apply", "--file", editsFile([["remove-join", "--source", "warehouse", "--model", "orders", "--name", "shipping_region"]])]);
     expect(rm.code).toBe(0);
     expect(model(ORDERS).joins!.map((j) => j.name)).not.toContain("shipping_region");
   });
 
   test("a draft golden naming a measure a later entry adds lands with it", async () => {
     const edits = [golden("rev_x", 2024).map((w) => w.replace("orders.revenue", "orders.gifts")), ["add-field", "warehouse.orders", "--kind", "measure", "--name", "gifts", "--agg", "count"]];
-    const r = await sl(root, ["apply", "--file", editsFile(edits)]);
+    const r = await semlayer(root, ["apply", "--file", editsFile(edits)]);
     // The golden names a measure the next entry adds: a draft golden naming an unknown field only warns, so both land.
     expect(r.err).toBe("");
     expect(existsSync(join(root, "goldens", "rev_x.yaml"))).toBe(true);
@@ -301,11 +301,11 @@ describe("sl apply takes add-join, remove-join and goldens new", () => {
 
   test("each entry is checked against the role that runs the batch", () => {
     expect(applyEntryRefusal(golden("g", 2024), ROLES.golden_builder)).toBeUndefined();
-    expect(applyEntryRefusal(ADD_JOIN, ROLES.golden_builder)).toContain("the golden builder may not run sl add-join");
+    expect(applyEntryRefusal(ADD_JOIN, ROLES.golden_builder)).toContain("the golden builder may not run semlayer add-join");
     expect(applyEntryRefusal(ADD_JOIN, ROLES.interviewer)).toBeUndefined();
     expect(applyEntryRefusal(["remove-join", "--source", "warehouse"], ROLES.interviewer)).toBeUndefined();
     expect(applyEntryRefusal(["goldens", "run", "--name", "g"])).toContain("is not a typed edit");
     expect(applyEntryRefusal(["goldens", "confirm", "--name", "g"])).toContain("records the owner's answer or approval");
-    expect(applyFileRefusals(ROLES.golden_builder, JSON.stringify({ edits: [golden("g", 2024), ADD_JOIN] }))).toEqual([expect.stringContaining("entry 2 of sl apply is refused for the golden builder")]);
+    expect(applyFileRefusals(ROLES.golden_builder, JSON.stringify({ edits: [golden("g", 2024), ADD_JOIN] }))).toEqual([expect.stringContaining("entry 2 of semlayer apply is refused for the golden builder")]);
   });
 });

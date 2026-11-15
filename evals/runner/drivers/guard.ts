@@ -1,11 +1,11 @@
 // Which tool calls the sdk driver's skill agent may make. It reads only the working root and the
-// skill's own files, writes only inside the root, and runs only the sl CLI there, so it cannot
+// skill's own files, writes only inside the root, and runs only the semlayer CLI there, so it cannot
 // open the owner's brief, the fixture's reference figures or earlier runs.
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { REPO_ROOT } from "../files.ts";
 
 export const SKILL_DIR = join(REPO_ROOT, "skills", "semantic-layer");
-export const SL = join(SKILL_DIR, "scripts", "sl.ts");
+export const SEMLAYER = join(SKILL_DIR, "scripts", "semlayer.ts");
 // The tools the skill agent has; the guard checks every call to them.
 export const SKILL_TOOLS = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"];
 
@@ -40,7 +40,7 @@ export function refuseSkillTool(tool: string, input: Record<string, unknown>, ro
     }
     case "Bash": {
       const command = (str("command") ?? "").trim();
-      const prefix = `bun ${SL} `;
+      const prefix = `bun ${SEMLAYER} `;
       const args = command.startsWith(prefix) ? command.slice(prefix.length) : undefined;
       if (args === undefined || /[;&|<>`$\n\r\\]/.test(args) || LEAVES_ROOT.test(args)) {
         return `Running "${command}" is refused: run only \`${prefix}<command> --root .\`, one command at a time, with paths inside the semantic root.`;

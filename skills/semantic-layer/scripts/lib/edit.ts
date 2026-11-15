@@ -1,5 +1,5 @@
-// Typed edits: the shared steps of sl set, sl tag, sl ignore-column, sl question, sl add-field,
-// sl remove-field, sl add-metric, sl remove-metric, sl rename and the access edits (lib/access-edit.ts).
+// Typed edits: the shared steps of semlayer set, semlayer tag, semlayer ignore-column, semlayer question, semlayer add-field,
+// semlayer remove-field, semlayer add-metric, semlayer remove-metric, semlayer rename and the access edits (lib/access-edit.ts).
 // An edit changes YAML files through editYamlText, so the owner's
 // comments and every untouched byte survive; the result is validated as the project would read it,
 // and it is written only when it adds no error.
@@ -22,7 +22,7 @@ import { sqlNames } from "./sql-names.ts";
 import { type Issue, SCHEMAS_DIR, validateProject } from "./validate.ts";
 import { editYamlText, parseYaml, parseYamlText, readYamlIfExists } from "./yaml.ts";
 
-// Keys only sl approve writes.
+// Keys only semlayer approve writes.
 export const APPROVAL_FIELDS = ["status", "approved_by", "approved_at", "approved_hash", "last_approved"];
 
 export type ItemKind = "model" | "dimension" | "measure" | "join" | "metric" | "access";
@@ -44,30 +44,30 @@ export function locate(root: string, ref: string): Located {
   const obj = (x: unknown) => x as Record<string, unknown>;
   switch (t.kind) {
     case "golden":
-      throw new UserError(`Goldens are not edited with typed edits; sl goldens run --name ${t.name} shows one.`);
+      throw new UserError(`Goldens are not edited with typed edits; semlayer goldens run --name ${t.name} shows one.`);
     case "access": {
       const file = paths(root).access;
       const access = readYamlIfExists<Record<string, unknown>>(file);
-      if (!access) throw new UserError(`No access.yaml at ${file}. Ask the owner the exceptions question first (sl status names it), then create it with sl set access mode open (or closed for an allowlist).`);
+      if (!access) throw new UserError(`No access.yaml at ${file}. Ask the owner the exceptions question first (semlayer status names it), then create it with semlayer set access mode open (or closed for an allowlist).`);
       return { ref, kind: "access", file, path: [], item: access };
     }
     case "metric": {
       const file = paths(root).metrics;
       const metrics = readYamlIfExists<{ metrics?: Record<string, unknown>[] }>(file)?.metrics ?? [];
       const index = Array.isArray(metrics) ? metrics.findIndex((m) => m?.name === t.name) : -1;
-      if (index < 0) throw new UserError(`No metric "${t.name}" in metrics.yaml. Run sl status to list the metrics.`);
+      if (index < 0) throw new UserError(`No metric "${t.name}" in metrics.yaml. Run semlayer status to list the metrics.`);
       return { ref, kind: "metric", file, path: ["metrics", index], item: metrics[index]! };
     }
     case "model":
     case "field": {
       const file = paths(root).model(t.source, t.model);
       const model = readYamlIfExists<Model>(file);
-      if (!model) throw new UserError(`No model "${t.model}" in source "${t.source}" (${file}). Run sl status to list the models.`);
+      if (!model) throw new UserError(`No model "${t.model}" in source "${t.source}" (${file}). Run semlayer status to list the models.`);
       if (t.kind === "model") return { ref, kind: "model", file, path: [], item: obj(model), source: t.source, model };
       const match: FieldMatch | undefined = findField(model, t.field);
       if (!match) {
         const names = [...(model.dimensions ?? []), ...(model.measures ?? []), ...(model.joins ?? [])].map((f) => f.name);
-        throw new UserError(`No dimension, measure or join "${t.field}" in ${t.source}.${t.model}. Known: ${names.join(", ") || "none"}. Check the spelling; sl add-field ${t.source}.${t.model} adds a new one.`);
+        throw new UserError(`No dimension, measure or join "${t.field}" in ${t.source}.${t.model}. Known: ${names.join(", ") || "none"}. Check the spelling; semlayer add-field ${t.source}.${t.model} adds a new one.`);
       }
       const section = match.kind === "dimension" ? "dimensions" : match.kind === "measure" ? "measures" : "joins";
       return { ref, kind: match.kind, file, path: [section, match.index], item: obj(match.item), source: t.source, model };
@@ -182,7 +182,7 @@ export interface EditOutcome {
   reapprove: string[];
 }
 
-// The warnings sl validate gives for a value of one key that can never be right, whatever else the
+// The warnings semlayer validate gives for a value of one key that can never be right, whatever else the
 // layer holds: a typed edit that adds one is refused with validate's own words, as an error is.
 // - time_zone on a time dimension whose column carries its own zone;
 // - a measure expr dividing by a numeric literal on duckdb (validate: "this warning never stands");
@@ -194,7 +194,7 @@ export function neverRight(i: Issue): boolean {
   return /^ignored_columns\[\d+\]$/.test(i.path) && i.message.includes("so it is not left out");
 }
 
-// A typed edit refused for a value that can never be right (neverRight). sl apply names every
+// A typed edit refused for a value that can never be right (neverRight). semlayer apply names every
 // entry refused this way, not only the first.
 export class ValueRefusal extends UserError {}
 
@@ -203,7 +203,7 @@ export function issueLine(i: Issue): string {
   return `${i.file}${i.path ? ` ${i.path}` : ""}: ${i.message}`;
 }
 
-// The warnings the typed edits of this CLI run added, outside sl apply and the access edits (which
+// The warnings the typed edits of this CLI run added, outside semlayer apply and the access edits (which
 // report their own): the CLI prints them with the command's output (withEditWarnings).
 let pendingWarnings: Issue[] = [];
 
@@ -262,7 +262,7 @@ function assertFree(root: string, file: string): void {
   } catch {
     return;
   }
-  throw new UserError(`Refusing to write ${relFile(root, file)}: something is already there (a file, or a link). Nothing was written. Run sl validate.`);
+  throw new UserError(`Refusing to write ${relFile(root, file)}: something is already there (a file, or a link). Nothing was written. Run semlayer validate.`);
 }
 
 export interface EditsOutcome {
@@ -274,7 +274,7 @@ export interface EditsOutcome {
 
 // Applies edits to one or more files, validates the project as it would read all of them together
 // and writes them only when they add no error: on any error nothing is written. An approved item the
-// edits change is not an error here (sl validate reports it, and the result names it in `reapprove`).
+// edits change is not an error here (semlayer validate reports it, and the result names it in `reapprove`).
 // `guard` sees those items first and throws to refuse the edit. Edits that leave every text as it
 // was write nothing.
 export function commitEdits(
@@ -315,12 +315,12 @@ export function commitEdits(
     const added = blamed(addedIssues(validateProject(root, after, removed), () => validateProject(root), { moves, reapprove, warnings, refuse }));
     if (added.length) throw invalid(what, added);
     opts.warnings?.push(...warnings);
-    // In sl apply's pass that finds which entry added a warning, the warnings the batch ends with go to the entry.
+    // In semlayer apply's pass that finds which entry added a warning, the warnings the batch ends with go to the entry.
     if (batch?.entryWarnings) batch.entryWarnings.push(...warnings.filter((w) => batch!.endWarnings.has(endKey(batch!, w))));
     else if (!batch && !opts.warnings) pendingWarnings.push(...warnings);
   }
   if (batch) {
-    // Inside sl apply: the batch validates once at its end and puts every file back on any failure.
+    // Inside semlayer apply: the batch validates once at its end and puts every file back on any failure.
     for (const file of [...after.keys(), ...removed]) batchWrite(file);
     batch.moves.push(...moves);
     for (const r of reapprove) batch.reapprove.add(r);
@@ -338,16 +338,16 @@ function invalid(what: string, added: Issue[]): UserError {
   // Only refused warnings: the value itself can never be right.
   if (added.every((i) => i.level === "warning"))
     return new ValueRefusal(
-      `Cannot ${what}: sl validate would warn about the value, and it can never be right here, so nothing was written:\n${lines.join("\n")}\n` +
-        "Leave the key out or give a value the warning allows, then run it again; sl validate lists the project's issues.",
+      `Cannot ${what}: semlayer validate would warn about the value, and it can never be right here, so nothing was written:\n${lines.join("\n")}\n` +
+        "Leave the key out or give a value the warning allows, then run it again; semlayer validate lists the project's issues.",
     );
   return new UserError(
-    `Cannot ${what}: the result would not validate, so nothing was written:\n${lines.join("\n")}\nFix the value and run it again; sl validate lists the project's errors.`,
+    `Cannot ${what}: the result would not validate, so nothing was written:\n${lines.join("\n")}\nFix the value and run it again; semlayer validate lists the project's errors.`,
   );
 }
 
 // The once-per-file count of approved items without a hash or without a matching owner yes: its
-// words change with the count, and only sl approve adds to it, so an edit never reports it.
+// words change with the count, and only semlayer approve adds to it, so an edit never reports it.
 function approvalSummary(i: Issue): boolean {
   return i.path === "" && (i.message.includes(UNHASHED_MESSAGE) || i.message.includes("no recorded owner yes in"));
 }
@@ -392,7 +392,7 @@ function addedIssues(now: Issue[], before: () => Issue[], o: AddedOptions): Issu
   return added;
 }
 
-// A batch of typed edits (sl apply). While one is open, commitEdits writes each edit as it comes,
+// A batch of typed edits (semlayer apply). While one is open, commitEdits writes each edit as it comes,
 // keeping each file's text from before the batch's first write to it (null for a file the batch
 // creates). In the deferred pass it skips each edit's validation, which the batch does once at its end.
 interface Batch {
@@ -453,7 +453,7 @@ export interface BatchOutcome {
 }
 
 function openBatch(deferred: boolean, blame?: Batch["blame"], endWarnings: Set<string> = new Set()): Batch {
-  if (batch) throw new UserError("sl apply cannot run inside another sl apply.");
+  if (batch) throw new UserError("semlayer apply cannot run inside another semlayer apply.");
   batch = { deferred, originals: new Map(), moves: [], reapprove: new Set(), refuse: [], blame, endWarnings };
   return batch;
 }
@@ -473,7 +473,7 @@ export function batchEntry(i: number): void {
 // first edit that adds an error the batch ends with (`edits` names its entry); an edit whose error a
 // later one fixes runs on. The files are put back after that pass too.
 // `what` names the batch in an error no single edit explains. `refused`, when given, is the error
-// for the edits the run itself refused and stepped over (sl apply checks every entry), read after
+// for the edits the run itself refused and stepped over (semlayer apply checks every entry), read after
 // each run: the batch fails with it, and on the run that names the edits behind the end's errors it
 // holds those too, with any end error no edit is blamed for listed under it.
 export async function runBatch(root: string, what: string, edits: () => Promise<void>, refused?: () => UserError | undefined): Promise<BatchOutcome> {
@@ -599,7 +599,7 @@ export function reapproveLines(refs: string[]): string[] {
   return refs.map(
     (r) =>
       `${r} is approved and changed since its approval: read it back to the owner as it now stands, and approve it again only on their yes ` +
-      `(sl approve --target ${r} --by "<owner>").`,
+      `(semlayer approve --target ${r} --by "<owner>").`,
   );
 }
 
@@ -617,13 +617,13 @@ export function protectionGuard(ref: string, before: string[], after: string[]):
     if (!changes.length || !reapprove.includes(ref)) return;
     throw new UserError(
       `Cannot ${changes.join(" and ")} ${ref} while it is approved: tools apply the approved item, so everyone who may see it would see its values at once. ` +
-        `Nothing was written. Revoke the approval first (sl approve --target ${ref} --revoke), run this again, then read the item back to the owner ` +
+        `Nothing was written. Revoke the approval first (semlayer approve --target ${ref} --revoke), run this again, then read the item back to the owner ` +
         `and approve it again only on their yes.`,
     );
   };
 }
 
-// Makes an approved access.yaml a draft in the edited document, as sl approve --target access
+// Makes an approved access.yaml a draft in the edited document, as semlayer approve --target access
 // --revoke writes it: status draft, approved_by and approved_at kept as last_approved where
 // approved_by stood, approved_hash removed. Tools apply an approved file as it stands, so a typed
 // edit of its rules is written as a draft and takes effect only once the owner approves it again.
@@ -651,7 +651,7 @@ export function accessDraftLines(set: { last_approved?: LastApproval }): string[
   const kept = set.last_approved
     ? `the version approved by ${set.last_approved.by} on ${set.last_approved.at} keeps applying where it is deployed (kept as last_approved); tell the owner so`
     : "tools serve nothing under it until it is approved";
-  return [`access.yaml was approved, so this edit made it a draft again: ${kept}. Read it back with sl readback --targets access and approve it again only on the owner's yes.`];
+  return [`access.yaml was approved, so this edit made it a draft again: ${kept}. Read it back with semlayer readback --targets access and approve it again only on the owner's yes.`];
 }
 
 export interface Prop {
@@ -676,7 +676,7 @@ export function parseValue(key: string, raw: string, prop: Prop): unknown {
   const words = Array.isArray(prop.enum) && prop.enum.every((v) => typeof v === "string");
   if (prop.type === "string" || words) return raw.trim();
   const value = parseYamlText(raw, `the value of ${key}`);
-  // A list of names is also written a,b (as sl set access takes one); a single name stays [a].
+  // A list of names is also written a,b (as semlayer set access takes one); a single name stays [a].
   if (prop.type === "array" && prop.items?.type === "string" && typeof value === "string" && value.includes(",")) {
     const items = value.split(",").map((x) => x.trim());
     if (items.some((x) => !x)) throw new UserError(`${key} has an empty name in ${JSON.stringify(raw.trim())}: write it as a,b or [a, b].`);
@@ -688,7 +688,7 @@ export function parseValue(key: string, raw: string, prop: Prop): unknown {
 }
 
 // What of the model reads `column`: its fields by kind and name, its join keys, its primary key and
-// other models' joins to it, by the rules sl validate checks ignored_columns with.
+// other models' joins to it, by the rules semlayer validate checks ignored_columns with.
 export function readers(model: Model, column: string, others: Model[], dialect: string | undefined): string[] {
   const one: SnapshotTable = { schema: null, name: model.model, kind: "table", columns: [{ name: column, type: "" }] };
   const joinNames = (model.joins ?? []).map((j) => ({ ...j, keys: [] }));
@@ -726,8 +726,8 @@ export function ignoredReads(model: Model, models: readonly Model[], texts: read
   return out;
 }
 
-// The refusal of a typed edit, or of sl check-rule, whose expression reads ignored columns: each was
-// left out of the layer on purpose, so the owner confirms first and sl ignore-column --remove takes it back.
+// The refusal of a typed edit, or of semlayer check-rule, whose expression reads ignored columns: each was
+// left out of the layer on purpose, so the owner confirms first and semlayer ignore-column --remove takes it back.
 export function ignoredRefusal(source: string, what: string, reads: readonly IgnoredRead[], written = true): UserError {
   const names = reads.map((r) => `${r.model}.${r.column}`);
   const one = reads.length === 1;
@@ -737,19 +737,19 @@ export function ignoredRefusal(source: string, what: string, reads: readonly Ign
   );
 }
 
-// The words of the sl ignore-column that takes a column back into the layer.
+// The words of the semlayer ignore-column that takes a column back into the layer.
 export function unignoreWords(source: string, model: string, column: string): string[] {
   return ["ignore-column", "--source", source, "--model", model, "--column", column, "--remove"];
 }
 
-// Where typed edits a message names go: one owner turn's edits go in one sl apply, so each is given
-// as the entry that apply takes (the words after "sl", as JSON), with the command that runs it alone.
+// Where typed edits a message names go: one owner turn's edits go in one semlayer apply, so each is given
+// as the entry that apply takes (the words after "semlayer", as JSON), with the command that runs it alone.
 // `where` places the entries among the turn's other edits.
 export function inTurnApply(edits: readonly (readonly string[])[], where?: string): string {
   const entries = edits.map((w) => `[${w.map((x) => JSON.stringify(x)).join(", ")}]`).join(", ");
   const word = (x: string) => (/[\s"'\\$`;&|()]/.test(x) || !x ? `'${x.replace(/'/g, "'\\''")}'` : x);
-  const alone = edits.map((w) => `sl ${w.map(word).join(" ")}`).join(", then ");
-  return `with ${edits.length === 1 ? "this entry" : "these entries"} in the turn's sl apply --file -${where ? `, ${where}` : ""}: ${entries} (on ${edits.length === 1 ? "its" : "their"} own: ${alone})`;
+  const alone = edits.map((w) => `semlayer ${w.map(word).join(" ")}`).join(", then ");
+  return `with ${edits.length === 1 ? "this entry" : "these entries"} in the turn's semlayer apply --file -${where ? `, ${where}` : ""}: ${entries} (on ${edits.length === 1 ? "its" : "their"} own: ${alone})`;
 }
 
 // The columns of the model's own table one field reads: a join's key columns, or the columns of a
@@ -876,7 +876,7 @@ export function renameInSql(sql: string, dialect: Dialect | undefined, pick: (pa
   let text = sql;
   for (const e of edits.sort((a, b) => b.start - a.start)) text = text.slice(0, e.start) + e.text + text.slice(e.end);
   const got = sqlNames(text, dialect).chains.map((c) => c.parts.join("."));
-  if (got.join("\n") !== want.join("\n")) throw new UserError(`Cannot rewrite the join references in "${oneLine(sql)}" safely; edit it by hand and run sl validate.`);
+  if (got.join("\n") !== want.join("\n")) throw new UserError(`Cannot rewrite the join references in "${oneLine(sql)}" safely; edit it by hand and run semlayer validate.`);
   return { text, hits };
 }
 
@@ -979,7 +979,7 @@ export function referenceSites(root: string, target: RefTarget, newName = target
     for (const key of ["measures", "dimensions"]) arr(request[key]).forEach((v, i) => check(["request", key, i], v));
     for (const key of ["filters", "order_by"]) arr(request[key]).forEach((v, i) => check(["request", key, i, "field"], obj(v).field));
   }
-  // access.yaml, read as sl access reads it: a restriction target with the metric: prefix names a
+  // access.yaml, read as semlayer access reads it: a restriction target with the metric: prefix names a
   // metric (matched against its bare name), any other a model or field (source.model.field). An entry
   // that names the item exactly is renamed with it. A list (a restriction's targets, a role's
   // deny.fields) covers the item when any entry matches it; a rename that changes whether a list
@@ -1048,7 +1048,7 @@ export function siteEdits(sites: RefSite[]): FileEdit[] {
   }));
 }
 
-// A line naming the model's open questions that start "<field>: " (as sl question add writes a
+// A line naming the model's open questions that start "<field>: " (as semlayer question add writes a
 // field's), which an edit that renames or removes the field leaves as they are; none, an empty list.
 export function questionLines(model: Model | undefined, field: string, file: string): string[] {
   const n = (Array.isArray(model?.open_questions) ? model.open_questions : []).filter((q) => String(q).startsWith(`${field}: `)).length;

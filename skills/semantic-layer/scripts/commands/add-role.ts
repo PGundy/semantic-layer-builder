@@ -12,8 +12,8 @@ const spec: CommandSpec = {
     "add-role --name <n> [--description <text>] [--assign-when <condition>] [--allow-tags pii,sensitive] [--allow-models <pattern>,...]\n" +
     "       [--deny-models <pattern>,...] [--deny-fields <source.model.field>,...] [--deny-tags <tag>,...]\n\n" +
     `${CONDITION_HELP}\n` +
-    "Every attribute a condition reads is declared first (sl add-attribute). --allow-models is the allowlist of closed mode.\n" +
-    "Row filters are added to the role with sl add-row-filter; one key is changed with sl set access role:<n> <key> <value>.",
+    "Every attribute a condition reads is declared first (semlayer add-attribute). --allow-models is the allowlist of closed mode.\n" +
+    "Row filters are added to the role with semlayer add-row-filter; one key is changed with semlayer set access role:<n> <key> <value>.",
   options: {
     name: { type: "string" },
     description: { type: "string" },
@@ -29,7 +29,7 @@ const spec: CommandSpec = {
       ...Object.fromEntries(LISTS.map((f) => [f.replace("-", "."), list(values, f)])),
     });
     if (ctx.json) ctx.out(formatJson({ ...o, role: o.entry.name }));
-    else ctx.out([`Added role ${o.entry.name} to ${o.file}.`, ...accessEditLines(o, `sl access --roles ${o.entry.name} shows what it sees; ${READBACK_NEXT}`)].join("\n"));
+    else ctx.out([`Added role ${o.entry.name} to ${o.file}.`, ...accessEditLines(o, `semlayer access --roles ${o.entry.name} shows what it sees; ${READBACK_NEXT}`)].join("\n"));
     return 0;
   },
 };

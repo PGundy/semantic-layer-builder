@@ -12,7 +12,7 @@ A user has the Claude Code plugin "semantic-layer-builder" installed and says to
 
   "Help me build a semantic layer for our warehouse. It's Postgres. The connection URL is in the .env file in this folder, as WAREHOUSE_URL. I'm Dana Ruiz, I own this data, and I have time now to answer your questions."
 
-The plugin's skill is at `<PLUGIN>/skills/semantic-layer/` (SKILL.md is its entry point; in a real session Claude Code would have loaded SKILL.md for you, so reading it is your first act). The project folder is `<WALK>/work`. Act exactly as SKILL.md tells a fresh interviewer agent to act, and follow `sl next` from start to finish, until the layer is approved and at least three goldens are confirmed (the handoff phase), or until you truly cannot go on.
+The plugin's skill is at `<PLUGIN>/skills/semantic-layer/` (SKILL.md is its entry point; in a real session Claude Code would have loaded SKILL.md for you, so reading it is your first act). The project folder is `<WALK>/work`. Act exactly as SKILL.md tells a fresh interviewer agent to act, and follow `semlayer next` from start to finish, until the layer is approved and at least three goldens are confirmed (the handoff phase), or until you truly cannot go on.
 
 HOW YOU ACT: ONE WRAPPER, NOTHING ELSE
 The plugin's hooks are simulated by a wrapper, and everything you do is measured from its log. So:
@@ -30,11 +30,11 @@ SCOPE
 Go through the whole first build as the tool leads you: intake, scope, profile, draft, the interview, joins, metrics, access and verification with at least three confirmed goldens, then handoff. If the owner's brief or the tool suggests leaving some tables out for now, that is fine; follow the tool. Budget: about 170 wrapper calls. If you are near that and not finished, stop and report where you are.
 
 WHEN SOMETHING GOES WRONG
-This is a test of the tool, so problems are findings, not failures of yours. Whenever (a) `sl next` names a step that does not run or leads nowhere, (b) you find no command for what the owner asked, (c) a card does not tell you enough and you feel you need a large reference or spec.md, or (d) the hook refuses something you believe was legitimate: note it for your report with the exact command and message. Then take the smallest step that lets you continue (for example `<command> --help`, or the reference the card names), and say in the report exactly what you did. Do not hand-edit a layer file unless there is truly no other way; if you do, say which file and why.
+This is a test of the tool, so problems are findings, not failures of yours. Whenever (a) `semlayer next` names a step that does not run or leads nowhere, (b) you find no command for what the owner asked, (c) a card does not tell you enough and you feel you need a large reference or spec.md, or (d) the hook refuses something you believe was legitimate: note it for your report with the exact command and message. Then take the smallest step that lets you continue (for example `<command> --help`, or the reference the card names), and say in the report exactly what you did. Do not hand-edit a layer file unless there is truly no other way; if you do, say which file and why.
 
 YOUR REPORT (at most about 900 words)
-1. Outcome: how far you got; what `sl next` and `sl status` say at the end; what `sl validate` says at the end (run it); how many models, fields, joins, metrics and goldens ended approved or confirmed; how many open questions remain.
-2. BLOCKERS: each step `sl next` named that failed to run or led nowhere, each thing with no command, each refused action you believe was legitimate. Exact command and message for each.
+1. Outcome: how far you got; what `semlayer next` and `semlayer status` say at the end; what `semlayer validate` says at the end (run it); how many models, fields, joins, metrics and goldens ended approved or confirmed; how many open questions remain.
+2. BLOCKERS: each step `semlayer next` named that failed to run or led nowhere, each thing with no command, each refused action you believe was legitimate. Exact command and message for each.
 3. Reading: every file you read beyond SKILL.md and the phase cards, and why you needed it.
 4. Recording an owner turn: for the owner turn that took the most commands to record, list those commands.
 5. FRICTION: smaller things that slowed you down or confused you, most important first.

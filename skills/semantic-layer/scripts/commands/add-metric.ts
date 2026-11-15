@@ -15,7 +15,7 @@ const PLACEHOLDER = /\{\s*([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)\s*\}/g;
 const NEW_FILE = "metrics: []\n";
 
 const spec: CommandSpec = {
-  summary: "Add a draft ratio or derived metric to metrics.yaml, checked as sl validate and the compiler read it.",
+  summary: "Add a draft ratio or derived metric to metrics.yaml, checked as semlayer validate and the compiler read it.",
   usage:
     "add-metric --name <n> --type ratio|derived [--source <s>] [--numerator <model.measure> --denominator <model.measure>] [--expr <e>] " +
     "[--format number|integer|currency|percent] [--currency <code>] [--description <text>] [--set key=value]...\n\n" +
@@ -42,7 +42,7 @@ const spec: CommandSpec = {
     const type = str(values, "type")?.trim();
     if (!name || !type) {
       throw new UserError(
-        "Usage: sl add-metric --name <n> --type ratio|derived ..., for example sl add-metric --name average_order_value --type ratio --numerator orders.revenue --denominator orders.order_count.",
+        "Usage: semlayer add-metric --name <n> --type ratio|derived ..., for example semlayer add-metric --name average_order_value --type ratio --numerator orders.revenue --denominator orders.order_count.",
       );
     }
     if (!NAME_PATTERN.test(name)) throw new UserError(`"${name}" is not a name: a name is lowercase and matches ^[a-z][a-z0-9_]*$, such as average_order_value.`);
@@ -53,7 +53,7 @@ const spec: CommandSpec = {
     const sources = listSourceNames(ctx.root);
     const source = str(values, "source")?.trim() ?? project.default_source ?? (sources.length === 1 ? sources[0] : undefined);
     if (!source) throw new UserError(`Name the metric's source with --source (${sources.join(", ") || "none yet"}).`);
-    if (!sources.includes(source)) throw new UserError(`No source "${source}". Sources: ${sources.join(", ") || "none yet"}; sl add-source adds one.`);
+    if (!sources.includes(source)) throw new UserError(`No source "${source}". Sources: ${sources.join(", ") || "none yet"}; semlayer add-source adds one.`);
 
     const props = schemaProperties("metric");
     const metric: Record<string, unknown> = { name, source, type };
@@ -84,7 +84,7 @@ const spec: CommandSpec = {
       const eq = s.indexOf("=");
       const key = eq < 0 ? s.trim() : s.slice(0, eq).trim();
       if (eq < 0) throw new UserError(`--set takes key=value, for example --set synonyms="[aov]"; got "${s}".`);
-      if (APPROVAL_FIELDS.includes(key)) throw new UserError(`${key} is an approval field: a new metric is always a draft, and only sl approve approves it after the owner's yes.`);
+      if (APPROVAL_FIELDS.includes(key)) throw new UserError(`${key} is an approval field: a new metric is always a draft, and only semlayer approve approves it after the owner's yes.`);
       if (key in metric || ["numerator", "denominator", "expr", "source", "type"].includes(key)) throw new UserError(`${key} is set with --${key}, once.`);
       if (!(key in props)) {
         const known = Object.keys(props).filter((k) => !APPROVAL_FIELDS.includes(k) && !(k in metric));
@@ -145,7 +145,7 @@ const spec: CommandSpec = {
       );
     }
     lines.push(...reapproveLines(outcome.reapprove));
-    lines.push(`Next: read the formula back to the owner (sl readback --targets ${ref}), record their answer with sl reply, and approve it only on their yes (sl approve --target ${ref}).`);
+    lines.push(`Next: read the formula back to the owner (semlayer readback --targets ${ref}), record their answer with semlayer reply, and approve it only on their yes (semlayer approve --target ${ref}).`);
     ctx.out(lines.join("\n"));
     return 0;
   },

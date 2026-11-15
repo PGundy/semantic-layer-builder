@@ -20,7 +20,7 @@ function unignore(ctx: CommandContext, path: string, ref: string, column: string
   const listed = ignored.find((c) => c.toLowerCase() === column.toLowerCase());
   if (listed === undefined) {
     if (ctx.json) ctx.out(formatJson({ changed: false, file: relFile(ctx.root, path), reapprove: [], ref, column, ignored_columns: ignored, removed: true }));
-    else ctx.out(`${column} is not in ${ref}'s ignored_columns; nothing changed. Next: sl status.`);
+    else ctx.out(`${column} is not in ${ref}'s ignored_columns; nothing changed. Next: semlayer status.`);
     return 0;
   }
   const outcome = commitEdit(ctx.root, path, `take ${listed} out of ${ref}'s ignored_columns`, (doc) => {
@@ -38,7 +38,7 @@ function unignore(ctx: CommandContext, path: string, ref: string, column: string
   ctx.out(
     [
       `Took ${listed} out of ${ref}'s ignored_columns in ${outcome.file}; no field was added.`,
-      "Next: run the edit the owner asked for that reads it (sl set, sl add-field, sl add-join or sl check-rule), then sl validate.",
+      "Next: run the edit the owner asked for that reads it (semlayer set, semlayer add-field, semlayer add-join or semlayer check-rule), then semlayer validate.",
     ].join("\n"),
   );
   return 0;
@@ -48,7 +48,7 @@ const spec: CommandSpec = {
   summary: "Add a column to a model's ignored_columns (left out on purpose, so no field is drafted for it), or take it back out with --remove.",
   usage:
     "ignore-column --source <s> --model <m> --column <c> [--reason <text>]\n" +
-    "       sl ignore-column --source <s> --model <m> --column <c> --remove   (takes the column out of ignored_columns, adding no field)",
+    "       semlayer ignore-column --source <s> --model <m> --column <c> --remove   (takes the column out of ignored_columns, adding no field)",
   options: { source: { type: "string" }, model: { type: "string" }, column: { type: "string" }, reason: { type: "string" }, remove: { type: "boolean" } },
   writes: "whole",
   async run({ values }, ctx) {
@@ -56,7 +56,7 @@ const spec: CommandSpec = {
     const source = str(values, "source");
     const modelName = str(values, "model");
     let column = str(values, "column")?.trim();
-    if (!source || !modelName || !column) throw new UserError("--source, --model and --column are required: sl ignore-column --source <s> --model <m> --column <c>.");
+    if (!source || !modelName || !column) throw new UserError("--source, --model and --column are required: semlayer ignore-column --source <s> --model <m> --column <c>.");
     const reason = str(values, "reason") === undefined ? undefined : oneLine(str(values, "reason")!);
     const config = loadSource(ctx.root, source);
     const { path, model } = loadModel(ctx.root, source, modelName);
@@ -71,7 +71,7 @@ const spec: CommandSpec = {
     let redact = false;
     if (table) {
       const col = table.columns.find((c) => c.name === column) ?? table.columns.find((c) => c.name.toLowerCase() === column!.toLowerCase());
-      if (!col) throw new UserError(`${column} is not a column of ${model.table} in the snapshot. Run sl tables --source ${source} to see its tables, or sl introspect --source ${source} if it is new.`);
+      if (!col) throw new UserError(`${column} is not a column of ${model.table} in the snapshot. Run semlayer tables --source ${source} to see its tables, or semlayer introspect --source ${source} if it is new.`);
       column = col.name;
       redact = heldValues(col.profile, col.type) !== null;
     }
@@ -79,7 +79,7 @@ const spec: CommandSpec = {
     const result = { ref, column, ignored_columns: ignored };
     if (ignored.some((c) => c.toLowerCase() === column!.toLowerCase())) {
       if (ctx.json) ctx.out(formatJson({ changed: false, file: relFile(ctx.root, path), reapprove: [], ...result }));
-      else ctx.out(`${column} is already in ${ref}'s ignored_columns; nothing changed. Next: sl status.`);
+      else ctx.out(`${column} is already in ${ref}'s ignored_columns; nothing changed. Next: semlayer status.`);
       return 0;
     }
     const others = listModels(ctx.root, source).map((l) => l.model).filter((m) => m.model !== modelName);
@@ -89,8 +89,8 @@ const spec: CommandSpec = {
       throw new UserError(
         `Cannot ignore ${column}: in ${ref} it is read by ${by.join(", ")}. ` +
           (fields.length
-            ? `Remove the field first (sl remove-field ${fields.join(", then sl remove-field ")}), which also adds the column to ignored_columns once nothing else reads it.`
-            : "A column a key reads is in use, so it stays; nothing was changed. Next: sl status."),
+            ? `Remove the field first (semlayer remove-field ${fields.join(", then semlayer remove-field ")}), which also adds the column to ignored_columns once nothing else reads it.`
+            : "A column a key reads is in use, so it stays; nothing was changed. Next: semlayer status."),
       );
     }
     const at = sortedIndex(ignored, column);
@@ -119,9 +119,9 @@ const spec: CommandSpec = {
       ctx.out(formatJson({ ...outcome, ...result, ignored_columns: after, ...(reason ? { reason } : {}), redact }));
       return 0;
     }
-    const lines = [`Added ${column} to ${ref}'s ignored_columns in ${outcome.file}; sl status and sl draft --new-columns skip it now.`];
-    if (redact) lines.push(`The snapshot holds sample values of ${column}, which is protected now: run sl profile --source ${source} --redact to keep counts only.`);
-    else lines.push("Next: sl status.");
+    const lines = [`Added ${column} to ${ref}'s ignored_columns in ${outcome.file}; semlayer status and semlayer draft --new-columns skip it now.`];
+    if (redact) lines.push(`The snapshot holds sample values of ${column}, which is protected now: run semlayer profile --source ${source} --redact to keep counts only.`);
+    else lines.push("Next: semlayer status.");
     ctx.out(lines.join("\n"));
     return 0;
   },

@@ -13,7 +13,7 @@
         "draft",
         "approved"
       ],
-      "description": "Whether the owner has signed off this access file. Tools only write draft; sl approve sets approved. Tools that serve users apply only an approved file; while this one is a draft, the last approved version keeps applying where it is deployed."
+      "description": "Whether the owner has signed off this access file. Tools only write draft; semlayer approve sets approved. Tools that serve users apply only an approved file; while this one is a draft, the last approved version keeps applying where it is deployed."
     },
     "approved_by": {
       "type": "string",
@@ -29,7 +29,7 @@
     "approved_hash": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$",
-      "description": "sha256: and 64 hex characters, written by sl approve: the hash of the whole file, but its approval and open_questions, when it was approved. sl validate errors when the file no longer matches it, and warns when an approved file has none (sl approve --stamp-hashes records it)."
+      "description": "sha256: and 64 hex characters, written by semlayer approve: the hash of the whole file, but its approval and open_questions, when it was approved. semlayer validate errors when the file no longer matches it, and warns when an approved file has none (semlayer approve --stamp-hashes records it)."
     },
     "last_approved": {
       "type": "object",
@@ -38,7 +38,7 @@
         "by",
         "at"
       ],
-      "description": "The approval sl approve --target access --revoke set aside: while this file is a draft, the version approved by by on at keeps applying where it is deployed. sl approve removes it when it approves the file again.",
+      "description": "The approval semlayer approve --target access --revoke set aside: while this file is a draft, the version approved by by on at keeps applying where it is deployed. semlayer approve removes it when it approves the file again.",
       "properties": {
         "by": {
           "type": "string",
@@ -92,7 +92,7 @@
         "type": "string",
         "minLength": 1
       },
-      "description": "Questions about access still open with the owner; sl status counts them."
+      "description": "Questions about access still open with the owner; semlayer status counts them."
     }
   },
   "allOf": [
@@ -236,7 +236,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Questions about this role still open with the owner; sl status counts them. An entry naming a model silences sl validate's warning that the model's rows are not limited by a row filter of this role on a model it joins to."
+          "description": "Questions about this role still open with the owner; semlayer status counts them. An entry naming a model silences semlayer validate's warning that the model's rows are not limited by a row filter of this role on a model it joins to."
         }
       }
     },

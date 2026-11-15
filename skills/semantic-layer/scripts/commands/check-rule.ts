@@ -48,7 +48,7 @@ const spec: CommandSpec = {
     const text = (filter ?? dimension)!;
     const source = loadSource(ctx.root, sourceName);
     const model = loadModel(ctx.root, sourceName, modelName).model;
-    if (typeof model.table !== "string" || !model.table) throw new UserError(`Model "${modelName}" has no table; run sl validate.`);
+    if (typeof model.table !== "string" || !model.table) throw new UserError(`Model "${modelName}" has no table; run semlayer validate.`);
     const what = kind === "filter" ? "filter" : "dimension expr";
     const models = listModels(ctx.root, sourceName).map((l) => l.model);
     // A rule reading an ignored column is refused, as the typed edits that would write it refuse it.
@@ -86,7 +86,7 @@ const spec: CommandSpec = {
       if (!read.length || !(e instanceof UserError) || !e.message.startsWith("Query failed:")) throw e;
       throw new UserError(
         `The count query failed. The rule reads the protected ${read.length === 1 ? "column" : "columns"} ${read.join(", ")}, so the database's message, which can quote a value, is not shown.\n` +
-          `Check the rule's casts and comparisons against each column's type, then run sl check-rule again.`,
+          `Check the rule's casts and comparisons against each column's type, then run semlayer check-rule again.`,
       );
     });
     let counted: { rows_matched: number; rows_total: number };

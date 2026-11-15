@@ -11,7 +11,7 @@ import { schemasToRead } from "../skills/semantic-layer/scripts/commands/introsp
 import { droppedText, intakeSchemas, schemaFilter } from "../skills/semantic-layer/scripts/lib/intake.ts";
 import type { Snapshot, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, duckdbSource, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, duckdbSource, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -64,7 +64,7 @@ describe("schemaFilter", () => {
 describe("intake.schemas helpers", () => {
   test("a list that is not names is refused with the fix", () => {
     const bad = { source: "wh", dialect: "duckdb", intake: { schemas: "acme" } } as unknown as SourceConfig;
-    expect(() => intakeSchemas(bad)).toThrow("intake.schemas in sources/wh.yaml must be a list of schema names, such as [analytics, marts]; fix it and run sl validate.");
+    expect(() => intakeSchemas(bad)).toThrow("intake.schemas in sources/wh.yaml must be a list of schema names, such as [analytics, marts]; fix it and run semlayer validate.");
     expect(intakeSchemas({ source: "wh", intake: { schemas: [" acme", "acme", ""] } } as SourceConfig)).toEqual(["acme"]);
   });
 
@@ -88,16 +88,16 @@ describe("intake.schemas helpers", () => {
 
   test("a BigQuery --emit-sql plan reads the table-list file's datasets unless intake.schemas lists some", async () => {
     const t = await setup();
-    expect((await sl(t.root, ["add-source", "--name", "bq", "--dialect", "bigquery"])).code).toBe(0);
+    expect((await semlayer(t.root, ["add-source", "--name", "bq", "--dialect", "bigquery"])).code).toBe(0);
     mkdirSync(join(t.root, "scope"), { recursive: true });
     writeFileSync(join(t.root, "scope", "bq.txt"), "listed.orders\n");
     patchSource(t.root, "bq", { scope: { include: ["saved.*"], tables_file: "scope/bq.txt" } });
-    const emit = await sl(t.root, ["introspect", "--source", "bq", "--emit-sql"]);
+    const emit = await semlayer(t.root, ["introspect", "--source", "bq", "--emit-sql"]);
     expect(emit.code).toBe(0);
     expect(emit.out).toContain("`saved`");
     expect(emit.out).toContain("`listed`");
     patchSource(t.root, "bq", { intake: { schemas: ["analytics"] } });
-    const withIntake = await sl(t.root, ["introspect", "--source", "bq", "--emit-sql"]);
+    const withIntake = await semlayer(t.root, ["introspect", "--source", "bq", "--emit-sql"]);
     expect(withIntake.code).toBe(0);
     expect(withIntake.out).toContain("`analytics`");
     expect(withIntake.out).not.toContain("`listed`");
@@ -114,12 +114,12 @@ describe("introspect reads intake.schemas: duckdb", () => {
   test("reads only intake.schemas, and an empty or absent list reads every schema", async () => {
     const t = await setup();
     await duckdbSource(t.root, t.dir, "wh", TWO_SCHEMAS);
-    const all = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const all = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(all.code).toBe(0);
     expect(all.json()).toMatchObject({ tables: 4, schemas: [], schemas_from: "all" });
 
     patchSource(t.root, "wh", { intake: { schemas: ["acme"] } });
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     const out = r.json<{ tables: number; schemas: string[]; schemas_from: string; schemas_note?: string; changes: { tables_removed: string[] } }>();
@@ -130,30 +130,30 @@ describe("introspect reads intake.schemas: duckdb", () => {
     expect(names(t.root, "wh")).toEqual(["acme.customers", "acme.orders"]);
 
     patchSource(t.root, "wh", { intake: { schemas: [] } });
-    expect((await sl(t.root, ["introspect", "--source", "wh", "--json"])).json()).toMatchObject({ tables: 4, schemas_from: "all" });
+    expect((await semlayer(t.root, ["introspect", "--source", "wh", "--json"])).json()).toMatchObject({ tables: 4, schemas_from: "all" });
   });
 
   test("--schemas overrides intake.schemas and says how to save them", async () => {
     const t = await setup();
     await duckdbSource(t.root, t.dir, "wh", TWO_SCHEMAS);
     patchSource(t.root, "wh", { intake: { schemas: ["acme"] } });
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
 
-    const text = await sl(t.root, ["introspect", "--source", "wh", "--schemas", "other"]);
+    const text = await semlayer(t.root, ["introspect", "--source", "wh", "--schemas", "other"]);
     expect(text.code).toBe(0);
     expect(text.out).toContain("--schemas (other) differs from intake.schemas in sources/wh.yaml (acme); this run reads other.");
-    expect(text.out).toContain("set intake.schemas in sources/wh.yaml to [other] and run sl validate");
-    expect(text.out).toContain("run sl introspect --source wh without --schemas");
+    expect(text.out).toContain("set intake.schemas in sources/wh.yaml to [other] and run semlayer validate");
+    expect(text.out).toContain("run semlayer introspect --source wh without --schemas");
     // A --schemas run refreshes those schemas and keeps the others' tables, as before.
     expect(names(t.root, "wh")).toEqual(["acme.customers", "acme.orders", "other.events"]);
 
-    const json = await sl(t.root, ["introspect", "--source", "wh", "--schemas", "other", "--json"]);
+    const json = await semlayer(t.root, ["introspect", "--source", "wh", "--schemas", "other", "--json"]);
     expect(json.json()).toMatchObject({ schemas: ["other"], schemas_from: "flag" });
     expect(json.json<{ schemas_note: string }>().schemas_note).toContain("differs from intake.schemas");
 
     // The same list, in any order, is no override.
     patchSource(t.root, "wh", { intake: { schemas: ["acme", "other"] } });
-    const same = await sl(t.root, ["introspect", "--source", "wh", "--schemas", "other,acme", "--json"]);
+    const same = await semlayer(t.root, ["introspect", "--source", "wh", "--schemas", "other,acme", "--json"]);
     expect(same.json<{ schemas_note?: string }>().schemas_note).toBeUndefined();
   });
 
@@ -161,7 +161,7 @@ describe("introspect reads intake.schemas: duckdb", () => {
     const t = await setup();
     await duckdbSource(t.root, t.dir, "wh", TWO_SCHEMAS);
     patchSource(t.root, "wh", { intake: { schemas: ["acme"] } });
-    const emit = await sl(t.root, ["introspect", "--source", "wh", "--emit-sql"]);
+    const emit = await semlayer(t.root, ["introspect", "--source", "wh", "--emit-sql"]);
     expect(emit.code).toBe(0);
     const plan = emit.json<{ plan_id: string; queries: { id: string; sql: string }[] }>();
     for (const q of plan.queries) expect(q.sql).toContain("where table_schema in ('acme')");
@@ -176,19 +176,19 @@ describe("introspect reads intake.schemas: duckdb", () => {
     db.closeSync();
     const results = join(t.dir, "results.json");
     writeFileSync(results, JSON.stringify(rows));
-    const fin = await sl(t.root, ["introspect", "--source", "wh", "--results", results, "--json"]);
+    const fin = await semlayer(t.root, ["introspect", "--source", "wh", "--results", results, "--json"]);
     expect(fin.code).toBe(0);
     expect(fin.json()).toMatchObject({ tables: 2, schemas: ["acme"] });
     for (const q of plan.queries) {
       const f = join(t.dir, `${q.id}.json`);
       writeFileSync(f, JSON.stringify(rows[q.id]));
-      expect((await sl(t.root, ["results", "add", "--plan", plan.plan_id, "--query", q.id, "--file", f])).code).toBe(0);
+      expect((await semlayer(t.root, ["results", "add", "--plan", plan.plan_id, "--query", q.id, "--file", f])).code).toBe(0);
     }
-    const byPlan = await sl(t.root, ["introspect", "--source", "wh", "--plan", plan.plan_id, "--json"]);
+    const byPlan = await semlayer(t.root, ["introspect", "--source", "wh", "--plan", plan.plan_id, "--json"]);
     expect(byPlan.code).toBe(0);
     expect(byPlan.json()).toMatchObject({ tables: 2, schemas_from: "intake" });
 
-    const override = await sl(t.root, ["introspect", "--source", "wh", "--schemas", "other", "--emit-sql"]);
+    const override = await semlayer(t.root, ["introspect", "--source", "wh", "--schemas", "other", "--emit-sql"]);
     expect(override.code).toBe(0);
     expect(override.err).toContain("--schemas (other) differs from intake.schemas");
     for (const q of override.json<{ queries: { sql: string }[] }>().queries) expect(q.sql).toContain("where table_schema in ('other')");
@@ -198,7 +198,7 @@ describe("introspect reads intake.schemas: duckdb", () => {
     const t = await setup();
     await duckdbSource(t.root, t.dir, "wh", TWO_SCHEMAS);
     // A plan emitted before intake.schemas was set reads every schema.
-    const plan = (await sl(t.root, ["introspect", "--source", "wh", "--emit-sql"])).json<{ queries: { id: string; sql: string }[] }>();
+    const plan = (await semlayer(t.root, ["introspect", "--source", "wh", "--emit-sql"])).json<{ queries: { id: string; sql: string }[] }>();
     const db = await DuckDBInstance.create(join(t.dir, "wh.duckdb"));
     const c = await db.connect();
     const rows: Record<string, unknown[]> = {};
@@ -209,20 +209,20 @@ describe("introspect reads intake.schemas: duckdb", () => {
     writeFileSync(results, JSON.stringify(rows));
 
     patchSource(t.root, "wh", { intake: { schemas: ["acme"] } });
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--results", results, "--json"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--results", results, "--json"]);
     expect(r.code).toBe(0);
     expect(r.json()).toMatchObject({ tables: 2, schemas: ["acme"], schemas_from: "intake", dropped: { tables: 2, schemas: ["main", "other"] } });
     expect(names(t.root, "wh")).toEqual(["acme.customers", "acme.orders"]);
-    const text = await sl(t.root, ["introspect", "--source", "wh", "--results", results]);
+    const text = await semlayer(t.root, ["introspect", "--source", "wh", "--results", results]);
     expect(text.out).toContain("Left out 2 tables in 2 schemas that this run does not read: main, other.");
-    expect(text.out).toContain("add them to intake.schemas in sources/wh.yaml and run sl validate, or pass them in --schemas");
+    expect(text.out).toContain("add them to intake.schemas in sources/wh.yaml and run semlayer validate, or pass them in --schemas");
 
     // --schemas keeps its own list from the same file, and the other schemas' tables from before.
-    const flag = await sl(t.root, ["introspect", "--source", "wh", "--schemas", "other", "--results", results, "--json"]);
+    const flag = await semlayer(t.root, ["introspect", "--source", "wh", "--schemas", "other", "--results", results, "--json"]);
     expect(flag.json()).toMatchObject({ tables: 3, schemas_from: "flag", dropped: { tables: 3, schemas: ["acme", "main"] } });
     expect(names(t.root, "wh")).toEqual(["acme.customers", "acme.orders", "other.events"]);
     // A live run reads only the listed schemas, so nothing is left out.
-    expect((await sl(t.root, ["introspect", "--source", "wh", "--json"])).json()).toMatchObject({ dropped: { tables: 0, schemas: [] } });
+    expect((await semlayer(t.root, ["introspect", "--source", "wh", "--json"])).json()).toMatchObject({ dropped: { tables: 0, schemas: [] } });
   });
 
   test("an attached database's schema is read as database.schema", async () => {
@@ -230,7 +230,7 @@ describe("introspect reads intake.schemas: duckdb", () => {
     await duckdbSource(t.root, t.dir, "lake", ["create schema raw", "create table raw.hits (id integer)", "create table main.junk (id integer)"]);
     await duckdbSource(t.root, t.dir, "wh", TWO_SCHEMAS);
     patchSource(t.root, "wh", { intake: { schemas: ["acme", "lake.raw"] } });
-    const emit = await sl(t.root, ["introspect", "--source", "wh", "--emit-sql"]);
+    const emit = await semlayer(t.root, ["introspect", "--source", "wh", "--emit-sql"]);
     const plan = emit.json<{ queries: { id: string; sql: string }[] }>();
     for (const q of plan.queries) expect(q.sql).toContain("where table_schema in ('acme', 'lake.raw')");
     // The agent runs the plan in a session with lake attached and finishes with --results.
@@ -243,7 +243,7 @@ describe("introspect reads intake.schemas: duckdb", () => {
     db.closeSync();
     const results = join(t.dir, "results.json");
     writeFileSync(results, JSON.stringify(rows));
-    expect((await sl(t.root, ["introspect", "--source", "wh", "--results", results])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh", "--results", results])).code).toBe(0);
     expect(names(t.root, "wh")).toEqual(["acme.customers", "acme.orders", "lake.raw.hits"]);
   });
 });
@@ -274,14 +274,14 @@ describe("introspect reads intake.schemas: postgres", () => {
 
   test.skipIf(!PG_URL)("a source with intake.schemas introspects only those schemas", async () => {
     const t = await setup();
-    expect((await sl(t.root, ["add-source", "--name", "pg", "--dialect", "postgres", "--env", "SL_TEST_PG", "--schemas", a])).code).toBe(0);
-    const r = await sl(t.root, ["introspect", "--source", "pg", "--json"], { SL_TEST_PG: PG_URL });
+    expect((await semlayer(t.root, ["add-source", "--name", "pg", "--dialect", "postgres", "--env", "SEMLAYER_TEST_PG", "--schemas", a])).code).toBe(0);
+    const r = await semlayer(t.root, ["introspect", "--source", "pg", "--json"], { SEMLAYER_TEST_PG: PG_URL });
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     expect(r.json()).toMatchObject({ tables: 2, primary_keys: 2, schemas: [a], schemas_from: "intake" });
     expect(names(t.root, "pg")).toEqual([`${a}.customers`, `${a}.orders`]);
 
-    const both = await sl(t.root, ["introspect", "--source", "pg", "--schemas", `${a},${b}`], { SL_TEST_PG: PG_URL });
+    const both = await semlayer(t.root, ["introspect", "--source", "pg", "--schemas", `${a},${b}`], { SEMLAYER_TEST_PG: PG_URL });
     expect(both.code).toBe(0);
     expect(both.out).toContain(`--schemas (${a}, ${b}) differs from intake.schemas in sources/pg.yaml (${a})`);
     expect(names(t.root, "pg")).toEqual([`${a}.customers`, `${a}.orders`, `${b}.events`]);
@@ -289,14 +289,14 @@ describe("introspect reads intake.schemas: postgres", () => {
 
   test.skipIf(!PG_URL)("an export with three schemas imports only the listed one", async () => {
     const t = await setup();
-    const exp = await sl(t.root, ["export-sql", "--dialect", "postgres", "--schemas", `${a},${b}`, "--json"]);
+    const exp = await semlayer(t.root, ["export-sql", "--dialect", "postgres", "--schemas", `${a},${b}`, "--json"]);
     const rows = await pg!.unsafe(exp.json<{ sql: string }>().sql);
     // A third schema in the same export, as an owner's wider export would hold.
     const third = (rows as Record<string, unknown>[]).filter((r) => r.table_schema === a).map((r) => ({ ...r, table_schema: "third" }));
     const file = join(t.dir, "schema.json");
     writeFileSync(file, JSON.stringify([...rows, ...third]));
-    expect((await sl(t.root, ["add-source", "--name", "pg", "--dialect", "postgres", "--env", "SL_TEST_PG", "--schemas", a])).code).toBe(0);
-    const r = await sl(t.root, ["import", "--source", "pg", "--file", file, "--json"]);
+    expect((await semlayer(t.root, ["add-source", "--name", "pg", "--dialect", "postgres", "--env", "SEMLAYER_TEST_PG", "--schemas", a])).code).toBe(0);
+    const r = await semlayer(t.root, ["import", "--source", "pg", "--file", file, "--json"]);
     expect(r.code).toBe(0);
     expect(r.json()).toMatchObject({ tables: 2, dropped: { tables: 3, schemas: [b, "third"].sort() } });
     expect(names(t.root, "pg")).toEqual([`${a}.customers`, `${a}.orders`]);
@@ -321,12 +321,12 @@ describe("import keeps only intake.schemas", () => {
     patchSource(t.root, "wh", { intake: { schemas: ["acme"] } });
     const file = join(t.dir, "schema.csv");
     writeFileSync(file, CSV);
-    const text = await sl(t.root, ["import", "--source", "wh", "--file", file]);
+    const text = await semlayer(t.root, ["import", "--source", "wh", "--file", file]);
     expect(text.code).toBe(0);
     expect(text.out).toContain("Imported 2 tables and 3 columns");
     expect(text.out).toContain("Dropped 3 tables in 2 schemas not in intake.schemas: marts, raw.");
-    expect(text.out).toContain("add the schema to intake.schemas in sources/wh.yaml, run sl validate and rerun sl import --source wh");
-    const json = await sl(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
+    expect(text.out).toContain("add the schema to intake.schemas in sources/wh.yaml, run semlayer validate and rerun semlayer import --source wh");
+    const json = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
     expect(json.json()).toMatchObject({ tables: 2, dropped: { tables: 3, schemas: ["marts", "raw"] } });
     expect(names(t.root, "wh")).toEqual(["acme.customers", "acme.orders"]);
   });
@@ -336,7 +336,7 @@ describe("import keeps only intake.schemas", () => {
     await duckdbSource(t.root, t.dir, "wh", []);
     const file = join(t.dir, "schema.csv");
     writeFileSync(file, CSV);
-    const r = await sl(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
+    const r = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
     expect(r.json()).toMatchObject({ tables: 5, dropped: { tables: 0, schemas: [] } });
     expect(r.json<{ warnings: string[] }>().warnings.some((w) => w.includes("intake.schemas"))).toBe(false);
   });
@@ -352,7 +352,7 @@ describe("import keeps only intake.schemas", () => {
     });
     const json = join(t.dir, "schema.json");
     writeFileSync(json, JSON.stringify(rows));
-    expect((await sl(t.root, ["import", "--source", "wh", "--file", json, "--json"])).json()).toMatchObject({ tables: 4, dropped: { tables: 1, schemas: ["raw"] } });
+    expect((await semlayer(t.root, ["import", "--source", "wh", "--file", json, "--json"])).json()).toMatchObject({ tables: 4, dropped: { tables: 1, schemas: ["raw"] } });
 
     const node = (schema: string, name: string) => ({
       resource_type: "model", name, package_name: "p", schema, alias: name, database: "d", config: { materialized: "table" },
@@ -365,13 +365,13 @@ describe("import keeps only intake.schemas", () => {
     };
     const dbt = join(t.dir, "manifest.json");
     writeFileSync(dbt, JSON.stringify(manifest));
-    const d = await sl(t.root, ["import", "--source", "wh", "--file", dbt, "--json"]);
+    const d = await semlayer(t.root, ["import", "--source", "wh", "--file", dbt, "--json"]);
     expect(d.code).toBe(0);
     expect(d.json()).toMatchObject({ method: "dbt_manifest", tables: 1, dropped: { tables: 2, schemas: ["raw", "staging"] } });
 
     const ddl = join(t.dir, "schema.sql");
     writeFileSync(ddl, "create table acme.orders (id int);\ncreate table marts.daily (day date);\ncreate table raw.events (id int);\ncreate table loose (id int);\n");
-    const s = await sl(t.root, ["import", "--source", "wh", "--file", ddl, "--json"]);
+    const s = await semlayer(t.root, ["import", "--source", "wh", "--file", ddl, "--json"]);
     expect(s.code).toBe(0);
     // An unqualified Postgres table lands in public, which intake.schemas leaves out.
     expect(s.json()).toMatchObject({ method: "ddl", tables: 2, dropped: { tables: 2, schemas: ["public", "raw"] } });
@@ -387,17 +387,17 @@ describe("import keeps only intake.schemas", () => {
       { table_schema: "acme", table_name: "orders", column_name: "id", data_type: "int" },
       { table_name: "loose", column_name: "id", data_type: "int" },
     ]));
-    const m = await sl(t.root, ["import", "--source", "wh", "--file", mixed, "--json"]);
+    const m = await semlayer(t.root, ["import", "--source", "wh", "--file", mixed, "--json"]);
     expect(m.json()).toMatchObject({ tables: 1, dropped: { tables: 1, schemas: [null] } });
-    expect((await sl(t.root, ["import", "--source", "wh", "--file", mixed])).out).toContain("Dropped 1 table with no schema not in intake.schemas: (no schema).");
+    expect((await semlayer(t.root, ["import", "--source", "wh", "--file", mixed])).out).toContain("Dropped 1 table with no schema not in intake.schemas: (no schema).");
 
     const file = join(t.dir, "schema.csv");
     writeFileSync(file, CSV.split("\n").filter((l) => !l.startsWith("acme")).join("\n"));
-    const r = await sl(t.root, ["import", "--source", "wh", "--file", file]);
+    const r = await semlayer(t.root, ["import", "--source", "wh", "--file", file]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("None of the 3 tables in");
     expect(r.err).toContain("is in intake.schemas (acme); the file holds marts, raw.");
-    expect(r.err).toContain("rerun sl import --source wh");
+    expect(r.err).toContain("rerun semlayer import --source wh");
   });
 
   test("a previous table the file holds outside intake.schemas is reported once", async () => {
@@ -405,15 +405,15 @@ describe("import keeps only intake.schemas", () => {
     await duckdbSource(t.root, t.dir, "wh", []);
     const file = join(t.dir, "schema.csv");
     writeFileSync(file, CSV);
-    expect((await sl(t.root, ["import", "--source", "wh", "--file", file])).code).toBe(0);
+    expect((await semlayer(t.root, ["import", "--source", "wh", "--file", file])).code).toBe(0);
     patchSource(t.root, "wh", { intake: { schemas: ["acme"] } });
-    const r = await sl(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
+    const r = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
     const warnings = r.json<{ warnings: string[] }>().warnings;
     expect(warnings.some((w) => w.startsWith("Dropped 3 tables in 2 schemas"))).toBe(true);
     expect(warnings.some((w) => w.includes("in the previous snapshot"))).toBe(false);
     // A previous table the file no longer holds is still reported.
     writeFileSync(file, CSV.split("\n").filter((l) => !l.includes("customers")).join("\n"));
-    const again = await sl(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
+    const again = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
     expect(again.json<{ warnings: string[] }>().warnings.join(" ")).toContain("1 table in the previous snapshot is not in this import and was dropped: acme.customers.");
   });
 
@@ -422,22 +422,22 @@ describe("import keeps only intake.schemas", () => {
     await duckdbSource(t.root, t.dir, "wh", []);
     const file = join(t.dir, "schema.csv");
     writeFileSync(file, CSV);
-    expect((await sl(t.root, ["import", "--source", "wh", "--file", file])).code).toBe(0);
+    expect((await semlayer(t.root, ["import", "--source", "wh", "--file", file])).code).toBe(0);
     patchSource(t.root, "wh", { intake: { schemas: ["acme"] } });
-    const r = await sl(t.root, ["import", "--source", "wh", "--file", file, "--include", "orders"]);
+    const r = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--include", "orders"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Dropped 3 tables in 2 schemas not in intake.schemas: marts, raw.");
     expect(r.out).toContain("Kept the 1 table matching --include and --exclude; dropped 1 other of the tables intake.schemas keeps.");
     expect(r.out).not.toContain("in the previous snapshot");
     // Without intake.schemas the same holds for a filter drop alone.
     patchSource(t.root, "wh", { intake: { schemas: [] } });
-    expect((await sl(t.root, ["import", "--source", "wh", "--file", file])).code).toBe(0);
-    const ex = await sl(t.root, ["import", "--source", "wh", "--file", file, "--exclude", "marts.weekly", "--json"]);
+    expect((await semlayer(t.root, ["import", "--source", "wh", "--file", file])).code).toBe(0);
+    const ex = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--exclude", "marts.weekly", "--json"]);
     const j = ex.json<{ dropped: unknown; filters: unknown; warnings: string[] }>();
     expect(j.dropped).toEqual({ tables: 0, schemas: [] });
     expect(j.filters).toEqual({ include: [], exclude: ["marts.weekly"], kept: 4, dropped: 1 });
     expect(j.warnings.some((w) => w.includes("in the previous snapshot"))).toBe(false);
-    expect((await sl(t.root, ["import", "--source", "wh", "--file", file, "--exclude", "marts.weekly"])).out).toContain("dropped 1 other from the file.");
+    expect((await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--exclude", "marts.weekly"])).out).toContain("dropped 1 other from the file.");
   });
 
   test("with scope.tables_file, the in-scope tables are those intake.schemas keeps and the file lists", async () => {
@@ -448,10 +448,10 @@ describe("import keeps only intake.schemas", () => {
     patchSource(t.root, "wh", { intake: { schemas: ["acme"] }, scope: { tables_file: "scope/wh.txt" } });
     const file = join(t.dir, "schema.csv");
     writeFileSync(file, CSV);
-    const r = await sl(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
+    const r = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
     expect(r.code).toBe(0);
     expect(r.json()).toMatchObject({ tables: 2, dropped: { tables: 3, schemas: ["marts", "raw"] } });
-    const tables = JSON.stringify((await sl(t.root, ["tables", "--source", "wh", "--json"])).json());
+    const tables = JSON.stringify((await semlayer(t.root, ["tables", "--source", "wh", "--json"])).json());
     expect(tables).toContain("orders");
     expect(tables).not.toContain("customers");
   });
@@ -463,7 +463,7 @@ describe("import keeps only intake.schemas", () => {
     const file = join(t.dir, "schema.csv");
     writeFileSync(file, CSV);
     const args = ["import", "--source", "wh", "--file", file, "--include", "orders,daily,events", "--exclude", "weekly"];
-    const text = await sl(t.root, args);
+    const text = await semlayer(t.root, args);
     expect(text.code).toBe(0);
     expect(text.out).toContain("Imported 2 tables");
     expect(text.out).toContain("Dropped 1 table in 1 schema not in intake.schemas: raw.");
@@ -471,16 +471,16 @@ describe("import keeps only intake.schemas", () => {
     // events is only in raw, which intake.schemas leaves out.
     expect(text.out).toContain(`Pattern "events" matches no table in ${file} within intake.schemas.`);
     expect(names(t.root, "wh")).toEqual(["acme.orders", "marts.daily"]);
-    const json = await sl(t.root, [...args, "--json"]);
+    const json = await semlayer(t.root, [...args, "--json"]);
     expect(json.json()).toMatchObject({
       tables: 2,
       dropped: { tables: 1, schemas: ["raw"] },
       filters: { include: ["orders", "daily", "events"], exclude: ["weekly"], kept: 2, dropped: 2 },
     });
-    const none = await sl(t.root, ["import", "--source", "wh", "--file", file, "--include", "raw.*"]);
+    const none = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--include", "raw.*"]);
     expect(none.code).toBe(1);
     expect(none.err).toContain(`No table in ${file} within intake.schemas matches --include and --exclude, so nothing was imported.`);
-    expect(none.err).toContain("and the schemas in intake.schemas and run sl import again.");
+    expect(none.err).toContain("and the schemas in intake.schemas and run semlayer import again.");
   });
 
   test("an export source imports intake.export.file with --include", async () => {
@@ -488,7 +488,7 @@ describe("import keeps only intake.schemas", () => {
     await duckdbSource(t.root, t.dir, "wh", []);
     writeFileSync(join(t.root, "schema.csv"), CSV);
     patchSource(t.root, "wh", { intake: { mode: "export", reason: "No outside connections.", schemas: ["acme"], export: { file: "schema.csv" } } });
-    const r = await sl(t.root, ["import", "--source", "wh", "--include", "orders", "--json"]);
+    const r = await semlayer(t.root, ["import", "--source", "wh", "--include", "orders", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json()).toMatchObject({ tables: 1, dropped: { tables: 3, schemas: ["marts", "raw"] }, filters: { kept: 1, dropped: 1 } });
     expect(names(t.root, "wh")).toEqual(["acme.orders"]);
@@ -504,7 +504,7 @@ describe("import keeps only intake.schemas", () => {
       { table_catalog: "wh", table_schema: "other", table_name: "x", column_name: "id", data_type: "int" },
       { table_catalog: "lake", table_schema: "raw", table_name: "hits", column_name: "id", data_type: "int" },
     ]));
-    const r = await sl(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
+    const r = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
     expect(r.json()).toMatchObject({ tables: 2, dropped: { tables: 1, schemas: ["wh.other"] } });
     expect(names(t.root, "wh")).toEqual(["lake.raw.hits", "wh.acme.orders"]);
   });
@@ -513,7 +513,7 @@ describe("import keeps only intake.schemas", () => {
     const t = await setup();
     await duckdbSource(t.root, t.dir, "wh", [...TWO_SCHEMAS, "create schema third", "create table third.t (id integer)"]);
     patchSource(t.root, "wh", { intake: { schemas: ["acme"] } });
-    const exp = await sl(t.root, ["export-sql", "--dialect", "duckdb", "--json"]);
+    const exp = await semlayer(t.root, ["export-sql", "--dialect", "duckdb", "--json"]);
     const db = await DuckDBInstance.create(join(t.dir, "wh.duckdb"));
     const c = await db.connect();
     const rows = (await c.runAndReadAll(exp.json<{ sql: string }>().sql)).getRowObjectsJson();
@@ -521,7 +521,7 @@ describe("import keeps only intake.schemas", () => {
     db.closeSync();
     const file = join(t.dir, "schema.json");
     writeFileSync(file, JSON.stringify(rows));
-    const r = await sl(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
+    const r = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
     expect(r.code).toBe(0);
     expect(r.json()).toMatchObject({ tables: 2, primary_keys: 2, dropped: { tables: 3, schemas: ["main", "other", "third"] } });
     expect(names(t.root, "wh")).toEqual(["acme.customers", "acme.orders"]);
@@ -536,7 +536,7 @@ describe("import in export mode reads intake.export.file", () => {
     writeFileSync(join(t.root, "exports", "warehouse.csv"), CSV);
     patchSource(t.root, "wh", { intake: { mode: "export", reason: "No outside connections.", schemas: ["marts"], export: { file: "exports/warehouse.csv" } } });
     // The working directory is elsewhere: the file resolves from the root.
-    const r = await sl(t.root, ["import", "--source", "wh", "--json"]);
+    const r = await semlayer(t.root, ["import", "--source", "wh", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json()).toMatchObject({ tables: 2, dropped: { tables: 3, schemas: ["acme", "raw"] } });
     expect(names(t.root, "wh")).toEqual(["marts.daily", "marts.weekly"]);
@@ -547,21 +547,21 @@ describe("import in export mode reads intake.export.file", () => {
     await duckdbSource(t.root, t.dir, "wh", []);
     writeFileSync(join(t.dir, "outside.csv"), CSV);
     patchSource(t.root, "wh", { intake: { mode: "export", reason: "No outside connections.", export: { file: "../outside.csv" } } });
-    const out = await sl(t.root, ["import", "--source", "wh"]);
+    const out = await semlayer(t.root, ["import", "--source", "wh"]);
     expect(out.code).toBe(1);
     expect(out.err).toContain("intake.export.file in sources/wh.yaml must be a path inside the semantic root");
     expect(existsSnapshot(t.root)).toBe(false);
 
     patchSource(t.root, "wh", { intake: { mode: "export", reason: "No outside connections.", export: { file: "exports/none.csv" } } });
-    const gone = await sl(t.root, ["import", "--source", "wh"]);
+    const gone = await semlayer(t.root, ["import", "--source", "wh"]);
     expect(gone.code).toBe(1);
     expect(gone.err).toContain("intake.export.file in sources/wh.yaml names exports/none.csv, which does not exist under the semantic root");
     expect(gone.err).toContain("or pass --file");
 
     patchSource(t.root, "wh", { intake: { mode: "connection" } });
-    const conn = await sl(t.root, ["import", "--source", "wh"]);
+    const conn = await semlayer(t.root, ["import", "--source", "wh"]);
     expect(conn.code).toBe(1);
-    expect(conn.err).toContain("--file is required: pass the export to import, as in sl import --source wh --file schema.csv");
+    expect(conn.err).toContain("--file is required: pass the export to import, as in semlayer import --source wh --file schema.csv");
   });
 });
 

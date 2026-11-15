@@ -100,7 +100,7 @@
             "draft",
             "approved"
           ],
-          "description": "Whether the owner has signed off this metric. Tools only write draft; sl approve sets approved."
+          "description": "Whether the owner has signed off this metric. Tools only write draft; semlayer approve sets approved."
         },
         "approved_by": {
           "type": "string",
@@ -116,7 +116,7 @@
         "approved_hash": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$",
-          "description": "sha256: and 64 hex characters, written by sl approve: the hash of the item's semantic content when it was approved. sl validate errors when the item no longer matches it, and warns when an approved item has none (sl approve --stamp-hashes records it)."
+          "description": "sha256: and 64 hex characters, written by semlayer approve: the hash of the item's semantic content when it was approved. semlayer validate errors when the item no longer matches it, and warns when an approved item has none (semlayer approve --stamp-hashes records it)."
         }
       },
       "allOf": [

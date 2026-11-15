@@ -1,4 +1,4 @@
--- Schema export for Amazon Redshift, for `sl import`.
+-- Schema export for Amazon Redshift, for `semlayer import`.
 --
 -- Reads only the system catalog (pg_catalog, on the leader node): no table data is read and
 -- nothing is written. Returns one row per column, with its table's type, comment and row
@@ -11,13 +11,13 @@
 --   psql -X "host=<cluster> port=5439 dbname=<db> user=<user>" --csv -f redshift.sql > schema.csv
 -- (-X skips ~/.psqlrc, whose settings, such as \pset null, would change the CSV.)
 -- Then import it:
---   sl import --source <source> --file schema.csv
+--   semlayer import --source <source> --file schema.csv
 --
--- Restrict schemas: uncomment the line marked sl:schema-filter below and list the schemas,
--- or print this query with the filter applied: sl export-sql --dialect redshift --schemas a,b
+-- Restrict schemas: uncomment the line marked semlayer:schema-filter below and list the schemas,
+-- or print this query with the filter applied: semlayer export-sql --dialect redshift --schemas a,b
 --
--- Restrict tables: sl export-sql --include/--exclude prints this query with a table filter at the
--- line marked sl:table-filter (a pattern the dialect cannot express is applied by sl import).
+-- Restrict tables: semlayer export-sql --include/--exclude prints this query with a table filter at the
+-- line marked semlayer:table-filter (a pattern the dialect cannot express is applied by semlayer import).
 --
 -- row_count is pg_class.reltuples, the planner's estimate (svv_table_info.tbl_rows has exact
 -- counts). Late-binding views (WITH NO SCHEMA BINDING) and Spectrum external tables keep their
@@ -38,8 +38,8 @@ with rel as (
   where c.relkind in ('r', 'v')
     and n.nspname not in ('information_schema', 'catalog_history')
     and left(n.nspname, 3) <> 'pg_'
-    -- and n.nspname in ('public')  -- sl:schema-filter: uncomment and list the schemas to export
-    -- sl:table-filter: sl export-sql --include/--exclude writes the table filter here
+    -- and n.nspname in ('public')  -- semlayer:schema-filter: uncomment and list the schemas to export
+    -- semlayer:table-filter: semlayer export-sql --include/--exclude writes the table filter here
 ),
 -- Positions 1 to 32 (the most columns a key holds), to index a constraint's key arrays; the
 -- leader node has no unnest.

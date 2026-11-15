@@ -1,4 +1,4 @@
-// The JSON a batched owner-answer form reads (sl reply --answers, sl question resolve --answers): a
+// The JSON a batched owner-answer form reads (semlayer reply --answers, semlayer question resolve --answers): a
 // file, or standard input with "-".
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";

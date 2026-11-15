@@ -13,7 +13,7 @@ export interface Approval {
   approved_by?: string;
   approved_at?: string;
   // "sha256:" and 64 hex characters: the hash of the item's semantic content when it was approved
-  // (lib/approval-hash.ts). sl validate errors when the item no longer matches it.
+  // (lib/approval-hash.ts). semlayer validate errors when the item no longer matches it.
   approved_hash?: string;
 }
 
@@ -38,7 +38,7 @@ export interface Scope {
   exclude?: string[];
   // A table-list file relative to the semantic root; lib/table-list.ts joins its entries to the lists.
   tables_file?: string;
-  // Why an exclude pattern leaves tables out, by pattern, in the owner's words (sl scope --reason).
+  // Why an exclude pattern leaves tables out, by pattern, in the owner's words (semlayer scope --reason).
   exclude_reasons?: Record<string, string>;
 }
 
@@ -126,7 +126,7 @@ export interface SnapshotTable {
   unique_keys?: string[][];
   foreign_keys?: ForeignKey[];
   profiled_at?: string | null;
-  // Why the last sl profile run skipped the table and when (spec: Skipped tables). Removed when a
+  // Why the last semlayer profile run skipped the table and when (spec: Skipped tables). Removed when a
   // run profiles it; an earlier profile, if any, stays beside it.
   profile_skipped?: ProfileSkip;
   columns: SnapshotColumn[];
@@ -137,7 +137,7 @@ export interface ProfileSkip {
   reason: string;
 }
 
-// The selection sl introspect or sl import recorded when it wrote the snapshot (spec: snapshots,
+// The selection semlayer introspect or semlayer import recorded when it wrote the snapshot (spec: snapshots,
 // Scope changes): qualified names of the tables in it, those that entered it with no model yet,
 // and those that left it with an approved model.
 export interface SnapshotScopeState {
@@ -241,7 +241,7 @@ export interface Model extends Approval {
   primary_key?: string[];
   tags?: string[];
   open_questions?: string[];
-  // Columns of the table the owner or sl draft left out on purpose; sl draft --new-columns skips them.
+  // Columns of the table the owner or semlayer draft left out on purpose; semlayer draft --new-columns skips them.
   ignored_columns?: string[];
   dimensions: Dimension[];
   measures: Measure[];
@@ -329,7 +329,7 @@ export interface Role {
   // fields names dimensions and measures as source.model.field; a join is hidden with its target model.
   deny?: { models?: string[]; fields?: string[]; tags?: string[] };
   row_filters?: RowFilter[];
-  // An entry naming a model silences sl validate's warning that the model's rows are not limited by
+  // An entry naming a model silences semlayer validate's warning that the model's rows are not limited by
   // this role's row filter on a model it joins to.
   open_questions?: string[];
 }
@@ -389,7 +389,7 @@ export interface Golden {
   status: Status;
   confirmed_by?: string;
   confirmed_at?: string;
-  // The role and user the golden ran as when sl goldens confirm recorded its rows.
+  // The role and user the golden ran as when semlayer goldens confirm recorded its rows.
   confirmed_as?: GoldenRunAs;
 }
 
@@ -419,7 +419,7 @@ export interface QueryPlan {
 export type ResultRows = Record<string, unknown>[];
 export type PlanResults = Record<string, ResultRows>;
 
-// Pending readbacks (.sl/pending/<readback_id>.json), written by sl readback.
+// Pending readbacks (.semlayer/pending/<readback_id>.json), written by semlayer readback.
 
 export interface ReadbackItem {
   n: number;
@@ -427,9 +427,9 @@ export interface ReadbackItem {
   target: string;
   kind: "approve";
   text: string;
-  // The target's content hash when it was read back: what sl approve records as approved_hash.
+  // The target's content hash when it was read back: what semlayer approve records as approved_hash.
   content_hash: string;
-  // A golden:<name> item only: the tolerance it was read back with, which sl goldens confirm records.
+  // A golden:<name> item only: the tolerance it was read back with, which semlayer goldens confirm records.
   tolerance?: number;
   // A golden:<name> item read back from stored rows: the --results <file> or --plan <plan_id> it took.
   rows_from?: string;
@@ -459,7 +459,7 @@ export interface PendingReadback {
   items: ReadbackItem[];
 }
 
-// .sl/plans/<plan_id>.json: a plan written by --emit-sql, finished with --plan <plan_id>.
+// .semlayer/plans/<plan_id>.json: a plan written by --emit-sql, finished with --plan <plan_id>.
 export interface StoredPlan extends QueryPlan {
   version: 1;
   plan_id: string;
@@ -468,7 +468,7 @@ export interface StoredPlan extends QueryPlan {
   queries: (PlannedQuery & { max_rows: number })[];
 }
 
-// The answer ledger (.sl/ledger.jsonl), appended to by sl reply and sl question resolve: one JSON
+// The answer ledger (.semlayer/ledger.jsonl), appended to by semlayer reply and semlayer question resolve: one JSON
 // object per line, holding the owner's words, never data values.
 
 export type ReplyVerdict = "yes" | "no" | "change";
@@ -478,13 +478,13 @@ export interface LedgerReply {
   kind: "reply";
   readback_id: string;
   item: number;
-  // The approve target the item read back (golden:<name> for a golden sl goldens confirm records).
+  // The approve target the item read back (golden:<name> for a golden semlayer goldens confirm records).
   target: string;
   // The target's content hash when it was read back, copied from the pending readback.
   content_hash: string;
   text: string;
   verdict: ReplyVerdict | null;
-  // "access" on a change to who sees the item (sl reply --about access): it is settled in the access
+  // "access" on a change to who sees the item (semlayer reply --about access): it is settled in the access
   // phase and is not a verdict on the item's content.
   about?: "access";
   by: string;
@@ -495,7 +495,7 @@ export interface LedgerQuestion {
   id: string;
   kind: "question";
   // The ref the question was resolved on: source.model, source.model.field or access, and from
-  // sl review apply also access.roles.<role>.
+  // semlayer review apply also access.roles.<role>.
   target: string;
   question: string;
   text: string;

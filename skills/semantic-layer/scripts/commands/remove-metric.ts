@@ -15,7 +15,7 @@ const spec: CommandSpec = {
   async run({ values, positionals }, ctx) {
     loadProject(ctx.root);
     const [raw, ...extra] = positionals;
-    if (!raw || extra.length) throw new UserError("Usage: sl remove-metric <name> [--force], for example sl remove-metric average_order_value.");
+    if (!raw || extra.length) throw new UserError("Usage: semlayer remove-metric <name> [--force], for example semlayer remove-metric average_order_value.");
     const name = raw.trim().replace(/^metric:/, "");
     const ref = `metric:${name}`;
     const loc = locate(ctx.root, ref);
@@ -31,7 +31,7 @@ const spec: CommandSpec = {
     if (approved && !bool(values, "force")) {
       throw new UserError(
         `${ref} is approved: removing it takes away a figure the owner signed off. Nothing was written. ` +
-          `Ask the owner first, and only on their yes run sl remove-metric ${name} --force.`,
+          `Ask the owner first, and only on their yes run semlayer remove-metric ${name} --force.`,
       );
     }
     const outcome = commitEdit(ctx.root, loc.file, `remove ${ref}`, (doc) => {
@@ -48,7 +48,7 @@ const spec: CommandSpec = {
     const lines = [`Removed metric ${name} from ${outcome.file}.`];
     if (approved) lines.push(`${ref} was approved: tell the owner it is removed.`);
     lines.push(...reapproveLines(outcome.reapprove));
-    if (!outcome.reapprove.length) lines.push("Next: sl status.");
+    if (!outcome.reapprove.length) lines.push("Next: semlayer status.");
     ctx.out(lines.join("\n"));
     return 0;
   },

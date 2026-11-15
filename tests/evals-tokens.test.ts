@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
-import { type Role, ROLES, slRefusal } from "../skills/semantic-layer/scripts/lib/roles.ts";
+import { type Role, ROLES, semlayerRefusal } from "../skills/semantic-layer/scripts/lib/roles.ts";
 import { loadScenario, loadScript, REPO_ROOT, SCENARIOS_DIR, type Script, type ScriptTurn, scriptWritePath } from "../evals/runner/files.ts";
-import { runScenario, slIn, steppingClock } from "../evals/runner/runner.ts";
+import { runScenario, semlayerIn, steppingClock } from "../evals/runner/runner.ts";
 import type { Driver, RoleTurn, Summary, Scenario } from "../evals/runner/types.ts";
 import { tempDir } from "./helpers.ts";
 
 // The counting rule of evals/README.md, Token counts: every scripted scenario's canned tokens are
 // recomputed by replaying its script with a driver that counts each turn by the rule instead of
-// reading its `tokens`. SL_EVAL_RECOUNT=1 rewrites the scripts' counts in place to the recount.
+// reading its `tokens`. SEMLAYER_EVAL_RECOUNT=1 rewrites the scripts' counts in place to the recount.
 
 const FIXED_CONTEXT = 500;
 const tokensOf = (chars: number) => Math.ceil(chars / 4);
@@ -36,17 +36,17 @@ async function recount(file: string, outDir: string): Promise<Recount & { stop: 
   const skill: number[] = [];
   let at = 0;
   let ownerAt = 0;
-  // The characters a turn's sl commands print, stdout and stderr, the working root's path counted as ".".
+  // The characters a turn's semlayer commands print, stdout and stderr, the working root's path counted as ".".
   const printed = async (role: Role, turn: ScriptTurn, root: string) => {
     const fixtureDir = relative(root, join(REPO_ROOT, "fixtures", scenario.fixture)).split(sep).join("/");
     let n = 0;
-    for (const args of turn.sl ?? []) {
-      const refused = slRefusal(role, args);
+    for (const args of turn.semlayer ?? []) {
+      const refused = semlayerRefusal(role, args);
       if (refused) {
         n += chars(refused);
         continue;
       }
-      const r = await slIn(root, args.map((a) => a.replaceAll("{fixture}", fixtureDir)), clock);
+      const r = await semlayerIn(root, args.map((a) => a.replaceAll("{fixture}", fixtureDir)), clock);
       n += chars((r.out + r.err).replaceAll(root, "."));
     }
     return n;
@@ -126,8 +126,8 @@ describe("scripted token counts", () => {
       const got = await recount(file, out);
       expect(got.stop).toBe("done");
       const canned: Recount = { skill: script.skill.map((t) => t.tokens ?? -1), owner: script.owner.map((t) => t.tokens ?? -1) };
-      if (process.env.SL_EVAL_RECOUNT === "1") rewrite(join(dirname(file), scenario.script!), got);
-      else expect(canned, `${scenario.script}: recount with SL_EVAL_RECOUNT=1 bun test tests/evals-tokens.test.ts, then bun run eval:smoke -- --update-baseline, then update the figures that follow (evals/README.md, Token counts)`).toEqual({ skill: got.skill, owner: got.owner });
+      if (process.env.SEMLAYER_EVAL_RECOUNT === "1") rewrite(join(dirname(file), scenario.script!), got);
+      else expect(canned, `${scenario.script}: recount with SEMLAYER_EVAL_RECOUNT=1 bun test tests/evals-tokens.test.ts, then bun run eval:smoke -- --update-baseline, then update the figures that follow (evals/README.md, Token counts)`).toEqual({ skill: got.skill, owner: got.owner });
     }, 60_000);
   }
 

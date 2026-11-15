@@ -9,7 +9,7 @@ import { buildSnapshot, nullable } from "../skills/semantic-layer/scripts/lib/in
 import { introspectionPlan, schemaMatcher } from "../skills/semantic-layer/scripts/lib/sql/introspection.ts";
 import type { QueryPlan, Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { duckdbSource, FIXED_NOW, initProject, PG_URL, sl, tempRoot } from "./helpers.ts";
+import { duckdbSource, FIXED_NOW, initProject, PG_URL, semlayer, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -51,7 +51,7 @@ describe("introspect: duckdb", () => {
   test("captures tables, views, comments, composite and foreign keys", async () => {
     const t = await setup();
     await duckdbSource(t.root, t.dir, "wh", WAREHOUSE);
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     const out = r.json<{ source: string; tables: number; columns: number; primary_keys: number; foreign_keys: number; snapshot: string }>();
@@ -59,10 +59,10 @@ describe("introspect: duckdb", () => {
     expect(out.snapshot).toBe(join(t.root, "snapshots", "wh.json"));
     expect(r.json<{ no_row_count: number; row_count_note: string }>()).toMatchObject({
       no_row_count: 1,
-      row_count_note: "1 view has no row count yet; sl profile measures it.",
+      row_count_note: "1 view has no row count yet; semlayer profile measures it.",
     });
-    const human = await sl(t.root, ["introspect", "--source", "wh"]);
-    expect(human.out).toContain("1 view has no row count yet; sl profile measures it.");
+    const human = await semlayer(t.root, ["introspect", "--source", "wh"]);
+    expect(human.out).toContain("1 view has no row count yet; semlayer profile measures it.");
 
     const s = snapshotOf(t.root, "wh");
     expect(s).toMatchObject({ snapshot_version: 1, source: "wh", dialect: "duckdb", method: "live", captured_at: FIXED_NOW });
@@ -101,7 +101,7 @@ describe("introspect: duckdb", () => {
   test("a second run keeps profiles and descriptions, drops a profile whose type changed, and keeps profiled_at only when nothing needs profiling", async () => {
     const t = await setup();
     await duckdbSource(t.root, t.dir, "wh", WAREHOUSE);
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
     const path = join(t.root, "snapshots", "wh.json");
     const s = snapshotOf(t.root, "wh");
     const orders = table(s, "sales", "orders");
@@ -117,7 +117,7 @@ describe("introspect: duckdb", () => {
     customers.unique_keys = [["email"], ["gone_column"]];
     writeFileSync(path, JSON.stringify(s));
 
-    const r = await sl(t.root, ["introspect", "--source", "wh"], { SL_NOW: "2026-02-01T00:00:00.000Z" });
+    const r = await semlayer(t.root, ["introspect", "--source", "wh"], { SEMLAYER_NOW: "2026-02-01T00:00:00.000Z" });
     expect(r.code).toBe(0);
     const again = snapshotOf(t.root, "wh");
     expect(again.captured_at).toBe("2026-02-01T00:00:00.000Z");
@@ -138,7 +138,7 @@ describe("introspect: duckdb", () => {
   test("a table that gains a column after profiling is no longer marked profiled", async () => {
     const t = await setup();
     await duckdbSource(t.root, t.dir, "wh", ["create table t (id integer, s varchar)", "insert into t values (1, 'a')"]);
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
     const path = join(t.root, "snapshots", "wh.json");
     const s = snapshotOf(t.root, "wh");
     const tt = table(s, "main", "t");
@@ -146,7 +146,7 @@ describe("introspect: duckdb", () => {
     for (const col of tt.columns) col.profile = { null_fraction: 0, distinct_count: 1, sampled: false };
     writeFileSync(path, JSON.stringify(s));
     await duckdbSource(t.root, t.dir, "wh", ["alter table t add column amount integer"]);
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
     const again = table(snapshotOf(t.root, "wh"), "main", "t");
     expect(again.profiled_at).toBeUndefined();
     expect(again.columns.map((c) => [c.name, c.profile !== undefined])).toEqual([
@@ -162,7 +162,7 @@ describe("introspect: duckdb", () => {
       "create table t (id integer, s varchar, amount integer, legacy boolean)",
       "create table gone (id integer)",
     ]);
-    const first = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const first = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(first.json<{ changes: unknown }>().changes).toBeNull();
     await duckdbSource(t.root, t.dir, "wh", [
       "alter table t add column notes varchar",
@@ -171,7 +171,7 @@ describe("introspect: duckdb", () => {
       "drop table gone",
       "create table fresh (id integer)",
     ]);
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<{ changes: unknown }>().changes).toEqual({
       tables_added: ["main.fresh"],
@@ -189,18 +189,18 @@ describe("introspect: duckdb", () => {
       ],
     });
 
-    const same = await sl(t.root, ["introspect", "--source", "wh"]);
+    const same = await semlayer(t.root, ["introspect", "--source", "wh"]);
     expect(same.out).toContain("No tables or columns changed since the previous snapshot.");
     expect(same.out).not.toContain("--new-columns");
 
     await duckdbSource(t.root, t.dir, "wh", ["alter table t add column refund_cents bigint", "alter table t drop column s"]);
-    const human = await sl(t.root, ["introspect", "--source", "wh"]);
+    const human = await semlayer(t.root, ["introspect", "--source", "wh"]);
     // No model is built on main.t, so there is nothing for --new-columns to draft.
     expect(human.out).toContain(
       [
         "Changes since the previous snapshot:",
         "  main.t: added refund_cents (BIGINT); removed s.",
-        "Removed or retyped columns and tables: `sl validate` reports the fields that read a removed column; read the affected fields back to the owner.",
+        "Removed or retyped columns and tables: `semlayer validate` reports the fields that read a removed column; read the affected fields back to the owner.",
       ].join("\n"),
     );
     expect(human.out).not.toContain("--new-columns");
@@ -216,28 +216,28 @@ describe("introspect: duckdb", () => {
       measures: [],
     });
     await duckdbSource(t.root, t.dir, "wh", ["alter table t add column channel varchar", "alter table fresh add column label varchar"]);
-    const modeled = await sl(t.root, ["introspect", "--source", "wh"]);
+    const modeled = await semlayer(t.root, ["introspect", "--source", "wh"]);
     expect(modeled.out).toContain(
       [
         "Changes since the previous snapshot:",
         "  main.fresh: added label (VARCHAR).",
         "  main.t: added channel (VARCHAR).",
-        "Modeled tables gained columns (main.t): `sl draft --source wh --new-columns` drafts them.",
+        "Modeled tables gained columns (main.t): `semlayer draft --source wh --new-columns` drafts them.",
       ].join("\n"),
     );
 
     // A model file that does not parse falls back to the general hint rather than failing.
     writeFileSync(join(t.root, "models", "wh", "broken.yaml"), "model: [unclosed\n");
     await duckdbSource(t.root, t.dir, "wh", ["alter table fresh add column kind varchar"]);
-    const broken = await sl(t.root, ["introspect", "--source", "wh"]);
+    const broken = await semlayer(t.root, ["introspect", "--source", "wh"]);
     expect(broken.code).toBe(0);
-    expect(broken.out).toContain("Columns were added: `sl draft --source wh --new-columns` drafts the new columns of modeled tables.");
+    expect(broken.out).toContain("Columns were added: `semlayer draft --source wh --new-columns` drafts the new columns of modeled tables.");
   });
 
   test("the first introspect prints no changes", async () => {
     const t = await setup();
     await duckdbSource(t.root, t.dir, "wh", ["create table t (id integer)"]);
-    const r = await sl(t.root, ["introspect", "--source", "wh"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh"]);
     expect(r.code).toBe(0);
     expect(r.out).not.toContain("Changes since");
     expect(r.out).not.toContain("No tables or columns changed");
@@ -253,7 +253,7 @@ describe("introspect: duckdb", () => {
     const csv = join(t.dir, "orders_view.csv");
     writeFileSync(csv, "shadow,zz\nv,1\n");
     writeYaml(join(t.root, "sources", "wh.yaml"), { ...src, connection: { ...src.connection, views: { Orders: `read_csv('${csv}')` } } });
-    const r = await sl(t.root, ["introspect", "--source", "wh"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh"]);
     expect(r.err).toBe("");
     const s = snapshotOf(t.root, "wh");
     expect(s.tables.map((x) => `${x.schema}.${x.name}`)).toEqual(["main.keep", "main.Orders"]);
@@ -275,7 +275,7 @@ describe("introspect: duckdb", () => {
     c.closeSync();
     db.closeSync();
 
-    const add = await sl(t.root, [
+    const add = await semlayer(t.root, [
       "add-source",
       "--name",
       "lake",
@@ -288,12 +288,12 @@ describe("introspect: duckdb", () => {
     ]);
     expect(add.err).toBe("");
     expect(add.code).toBe(0);
-    const r = await sl(t.root, ["introspect", "--source", "lake", "--json"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "lake", "--json"]);
     expect(r.err).toBe("");
     expect(r.json<{ tables: number }>().tables).toBe(2);
     expect(r.json<{ no_row_count: number }>().no_row_count).toBe(2);
-    const human = await sl(t.root, ["introspect", "--source", "lake"]);
-    expect(human.out).toContain("2 views have no row count yet; sl profile measures them.");
+    const human = await semlayer(t.root, ["introspect", "--source", "lake"]);
+    expect(human.out).toContain("2 views have no row count yet; semlayer profile measures them.");
     const s = snapshotOf(t.root, "lake");
     const events = table(s, "main", "events");
     expect(events.kind).toBe("view");
@@ -309,45 +309,45 @@ describe("introspect: duckdb", () => {
   test("--schemas restricts the plan and keeps other schemas' tables from the previous snapshot", async () => {
     const t = await setup();
     await duckdbSource(t.root, t.dir, "wh", [...WAREHOUSE, "create schema ops", "create table ops.jobs (id integer)"]);
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
     expect(snapshotOf(t.root, "wh").tables).toHaveLength(6);
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--schemas", "ops", "--json"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--schemas", "ops", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<{ tables: number }>().tables).toBe(6);
     const plan = introspectionPlan({ source: "wh", dialect: "duckdb" }, { schemas: ["ops"] });
     for (const q of plan.queries) expect(q.sql).toContain("where table_schema in ('ops')");
   });
 
-  test("hints at sl tables --groups above the focus threshold, else sl profile", async () => {
+  test("hints at semlayer tables --groups above the focus threshold, else semlayer profile", async () => {
     const t = await setup();
     const many = Array.from({ length: 14 }, (_, i) => `create table fct_t${i} (id integer)`);
     await duckdbSource(t.root, t.dir, "big", many);
-    const r = await sl(t.root, ["introspect", "--source", "big"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "big"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("14 tables, 14 columns, 0 primary keys, 0 foreign keys");
-    expect(r.out).toContain("sl tables --source big --groups");
+    expect(r.out).toContain("semlayer tables --source big --groups");
     await duckdbSource(t.root, t.dir, "small", ["create table a (id integer)"]);
-    const s = await sl(t.root, ["introspect", "--source", "small"]);
-    expect(s.out).toContain("sl profile --source small");
+    const s = await semlayer(t.root, ["introspect", "--source", "small"]);
+    expect(s.out).toContain("semlayer profile --source small");
     expect(s.out).not.toContain("no row count");
-    const j = await sl(t.root, ["introspect", "--source", "small", "--json"]);
+    const j = await semlayer(t.root, ["introspect", "--source", "small", "--json"]);
     expect(j.json<{ no_row_count: number; row_count_note?: string }>()).toMatchObject({ no_row_count: 0 });
     expect(j.json<{ row_count_note?: string }>().row_count_note).toBeUndefined();
   });
 
-  test("hints at sl profile only while an in-scope table is not profiled, else sl validate or sl status", async () => {
+  test("hints at semlayer profile only while an in-scope table is not profiled, else semlayer validate or semlayer status", async () => {
     const t = await setup();
     await duckdbSource(t.root, t.dir, "wh", ["create table t (id integer, s varchar)", "create table u (id integer)", "insert into t values (1, 'a')"]);
-    const next = async () => (await sl(t.root, ["introspect", "--source", "wh", "--json"])).json<{ next: string }>().next;
-    expect(await next()).toBe("Next: sl profile --source wh");
-    expect((await sl(t.root, ["profile", "--source", "wh"])).code).toBe(0);
+    const next = async () => (await semlayer(t.root, ["introspect", "--source", "wh", "--json"])).json<{ next: string }>().next;
+    expect(await next()).toBe("Next: semlayer profile --source wh");
+    expect((await semlayer(t.root, ["profile", "--source", "wh"])).code).toBe(0);
     // Nothing changed and every in-scope table is profiled.
-    expect(await next()).toBe("Next: sl status");
-    const human = await sl(t.root, ["introspect", "--source", "wh"]);
+    expect(await next()).toBe("Next: semlayer status");
+    const human = await semlayer(t.root, ["introspect", "--source", "wh"]);
     expect(human.out).toContain("No tables or columns changed since the previous snapshot.");
-    expect(human.out).toContain("Next: sl status");
-    expect(human.out).not.toContain("sl profile");
-    // A modeled table lost a column: its profile stands, and sl validate names the fields that read it.
+    expect(human.out).toContain("Next: semlayer status");
+    expect(human.out).not.toContain("semlayer profile");
+    // A modeled table lost a column: its profile stands, and semlayer validate names the fields that read it.
     writeYaml(join(t.root, "models", "wh", "t.yaml"), {
       model: "t",
       source: "wh",
@@ -357,16 +357,16 @@ describe("introspect: duckdb", () => {
       measures: [],
     });
     await duckdbSource(t.root, t.dir, "wh", ["alter table t drop column s"]);
-    expect(await next()).toBe("Next: sl validate");
+    expect(await next()).toBe("Next: semlayer validate");
     // An unmodeled table gained a column, so its profile is partial.
     await duckdbSource(t.root, t.dir, "wh", ["alter table u add column x integer"]);
-    expect(await next()).toBe("Next: sl profile --source wh");
+    expect(await next()).toBe("Next: semlayer profile --source wh");
     // Out of scope, it needs no profile.
     writeYaml(join(t.root, "sources", "wh.yaml"), {
       ...readYaml<SourceConfig>(join(t.root, "sources", "wh.yaml")),
       scope: { exclude: ["u"] },
     });
-    expect(await next()).toBe("Next: sl status");
+    expect(await next()).toBe("Next: semlayer status");
   });
 
   test("names the tables without a row count by kind", () => {
@@ -375,10 +375,10 @@ describe("introspect: duckdb", () => {
     expect(rowCountNote(snap([mk("a", "table", 10), mk("b", "view", 0)]))).toBeNull();
     expect(rowCountNote(snap([mk("a", "table", null), mk("b", "view", null), mk("c", "view"), mk("d", "external", null), mk("e", "table", 3)]))).toEqual({
       count: 4,
-      note: "1 table, 2 views and 1 external table have no row count yet; sl profile measures them.",
+      note: "1 table, 2 views and 1 external table have no row count yet; semlayer profile measures them.",
     });
     expect(rowCountNote(snap([mk("a", "table", null), mk("b", "table", null)]))?.note).toBe(
-      "2 tables have no row count yet; sl profile measures them.",
+      "2 tables have no row count yet; semlayer profile measures them.",
     );
   });
 
@@ -395,37 +395,37 @@ describe("introspect: duckdb", () => {
     expect(rowCountNote(snap([mk("a", "view"), mk("b", "view")]), { exclude: ["s.a", "s.b"] })).toBeNull();
     expect(rowCountNote(snap([mk("a", "view"), mk("b", "table")]), { include: ["s.b"] })).toEqual({
       count: 1,
-      note: "1 table has no row count yet; sl profile measures it.",
+      note: "1 table has no row count yet; semlayer profile measures it.",
     });
     expect(rowCountNote(snap([mk("v", "view", FIXED_NOW)]))).toEqual({
       count: 1,
-      note: "1 view profiled earlier has no row count; sl profile --refresh --tables s.v measures it.",
+      note: "1 view profiled earlier has no row count; semlayer profile --refresh --tables s.v measures it.",
     });
     expect(rowCountNote(snap([mk("a", "table"), mk("v", "view", FIXED_NOW), mk("w", "view", FIXED_NOW)]))).toEqual({
       count: 3,
       note:
-        "1 table has no row count yet; sl profile measures it. " +
-        "2 views profiled earlier have no row count; sl profile --refresh --tables s.v,s.w measures them.",
+        "1 table has no row count yet; semlayer profile measures it. " +
+        "2 views profiled earlier have no row count; semlayer profile --refresh --tables s.v,s.w measures them.",
     });
     const many = Array.from({ length: 9 }, (_, i) => mk(`v${i}`, "view", FIXED_NOW));
-    expect(rowCountNote(snap(many))?.note).toBe("9 views profiled earlier have no row count; sl profile --refresh measures them.");
+    expect(rowCountNote(snap(many))?.note).toBe("9 views profiled earlier have no row count; semlayer profile --refresh measures them.");
     expect(rowCountNote(snap([mk("my view", "view", FIXED_NOW)]))?.note).toBe(
-      "1 view profiled earlier has no row count; sl profile --refresh measures it.",
+      "1 view profiled earlier has no row count; semlayer profile --refresh measures it.",
     );
   });
 
   test("re-introspecting after a profile, or after excluding a view, does not send the agent to a no-op profile", async () => {
     const t = await setup();
     await duckdbSource(t.root, t.dir, "wh", ["create table a (id integer)", "insert into a values (1), (2)", "create view v as select * from a"]);
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).out).toContain("1 view has no row count yet; sl profile measures it.");
-    const p = await sl(t.root, ["profile", "--source", "wh"]);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).out).toContain("1 view has no row count yet; semlayer profile measures it.");
+    const p = await semlayer(t.root, ["profile", "--source", "wh"]);
     expect(p.code).toBe(0);
-    const again = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const again = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(again.code).toBe(0);
     const out = again.json<{ no_row_count: number; row_count_note?: string }>();
     if (out.no_row_count) {
-      expect(out.row_count_note).toBe("1 view profiled earlier has no row count; sl profile --refresh --tables main.v measures it.");
-      const refresh = await sl(t.root, ["profile", "--source", "wh", "--refresh", "--tables", "main.v"]);
+      expect(out.row_count_note).toBe("1 view profiled earlier has no row count; semlayer profile --refresh --tables main.v measures it.");
+      const refresh = await semlayer(t.root, ["profile", "--source", "wh", "--refresh", "--tables", "main.v"]);
       expect(refresh.err).toBe("");
       expect(refresh.code).toBe(0);
       expect(typeof table(snapshotOf(t.root, "wh"), "main", "v").row_count).toBe("number");
@@ -433,8 +433,8 @@ describe("introspect: duckdb", () => {
       expect(out.row_count_note).toBeUndefined();
     }
 
-    expect((await sl(t.root, ["scope", "--source", "wh", "--exclude", "v", "--write"])).code).toBe(0);
-    const excluded = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    expect((await semlayer(t.root, ["scope", "--source", "wh", "--exclude", "v", "--write"])).code).toBe(0);
+    const excluded = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(excluded.json<{ no_row_count: number; row_count_note?: string }>()).toMatchObject({ no_row_count: 0 });
     expect(excluded.json<{ row_count_note?: string }>().row_count_note).toBeUndefined();
   });
@@ -442,7 +442,7 @@ describe("introspect: duckdb", () => {
   test("--emit-sql prints the plan and writes nothing", async () => {
     const t = await setup();
     await duckdbSource(t.root, t.dir, "wh", WAREHOUSE);
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--emit-sql"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--emit-sql"]);
     expect(r.code).toBe(0);
     const plan = JSON.parse(r.out) as QueryPlan;
     expect(plan.command).toBe("introspect");
@@ -483,9 +483,9 @@ describe("introspect: postgres", () => {
 
   test.skipIf(!PG_URL)("captures composite keys in key order, foreign keys, comments and estimates", async () => {
     const t = await setup();
-    const add = await sl(t.root, ["add-source", "--name", "pg", "--dialect", "postgres", "--env", "SL_TEST_PG"]);
+    const add = await semlayer(t.root, ["add-source", "--name", "pg", "--dialect", "postgres", "--env", "SEMLAYER_TEST_PG"]);
     expect(add.code).toBe(0);
-    const r = await sl(t.root, ["introspect", "--source", "pg", "--schemas", schema, "--json"], { SL_TEST_PG: PG_URL });
+    const r = await semlayer(t.root, ["introspect", "--source", "pg", "--schemas", schema, "--json"], { SEMLAYER_TEST_PG: PG_URL });
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     expect(r.json()).toMatchObject({ tables: 4, primary_keys: 3, foreign_keys: 2 });
@@ -574,11 +574,11 @@ describe("introspect: plan-only dialects", () => {
 
   test("snowflake through the CLI: --emit-sql, then --results with uppercase keys", async () => {
     const t = await setup();
-    expect((await sl(t.root, ["add-source", "--name", "sf", "--dialect", "snowflake", "--env", "SF_URL"])).code).toBe(0);
-    const live = await sl(t.root, ["introspect", "--source", "sf"]);
+    expect((await semlayer(t.root, ["add-source", "--name", "sf", "--dialect", "snowflake", "--env", "SF_URL"])).code).toBe(0);
+    const live = await semlayer(t.root, ["introspect", "--source", "sf"]);
     expect(live.code).toBe(1);
     expect(live.err).toContain("--emit-sql");
-    const emitted = await sl(t.root, ["introspect", "--source", "sf", "--emit-sql"]);
+    const emitted = await semlayer(t.root, ["introspect", "--source", "sf", "--emit-sql"]);
     const plan = JSON.parse(emitted.out) as QueryPlan;
     expect(plan.queries.map((q) => q.id)).toEqual(["tables", "columns"]);
     const results = {
@@ -594,7 +594,7 @@ describe("introspect: plan-only dialects", () => {
     };
     const file = join(t.dir, "sf-results.json");
     writeFileSync(file, JSON.stringify(results));
-    const r = await sl(t.root, ["introspect", "--source", "sf", "--results", file, "--json"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "sf", "--results", file, "--json"]);
     expect(r.err).toBe("");
     expect(r.json()).toMatchObject({ source: "sf", tables: 2, columns: 3, primary_keys: 0, foreign_keys: 0 });
     const s = snapshotOf(t.root, "sf");
@@ -609,13 +609,13 @@ describe("introspect: plan-only dialects", () => {
 
   test("bigquery through the CLI: datasets from scope, composite keys from results", async () => {
     const t = await setup();
-    expect((await sl(t.root, ["add-source", "--name", "bq", "--dialect", "bigquery"])).code).toBe(0);
-    const noDatasets = await sl(t.root, ["introspect", "--source", "bq", "--emit-sql"]);
+    expect((await semlayer(t.root, ["add-source", "--name", "bq", "--dialect", "bigquery"])).code).toBe(0);
+    const noDatasets = await semlayer(t.root, ["introspect", "--source", "bq", "--emit-sql"]);
     expect(noDatasets.code).toBe(1);
     expect(noDatasets.err).toContain("--schemas");
     const srcPath = join(t.root, "sources", "bq.yaml");
     writeYaml(srcPath, { ...readYaml<SourceConfig>(srcPath), scope: { include: ["sales.*", "fct_*"] } });
-    const emitted = await sl(t.root, ["introspect", "--source", "bq", "--emit-sql"]);
+    const emitted = await semlayer(t.root, ["introspect", "--source", "bq", "--emit-sql"]);
     expect(emitted.code).toBe(0);
     const plan = JSON.parse(emitted.out) as QueryPlan;
     expect(plan.queries[0]!.sql).toContain("`sales`.INFORMATION_SCHEMA.TABLES");
@@ -642,7 +642,7 @@ describe("introspect: plan-only dialects", () => {
     };
     const file = join(t.dir, "bq-results.json");
     writeFileSync(file, JSON.stringify(results));
-    const r = await sl(t.root, ["introspect", "--source", "bq", "--results", file]);
+    const r = await semlayer(t.root, ["introspect", "--source", "bq", "--results", file]);
     expect(r.err).toBe("");
     expect(r.out).toContain("2 tables, 4 columns, 1 primary keys, 1 foreign keys");
     const s = snapshotOf(t.root, "bq");
@@ -656,8 +656,8 @@ describe("introspect: plan-only dialects", () => {
 
   test("bigquery: a project-qualified dataset keeps its project, and a rerun drops removed tables", async () => {
     const t = await setup();
-    expect((await sl(t.root, ["add-source", "--name", "bq", "--dialect", "bigquery"])).code).toBe(0);
-    const emitted = await sl(t.root, ["introspect", "--source", "bq", "--schemas", "other-proj.sales", "--emit-sql"]);
+    expect((await semlayer(t.root, ["add-source", "--name", "bq", "--dialect", "bigquery"])).code).toBe(0);
+    const emitted = await semlayer(t.root, ["introspect", "--source", "bq", "--schemas", "other-proj.sales", "--emit-sql"]);
     expect((JSON.parse(emitted.out) as QueryPlan).queries[0]!.sql).toContain("'other-proj.sales' as table_schema");
     const file = join(t.dir, "bq.json");
     const write = (names: string[]) =>
@@ -671,16 +671,16 @@ describe("introspect: plan-only dialects", () => {
         }),
       );
     write(["a", "b"]);
-    expect((await sl(t.root, ["introspect", "--source", "bq", "--schemas", "other-proj.sales", "--results", file])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "bq", "--schemas", "other-proj.sales", "--results", file])).code).toBe(0);
     write(["a"]);
-    expect((await sl(t.root, ["introspect", "--source", "bq", "--schemas", "other-proj.sales", "--results", file])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "bq", "--schemas", "other-proj.sales", "--results", file])).code).toBe(0);
     expect(snapshotOf(t.root, "bq").tables.map((x) => `${x.schema}.${x.name}`)).toEqual(["other-proj.sales.a"]);
   });
 
   test("databricks through the CLI: --emit-sql, then --results with uppercase keys, composite keys and foreign keys", async () => {
     const t = await setup();
-    expect((await sl(t.root, ["add-source", "--name", "dbx", "--dialect", "databricks"])).code).toBe(0);
-    const emitted = await sl(t.root, ["introspect", "--source", "dbx", "--schemas", "gold", "--emit-sql"]);
+    expect((await semlayer(t.root, ["add-source", "--name", "dbx", "--dialect", "databricks"])).code).toBe(0);
+    const emitted = await semlayer(t.root, ["introspect", "--source", "dbx", "--schemas", "gold", "--emit-sql"]);
     expect(emitted.code).toBe(0);
     const plan = JSON.parse(emitted.out) as QueryPlan;
     expect(plan.queries.map((q) => q.id)).toEqual(["tables", "columns", "primary_keys", "foreign_keys"]);
@@ -688,7 +688,7 @@ describe("introspect: plan-only dialects", () => {
 
     const file = join(t.dir, "dbx-results.json");
     writeFileSync(file, JSON.stringify({ tables: [], columns: [] }));
-    const missing = await sl(t.root, ["introspect", "--source", "dbx", "--results", file]);
+    const missing = await semlayer(t.root, ["introspect", "--source", "dbx", "--results", file]);
     expect(missing.code).toBe(1);
     expect(missing.err).toContain("primary_keys");
 
@@ -716,7 +716,7 @@ describe("introspect: plan-only dialects", () => {
         ],
       }),
     );
-    const ok = await sl(t.root, ["introspect", "--source", "dbx", "--results", file, "--json"]);
+    const ok = await semlayer(t.root, ["introspect", "--source", "dbx", "--results", file, "--json"]);
     expect(ok.err).toBe("");
     expect(ok.json()).toMatchObject({ tables: 3, columns: 5, primary_keys: 2, foreign_keys: 2 });
     const s = snapshotOf(t.root, "dbx");
@@ -809,7 +809,7 @@ describe("buildSnapshot", () => {
 describe("add-source", () => {
   test("writes a duckdb source with views split on the first '='", async () => {
     const t = await setup();
-    const r = await sl(t.root, [
+    const r = await semlayer(t.root, [
       "add-source",
       "--name",
       "lake",
@@ -837,7 +837,7 @@ describe("add-source", () => {
 
   test("writes a postgres source naming its env var, and plan-only dialects without one", async () => {
     const t = await setup();
-    const r = await sl(t.root, ["add-source", "--name", "warehouse", "--dialect", "postgres", "--env", "WAREHOUSE_URL"]);
+    const r = await semlayer(t.root, ["add-source", "--name", "warehouse", "--dialect", "postgres", "--env", "WAREHOUSE_URL"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("WAREHOUSE_URL is not set");
     expect(readYaml<SourceConfig>(join(t.root, "sources", "warehouse.yaml"))).toEqual({
@@ -845,7 +845,7 @@ describe("add-source", () => {
       dialect: "postgres",
       connection: { env: "WAREHOUSE_URL" },
     });
-    const sf = await sl(t.root, ["add-source", "--name", "sf", "--dialect", "snowflake"]);
+    const sf = await semlayer(t.root, ["add-source", "--name", "sf", "--dialect", "snowflake"]);
     expect(sf.code).toBe(0);
     expect(sf.out).toContain("--emit-sql");
     expect(readYaml<SourceConfig>(join(t.root, "sources", "sf.yaml"))).toEqual({ source: "sf", dialect: "snowflake" });
@@ -866,13 +866,13 @@ describe("add-source", () => {
       [["--name", "x", "--dialect", "duckdb", "--database", "postgres://u:p@h/db"], "contains a credential"],
     ];
     for (const [args, message] of cases) {
-      const r = await sl(t.root, ["add-source", ...args]);
+      const r = await semlayer(t.root, ["add-source", ...args]);
       expect(r.code).toBe(1);
       expect(r.err).toContain(message);
     }
     expect(existsSync(join(t.root, "sources", "x.yaml"))).toBe(false);
-    expect((await sl(t.root, ["add-source", "--name", "x", "--dialect", "duckdb"])).code).toBe(0);
-    const dup = await sl(t.root, ["add-source", "--name", "x", "--dialect", "duckdb"]);
+    expect((await semlayer(t.root, ["add-source", "--name", "x", "--dialect", "duckdb"])).code).toBe(0);
+    const dup = await semlayer(t.root, ["add-source", "--name", "x", "--dialect", "duckdb"]);
     expect(dup.code).toBe(1);
     expect(dup.err).toContain("already exists");
   });
@@ -892,7 +892,7 @@ describe("add-source", () => {
       ["--view", "t=read_parquet('https://acct.blob.core.windows.net/c/x.parquet?sv=2024&sig=abcSECRET')"],
     ];
     for (const [flag, value] of cases) {
-      const r = await sl(t.root, ["add-source", "--name", "x", "--dialect", "duckdb", flag, value, "--json"]);
+      const r = await semlayer(t.root, ["add-source", "--name", "x", "--dialect", "duckdb", flag, value, "--json"]);
       expect(r.code).toBe(1);
       expect(r.err).toContain(`${flag} contains a credential`);
       for (const secret of ["wJalrXUtnFEMI", "AKIA", "hunter2", "abcSECRET", "eyJsecret", "FwoGZ", "AccountKey"]) {
@@ -902,7 +902,7 @@ describe("add-source", () => {
     }
     expect(existsSync(join(t.root, "sources", "x.yaml"))).toBe(false);
 
-    const ok = await sl(t.root, [
+    const ok = await semlayer(t.root, [
       "add-source", "--name", "lake", "--dialect", "duckdb", "--database", "md:analytics",
       "--setup", "SET secret_directory='/tmp/s'", "--setup", "CREATE SECRET (TYPE s3, PROVIDER credential_chain)",
       "--view", "ev=read_parquet('s3://bucket/token_files/*.parquet')", "--json",
@@ -913,12 +913,12 @@ describe("add-source", () => {
     expect(out).toMatchObject({ source: "lake", dialect: "duckdb", views: ["ev"], setup_statements: 2, notes: [] });
     expect(ok.out).not.toContain("credential_chain");
     expect(ok.out).not.toContain("md:analytics");
-    const human = await sl(t.root, ["add-source", "--name", "local", "--dialect", "duckdb", "--database", "data/missing.duckdb"]);
+    const human = await semlayer(t.root, ["add-source", "--name", "local", "--dialect", "duckdb", "--database", "data/missing.duckdb"]);
     expect(human.out).toContain("does not exist yet");
     expect(human.out).not.toContain("missing.duckdb");
   });
 
-  test("add-source and sl validate share one credential check", async () => {
+  test("add-source and semlayer validate share one credential check", async () => {
     const flagged: [CredentialSlot, string][] = [
       ["setup", "SET s3_secret_access_key='wJalrXUtnFEMI'"],
       ["setup", "ATTACH 'dbname=prod user=u password=hunter2 host=db' AS pg (TYPE postgres)"],
@@ -936,18 +936,18 @@ describe("add-source", () => {
     ];
     for (const [slot, value] of clean) expect(hasCredential(slot, value)).toBe(false);
 
-    // A hand-edited source gets the same check from sl validate, which names the key, never the value.
+    // A hand-edited source gets the same check from semlayer validate, which names the key, never the value.
     const t = await setup();
     writeYaml(join(t.root, "sources", "lake.yaml"), {
       source: "lake",
       dialect: "duckdb",
       connection: { database: ":memory:", setup: ["SET threads=2", "SET s3_secret_access_key='wJalrXUtnFEMI'"], views: { ev: "read_parquet('x?sig=abcSECRET')" } },
     });
-    const r = await sl(t.root, ["validate", "--json"]);
+    const r = await semlayer(t.root, ["validate", "--json"]);
     expect(r.code).toBe(1);
     const issues = r.json<{ issues: { path: string; message: string }[] }>().issues.filter((i) => i.message.includes("contains a credential"));
     expect(issues.map((i) => i.path).sort()).toEqual(["connection.setup[1]", "connection.views.ev"]);
-    for (const out of [r.out, (await sl(t.root, ["validate"])).out]) {
+    for (const out of [r.out, (await semlayer(t.root, ["validate"])).out]) {
       expect(out).not.toContain("wJalrXUtnFEMI");
       expect(out).not.toContain("abcSECRET");
     }
@@ -956,7 +956,7 @@ describe("add-source", () => {
   test("refuses a name that already has a .yml source file", async () => {
     const t = await setup();
     writeFileSync(join(t.root, "sources", "x.yml"), "source: x\ndialect: duckdb\n");
-    const r = await sl(t.root, ["add-source", "--name", "x", "--dialect", "duckdb"]);
+    const r = await semlayer(t.root, ["add-source", "--name", "x", "--dialect", "duckdb"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("already exists");
     expect(existsSync(join(t.root, "sources", "x.yaml"))).toBe(false);
@@ -965,7 +965,7 @@ describe("add-source", () => {
   test("refuses a connection URL passed as --env without echoing it", async () => {
     const t = await setup();
     for (const value of ["postgres://admin:hunter2@db.example.com/prod", "admin@db.example.com", "hunter2-not-a-name"]) {
-      const r = await sl(t.root, ["add-source", "--name", "wh", "--dialect", "postgres", "--env", value]);
+      const r = await semlayer(t.root, ["add-source", "--name", "wh", "--dialect", "postgres", "--env", value]);
       expect(r.code).toBe(1);
       expect(r.err).toContain("environment variable");
       expect(r.err).not.toContain("hunter2");
@@ -977,8 +977,8 @@ describe("add-source", () => {
   test("needs an initialized project", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
-    const r = await sl(t.root, ["add-source", "--name", "x", "--dialect", "duckdb"]);
+    const r = await semlayer(t.root, ["add-source", "--name", "x", "--dialect", "duckdb"]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain("sl init");
+    expect(r.err).toContain("semlayer init");
   });
 });

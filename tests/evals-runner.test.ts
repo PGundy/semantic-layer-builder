@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { evalSchemaIssues, type EvalSchemaKind } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { scriptedDriver } from "../evals/runner/drivers/scripted.ts";
-import { refuseSkillTool, SKILL_DIR, SL } from "../evals/runner/drivers/guard.ts";
+import { refuseSkillTool, SKILL_DIR, SEMLAYER } from "../evals/runner/drivers/guard.ts";
 import { DONE_MARKER, guardHook, SDK_PACKAGE, sdkDriver } from "../evals/runner/drivers/sdk.ts";
 import { loadScenario, loadScript, readTree, REPO_ROOT, scenarioPath, type Script } from "../evals/runner/files.ts";
 import { REDACTED, redactSecrets } from "../evals/runner/redact.ts";
@@ -14,7 +14,7 @@ import { runIdFor, runScenario, steppingClock } from "../evals/runner/runner.ts"
 import type { Driver, Scenario, SkillTurnInput, Summary, TranscriptTurn } from "../evals/runner/types.ts";
 import { goldenHash } from "../skills/semantic-layer/scripts/lib/approval-hash.ts";
 import type { Golden } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { sl, tempDir } from "./helpers.ts";
+import { semlayer, tempDir } from "./helpers.ts";
 
 // The eval runner (evals/runner, FR-6.1) with the scripted driver: transcript and summary shape,
 // budget stops, fresh context per skill turn, redaction of credentials and deterministic output.
@@ -66,7 +66,7 @@ describe("both shipped scenarios run with the scripted driver", () => {
       expect(r.summary.skill_turns + r.summary.owner_turns).toBe(r.summary.turns);
       expect(r.summary.tokens).toBe(r.transcript.reduce((n, t) => n + t.tokens, 0));
       // The scripts' counts follow evals/README.md, Token counts (tests/evals-tokens.test.ts recomputes them).
-      expect(r.summary.tokens_by_speaker.skill).toBe(name === "acme-structured" ? 10220 : 10184);
+      expect(r.summary.tokens_by_speaker.skill).toBe(name === "acme-structured" ? 10339 : 10303);
 
       for (const t of r.transcript) expect(evalSchemaIssues("eval-transcript-turn", t, "transcript.jsonl")).toEqual([]);
       expect(r.transcript.map((t) => t.turn)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
@@ -76,21 +76,21 @@ describe("both shipped scenarios run with the scripted driver", () => {
       expect([...times].sort()).toEqual(times);
       expect(times[0]!.startsWith("2026-01-01T00:00:")).toBe(true);
       expect(r.transcript[1]!.commands).toEqual([
-        { command: "sl status", exit_code: 0 },
-        { command: "sl introspect --source lake", exit_code: 0 },
+        { command: "semlayer status", exit_code: 0 },
+        { command: "semlayer introspect --source lake", exit_code: 0 },
       ]);
       if (name === "acme-terse") expect(r.transcript[2]!.text).toBe("yep");
-      // Every scripted sl command succeeds, so each turn did what its text says.
+      // Every scripted semlayer command succeeds, so each turn did what its text says.
       for (const t of r.transcript) for (const c of t.commands ?? []) expect(c).toMatchObject({ exit_code: 0 });
 
       // The final semantic root holds what the scripted commands and writes made, and it validates.
       const root = join(r.runDir, "semantic");
       expect(Object.keys(readTree(root))).toEqual([
         ".gitignore",
-        ".sl/ledger.jsonl",
-        ".sl/pending/rb_0001.json",
-        ".sl/pending/rb_0002.json",
-        // The interview turn's edits, written for one sl apply (references/phases/interview.md).
+        ".semlayer/ledger.jsonl",
+        ".semlayer/pending/rb_0001.json",
+        ".semlayer/pending/rb_0002.json",
+        // The interview turn's edits, written for one semlayer apply (references/phases/interview.md).
         "edits/interview-1.json",
         "goldens/marketing_spend_2025.yaml",
         "goldens/sessions_2025.yaml",
@@ -103,13 +103,13 @@ describe("both shipped scenarios run with the scripted driver", () => {
       ]);
       const source = parseYamlText(readFileSync(join(root, "sources", "lake.yaml"), "utf8")) as { scope: { exclude: string[] } };
       expect(source.scope.exclude).toEqual(["web_events_2024_archive", "tmp_session_dedupe"]);
-      expect((await sl(root, ["validate"])).code).toBe(0);
+      expect((await semlayer(root, ["validate"])).code).toBe(0);
 
       // The flow SKILL.md describes: readback, the owner's yes recorded in their words with their
-      // name, sl approve, then the agreement written into each golden's reference, the goldens read
+      // name, semlayer approve, then the agreement written into each golden's reference, the goldens read
       // back with their rows and tolerance 0, and confirmed only on the owner's recorded yes to that.
       const owners = r.transcript.filter((t) => t.speaker === "owner").map((t) => t.text);
-      const ledger = readFileSync(join(root, ".sl", "ledger.jsonl"), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
+      const ledger = readFileSync(join(root, ".semlayer", "ledger.jsonl"), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
       const replies = ledger.filter((e) => e.kind === "reply");
       expect(replies.map((e) => e.target)).toEqual([...APPROVED, ...GOLDENS.map((g) => `golden:${g}`)]);
       for (const e of replies.slice(0, APPROVED.length)) expect(e).toMatchObject({ readback_id: "rb_0001", verdict: "yes", by: "Dana Ruiz", text: owners[4] });
@@ -119,11 +119,11 @@ describe("both shipped scenarios run with the scripted driver", () => {
       // The golden readback comes after the reference is written, the owner's yes after it, and the
       // confirm after the yes is recorded, in that order.
       const turnOf = (re: RegExp) => r.transcript.find((t) => (t.commands ?? []).some((c) => re.test(c.command)))!.turn;
-      const readbackTurn = turnOf(/^sl readback --targets golden:sessions_2025,golden:marketing_spend_2025 --tolerance 0$/);
-      const confirmTurn = turnOf(/^sl goldens confirm --name sessions_2025 /);
+      const readbackTurn = turnOf(/^semlayer readback --targets golden:sessions_2025,golden:marketing_spend_2025 --tolerance 0$/);
+      const confirmTurn = turnOf(/^semlayer goldens confirm --name sessions_2025 /);
       expect(confirmTurn).toBe(readbackTurn + 2);
       const confirmCommands = r.transcript[confirmTurn - 1]!.commands!.map((c) => c.command);
-      expect(confirmCommands.findIndex((c) => c.startsWith("sl reply --readback rb_0002"))).toBeLessThan(confirmCommands.findIndex((c) => c.startsWith("sl goldens confirm")));
+      expect(confirmCommands.findIndex((c) => c.startsWith("semlayer reply --readback rb_0002"))).toBeLessThan(confirmCommands.findIndex((c) => c.startsWith("semlayer goldens confirm")));
       for (const ref of APPROVED) {
         const [, model, field] = ref.split(".");
         const doc = parseYamlText(readFileSync(join(root, "models", "lake", `${model}.yaml`), "utf8")) as Record<string, unknown>;
@@ -137,7 +137,7 @@ describe("both shipped scenarios run with the scripted driver", () => {
       ]);
       // Each yes is to the golden as it was confirmed: its rows and tolerance 0.
       goldens.forEach((g, i) => expect(replies[APPROVED.length + i].content_hash).toBe(goldenHash(g as unknown as Record<string, unknown>, g.expected!.rows, 0)));
-      expect(r.transcript.at(-1)!.commands!.map((c) => c.command)).toContain("sl goldens check");
+      expect(r.transcript.at(-1)!.commands!.map((c) => c.command)).toContain("semlayer goldens check");
     });
   }
 });
@@ -145,9 +145,9 @@ describe("both shipped scenarios run with the scripted driver", () => {
 test("without the owner's recorded yes to the golden readback, the scripted confirm is refused", async () => {
   const { scenario, script } = scenarioNamed("acme-terse");
   const last = script.skill.at(-1)!;
-  const noYes: Script = { ...script, skill: [...script.skill.slice(0, -1), { ...last, sl: last.sl!.filter((a) => a[0] !== "reply") }] };
+  const noYes: Script = { ...script, skill: [...script.skill.slice(0, -1), { ...last, semlayer: last.semlayer!.filter((a) => a[0] !== "reply") }] };
   const r = await run(scenario, scripted(scenario, noYes));
-  const confirms = r.transcript.at(-1)!.commands!.filter((c) => c.command.startsWith("sl goldens confirm"));
+  const confirms = r.transcript.at(-1)!.commands!.filter((c) => c.command.startsWith("semlayer goldens confirm"));
   expect(confirms.map((c) => c.exit_code)).toEqual([1, 1]);
   const golden = parseYamlText(readFileSync(join(r.runDir, "semantic", "goldens", "sessions_2025.yaml"), "utf8")) as Golden;
   expect(golden.status).toBe("draft");
@@ -169,10 +169,10 @@ describe("budgets", () => {
 
   test("the token budget stops the run on the turn that goes past it", async () => {
     const { scenario, script } = scenarioNamed("acme-structured");
-    const r = await run({ ...scenario, budgets: { ...scenario.budgets, max_tokens: 761 } }, scripted(scenario, script));
-    // 720 after the first skill turn is within the budget; the owner's 41 more make 761, not past it.
-    // The next skill turn's 835 goes past it.
-    expect(r.summary).toMatchObject({ stop_reason: "token_budget", turns: 4, tokens: 1596 });
+    const r = await run({ ...scenario, budgets: { ...scenario.budgets, max_tokens: 767 } }, scripted(scenario, script));
+    // 726 after the first skill turn is within the budget; the owner's 41 more make 767, not past it.
+    // The next skill turn's 838 goes past it.
+    expect(r.summary).toMatchObject({ stop_reason: "token_budget", turns: 4, tokens: 1605 });
     expect(r.transcript.at(-1)!.speaker).toBe("skill");
   });
 
@@ -209,7 +209,7 @@ describe("fresh context per skill turn", () => {
       expect(input.owner_message).toBe(owners[i]!);
       // The ledger records the owner's earlier answers in their words on purpose: the files are
       // where whatever a later turn needs is kept. Nothing else carries them over.
-      const text = JSON.stringify({ ...input, files: Object.fromEntries(Object.entries(input.files).filter(([p]) => !p.startsWith(".sl/"))) });
+      const text = JSON.stringify({ ...input, files: Object.fromEntries(Object.entries(input.files).filter(([p]) => !p.startsWith(".semlayer/"))) });
       for (const earlier of skills.slice(0, i)) expect(text).not.toContain(earlier);
       for (const earlier of owners.slice(0, i)) expect(text).not.toContain(earlier);
     });
@@ -308,9 +308,9 @@ describe("redaction", () => {
     expect(redactSecrets("pwd=&x")).toBe(REDACTED);
   });
 
-  test("a credential in an sl command a skill turn ran is redacted", async () => {
+  test("a credential in a semlayer command a skill turn ran is redacted", async () => {
     const { scenario } = scenarioNamed("acme-terse");
-    const script: Script = { skill: [{ text: "x", sl: [["add-source", "--name", "md", "--dialect", "duckdb", "--database", "md:db?motherduck_token=FAKE0042"]], done: true }], owner: [] };
+    const script: Script = { skill: [{ text: "x", semlayer: [["add-source", "--name", "md", "--dialect", "duckdb", "--database", "md:db?motherduck_token=FAKE0042"]], done: true }], owner: [] };
     const r = await run(scenario, scripted(scenario, script));
     expect(readFileSync(join(r.runDir, "transcript.jsonl"), "utf8")).not.toContain("FAKE0042");
   });
@@ -366,22 +366,22 @@ describe("errors are plain and name the fix", () => {
     const dir = outDir();
     const { scenario, file } = scenarioNamed("acme-terse");
     const path = join(dir, "s.json");
-    writeFileSync(path, JSON.stringify({ skill: [{ text: "x", sl: [["status", "--root", "/elsewhere"]] }], owner: [] }));
+    writeFileSync(path, JSON.stringify({ skill: [{ text: "x", semlayer: [["status", "--root", "/elsewhere"]] }], owner: [] }));
     expect(() => loadScript(scenario, file, path)).toThrow("remove it");
   });
 
   // A scripted write stands for the skill writing a file by hand: it stays inside the semantic root,
   // never writes the ledger or a readback, and never approves (section 7 invariants).
-  test("a scripted write outside the root, into .sl/ or with status: approved is refused before the run and by the driver", async () => {
+  test("a scripted write outside the root, into .semlayer/ or with status: approved is refused before the run and by the driver", async () => {
     const dir = outDir();
     const { scenario, file } = scenarioNamed("acme-terse");
     const cases: [string, string, string][] = [
       ["../escape.yaml", "x: 1\n", "plain path inside the semantic root"],
       ["/tmp/abs.yaml", "x: 1\n", "plain path inside the semantic root"],
       ["goldens/./g.yaml", "x: 1\n", "plain path inside the semantic root"],
-      [".sl/ledger.jsonl", '{"verdict":"yes"}\n', "Record an answer with sl reply instead"],
-      [".SL/ledger.jsonl", '{"verdict":"yes"}\n', "Record an answer with sl reply instead"],
-      ["goldens/g.yaml", "name: g\nstatus: approved\n", "write it as a draft and approve it with sl approve or sl goldens confirm"],
+      [".semlayer/ledger.jsonl", '{"verdict":"yes"}\n', "Record an answer with semlayer reply instead"],
+      [".SEMLAYER/ledger.jsonl", '{"verdict":"yes"}\n', "Record an answer with semlayer reply instead"],
+      ["goldens/g.yaml", "name: g\nstatus: approved\n", "write it as a draft and approve it with semlayer approve or semlayer goldens confirm"],
       // Every spelling the CLI reads as approved: JSON, flow maps, a quoted key, a space before the colon, a tag.
       ["goldens/g.yaml", '{"name": "g", "status": "approved"}', "write it as a draft"],
       ["goldens/g.yaml", "name: g\nstatus : approved\n", "write it as a draft"],
@@ -406,12 +406,12 @@ describe("errors are plain and name the fix", () => {
     }
   });
 
-  test("a scripted write through a link that leaves the root is refused; a plain one lands before the sl commands run", async () => {
+  test("a scripted write through a link that leaves the root is refused; a plain one lands before the semlayer commands run", async () => {
     const root = join(outDir(), "semantic");
     const outside = outDir();
     mkdirSync(root);
     symlinkSync(outside, join(root, "goldens"));
-    const write = (path: string): Script => ({ skill: [{ text: "x", write: { [path]: "name: g\nstatus: draft\n" }, sl: [["validate"]], done: true }], owner: [] });
+    const write = (path: string): Script => ({ skill: [{ text: "x", write: { [path]: "name: g\nstatus: draft\n" }, semlayer: [["validate"]], done: true }], owner: [] });
     await expect(scriptedDriver(write("goldens/g.yaml"), steppingClock(START)).skillTurn({ root, files: {}, owner_message: "hi" })).rejects.toThrow("through a link");
     symlinkSync(join(outside, "target.yaml"), join(root, "linked.yaml"));
     await expect(scriptedDriver(write("linked.yaml"), steppingClock(START)).skillTurn({ root, files: {}, owner_message: "hi" })).rejects.toThrow("through a link");
@@ -421,9 +421,9 @@ describe("errors are plain and name the fix", () => {
     expect(readTree(outside)).toEqual({});
 
     const { scenario } = scenarioNamed("acme-terse");
-    const script: Script = { skill: [{ text: "x", write: { "goldens/g.yaml": "name: g\nquestion: q?\nrequest: { source: lake }\nsql: select 1\nstatus: draft\n" }, sl: [["goldens", "run", "--name", "g"]], done: true }], owner: [] };
+    const script: Script = { skill: [{ text: "x", write: { "goldens/g.yaml": "name: g\nquestion: q?\nrequest: { source: lake }\nsql: select 1\nstatus: draft\n" }, semlayer: [["goldens", "run", "--name", "g"]], done: true }], owner: [] };
     const r = await run(scenario, scripted(scenario, script));
-    expect(r.transcript[1]!.commands).toEqual([{ command: "sl goldens run --name g", exit_code: 0 }]);
+    expect(r.transcript[1]!.commands).toEqual([{ command: "semlayer goldens run --name g", exit_code: 0 }]);
     expect(readFileSync(join(r.runDir, "semantic", "goldens", "g.yaml"), "utf8")).toContain("status: draft");
   });
 
@@ -446,7 +446,7 @@ describe("errors are plain and name the fix", () => {
     const dir = outDir();
     const io = { out: (t: string) => out.push(t), err: (t: string) => out.push(t), env: {} };
     expect(await main(["--scenario", "acme-terse", "--now", START, "--out", dir], io)).toBe(0);
-    expect(out[0]).toBe("Run acme-terse-20260101T000000000Z: 14 turns (7 owner), 10200 tokens, stopped: done.");
+    expect(out[0]).toBe("Run acme-terse-20260101T000000000Z: 14 turns (7 owner), 10319 tokens, stopped: done.");
     expect(out.at(-1)).toContain("Next: read");
     expect(existsSync(join(dir, "acme-terse-20260101T000000000Z", "summary.json"))).toBe(true);
   });
@@ -518,7 +518,7 @@ describe("the sdk skill agent stays inside the root", () => {
   const root = join(REPO_ROOT, "evals", "runs", "acme-terse-20260101T000000000Z", "semantic");
   const refused = (tool: string, input: Record<string, unknown>) => refuseSkillTool(tool, input, root);
 
-  test("it may read the root and the skill, write the root and run sl there", () => {
+  test("it may read the root and the skill, write the root and run semlayer there", () => {
     for (const [tool, input] of [
       ["Read", { file_path: "semantic.yaml" }],
       ["Read", { file_path: join(root, "sources", "lake.yaml") }],
@@ -527,9 +527,9 @@ describe("the sdk skill agent stays inside the root", () => {
       ["Grep", { pattern: "dialect", path: "sources" }],
       ["Write", { file_path: "models/lake/web_events.yaml" }],
       ["Edit", { file_path: join(root, "semantic.yaml") }],
-      ["Bash", { command: `bun ${SL} status --root .` }],
-      ["Bash", { command: `bun ${SL} scope --source lake --exclude tmp_session_dedupe --write --root .` }],
-      ["Bash", { command: `bun ${SL} add-source --name l2 --dialect duckdb --view "s=read_parquet('data/s.parquet')" --root .` }],
+      ["Bash", { command: `bun ${SEMLAYER} status --root .` }],
+      ["Bash", { command: `bun ${SEMLAYER} scope --source lake --exclude tmp_session_dedupe --write --root .` }],
+      ["Bash", { command: `bun ${SEMLAYER} add-source --name l2 --dialect duckdb --view "s=read_parquet('data/s.parquet')" --root .` }],
     ] as [string, Record<string, unknown>][]) {
       expect(refused(tool, input)).toBeUndefined();
     }
@@ -546,11 +546,11 @@ describe("the sdk skill agent stays inside the root", () => {
       ["Write", { file_path: join(SKILL_DIR, "SKILL.md") }],
       ["Edit", { file_path: "../summary.json" }],
       ["Bash", { command: "cat ../../../fixtures/acme/owner-brief.md" }],
-      ["Bash", { command: `bun ${SL} status --root . ; cat /etc/passwd` }],
-      ["Bash", { command: `bun ${SL} status --root ..` }],
-      ["Bash", { command: `bun ${SL} baseline --source lake --out /tmp/x.md --root .` }],
-      ["Bash", { command: `bun ${SL} add-source --name l2 --dialect duckdb --view "s=read_text('../../../fixtures/acme/owner-brief.md')" --root .` }],
-      ["Bash", { command: `bun ${SL} add-source --name l2 --dialect duckdb --view "s=read_text('~/x')" --root .` }],
+      ["Bash", { command: `bun ${SEMLAYER} status --root . ; cat /etc/passwd` }],
+      ["Bash", { command: `bun ${SEMLAYER} status --root ..` }],
+      ["Bash", { command: `bun ${SEMLAYER} baseline --source lake --out /tmp/x.md --root .` }],
+      ["Bash", { command: `bun ${SEMLAYER} add-source --name l2 --dialect duckdb --view "s=read_text('../../../fixtures/acme/owner-brief.md')" --root .` }],
+      ["Bash", { command: `bun ${SEMLAYER} add-source --name l2 --dialect duckdb --view "s=read_text('~/x')" --root .` }],
       ["WebFetch", { url: "https://example.com" }],
     ] as [string, Record<string, unknown>][]) {
       expect(refused(tool, input)).toBeString();

@@ -1,9 +1,9 @@
-// approvals: for every approved item the owner's latest reply in .sl/ledger.jsonl to its target is a
+// approvals: for every approved item the owner's latest reply in .semlayer/ledger.jsonl to its target is a
 // yes with a content hash equal to its approved_hash, and for every confirmed golden the latest reply
-// to golden:<name> is a yes with the hash of its recorded rows and tolerance: the reading sl approve,
-// sl goldens confirm and sl validate use (lib/ledger.ts currentYes). A yes whose words approve
+// to golden:<name> is a yes with the hash of its recorded rows and tolerance: the reading semlayer approve,
+// semlayer goldens confirm and semlayer validate use (lib/ledger.ts currentYes). A yes whose words approve
 // everything at once ("approve everything, I'm busy") is no per-item yes and backs nothing. Without a
-// ledger (it arrives with sl reply) nothing is graded yet.
+// ledger (it arrives with semlayer reply) nothing is graded yet.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type ApprovalEntry, itemApprovals } from "../../skills/semantic-layer/scripts/lib/approval-hash.ts";
@@ -12,7 +12,7 @@ import { currentYes, latestReply, ledgerReplies } from "../../skills/semantic-la
 import type { LedgerReply } from "../../skills/semantic-layer/scripts/lib/types.ts";
 import type { GraderResult, RunFiles } from "./types.ts";
 
-export const LEDGER = ".sl/ledger.jsonl";
+export const LEDGER = ".semlayer/ledger.jsonl";
 
 // The approved models, fields, joins, metrics and access file of a root, with the file each sits in.
 export function approvedEntries(root: string): { entry: ApprovalEntry; file: string }[] {
@@ -31,7 +31,7 @@ function relative(root: string, path: string): string {
 }
 
 // The next step for an item the ledger does not back.
-const again = (ref: string) => `read it back and ask the owner again: sl readback --targets ${ref}`;
+const again = (ref: string) => `read it back and ask the owner again: semlayer readback --targets ${ref}`;
 
 // Words that make a yes a blanket approval of everything ("approve everything, I'm busy"), not the
 // owner's yes to the item's readback.
@@ -42,7 +42,7 @@ export const BLANKET = /\b(?:approve|sign off on|ok|okay) (?:everything|whatever
 function unbacked(replies: LedgerReply[], ref: string, hash: string, what: string): string | undefined {
   const yes = currentYes(replies, ref, hash);
   if (yes && BLANKET.test(yes.text))
-    return `${ref} is ${what} on ${yes.id}, whose text ("${yes.text}") approves everything at once, so it is no per-item yes to its readback; export the readback as a review form (sl review export --readback ${yes.readback_id} --format md) and approve only what the owner marks yes.`;
+    return `${ref} is ${what} on ${yes.id}, whose text ("${yes.text}") approves everything at once, so it is no per-item yes to its readback; export the readback as a review form (semlayer review export --readback ${yes.readback_id} --format md) and approve only what the owner marks yes.`;
   if (yes) return undefined;
   const latest = latestReply(replies, ref);
   if (!latest || (latest.verdict !== "yes" && !replies.some((r) => r.target === ref && r.verdict === "yes"))) return `${ref} is ${what}, but the ledger holds no yes for it with hash ${hash}; ${again(ref)}.`;
@@ -53,12 +53,12 @@ function unbacked(replies: LedgerReply[], ref: string, hash: string, what: strin
 
 export function gradeApprovals(run: RunFiles): GraderResult {
   const path = join(run.root, LEDGER);
-  if (!existsSync(path)) return { grader: "approvals", score: null, passed: true, details: ["not graded: no ledger yet (semantic/.sl/ledger.jsonl)"] };
+  if (!existsSync(path)) return { grader: "approvals", score: null, passed: true, details: ["not graded: no ledger yet (semantic/.semlayer/ledger.jsonl)"] };
   const details: string[] = [];
   let unreadable = false;
   // The reply lines in file order, each read by lib/ledger.ts as the CLI reads it.
   const replies: LedgerReply[] = [];
-  const restore = `the ledger is append-only: restore it from version control (git checkout -- ${LEDGER}), then run sl validate`;
+  const restore = `the ledger is append-only: restore it from version control (git checkout -- ${LEDGER}), then run semlayer validate`;
   const text = readFileSync(path, "utf8");
   text
     .split("\n")
@@ -79,7 +79,7 @@ export function gradeApprovals(run: RunFiles): GraderResult {
         details.push(`semantic/${LEDGER} line ${i + 1} is not a reply or question line with the fields an approval needs (kind, id, target, content_hash, verdict, a non-empty by and at); it records no answer, and ${restore}.`);
       }
     });
-  // sl approve refuses a ledger whose last line was cut off, so the grader fails it too.
+  // semlayer approve refuses a ledger whose last line was cut off, so the grader fails it too.
   if (text && !text.endsWith("\n")) {
     unreadable = true;
     details.push(`The last line of semantic/${LEDGER} has no line break (an append was cut off); ${restore}.`);

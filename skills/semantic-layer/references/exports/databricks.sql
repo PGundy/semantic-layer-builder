@@ -1,22 +1,22 @@
--- Schema export for Databricks (Unity Catalog), for `sl import`.
+-- Schema export for Databricks (Unity Catalog), for `semlayer import`.
 --
 -- Reads only the current catalog's information_schema: no table data is read and nothing is
 -- written. Returns one row per column, with its table's type and comment, its primary key position
 -- and the foreign keys it belongs to (a column in several foreign keys appears once per key;
 -- Unity Catalog keys are informational). information_schema has no row counts, so row_count is
--- empty; sl profile measures them.
+-- empty; semlayer profile measures them.
 --
 -- Run it in the catalog to export (USE CATALOG <catalog>, or pick it in the SQL editor) and save
 -- CSV: in the Databricks SQL editor, run it and download the results as CSV, or with the
 -- Databricks CLI or any JDBC/ODBC client that writes CSV. Then import it:
---   sl import --source <source> --file schema.csv
+--   semlayer import --source <source> --file schema.csv
 --
--- Restrict schemas: uncomment the line marked sl:schema-filter below and list the schemas, or
--- print this query with the filter applied: sl export-sql --dialect databricks --schemas a,b
+-- Restrict schemas: uncomment the line marked semlayer:schema-filter below and list the schemas, or
+-- print this query with the filter applied: semlayer export-sql --dialect databricks --schemas a,b
 -- (Unity Catalog stores schema names in lowercase).
 --
--- Restrict tables: sl export-sql --include/--exclude prints this query with a table filter at the
--- line marked sl:table-filter (a pattern the dialect cannot express is applied by sl import).
+-- Restrict tables: semlayer export-sql --include/--exclude prints this query with a table filter at the
+-- line marked semlayer:table-filter (a pattern the dialect cannot express is applied by semlayer import).
 with pk as (
   select k.table_schema, k.table_name, k.column_name, k.ordinal_position as pk_ordinal
   from information_schema.table_constraints tc
@@ -80,6 +80,6 @@ join information_schema.tables t
 left join pk on pk.table_schema = c.table_schema and pk.table_name = c.table_name and pk.column_name = c.column_name
 left join fk on fk.table_schema = c.table_schema and fk.table_name = c.table_name and fk.column_name = c.column_name
 where c.table_schema <> 'information_schema'
-  -- and lower(c.table_schema) in ('default')  -- sl:schema-filter: uncomment and list the schemas to export
-  -- sl:table-filter: sl export-sql --include/--exclude writes the table filter here
+  -- and lower(c.table_schema) in ('default')  -- semlayer:schema-filter: uncomment and list the schemas to export
+  -- semlayer:table-filter: semlayer export-sql --include/--exclude writes the table filter here
 order by table_schema, table_name, ordinal_position, fk_name;

@@ -1,5 +1,5 @@
 // Where a source's connection variables come from (spec: Connection variables and env files): the
-// process environment first, then the env file named by --env-file or SL_ENV_FILE, then .env in
+// process environment first, then the env file named by --env-file or SEMLAYER_ENV_FILE, then .env in
 // the directory that holds the semantic root, then .env in the working directory. The files are
 // read here, as written: nothing in a value is expanded. No function here returns or prints a
 // value except readConnection, which hands the values to the adapter.
@@ -134,22 +134,22 @@ function lookupOf(env: Env, opts?: EnvLookup): EnvLookup {
   return { ...LOOKUPS.get(env), ...opts };
 }
 
-// The env file a flag or SL_ENV_FILE names, which must exist.
+// The env file a flag or SEMLAYER_ENV_FILE names, which must exist.
 function namedFile(env: Env, lookup: EnvLookup): string | null {
   const flag = lookup.envFile;
-  const named = flag ?? (env.SL_ENV_FILE || undefined);
+  const named = flag ?? (env.SEMLAYER_ENV_FILE || undefined);
   if (named === undefined) return null;
   const path = resolve(lookup.cwd ?? process.cwd(), named);
   if (readIfFile(path) === null) {
     throw new UserError(
-      `${flag !== undefined ? "--env-file" : "SL_ENV_FILE"} names ${path}, which is not a file. Give the path of the env file that holds the connection variables, ` +
+      `${flag !== undefined ? "--env-file" : "SEMLAYER_ENV_FILE"} names ${path}, which is not a file. Give the path of the env file that holds the connection variables, ` +
         "or leave it out to read the .env beside the semantic root, then run the same command again.",
     );
   }
   return path;
 }
 
-// The .env beside the semantic root: the one sl init and sl setup keep out of version control.
+// The .env beside the semantic root: the one semlayer init and semlayer setup keep out of version control.
 export function rootEnvFile(root: string): string {
   return join(dirname(resolve(root)), ".env");
 }
@@ -251,7 +251,7 @@ export function readConnection(root: string, source: SourceConfig, env: Env, opt
   const prefix = source.connection?.env_prefix;
   if (source.dialect !== "postgres" || (!variable && prefix === undefined)) return { resolution: { status: "ok", from: null, variables: [], described: "" }, values: {} };
   if (variable && prefix !== undefined) {
-    throw new UserError(`Source "${source.source}" has both connection.env and connection.env_prefix; keep one: sl setup --source ${source.source} --dialect postgres --env <VAR> or --env-prefix <PREFIX> writes it.`);
+    throw new UserError(`Source "${source.source}" has both connection.env and connection.env_prefix; keep one: semlayer setup --source ${source.source} --dialect postgres --env <VAR> or --env-prefix <PREFIX> writes it.`);
   }
   const names = variable ? [variable] : PREFIX_PARTS.map((p) => `${prefix}${p}`);
   const required = variable ? [variable] : REQUIRED_PARTS.map((p) => `${prefix}${p}`);
@@ -267,7 +267,7 @@ export function readConnection(root: string, source: SourceConfig, env: Env, opt
   const lines = variable
     ? [`${variable}=${URL_PLACEHOLDER}`]
     : PREFIX_PARTS.filter((p) => (hits.size ? missing.includes(`${prefix}${p}`) : true)).map((p) => `${prefix}${p}=${PLACEHOLDERS[p]}`);
-  const named = lookupOf(env, opts).envFile ?? (env.SL_ENV_FILE || undefined);
+  const named = lookupOf(env, opts).envFile ?? (env.SEMLAYER_ENV_FILE || undefined);
   const addTo = named === undefined ? rootEnvFile(root) : files[0]!.path;
   const looked = files.map((f) => `${f.path} (${f.exists ? "not set there" : "no such file"})`).join(", ");
   const many = lines.length > 1;
@@ -312,13 +312,13 @@ export function ignoreEnvFiles(root: string): void {
   // The exception only holds after the pattern it excepts.
   if (missing.includes(".env.*") && !missing.includes("!.env.example")) missing.push("!.env.example");
   const lines = `${missing.join("\n")}\n`;
-  if (text === null) writeFileSync(file, `# Env files hold connection secrets; sl init and sl setup keep them out of version control.\n${lines}`);
+  if (text === null) writeFileSync(file, `# Env files hold connection secrets; semlayer init and semlayer setup keep them out of version control.\n${lines}`);
   else appendFileSync(file, `${text.endsWith("\n") || !text ? "" : "\n"}${lines}`);
 }
 
 const isEnvFileName = (name: string) => name === ".env" || (name.startsWith(".env.") && name !== ".env.example");
 
-// The env files under the semantic root, as paths relative to it. sl validate reports each: a
+// The env files under the semantic root, as paths relative to it. semlayer validate reports each: a
 // secret is never kept inside the root.
 export function envFilesInRoot(root: string): string[] {
   let names: string[];

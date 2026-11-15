@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 // The plugin's before-and-after comparison of the answer ledger, and its refusal to read or search a
 // connection's env file (spec: Hand edits). guard-edits.ts calls runBefore from its PreToolUse run;
-// plugin.json runs this file after a Bash call or one of the MCP server's sl tools (PostToolUse and
+// plugin.json runs this file after a Bash call or one of the MCP server's semlayer tools (PostToolUse and
 // PostToolUseFailure) and before one of those MCP tools.
 //
-// Before a Bash call that is neither a plain sl command nor a git-only command, the hook copies
-// .sl/ledger.jsonl and .sl/pending/ of every semantic root it can find into its state directory.
-// After the call it compares. A difference no sl or git command could have made is put back and
-// reported; one made while sl or git ran at the same time is left and reported. A call whose
+// Before a Bash call that is neither a plain semlayer command nor a git-only command, the hook copies
+// .semlayer/ledger.jsonl and .semlayer/pending/ of every semantic root it can find into its state directory.
+// After the call it compares. A difference no semlayer or git command could have made is put back and
+// reported; one made while semlayer or git ran at the same time is left and reported. A call whose
 // after-check never ran is compared at the next before-call. The state directory is
 // ${CLAUDE_PLUGIN_DATA}/ledger-guard, or a private directory under the system temp directory. It
 // also holds, per project directory, the evidence that the project uses this plugin, which extends
@@ -111,7 +111,7 @@ function follow(args: Word[], dirs: string[]): boolean {
 
 // --- The env file ----------------------------------------------------------------------------
 
-const SECRET = "This file holds the connection secret. sl reads it itself, and you never need its contents. To check the connection, run sl setup --source <s>.";
+const SECRET = "This file holds the connection secret. semlayer reads it itself, and you never need its contents. To check the connection, run semlayer setup --source <s>.";
 const READERS = new Set(["cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "sed", "awk", "gawk", "source", ".", "tac", "nl", "od", "xxd", "strings", "base64", "bat"]);
 const GREPS = new Set(["grep", "egrep", "fgrep", "rg"]);
 const SCAN_HINT = "To search the other files, name a subdirectory or add --exclude='.env*'.";
@@ -137,14 +137,14 @@ function nearRoot(dir: string): boolean {
 }
 
 // Whether a file is an env file a semantic root would load: .env or .env.<name> (not .env.example)
-// in a semantic root or the directory holding one, or the file SL_ENV_FILE names; and, in a project
+// in a semantic root or the directory holding one, or the file SEMLAYER_ENV_FILE names; and, in a project
 // that has shown it uses this plugin (inUse), one in the project directory or the working directory,
-// where sl looks before a root exists. sl's own lookup is lib/env-file.ts; this is the short path
+// where semlayer looks before a root exists. semlayer's own lookup is lib/env-file.ts; this is the short path
 // rule the hook needs, and it reads no file.
 function isEnvFile(abs: string, cwd: string, env: Env): boolean {
   if (!existsSync(abs)) return false;
   const real = realPath(abs);
-  if (env.SL_ENV_FILE && realPath(resolve(cwd, expandHome(env.SL_ENV_FILE))) === real) return true;
+  if (env.SEMLAYER_ENV_FILE && realPath(resolve(cwd, expandHome(env.SEMLAYER_ENV_FILE))) === real) return true;
   return [abs, real].some((p) => isEnvName(basename(p)) && (nearRoot(dirname(p)) || inUse(dirname(p), cwd, env)));
 }
 
@@ -157,7 +157,7 @@ const projectOf = (cwd: string, env: Env) => realPath(env.CLAUDE_PROJECT_DIR ? r
 const evidenceFile = (project: string, env: Env, dir = stateDir(env)) => join(dir, `project-${createHash("sha256").update(project).digest("hex").slice(0, 32)}`);
 
 // Whether `dir` is the project directory or the working directory of a project with evidence that
-// it uses this plugin: an sl command ran there, or a file of this skill was read through a hooked tool.
+// it uses this plugin: a semlayer command ran there, or a file of this skill was read through a hooked tool.
 // A call that is itself evidence counts (SELF_EVIDENCE, set by envFileRefusal), since the hook checks
 // it before runBefore records the evidence.
 function inUse(dir: string, cwd: string, env: Env): boolean {
@@ -165,13 +165,13 @@ function inUse(dir: string, cwd: string, env: Env): boolean {
   const real = realPath(dir);
   return (real === project || real === realPath(cwd)) && (env[SELF_EVIDENCE] === "1" || existsSync(evidenceFile(project, env)));
 }
-const SELF_EVIDENCE = "__SL_HOOK_CALL_IS_EVIDENCE";
+const SELF_EVIDENCE = "__SEMLAYER_HOOK_CALL_IS_EVIDENCE";
 
-// Whether a call is evidence that its project uses this plugin: an sl command in either form (this
-// plugin's sl.ts, a command named sl, or one of the MCP server's sl tools), or a Read, Grep or shell
+// Whether a call is evidence that its project uses this plugin: a semlayer command in either form (this
+// plugin's semlayer.ts, a command named semlayer, or one of the MCP server's semlayer tools), or a Read, Grep or shell
 // command that names a file under this skill's directory.
 function isEvidence(tool: string, args: unknown, cwd: string): boolean {
-  if (/^mcp__.*__sl_[a-z0-9_]+$/.test(tool)) return true;
+  if (/^mcp__.*__semlayer_[a-z0-9_]+$/.test(tool)) return true;
   if (!isObject(args)) return false;
   const skill = [SKILL_DIR, realPath(SKILL_DIR)];
   const under = (p: unknown) => {
@@ -183,10 +183,10 @@ function isEvidence(tool: string, args: unknown, cwd: string): boolean {
   if (tool === "Grep") return under(args.path);
   const command = args.command;
   if (tool !== "Bash" || typeof command !== "string") return false;
-  return classify(command, cwd).ran.sl || skill.some((d) => command.includes(d));
+  return classify(command, cwd).ran.semlayer || skill.some((d) => command.includes(d));
 }
 
-// Records the evidence for the call's project when the call is evidence and a directory sl would
+// Records the evidence for the call's project when the call is evidence and a directory semlayer would
 // read an env file from (the project directory, the working directory) holds no semantic root yet:
 // once one does, the root's own rule covers its env files.
 function noteEvidence(input: Obj, dir: string, env: Env): void {
@@ -287,7 +287,7 @@ function envFilesRead(command: string, cwd: string, env: Env, depth = 0, bases: 
 
 // The env files the Grep tool reaches from a directory. It searches every file below it, dot files
 // too, and follows no link (ripgrep --hidden): the env files in the directory's first 1,000
-// directories, nearest first, and the file SL_ENV_FILE names when it lies below.
+// directories, nearest first, and the file SEMLAYER_ENV_FILE names when it lies below.
 function envFilesUnder(dir: string, cwd: string, env: Env): string[] {
   const out: string[] = [];
   const queue = [dir];
@@ -305,7 +305,7 @@ function envFilesUnder(dir: string, cwd: string, env: Env): string[] {
       } else if (isEnvName(e.name) && isEnvFile(p, cwd, env)) out.push(p);
     }
   }
-  const named = env.SL_ENV_FILE ? realPath(resolve(cwd, expandHome(env.SL_ENV_FILE))) : undefined;
+  const named = env.SEMLAYER_ENV_FILE ? realPath(resolve(cwd, expandHome(env.SEMLAYER_ENV_FILE))) : undefined;
   if (named && existsSync(named) && named.startsWith(realPath(dir) + sep) && !out.some((p) => realPath(p) === named)) out.push(named);
   return out;
 }
@@ -356,23 +356,23 @@ export function envFileRefusal(tool: string, input: Obj, cwd: string, processEnv
 // --- What a Bash call is -----------------------------------------------------------------------
 
 // The CLI entry this hook ships with.
-const SL_ENTRY = join(import.meta.dir, "..", "sl.ts");
+const SEMLAYER_ENTRY = join(import.meta.dir, "..", "semlayer.ts");
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-const SL_VARIABLE = /^(SL_[A-Z0-9_]+|SEMANTIC_ROOT)=/;
-// Commands that write no file themselves, so sl or git may be joined or piped to them. tee writes
+const SEMLAYER_VARIABLE = /^(SEMLAYER_[A-Z0-9_]+|SEMANTIC_ROOT)=/;
+// Commands that write no file themselves, so semlayer or git may be joined or piped to them. tee writes
 // the files it names: guard-edits.ts has checked those it can read, and one it cannot is not quiet.
 const QUIET = new Set(["head", "tail", "grep", "wc", "cat", "jq", "cut", "tr", "echo", "printf", "ls", "pwd", "test", "[", "sleep", "true", "false", "exit", "tee"]);
 // git subcommands that bring commits or committed files into the working tree, and those that never change it.
 const GIT_MOVES = new Set(["pull", "merge", "rebase", "checkout", "switch", "restore", "reset", "revert", "cherry-pick", "stash"]);
 const GIT_STAYS = new Set(["fetch", "status", "add", "commit", "log", "diff", "show", "branch", "push", "remote", "tag", "rev-parse"]);
 
-// Whether a simple command runs this plugin's sl: `bun [run] <sl.ts> ...` with the path written out
-// and naming the entry from every directory the shell may be in, or an `sl` on PATH that is the entry.
+// Whether a simple command runs this plugin's semlayer: `bun [run] <semlayer.ts> ...` with the path written out
+// and naming the entry from every directory the shell may be in, or an `semlayer` on PATH that is the entry.
 function isSl(first: Word, args: Word[], dirs: string[]): boolean {
   if (first.dynamic) return false;
-  const entry = realPath(SL_ENTRY);
-  if (first.word === "sl") {
-    const found = Bun.which("sl");
+  const entry = realPath(SEMLAYER_ENTRY);
+  if (first.word === "semlayer") {
+    const found = Bun.which("semlayer");
     return found !== null && realPath(found) === entry;
   }
   if (first.word !== "bun" && !(isAbsolute(first.word) && realPath(first.word) === realPath(process.execPath))) return false;
@@ -391,10 +391,10 @@ function gitSubcommand(args: Word[]): string | undefined {
 }
 
 interface Call {
-  // "sl": every simple command is this plugin's sl, a git command, a cd or a command that writes no
-  // file, with no $(...) or `...`, and at least one is sl. "git": the same with no sl and at least one
+  // "semlayer": every simple command is this plugin's semlayer, a git command, a cd or a command that writes no
+  // file, with no $(...) or `...`, and at least one is semlayer. "git": the same with no semlayer and at least one
   // git command that moves commits. "other": anything else.
-  kind: "sl" | "git" | "other";
+  kind: "semlayer" | "git" | "other";
   // It may leave a program running after the call returns.
   background: boolean;
   // The call's working directory and every directory a cd in it names.
@@ -404,30 +404,30 @@ interface Call {
 }
 
 interface Ran {
-  // The command text names sl: this plugin's, an alias, or sl.ts behind a variable.
-  sl: boolean;
+  // The command text names semlayer: this plugin's, an alias, or semlayer.ts behind a variable.
+  semlayer: boolean;
   // A git command in it moves commits.
   git: boolean;
 }
-const NAMES_SL = /(^|[\s;&|(`'"=\/])sl(\.ts)?(\s|["']|$)/;
+const NAMES_SEMLAYER = /(^|[\s;&|(`'"=\/])semlayer(\.ts)?(\s|["']|$)/;
 
 function classify(command: string, cwd: string): Call {
   const { commands, subs, background } = parseShell(command);
   const dirs = [cwd];
   let trusted = subs.length === 0;
-  let sl = false;
+  let semlayer = false;
   let moves = false;
   let detached = background;
   for (const c of commands) {
     if (c.writes.some((w) => w.dynamic)) trusted = false;
     let k = 0;
-    for (; k < c.words.length && ASSIGNMENT.test(c.words[k]!.word); k++) if (!SL_VARIABLE.test(c.words[k]!.word) || c.words[k]!.dynamic) trusted = false;
+    for (; k < c.words.length && ASSIGNMENT.test(c.words[k]!.word); k++) if (!SEMLAYER_VARIABLE.test(c.words[k]!.word) || c.words[k]!.dynamic) trusted = false;
     const first = c.words[k];
     if (!first) continue;
     const args = c.words.slice(k + 1);
     if (!first.dynamic && first.word === "cd") {
       if (!follow(args, dirs)) trusted = false;
-    } else if (isSl(first, args, dirs)) sl = true;
+    } else if (isSl(first, args, dirs)) semlayer = true;
     else if (!first.dynamic && first.word === "git") {
       const sub = gitSubcommand(args);
       if (sub !== undefined && GIT_MOVES.has(sub)) moves = true;
@@ -439,8 +439,8 @@ function classify(command: string, cwd: string): Call {
       if (/^(nohup|setsid|disown)$/.test(basename(first.word))) detached = true;
     }
   }
-  const ran = { sl: sl || NAMES_SL.test(command), git: moves };
-  return { kind: trusted && sl ? "sl" : trusted && moves ? "git" : "other", background: detached, dirs, ran };
+  const ran = { semlayer: semlayer || NAMES_SEMLAYER.test(command), git: moves };
+  return { kind: trusted && semlayer ? "semlayer" : trusted && moves ? "git" : "other", background: detached, dirs, ran };
 }
 
 // --- Semantic roots ----------------------------------------------------------------------------
@@ -523,12 +523,12 @@ function openState(dir: string): void {
 
 // One entry of the state directory, named by its file name alone:
 //   <started>-<stream>-<key>.snap   a directory: the copies of one call, and meta.json
-//   <started>-<stream>-<key>.sl     sl or git is running (a marker, empty)
-//   <started>-<ended>-<key>.done    sl or git ran from started to ended
+//   <started>-<stream>-<key>.semlayer     semlayer or git is running (a marker, empty)
+//   <started>-<ended>-<key>.done    semlayer or git ran from started to ended
 // `stream` names the agent that made the call: one agent's calls that write run one after another.
 interface Entry {
   name: string;
-  kind: "snap" | "sl" | "done";
+  kind: "snap" | "semlayer" | "done";
   started: number;
   ended?: number;
   stream?: string;
@@ -544,11 +544,11 @@ function entries(dir: string, now: number): Entry[] {
   }
   const out: Entry[] = [];
   for (const name of names) {
-    const live = /^(\d+)-([0-9a-f]{12})-([0-9a-f]{32})\.(snap|sl)$/.exec(name);
+    const live = /^(\d+)-([0-9a-f]{12})-([0-9a-f]{32})\.(snap|semlayer)$/.exec(name);
     const done = /^(\d+)-(\d+)-([0-9a-f]{32})\.done$/.exec(name);
     // A copy being made or settled by a hook call that died is removed.
     const part = /^\.(?:new|claim)-(\d+)-/.exec(name);
-    if (live) out.push({ name, kind: live[4] as "snap" | "sl", started: Number(live[1]), stream: live[2]!, key: live[3]! });
+    if (live) out.push({ name, kind: live[4] as "snap" | "semlayer", started: Number(live[1]), stream: live[2]!, key: live[3]! });
     else if (done) out.push({ name, kind: "done", started: Number(done[1]), ended: Number(done[2]), key: done[3]! });
     else if (part && now - Number(part[1]) > STALE_MS) rmSync(join(dir, name), { recursive: true, force: true });
   }
@@ -572,7 +572,7 @@ type Kind = "file" | "other" | "none";
 interface RootCopy {
   root: string;
   ledger: Kind;
-  // The files of .sl/pending/ (null: no such directory) and its entries that are not files.
+  // The files of .semlayer/pending/ (null: no such directory) and its entries that are not files.
   pending: string[] | null;
   other: string[];
 }
@@ -587,7 +587,7 @@ interface Meta {
 interface Diff {
   at: number;
   root: string;
-  // .sl/ledger.jsonl or .sl/pending/<file>
+  // .semlayer/ledger.jsonl or .semlayer/pending/<file>
   rel: string;
   // "linked": the same bytes under a second name (a hard link), through which a later command
   // could write the file without naming it.
@@ -604,7 +604,7 @@ function kindOf(p: string): Kind {
 
 function pendingNames(root: string): string[] | null {
   try {
-    return readdirSync(join(root, ".sl", "pending")).sort();
+    return readdirSync(join(root, ".semlayer", "pending")).sort();
   } catch {
     return null;
   }
@@ -612,15 +612,15 @@ function pendingNames(root: string): string[] | null {
 
 function copyRoot(root: string, into: string): RootCopy {
   mkdirSync(join(into, "pending"), { recursive: true });
-  const ledger = kindOf(join(root, ".sl", "ledger.jsonl"));
-  if (ledger === "file") copyFileSync(join(root, ".sl", "ledger.jsonl"), join(into, "ledger.jsonl"));
+  const ledger = kindOf(join(root, ".semlayer", "ledger.jsonl"));
+  if (ledger === "file") copyFileSync(join(root, ".semlayer", "ledger.jsonl"), join(into, "ledger.jsonl"));
   const names = pendingNames(root);
   const pending: string[] = [];
   const other: string[] = [];
   for (const n of names ?? []) {
-    if (kindOf(join(root, ".sl", "pending", n)) !== "file") other.push(n);
+    if (kindOf(join(root, ".semlayer", "pending", n)) !== "file") other.push(n);
     else {
-      copyFileSync(join(root, ".sl", "pending", n), join(into, "pending", n));
+      copyFileSync(join(root, ".semlayer", "pending", n), join(into, "pending", n));
       pending.push(n);
     }
   }
@@ -639,20 +639,20 @@ function differences(meta: Meta, from: string): Diff[] {
     const diff = (rel: string, was: Kind) => {
       const file = join(r.root, rel);
       const now = kindOf(file);
-      const same = () => (sameBytes(file, join(copy, rel.slice(".sl/".length))) ? (statSync(file).nlink > 1 ? "linked" : undefined) : "changed");
+      const same = () => (sameBytes(file, join(copy, rel.slice(".semlayer/".length))) ? (statSync(file).nlink > 1 ? "linked" : undefined) : "changed");
       const what = was === "none" ? (now === "none" ? undefined : "added") : now === "none" ? "deleted" : now === "other" ? "changed" : same();
       if (what) out.push({ at, root: r.root, rel, what });
     };
-    if (r.ledger !== "other") diff(".sl/ledger.jsonl", r.ledger);
-    for (const n of r.pending ?? []) diff(`.sl/pending/${n}`, "file");
-    for (const n of pendingNames(r.root) ?? []) if (!r.pending?.includes(n) && !r.other.includes(n)) diff(`.sl/pending/${n}`, "none");
+    if (r.ledger !== "other") diff(".semlayer/ledger.jsonl", r.ledger);
+    for (const n of r.pending ?? []) diff(`.semlayer/pending/${n}`, "file");
+    for (const n of pendingNames(r.root) ?? []) if (!r.pending?.includes(n) && !r.other.includes(n)) diff(`.semlayer/pending/${n}`, "none");
   });
   return out;
 }
 
 // Puts one file back as it was copied, or removes one that was added. The file put back is a new
 // one, so a second name the old one was given no longer leads to it. It writes only under the
-// root's .sl directory, and not through a link that leads out of the root.
+// root's .semlayer directory, and not through a link that leads out of the root.
 function putBack(d: Diff, from: string): void {
   const target = join(d.root, d.rel);
   const root = realPath(d.root);
@@ -661,25 +661,25 @@ function putBack(d: Diff, from: string): void {
   if (d.what === "added") return rmSync(target, { recursive: true, force: true });
   mkdirSync(dirname(target), { recursive: true });
   const part = `${target}.restore-${process.pid}`;
-  copyFileSync(join(from, String(d.at), d.rel.slice(".sl/".length)), part);
+  copyFileSync(join(from, String(d.at), d.rel.slice(".semlayer/".length)), part);
   if (kindOf(target) === "other") rmSync(target, { recursive: true, force: true });
   renameSync(part, target);
 }
 
-const UNDONE = "semantic-layer: A command changed the answer ledger outside sl, and the change was undone. An owner's answer is recorded only with sl reply, after the owner answers.";
+const UNDONE = "semantic-layer: A command changed the answer ledger outside semlayer, and the change was undone. An owner's answer is recorded only with semlayer reply, after the owner answers.";
 const LEFT =
-  "semantic-layer: The answer ledger changed while sl or git ran at the same time as another command, so the change could not be attributed and was left as it is. " +
-  "Run sl validate, and record an owner's answer only with sl reply, after the owner answers.";
-const ON_ITS_OWN = "on its own, with its path written out (bun <skill dir>/scripts/sl.ts <command>) and joined to no other program";
+  "semantic-layer: The answer ledger changed while semlayer or git ran at the same time as another command, so the change could not be attributed and was left as it is. " +
+  "Run semlayer validate, and record an owner's answer only with semlayer reply, after the owner answers.";
+const ON_ITS_OWN = "on its own, with its path written out (bun <skill dir>/scripts/semlayer.ts <command>) and joined to no other program";
 // What follows the list of files, by what the call ran besides the program that may have forged the change.
-const RAN_SL =
-  "- This call also ran sl, whose writes cannot be told from the other program's: what sl wrote to the ledger was removed with the rest, and a layer file it edited was not put back. " +
-  `Run the sl command again ${ON_ITS_OWN}, then sl validate. sl reply, sl question resolve and sl review apply record an owner's answer; ` +
-  "if an open question was resolved, it is now gone from its file without its answer, so add it again first with sl question add.";
+const RAN_SEMLAYER =
+  "- This call also ran semlayer, whose writes cannot be told from the other program's: what semlayer wrote to the ledger was removed with the rest, and a layer file it edited was not put back. " +
+  `Run the semlayer command again ${ON_ITS_OWN}, then semlayer validate. semlayer reply, semlayer question resolve and semlayer review apply record an owner's answer; ` +
+  "if an open question was resolved, it is now gone from its file without its answer, so add it again first with semlayer question add.";
 const RAN_GIT =
   "- This call also ran git. If its pull or merge brought ledger lines in, they were removed with the rest: get them back with git checkout -- <file> for each file listed above, " +
   "run in the semantic root on its own. Run it only after such a pull or merge, since it replaces the file with the committed one.";
-const ALONE = `- sl reply, sl question resolve and sl review apply record an owner's answer. If one of them made that change (run through a script or a variable), run it again ${ON_ITS_OWN}.`;
+const ALONE = `- semlayer reply, semlayer question resolve and semlayer review apply record an owner's answer. If one of them made that change (run through a script or a variable), run it again ${ON_ITS_OWN}.`;
 const EARLIER = "This was found before the current call";
 
 function listed(diffs: Diff[], word: (d: Diff) => string): string[] {
@@ -687,14 +687,14 @@ function listed(diffs: Diff[], word: (d: Diff) => string): string[] {
   return roots.map((root) => `- in ${root}: ${diffs.filter((d) => d.root === root).slice(0, 8).map((d) => `${d.rel} (${word(d)})`).join(", ")}`);
 }
 
-// Whether sl or git ran at any time since the call of `snap` started. A marker with no end from the
+// Whether semlayer or git ran at any time since the call of `snap` started. A marker with no end from the
 // same agent, started earlier, is a call that ended without its after-check; from another agent it
 // may still be running.
 function overlapped(all: Entry[], snap: Entry, now: number): boolean {
-  return all.some((m) => (m.kind === "done" ? m.ended! > snap.started : m.kind === "sl" && (m.started >= snap.started || (m.stream !== snap.stream && now - m.started < IN_FLIGHT_MS))));
+  return all.some((m) => (m.kind === "done" ? m.ended! > snap.started : m.kind === "semlayer" && (m.started >= snap.started || (m.stream !== snap.stream && now - m.started < IN_FLIGHT_MS))));
 }
 
-// Settles a copy that differs from the files: puts them back, or leaves them when sl or git ran
+// Settles a copy that differs from the files: puts them back, or leaves them when semlayer or git ran
 // meanwhile. Returns what to tell the agent, or undefined when another hook call took the copy.
 function settle(dir: string, snap: Entry, diffs: Diff[], all: Entry[], now: number, ran: Ran | undefined): string | undefined {
   const claimed = join(dir, `.claim-${now}-${process.pid}-${snap.name}`);
@@ -710,11 +710,11 @@ function settle(dir: string, snap: Entry, diffs: Diff[], all: Entry[], now: numb
       try {
         putBack(d, claimed);
       } catch (e) {
-        failed.push(`- could not put back ${d.rel} in ${d.root} (${(e as Error).message}). Restore it from version control (git checkout -- ${d.rel}), then run sl validate.`);
+        failed.push(`- could not put back ${d.rel} in ${d.root} (${(e as Error).message}). Restore it from version control (git checkout -- ${d.rel}), then run semlayer validate.`);
       }
     }
     const done = (d: Diff) => (d.what === "added" ? "added, now removed" : d.what === "linked" ? "given a second name, now a file of its own again" : `${d.what}, now restored`);
-    const advice = [...(ran?.sl ? [RAN_SL] : []), ...(ran?.git ? [RAN_GIT] : [])];
+    const advice = [...(ran?.semlayer ? [RAN_SEMLAYER] : []), ...(ran?.git ? [RAN_GIT] : [])];
     return [UNDONE, ...listed(diffs, done), ...failed, ...(advice.length ? advice : [ALONE])].join("\n");
   } finally {
     rmSync(claimed, { recursive: true, force: true });
@@ -754,8 +754,8 @@ function sweep(dir: string, now: number, stream: string): string[] {
           const report = settle(dir, e, diffs, all, now, meta.ran);
           if (report) reports.push(report);
         } else if (e.stream === stream || now - e.started > IN_FLIGHT_MS) rmSync(path, { recursive: true, force: true });
-      } else if (e.kind === "sl") {
-        // The same agent's earlier sl call is over; when it ended is not known, so it counts up to now.
+      } else if (e.kind === "semlayer") {
+        // The same agent's earlier semlayer call is over; when it ended is not known, so it counts up to now.
         if (e.stream === stream) renameSync(path, join(dir, `${e.started}-${now}-${e.key}.done`));
         else if (now - e.started > IN_FLIGHT_MS) rmSync(path, { force: true });
       }
@@ -767,17 +767,17 @@ function sweep(dir: string, now: number, stream: string): string[] {
   return reports;
 }
 
-// Records the call that is about to run: a marker for sl and git, copies for any other Bash call.
+// Records the call that is about to run: a marker for semlayer and git, copies for any other Bash call.
 function record(input: Obj, dir: string, now: number, stream: string, env: Env): void {
   const tool = String(input.tool_name);
   const args = input.tool_input;
   const key = keyOf(input);
   const mark = () => {
     openState(dir);
-    writeFileSync(join(dir, `${now}-${stream}-${key}.sl`), "");
+    writeFileSync(join(dir, `${now}-${stream}-${key}.semlayer`), "");
   };
-  // One of the MCP server's tools runs sl.
-  if (/^mcp__.*__sl_[a-z0-9_]+$/.test(tool)) return mark();
+  // One of the MCP server's tools runs semlayer.
+  if (/^mcp__.*__semlayer_[a-z0-9_]+$/.test(tool)) return mark();
   if (tool !== "Bash" || !isObject(args) || typeof args.command !== "string") return;
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
   const call = classify(args.command, cwd);
@@ -825,7 +825,7 @@ export function runBefore(stdin: string, note = true, opts: Options = {}): Outco
   }
 }
 
-// The after half, for a PostToolUse or PostToolUseFailure call: an sl or git marker gets its end,
+// The after half, for a PostToolUse or PostToolUseFailure call: a semlayer or git marker gets its end,
 // and a copy is compared with the files.
 export function runAfter(stdin: string, opts: Options = {}): Outcome {
   try {
@@ -837,7 +837,7 @@ export function runAfter(stdin: string, opts: Options = {}): Outcome {
     const all = entries(dir, now);
     const mine = all.find((e) => e.key === key && e.kind !== "done");
     let message: string | undefined;
-    if (mine?.kind === "sl") renameSync(join(dir, mine.name), join(dir, `${mine.started}-${now}-${key}.done`));
+    if (mine?.kind === "semlayer") renameSync(join(dir, mine.name), join(dir, `${mine.started}-${now}-${key}.done`));
     else if (mine) {
       const meta = readMeta(dir, mine);
       const diffs = differences(meta, join(dir, mine.name));

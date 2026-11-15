@@ -74,7 +74,7 @@ function resolveTableRefs(snapshot: Snapshot, refs: string[], sourceName: string
   if (unknown.length) {
     throw new UserError(
       `No table matches ${unknown.map((n) => `"${n}"`).join(", ")} in the ${sourceName} snapshot. ` +
-        `Run \`sl tables --source ${sourceName} --all\` for the names.`,
+        `Run \`semlayer tables --source ${sourceName} --all\` for the names.`,
     );
   }
   return picked;
@@ -84,7 +84,7 @@ function resolveTableRefs(snapshot: Snapshot, refs: string[], sourceName: string
 // draft tags pii or sensitive, and a column it leaves out into ignored_columns, whose sample values
 // a profile taken before the draft still holds. `tables` are the models' tables as written in them.
 // Returns the columns whose profile changed, as table.column, so a draft after a profile needs no
-// sl profile --redact.
+// semlayer profile --redact.
 function redactDrafted(ctx: CommandContext, source: SourceConfig, snapshot: Snapshot, tables: string[]): string[] {
   const only = new Set(tables.flatMap((ref) => ((t) => (t ? [qualifiedName(t)] : []))(findTable(snapshot.tables, ref))));
   if (!only.size) return [];
@@ -146,7 +146,7 @@ function appendItems(doc: Document, key: string, items: unknown[], before: strin
   doc.set(key, doc.createNode(items));
 }
 
-// sl draft --new-columns: drafts the columns no existing model on an in-scope table reads, into the
+// semlayer draft --new-columns: drafts the columns no existing model on an in-scope table reads, into the
 // table's model that reads the most of its columns.
 function draftNewColumnsCommand(
   ctx: CommandContext,
@@ -215,14 +215,14 @@ function draftNewColumnsCommand(
     lines.push(`  ${u.model} (${u.table}, ${relative(ctx.cwd, u.path) || u.path}): ${parts.join("; ")}`);
   }
   if (redacted.length) lines.push(redactedLine(redacted));
-  // A join to a table with no model fails sl validate and sl check-join until that table is drafted.
+  // A join to a table with no model fails semlayer validate and semlayer check-join until that table is drafted.
   const draftFirst = [...new Set(updated.flatMap((u) => u.unmodeled.map((x) => x.table)))];
   lines.push(
     "",
     "Each new field is a draft with an open question, and the model's own status is unchanged. " +
       `Next: read each new item back to the owner, ${
-        draftFirst.length ? `draft ${listPhrase(draftFirst)} first (\`sl draft --source ${sourceName} --tables ${draftFirst.join(",")}\`), ` : ""
-      }${updated.some((u) => u.joins.length) ? "run `sl check-join` on each new join, " : ""}then run \`sl validate\`.`,
+        draftFirst.length ? `draft ${listPhrase(draftFirst)} first (\`semlayer draft --source ${sourceName} --tables ${draftFirst.join(",")}\`), ` : ""
+      }${updated.some((u) => u.joins.length) ? "run `semlayer check-join` on each new join, " : ""}then run \`semlayer validate\`.`,
   );
   ctx.out(lines.join("\n"));
   return 0;
@@ -290,7 +290,7 @@ const spec: CommandSpec = {
         else if (!inScope(scope, t))
           skipped.push({
             table: qualifiedName(t),
-            reason: `out of scope; add it with \`sl scope --source ${sourceName} --tables ${qualifiedName(t)} --write\``,
+            reason: `out of scope; add it with \`semlayer scope --source ${sourceName} --tables ${qualifiedName(t)} --write\``,
           });
         else selected.push(t);
       }
@@ -303,8 +303,8 @@ const spec: CommandSpec = {
       if (selected.length > focus_threshold && !force) {
         throw new UserError(
           `${selected.length} in-scope tables in "${sourceName}" have no model, more than the focus threshold of ${focus_threshold}. ` +
-            `Focus first: \`sl tables --source ${sourceName} --groups\` shows table groups and suggested patterns, and ` +
-            `\`sl scope --source ${sourceName} --include <pattern> --write\` narrows the scope. ` +
+            `Focus first: \`semlayer tables --source ${sourceName} --groups\` shows table groups and suggested patterns, and ` +
+            `\`semlayer scope --source ${sourceName} --include <pattern> --write\` narrows the scope. ` +
             `Or name tables with --tables (globs such as fct_* work), or pass --force to draft all ${selected.length}.`,
         );
       }
@@ -377,7 +377,7 @@ const spec: CommandSpec = {
       lines.push(
         "",
         `Every item is a draft. Next: answer each model's open questions with the owner, ` +
-          `run \`sl check-join\` on each join, then \`sl validate\`.`,
+          `run \`semlayer check-join\` on each join, then \`semlayer validate\`.`,
       );
     }
     ctx.out(lines.join("\n"));

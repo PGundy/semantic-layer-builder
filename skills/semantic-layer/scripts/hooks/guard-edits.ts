@@ -4,17 +4,17 @@
 // semantic root (a directory holding semantic.yaml) it exits 2, with the reason and the command to
 // use on stderr, when the call would add, change or remove an approval field, change what an
 // approved item's content hash covers, change a confirmed golden's recorded rows, or write
-// .sl/ledger.jsonl or .sl/pending/ by hand. Before those checks, a call from one of the plugin's
+// .semlayer/ledger.jsonl or .semlayer/pending/ by hand. Before those checks, a call from one of the plugin's
 // role agents (spec: Agent roles) is held to what lib/roles.ts lets that role run and edit.
 // It also refuses a read or a search of the env file that holds a connection's secret (Read, Grep
 // and Bash), and it runs the before half of the answer ledger's before-and-after comparison (integrity.ts).
-// Anything else exits 0. The CLI's own checks (sl validate, sl approve) remain the guarantee; this
+// Anything else exits 0. The CLI's own checks (semlayer validate, semlayer approve) remain the guarantee; this
 // hook stops the edit before it is made.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type ApprovalEntry, carriesHash, itemApprovals, listApprovals } from "../lib/approval-hash.ts";
-import { applyFileRefusals, commandList, DENIED_FLAGS, roleOf, slRefusal, type Role } from "../lib/roles.ts";
+import { applyFileRefusals, commandList, DENIED_FLAGS, roleOf, semlayerRefusal, type Role } from "../lib/roles.ts";
 import { DIALECTS, type Dialect, type Model } from "../lib/types.ts";
 import { parseYamlText } from "../lib/yaml.ts";
 import { envFileRefusal, realPath, runBefore, semanticRoot } from "./integrity.ts";
@@ -32,17 +32,17 @@ export interface Verdict {
 type Obj = Record<string, unknown>;
 const isObject = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 
-// Keys only sl approve and sl goldens confirm write; status counts when it says approved.
+// Keys only semlayer approve and semlayer goldens confirm write; status counts when it says approved.
 const MARK_KEYS = ["approved_by", "approved_at", "approved_hash", "last_approved", "confirmed_by", "confirmed_at", "confirmed_as"];
 // Approval fields in text that does not parse, read loosely (flow style and quoted keys too).
 const STATUS_TEXT = /\bstatus["']?\s*:\s*["']?approved\b/;
 const MARK_TEXT = new RegExp(`\\b(?:${MARK_KEYS.join("|")})\\b|${STATUS_TEXT.source}`);
-const REPLY = 'sl reply --readback <id> --item <n> --text "<owner\'s words>" --verdict yes --by "<owner>"';
+const REPLY = 'semlayer reply --readback <id> --item <n> --text "<owner\'s words>" --verdict yes --by "<owner>"';
 const LEDGER =
-  "is written only by the CLI, so it records exactly what the owner heard and said: sl readback writes .sl/pending/, and sl reply, " +
-  `sl question resolve and sl review apply append to .sl/ledger.jsonl. Record an owner's answer with ${REPLY.replace("yes", "yes|no|change")}.`;
+  "is written only by the CLI, so it records exactly what the owner heard and said: semlayer readback writes .semlayer/pending/, and semlayer reply, " +
+  `semlayer question resolve and semlayer review apply append to .semlayer/ledger.jsonl. Record an owner's answer with ${REPLY.replace("yes", "yes|no|change")}.`;
 const MAX_LINES = 5;
-const TYPED = "sl set, sl tag, sl ignore-column, sl question add, sl add-field, sl remove-field, sl add-metric, sl remove-metric, sl add-join, sl remove-join or sl rename";
+const TYPED = "semlayer set, semlayer tag, semlayer ignore-column, semlayer question add, semlayer add-field, semlayer remove-field, semlayer add-metric, semlayer remove-metric, semlayer add-join, semlayer remove-join or semlayer rename";
 
 // A stable JSON text: object keys sorted.
 function canonical(v: unknown): string {
@@ -58,7 +58,7 @@ type Area = "ledger" | "layer" | "dir";
 function areaOf(root: string, abs: string): { area: Area; rel: string } | undefined {
   const rel = relative(root, abs).split(sep).join("/");
   if (rel.startsWith("../") || rel === ".." || isAbsolute(rel)) return undefined;
-  if (rel === ".sl" || rel === ".sl/ledger.jsonl" || rel === ".sl/pending" || rel.startsWith(".sl/pending/")) return { area: "ledger", rel };
+  if (rel === ".semlayer" || rel === ".semlayer/ledger.jsonl" || rel === ".semlayer/pending" || rel.startsWith(".semlayer/pending/")) return { area: "ledger", rel };
   if (rel === "" || rel === "models" || rel === "goldens") return { area: "dir", rel };
   if (rel === "metrics.yaml" || rel === "access.yaml") return { area: "layer", rel };
   if (/^(models|goldens)\//.test(rel)) {
@@ -162,8 +162,8 @@ function sourceModels(root: string, source: string): Map<string, Model> {
 }
 
 // The approval entries of a model file's parsed value, hashed with the source and model name as the
-// file writes them (as sl validate and sl approve hash them); `of` names the file for a value
-// without a model key. Lookups of the source's other models go by file name, as in sl validate.
+// file writes them (as semlayer validate and semlayer approve hash them); `of` names the file for a value
+// without a model key. Lookups of the source's other models go by file name, as in semlayer validate.
 function modelScope(root: string, k: { source: string; name: string }) {
   let siblings: Map<string, Model> | undefined;
   const others = () => (siblings ??= sourceModels(root, k.source));
@@ -262,45 +262,45 @@ function message(v: Violation): string {
     case "approval":
       if (g !== undefined)
         return (
-          `this edit changes the confirmation fields of ${v.ref} (${v.keys!.join(", ")}). Only sl goldens confirm writes them, on the owner's recorded yes: ` +
-          `sl readback --targets ${v.ref}, ${REPLY}, then sl goldens confirm --name ${g}.`
+          `this edit changes the confirmation fields of ${v.ref} (${v.keys!.join(", ")}). Only semlayer goldens confirm writes them, on the owner's recorded yes: ` +
+          `semlayer readback --targets ${v.ref}, ${REPLY}, then semlayer goldens confirm --name ${g}.`
         );
       return (
-        `this edit changes the approval fields of ${v.ref} (${v.keys!.join(", ")}). Only sl approve writes them, on the owner's recorded yes: ` +
-        `sl readback --targets ${v.ref}, ${REPLY}, then sl approve --target ${v.ref}. To make it a draft, run sl approve --target ${v.ref} --revoke.`
+        `this edit changes the approval fields of ${v.ref} (${v.keys!.join(", ")}). Only semlayer approve writes them, on the owner's recorded yes: ` +
+        `semlayer readback --targets ${v.ref}, ${REPLY}, then semlayer approve --target ${v.ref}. To make it a draft, run semlayer approve --target ${v.ref} --revoke.`
       );
     case "expected":
       return (
-        `${v.ref} is confirmed, and its expected rows and tolerance are what the owner said yes to. Only sl goldens confirm records them: ` +
-        `sl readback --targets ${v.ref} [--tolerance <t>], ${REPLY}, then sl goldens confirm --name ${g}.`
+        `${v.ref} is confirmed, and its expected rows and tolerance are what the owner said yes to. Only semlayer goldens confirm records them: ` +
+        `semlayer readback --targets ${v.ref} [--tolerance <t>], ${REPLY}, then semlayer goldens confirm --name ${g}.`
       );
     case "removed": {
       const head = `this edit removes or renames approved ${v.ref}.`;
-      const revoke = `make it a draft first with sl approve --target ${v.ref} --revoke`;
-      if (!v.ref.includes(":") && v.ref.split(".").length === 3) return `${head} Rename it with sl rename ${v.ref} <new_name> or remove it with sl remove-field ${v.ref}, or ${revoke}.`;
-      if (v.ref.startsWith("metric:")) return `${head} Rename it with sl rename ${v.ref} <new_name> or remove it with sl remove-metric ${v.ref.slice(7)} --force (on the owner's yes), or ${revoke}.`;
+      const revoke = `make it a draft first with semlayer approve --target ${v.ref} --revoke`;
+      if (!v.ref.includes(":") && v.ref.split(".").length === 3) return `${head} Rename it with semlayer rename ${v.ref} <new_name> or remove it with semlayer remove-field ${v.ref}, or ${revoke}.`;
+      if (v.ref.startsWith("metric:")) return `${head} Rename it with semlayer rename ${v.ref} <new_name> or remove it with semlayer remove-metric ${v.ref.slice(7)} --force (on the owner's yes), or ${revoke}.`;
       return `${head} To remove it, ${revoke} --recursive, then remove it.`;
     }
     case "renamed":
       return (
         `this edit changes the model or source key of ${v.ref}, which holds approved items, and an approval covers the model's source and name. ` +
-        `Rename a model with sl rename ${v.ref} <new_name>, which moves its file, renames every reference and sends the approved items back for re-approval; ` +
-        `otherwise make them drafts first with sl approve --target ${v.ref} --revoke --recursive and read them back (sl readback --targets ${v.ref}).`
+        `Rename a model with semlayer rename ${v.ref} <new_name>, which moves its file, renames every reference and sends the approved items back for re-approval; ` +
+        `otherwise make them drafts first with semlayer approve --target ${v.ref} --revoke --recursive and read them back (semlayer readback --targets ${v.ref}).`
       );
     case "via_join":
       return (
         `${v.ref} is approved and reads through a join this edit changes, so the edit changes what the owner approved. ` +
-        `Change the join with sl set <source.model.join> <key> <value>, which names every approved item to read back again, or revoke ${v.ref} first (sl approve --target ${v.ref} --revoke).`
+        `Change the join with semlayer set <source.model.join> <key> <value>, which names every approved item to read back again, or revoke ${v.ref} first (semlayer approve --target ${v.ref} --revoke).`
       );
     case "changed":
       if (v.ref === "access")
         return (
-          "access.yaml is approved, and this edit changes the rules the owner approved. Revoke it first (sl approve --target access --revoke; " +
-          "the approved version keeps applying where it is deployed), edit the draft, then read it back with sl readback --targets access."
+          "access.yaml is approved, and this edit changes the rules the owner approved. Revoke it first (semlayer approve --target access --revoke; " +
+          "the approved version keeps applying where it is deployed), edit the draft, then read it back with semlayer readback --targets access."
         );
       return (
         `${v.ref} is approved, and this edit changes what the owner approved. Use a typed edit (${TYPED}), which routes it back to the owner ` +
-        `for re-approval, or make it a draft first with sl approve --target ${v.ref} --revoke. Descriptions and open questions are outside the approval and may be edited directly.`
+        `for re-approval, or make it a draft first with semlayer approve --target ${v.ref} --revoke. Descriptions and open questions are outside the approval and may be edited directly.`
       );
   }
 }
@@ -428,7 +428,7 @@ function bashCall(input: Obj, cwd: string): Verdict {
   const seen = new Set<string>();
   for (const w of shellWrites(input.command, cwd)) {
     if (w.dynamic) {
-      if (/(^|\/)\.sl\/(ledger\.jsonl|pending)(\/|$)/.test(w.path) && !seen.has(w.path)) {
+      if (/(^|\/)\.semlayer\/(ledger\.jsonl|pending)(\/|$)/.test(w.path) && !seen.has(w.path)) {
         seen.add(w.path);
         lines.push(`- it may write ${w.path} (${w.how}), which names the answer ledger or a pending readback; that file ${LEDGER}`);
       }
@@ -448,7 +448,7 @@ function bashCall(input: Obj, cwd: string): Verdict {
       lines.push(
         g.area === "ledger"
           ? `- it writes ${where} in ${g.root} (${w.how}); ${g.rel} ${LEDGER}`
-          : `- it writes ${where} in ${g.root} (${w.how}). A shell write cannot be checked against approvals: change YAML with a typed edit (${TYPED}), or edit a draft with the Edit tool, which this hook checks. Approvals come only from sl approve and sl goldens confirm on the owner's recorded yes.`,
+          : `- it writes ${where} in ${g.root} (${w.how}). A shell write cannot be checked against approvals: change YAML with a typed edit (${TYPED}), or edit a draft with the Edit tool, which this hook checks. Approvals come only from semlayer approve and semlayer goldens confirm on the owner's recorded yes.`,
       );
     }
   }
@@ -457,8 +457,8 @@ function bashCall(input: Obj, cwd: string): Verdict {
 
 // --- Role agents -----------------------------------------------------------------------------
 
-// The CLI entry this hook ships with: the only sl a role agent may run.
-const SL_ENTRY = join(import.meta.dir, "..", "sl.ts");
+// The CLI entry this hook ships with: the only semlayer a role agent may run.
+const SEMLAYER_ENTRY = join(import.meta.dir, "..", "semlayer.ts");
 const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 const SEPARATORS = new Set([";", ";;", "&&", "||", "|", "|&", "&", "(", ")"]);
 const OUTPUT_REDIRECTS = new Set([">", ">>", ">|", "&>", "&>>"]);
@@ -466,7 +466,7 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 type Word = { word: string; dynamic: boolean; pattern?: boolean };
 const isWord = (t: unknown): t is Word => isObject(t) && typeof t.word === "string";
 const expandHome = (p: string) => (p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
-// Command prefixes the interviewer's sl invocations are read through (env SL_NOW=x bun <sl.ts> ...).
+// Command prefixes the interviewer's semlayer invocations are read through (env SEMLAYER_NOW=x bun <semlayer.ts> ...).
 const PREFIXES = new Set(["env", "command", "exec", "nohup", "time", "nice"]);
 const isDenied = (w: string) => DENIED_FLAGS.some((f) => w === f || w.startsWith(`${f}=`));
 
@@ -478,21 +478,21 @@ function allWords(command: string, depth = 0): string[] {
 }
 
 // Why a role agent's shell command is refused: one line per problem, none when it may run it. For a
-// role whose shell is "sl_only" every simple command must be `bun [run] <the plugin's sl.ts> ...`
+// role whose shell is "semlayer_only" every simple command must be `bun [run] <the plugin's semlayer.ts> ...`
 // written out (no variable, no $(...), no unquoted pattern) or a `cd`; input comes only from a heredoc with a quoted
 // delimiter or a <<< string, and output goes nowhere but the terminal and /dev/null. For any role,
-// every sl invocation it can see must be one the role may run.
+// every semlayer invocation it can see must be one the role may run.
 function roleShell(role: Role, command: string, cwd: string): string[] {
-  const strict = role.shell === "sl_only";
+  const strict = role.shell === "semlayer_only";
   const subs: string[] = [];
   const toks = tokenize(command, subs);
   const out: string[] = [];
   const flag = allWords(command).find(isDenied);
   if (flag) out.push(`it passes ${flag.split("=")[0]}; protected values are for the owner to print by hand, so no agent passes it. Run the command without it.`);
   if (strict && subs.length) out.push("it runs a command inside $(...) or `...`, which the hook cannot check; write each value out.");
-  // Every directory a cd may have left the shell in: a relative sl path must name the entry from each.
+  // Every directory a cd may have left the shell in: a relative semlayer path must name the entry from each.
   const dirs = [cwd];
-  const entry = realPath(SL_ENTRY);
+  const entry = realPath(SEMLAYER_ENTRY);
   for (let i = 0; i < toks.length; i++) {
     const words: Word[] = [];
     for (; i < toks.length; i++) {
@@ -515,78 +515,78 @@ function roleShell(role: Role, command: string, cwd: string): string[] {
       if (op === "<<<" && to && !to.dynamic) continue;
       if ((op === ">&" || op === "<&") && to && /^(\d+-?|-)$/.test(to.word)) continue;
       if (OUTPUT_REDIRECTS.has(op) && to?.word === "/dev/null") continue;
-      out.push(`it uses the redirection ${op}${to ? ` ${to.word}` : ""}; a role agent writes no files and gives sl its input in a heredoc (<<'ROWS') or a <<< string.`);
+      out.push(`it uses the redirection ${op}${to ? ` ${to.word}` : ""}; a role agent writes no files and gives semlayer its input in a heredoc (<<'ROWS') or a <<< string.`);
     }
     if (!words.length) continue;
     let k = 0;
-    // The interviewer's command is read through assignments and prefixes; a role that runs only sl has neither.
+    // The interviewer's command is read through assignments and prefixes; a role that runs only semlayer has neither.
     while (!strict && k < words.length && (ASSIGNMENT.test(words[k]!.word) || PREFIXES.has(words[k]!.word) || (k > 0 && words[k - 1]!.word === "env" && words[k]!.word.startsWith("-"))))
       k++;
     const first = words[k];
     if (!first) continue;
     if (strict && ASSIGNMENT.test(first.word)) {
-      out.push(`it sets ${first.word.split("=")[0]} before the command; a role agent runs sl with no variables set.`);
+      out.push(`it sets ${first.word.split("=")[0]} before the command; a role agent runs semlayer with no variables set.`);
       continue;
     }
     if (first.word === "cd" && !first.dynamic) {
       const args = words.slice(k + 1);
       if (args.length > 1 || args.some((a) => a.dynamic || a.word.startsWith("-"))) {
-        if (strict) out.push("it runs a cd the hook cannot follow; give sl.ts its absolute path instead.");
+        if (strict) out.push("it runs a cd the hook cannot follow; give semlayer.ts its absolute path instead.");
       } else for (const d of [...dirs]) if (dirs.length < 8) dirs.push(resolve(d, expandHome(args[0]?.word ?? "~")));
       continue;
     }
     const bun = !first.dynamic && (first.word === "bun" || (isAbsolute(first.word) && realPath(first.word) === realPath(process.execPath)));
     const at = bun && words[k + 1]?.word === "run" ? k + 2 : k + 1;
     const path = words[at];
-    const sl =
+    const semlayer =
       bun &&
       path !== undefined &&
       !path.dynamic &&
       // To allow a strict role's call the path must name the entry from every directory; to check an
       // interviewer's call, naming it from any is enough.
       (isAbsolute(expandHome(path.word)) ? [expandHome(path.word)] : dirs.map((d) => resolve(d, path.word)))[strict ? "every" : "some"]((p) => realPath(p) === entry);
-    if (!sl) {
-      if (strict) out.push(`it runs ${first.dynamic ? "a command named by a variable" : basename(first.word)}${bun ? " on a file other than the plugin's sl.ts" : ""}, and the ${role.title.toLowerCase()} runs only sl.`);
+    if (!semlayer) {
+      if (strict) out.push(`it runs ${first.dynamic ? "a command named by a variable" : basename(first.word)}${bun ? " on a file other than the plugin's semlayer.ts" : ""}, and the ${role.title.toLowerCase()} runs only semlayer.`);
       continue;
     }
     const args = words.slice(at + 1);
     // The shell may turn a pattern into other words (--{show-protected,json}), so the hook cannot read it.
     if (words.some((w) => w.pattern)) {
-      out.push("it passes sl an unquoted *, ?, [ or {, which the shell may expand into other arguments; quote that argument.");
+      out.push("it passes semlayer an unquoted *, ?, [ or {, which the shell may expand into other arguments; quote that argument.");
       continue;
     }
-    // A variable or a command's output may hold any flag (--show-protected), so no role passes one to sl.
+    // A variable or a command's output may hold any flag (--show-protected), so no role passes one to semlayer.
     if (args.some((a) => a.dynamic)) {
-      out.push("it passes sl a variable or a command's output; write each value out.");
+      out.push("it passes semlayer a variable or a command's output; write each value out.");
       continue;
     }
-    const why = slRefusal(role, args.map((a) => a.word));
+    const why = semlayerRefusal(role, args.map((a) => a.word));
     if (why && !(flag && args.some((a) => isDenied(a.word)))) out.push(why);
     else if (!why && args[0]?.word === "apply") out.push(...applyRefusals(role, args.map((a) => a.word), dirs[dirs.length - 1]!));
   }
   return [...new Set(out)];
 }
 
-// For a role that runs only some commands: each entry of an sl apply file is held to them, as if run
+// For a role that runs only some commands: each entry of a semlayer apply file is held to them, as if run
 // on its own. Entries on stdin cannot be read here, so such a role passes --file <path>.
 function applyRefusals(role: Role, args: string[], cwd: string): string[] {
   if (role.commands === "every") return [];
   const at = args.findIndex((a) => a === "--file" || a.startsWith("--file="));
   const file = at < 0 ? undefined : args[at]!.startsWith("--file=") ? args[at]!.slice(7) : args[at + 1];
-  if (!file || file === "-") return [`it gives sl apply its entries on stdin, which the hook cannot check entry by entry; the ${role.title.toLowerCase()} passes --file <path>.`];
+  if (!file || file === "-") return [`it gives semlayer apply its entries on stdin, which the hook cannot check entry by entry; the ${role.title.toLowerCase()} passes --file <path>.`];
   let text: string;
   try {
     text = readFileSync(resolve(cwd, expandHome(file)), "utf8");
   } catch {
-    return [`it names an sl apply file the hook cannot read (${file}); the ${role.title.toLowerCase()} passes a file that exists.`];
+    return [`it names a semlayer apply file the hook cannot read (${file}); the ${role.title.toLowerCase()} passes a file that exists.`];
   }
   return applyFileRefusals(role, text);
 }
 
-const ROLE_TYPED = `Change it with a typed edit (${TYPED}, sl draft, or sl setup --view for a source's connection.views).`;
+const ROLE_TYPED = `Change it with a typed edit (${TYPED}, semlayer draft, or semlayer setup --view for a source's connection.views).`;
 
 // The files inside a semantic root a shell command plainly writes, for a role that edits only outside
-// one. Removing an abandoned plan under .sl/plans/ is the one shell write it makes there.
+// one. Removing an abandoned plan under .semlayer/plans/ is the one shell write it makes there.
 function layerShellWrites(command: string, cwd: string, who: string): string[] {
   const out: string[] = [];
   for (const w of shellWrites(command, cwd)) {
@@ -596,7 +596,7 @@ function layerShellWrites(command: string, cwd: string, who: string): string[] {
       const root = semanticRoot(dirname(real));
       if (!root) continue;
       const rel = relative(root, real);
-      if (/^(rm|unlink)$/.test(w.how) && rel.startsWith(join(".sl", "plans") + sep)) continue;
+      if (/^(rm|unlink)$/.test(w.how) && rel.startsWith(join(".semlayer", "plans") + sep)) continue;
       out.push(`it writes ${rel} in ${root} (${w.how}), and ${who} never edits the semantic layer by hand. ${ROLE_TYPED}`);
     }
   }
@@ -625,7 +625,7 @@ function roleCall(role: Role, tool: string, input: Obj, cwd: string): Verdict | 
   return refuse([
     `semantic-layer: refused this shell command for ${who}:`,
     ...problems.map((p) => `- ${p}`),
-    `It may run ${commandList(role)}, each as bun <skill dir>/scripts/sl.ts <command> with the path written out.`,
+    `It may run ${commandList(role)}, each as bun <skill dir>/scripts/semlayer.ts <command> with the path written out.`,
   ]);
 }
 
@@ -642,7 +642,7 @@ export function checkToolUse(stdin: string, fallbackCwd = process.cwd(), env: Re
   if (!isObject(input) || typeof input.tool_name !== "string" || !isObject(input.tool_input))
     return { allow: true, message: "semantic-layer hook: the hook input has no tool_name or tool_input; not checked." };
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : fallbackCwd;
-  // The env file a semantic root loads, or sl would load in a project that uses this plugin before
+  // The env file a semantic root loads, or semlayer would load in a project that uses this plugin before
   // its root exists, holds the connection secret: no agent reads it. A failure of
   // this check leaves the checks below to decide, and a call they allow carries its warning.
   let secret: string | undefined;
@@ -684,7 +684,7 @@ export function checkToolUse(stdin: string, fallbackCwd = process.cwd(), env: Re
 if (import.meta.main) {
   const stdin = await Bun.stdin.text();
   const verdict = checkToolUse(stdin);
-  // The answer ledger's comparison: an earlier change no sl command made is put back and reported,
+  // The answer ledger's comparison: an earlier change no semlayer command made is put back and reported,
   // which stops this call, and a call that is allowed is recorded for its after-check.
   const ledger = runBefore(stdin, verdict.allow);
   for (const m of [verdict.message, ledger.message]) if (m) process.stderr.write(`${m}\n`);

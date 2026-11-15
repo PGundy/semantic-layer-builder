@@ -1,6 +1,6 @@
 // One writer at a time under a semantic root, and whole-file writes (spec: Locking and whole-file writes).
 //
-// The lock is the file .sl/lock, created exclusively and holding the pid, command and start time of
+// The lock is the file .semlayer/lock, created exclusively and holding the pid, command and start time of
 // the command that writes. A command holds it while it reads, changes and writes; a second writer
 // waits, then fails naming the holder. A lock whose process is gone is taken over. Every write goes
 // to a temporary file beside its target and is renamed into place, so a reader, or a command that
@@ -9,9 +9,9 @@ import { closeSync, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readdi
 import { basename, dirname, join, sep } from "node:path";
 import { UserError } from "./errors.ts";
 
-export const LOCK_FILE = ".sl/lock";
+export const LOCK_FILE = ".semlayer/lock";
 export const DEFAULT_LOCK_WAIT_MS = 30_000;
-const TEMP_SUFFIX = ".sl-tmp";
+const TEMP_SUFFIX = ".semlayer-tmp";
 
 // Whole-file writes -----------------------------------------------------------------------------
 
@@ -102,7 +102,7 @@ function sweepTemps(dir: string, pid: number): void {
 
 export interface LockHolder {
   pid: number;
-  // The sl command that holds the lock, by name alone: its arguments can hold the owner's words.
+  // The semlayer command that holds the lock, by name alone: its arguments can hold the owner's words.
   command: string;
   // When it took the lock, an ISO timestamp from the command's clock.
   started: string;
@@ -112,7 +112,7 @@ interface Held {
   root: string;
   text: string;
   count: number;
-  // The .sl directory, when taking the lock created it: removed again if the command leaves it empty.
+  // The .semlayer directory, when taking the lock created it: removed again if the command leaves it empty.
   made?: string;
 }
 
@@ -122,16 +122,16 @@ const held = new Map<string, Held>();
 // Roots whose .gitignore is known to name the lock.
 const ignored = new Set<string>();
 
-// How long a writer waits for the lock: SL_LOCK_WAIT_MS, or 30 seconds.
+// How long a writer waits for the lock: SEMLAYER_LOCK_WAIT_MS, or 30 seconds.
 export function lockWaitMs(env: Record<string, string | undefined>): number {
-  const raw = env.SL_LOCK_WAIT_MS;
+  const raw = env.SEMLAYER_LOCK_WAIT_MS;
   if (raw === undefined || raw === "") return DEFAULT_LOCK_WAIT_MS;
   const ms = Number(raw);
-  if (!Number.isFinite(ms) || ms < 0) throw new UserError(`SL_LOCK_WAIT_MS is the number of milliseconds a command waits for another to finish writing, not ${JSON.stringify(raw)}. Unset it or set a number, then run the command again.`);
+  if (!Number.isFinite(ms) || ms < 0) throw new UserError(`SEMLAYER_LOCK_WAIT_MS is the number of milliseconds a command waits for another to finish writing, not ${JSON.stringify(raw)}. Unset it or set a number, then run the command again.`);
   return ms;
 }
 
-// The directory that holds the lock: the root's .sl, created when missing (`made`). Null when .sl
+// The directory that holds the lock: the root's .semlayer, created when missing (`made`). Null when .semlayer
 // is not a directory inside the root (a link that leads outside it or to nothing, a file): no lock
 // is taken there, since nothing is written outside the semantic root, and the command's own checks
 // refuse it.
@@ -219,8 +219,8 @@ function clearStale(root: string, path: string): boolean {
 }
 
 function busy(path: string, holder: LockHolder | null, waitMs: number): UserError {
-  const who = holder ? `sl ${holder.command} (process ${holder.pid}${holder.started ? `, started ${holder.started}` : ""})` : "another sl command";
-  const stuck = holder ? `if process ${holder.pid} is no longer an sl command` : "if no sl command is running";
+  const who = holder ? `semlayer ${holder.command} (process ${holder.pid}${holder.started ? `, started ${holder.started}` : ""})` : "another semlayer command";
+  const stuck = holder ? `if process ${holder.pid} is no longer a semlayer command` : "if no semlayer command is running";
   return new UserError(
     `${who} is writing to this semantic layer and still held ${path} after ${waitMs} ms, so nothing was written. ` +
       `Run this command again once it has finished; ${stuck}, remove ${path} first.`,
@@ -259,10 +259,10 @@ function release(path: string): void {
   held.delete(path);
   try {
     if (readFileSync(path, "utf8") === h.text) unlinkSync(path);
-    // A command that failed before it wrote anything leaves no empty .sl behind.
+    // A command that failed before it wrote anything leaves no empty .semlayer behind.
     if (h.made) rmdirSync(h.made);
   } catch {
-    // gone already, or .sl holds the command's files
+    // gone already, or .semlayer holds the command's files
   }
   if (!held.size) for (const s of SIGNALS) process.off(s, onSignal);
 }
@@ -288,7 +288,7 @@ export async function acquireLock(root: string, who: { command: string; started:
       fd = openSync(path, "wx");
     } catch (e) {
       const code = (e as { code?: string }).code;
-      // Another command removed the .sl it had made and left empty: make it again.
+      // Another command removed the .semlayer it had made and left empty: make it again.
       if (code === "ENOENT" && lockDir(root)) {
         made = true;
         continue;
@@ -331,7 +331,7 @@ export async function acquireLock(root: string, who: { command: string; started:
 export const LOCK_IGNORE = [LOCK_FILE, `${LOCK_FILE}.takeover`, `*${TEMP_SUFFIX}`];
 
 // Adds the LOCK_IGNORE lines the root's .gitignore lacks, creating the file when the root has none:
-// sl init calls it, and a root made before gets them when its first locked command ends. A
+// semlayer init calls it, and a root made before gets them when its first locked command ends. A
 // .gitignore that is a link, or cannot be written, is left alone.
 export function ignoreLock(root: string): void {
   const file = join(root, ".gitignore");

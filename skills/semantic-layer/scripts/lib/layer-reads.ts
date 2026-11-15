@@ -1,7 +1,7 @@
 // The columns of a model's table that other parts of the layer read, beyond the model's own fields,
 // keys and the joins to it: another model's field reading it through joins (<join>.<column>,
-// <join>.<join>.<column>), and a row filter of access.yaml on the model. sl validate warns when such
-// a column is in ignored_columns, and sl status and sl draft --new-columns leave it alone.
+// <join>.<join>.<column>), and a row filter of access.yaml on the model. semlayer validate warns when such
+// a column is in ignored_columns, and semlayer status and semlayer draft --new-columns leave it alone.
 import { columnRefs } from "./compiler/qualify.ts";
 import { loadAccess } from "./project.ts";
 import type { Join, Model } from "./types.ts";
@@ -83,7 +83,7 @@ export function sourceRowFilters(access: unknown, source: string): { model: stri
   return out;
 }
 
-// sourceRowFilters of the project's access.yaml; none when it is missing or cannot be read (sl validate reports that).
+// sourceRowFilters of the project's access.yaml; none when it is missing or cannot be read (semlayer validate reports that).
 export function accessRowFilters(root: string, source: string): { model: string; text: string; role: string }[] {
   try {
     return sourceRowFilters(loadAccess(root), source);

@@ -1,7 +1,7 @@
 // Canonical plain-English readbacks of approve targets, and the pending store that keeps them.
-// sl readback renders each target from the YAML (its definition, who sees it under the current
+// semlayer readback renders each target from the YAML (its definition, who sees it under the current
 // access.yaml, and the facts measured from the data) and stores the numbered items with the content
-// hash sl approve would record, in .sl/pending/<readback_id>.json under the semantic root.
+// hash semlayer approve would record, in .semlayer/pending/<readback_id>.json under the semantic root.
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type AccessLayer, type AccessVisibility, evaluateLayer, loadAccessLayer } from "./access.ts";
@@ -21,8 +21,8 @@ import { DIALECTS, NAME_PATTERN, PROTECTED_TAGS } from "./types.ts";
 import { conditionWords, parseCondition } from "./conditions.ts";
 import { readYamlIfExists } from "./yaml.ts";
 
-export const PENDING_DIR = join(".sl", "pending");
-// A readback's file, or the marker sl readback --discard leaves in its place so its id is never issued again.
+export const PENDING_DIR = join(".semlayer", "pending");
+// A readback's file, or the marker semlayer readback --discard leaves in its place so its id is never issued again.
 const ID_FILE = /^rb_(\d{4,})\.(json|discarded)$/;
 export const DISCARDED = ".discarded";
 const MEASURED = "Measured from the data, no need to confirm:";
@@ -66,7 +66,7 @@ export function nextReadbackId(root: string): string {
   return `rb_${String(max + 1).padStart(4, "0")}`;
 }
 
-// Writes a readback to .sl/pending/<readback_id>.json, never over an existing file; returns its
+// Writes a readback to .semlayer/pending/<readback_id>.json, never over an existing file; returns its
 // path relative to the semantic root.
 export function writePending(root: string, pending: PendingReadback): string {
   const rel = join(PENDING_DIR, `${pending.readback_id}.json`);
@@ -75,7 +75,7 @@ export function writePending(root: string, pending: PendingReadback): string {
     writeFileAtomic(join(root, rel), `${JSON.stringify(pending, null, 2)}\n`, { exclusive: true });
   } catch (e) {
     if ((e as { code?: string }).code !== "EEXIST") throw e;
-    throw new UserError(`${rel} was written by another run just now; run sl readback again for the next free id.`);
+    throw new UserError(`${rel} was written by another run just now; run semlayer readback again for the next free id.`);
   }
   return rel.split("\\").join("/");
 }
@@ -267,7 +267,7 @@ function tableOf(info: SourceInfo, model: Model | undefined): SnapshotTable | un
   return model && info.snapshot ? findTable(info.snapshot.tables, model.table) : undefined;
 }
 
-// The words a readback item gives a protected column, which sl readback looks for to add its note.
+// The words a readback item gives a protected column, which semlayer readback looks for to add its note.
 export const PROTECTED_FACT = "protected, so counts only and no values";
 
 // Counts for one column; values (top values, a text min or max) only for a column that is not
@@ -294,18 +294,18 @@ function columnFacts(info: SourceInfo, table: SnapshotTable, name: string, label
 function tableFacts(info: SourceInfo, table: SnapshotTable): string {
   const rows = typeof table.row_count === "number" ? `${num(table.row_count)} rows` : "an unknown number of rows";
   const when = table.profiled_at ? `profiled ${flat(table.profiled_at).slice(0, 10)}` : "not profiled yet";
-  const how = info.snapshot?.method === "live" ? "" : `; the snapshot came from an import (${flat(info.snapshot?.method)}), so sl profile needs a connection`;
+  const how = info.snapshot?.method === "live" ? "" : `; the snapshot came from an import (${flat(info.snapshot?.method)}), so semlayer profile needs a connection`;
   return `- ${qualifiedName(table)} has ${rows} (${when}${how}).`;
 }
 
 function noFacts(source: string, why: string): string[] {
-  return [MEASURED, `- Nothing measured yet: ${why} (sl introspect --source ${source}, then sl profile --source ${source}).`];
+  return [MEASURED, `- Nothing measured yet: ${why} (semlayer introspect --source ${source}, then semlayer profile --source ${source}).`];
 }
 
 // Who sees it -----------------------------------------------------------------------------------
 
 // The last line of a who-sees block: it states and does not ask, since who sees what is decided
-// once, in the access phase (a change to it is recorded with sl reply --about access).
+// once, in the access phase (a change to it is recorded with semlayer reply --about access).
 export const WHO_SEES_STATED = "- Stated, not asked: who sees what is decided once, in the access step, and a change to it does not hold this approval.";
 
 const REASONS: [RegExp, (m: RegExpExecArray) => string][] = [
@@ -346,7 +346,7 @@ interface Audience {
   vis: AccessVisibility;
 }
 
-// The default audience and each role of access.yaml, evaluated once per sl readback, and the state
+// The default audience and each role of access.yaml, evaluated once per semlayer readback, and the state
 // of access.yaml as it stands, hashes compared.
 type Audiences = () => { layer: AccessLayer; list: Audience[]; access_file: AccessVisibility["access_file"] };
 
@@ -421,7 +421,7 @@ function technical(lines: string[]): string[] {
   return lines.length ? ["Technical definition (the SQL, for the record):", ...lines.map((l) => `  ${flat(l)}`)] : [];
 }
 
-// The grain is free text, and sl draft may have copied it from the table comment, so it is quoted.
+// The grain is free text, and semlayer draft may have copied it from the table comment, so it is quoted.
 function grainLines(model: Model, table: SnapshotTable | undefined): string[] {
   if (typeof model.grain !== "string" || !model.grain.trim()) return ["- One row is: not written yet."];
   const m = GRAIN_TEXT.exec(table?.description ?? "");
@@ -512,7 +512,7 @@ function renderField(ref: string, source: string, model: Model, e: ApprovalEntry
     const who = [`${source}.${model.model}`, `${source}.${j.to}`];
     const sql = technical([joinSql(model.model, j)]);
     const ev = j.evidence;
-    if (!ev) return { lines: [...out, MEASURED, `- No join evidence yet: run sl check-join --source ${source} --model ${model.model} --join ${j.name}.`, ...sql], who };
+    if (!ev) return { lines: [...out, MEASURED, `- No join evidence yet: run semlayer check-join --source ${source} --model ${model.model} --join ${j.name}.`, ...sql], who };
     const sameKeys = !ev.keys || JSON.stringify(ev.keys.map((k) => [k.from, k.to])) === JSON.stringify(objs<{ from: string; to: string }>(j.keys).map((k) => [k.from, k.to]));
     out.push(
       MEASURED,
@@ -520,13 +520,13 @@ function renderField(ref: string, source: string, model: Model, e: ApprovalEntry
       `- The key on ${j.to} is ${ev.right_key_unique ? "unique" : "not unique"}, and a row matches at most ${num(ev.max_fanout)} ${j.to} row(s)${ev.max_fanout > 1 ? ", so the join repeats rows" : ", so the join never repeats a row"}.`,
       `- The data suggests ${ev.suggested_relationship}; checked ${ev.checked_at}.`,
     );
-    if ((ev.to && ev.to !== j.to) || !sameKeys) out.push(`- This evidence measured another target or other keys; rerun sl check-join --source ${source} --model ${model.model} --join ${j.name}.`);
+    if ((ev.to && ev.to !== j.to) || !sameKeys) out.push(`- This evidence measured another target or other keys; rerun semlayer check-join --source ${source} --model ${model.model} --join ${j.name}.`);
     return { lines: [...out, ...sql], who };
   }
   const reads = joinReads(model, e.kind === "measure" ? [f.expr, f.filter] : [f.expr], info.lookup, info.dialect);
   const alone = { ...model, dimensions: e.kind === "dimension" ? [f] : [], measures: e.kind === "measure" ? [f] : [], primary_key: [], joins: objs<Join>(model.joins).map((j) => ({ ...j, keys: [] })) } as unknown as Model;
   const own = table ? referencedColumns(alone, table, info.dialect) : [];
-  // A field over one column may carry the description sl draft copied from that column's comment.
+  // A field over one column may carry the description semlayer draft copied from that column's comment.
   const comment = own.length === 1 ? table?.columns.find((c) => c.name === own[0])?.description : undefined;
   out.push(...description(f, comment, `${model.table}.${own[0]}`));
   const sql: string[] = [];
@@ -658,7 +658,7 @@ function renderAccess(aud: Audiences, access: Obj): Rendered {
   out.push(`- A user with no role sees ${none}.`);
   for (const [i, r] of (Array.isArray(access.roles) ? (access.roles as unknown[]) : []).entries()) {
     if (!isObj(r) || typeof r.name !== "string") {
-      out.push(`- Role at roles[${i}]: cannot be read, so nobody holds it (sl validate says why).`);
+      out.push(`- Role at roles[${i}]: cannot be read, so nobody holds it (semlayer validate says why).`);
       continue;
     }
     const held = typeof r.assign_when === "string" ? `held when ${condition(r.assign_when)}` : "held when assigned by name";
@@ -682,7 +682,7 @@ function renderAccess(aud: Audiences, access: Obj): Rendered {
   return { lines: out };
 }
 
-// A golden's rows as sl readback ran them, with the tolerance the readback states.
+// A golden's rows as semlayer readback ran them, with the tolerance the readback states.
 export interface GoldenRun {
   rows: ResultRows;
   tolerance: number;
@@ -694,7 +694,7 @@ export interface GoldenRun {
   // the request does not compile; and whether cross_check_sql ran too and gave the same rows.
   from_query?: "compiled" | "cross_check_sql";
   cross_checked?: boolean;
-  // The result columns of currency measures and metrics, shown to two decimals as sl goldens run and
+  // The result columns of currency measures and metrics, shown to two decimals as semlayer goldens run and
   // confirm print them; the rows, the hash and what confirm records keep the full figures.
   currency?: string[];
 }
@@ -733,7 +733,7 @@ function requestWords(g: Golden): string[] {
 function rowsFrom(g: Golden, run: GoldenRun): string {
   if (run.from_query === "compiled") return "Its request, compiled from the current YAML, returns now";
   if (run.from_query === "cross_check_sql")
-    return `Its request does not compile from the current YAML (sl goldens run --name ${g.name} says why); its cross_check_sql returns now`;
+    return `Its request does not compile from the current YAML (semlayer goldens run --name ${g.name} says why); its cross_check_sql returns now`;
   return "Its SQL returns now";
 }
 
@@ -761,10 +761,10 @@ function renderGolden(g: Golden, run: GoldenRun): string[] {
   if (run.cross_checked) out.push("- Its cross_check_sql gives the same rows.");
   if (run.masked.length) out.push(`- Protected columns shown as ${PROTECTED_VALUE}: ${run.masked.map(flat).join(", ")}.`);
   if (full.length)
-    out.push(`- Money is shown to two decimals; sl goldens confirm records and later runs compare the full figure: ${full.slice(0, 10).join(", ")}${full.length > 10 ? ` and ${full.length - 10} more` : ""}.`);
+    out.push(`- Money is shown to two decimals; semlayer goldens confirm records and later runs compare the full figure: ${full.slice(0, 10).join(", ")}${full.length > 10 ? ` and ${full.length - 10} more` : ""}.`);
   out.push(
     `- Tolerance: ${run.tolerance}${run.from === "default" ? " (the default; agree one with the owner and read it back with --tolerance <t>)" : ""}: ${rule}.`,
-    `- Say yes only when these rows match the figure the owner trusts; sl goldens confirm then records exactly them${full.length ? ", with the full figures above" : ""}.`,
+    `- Say yes only when these rows match the figure the owner trusts; semlayer goldens confirm then records exactly them${full.length ? ", with the full figures above" : ""}.`,
   );
   return out;
 }
@@ -784,7 +784,7 @@ function roundedFigures(run: GoldenRun): string[] {
 
 // The hash of a target that was read back with `stored`, as the target stands now, or null when it
 // no longer exists. A golden's hash covers the rows its request compiles to, which only a run gives:
-// while goldens/<name>.yaml exists the stored hash stands, and sl goldens confirm reruns the golden
+// while goldens/<name>.yaml exists the stored hash stands, and semlayer goldens confirm reruns the golden
 // and refuses a yes whose hash no longer matches.
 export function currentHash(root: string, target: string, stored: string): string | null {
   const golden = /^golden:([a-z][a-z0-9_]*)$/.exec(target)?.[1];
@@ -797,8 +797,8 @@ export function currentHash(root: string, target: string, stored: string): strin
   }
 }
 
-// Renders each target's readback with the content hash sl approve would record for it. A golden
-// target (golden:<name>) needs its rows in `goldens`, keyed by name: sl readback runs the golden first.
+// Renders each target's readback with the content hash semlayer approve would record for it. A golden
+// target (golden:<name>) needs its rows in `goldens`, keyed by name: semlayer readback runs the golden first.
 // A measure or metric shows its figure from `figures` (readbackFigures), which never changes the
 // hash. A who-sees block the same as an earlier item's is printed once and named by that item's
 // number. An unknown target is an error naming it, before anything is written.
@@ -813,7 +813,7 @@ export function renderReadbacks(
   let evaluated: ReturnType<Audiences> | undefined;
   const aud: Audiences = () => (evaluated ??= audiences(root));
   const unknown = (ref: string, why: string) =>
-    new UserError(`Unknown target "${ref}": ${why}. Run sl status to see the models, fields, metrics and goldens; targets are source.model, source.model.field, metric:<name>, golden:<name> or access.`);
+    new UserError(`Unknown target "${ref}": ${why}. Run semlayer status to see the models, fields, metrics and goldens; targets are source.model, source.model.field, metric:<name>, golden:<name> or access.`);
   const blocks = new Map<string, number>();
   return [...new Set(refs)].map((ref, index) => {
     const t = parseTarget(ref);
@@ -825,7 +825,7 @@ export function renderReadbacks(
         const g = existsSync(file) ? loadFile<Golden>(root, file, "golden") : null;
         if (!g) throw unknown(ref, `there is no goldens/${t.name}.yaml`);
         const run = goldens.get(t.name);
-        if (!run) throw new UserError(`${ref} is read back with the rows its request compiles to: run sl readback --targets ${ref}.`);
+        if (!run) throw new UserError(`${ref} is read back with the rows its request compiles to: run semlayer readback --targets ${ref}.`);
         const text = renderGolden(g, run).join("\n");
         return { target: ref, text, content_hash: goldenHash(g as unknown as Obj, run.rows, run.tolerance) };
       }
@@ -847,8 +847,8 @@ export function renderReadbacks(
         const model = existsSync(file) ? loadFile<Model>(root, file, "model") : null;
         if (!model) throw unknown(ref, `there is no model ${t.source}.${t.model}`);
         const i = info(t.source);
-        // The model as its file holds it, hashed the way sl approve hashes it; a field is found the way
-        // sl approve finds it (dimensions, then measures, then joins).
+        // The model as its file holds it, hashed the way semlayer approve hashes it; a field is found the way
+        // semlayer approve finds it (dimensions, then measures, then joins).
         const entries = itemApprovals(listApprovals({ models: [{ source: t.source, model, lookup: i.lookup, dialect: i.dialect }] }));
         const field = t.kind === "field" ? t.field : undefined;
         entry = field === undefined ? entries[0] : entries.find((e) => e.kind !== "model" && e.item.name === field);

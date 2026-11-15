@@ -1,5 +1,5 @@
 // Checking a rule (references/spec.md, Reference compiler, Checking a rule): whether a row-level
-// filter or a dimension expr can be written on a model as the compiler and sl validate read one,
+// filter or a dimension expr can be written on a model as the compiler and semlayer validate read one,
 // and the one read-only count query that measures how many rows it matches. It reads the rule the
 // way the compiler qualifies it (qualify.ts) and adds its joins through the compiler's join planner.
 import { createHash } from "node:crypto";
@@ -187,7 +187,7 @@ class Checker {
   }
 
   private viewHint(model: Model): string {
-    return `ask the owner for a view with one row per ${grainOf(model)} that holds what the rule needs, model it, and run sl check-rule on it`;
+    return `ask the owner for a view with one row per ${grainOf(model)} that holds what the rule needs, model it, and run semlayer check-rule on it`;
   }
 
   // The text as one SQL expression: balanced parentheses, no statement break, parameter or placeholder.
@@ -198,16 +198,16 @@ class Checker {
       guard = tokenize(text);
     } catch (e) {
       const open = /unterminated ([a-z -]+)/.exec((e as Error).message)?.[1] ?? "string or comment";
-      return this.fail("invalid_rule", `the ${this.what} has an unterminated ${open}, so it is not one SQL expression`, `Close the ${open} and run sl check-rule again.`);
+      return this.fail("invalid_rule", `the ${this.what} has an unterminated ${open}, so it is not one SQL expression`, `Close the ${open} and run semlayer check-rule again.`);
     }
     if (nestsComments(text, guard))
       return this.fail(
         "invalid_rule",
         `the ${this.what} has a block comment inside a block comment, which databases read differently`,
-        "Write each comment on its own, or as a -- comment, and run sl check-rule again.",
+        "Write each comment on its own, or as a -- comment, and run semlayer check-rule again.",
       );
     if (!balanced(text, guard, this.input.source.dialect))
-      return this.fail("invalid_rule", `the ${this.what} has unbalanced parentheses, so it is not one SQL expression`, "Balance its parentheses and run sl check-rule again.");
+      return this.fail("invalid_rule", `the ${this.what} has unbalanced parentheses, so it is not one SQL expression`, "Balance its parentheses and run semlayer check-rule again.");
     if (guard.some((t) => t.kind === "semicolon"))
       return this.fail("invalid_rule", `the ${this.what} holds a semicolon; a rule is one SQL expression, never a statement`, "Pass one expression without a semicolon.");
     if (guard.some((t) => t.kind === "param") || text.includes("{{"))
@@ -260,7 +260,7 @@ class Checker {
     this.fail(
       "aggregate",
       `the ${this.what} needs an aggregate (${fn === "window" ? "a window function" : `${fn}()`}) over ${onModel.model}; a rule is read row by row on ${this.model.model}`,
-      `Ask the owner for a view with one row per ${grain} and ${name}, model it with a join from ${this.model.model}, and run sl check-rule again with the rule over that join.`,
+      `Ask the owner for a view with one row per ${grain} and ${name}, model it with a join from ${this.model.model}, and run semlayer check-rule again with the rule over that join.`,
     );
   }
 
@@ -283,7 +283,7 @@ class Checker {
       return this.fail(
         "other_table",
         `${t.v}.${fn}() names a function by its schema; a rule calls functions by their bare names`,
-        `Write ${fn}(...) without ${t.v}., and run sl check-rule again.`,
+        `Write ${fn}(...) without ${t.v}., and run semlayer check-rule again.`,
       );
     }
     for (const r of columnRefs(text)) {
@@ -317,7 +317,7 @@ class Checker {
           : `"${first}" is not a column of ${table}, the table of model ${this.model.model}; ${closeNote(close)}`,
         dim && typeof dim.expr === "string"
           ? `${dim.name} is a dimension of ${this.model.model}, and a rule reads columns: write its expr, ${dim.expr}, in the rule.`
-          : `Write ${close.length ? `one of the closest names (${close.join(", ")})` : `a column of ${table}`}, or, if the column is new, run sl introspect --source ${this.input.source.source} and check the rule again.`,
+          : `Write ${close.length ? `one of the closest names (${close.join(", ")})` : `a column of ${table}`}, or, if the column is new, run semlayer introspect --source ${this.input.source.source} and check the rule again.`,
       );
     }
   }
@@ -331,14 +331,14 @@ class Checker {
         this.fail(
           "to_many_join",
           `${text} reads through join ${from.model}.${join.name}, which is ${join.relationship}: it would repeat rows of ${from.model}`,
-          `Add a many_to_one or one_to_one join from ${this.model.model} that reaches the column (sl check-join measures it), or ${this.viewHint(this.model)}.`,
+          `Add a many_to_one or one_to_one join from ${this.model.model} that reaches the column (semlayer check-join measures it), or ${this.viewHint(this.model)}.`,
         );
         return;
       }
       hops.push(join);
       const target = this.modelOf(join.to);
       if (!target) {
-        this.fail("invalid_layer", `join ${from.model}.${join.name} goes to ${join.to}, which is not a model of source ${this.input.source.source}`, "Run sl validate and fix what it reports, then run sl check-rule again.");
+        this.fail("invalid_layer", `join ${from.model}.${join.name} goes to ${join.to}, which is not a model of source ${this.input.source.source}`, "Run semlayer validate and fix what it reports, then run semlayer check-rule again.");
         return;
       }
       const isLast = k === parts.length - 1;
@@ -365,7 +365,7 @@ class Checker {
         this.fail(
           "unknown_column",
           `${text}: "${parts[k]}" is not a column of ${table}, the table of model ${target.model} that ${chain} reaches; ${closeNote(close)}`,
-          `Write ${chain}.<column> with ${close.length ? `one of ${close.join(", ")}` : `a column of ${table}`}, or, if the column is new, run sl introspect --source ${this.input.source.source} and check the rule again.`,
+          `Write ${chain}.<column> with ${close.length ? `one of ${close.join(", ")}` : `a column of ${table}`}, or, if the column is new, run semlayer introspect --source ${this.input.source.source} and check the rule again.`,
         );
       }
       return;
@@ -408,7 +408,7 @@ export function checkRule(input: RuleInput): RuleCheck {
         c.fail(
           code === "join_fans_out" ? "join_fans_out" : "invalid_layer",
           message,
-          next?.replace(/run sl sql again\.$/, "run sl check-rule again.") ?? "Run sl validate and fix what it reports, then run sl check-rule again.",
+          next?.replace(/run semlayer sql again\.$/, "run semlayer check-rule again.") ?? "Run semlayer validate and fix what it reports, then run semlayer check-rule again.",
         ),
     });
     const rule = plan.sql(text, plan.base, ref);
@@ -419,7 +419,7 @@ export function checkRule(input: RuleInput): RuleCheck {
         const root = input.root;
         assertReadOnly(sql, root ? { globAllowed: (p) => globInsideViews(root, source, p) } : {});
       } catch (e) {
-        c.fail("not_read_only", `the count query is not read-only (${(e as Error).message})`, "A rule is one read-only SQL expression; remove what the check names and run sl check-rule again.");
+        c.fail("not_read_only", `the count query is not read-only (${(e as Error).message})`, "A rule is one read-only SQL expression; remove what the check names and run semlayer check-rule again.");
       }
     }
   }

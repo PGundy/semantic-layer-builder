@@ -27,7 +27,7 @@ import { saveSnapshot } from "../../skills/semantic-layer/scripts/lib/project.ts
 import { diffSnapshots } from "../../skills/semantic-layer/scripts/lib/snapshot-diff.ts";
 import type { Scope, Snapshot, SnapshotColumn, SnapshotTable } from "../../skills/semantic-layer/scripts/lib/types.ts";
 import { parseYaml, writeYaml } from "../../skills/semantic-layer/scripts/lib/yaml.ts";
-import { duckdbSource, initProject, sl, tempRoot } from "../helpers.ts";
+import { duckdbSource, initProject, semlayer, tempRoot } from "../helpers.ts";
 
 type Named = { schema?: string | null; name: string };
 
@@ -308,8 +308,8 @@ describe("pattern matching fast paths", () => {
       });
       const csv = join(t.dir, "c.csv");
       writeFileSync(csv, "table_schema,table_name,column_name,data_type\ns,orders,id,int\ns,dim_x,id,int\n");
-      expect((await sl(t.root, ["import", "--source", "wh", "--file", csv])).code).toBe(0);
-      const r = await sl(t.root, ["scope", "--source", "wh", "--clear", "--include", "orders"]);
+      expect((await semlayer(t.root, ["import", "--source", "wh", "--file", csv])).code).toBe(0);
+      const r = await semlayer(t.root, ["scope", "--source", "wh", "--clear", "--include", "orders"]);
       expect(r.err).toBe("");
       expect(r.code).toBe(0);
       expect(r.out).toContain("Added (1): s.orders");

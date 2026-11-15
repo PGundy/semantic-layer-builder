@@ -1,6 +1,6 @@
-// FR-1.7: a catalog of 50,000 tables and 1,000,000 columns. Runs only with SL_PERF=1
+// FR-1.7: a catalog of 50,000 tables and 1,000,000 columns. Runs only with SEMLAYER_PERF=1
 // (`bun run perf`): it builds the synthetic catalog once per generator version, caches it under
-// the system temp directory (SL_PERF_CACHE overrides), and runs each command as its own process.
+// the system temp directory (SEMLAYER_PERF_CACHE overrides), and runs each command as its own process.
 // The live Postgres case also needs PG_URL; its 50,000 tables are created once in schemas named
 // for the generator version and kept for the next run.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -11,7 +11,7 @@ import { assertLocalPg, initProject, PG_URL, tempRoot } from "../helpers.ts";
 import { cachedCsv, cachedDuckDb, catalogTables, ensurePgCatalog, SCHEMAS } from "./catalog.ts";
 import { ok, report, tableListText, type Timed, timedSl } from "./harness.ts";
 
-const PERF = process.env.SL_PERF === "1";
+const PERF = process.env.SEMLAYER_PERF === "1";
 const TABLES = 50_000;
 // FR-1.7 budgets: import or introspect plus scope preview under 20 s, each process under 2 GB.
 const PREVIEW_BUDGET_MS = 20_000;
@@ -54,12 +54,12 @@ describe.skipIf(!PERF)("50,000 tables and 1,000,000 columns", () => {
   test(
     "import plus scope preview finish under 20 s and 2 GB",
     async () => {
-      const imported = ok(await timedSl(root, ["import", "--source", "wh", "--file", csv, "--json"]), "sl import");
+      const imported = ok(await timedSl(root, ["import", "--source", "wh", "--file", csv, "--json"]), "semlayer import");
       report("import (first)", imported);
       const j = JSON.parse(imported.out) as { tables: number; columns: number };
       expect(j.tables).toBe(TABLES);
       expect(j.columns).toBe(TABLES * 20);
-      const preview = ok(await timedSl(root, ["scope", "--source", "wh"]), "sl scope");
+      const preview = ok(await timedSl(root, ["scope", "--source", "wh"]), "semlayer scope");
       report("scope preview", preview);
       expect(preview.out).toContain(`of ${TABLES} (was`);
       console.log(`perf: import + scope preview total ${((imported.ms + preview.ms) / 1000).toFixed(2)} s`);
@@ -73,7 +73,7 @@ describe.skipIf(!PERF)("50,000 tables and 1,000,000 columns", () => {
   test(
     "a second import of the same file, which diffs against the saved snapshot, stays in budget",
     async () => {
-      const again = ok(await timedSl(root, ["import", "--source", "wh", "--file", csv, "--json"]), "sl import again");
+      const again = ok(await timedSl(root, ["import", "--source", "wh", "--file", csv, "--json"]), "semlayer import again");
       report("import (diff against previous)", again);
       within(again, PREVIEW_BUDGET_MS);
     },
@@ -83,16 +83,16 @@ describe.skipIf(!PERF)("50,000 tables and 1,000,000 columns", () => {
   test(
     "scope --json, scope --explain, tables --groups and status read the full catalog in budget",
     async () => {
-      const json = ok(await timedSl(root, ["scope", "--source", "wh", "--json"]), "sl scope --json");
+      const json = ok(await timedSl(root, ["scope", "--source", "wh", "--json"]), "semlayer scope --json");
       report("scope --json", json);
       const entries = (JSON.parse(json.out) as { entries: unknown[] }).entries;
       expect(entries.length).toBeGreaterThan(400);
       const first = catalogTables(1).next().value!;
-      const explain = ok(await timedSl(root, ["scope", "--source", "wh", "--explain", `${first.schema}.${first.name}`]), "sl scope --explain");
+      const explain = ok(await timedSl(root, ["scope", "--source", "wh", "--explain", `${first.schema}.${first.name}`]), "semlayer scope --explain");
       report("scope --explain", explain);
-      const groups = ok(await timedSl(root, ["tables", "--source", "wh", "--groups", "--json"]), "sl tables --groups");
+      const groups = ok(await timedSl(root, ["tables", "--source", "wh", "--groups", "--json"]), "semlayer tables --groups");
       report("tables --groups", groups);
-      const status = ok(await timedSl(root, ["status", "--json"]), "sl status");
+      const status = ok(await timedSl(root, ["status", "--json"]), "semlayer status");
       report("status", status);
       for (const r of [json, explain, groups, status]) within(r, READ_BUDGET_MS);
     },
@@ -102,7 +102,7 @@ describe.skipIf(!PERF)("50,000 tables and 1,000,000 columns", () => {
   test(
     "the baseline brief finishes in budget",
     async () => {
-      const brief = ok(await timedSl(root, ["baseline", "--source", "wh", "--out", "baseline.md"]), "sl baseline");
+      const brief = ok(await timedSl(root, ["baseline", "--source", "wh", "--out", "baseline.md"]), "semlayer baseline");
       report("baseline brief", brief);
       within(brief, BASELINE_BUDGET_MS);
     },
@@ -117,12 +117,12 @@ describe.skipIf(!PERF)("introspect 50,000 tables from DuckDB", () => {
       const db = await cachedDuckDb(TABLES);
       const { root, cleanup } = await project({ dialect: "duckdb", connection: { database: db }, intake: { schemas: [...SCHEMAS] } });
       try {
-        const introspected = ok(await timedSl(root, ["introspect", "--source", "wh", "--json"]), "sl introspect");
+        const introspected = ok(await timedSl(root, ["introspect", "--source", "wh", "--json"]), "semlayer introspect");
         report("introspect duckdb", introspected);
         const j = JSON.parse(introspected.out) as { tables: number; columns: number };
         expect(j.tables).toBe(TABLES);
         expect(j.columns).toBe(TABLES * 20);
-        const preview = ok(await timedSl(root, ["scope", "--source", "wh"]), "sl scope");
+        const preview = ok(await timedSl(root, ["scope", "--source", "wh"]), "semlayer scope");
         report("scope preview", preview);
         // DuckDB itself takes about 1.4 GB of the 2 GB to open a 50,000-table database.
         within(introspected, PREVIEW_BUDGET_MS);
@@ -144,15 +144,15 @@ describe.skipIf(!PERF || !PG_URL)("introspect 50,000 tables from a local Postgre
       const created = performance.now();
       const { schemas, reused } = await ensurePgCatalog(PG_URL!, TABLES);
       console.log(`perf: postgres catalog ${reused ? "reused" : `created in ${((performance.now() - created) / 1000).toFixed(1)} s`}`);
-      const { root, cleanup } = await project({ dialect: "postgres", connection: { env: "SL_PERF_PG_URL" }, intake: { schemas } });
+      const { root, cleanup } = await project({ dialect: "postgres", connection: { env: "SEMLAYER_PERF_PG_URL" }, intake: { schemas } });
       try {
-        const env = { SL_PERF_PG_URL: PG_URL! };
-        const introspected = ok(await timedSl(root, ["introspect", "--source", "wh", "--json"], env), "sl introspect");
+        const env = { SEMLAYER_PERF_PG_URL: PG_URL! };
+        const introspected = ok(await timedSl(root, ["introspect", "--source", "wh", "--json"], env), "semlayer introspect");
         report("introspect postgres", introspected);
         const j = JSON.parse(introspected.out) as { tables: number; columns: number };
         expect(j.tables).toBe(TABLES);
         expect(j.columns).toBe(TABLES * 20);
-        const preview = ok(await timedSl(root, ["scope", "--source", "wh"]), "sl scope");
+        const preview = ok(await timedSl(root, ["scope", "--source", "wh"]), "semlayer scope");
         report("scope preview", preview);
         console.log(`perf: introspect + scope preview total ${((introspected.ms + preview.ms) / 1000).toFixed(2)} s`);
         within(introspected, PREVIEW_BUDGET_MS);

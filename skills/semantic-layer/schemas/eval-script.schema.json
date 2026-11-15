@@ -15,20 +15,20 @@
         "properties": {
           "text": { "type": "string" },
           "tokens": { "type": "integer", "minimum": 0, "description": "Defaults to the text's length divided by 4, rounded up." },
-          "sl": {
+          "semlayer": {
             "type": "array",
-            "description": "sl commands to run in the working root before the turn is recorded, each as its arguments without --root.",
+            "description": "semlayer commands to run in the working root before the turn is recorded, each as its arguments without --root.",
             "items": { "type": "array", "minItems": 1, "items": { "type": "string" } }
           },
           "write": {
             "type": "object",
-            "description": "Files the skill writes by hand before its sl commands run, by path relative to the working root (such as goldens/<name>.yaml) to their text. Never under .sl/, never outside the root or through a link, always valid YAML, and never with status: approved or an approval field.",
+            "description": "Files the skill writes by hand before its semlayer commands run, by path relative to the working root (such as goldens/<name>.yaml) to their text. Never under .semlayer/, never outside the root or through a link, always valid YAML, and never with status: approved or an approval field.",
             "additionalProperties": { "type": "string" }
           },
           "done": { "type": "boolean" },
           "agent": {
             "enum": ["connector_runner", "batch_analyst", "readback_verifier", "golden_builder"],
-            "description": "A task the interviewer turn before it dispatched to this role agent (multi-agent scenarios): its sl commands run through the role guard, it writes nothing and never ends the session."
+            "description": "A task the interviewer turn before it dispatched to this role agent (multi-agent scenarios): its semlayer commands run through the role guard, it writes nothing and never ends the session."
           }
         }
       }
@@ -44,13 +44,13 @@
           "tokens": { "type": "integer", "minimum": 0 },
           "fill": {
             "type": "array",
-            "description": "Review forms the owner fills in and hands back with this turn: each form sl review export wrote, with the owner's verdict and words per item, written in as a person fills in the form.",
+            "description": "Review forms the owner fills in and hands back with this turn: each form semlayer review export wrote, with the owner's verdict and words per item, written in as a person fills in the form.",
             "items": {
               "type": "object",
               "additionalProperties": false,
               "required": ["form", "as"],
               "properties": {
-                "form": { "type": "string", "pattern": "^\\.sl/reviews/[^/\\\\]+\\.(md|json)$", "description": "The form the skill wrote, such as .sl/reviews/rb_0001.md." },
+                "form": { "type": "string", "pattern": "^\\.semlayer/reviews/[^/\\\\]+\\.(md|json)$", "description": "The form the skill wrote, such as .semlayer/reviews/rb_0001.md." },
                 "as": { "type": "string", "pattern": "^shared/[^/\\\\]+\\.(md|json)$", "description": "Where the owner hands it back, under shared/ in the working root, in the form's format." },
                 "items": {
                   "type": "object",

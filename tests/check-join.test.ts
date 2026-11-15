@@ -7,7 +7,7 @@ import { evaluateJoin, nounForms } from "../skills/semantic-layer/scripts/lib/jo
 import { joinCheckPlan, joinCheckSql } from "../skills/semantic-layer/scripts/lib/sql/join-check.ts";
 import type { JoinEvidence, Model, QueryPlan, Snapshot } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { FIXED_NOW, PG_URL, duckdbSource, initProject, sl, tempRoot } from "./helpers.ts";
+import { FIXED_NOW, PG_URL, duckdbSource, initProject, semlayer, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
@@ -314,7 +314,7 @@ describe("joinCheckSql", () => {
 describe("check-join on duckdb", () => {
   test("measures orphans and null keys, writes evidence, keeps comments and status", async () => {
     const s = await setup();
-    const r = await sl(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "customer", "--json"]);
+    const r = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "customer", "--json"]);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     const out = r.json<CheckOut>();
@@ -357,7 +357,7 @@ describe("check-join on duckdb", () => {
 
   test("many-to-many and a declared relationship that the data contradicts", async () => {
     const s = await setup();
-    const r = await sl(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "dup_customer", "--json"]);
+    const r = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "dup_customer", "--json"]);
     expect(r.code).toBe(0);
     const c = r.json<CheckOut>().checks[0]!;
     expect(c.evidence.suggested_relationship).toBe("many_to_many");
@@ -374,7 +374,7 @@ describe("check-join on duckdb", () => {
 
   test("--model --all covers one-to-one and one-to-many", async () => {
     const s = await setup();
-    const r = await sl(s.root, ["check-join", "--source", "wh", "--model", "customers", "--all", "--json"]);
+    const r = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "customers", "--all", "--json"]);
     expect(r.code).toBe(0);
     const checks = r.json<CheckOut>().checks;
     expect(checks.map((c) => c.join)).toEqual(["profile", "orders"]);
@@ -397,7 +397,7 @@ describe("check-join on duckdb", () => {
 
   test("composite keys: a partial key match does not count", async () => {
     const s = await setup();
-    const r = await sl(s.root, ["check-join", "--source", "wh", "--model", "shipments", "--join", "line", "--json"]);
+    const r = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "shipments", "--join", "line", "--json"]);
     expect(r.code).toBe(0);
     const e = r.json<CheckOut>().checks[0]!.evidence;
     expect(e).toMatchObject({
@@ -423,7 +423,7 @@ describe("check-join on duckdb", () => {
   test("evidence records the keys as the YAML declares them, not as the snapshot spells the columns", async () => {
     const s = await setup();
     writeFileSync(s.modelPath("shipments"), SHIPMENTS_YAML.replace("{ from: order_id, to: order_id }", "{ from: ORDER_ID, to: Order_Id }"));
-    const r = await sl(s.root, ["check-join", "--source", "wh", "--model", "shipments", "--join", "line", "--json"]);
+    const r = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "shipments", "--join", "line", "--json"]);
     expect(r.code).toBe(0);
     const e = r.json<CheckOut>().checks[0]!.evidence;
     expect(e.matched_rows).toBe(4);
@@ -436,10 +436,10 @@ describe("check-join on duckdb", () => {
 
   test("a recheck after the join's keys or target change records the new ones", async () => {
     const s = await setup();
-    await sl(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "dup_customer"]);
+    await semlayer(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "dup_customer"]);
     expect(measured(s.model("orders"), 1)?.to).toBe("dup_customers");
     writeFileSync(s.modelPath("orders"), s.read("orders").replace("to: dup_customers", "to: customers"));
-    const r = await sl(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "dup_customer", "--json"]);
+    const r = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "dup_customer", "--json"]);
     expect(r.code).toBe(0);
     const e = measured(s.model("orders"), 1)!;
     expect(e.to).toBe("customers");
@@ -449,13 +449,13 @@ describe("check-join on duckdb", () => {
   test("--all checks every join in the source; --no-write leaves files alone", async () => {
     const s = await setup();
     const before = ["orders", "customers", "shipments"].map((m) => s.read(m));
-    const dry = await sl(s.root, ["check-join", "--source", "wh", "--all", "--no-write", "--json"]);
+    const dry = await semlayer(s.root, ["check-join", "--source", "wh", "--all", "--no-write", "--json"]);
     expect(dry.code).toBe(0);
     const ids = dry.json<CheckOut>().checks.map((c) => `${c.model}.${c.join}`);
     expect(ids.sort()).toEqual(["customers.orders", "customers.profile", "orders.customer", "orders.dup_customer", "shipments.line"]);
     expect(["orders", "customers", "shipments"].map((m) => s.read(m))).toEqual(before);
 
-    const human = await sl(s.root, ["check-join", "--source", "wh", "--all"]);
+    const human = await semlayer(s.root, ["check-join", "--source", "wh", "--all"]);
     expect(human.code).toBe(0);
     expect(human.out).toContain("orders.customer -> customers  (YAML says many_to_one, data says many_to_one)");
     expect(human.out).not.toContain("declared");
@@ -467,14 +467,14 @@ describe("check-join on duckdb", () => {
 
   test("works without a snapshot", async () => {
     const s = await setup(false);
-    const r = await sl(s.root, ["check-join", "--source", "wh", "--model", "shipments", "--join", "line", "--json", "--no-write"]);
+    const r = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "shipments", "--join", "line", "--json", "--no-write"]);
     expect(r.err).toBe("");
     expect(r.json<CheckOut>().checks[0]!.evidence.matched_rows).toBe(4);
   });
 
   test("--emit-sql then --results gives the same evidence as a live run", async () => {
     const s = await setup();
-    const emitted = await sl(s.root, ["check-join", "--source", "wh", "--all", "--emit-sql"]);
+    const emitted = await semlayer(s.root, ["check-join", "--source", "wh", "--all", "--emit-sql"]);
     expect(emitted.code).toBe(0);
     const plan = JSON.parse(emitted.out) as QueryPlan;
     expect(plan.command).toBe("check-join");
@@ -494,13 +494,13 @@ describe("check-join on duckdb", () => {
     const file = join(s.dir, "results.json");
     writeFileSync(file, JSON.stringify(results));
 
-    const fromFile = await sl(s.root, ["check-join", "--source", "wh", "--all", "--results", file, "--no-write", "--json"]);
+    const fromFile = await semlayer(s.root, ["check-join", "--source", "wh", "--all", "--results", file, "--no-write", "--json"]);
     expect(fromFile.err).toBe("");
-    const live = await sl(s.root, ["check-join", "--source", "wh", "--all", "--no-write", "--json"]);
+    const live = await semlayer(s.root, ["check-join", "--source", "wh", "--all", "--no-write", "--json"]);
     expect(fromFile.json()).toEqual(live.json());
 
     writeFileSync(file, JSON.stringify({ "join:orders.customer": results["join:orders.customer"] }));
-    const missing = await sl(s.root, ["check-join", "--source", "wh", "--all", "--results", file]);
+    const missing = await semlayer(s.root, ["check-join", "--source", "wh", "--all", "--results", file]);
     expect(missing.code).toBe(1);
     expect(missing.err).toContain("missing results");
   });
@@ -516,25 +516,25 @@ describe("check-join on duckdb", () => {
       [["--model", "orders", "--join", "customer", "--all"], "either --join or --all"],
     ];
     for (const [args, message] of cases) {
-      const r = await sl(s.root, ["check-join", "--source", "wh", ...args]);
+      const r = await semlayer(s.root, ["check-join", "--source", "wh", ...args]);
       expect(r.code).toBe(1);
       expect(r.err).toContain(message);
     }
-    const noSource = await sl(s.root, ["check-join", "--model", "orders", "--join", "customer"]);
+    const noSource = await semlayer(s.root, ["check-join", "--model", "orders", "--join", "customer"]);
     expect(noSource.err).toContain("--source is required");
 
     writeFileSync(s.modelPath("orders"), ORDERS_YAML.replace("to: dup_customers", "to: ghosts"));
-    const ghost = await sl(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "dup_customer"]);
+    const ghost = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "dup_customer"]);
     expect(ghost.code).toBe(1);
     expect(ghost.err).toContain('points to "ghosts", which is not a model in source "wh"');
 
     writeFileSync(s.modelPath("orders"), ORDERS_YAML.replace("{ from: customer_id, to: customer_id }", "{ from: cust, to: customer_id }"));
-    const col = await sl(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "customer"]);
+    const col = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "customer"]);
     expect(col.code).toBe(1);
     expect(col.err).toContain('left key column "cust" is not a column of main.orders');
 
     writeFileSync(s.modelPath("order_lines"), bare("order_lines", "main.not_there"));
-    const table = await sl(s.root, ["check-join", "--source", "wh", "--model", "shipments", "--join", "line"]);
+    const table = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "shipments", "--join", "line"]);
     expect(table.code).toBe(1);
     expect(table.err).toContain("not in the snapshot");
   });
@@ -554,7 +554,7 @@ describe("check-join edge cases", () => {
       [["--source", "wh", "--model", "Orders", "--all"], "--model must match"],
     ];
     for (const [args, message] of cases) {
-      const r = await sl(s.root, ["check-join", ...args]);
+      const r = await semlayer(s.root, ["check-join", ...args]);
       expect(r.code).toBe(1);
       expect(r.err).toContain(message);
     }
@@ -569,14 +569,14 @@ describe("check-join edge cases", () => {
     writeFileSync(s.modelPath("keyless_orders"), yaml("keyless_orders", "keyless_orders"));
     const before = [s.read("empty_orders"), s.read("keyless_orders")];
 
-    const empty = await sl(s.root, ["check-join", "--source", "wh", "--model", "empty_orders", "--join", "customer", "--json"]);
+    const empty = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "empty_orders", "--join", "customer", "--json"]);
     expect(empty.err).toBe("");
     const e = empty.json<CheckOut>().checks[0]!;
     expect(e.evidence).toBeNull();
     expect(e.sentence).toBe("There are no empty orders to check, so this join could not be measured.");
     expect(e.findings.map((f) => f.message).join("\n")).not.toMatch(/YAML|declared/);
 
-    const keyless = await sl(s.root, ["check-join", "--source", "wh", "--model", "keyless_orders", "--join", "customer"]);
+    const keyless = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "keyless_orders", "--join", "customer"]);
     expect(keyless.code).toBe(0);
     expect(keyless.out).toContain("not measured");
     expect(keyless.out).toContain("Every keyless order has an empty join key");
@@ -595,7 +595,7 @@ describe("check-join edge cases", () => {
         "joins:\n  - name: store\n    to: stores\n    keys:\n      - { from: store_id, to: store_id }\n    relationship: many_to_one\n    status: draft\n",
       ),
     );
-    const r = await sl(s.root, ["check-join", "--source", "wh", "--model", "orders", "--all", "--json"]);
+    const r = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "orders", "--all", "--json"]);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     const out = r.json<CheckOut>();
@@ -606,11 +606,11 @@ describe("check-join edge cases", () => {
     expect(s.model("orders").joins!.find((j) => j.name === "customer")!.evidence?.checked_at).toBe(FIXED_NOW);
     expect(s.model("orders").joins!.find((j) => j.name === "store")!.evidence).toBeUndefined();
 
-    const human = await sl(s.root, ["check-join", "--source", "wh", "--all", "--no-write"]);
+    const human = await semlayer(s.root, ["check-join", "--source", "wh", "--all", "--no-write"]);
     expect(human.code).toBe(0);
     expect(human.out).toContain('orders.store: skipped: Join "store" on model "orders" points to "stores"');
 
-    const single = await sl(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "store"]);
+    const single = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "store"]);
     expect(single.code).toBe(1);
     expect(single.err).toContain('points to "stores"');
   });
@@ -621,13 +621,13 @@ describe("check-join edge cases", () => {
       s.modelPath("employees"),
       "model: employees\nsource: wh\ntable: employees\nstatus: draft\ndimensions: []\nmeasures: []\njoins:\n  - name: manager\n    to: employees\n    keys:\n      - { from: manager_id, to: employee_id }\n    status: draft\n",
     );
-    const r = await sl(s.root, ["check-join", "--source", "wh", "--model", "employees", "--join", "manager", "--json", "--no-write"]);
+    const r = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "employees", "--join", "manager", "--json", "--no-write"]);
     expect(r.err).toBe("");
     const c = r.json<CheckOut>().checks[0]!;
     expect(c.evidence.suggested_relationship).toBe("many_to_one");
     expect(c.sentence).toBe("Each employee points to at most one manager, and 75% of employees find their manager (1 does not).");
     expect(c.findings.map((f) => f.message)).toContain("The YAML gives this join no relationship; the data says many_to_one.");
-    const human = await sl(s.root, ["check-join", "--source", "wh", "--model", "employees", "--join", "manager", "--no-write"]);
+    const human = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "employees", "--join", "manager", "--no-write"]);
     expect(human.out).toContain("(YAML says none, data says many_to_one)");
     expect(human.out).toContain("matched 3 (75%), unmatched 1");
   });
@@ -640,7 +640,7 @@ describe("check-join edge cases", () => {
       file,
       JSON.stringify({ "join:orders.customer": [{ left_rows: 20, left_null_keys: 1, matched_rows: 17, right_rows: 10, left_max_dup: 3 }] }),
     );
-    const r = await sl(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "customer", "--results", file]);
+    const r = await semlayer(s.root, ["check-join", "--source", "wh", "--model", "orders", "--join", "customer", "--results", file]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("join:orders.customer: Join check result is missing right_distinct_keys");
     expect(s.read("orders")).toBe(before);
@@ -661,13 +661,13 @@ describe("check-join on a warehouse it cannot run", () => {
       "model: orders\nsource: snow\ntable: ANALYTICS.FCT_ORDERS\nstatus: draft\ndimensions: []\nmeasures: []\njoins:\n  - name: customer\n    to: customers\n    keys:\n      - { from: CUSTOMER_ID, to: CUSTOMER_ID }\n    relationship: many_to_one\n    status: draft\n",
     );
     writeFileSync(join(dir, "customers.yaml"), "model: customers\nsource: snow\ntable: ANALYTICS.DIM_CUSTOMERS\nstatus: draft\ndimensions: []\nmeasures: []\n");
-    const emitted = await sl(t.root, ["check-join", "--source", "snow", "--all", "--emit-sql"]);
+    const emitted = await semlayer(t.root, ["check-join", "--source", "snow", "--all", "--emit-sql"]);
     const plan = JSON.parse(emitted.out) as QueryPlan;
     expect(plan.dialect).toBe("snowflake");
     expect(plan.queries[0]!.sql).toContain(`from "ANALYTICS"."FCT_ORDERS"`);
     expect(plan.queries[0]!.sql).toContain(`"CUSTOMER_ID" as "k0"`);
 
-    const refused = await sl(t.root, ["check-join", "--source", "snow", "--all"]);
+    const refused = await semlayer(t.root, ["check-join", "--source", "snow", "--all"]);
     expect(refused.code).toBe(1);
     expect(refused.err).toContain("--emit-sql");
 
@@ -680,7 +680,7 @@ describe("check-join on a warehouse it cannot run", () => {
         ],
       }),
     );
-    const done = await sl(t.root, ["check-join", "--source", "snow", "--all", "--results", file, "--json"]);
+    const done = await semlayer(t.root, ["check-join", "--source", "snow", "--all", "--results", file, "--json"]);
     expect(done.err).toBe("");
     const c = done.json<CheckOut>().checks[0]!;
     expect(c.sentence).toBe("Each order points to at most one customer, and every order finds its customer.");
@@ -721,7 +721,7 @@ describe("check-join on postgres", () => {
       `model: orders\nsource: pg\ntable: ${schema}.Orders\nstatus: draft\ndimensions: []\nmeasures: []\njoins:\n  - name: customer # pg\n    to: customers\n    keys:\n      - { from: customer_id, to: customer_id }\n    relationship: one_to_one\n    status: draft\n`,
     );
     writeFileSync(join(dir, "customers.yaml"), `model: customers\nsource: pg\ntable: ${schema}.customers\nstatus: draft\ndimensions: []\nmeasures: []\n`);
-    const r = await sl(t.root, ["check-join", "--source", "pg", "--model", "orders", "--join", "customer", "--json"], { CJ_PG_URL: PG_URL });
+    const r = await semlayer(t.root, ["check-join", "--source", "pg", "--model", "orders", "--join", "customer", "--json"], { CJ_PG_URL: PG_URL });
     expect(r.err).toBe("");
     const c = r.json<CheckOut>().checks[0]!;
     expect(c.evidence).toMatchObject({

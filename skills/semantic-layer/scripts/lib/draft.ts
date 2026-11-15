@@ -1197,7 +1197,7 @@ function buildContext(snapshot: Snapshot, tables: SnapshotTable[], existing: Mod
 // Drafts one model per table. Names avoid existing models and each other; joins
 // reach only known tables, and anything the rules cannot settle is an open question.
 // Every column of the table that no drafted field, join key or primary key reads is listed in
-// the model's ignored_columns, so a later sl draft --new-columns finds only columns added since.
+// the model's ignored_columns, so a later semlayer draft --new-columns finds only columns added since.
 export function draftModels(snapshot: Snapshot, tables: SnapshotTable[], existing: Model[], opts: DraftOptions): DraftResult {
   const notes: string[] = [];
   const { ctx, byKey, existingNames } = buildContext(snapshot, tables, existing, opts, notes);
@@ -1348,7 +1348,7 @@ export function draftNewColumns(
     if (!take(cols, `the join ${j.name} to ${j.to} (${how}${unmodeled})`)) continue;
     result.joins.push(j);
     if (unmodeled && target) result.unmodeled.push({ join: j.name, to: j.to, table: target });
-    for (const c of cols) if (isFresh.has(c)) checkJoin.set(c, `sl check-join --source ${opts.source} --model ${model.model} --join ${j.name}`);
+    for (const c of cols) if (isFresh.has(c)) checkJoin.set(c, `semlayer check-join --source ${opts.source} --model ${model.model} --join ${j.name}`);
   }
 
   for (const c of fresh) {

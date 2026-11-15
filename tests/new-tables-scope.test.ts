@@ -1,4 +1,4 @@
-// FR-1.8: tables that enter the selection after a rerun of sl introspect or sl import are named as
+// FR-1.8: tables that enter the selection after a rerun of semlayer introspect or semlayer import are named as
 // new in scope and routed to drafting; tables that leave it with approved models are warned about,
 // and no model is deleted.
 import { afterEach, describe, expect, test } from "bun:test";
@@ -9,7 +9,7 @@ import type { ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.
 import type { Model, Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { DuckDBInstance } from "@duckdb/node-api";
-import { duckdbSource, initProject, sl, tempRoot } from "./helpers.ts";
+import { duckdbSource, initProject, semlayer, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -58,22 +58,22 @@ function approvedModel(name: string, table: string): Model {
 }
 
 // A DuckDB warehouse scoped to fct_* and dim_*, introspected, with a draft model on every in-scope
-// table (sl draft) and the model on fct_legacy approved.
+// table (semlayer draft) and the model on fct_legacy approved.
 async function warehouse(): Promise<{ root: string; dir: string }> {
   const t = tempRoot();
   cleanup = t.cleanup;
   await initProject(t.root);
   const src = await duckdbSource(t.root, t.dir, "wh", WAREHOUSE);
   writeYaml(join(t.root, "sources", "wh.yaml"), { ...src, scope: { include: ["fct_*", "dim_*"] } } satisfies SourceConfig);
-  expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
-  expect((await sl(t.root, ["profile", "--source", "wh"])).code).toBe(0);
-  expect((await sl(t.root, ["draft", "--source", "wh"])).code).toBe(0);
+  expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+  expect((await semlayer(t.root, ["profile", "--source", "wh"])).code).toBe(0);
+  expect((await semlayer(t.root, ["draft", "--source", "wh"])).code).toBe(0);
   writeYaml(join(t.root, "models", "wh", "legacy.yaml"), approvedModel("legacy", "main.fct_legacy"));
   return t;
 }
 
 async function status(root: string): Promise<ProjectStatus> {
-  const r = await sl(root, ["status", "--json"]);
+  const r = await semlayer(root, ["status", "--json"]);
   if (r.code !== 0) throw new Error(r.err);
   return r.json<ProjectStatus>();
 }
@@ -87,7 +87,7 @@ describe("a re-introspect that finds tables new in scope", () => {
     const t = await warehouse();
     expect((await status(t.root)).sources[0]!.new_in_scope).toEqual([]);
     await alter(t.dir, ["create table fct_returns (return_id integer primary key, amount integer)", "create table stg_more (id integer)"]);
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(r.code).toBe(0);
     // stg_more is a new table too, but out of scope.
     expect(r.json<{ changes: Changes & { tables_added: string[] } }>().changes).toMatchObject({
@@ -101,20 +101,20 @@ describe("a re-introspect that finds tables new in scope", () => {
     // The new table is profiled first, then drafted by name.
     const before = await status(t.root);
     expect(before.sources[0]!.new_in_scope).toEqual(["main.fct_returns"]);
-    expect(before.next_step).toMatchObject({ phase: "profile", command: "sl profile --source wh" });
-    expect((await sl(t.root, ["profile", "--source", "wh"])).code).toBe(0);
+    expect(before.next_step).toMatchObject({ phase: "profile", command: "semlayer profile --source wh" });
+    expect((await semlayer(t.root, ["profile", "--source", "wh"])).code).toBe(0);
     const st = await status(t.root);
     expect(st.next_step).toMatchObject({
       phase: "draft",
       source: "wh",
-      command: "sl draft --source wh --tables main.fct_returns",
+      command: "semlayer draft --source wh --tables main.fct_returns",
       after_owner_yes: false,
     });
     expect(st.next_step.message).toContain('1 table(s) in "wh" are new in scope and have no model: main.fct_returns.');
-    expect((await sl(t.root, ["status"])).out).toContain("  new in scope, with no model yet: main.fct_returns");
+    expect((await semlayer(t.root, ["status"])).out).toContain("  new in scope, with no model yet: main.fct_returns");
 
     // Drafting it clears it.
-    expect((await sl(t.root, ["draft", "--source", "wh", "--tables", "main.fct_returns"])).code).toBe(0);
+    expect((await semlayer(t.root, ["draft", "--source", "wh", "--tables", "main.fct_returns"])).code).toBe(0);
     const after = await status(t.root);
     expect(after.sources[0]!.new_in_scope).toEqual([]);
     expect(after.next_step.phase).not.toBe("draft");
@@ -123,20 +123,20 @@ describe("a re-introspect that finds tables new in scope", () => {
   test("the text report names the new table and the command that drafts it; a rerun before drafting keeps it", async () => {
     const t = await warehouse();
     await alter(t.dir, ["create table fct_returns (return_id integer primary key)"]);
-    const r = await sl(t.root, ["introspect", "--source", "wh"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh"]);
     expect(r.out).toContain(
-      ["  1 table added: main.fct_returns.", "New in scope, with no model yet: main.fct_returns. `sl draft --source wh --tables main.fct_returns` drafts it."].join("\n"),
+      ["  1 table added: main.fct_returns.", "New in scope, with no model yet: main.fct_returns. `semlayer draft --source wh --tables main.fct_returns` drafts it."].join("\n"),
     );
     // The second rerun has nothing new to report, but status still names the table.
-    const again = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const again = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(again.json<{ changes: Changes }>().changes.new_in_scope).toEqual([]);
     expect((await status(t.root)).sources[0]!.new_in_scope).toEqual(["main.fct_returns"]);
   });
 
   test("a scope change that brings existing tables in reports them as new in scope on the rerun", async () => {
     const t = await warehouse();
-    expect((await sl(t.root, ["scope", "--source", "wh", "--include", "stg_*", "--write"])).code).toBe(0);
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    expect((await semlayer(t.root, ["scope", "--source", "wh", "--include", "stg_*", "--write"])).code).toBe(0);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     const changes = r.json<{ changes: Changes & { tables_added: string[] } }>().changes;
     expect(changes.tables_added).toEqual([]);
     expect(changes.new_in_scope).toEqual(["main.stg_events"]);
@@ -148,12 +148,12 @@ describe("a re-introspect that finds tables new in scope", () => {
     cleanup = t.cleanup;
     await initProject(t.root);
     await duckdbSource(t.root, t.dir, "wh", WAREHOUSE);
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
     await alter(t.dir, ["create table fct_returns (id integer)"]);
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
-    expect((await sl(t.root, ["profile", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["profile", "--source", "wh"])).code).toBe(0);
     const st = await status(t.root);
-    expect(st.next_step.command).toBe("sl draft --source wh --tables main.fct_returns");
+    expect(st.next_step.command).toBe("semlayer draft --source wh --tables main.fct_returns");
     expect(st.next_step.message).toContain("4 other in-scope table(s) have no model either");
   });
 });
@@ -162,7 +162,7 @@ describe("tables that leave scope with approved models", () => {
   test("dropping a modeled, approved table warns in introspect and in status, and keeps the model", async () => {
     const t = await warehouse();
     await alter(t.dir, ["drop table fct_legacy"]);
-    const json = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const json = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(json.json<{ changes: Changes }>().changes).toMatchObject({
       new_in_scope: [],
       left_scope: ["main.fct_legacy"],
@@ -178,58 +178,58 @@ describe("tables that leave scope with approved models", () => {
     // A table gone from the snapshot opens drift, which names what to do.
     expect(st.next_step.phase).toBe("drift");
     expect(st.next_step.message).toContain("legacy (main.fct_legacy)");
-    expect((await sl(t.root, ["status"])).out).toContain("  left scope with approved models: legacy (main.fct_legacy)");
+    expect((await semlayer(t.root, ["status"])).out).toContain("  left scope with approved models: legacy (main.fct_legacy)");
   });
 
   test("the text report of a dropped table warns and names what to do", async () => {
     const t = await warehouse();
     await alter(t.dir, ["drop table fct_legacy"]);
-    const r = await sl(t.root, ["introspect", "--source", "wh"]);
-    // The table is named once, among the tables removed, and the next command is sl status.
+    const r = await semlayer(t.root, ["introspect", "--source", "wh"]);
+    // The table is named once, among the tables removed, and the next command is semlayer status.
     expect(r.out).toContain("  1 table removed: main.fct_legacy.");
     expect(r.out).not.toContain("Left scope,");
-    expect(r.out).toContain("Next: sl status");
+    expect(r.out).toContain("Next: semlayer status");
     expect(r.out).toContain("Warning: left scope with approved models: legacy (main.fct_legacy). The models are kept and still served.");
-    expect(r.out).toContain("`sl approve --target wh.<model> --revoke`");
+    expect(r.out).toContain("`semlayer approve --target wh.<model> --revoke`");
   });
 
   test("a scope change that drops a modeled, approved table warns, and status routes to scope until the owner decides", async () => {
     const t = await warehouse();
-    expect((await sl(t.root, ["scope", "--source", "wh", "--exclude", "fct_legacy", "--write"])).code).toBe(0);
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    expect((await semlayer(t.root, ["scope", "--source", "wh", "--exclude", "fct_legacy", "--write"])).code).toBe(0);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(r.json<{ changes: Changes & { tables_removed: string[] } }>().changes).toMatchObject({
       tables_removed: [],
       new_in_scope: [],
       left_scope: ["main.fct_legacy"],
       left_scope_with_models: [{ model: "legacy", table: "main.fct_legacy" }],
     });
-    const text = await sl(t.root, ["introspect", "--source", "wh"]);
+    const text = await semlayer(t.root, ["introspect", "--source", "wh"]);
     // Measured against the selection the previous run recorded, the second rerun has nothing new to say...
     expect(text.out).not.toContain("left scope with approved models");
-    expect(text.out).toContain("Next: sl status");
+    expect(text.out).toContain("Next: semlayer status");
     // ...but status keeps the warning until the owner decides.
     const st = await status(t.root);
     expect(st.sources[0]!.left_scope_with_models).toEqual([{ model: "legacy", table: "main.fct_legacy" }]);
     expect(st.next_step).toMatchObject({
       phase: "scope",
       source: "wh",
-      command: "sl scope --source wh --tables main.fct_legacy",
+      command: "semlayer scope --source wh --tables main.fct_legacy",
       after_owner_yes: false,
     });
     expect(st.next_step.message).toContain("Left scope with approved models: legacy (main.fct_legacy).");
-    expect(st.next_step.message).toContain("sl approve --target wh.<model> --revoke");
+    expect(st.next_step.message).toContain("semlayer approve --target wh.<model> --revoke");
     expect(readYaml<Model>(join(t.root, "models", "wh", "legacy.yaml")).status).toBe("approved");
 
     // Restoring the pattern clears it.
-    expect((await sl(t.root, ["scope", "--source", "wh", "--remove", "fct_legacy", "--write"])).code).toBe(0);
+    expect((await semlayer(t.root, ["scope", "--source", "wh", "--remove", "fct_legacy", "--write"])).code).toBe(0);
     expect((await status(t.root)).sources[0]!.left_scope_with_models).toEqual([]);
   });
 
   test("revoking the model clears the warning", async () => {
     const t = await warehouse();
-    expect((await sl(t.root, ["scope", "--source", "wh", "--exclude", "fct_legacy", "--write"])).code).toBe(0);
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
-    expect((await sl(t.root, ["approve", "--target", "wh.legacy", "--revoke"])).code).toBe(0);
+    expect((await semlayer(t.root, ["scope", "--source", "wh", "--exclude", "fct_legacy", "--write"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["approve", "--target", "wh.legacy", "--revoke"])).code).toBe(0);
     const st = await status(t.root);
     expect(st.sources[0]!.left_scope_with_models).toEqual([]);
     expect(st.next_step.phase).not.toBe("scope");
@@ -238,13 +238,13 @@ describe("tables that leave scope with approved models", () => {
   test("an approved model out of scope before this report is not warned about", async () => {
     const t = await warehouse();
     writeYaml(join(t.root, "models", "wh", "events.yaml"), approvedModel("events", "main.stg_events"));
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(r.json<{ changes: Changes }>().changes.left_scope_with_models).toEqual([]);
     expect((await status(t.root)).sources[0]!.left_scope_with_models).toEqual([]);
   });
 });
 
-describe("sl import gives the same report", () => {
+describe("semlayer import gives the same report", () => {
   const HEADER = "table_schema,table_name,column_name,data_type,is_nullable,ordinal_position";
   const rows = (tables: string[]) => tables.flatMap((t) => [`shop,${t},id,integer,NO,1`, `shop,${t},amount,integer,YES,2`]);
 
@@ -255,12 +255,12 @@ describe("sl import gives the same report", () => {
     writeYaml(join(t.root, "sources", "shop.yaml"), { source: "shop", dialect: "snowflake", scope: { include: ["fct_*"] } } satisfies SourceConfig);
     const file = join(t.dir, "export.csv");
     writeFileSync(file, [HEADER, ...rows(["fct_orders", "fct_legacy", "stg_x"])].join("\n"));
-    expect((await sl(t.root, ["import", "--source", "shop", "--file", file])).code).toBe(0);
+    expect((await semlayer(t.root, ["import", "--source", "shop", "--file", file])).code).toBe(0);
     writeYaml(join(t.root, "models", "shop", "legacy.yaml"), { ...approvedModel("legacy", "shop.fct_legacy"), source: "shop" });
     writeYaml(join(t.root, "models", "shop", "orders.yaml"), { ...approvedModel("orders", "shop.fct_orders"), source: "shop", status: "draft" });
 
     writeFileSync(file, [HEADER, ...rows(["fct_orders", "fct_returns", "stg_x"])].join("\n"));
-    const r = await sl(t.root, ["import", "--source", "shop", "--file", file, "--json"]);
+    const r = await semlayer(t.root, ["import", "--source", "shop", "--file", file, "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<{ changes: Changes; next: string }>();
     expect(out.changes).toMatchObject({
@@ -268,14 +268,14 @@ describe("sl import gives the same report", () => {
       left_scope: ["shop.fct_legacy"],
       left_scope_with_models: [{ model: "legacy", table: "shop.fct_legacy" }],
     });
-    // An approved model left scope, so the next command is sl status, whose drift and scope steps come first.
-    expect(out.next).toBe("sl status");
+    // An approved model left scope, so the next command is semlayer status, whose drift and scope steps come first.
+    expect(out.next).toBe("semlayer status");
 
     writeFileSync(file, [HEADER, ...rows(["fct_orders", "fct_legacy", "stg_x"])].join("\n"));
-    expect((await sl(t.root, ["import", "--source", "shop", "--file", file])).code).toBe(0);
+    expect((await semlayer(t.root, ["import", "--source", "shop", "--file", file])).code).toBe(0);
     writeFileSync(file, [HEADER, ...rows(["fct_orders", "fct_returns", "stg_x"])].join("\n"));
-    const text = await sl(t.root, ["import", "--source", "shop", "--file", file]);
-    expect(text.out).toContain("New in scope, with no model yet: shop.fct_returns. `sl draft --source shop --tables shop.fct_returns` drafts it.");
+    const text = await semlayer(t.root, ["import", "--source", "shop", "--file", file]);
+    expect(text.out).toContain("New in scope, with no model yet: shop.fct_returns. `semlayer draft --source shop --tables shop.fct_returns` drafts it.");
     expect(text.out).toContain("Warning: left scope with approved models: legacy (shop.fct_legacy).");
 
     // A plan-only source has no profile step, so the drift on the gone table comes first, then draft.
@@ -283,8 +283,8 @@ describe("sl import gives the same report", () => {
     expect(st.sources[0]!.new_in_scope).toEqual(["shop.fct_returns"]);
     expect(st.sources[0]!.left_scope_with_models).toEqual([{ model: "legacy", table: "shop.fct_legacy" }]);
     expect(st.next_step.phase).toBe("drift");
-    expect((await sl(t.root, ["approve", "--target", "shop.legacy", "--revoke"])).code).toBe(0);
-    expect((await status(t.root)).next_step).toMatchObject({ phase: "draft", command: "sl draft --source shop --tables shop.fct_returns" });
+    expect((await semlayer(t.root, ["approve", "--target", "shop.legacy", "--revoke"])).code).toBe(0);
+    expect((await status(t.root)).next_step).toMatchObject({ phase: "draft", command: "semlayer draft --source shop --tables shop.fct_returns" });
   });
 });
 
@@ -296,7 +296,7 @@ describe("edges", () => {
     await initProject(t.root);
     const src = await duckdbSource(t.root, t.dir, "wh", statements);
     writeYaml(join(t.root, "sources", "wh.yaml"), { ...src, ...(scope ? { scope } : {}), ...(intake ? { intake } : {}) } satisfies SourceConfig);
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
     return t;
   }
 
@@ -304,35 +304,35 @@ describe("edges", () => {
     const t = await base(["create table fct_a (id integer primary key, amount integer)", "create table fct_legacy (id integer primary key, amount integer)"], {
       include: ["fct_*"],
     });
-    expect((await sl(t.root, ["profile", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["profile", "--source", "wh"])).code).toBe(0);
     writeYaml(join(t.root, "models", "wh", "a.yaml"), approvedModel("a", "main.fct_a"));
     writeYaml(join(t.root, "models", "wh", "legacy.yaml"), approvedModel("legacy", "main.fct_legacy"));
-    expect((await sl(t.root, ["scope", "--source", "wh", "--exclude", "fct_legacy", "--write"])).code).toBe(0);
+    expect((await semlayer(t.root, ["scope", "--source", "wh", "--exclude", "fct_legacy", "--write"])).code).toBe(0);
     await alter(t.dir, ["create table fct_new (id integer primary key, amount integer)"]);
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(r.json<{ next: string; changes: Changes }>().changes.new_in_scope).toEqual(["main.fct_new"]);
-    expect((await sl(t.root, ["profile", "--source", "wh"])).code).toBe(0);
-    // Profiled, a rerun would otherwise say sl draft; status's scope step comes first.
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).out).toContain("Next: sl status");
+    expect((await semlayer(t.root, ["profile", "--source", "wh"])).code).toBe(0);
+    // Profiled, a rerun would otherwise say semlayer draft; status's scope step comes first.
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).out).toContain("Next: semlayer status");
     expect((await status(t.root)).next_step.phase).toBe("scope");
     // Once the owner revokes the model, the rerun names the new table to draft.
-    expect((await sl(t.root, ["approve", "--target", "wh.legacy", "--revoke"])).code).toBe(0);
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).out).toContain("Next: sl draft --source wh --tables main.fct_new");
+    expect((await semlayer(t.root, ["approve", "--target", "wh.legacy", "--revoke"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).out).toContain("Next: semlayer draft --source wh --tables main.fct_new");
   });
 
   test("the scope step's command, followed with --write, settles the warning", async () => {
     const t = await base(["create table fct_a (id integer)", "create table fct_legacy (id integer, amount integer)"], { include: ["fct_*"] });
     writeYaml(join(t.root, "models", "wh", "legacy.yaml"), approvedModel("legacy", "main.fct_legacy"));
     // Narrow the include pattern, not an exclude, so the table stops matching.
-    expect((await sl(t.root, ["scope", "--source", "wh", "--remove", "fct_*", "--write"])).code).toBe(0);
-    expect((await sl(t.root, ["scope", "--source", "wh", "--include", "fct_a", "--write"])).code).toBe(0);
-    const r = await sl(t.root, ["introspect", "--source", "wh"]);
-    expect(r.out).toContain("Left scope, no longer matching the scope or intake.schemas: main.fct_legacy. `sl scope --source wh` shows what the scope selects.");
+    expect((await semlayer(t.root, ["scope", "--source", "wh", "--remove", "fct_*", "--write"])).code).toBe(0);
+    expect((await semlayer(t.root, ["scope", "--source", "wh", "--include", "fct_a", "--write"])).code).toBe(0);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh"]);
+    expect(r.out).toContain("Left scope, no longer matching the scope or intake.schemas: main.fct_legacy. `semlayer scope --source wh` shows what the scope selects.");
     expect(r.out).toContain("Warning: left scope with approved models: legacy (main.fct_legacy).");
     const st = await status(t.root);
-    expect(st.next_step.command).toBe("sl scope --source wh --tables main.fct_legacy");
-    expect((await sl(t.root, ["scope", "--source", "wh"])).code).toBe(0);
-    expect((await sl(t.root, [...st.next_step.command.split(" ").slice(1), "--write"])).code).toBe(0);
+    expect(st.next_step.command).toBe("semlayer scope --source wh --tables main.fct_legacy");
+    expect((await semlayer(t.root, ["scope", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, [...st.next_step.command.split(" ").slice(1), "--write"])).code).toBe(0);
     const after = await status(t.root);
     expect(after.sources[0]!.left_scope_with_models).toEqual([]);
     expect(after.next_step.phase).not.toBe("scope");
@@ -344,19 +344,19 @@ describe("edges", () => {
     });
     writeYaml(join(t.root, "models", "wh", "legacy.yaml"), approvedModel("legacy", "main.fct_legacy"));
     await alter(t.dir, ["drop table fct_legacy"]);
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
     expect((await status(t.root)).sources[0]!.left_scope_with_models).toEqual([{ model: "legacy", table: "main.fct_legacy" }]);
     await alter(t.dir, ["create table fct_legacy (id integer primary key, amount integer)"]);
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(r.json<{ changes: Changes }>().changes.new_in_scope).toEqual([]);
     expect(snapshotOf(t.root).scope_state!.left_scope).toEqual([]);
     expect((await status(t.root)).sources[0]!.left_scope_with_models).toEqual([]);
   });
 
-  test("an exact name added with sl scope --tables enters as new in scope", async () => {
+  test("an exact name added with semlayer scope --tables enters as new in scope", async () => {
     const t = await base(["create table fct_a (id integer)", "create table stg_x (id integer)"], { include: ["fct_*"] });
-    expect((await sl(t.root, ["scope", "--source", "wh", "--tables", "main.stg_x", "--write"])).code).toBe(0);
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    expect((await semlayer(t.root, ["scope", "--source", "wh", "--tables", "main.stg_x", "--write"])).code).toBe(0);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(r.json<{ changes: Changes }>().changes.new_in_scope).toEqual(["main.stg_x"]);
   });
 
@@ -366,7 +366,7 @@ describe("edges", () => {
     delete snap.scope_state;
     writeFileSync(join(t.root, "snapshots", "wh.json"), JSON.stringify(snap, null, 2));
     await alter(t.dir, ["create table fct_b (id integer)"]);
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(r.json<{ changes: Changes }>().changes.new_in_scope).toEqual(["main.fct_b"]);
   });
 
@@ -386,7 +386,7 @@ describe("edges", () => {
     writeYaml(join(t.root, "models", "wh", "old.yaml"), approvedModel("old", "legacy.fct_old"));
     const src = readYaml<SourceConfig>(join(t.root, "sources", "wh.yaml"));
     writeYaml(join(t.root, "sources", "wh.yaml"), { ...src, intake: { schemas: ["marts", "extra"] } });
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     const changes = r.json<{ changes: Changes }>().changes;
     expect(changes.new_in_scope).toEqual(["extra.fct_x"]);
     expect(changes.left_scope_with_models).toEqual([{ model: "old", table: "legacy.fct_old" }]);
@@ -396,8 +396,8 @@ describe("edges", () => {
   test("a draft model leaving scope is named but not warned about", async () => {
     const t = await base(["create table fct_a (id integer)", "create table fct_b (id integer, amount integer)"], { include: ["fct_*"] });
     writeYaml(join(t.root, "models", "wh", "b.yaml"), { ...approvedModel("b", "main.fct_b"), status: "draft" });
-    expect((await sl(t.root, ["scope", "--source", "wh", "--exclude", "fct_b", "--write"])).code).toBe(0);
-    const r = await sl(t.root, ["introspect", "--source", "wh"]);
+    expect((await semlayer(t.root, ["scope", "--source", "wh", "--exclude", "fct_b", "--write"])).code).toBe(0);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh"]);
     expect(r.out).toContain("Left scope, no longer matching the scope or intake.schemas: main.fct_b.");
     expect(r.out).not.toContain("approved models");
   });
@@ -405,8 +405,8 @@ describe("edges", () => {
   test("a model whose table is written in another case still counts", async () => {
     const t = await base(["create table fct_a (id integer)", "create table fct_legacy (id integer, amount integer)"], { include: ["fct_*"] });
     writeYaml(join(t.root, "models", "wh", "legacy.yaml"), approvedModel("legacy", "MAIN.FCT_LEGACY"));
-    expect((await sl(t.root, ["scope", "--source", "wh", "--exclude", "fct_legacy", "--write"])).code).toBe(0);
-    const r = await sl(t.root, ["introspect", "--source", "wh", "--json"]);
+    expect((await semlayer(t.root, ["scope", "--source", "wh", "--exclude", "fct_legacy", "--write"])).code).toBe(0);
+    const r = await semlayer(t.root, ["introspect", "--source", "wh", "--json"]);
     expect(r.json<{ changes: Changes }>().changes.left_scope_with_models).toEqual([{ model: "legacy", table: "main.fct_legacy" }]);
   });
 
@@ -424,16 +424,16 @@ describe("edges", () => {
 describe("determinism", () => {
   test("the same rerun from the same files gives the same report and snapshot", async () => {
     const t = await warehouse();
-    expect((await sl(t.root, ["scope", "--source", "wh", "--exclude", "fct_legacy", "--write"])).code).toBe(0);
+    expect((await semlayer(t.root, ["scope", "--source", "wh", "--exclude", "fct_legacy", "--write"])).code).toBe(0);
     await alter(t.dir, ["create table fct_b (id integer)", "create table fct_a (id integer)", "create table dim_z (id integer)"]);
     const path = join(t.root, "snapshots", "wh.json");
     const previous = readFileSync(path, "utf8");
     const runs: { text: string; json: string; snapshot: string }[] = [];
     for (let i = 0; i < 2; i++) {
       writeFileSync(path, previous);
-      const json = (await sl(t.root, ["introspect", "--source", "wh", "--json"])).out;
+      const json = (await semlayer(t.root, ["introspect", "--source", "wh", "--json"])).out;
       writeFileSync(path, previous);
-      const text = (await sl(t.root, ["introspect", "--source", "wh"])).out;
+      const text = (await semlayer(t.root, ["introspect", "--source", "wh"])).out;
       runs.push({ text, json, snapshot: readFileSync(path, "utf8") });
     }
     expect(runs[1]).toEqual(runs[0]!);
@@ -516,24 +516,24 @@ describe("recordScope", () => {
     expect(tablesFlag(["marts.fct_*"])).toBe("");
     expect(tablesFlag(Array.from({ length: 9 }, (_, i) => `marts.fct_${i}`))).toBe("");
     const lines = scopeLines({ new_in_scope: ["marts.Order Lines"], left_scope: [], left_scope_with_models: [] }, "wh");
-    expect(lines[0]).toContain("`sl draft --source wh` drafts it.");
+    expect(lines[0]).toContain("`semlayer draft --source wh` drafts it.");
   });
 
   test("a table that left and is among the removed tables is not named again", () => {
     const changes = { new_in_scope: [], left_scope: ["marts.fct_gone", "marts.fct_x"], left_scope_with_models: [] };
     expect(scopeLines(changes, "wh", ["MARTS.FCT_GONE"])).toEqual([
-      "Left scope, no longer matching the scope or intake.schemas: marts.fct_x. `sl scope --source wh` shows what the scope selects.",
+      "Left scope, no longer matching the scope or intake.schemas: marts.fct_x. `semlayer scope --source wh` shows what the scope selects.",
     ]);
     expect(scopeLines(changes, "wh", ["marts.fct_gone", "marts.fct_x"])).toEqual([]);
   });
 });
 
 describe("validate", () => {
-  test("a snapshot with scope_state passes sl validate", async () => {
+  test("a snapshot with scope_state passes semlayer validate", async () => {
     const t = await warehouse();
     await alter(t.dir, ["create table fct_returns (id integer)"]);
-    expect((await sl(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
-    const r = await sl(t.root, ["validate", "--json"]);
+    expect((await semlayer(t.root, ["introspect", "--source", "wh"])).code).toBe(0);
+    const r = await semlayer(t.root, ["validate", "--json"]);
     expect(r.out).not.toContain("snapshots/wh.json");
   });
 });

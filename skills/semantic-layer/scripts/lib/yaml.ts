@@ -21,7 +21,7 @@ import { writeFileAtomic } from "./lock.ts";
 
 const STRINGIFY = { lineWidth: 0, indent: 2, flowCollectionPadding: false } as const;
 
-// Parsed YAML by its text, so a file read again in one process (by each entry of sl apply, or by an
+// Parsed YAML by its text, so a file read again in one process (by each entry of semlayer apply, or by an
 // edit's reads before and after) is parsed once. Each caller gets its own copy to change. The cache
 // is emptied when the text it holds passes CACHE_CHARS, which bounds a long-lived MCP server.
 const parsedTexts = new Map<string, unknown>();

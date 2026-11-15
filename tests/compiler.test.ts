@@ -11,7 +11,7 @@ import { listGoldens, loadSource } from "../skills/semantic-layer/scripts/lib/pr
 import { resolvedRelation } from "../skills/semantic-layer/scripts/lib/source-safety.ts";
 import type { Golden, Model, QueryRequest, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, duckdbSource, expectRefusedAsChanged, initProject, PG_URL, reapprove, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, duckdbSource, expectRefusedAsChanged, initProject, PG_URL, reapprove, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 type Row = Record<string, unknown>;
 
@@ -204,8 +204,8 @@ describe("compiled SQL", () => {
     const a = compiled(compileRequest(root, r));
     const b = compiled(compileRequest(root, JSON.parse(JSON.stringify(r))));
     expect(b).toEqual(a);
-    const cli1 = await sl(root, ["sql", "--request", JSON.stringify(r), "--json"]);
-    const cli2 = await sl(root, ["sql", "--request", JSON.stringify(r), "--json"]);
+    const cli1 = await semlayer(root, ["sql", "--request", JSON.stringify(r), "--json"]);
+    const cli2 = await semlayer(root, ["sql", "--request", JSON.stringify(r), "--json"]);
     expect(cli1.out).toBe(cli2.out);
   });
 
@@ -401,7 +401,7 @@ describe("refusals", () => {
     ]);
     expect(hidden.refusals[0]!.message).toBe("dimensions[0] names orders.email, which this user may not see (protected_tag:pii)");
     expect(hidden.refusals[1]!.message).toBe(
-      'dimensions[1] names orders.note, which is a draft until it is read back and approved: sl readback --targets shop.orders.note, then sl approve --target shop.orders.note --by "<owner>" after the owner\'s yes',
+      'dimensions[1] names orders.note, which is a draft until it is read back and approved: semlayer readback --targets shop.orders.note, then semlayer approve --target shop.orders.note --by "<owner>" after the owner\'s yes',
     );
     expect(hidden.refusals[1]).toMatchObject({ reasons: ["draft"], awaits: ["shop.orders.note"] });
     expect(hidden.refusals[0]).toMatchObject({ reasons: ["protected_tag:pii"] });
@@ -430,7 +430,7 @@ describe("refusals", () => {
       [req({ dimensions: ["orders.revenue"] }), "dimensions[0] names orders.revenue, which is a measure"],
       [req({ filters: [{ field: "orders.status", op: "eq", value: "a" }] }), "the request names no measure or dimension"],
       [req({ measures: ["orders.revenue"], filters: [{ field: "orders.status", op: "in", value: [null] }] }), "use is_null or not_null for null"],
-      [req({ measures: ["orders.revenue"] }, "snow"), "source snow is snowflake; sl sql compiles for postgres and duckdb sources, and a later version of sl sql adds other dialects"],
+      [req({ measures: ["orders.revenue"] }, "snow"), "source snow is snowflake; semlayer sql compiles for postgres and duckdb sources, and a later version of semlayer sql adds other dialects"],
     ];
     for (const [request, message] of cases) expect((await refusal(root, request)).reason).toContain(message);
     expect((await refusal(root, { measures: ["orders.revenue"], source: "pg" }, { source: "shop" })).reason).toBe("the request is on source pg, not shop");
@@ -446,28 +446,28 @@ describe("refusals", () => {
     const leak = await refusal(root, req({ measures: ["orders.leak"] }));
     expect(leak.refusals[0]!.code).toBe("invalid_layer");
     expect(leak.reason).toContain("the compiled SQL is not read-only");
-    expect((await refusal(root, req({ measures: ["orders.sub"] }))).reason).toContain("orders.sub has an expr or filter the compiler cannot use; run sl validate");
+    expect((await refusal(root, req({ measures: ["orders.sub"] }))).reason).toContain("orders.sub has an expr or filter the compiler cannot use; run semlayer validate");
     expect((await refusal(root, req({ dimensions: ["orders.blank"] }))).reason).toContain("orders.blank has an expr or filter the compiler cannot use");
   });
 });
 
-describe("sl sql", () => {
+describe("semlayer sql", () => {
   test("prints the SQL and its parameters, and never runs it", async () => {
     const { root } = await shop();
-    const r = await sl(root, ["sql", "--source", "shop", "--request", JSON.stringify({ measures: ["orders.revenue"], filters: [{ field: "orders.region", op: "eq", value: "NE" }] })]);
+    const r = await semlayer(root, ["sql", "--source", "shop", "--request", JSON.stringify({ measures: ["orders.revenue"], filters: [{ field: "orders.region", op: "eq", value: "NE" }] })]);
     expect(r.code).toBe(0);
     expect(r.out).toContain(`sum(amount_cents * 0.01) filter (where status <> 'cancelled') as "revenue"`);
     expect(r.out).toContain('Parameters, bound in order: $1 = "NE"');
-    expect(r.out).toContain("sl sql never runs it");
-    expect(r.out).toContain("sl goldens check");
+    expect(r.out).toContain("semlayer sql never runs it");
+    expect(r.out).toContain("semlayer goldens check");
   });
 
   test("a golden file gives the request, role and user; a refusal exits 1 naming the next command", async () => {
     // A metric golden as finance, and a sales rep's golden with its row filter, both compile.
-    const finance = await sl(ACME, ["sql", "--request", join(ACME, "goldens", "finance_net_revenue_2025.yaml"), "--json"]);
+    const finance = await semlayer(ACME, ["sql", "--request", join(ACME, "goldens", "finance_net_revenue_2025.yaml"), "--json"]);
     expect(finance.code).toBe(0);
     expect(finance.json<Compiled>().columns.map((c) => c.kind)).toEqual(["dimension", "metric"]);
-    const sales = await sl(ACME, ["sql", "--request", join(ACME, "goldens", "sales_rep_101_2025.yaml"), "--json"]);
+    const sales = await semlayer(ACME, ["sql", "--request", join(ACME, "goldens", "sales_rep_101_2025.yaml"), "--json"]);
     expect(sales.code).toBe(0);
     expect(sales.json<Compiled>().params).toEqual([101, 101, "2025-01-01", "2026-01-01"]);
     // A golden whose request needs what a later version adds (a cumulative metric) names its hand-written SQL.
@@ -475,39 +475,39 @@ describe("sl sql", () => {
     writeYaml(join(root, "metrics.yaml"), { metrics: [{ name: "running", source: "shop", type: "cumulative", expr: "{orders.revenue}", ...ok, description: "x" }] });
     const goldenFile = join(root, "goldens", "running_total.yaml");
     writeYaml(goldenFile, { name: "running_total", question: "What is the running revenue?", request: { source: "shop", measures: ["running"] }, sql: "select 1", status: "draft" });
-    const r = await sl(root, ["sql", "--request", goldenFile]);
+    const r = await semlayer(root, ["sql", "--request", goldenFile]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain("metric running is of type cumulative, and sl sql compiles ratio and derived metrics only");
-    expect(r.err).toContain("sl goldens run --name running_total");
-    const j = await sl(root, ["sql", "--request", goldenFile, "--json"]);
+    expect(r.err).toContain("metric running is of type cumulative, and semlayer sql compiles ratio and derived metrics only");
+    expect(r.err).toContain("semlayer goldens run --name running_total");
+    const j = await semlayer(root, ["sql", "--request", goldenFile, "--json"]);
     const out = j.json<{ ok: boolean; refusals: { code: string }[]; next: string }>();
     expect(out.ok).toBe(false);
     expect(out.refusals.map((x) => x.code)).toEqual(["unsupported_metric"]);
 
-    const hidden = await sl(ACME, ["sql", "--request", JSON.stringify({ source: "warehouse", measures: ["refunds.refund_amount"] })]);
+    const hidden = await semlayer(ACME, ["sql", "--request", JSON.stringify({ source: "warehouse", measures: ["refunds.refund_amount"] })]);
     expect(hidden.code).toBe(1);
     expect(hidden.err).toContain("which this user may not see (model_hidden)");
-    expect(hidden.err).toContain("see what this user may see with sl access --user '{}'.");
-    const quote = await sl(ACME, ["sql", "--request", JSON.stringify({ source: "warehouse", measures: ["refunds.refund_amount"] }), "--user", '{"name":"O\'Brien"}']);
-    expect(quote.err).toContain(`sl access --user '{"name":"O'\\''Brien"}'`);
+    expect(hidden.err).toContain("see what this user may see with semlayer access --user '{}'.");
+    const quote = await semlayer(ACME, ["sql", "--request", JSON.stringify({ source: "warehouse", measures: ["refunds.refund_amount"] }), "--user", '{"name":"O\'Brien"}']);
+    expect(quote.err).toContain(`semlayer access --user '{"name":"O'\\''Brien"}'`);
 
-    const spend = await sl(ACME, ["sql", "--request", join(ACME, "goldens", "spend_2025.yaml"), "--json"]);
+    const spend = await semlayer(ACME, ["sql", "--request", join(ACME, "goldens", "spend_2025.yaml"), "--json"]);
     expect(spend.code).toBe(0);
     expect(spend.json<Compiled>().params).toEqual(["2025-01-01", "2026-01-01"]);
   });
 
   test("bad flags are plain errors, and a refusal without a golden names the command to run instead", async () => {
     const { root } = await shop();
-    expect((await sl(root, ["sql"])).err).toContain("--request is required");
-    expect((await sl(root, ["sql", "--request", "{nope"])).err).toContain("--request is not valid JSON");
-    expect((await sl(root, ["sql", "--request", "missing.yaml"])).err).toContain("no file missing.yaml");
-    expect((await sl(root, ["sql", "--request", '{"source":"shop","measures":["orders.revenue"]}', "--user", "[1]"])).err).toContain("--user must be a JSON object");
-    const snow = await sl(root, ["sql", "--request", '{"source":"snow","measures":["orders.revenue"]}']);
-    expect(snow.err).toContain("and a later version of sl sql adds other dialects");
+    expect((await semlayer(root, ["sql"])).err).toContain("--request is required");
+    expect((await semlayer(root, ["sql", "--request", "{nope"])).err).toContain("--request is not valid JSON");
+    expect((await semlayer(root, ["sql", "--request", "missing.yaml"])).err).toContain("no file missing.yaml");
+    expect((await semlayer(root, ["sql", "--request", '{"source":"shop","measures":["orders.revenue"]}', "--user", "[1]"])).err).toContain("--user must be a JSON object");
+    const snow = await semlayer(root, ["sql", "--request", '{"source":"snow","measures":["orders.revenue"]}']);
+    expect(snow.err).toContain("and a later version of semlayer sql adds other dialects");
     expect(snow.err).toContain("Until a later version compiles it, hand-written SQL computes this figure: write it from the model YAML and run it with your own tool.");
     writeYaml(join(root, "metrics.yaml"), { metrics: [{ name: "running", source: "shop", type: "cumulative", expr: "{orders.revenue}", ...ok, description: "x" }] });
-    const later = await sl(root, ["sql", "--request", '{"source":"shop","measures":["running"]}']);
-    expect(later.err).toContain("write it from the model YAML and run it with sl run --source shop --file <query.sql>.");
+    const later = await semlayer(root, ["sql", "--request", '{"source":"shop","measures":["running"]}']);
+    expect(later.err).toContain("write it from the model YAML and run it with semlayer run --source shop --file <query.sql>.");
   });
 });
 
@@ -630,7 +630,7 @@ describe("Acme's warehouse goldens on postgres, with definition joins written ou
     "revenue, order count by region and discount compile to the recorded rows; grains match hand-written SQL; cancelled orders change revenue once approved again",
     async () => {
       assertLocalPg(PG_URL);
-      const schema = uniqueSchema("sl_compiler");
+      const schema = uniqueSchema("semlayer_compiler");
       const db = new SQL({ url: PG_URL!, max: 1 });
       try {
         await loadPostgres(PG_URL!, DATA, schema);

@@ -88,9 +88,9 @@ function build(): void {
     sql: "select count(*) as order_count from main.orders",
     status: "draft",
   });
-  mkdirSync(join(root, ".sl", "pending"), { recursive: true });
-  writeFileSync(join(root, ".sl", "ledger.jsonl"), '{"kind":"reply"}\n');
-  writeFileSync(join(root, ".sl", "pending", "rb_0001.json"), "{}\n");
+  mkdirSync(join(root, ".semlayer", "pending"), { recursive: true });
+  writeFileSync(join(root, ".semlayer", "ledger.jsonl"), '{"kind":"reply"}\n');
+  writeFileSync(join(root, ".semlayer", "pending", "rb_0001.json"), "{}\n");
 }
 
 // Every file under the directory with its contents, to show the hook writes nothing.
@@ -142,9 +142,9 @@ function allowed(v: Verdict): void {
 }
 
 describe("approval fields", () => {
-  test("approving a draft measure by hand is refused, naming sl approve", () => {
+  test("approving a draft measure by hand is refused, naming semlayer approve", () => {
     const v = edit(model(), "agg: count\n    status: draft", "agg: count\n    status: approved\n    approved_by: Test Owner");
-    refused(v, "approval fields of wh.orders.order_count", "approved_by, status", "sl readback --targets wh.orders.order_count", "sl approve --target wh.orders.order_count");
+    refused(v, "approval fields of wh.orders.order_count", "approved_by, status", "semlayer readback --targets wh.orders.order_count", "semlayer approve --target wh.orders.order_count");
   });
 
   test("approving a draft metric with Write is refused", () => {
@@ -158,16 +158,16 @@ describe("approval fields", () => {
 
   test("making an approved item a draft by hand is refused, naming --revoke", () => {
     const v = edit(model(), "status: approved\napproved_by", "status: draft\napproved_by");
-    refused(v, "approval fields of wh.orders (status)", "sl approve --target wh.orders --revoke");
+    refused(v, "approval fields of wh.orders (status)", "semlayer approve --target wh.orders --revoke");
   });
 
   test("changing a recorded approved_hash is refused", () => {
     refused(edit(model(), "approved_hash: sha256:", "approved_hash: sha256:0"), "approval fields of wh.orders");
   });
 
-  test("a golden's confirmation fields are refused, naming sl goldens confirm", () => {
+  test("a golden's confirmation fields are refused, naming semlayer goldens confirm", () => {
     const g = join(root, "goldens", "orders_2025.yaml");
-    refused(edit(g, "status: draft", "status: approved\nconfirmed_by: Test Owner"), "confirmation fields of golden:orders_2025", "sl goldens confirm --name orders_2025");
+    refused(edit(g, "status: draft", "status: approved\nconfirmed_by: Test Owner"), "confirmation fields of golden:orders_2025", "semlayer goldens confirm --name orders_2025");
   });
 
   test("access.yaml's last_approved is an approval field", () => {
@@ -178,7 +178,7 @@ describe("approval fields", () => {
 describe("approved items", () => {
   test("editing an approved measure's expr is refused, naming the typed edits and --revoke", () => {
     const v = edit(model(), "expr: amount_cents / 100.0\n    agg: sum\n    filter: status", "expr: amount_cents\n    agg: sum\n    filter: status");
-    refused(v, "wh.orders.revenue is approved", "sl set", "sl approve --target wh.orders.revenue --revoke");
+    refused(v, "wh.orders.revenue is approved", "semlayer set", "semlayer approve --target wh.orders.revenue --revoke");
   });
 
   test("editing an approved model's table or an approved join is refused", () => {
@@ -190,17 +190,17 @@ describe("approved items", () => {
     const text = read(model());
     const start = text.indexOf("  - name: revenue_ne");
     const end = text.indexOf("  - name: order_count");
-    refused(call("Write", { file_path: model(), content: text.slice(0, start) + text.slice(end) }), "removes or renames approved wh.orders.revenue_ne", "sl remove-field wh.orders.revenue_ne");
+    refused(call("Write", { file_path: model(), content: text.slice(0, start) + text.slice(end) }), "removes or renames approved wh.orders.revenue_ne", "semlayer remove-field wh.orders.revenue_ne");
   });
 
   test("deleting the content of a file with approved items is refused", () => {
     const v = call("Write", { file_path: model(), content: "" });
-    refused(v, "removes or renames approved wh.orders. To remove it, make it a draft first with sl approve --target wh.orders --revoke --recursive");
+    refused(v, "removes or renames approved wh.orders. To remove it, make it a draft first with semlayer approve --target wh.orders --revoke --recursive");
     expect(v.message!.split("\n").length).toBe(6);
   });
 
   test("changing an approved model's model or source key is refused; a draft model's is not", () => {
-    refused(edit(model(), "model: orders\n", "model: orders_v2\n"), "changes the model or source key of wh.orders", "sl approve --target wh.orders --revoke --recursive");
+    refused(edit(model(), "model: orders\n", "model: orders_v2\n"), "changes the model or source key of wh.orders", "semlayer approve --target wh.orders --revoke --recursive");
     refused(edit(model(), "model: orders\n", "model: orders\nsource: lake\n"), "model or source key of wh.orders");
     allowed(edit(model("regions"), "model: regions\n", "model: regions_v2\n"));
   });
@@ -225,7 +225,7 @@ describe("approved items", () => {
 
   test("a join another model's approved measure reads through is guarded", () => {
     const v = edit(model("customers"), "from: region_id", "from: home_region_id");
-    refused(v, "wh.orders.revenue_ne is approved and reads through a join this edit changes", "sl approve --target wh.orders.revenue_ne --revoke");
+    refused(v, "wh.orders.revenue_ne is approved and reads through a join this edit changes", "semlayer approve --target wh.orders.revenue_ne --revoke");
   });
 
   test("restoring the content an approved_hash records is allowed", () => {
@@ -247,13 +247,13 @@ describe("approved items", () => {
 
   test("an approved access.yaml is guarded, its open questions are not", () => {
     const a = join(root, "access.yaml");
-    refused(edit(a, "mode: open", "mode: closed"), "access.yaml is approved", "sl approve --target access --revoke");
+    refused(edit(a, "mode: open", "mode: closed"), "access.yaml is approved", "semlayer approve --target access --revoke");
     allowed(edit(a, "open_questions: []", "open_questions:\n  - Who sees refunds?"));
   });
 
   test("a confirmed golden's expected rows are guarded; its reference and a draft golden are not", () => {
     const g = join(root, "goldens", "revenue_2025.yaml");
-    refused(edit(g, "revenue: 100.5", "revenue: 101"), "golden:revenue_2025 is confirmed", "sl goldens confirm --name revenue_2025");
+    refused(edit(g, "revenue: 100.5", "revenue: 101"), "golden:revenue_2025 is confirmed", "semlayer goldens confirm --name revenue_2025");
     refused(edit(g, "tolerance: 0", "tolerance: 0.1"), "golden:revenue_2025 is confirmed");
     allowed(edit(g, "reference: Finance close.", "reference: Finance close, 2025."));
     allowed(edit(join(root, "goldens", "orders_2025.yaml"), "count(*)", "count(distinct order_id)"));
@@ -302,7 +302,7 @@ describe("MultiEdit, matching and paths", () => {
 
   test("files in the root outside the guarded parts are allowed", () => {
     allowed(call("Write", { file_path: join(root, "semantic.yaml"), content: "name: hooktest\ndescription: Test.\n" }));
-    allowed(call("Write", { file_path: join(root, ".sl", "plans", "p1.json"), content: "{}" }));
+    allowed(call("Write", { file_path: join(root, ".semlayer", "plans", "p1.json"), content: "{}" }));
     allowed(call("Write", { file_path: join(root, "models", "README.md"), content: "notes" }));
   });
 
@@ -314,14 +314,14 @@ describe("MultiEdit, matching and paths", () => {
 
 describe("ledger and pending readbacks", () => {
   test("writing or editing the ledger by hand is refused", () => {
-    const ledger = join(root, ".sl", "ledger.jsonl");
-    refused(call("Write", { file_path: ledger, content: '{"kind":"reply","verdict":"yes"}\n' }), ".sl/ledger.jsonl is written only by the CLI", "sl reply --readback");
+    const ledger = join(root, ".semlayer", "ledger.jsonl");
+    refused(call("Write", { file_path: ledger, content: '{"kind":"reply","verdict":"yes"}\n' }), ".semlayer/ledger.jsonl is written only by the CLI", "semlayer reply --readback");
     refused(edit(ledger, '{"kind":"reply"}', '{"kind":"reply","verdict":"yes"}'), "written only by the CLI");
   });
 
   test("a pending readback, existing or new, is refused", () => {
-    refused(call("Edit", { file_path: join(root, ".sl", "pending", "rb_0001.json"), old_string: "{}", new_string: "{ }" }), ".sl/pending/rb_0001.json is written only by the CLI");
-    refused(call("Write", { file_path: join(root, ".sl", "pending", "rb_0002.json"), content: "{}" }), "sl readback writes .sl/pending/");
+    refused(call("Edit", { file_path: join(root, ".semlayer", "pending", "rb_0001.json"), old_string: "{}", new_string: "{ }" }), ".semlayer/pending/rb_0001.json is written only by the CLI");
+    refused(call("Write", { file_path: join(root, ".semlayer", "pending", "rb_0002.json"), content: "{}" }), "semlayer readback writes .semlayer/pending/");
   });
 });
 
@@ -335,7 +335,7 @@ describe("Bash", () => {
   });
 
   test("redirections, tee, cp, mv and rm onto layer files are refused", () => {
-    refused(sh(`echo '{"verdict":"yes"}' >> ${root}/.sl/ledger.jsonl`), ".sl/ledger.jsonl", "written only by the CLI");
+    refused(sh(`echo '{"verdict":"yes"}' >> ${root}/.semlayer/ledger.jsonl`), ".semlayer/ledger.jsonl", "written only by the CLI");
     refused(sh(`cat x > ${root}/access.yaml`), "access.yaml", "redirection >");
     refused(sh(`echo x | tee -a ${root}/goldens/revenue_2025.yaml`), "goldens/revenue_2025.yaml", "(tee)");
     refused(sh(`cp /tmp/orders.yaml ${root}/models/wh/orders.yaml`), "(cp)");
@@ -345,19 +345,19 @@ describe("Bash", () => {
     refused(sh(`rm -rf ${root}`), "the semantic root itself");
     refused(sh(`rm ${root}/models/wh/*.yaml`), "models/wh/customers.yaml");
     refused(sh(`yq -i '.status = "approved"' ${model()}`), "(yq -i)");
-    refused(sh(`printf x 2>/dev/null 1> ${root}/.sl/pending/rb_9.json`), ".sl/pending/rb_9.json");
+    refused(sh(`printf x 2>/dev/null 1> ${root}/.semlayer/pending/rb_9.json`), ".semlayer/pending/rb_9.json");
   });
 
   test("nested shells, heredocs and variables are read", () => {
     refused(sh(`bash -c "sed -i 's/a/b/' ${model()}"`), "(sed -i)");
     refused(sh(`cat > ${model()} <<'EOF'\nmodel: orders\nEOF`), "redirection >");
-    refused(sh('echo x >> "$ROOT/.sl/ledger.jsonl"'), "may write $ROOT/.sl/ledger.jsonl");
+    refused(sh('echo x >> "$ROOT/.semlayer/ledger.jsonl"'), "may write $ROOT/.semlayer/ledger.jsonl");
   });
 
-  test("sl commands and reads are allowed", () => {
-    allowed(sh(`bun skills/semantic-layer/scripts/sl.ts reply --readback rb_0001 --item 1 --text "Yes > fine, approve it" --verdict yes --by "Test Owner" --root ${root}`));
-    allowed(sh(`bun skills/semantic-layer/scripts/sl.ts approve --target wh.orders.order_count --root ${root} --json > /tmp/out.json 2>&1`));
-    allowed(sh(`bun skills/semantic-layer/scripts/sl.ts set wh.orders.revenue expr "amount_cents / 100.0" --root ${root} | tee /tmp/log.txt`));
+  test("semlayer commands and reads are allowed", () => {
+    allowed(sh(`bun skills/semantic-layer/scripts/semlayer.ts reply --readback rb_0001 --item 1 --text "Yes > fine, approve it" --verdict yes --by "Test Owner" --root ${root}`));
+    allowed(sh(`bun skills/semantic-layer/scripts/semlayer.ts approve --target wh.orders.order_count --root ${root} --json > /tmp/out.json 2>&1`));
+    allowed(sh(`bun skills/semantic-layer/scripts/semlayer.ts set wh.orders.revenue expr "amount_cents / 100.0" --root ${root} | tee /tmp/log.txt`));
     allowed(sh(`cat ${model()} && grep -n approved ${root}/metrics.yaml && sed -n 1,5p ${model()}`));
     allowed(sh(`git diff -- ${root} && cp ${model()} /tmp/orders-copy.yaml`));
     allowed(sh(`cat > /tmp/notes.txt <<EOF\nwrite > ${model()} later\nEOF`));
@@ -423,7 +423,7 @@ describe("Bash", () => {
   ];
 
   test("a write behind a shell keyword, in a group or in a function body is refused with the message the plain command gets", () => {
-    for (const f of [model(), join(root, "metrics.yaml"), join(root, ".sl", "ledger.jsonl")]) {
+    for (const f of [model(), join(root, "metrics.yaml"), join(root, ".semlayer", "ledger.jsonl")]) {
       for (const [write, how] of writesTo(f, outside)) {
         const plain = sh(write);
         refused(plain, how);
@@ -438,12 +438,12 @@ describe("Bash", () => {
     refused(sh("if true; then rm models/wh/orders.yaml; fi", root), "models/wh/orders.yaml", "(rm)", "typed edit");
     refused(sh(`if true; then cd ${root}; rm models/wh/orders.yaml; fi`), "models/wh/orders.yaml", "(rm)");
     refused(sh(`while true; do bash -c "sed -i s/a/b/ ${model()}"; break; done`), "(sed -i)");
-    refused(sh(`{ eval "rm ${root}/.sl/pending/rb_0001.json"; }`), ".sl/pending/rb_0001.json", "written only by the CLI");
+    refused(sh(`{ eval "rm ${root}/.semlayer/pending/rb_0001.json"; }`), ".semlayer/pending/rb_0001.json", "written only by the CLI");
     refused(sh("if true; then rm semantic.yaml; fi", root), "marks the semantic layer");
-    refused(sh('{ rm "$ROOT/.sl/ledger.jsonl"; }'), "may write $ROOT/.sl/ledger.jsonl");
+    refused(sh('{ rm "$ROOT/.semlayer/ledger.jsonl"; }'), "may write $ROOT/.semlayer/ledger.jsonl");
     // The interviewer's shell writes anywhere in the root are found the same way (spec: Agent roles).
     const interviewer = (command: string) =>
-      checkToolUse(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd: dir, agent_type: "semantic-layer-builder:sl-interviewer", agent_id: "a1" }));
+      checkToolUse(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd: dir, agent_type: "semantic-layer-builder:semlayer-interviewer", agent_id: "a1" }));
     const plain = interviewer(`rm ${root}/sources/wh.yaml`);
     refused(plain, "sources/wh.yaml", "(rm)", "never edits the semantic layer by hand");
     for (const form of KEYWORD_FORMS) expect(interviewer(form(`rm ${root}/sources/wh.yaml`)).message).toBe(plain.message!);
@@ -455,7 +455,7 @@ describe("Bash", () => {
       allowed(sh(form(`cat ${model()}`)));
       allowed(sh(form(`sed -n 1,5p ${model()}`)));
       allowed(sh(form(`cp ${model()} ${outside}/orders-copy.yaml`)));
-      allowed(sh(form(`bun skills/semantic-layer/scripts/sl.ts validate --root ${root}`)));
+      allowed(sh(form(`bun skills/semantic-layer/scripts/semlayer.ts validate --root ${root}`)));
     }
     // A keyword as an argument is not a command's name.
     allowed(sh(`echo if then rm ${model()}`));

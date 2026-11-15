@@ -9,7 +9,7 @@ import { SQL } from "bun";
 import { compareRows, compileGolden, groupingColumns, valuesEqual } from "../skills/semantic-layer/scripts/lib/goldens.ts";
 import type { Golden, Model } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, confirmWithYes, duckdbSource, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, confirmWithYes, duckdbSource, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -406,7 +406,7 @@ async function onDuckdb(golden?: Record<string, unknown>): Promise<Warehouse> {
 
 async function onPostgres(): Promise<Warehouse> {
   assertLocalPg(PG_URL);
-  const schema = uniqueSchema("sl_compare");
+  const schema = uniqueSchema("semlayer_compare");
   const db = new SQL({ url: PG_URL!, max: 1 });
   cleanups.push(async () => {
     await db.unsafe(`drop schema if exists ${schema} cascade`);
@@ -434,7 +434,7 @@ interface CheckJson {
 
 async function drift(w: Warehouse): Promise<void> {
   const check = async () => {
-    const r = await sl(w.root, ["goldens", "check", "--name", "sales_by_year", "--json"], w.env);
+    const r = await semlayer(w.root, ["goldens", "check", "--name", "sales_by_year", "--json"], w.env);
     const doc = r.json<CheckJson>();
     return { code: r.code, diffs: doc.results[0]!.diffs };
   };
@@ -470,11 +470,11 @@ async function drift(w: Warehouse): Promise<void> {
   expect(swapped.diffs).toHaveLength(2);
   expect(swapped.diffs.find((d) => d.includes("fiscal_year=2024"))).toMatch(/^Row [12] \(fiscal_year=2024\), column revenue: expected "?1500\.50?"?, got "?3000\.75"?\.$/);
   expect(swapped.diffs.find((d) => d.includes("fiscal_year=2025"))).toMatch(/^Row [12] \(fiscal_year=2025\), column revenue: expected "?3000\.75"?, got "?1500\.50?"?\.$/);
-  const human = await sl(w.root, ["goldens", "check", "--name", "sales_by_year"], w.env);
+  const human = await semlayer(w.root, ["goldens", "check", "--name", "sales_by_year"], w.env);
   expect(human.code).toBe(1);
   expect(human.out).toContain("FAIL  sales_by_year");
   expect(human.out).toContain("(fiscal_year=2024), column revenue: expected");
-  expect(human.out).toContain("Next: sl goldens run --name sales_by_year shows its rows");
+  expect(human.out).toContain("Next: semlayer goldens run --name sales_by_year shows its rows");
 }
 
 describe("goldens check on a golden grouped by year, confirmed at half a percent", () => {
@@ -487,7 +487,7 @@ describe("goldens check on a golden grouped by year, confirmed at half a percent
   });
 });
 
-// The cross-check comparison of goldens run, sl readback and goldens confirm reads the grouping
+// The cross-check comparison of goldens run, semlayer readback and goldens confirm reads the grouping
 // columns from the compiled request too. A decimal price band is not a whole number, so only that
 // rule can make it exact.
 describe("cross_check_sql against the compiled rows", () => {
@@ -504,24 +504,24 @@ describe("cross_check_sql against the compiled rows", () => {
     const file = join(w.root, "goldens", "by_band.yaml");
     expect(groupingColumns(compileGolden(w.root, readYaml<Golden>(file)))).toEqual(["price_band"]);
 
-    const run = await sl(w.root, ["goldens", "run", "--name", "by_band", "--tolerance", "0.005", "--json"]);
+    const run = await semlayer(w.root, ["goldens", "run", "--name", "by_band", "--tolerance", "0.005", "--json"]);
     const doc = run.json<{ cross_check?: { ok: boolean; diffs: string[] } }>();
     expect(doc.cross_check?.ok).toBe(false);
     expect(doc.cross_check?.diffs.join("\n")).toContain("but no result row matches it (grouping columns compare exactly).");
 
-    const readback = await sl(w.root, ["readback", "--targets", "golden:by_band", "--tolerance", "0.005"]);
+    const readback = await semlayer(w.root, ["readback", "--targets", "golden:by_band", "--tolerance", "0.005"]);
     expect(readback.code).toBe(1);
     expect(readback.err).toContain("cross_check_sql gives other rows");
-    expect(readback.err).toContain("sl goldens run --name by_band");
+    expect(readback.err).toContain("semlayer goldens run --name by_band");
     const confirm = await confirmWithYes(w.root, ["--name", "by_band", "--by", "Dana", "--tolerance", "0.005"]);
     expect(confirm.code).toBe(1);
     expect(readYaml<Golden>(file).status).toBe("draft");
 
     // With the same price bands, a decimal total half a dollar off still follows the tolerance.
     writeYaml(file, { ...golden, cross_check_sql: "select price_band, sum(amount) + 0.5 as revenue from sales group by 1" });
-    const within = await sl(w.root, ["goldens", "run", "--name", "by_band", "--tolerance", "0.005", "--json"]);
+    const within = await semlayer(w.root, ["goldens", "run", "--name", "by_band", "--tolerance", "0.005", "--json"]);
     expect(within.json<{ cross_check?: { ok: boolean } }>().cross_check?.ok).toBe(true);
-    const strict = await sl(w.root, ["goldens", "run", "--name", "by_band", "--tolerance", "0", "--json"]);
+    const strict = await semlayer(w.root, ["goldens", "run", "--name", "by_band", "--tolerance", "0", "--json"]);
     expect(strict.json<{ cross_check?: { ok: boolean } }>().cross_check?.ok).toBe(false);
   });
 
@@ -536,7 +536,7 @@ describe("cross_check_sql against the compiled rows", () => {
     const confirm = await confirmWithYes(w.root, ["--name", "by_sold_year", "--by", "Dana", "--tolerance", "0.005"]);
     expect(confirm.err).toBe("");
     expect(confirm.code).toBe(0);
-    const check = await sl(w.root, ["goldens", "check", "--json"]);
+    const check = await semlayer(w.root, ["goldens", "check", "--json"]);
     expect(check.code).toBe(0);
     expect(check.json<CheckJson>()).toEqual({ passed: 1, failed: 0, results: [{ name: "by_sold_year", ok: true, diffs: [], compiled: "pass" }] });
   });
@@ -554,7 +554,7 @@ describe("a golden checked by its cross_check_sql alone", () => {
     const file = join(t.dir, "results.json");
     const results = (rows: unknown[]) => writeFileSync(file, JSON.stringify({ "golden:sales_by_year:cross_check": rows }));
     const check = async () => {
-      const r = await sl(t.root, ["goldens", "check", "--results", file, "--json"]);
+      const r = await semlayer(t.root, ["goldens", "check", "--results", file, "--json"]);
       return { code: r.code, diffs: r.json<CheckJson>().results[0]!.diffs };
     };
     results([
@@ -590,7 +590,7 @@ describe("a golden checked by its cross_check_sql alone", () => {
     const moved = await check();
     expect(moved.code).toBe(1);
     expect(moved.diffs.join("\n")).toContain("(whole numbers compare exactly)");
-    const human = await sl(t.root, ["goldens", "check", "--results", file]);
+    const human = await semlayer(t.root, ["goldens", "check", "--results", file]);
     expect(human.code).toBe(1);
     expect(human.out).toContain("Next:");
   });

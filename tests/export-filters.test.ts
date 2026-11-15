@@ -8,7 +8,7 @@ import { EXPORT_DIALECTS, EXPORTS_DIR, type ExportDialect, exportSql } from "../
 import { applyTableFilter, portableRegex } from "../skills/semantic-layer/scripts/lib/export-filters.ts";
 import { filterInScope } from "../skills/semantic-layer/scripts/lib/patterns.ts";
 import type { Snapshot } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { assertLocalPg, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -24,12 +24,12 @@ const raw = (d: string) => readFileSync(join(EXPORTS_DIR, `${d}.sql`), "utf8");
 const INCLUDE = ["orders", "fct_*", "analytics.dim_?", '"Sales".fct_*', "re:stg_(orders|customers)\\d*"];
 const EXCLUDE = ["*_tmp", '"Archive"', "re:.*\\.bak_\\d+", "o'brien\\x"];
 
-// The filter lines a query holds, from each sl:table-filter opening line to its ")".
+// The filter lines a query holds, from each semlayer:table-filter opening line to its ")".
 function block(sql: string): string[] {
   const out: string[] = [];
   let on = false;
   for (const l of sql.split("\n")) {
-    if (/-- sl:table-filter: (include|exclude)$/.test(l)) on = true;
+    if (/-- semlayer:table-filter: (include|exclude)$/.test(l)) on = true;
     if (on) out.push(l);
     if (on && /^\s*\)$/.test(l)) on = false;
   }
@@ -38,7 +38,7 @@ function block(sql: string): string[] {
 
 const header = (sql: string) => {
   const lines = sql.split("\n");
-  const at = lines.indexOf("-- Table filter (sl export-sql --include/--exclude). The query reads table definitions only, never table data.");
+  const at = lines.indexOf("-- Table filter (semlayer export-sql --include/--exclude). The query reads table definitions only, never table data.");
   const end = lines.findIndex((l, i) => i > at && !l.startsWith("--"));
   return lines.slice(at, end);
 };
@@ -48,14 +48,14 @@ const header = (sql: string) => {
 // from İ and the Kelvin sign); elsewhere it is a class of its cases in a case-sensitive regex.
 const GOLDEN: Record<ExportDialect, string[]> = {
   postgres: [
-    "    and (  -- sl:table-filter: include",
+    "    and (  -- semlayer:table-filter: include",
     "      lower(c.relname collate \"C\") in ('orders')",
     "      or lower(c.relname collate \"C\") like 'fct!_%' escape '!'",
     "      or lower((n.nspname || '.' || c.relname) collate \"C\") like 'analytics.dim!__' escape '!'",
     "      or (n.nspname || '.' || c.relname) ~ '^(Sales[.][fF][cC][tT]_.*)$'",
     "      or c.relname ~ '^([sS][tT][gG]_([oO][rR][dD][eE][rR][sS]|[cC][uU][sS][tT][oO][mM][eE][rR][sS])[0-9]*)$'",
     "    )",
-    "    and not (  -- sl:table-filter: exclude",
+    "    and not (  -- semlayer:table-filter: exclude",
     "      lower(c.relname collate \"C\") like '%!_tmp' escape '!'",
     "      or c.relname in ('Archive')",
     "      or (n.nspname || '.' || c.relname) ~ '^(.*[.][bB][aA][kK]_[0-9]+)$'",
@@ -63,83 +63,83 @@ const GOLDEN: Record<ExportDialect, string[]> = {
     "    )",
   ],
   redshift: [
-    "    and (  -- sl:table-filter: include",
+    "    and (  -- semlayer:table-filter: include",
     "      c.relname ~ '^([oO][rR][dD][eE][rR][sS])$'",
     "      or c.relname ~ '^([fF][cC][tT]_.*)$'",
     "      or (n.nspname || '.' || c.relname) ~ '^([aA][nN][aA][lL][yY][tT][iI][cC][sS][.][dD][iI][mM]_.)$'",
     "      or (n.nspname || '.' || c.relname) ~ '^(Sales[.][fF][cC][tT]_.*)$'",
     "      or c.relname ~ '^([sS][tT][gG]_([oO][rR][dD][eE][rR][sS]|[cC][uU][sS][tT][oO][mM][eE][rR][sS])[0-9]*)$'",
     "    )",
-    "    and not (  -- sl:table-filter: exclude",
+    "    and not (  -- semlayer:table-filter: exclude",
     "      c.relname ~ '^(.*_[tT][mM][pP])$'",
     "      or c.relname in ('Archive')",
     "      or (n.nspname || '.' || c.relname) ~ '^(.*[.][bB][aA][kK]_[0-9]+)$'",
     "    )",
   ],
   mysql: [
-    "  and not (  -- sl:table-filter: exclude",
+    "  and not (  -- semlayer:table-filter: exclude",
     "    convert(lower(c.table_name) using utf8mb4) collate utf8mb4_bin like '%!_tmp' escape '!'",
     "    or convert(c.table_name using utf8mb4) collate utf8mb4_bin like 'Archive' escape '!'",
     "  )",
   ],
   sqlserver: [
-    "    and not (  -- sl:table-filter: exclude",
+    "    and not (  -- semlayer:table-filter: exclude",
     "      o.name collate Latin1_General_100_BIN2 like N'%!_[tT][mM][pP]' escape '!'",
     "      or o.name collate Latin1_General_100_BIN2 like N'Archive' escape '!'",
     "      or o.name collate Latin1_General_100_BIN2 like N'[oO]''[bB][rR][iI][eE][nN]\\[xX]' escape '!'",
     "    )",
   ],
   snowflake: [
-    "  and (  -- sl:table-filter: include",
+    "  and (  -- semlayer:table-filter: include",
     "    regexp_like(c.table_name, '^([oO][rR][dD][eE][rR][sS])$')",
     "    or regexp_like(c.table_name, '^([fF][cC][tT]_.*)$')",
     "    or regexp_like((c.table_schema || '.' || c.table_name), '^([aA][nN][aA][lL][yY][tT][iI][cC][sS][.][dD][iI][mM]_.)$')",
     "    or regexp_like((c.table_schema || '.' || c.table_name), '^(Sales[.][fF][cC][tT]_.*)$')",
     "    or regexp_like(c.table_name, '^([sS][tT][gG]_([oO][rR][dD][eE][rR][sS]|[cC][uU][sS][tT][oO][mM][eE][rR][sS])[0-9]*)$')",
     "  )",
-    "  and not (  -- sl:table-filter: exclude",
+    "  and not (  -- semlayer:table-filter: exclude",
     "    regexp_like(c.table_name, '^(.*_[tT][mM][pP])$')",
     "    or c.table_name in ('Archive')",
     "    or regexp_like((c.table_schema || '.' || c.table_name), '^(.*[.][bB][aA][kK]_[0-9]+)$')",
     "  )",
   ],
   bigquery: [
-    "where (  -- sl:table-filter: include",
+    "where (  -- semlayer:table-filter: include",
     "  regexp_contains(c.table_name, '^([oO][rR][dD][eE][rR][sS])$')",
     "  or regexp_contains(c.table_name, '^([fF][cC][tT]_.*)$')",
     "  or regexp_contains((c.table_schema || '.' || c.table_name), '^([aA][nN][aA][lL][yY][tT][iI][cC][sS][.][dD][iI][mM]_.)$')",
     "  or regexp_contains((c.table_schema || '.' || c.table_name), '^(Sales[.][fF][cC][tT]_.*)$')",
     "  or regexp_contains(c.table_name, '^([sS][tT][gG]_([oO][rR][dD][eE][rR][sS]|[cC][uU][sS][tT][oO][mM][eE][rR][sS])[0-9]*)$')",
     ")",
-    "and not (  -- sl:table-filter: exclude",
+    "and not (  -- semlayer:table-filter: exclude",
     "  regexp_contains(c.table_name, '^(.*_[tT][mM][pP])$')",
     "  or c.table_name in ('Archive')",
     "  or regexp_contains((c.table_schema || '.' || c.table_name), '^(.*[.][bB][aA][kK]_[0-9]+)$')",
     ")",
   ],
   databricks: [
-    "  and (  -- sl:table-filter: include",
+    "  and (  -- semlayer:table-filter: include",
     "    c.table_name rlike '^([oO][rR][dD][eE][rR][sS])$'",
     "    or c.table_name rlike '^([fF][cC][tT]_.*)$'",
     "    or (c.table_schema || '.' || c.table_name) rlike '^([aA][nN][aA][lL][yY][tT][iI][cC][sS][.][dD][iI][mM]_.)$'",
     "    or (c.table_schema || '.' || c.table_name) rlike '^(Sales[.][fF][cC][tT]_.*)$'",
     "    or c.table_name rlike '^([sS][tT][gG]_([oO][rR][dD][eE][rR][sS]|[cC][uU][sS][tT][oO][mM][eE][rR][sS])[0-9]*)$'",
     "  )",
-    "  and not (  -- sl:table-filter: exclude",
+    "  and not (  -- semlayer:table-filter: exclude",
     "    c.table_name rlike '^(.*_[tT][mM][pP])$'",
     "    or c.table_name in ('Archive')",
     "    or (c.table_schema || '.' || c.table_name) rlike '^(.*[.][bB][aA][kK]_[0-9]+)$'",
     "  )",
   ],
   duckdb: [
-    "where (  -- sl:table-filter: include",
+    "where (  -- semlayer:table-filter: include",
     "  lower(r.table_name) in ('orders')",
     "  or lower(r.table_name) like 'fct!_%' escape '!'",
     "  or regexp_matches((r.table_schema || '.' || r.table_name), '^([aA][nN][aA][lL][yY][tT][iI][cC][sS][.][dD][iI][mM]_.)$')",
     "  or regexp_matches((r.table_schema || '.' || r.table_name), '^(Sales[.][fF][cC][tT]_.*)$')",
     "  or regexp_matches(r.table_name, '^([sS][tT][gG]_([oO][rR][dD][eE][rR][sS]|[cC][uU][sS][tT][oO][mM][eE][rR][sS])[0-9]*)$')",
     ")",
-    "and not (  -- sl:table-filter: exclude",
+    "and not (  -- semlayer:table-filter: exclude",
     "  lower(r.table_name) like '%!_tmp' escape '!'",
     "  or r.table_name in ('Archive')",
     "  or regexp_matches((r.table_schema || '.' || r.table_name), '^(.*[.][bB][aA][kK]_[0-9]+)$')",
@@ -153,14 +153,14 @@ describe("export filters: golden SQL per dialect", () => {
     expect(block(r.sql)).toEqual(GOLDEN[d]);
     expect(r.sql.startsWith("-- Schema export for ")).toBe(true);
     // The filter replaces the marker line; nothing else of the query changes.
-    expect(r.sql).not.toContain("-- sl:table-filter: sl export-sql");
+    expect(r.sql).not.toContain("-- semlayer:table-filter: semlayer export-sql");
   });
 
-  test("the header lists what the query applies and what sl import applies, with the import line", () => {
+  test("the header lists what the query applies and what semlayer import applies, with the import line", () => {
     const pg = exportSql("postgres", [], { include: INCLUDE, exclude: EXCLUDE });
     expect(header(pg.sql)).toEqual([
-      "-- Table filter (sl export-sql --include/--exclude). The query reads table definitions only, never table data.",
-      "-- In this query, at the lines marked sl:table-filter:",
+      "-- Table filter (semlayer export-sql --include/--exclude). The query reads table definitions only, never table data.",
+      "-- In this query, at the lines marked semlayer:table-filter:",
       ...INCLUDE.map((p) => `--   include ${p}`),
       ...EXCLUDE.map((p) => `--   exclude ${p}`),
     ]);
@@ -179,20 +179,20 @@ describe("export filters: golden SQL per dialect", () => {
       deferred: [],
       import_command: null,
     });
-    expect(pg.run_hint).toEndWith("then import it: sl import --source <source> --file schema.csv");
+    expect(pg.run_hint).toEndWith("then import it: semlayer import --source <source> --file schema.csv");
 
-    // MySQL: a regex, and a quoted part next to a case-insensitive one, are left to sl import;
+    // MySQL: a regex, and a quoted part next to a case-insensitive one, are left to semlayer import;
     // one include it cannot express takes the other includes with it, an exclude goes alone.
     const my = exportSql("mysql", [], { include: INCLUDE, exclude: EXCLUDE });
     const importLine =
-      "sl import --source <source> --file schema.tsv --include 'orders' --include 'fct_*' --include 'analytics.dim_?' " +
+      "semlayer import --source <source> --file schema.tsv --include 'orders' --include 'fct_*' --include 'analytics.dim_?' " +
       `--include '"Sales".fct_*' --include 're:stg_(orders|customers)\\d*' --exclude 're:.*\\.bak_\\d+' --exclude 'o'\\''brien\\x'`;
     expect(header(my.sql)).toEqual([
-      "-- Table filter (sl export-sql --include/--exclude). The query reads table definitions only, never table data.",
-      "-- In this query, at the lines marked sl:table-filter:",
+      "-- Table filter (semlayer export-sql --include/--exclude). The query reads table definitions only, never table data.",
+      "-- In this query, at the lines marked semlayer:table-filter:",
       "--   exclude *_tmp",
       '--   exclude "Archive"',
-      "-- Left out of this query, so it reads more table definitions; sl import applies them (mysql):",
+      "-- Left out of this query, so it reads more table definitions; semlayer import applies them (mysql):",
       "--   include orders: another include cannot be expressed in mysql SQL, and includes are applied together",
       "--   include fct_*: another include cannot be expressed in mysql SQL, and includes are applied together",
       '--   include analytics.dim_?: it has a case-insensitive "i", and mysql\'s lower() also makes i from İ',
@@ -209,7 +209,7 @@ describe("export filters: golden SQL per dialect", () => {
     const ms = exportSql("sqlserver", [], { include: ["re:fct_.*"], exclude: [] });
     expect(ms.filters!.deferred).toEqual([{ kind: "include", pattern: "re:fct_.*", reason: "SQL Server has no regular expressions" }]);
     expect(block(ms.sql)).toEqual([]);
-    expect(ms.sql).toContain("-- sl:table-filter: sl export-sql --include/--exclude writes the table filter here");
+    expect(ms.sql).toContain("-- semlayer:table-filter: semlayer export-sql --include/--exclude writes the table filter here");
   });
 
   test("a quoted part alone compares case included; a regex dialect reads a mixed pattern case-exactly", () => {
@@ -227,7 +227,7 @@ describe("export filters: golden SQL per dialect", () => {
       "      c.relname ~ '^([Σςσ].*)$'",
       "      or c.relname ~ '^([µΜμ])$'",
     ]);
-    // A backslash is left to sl import where a setting decides how a string literal reads it.
+    // A backslash is left to semlayer import where a setting decides how a string literal reads it.
     for (const d of ["mysql", "databricks"] as const) {
       const r = exportSql(d, [], { exclude: ['"A\\b"', "x_*"] });
       expect(r.filters!.deferred.map((x) => x.pattern)).toEqual(['"A\\b"']);
@@ -313,7 +313,7 @@ describe("export filters: the catalog-only contract over filtered output", () =>
       const rest = [...lines.slice(0, start - 1), ...lines.slice(start + head.length)];
       const filt = block(rest.join("\n"));
       const without = rest.join("\n").replace(filt.join("\n"), "MARKER");
-      expect(without).toBe(raw(d).replace(/^[ \t]*-- sl:table-filter: .*$/m, "MARKER"));
+      expect(without).toBe(raw(d).replace(/^[ \t]*-- semlayer:table-filter: .*$/m, "MARKER"));
       // The filter's code, outside its string literals, uses only name columns and operators.
       const words = new Set(code(d, filt.join("\n")).match(/[A-Za-z_][A-Za-z0-9_.]*/g) ?? []);
       const allowed = new Set([
@@ -333,37 +333,37 @@ describe("export filters: the catalog-only contract over filtered output", () =>
     const t = tempRoot();
     cleanup = t.cleanup;
     for (const p of ["a\nselect 1", "a\rb", "a b"]) {
-      expect(() => applyTableFilter("postgres", raw("postgres"), [p], [], "sl import")).toThrow(/line break or control character/);
-      const r = await sl(t.root, ["export-sql", "--dialect", "postgres", "--include", p]);
+      expect(() => applyTableFilter("postgres", raw("postgres"), [p], [], "semlayer import")).toThrow(/line break or control character/);
+      const r = await semlayer(t.root, ["export-sql", "--dialect", "postgres", "--include", p]);
       expect(r.code).toBe(1);
       expect(r.err).toContain("write it on one line and run the command again");
     }
-    const bad = await sl(t.root, ["export-sql", "--dialect", "postgres", "--exclude", "re:(a+)+"]);
+    const bad = await semlayer(t.root, ["export-sql", "--dialect", "postgres", "--exclude", "re:(a+)+"]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain("Fix the pattern and run the command again");
   });
 });
 
-describe("sl export-sql --include/--exclude", () => {
-  test("prints the filtered query, and on stderr the run line and the sl import that applies the rest", async () => {
+describe("semlayer export-sql --include/--exclude", () => {
+  test("prints the filtered query, and on stderr the run line and the semlayer import that applies the rest", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
-    const r = await sl(t.root, ["export-sql", "--dialect", "sqlserver", "--include", "fct_*,dim_*", "--include", "re:a,b", "--exclude", "*_tmp"]);
+    const r = await semlayer(t.root, ["export-sql", "--dialect", "sqlserver", "--include", "fct_*,dim_*", "--include", "re:a,b", "--exclude", "*_tmp"]);
     expect(r.code).toBe(0);
     expect(r.out).toBe(exportSql("sqlserver", [], { include: ["fct_*", "dim_*", "re:a,b"], exclude: ["*_tmp"] }).sql.trimEnd());
-    const cmd = "sl import --source <source> --file schema.csv --include 'fct_*' --include 'dim_*' --include 're:a,b'";
+    const cmd = "semlayer import --source <source> --file schema.csv --include 'fct_*' --include 'dim_*' --include 're:a,b'";
     expect(r.err.split("\n")).toEqual([
       `Save this as export.sql, run sqlcmd -S <server> -d <database> -i export.sql -f 65001 -s, -W > schema.csv, then import it: ${cmd}`,
       `3 patterns cannot be written in sqlserver SQL, so the export reads those table definitions too (never table data); the query's header says why. Apply them when you import: ${cmd}`,
     ]);
-    const j = await sl(t.root, ["export-sql", "--dialect", "postgres", "--include", "fct_*", "--json"]);
+    const j = await semlayer(t.root, ["export-sql", "--dialect", "postgres", "--include", "fct_*", "--json"]);
     expect(j.err).toBe("");
     const out = j.json<Record<string, unknown>>();
     expect(Object.keys(out)).toEqual(["dialect", "sql", "run_hint", "filters"]);
     expect(out.filters).toEqual({ pushed: [{ kind: "include", pattern: "fct_*", method: "like" }], deferred: [], import_command: null });
     // A shell quote in a pattern stays inside its quoted argument.
     const q = exportSql("mysql", [], { include: ["re:o'b.*"] });
-    expect(q.filters!.import_command).toBe("sl import --source <source> --file schema.tsv --include 're:o'\\''b.*'");
+    expect(q.filters!.import_command).toBe("semlayer import --source <source> --file schema.tsv --include 're:o'\\''b.*'");
   });
 });
 
@@ -421,7 +421,7 @@ describe("export filters: duckdb, live on the Acme lake", () => {
     // Every injection attempt stays a literal, and the tables are still there.
     expect(await run([], INJECTION)).toEqual(all.filter((n) => n !== "Arch.a\\'b"));
 
-    // A lookahead is not pushed: the export reads every table and sl import applies it.
+    // A lookahead is not pushed: the export reads every table and semlayer import applies it.
     const include = ["re:(?!tmp_)[a-z_]+", "sessions"];
     const exp = exportSql("duckdb", [], { include, exclude: ["*_archive"] });
     expect(exp.filters!.deferred.map((x) => x.pattern)).toEqual(include);
@@ -433,8 +433,8 @@ describe("export filters: duckdb, live on the Acme lake", () => {
     await initProject(t.root);
     writeFileSync(join(t.root, "sources", "lake.yaml"), "source: lake\ndialect: duckdb\n");
     const args = exp.filters!.deferred.flatMap((x) => [`--${x.kind}`, x.pattern]);
-    expect(exp.filters!.import_command).toBe("sl import --source <source> --file schema.csv --include 're:(?!tmp_)[a-z_]+' --include 'sessions'");
-    const r = await sl(t.root, ["import", "--source", "lake", "--file", csv, ...args, "--json"]);
+    expect(exp.filters!.import_command).toBe("semlayer import --source <source> --file schema.csv --include 're:(?!tmp_)[a-z_]+' --include 'sessions'");
+    const r = await semlayer(t.root, ["import", "--source", "lake", "--file", csv, ...args, "--json"]);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     expect(r.json<{ filters: unknown }>().filters).toEqual({ include, exclude: [], kept: 4, dropped: 3 });
@@ -501,7 +501,7 @@ describe("export filters: postgres, live on the Acme warehouse", () => {
   );
 });
 
-describe("sl import --include/--exclude", () => {
+describe("semlayer import --include/--exclude", () => {
   const rows = ["shop.fct_orders", "shop.fct_orders_bak", "shop.dim_customers", "shop.tmp_x", "Other.Notes"].flatMap((q) => {
     const { schema, name } = split(q);
     return [
@@ -517,7 +517,7 @@ describe("sl import --include/--exclude", () => {
     writeFileSync(join(t.root, "sources", "wh.yaml"), "source: wh\ndialect: postgres\n");
     const file = join(t.dir, "schema.json");
     writeFileSync(file, JSON.stringify(rows));
-    const r = await sl(t.root, ["import", "--source", "wh", "--file", file, "--include", "fct_*,dim_*", "--include", '"Other".*', "--exclude", "*_bak", "--exclude", "re:nothing_\\d+"]);
+    const r = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--include", "fct_*,dim_*", "--include", '"Other".*', "--exclude", "*_bak", "--exclude", "re:nothing_\\d+"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Imported 3 tables and 6 columns");
     expect(r.out).toContain("Kept the 3 tables matching --include and --exclude; dropped 2 others from the file.");
@@ -525,14 +525,14 @@ describe("sl import --include/--exclude", () => {
     const snap = JSON.parse(readFileSync(join(t.root, "snapshots", "wh.json"), "utf8")) as Snapshot;
     expect(snap.tables.map((x) => `${x.schema}.${x.name}`)).toEqual(["Other.Notes", "shop.dim_customers", "shop.fct_orders"]);
 
-    const j = await sl(t.root, ["import", "--source", "wh", "--file", file, "--exclude", '"other".*', "--json"]);
+    const j = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--exclude", '"other".*', "--json"]);
     expect(j.code).toBe(0);
     const out = j.json<{ tables: number; filters: unknown; changes: { tables_added: string[] } }>();
     expect(out.tables).toBe(5);
     expect(out.filters).toEqual({ include: [], exclude: ['"other".*'], kept: 5, dropped: 0 });
     expect(out.changes.tables_added).toEqual(["shop.fct_orders_bak", "shop.tmp_x"]);
     // Without the flags the output keeps its keys.
-    const plain = await sl(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
+    const plain = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--json"]);
     expect(Object.keys(plain.json<object>())).not.toContain("filters");
   });
 
@@ -543,11 +543,11 @@ describe("sl import --include/--exclude", () => {
     writeFileSync(join(t.root, "sources", "wh.yaml"), "source: wh\ndialect: postgres\n");
     const file = join(t.dir, "schema.json");
     writeFileSync(file, JSON.stringify(rows));
-    const none = await sl(t.root, ["import", "--source", "wh", "--file", file, "--include", "nope_*"]);
+    const none = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--include", "nope_*"]);
     expect(none.code).toBe(1);
     expect(none.err).toContain(`No table in ${file} matches --include and --exclude, so nothing was imported.`);
-    expect(none.err).toContain("run sl import again");
-    const bad = await sl(t.root, ["import", "--source", "wh", "--file", file, "--include", "re:(a+)+"]);
+    expect(none.err).toContain("run semlayer import again");
+    const bad = await semlayer(t.root, ["import", "--source", "wh", "--file", file, "--include", "re:(a+)+"]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain("Fix the pattern and run the command again");
   });
@@ -569,7 +569,7 @@ const ODD_PATTERNS = [
 ];
 
 // Every pattern, as an include and as an exclude, returns from a live query exactly what the
-// grammar selects once sl import applies what was deferred.
+// grammar selects once semlayer import applies what was deferred.
 async function disagreements(d: "duckdb" | "postgres", schema: string, tables: string[], query: (sql: string) => Promise<{ table_name: unknown }[]>) {
   const run = async (include: string[], exclude: string[]) => {
     const r = exportSql(d, d === "postgres" ? [schema] : [], { include, exclude });

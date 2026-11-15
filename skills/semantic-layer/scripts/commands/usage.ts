@@ -57,7 +57,7 @@ function subsetOf(values: OptionValues, ctx: CommandContext, source: string, sna
     if (missing.length)
       throw new UserError(
         `--schema ${missing.join(", ")}: the snapshot of ${source} has no table in ${missing.length === 1 ? "that schema" : "those schemas"}. ` +
-          `Its schemas are ${[...known].sort().join(", ") || "none"}; name one of them, or run sl introspect --source ${source} --schemas <a,b> to read more.`,
+          `Its schemas are ${[...known].sort().join(", ") || "none"}; name one of them, or run semlayer introspect --source ${source} --schemas <a,b> to read more.`,
       );
     const set = new Set(schemas);
     return { kept: (t) => set.has((t.schema ?? "").toLowerCase()), schemas: set };
@@ -90,12 +90,12 @@ function summaryLines(s: UsageSummary, names: string[] = s.not_understood_files)
 }
 
 async function add(source: string, paths: string[], values: OptionValues, ctx: CommandContext): Promise<number> {
-  if (!paths.length) throw new UserError(`Give the query files or their folder, as in sl usage add --source ${source} ./queries (${ACCEPTED}).`);
+  if (!paths.length) throw new UserError(`Give the query files or their folder, as in semlayer usage add --source ${source} ./queries (${ACCEPTED}).`);
   const snapshot = requireSnapshot(ctx.root, source);
   const subset = subsetOf(values, ctx, source, snapshot);
   const { files, others } = findInputs(source, paths, ctx.cwd, ctx.root, envFiles(ctx.root, ctx.env));
   if (!files.length)
-    throw new UserError(`${paths.join(", ")} holds no query file${others ? ` (${noun(others, "other file")} not read)` : ""}. sl usage add reads ${ACCEPTED}.`);
+    throw new UserError(`${paths.join(", ")} holds no query file${others ? ` (${noun(others, "other file")} not read)` : ""}. semlayer usage add reads ${ACCEPTED}.`);
   const read = files
     .map((f) => {
       const bytes = readFileSync(f.abs);
@@ -119,7 +119,7 @@ async function add(source: string, paths: string[], values: OptionValues, ctx: C
   const target = usagePath(ctx.root, source);
   if (added.length) writeUsage(ctx.root, file);
   const run = delta(before, file.summary);
-  const next = `sl usage show --source ${source}`;
+  const next = `semlayer usage show --source ${source}`;
   if (ctx.json) {
     ctx.out(formatJson({ source, file: relative(ctx.root, target), added: added.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)), already_read: already.sort(), others_not_read: others, summary: run, next }));
     return 0;
@@ -132,12 +132,12 @@ async function add(source: string, paths: string[], values: OptionValues, ctx: C
     lines.push(`Wrote ${relative(ctx.root, target)}: ${noun(kept, "table")} of ${source} ${kept === 1 ? "appears" : "appear"} in saved queries. No statement text is stored.`);
     if (run.statements && !run.kept)
       lines.push(
-        `No statement read here reads a table ${source} keeps. If these queries are for another source, run sl usage clear --source ${source}, then sl usage add with that --source; if they read another schema of ${source}, run sl usage clear --source ${source}, then sl usage add again with --schema <name> or after widening sl scope.`,
+        `No statement read here reads a table ${source} keeps. If these queries are for another source, run semlayer usage clear --source ${source}, then semlayer usage add with that --source; if they read another schema of ${source}, run semlayer usage clear --source ${source}, then semlayer usage add again with --schema <name> or after widening semlayer scope.`,
       );
   } else lines.push(`Nothing new: every file given was read before. ${relative(ctx.root, target)} is unchanged.`);
   if (already.length) lines.push(`Already read, skipped: ${already.map(plainText).join(", ")}.`);
   if (others) lines.push(`${noun(others, "other file")} in those folders ${others === 1 ? "is" : "are"} not a query file and ${others === 1 ? "was" : "were"} not read.`);
-  lines.push(`Next: ${next} for the evidence, and sl tables --source ${source} to scope from what people query.`);
+  lines.push(`Next: ${next} for the evidence, and semlayer tables --source ${source} to scope from what people query.`);
   ctx.out(lines.join("\n"));
   return 0;
 }
@@ -161,8 +161,8 @@ function tableLines(q: string, t: TableUsage, sentences: string[]): string[] {
 function show(source: string, values: OptionValues, ctx: CommandContext): number {
   const file = loadUsage(ctx.root, source);
   if (!file) {
-    const text = `No usage evidence for ${source} yet. When the owner has saved queries, scratch files or a query log, run sl usage add --source ${source} <path>.`;
-    ctx.out(ctx.json ? formatJson({ source, usage: null, next: `sl usage add --source ${source} <path>` }) : text);
+    const text = `No usage evidence for ${source} yet. When the owner has saved queries, scratch files or a query log, run semlayer usage add --source ${source} <path>.`;
+    ctx.out(ctx.json ? formatJson({ source, usage: null, next: `semlayer usage add --source ${source} <path>` }) : text);
     return 0;
   }
   const snapshot = requireSnapshot(ctx.root, source);
@@ -171,10 +171,10 @@ function show(source: string, values: OptionValues, ctx: CommandContext): number
   let keys = Object.keys(file.tables).sort((a, b) => file.tables[b]!.statements - file.tables[a]!.statements || (a < b ? -1 : 1));
   if (wanted !== undefined) {
     const t = findTable(snapshot.tables, wanted);
-    if (!t) throw new UserError(`No table "${wanted}" in the snapshot of ${source}. Run sl tables --source ${source} for the names.`);
+    if (!t) throw new UserError(`No table "${wanted}" in the snapshot of ${source}. Run semlayer tables --source ${source} for the names.`);
     keys = keys.filter((k) => k === qualifiedName(t));
     if (!keys.length) {
-      ctx.out(ctx.json ? formatJson({ source, table: qualifiedName(t), usage: null }) : `No saved query read ${qualifiedName(t)}. Next: sl usage show --source ${source} for the tables they do read.`);
+      ctx.out(ctx.json ? formatJson({ source, table: qualifiedName(t), usage: null }) : `No saved query read ${qualifiedName(t)}. Next: semlayer usage show --source ${source} for the tables they do read.`);
       return 0;
     }
   }
@@ -198,7 +198,7 @@ function clear(source: string, ctx: CommandContext): number {
   const file = lstatSync(target, { throwIfNoEntry: false });
   if (file) rmSync(target);
   if (ctx.json) ctx.out(formatJson({ source, file: relative(ctx.root, target), removed: !!file }));
-  else ctx.out(file ? `Removed ${relative(ctx.root, target)}. Next: sl usage add --source ${source} <path> to read query files again.` : `No usage evidence for ${source}; nothing to remove.`);
+  else ctx.out(file ? `Removed ${relative(ctx.root, target)}. Next: semlayer usage add --source ${source} <path> to read query files again.` : `No usage evidence for ${source}; nothing to remove.`);
   return 0;
 }
 
@@ -216,11 +216,11 @@ const spec: CommandSpec = {
   async run({ values, positionals }, ctx) {
     const project = loadProject(ctx.root);
     const [sub, ...rest] = positionals;
-    if (sub !== "add" && sub !== "show" && sub !== "clear") throw new UserError(`Usage: sl ${USAGE.split("\n\n")[0]!.replace(/\n\s+/g, " | sl ")}`);
+    if (sub !== "add" && sub !== "show" && sub !== "clear") throw new UserError(`Usage: semlayer ${USAGE.split("\n\n")[0]!.replace(/\n\s+/g, " | semlayer ")}`);
     const source = sourceFlag(values, project);
     loadSource(ctx.root, source);
     if (sub === "add") return add(source, rest, values, ctx);
-    if (rest.length) throw new UserError(`sl usage ${sub} takes no paths; it reads snapshots/${source}.usage.json.`);
+    if (rest.length) throw new UserError(`semlayer usage ${sub} takes no paths; it reads snapshots/${source}.usage.json.`);
     return sub === "show" ? show(source, values, ctx) : clear(source, ctx);
   },
 };

@@ -1,5 +1,5 @@
 // The JSON Schemas under schemas/ and the checks made with them: schemaIssues, the full list
-// sl validate reports, and shapeIssue, the first wrong kind or missing part a loader refuses a
+// semlayer validate reports, and shapeIssue, the first wrong kind or missing part a loader refuses a
 // file on. Imports no other module of the CLI.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -176,7 +176,7 @@ function foundWord(value: unknown): string {
 }
 
 // The three shapes a value takes, and no value at all. Which single value one is (text or a
-// number) is not a matter of shape, and is sl validate's to check.
+// number) is not a matter of shape, and is semlayer validate's to check.
 const MAP = 1;
 const LIST = 2;
 const SINGLE = 4;
@@ -204,7 +204,7 @@ interface Check {
 const checks = new Map<SchemaNode, Check>();
 
 // Keys the check does not look under, because the commands read whatever they hold in words of
-// their own: a status that is not "approved" is a draft, and sl scope reports and clears a
+// their own: a status that is not "approved" is a draft, and semlayer scope reports and clears a
 // tables_file that is not a path.
 const READ_AROUND: ReadonlySet<string> = new Set(["status", "tables_file"]);
 
@@ -278,11 +278,11 @@ function missing(c: Check, key: string): Found {
 }
 
 // The first shape problem in a parsed layer file, or null: what a loader refuses the file for.
-// A snapshot or a usage file, which only sl writes, also has every key its schema requires. Of the files people
-// edit, commands read around a missing key (sl validate lists it), except a model's table, which
+// A snapshot or a usage file, which only semlayer writes, also has every key its schema requires. Of the files people
+// edit, commands read around a missing key (semlayer validate lists it), except a model's table, which
 // every command that reads the model looks up. access.yaml is checked no further than being a
 // map, because lib/access.ts reads each of its parts closed (a part it cannot read hides
-// everything) and sl status names that part.
+// everything) and semlayer status names that part.
 export function shapeIssue(kind: SchemaKind, data: unknown): ShapeIssue | null {
   if (data === null || data === undefined) return { path: "", expected: "a map", found: "an empty file" };
   const schema = readSchema(kind);
@@ -301,7 +301,7 @@ export function shapeIssue(kind: SchemaKind, data: unknown): ShapeIssue | null {
 
 // The line a loader refuses a file with: the file (relative to the semantic root), the place,
 // what was expected and what was found, and what to do.
-export const SHAPE_FIX = "Fix the file, or run sl validate for the full list.";
+export const SHAPE_FIX = "Fix the file, or run semlayer validate for the full list.";
 
 export function shapeMessage(file: string, issue: ShapeIssue): string {
   return `${file}: ${issue.path || "the file"} should be ${issue.expected} (found ${issue.found}). ${SHAPE_FIX}`;

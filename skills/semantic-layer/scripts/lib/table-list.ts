@@ -138,8 +138,8 @@ export function sourceTableList(root: string, source: SourceConfig): SourceTable
   if (rel === undefined) return null;
   const name = source.source;
   const fix =
-    `To fix it, edit scope.tables_file in sources/${name}.yaml, import a file with \`sl scope --source ${name} --from-file <path> --write\`, ` +
-    `or drop the saved scope with \`sl scope --source ${name} --clear --write\`.`;
+    `To fix it, edit scope.tables_file in sources/${name}.yaml, import a file with \`semlayer scope --source ${name} --from-file <path> --write\`, ` +
+    `or drop the saved scope with \`semlayer scope --source ${name} --clear --write\`.`;
   if (typeof rel !== "string") throw new UserError(`scope.tables_file in sources/${name}.yaml must be a path inside the semantic root, such as scope/${name}.txt. ${fix}`);
   let list: SourceTableList;
   try {
@@ -151,11 +151,11 @@ export function sourceTableList(root: string, source: SourceConfig): SourceTable
   if (!list.exists) {
     throw new UserError(
       `sources/${source.source}.yaml names the table-list file ${rel} in scope.tables_file, but it does not exist. ` +
-        `Import one with \`sl scope --source ${source.source} --from-file <path> --write\`, or remove scope.tables_file.`,
+        `Import one with \`semlayer scope --source ${source.source} --from-file <path> --write\`, or remove scope.tables_file.`,
     );
   }
   if (list.problems.length) {
-    throw new UserError(`${problemsMessage(rel, list.problems)}\nFix the file and run the command again; \`sl validate\` lists every problem.`);
+    throw new UserError(`${problemsMessage(rel, list.problems)}\nFix the file and run the command again; \`semlayer validate\` lists every problem.`);
   }
   return list;
 }
@@ -201,7 +201,7 @@ export function renderTableList(source: string, selected: Named[], all: Named[])
   if (broken) {
     throw new UserError(
       `The table ${JSON.stringify(qualifiedName(broken))} has a line break in its name, so a table-list file cannot name it. ` +
-        `Leave it out with \`sl scope --source ${source} --exclude <pattern>\`, then run --to-file again.`,
+        `Leave it out with \`semlayer scope --source ${source} --exclude <pattern>\`, then run --to-file again.`,
     );
   }
   const seen = new Map<string, number>();
@@ -213,7 +213,7 @@ export function renderTableList(source: string, selected: Named[], all: Named[])
     .map((t) => exactLine(t, (seen.get(qualifiedName(t).toLowerCase()) ?? 0) > 1))
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const header = [
-    `# Tables in scope for source ${source}: ${selected.length} table${selected.length === 1 ? "" : "s"}, written by sl scope --to-file.`,
+    `# Tables in scope for source ${source}: ${selected.length} table${selected.length === 1 ? "" : "s"}, written by semlayer scope --to-file.`,
     "# One entry per line: an exact name, a glob, re:<regex>, or !<entry> to exclude. # starts a comment.",
   ];
   return `${[...header, ...lines].join("\n")}\n`;

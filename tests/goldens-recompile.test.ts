@@ -1,6 +1,6 @@
-// sl goldens compiles each golden's request from the current YAML (FR-2.2): Acme's approved goldens
+// semlayer goldens compiles each golden's request from the current YAML (FR-2.2): Acme's approved goldens
 // pass as committed, the analytics reviewer's experiment fails every golden that uses revenue, a
-// cross-check that disagrees names itself, a refused golden is reported, and sl goldens new writes a
+// cross-check that disagrees names itself, a refused golden is reported, and semlayer goldens new writes a
 // valid draft. All data is the synthetic Acme fixture.
 import { afterEach, describe, expect, test } from "bun:test";
 import { SQL } from "bun";
@@ -17,7 +17,7 @@ import { PROTECTED_VALUE } from "../skills/semantic-layer/scripts/lib/output.ts"
 import type { Golden, Model, QueryPlan } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, initProject, PG_URL, reapprove, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, initProject, PG_URL, reapprove, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 const DATA = join(import.meta.dir, "..", "fixtures", "acme", "data");
@@ -148,7 +148,7 @@ function expectAllPass(doc: CheckJson, names: string[]): void {
 // gives the confirmed rows. The goldens that do not use revenue keep passing.
 async function revenueExperiment(root: string, env: Record<string, string> = {}): Promise<CheckJson> {
   withCancelled(root);
-  const before = await sl(root, ["goldens", "check", "--source", "warehouse", "--json"], env);
+  const before = await semlayer(root, ["goldens", "check", "--source", "warehouse", "--json"], env);
   expect(before.code).toBe(1);
   const refused = byName(before.json<CheckJson>());
   for (const name of WAREHOUSE_GOLDENS) {
@@ -163,11 +163,11 @@ async function revenueExperiment(root: string, env: Record<string, string> = {})
     // Each says so in plain words and names the readback, with no reason code and no "may not see".
     expect(r.diffs[0]).toContain("orders.revenue");
     expect(r.diffs[0]).toContain("changed since approval");
-    expect(r.diffs[0]).toContain("sl readback --targets warehouse.orders.revenue, then sl approve --target warehouse.orders.revenue");
+    expect(r.diffs[0]).toContain("semlayer readback --targets warehouse.orders.revenue, then semlayer approve --target warehouse.orders.revenue");
     expect(r.diffs[0]).not.toMatch(/measure_hidden|may not see|\(draft/);
-    expect(r.next).toStartWith("Read warehouse.orders.revenue back to the owner with sl readback --targets warehouse.orders.revenue and approve it on their yes");
+    expect(r.next).toStartWith("Read warehouse.orders.revenue back to the owner with semlayer readback --targets warehouse.orders.revenue and approve it on their yes");
   }
-  const approve = `sl readback --targets warehouse.orders.revenue, then sl approve --target warehouse.orders.revenue --by "<owner>" after the owner's yes`;
+  const approve = `semlayer readback --targets warehouse.orders.revenue, then semlayer approve --target warehouse.orders.revenue --by "<owner>" after the owner's yes`;
   expect(refused.revenue_2025!.diffs[0]).toBe(
     `The request does not compile from the current YAML: measures[0] names orders.revenue, which changed since approval; treated as draft until it is read back and approved again: ${approve}; ` +
       `measures[2] names average_order_value, which is held back because it reads orders.revenue, which changed since approval; it is served once orders.revenue is read back and approved again: ${approve}.`,
@@ -176,13 +176,13 @@ async function revenueExperiment(root: string, env: Record<string, string> = {})
     "The request does not compile from the current YAML: measures[0] names net_revenue, which is held back because it reads orders.revenue, which changed since approval; " +
       `it is served once orders.revenue is read back and approved again: ${approve}.`,
   );
-  const human = await sl(root, ["goldens", "check", "--name", "revenue_2025"], env);
+  const human = await semlayer(root, ["goldens", "check", "--name", "revenue_2025"], env);
   expect(human.code).toBe(1);
   expect(human.out).toContain("FAIL  revenue_2025");
   expect(human.out).toContain("Next: Read warehouse.orders.revenue back to the owner");
 
   await reapprove(root, ["warehouse.orders.revenue"]);
-  const after = await sl(root, ["goldens", "check", "--source", "warehouse", "--json"], env);
+  const after = await semlayer(root, ["goldens", "check", "--source", "warehouse", "--json"], env);
   expect(after.code).toBe(1);
   const doc = after.json<CheckJson>();
   expect(doc.results.filter((r) => !r.ok).map((r) => r.name)).toEqual(USING_REVENUE);
@@ -196,26 +196,26 @@ async function revenueExperiment(root: string, env: Record<string, string> = {})
     const named = r.diffs.some((d) => d.startsWith("Compiled: ") && new RegExp(`(column |[{ ])${figure}: `).test(d));
     expect({ name, named }).toEqual({ name, named: true });
   }
-  const text = await sl(root, ["goldens", "check", "--source", "warehouse"], env);
+  const text = await semlayer(root, ["goldens", "check", "--source", "warehouse"], env);
   expect(text.out).toContain(`${WAREHOUSE_GOLDENS.length - USING_REVENUE.length} passed, ${USING_REVENUE.length} failed.`);
-  expect(text.out).toContain("Next: sl goldens run --name analyst_rep_101_by_name_2025 shows its rows");
+  expect(text.out).toContain("Next: semlayer goldens run --name analyst_rep_101_by_name_2025 shows its rows");
   return doc;
 }
 
 describe("Acme's approved goldens compile from the YAML", () => {
   test("the lake's pass as committed on duckdb, compiled and cross-checked", async () => {
-    const r = await sl(ACME, ["goldens", "check", "--source", "lake", "--json"]);
+    const r = await semlayer(ACME, ["goldens", "check", "--source", "lake", "--json"]);
     expect(r.code).toBe(0);
     expectAllPass(r.json<CheckJson>(), LAKE_GOLDENS);
   });
 
   test("the warehouse's pass on duckdb; the experiment fails every golden using revenue, refused until approved again", async () => {
     const { root } = await duckdbAcme();
-    const r = await sl(root, ["goldens", "check", "--source", "warehouse", "--json"]);
+    const r = await semlayer(root, ["goldens", "check", "--source", "warehouse", "--json"]);
     expect(r.code).toBe(0);
     expectAllPass(r.json<CheckJson>(), WAREHOUSE_GOLDENS);
     // The same inputs give the same output.
-    expect((await sl(root, ["goldens", "check", "--source", "warehouse", "--json"])).out).toBe(r.out);
+    expect((await semlayer(root, ["goldens", "check", "--source", "warehouse", "--json"])).out).toBe(r.out);
     const doc = await revenueExperiment(root);
     expect(byName(doc).revenue_2025!.diffs.slice(1)).toEqual([
       "Compiled: Row 1: expected {revenue: 301050.82, order_count: 2239, average_order_value: 134.45771326485038}, but no result row matches it.",
@@ -227,7 +227,7 @@ describe("Acme's approved goldens compile from the YAML", () => {
     "every approved golden passes on postgres as committed; the experiment fails every golden using revenue",
     async () => {
       assertLocalPg(PG_URL);
-      const db = `sl_goldens_${process.pid}_${Date.now()}`;
+      const db = `semlayer_goldens_${process.pid}_${Date.now()}`;
       const admin = new SQL({ url: PG_URL!, max: 1 });
       const url = new URL(PG_URL!);
       url.pathname = `/${db}`;
@@ -239,7 +239,7 @@ describe("Acme's approved goldens compile from the YAML", () => {
         const tx = new SQL({ url: env.WAREHOUSE_URL, max: 1 });
         await tx.unsafe(readFileSync(join(DATA, "..", "evolve.sql"), "utf8"));
         await tx.close();
-        const r = await sl(ACME, ["goldens", "check", "--json"], env);
+        const r = await semlayer(ACME, ["goldens", "check", "--json"], env);
         expect(r.code).toBe(0);
         expectAllPass(r.json<CheckJson>(), [...WAREHOUSE_GOLDENS, ...LAKE_GOLDENS].sort());
         await revenueExperiment(copyAcme().root, env);
@@ -293,7 +293,7 @@ describe("the figures grader on Acme", () => {
     expect(refused.passed).toBe(false);
     const failing = (r: typeof g) => [...new Set(r.details.filter((d) => !d.includes("matches the reference figure") && !d.includes("maps to no reference figure")).map((d) => d.split(":")[0]!.replace(/^semantic\/goldens\/|\.yaml$/g, "")))];
     expect(failing(refused)).toEqual(USING_REVENUE);
-    expect(refused.details.filter((d) => d.includes("sl sql refuses its request")).length).toBe(USING_REVENUE.length);
+    expect(refused.details.filter((d) => d.includes("semlayer sql refuses its request")).length).toBe(USING_REVENUE.length);
     // Approved again on a recorded yes, each revenue golden mapped to a figure fails, naming it.
     await reapprove(root, ["warehouse.orders.revenue"]);
     const after = await gradeAcme(dir, root);
@@ -310,7 +310,7 @@ describe("cross_check_sql", () => {
   test("a cross-check that disagrees names itself; the compiled rows still pass; validate reads the older key sql", async () => {
     const { root } = await duckdbAcme();
     const path = join(root, "goldens", "revenue_2025.yaml");
-    // The example's golden under the older key sql: sl validate reads it as cross_check_sql, asks for
+    // The example's golden under the older key sql: semlayer validate reads it as cross_check_sql, asks for
     // the key to be renamed, and errors when a golden has both.
     const { cross_check_sql: committed, ...rest } = readYaml<Golden>(path);
     expect(committed).toBeDefined();
@@ -328,7 +328,7 @@ describe("cross_check_sql", () => {
     writeYaml(path, renamed);
     expect(validateProject(root).filter((i) => i.file === "goldens/revenue_2025.yaml" && (i.path === "sql" || i.level === "error"))).toEqual([]);
 
-    const r = await sl(root, ["goldens", "check", "--name", "revenue_2025", "--json"]);
+    const r = await semlayer(root, ["goldens", "check", "--name", "revenue_2025", "--json"]);
     expect(r.code).toBe(1);
     const [res] = r.json<CheckJson>().results;
     expect(res).toMatchObject({ name: "revenue_2025", ok: false, compiled: "pass", cross_check: "fail" });
@@ -336,12 +336,12 @@ describe("cross_check_sql", () => {
     expect(res!.diffs[1]).toStartWith("cross_check_sql: Row 1: expected {revenue: 301050.82, order_count: 2239, ");
 
     // goldens run shows the compiled rows and names the disagreement; confirm records nothing.
-    const run = await sl(root, ["goldens", "run", "--name", "revenue_2025"]);
+    const run = await semlayer(root, ["goldens", "run", "--name", "revenue_2025"]);
     expect(run.code).toBe(0);
     expect(run.out).toContain("These rows are the request compiled from the current YAML.");
     expect(run.out).toContain("cross_check_sql gives other rows (expected is the compiled, got is cross_check_sql):");
     const before = readFileSync(path, "utf8");
-    const confirm = await sl(root, ["goldens", "confirm", "--name", "revenue_2025", "--by", "Dana Ruiz", "--tolerance", "0"]);
+    const confirm = await semlayer(root, ["goldens", "confirm", "--name", "revenue_2025", "--by", "Dana Ruiz", "--tolerance", "0"]);
     expect(confirm.code).toBe(1);
     expect(confirm.err).toContain("cross_check_sql gives other rows than the request compiled from the YAML");
     expect(readFileSync(path, "utf8")).toBe(before);
@@ -349,7 +349,7 @@ describe("cross_check_sql", () => {
     // Without a cross-check the compiled rows alone are checked.
     const { cross_check_sql: _x, ...alone } = renamed;
     writeYaml(path, alone);
-    const pass = await sl(root, ["goldens", "check", "--name", "revenue_2025", "--json"]);
+    const pass = await semlayer(root, ["goldens", "check", "--name", "revenue_2025", "--json"]);
     expect(pass.json<CheckJson>().results).toEqual([{ name: "revenue_2025", ok: true, diffs: [], compiled: "pass" }]);
   }, 60_000);
 });
@@ -360,7 +360,7 @@ describe("goldens the compiler refuses", () => {
     const path = join(root, "goldens", "discount_2025.yaml");
     const g = readYaml<Golden>(path);
     writeYaml(path, { ...g, request: { ...g.request, measures: ["orders.discounts"] } });
-    const r = await sl(root, ["goldens", "check", "--source", "warehouse", "--json"]);
+    const r = await semlayer(root, ["goldens", "check", "--source", "warehouse", "--json"]);
     expect(r.code).toBe(1);
     const doc = r.json<CheckJson>();
     expect(doc).toMatchObject({ passed: WAREHOUSE_GOLDENS.length - 1, failed: 1 });
@@ -368,10 +368,10 @@ describe("goldens the compiler refuses", () => {
     expect(res).toMatchObject({ ok: false, compiled: "refused" });
     expect(res.cross_check).toBeUndefined();
     expect(res.diffs[0]).toContain("orders.discounts");
-    expect(res.next).toBe("Run sl sql --request goldens/discount_2025.yaml to see why, fix the request or the layer, then run sl goldens check --name discount_2025.");
+    expect(res.next).toBe("Run semlayer sql --request goldens/discount_2025.yaml to see why, fix the request or the layer, then run semlayer goldens check --name discount_2025.");
 
     // --emit-sql plans the others and says which it left out; finishing reports it as failed.
-    const emit = await sl(root, ["goldens", "check", "--source", "warehouse", "--emit-sql"]);
+    const emit = await semlayer(root, ["goldens", "check", "--source", "warehouse", "--emit-sql"]);
     expect(emit.code).toBe(0);
     expect(emit.err).toContain("Not planned: discount_2025. The request does not compile from the current YAML");
     const plan = emit.json<QueryPlan & { plan_id: string }>();
@@ -386,18 +386,18 @@ describe("goldens the compiler refuses", () => {
     writeFileSync(join(t.root, "sources", "lake.yaml"), "source: lake\ndialect: snowflake\nconnection:\n  env: LAKE_URL\n");
     const results = join(t.dir, "results.json");
     writeFileSync(results, JSON.stringify({ "golden:sessions_2025:cross_check": [{ SESSION_COUNT: 4551 }] }));
-    const r = await sl(t.root, ["goldens", "check", "--name", "sessions_2025", "--results", results]);
+    const r = await semlayer(t.root, ["goldens", "check", "--name", "sessions_2025", "--results", results]);
     expect(r.code).toBe(0);
-    expect(r.out).toContain("pass  sessions_2025  (checked by cross_check_sql alone: sl sql compiles postgres and duckdb sources)");
+    expect(r.out).toContain("pass  sessions_2025  (checked by cross_check_sql alone: semlayer sql compiles postgres and duckdb sources)");
     const path = join(t.root, "goldens", "sessions_2025.yaml");
     const { cross_check_sql: _s, ...noCross } = readYaml<Golden>(path);
     writeYaml(path, noCross);
-    const none = await sl(t.root, ["goldens", "check", "--name", "sessions_2025", "--json"]);
+    const none = await semlayer(t.root, ["goldens", "check", "--name", "sessions_2025", "--json"]);
     expect(none.code).toBe(1);
     const [res] = none.json<CheckJson>().results;
     expect(res).toMatchObject({ ok: false, compiled: "refused" });
     expect(res!.next).toBe(
-      "sl sql compiles postgres and duckdb sources only: write the golden's query by hand from the model YAML as cross_check_sql, then run sl goldens run --name sessions_2025 --emit-sql to plan it.",
+      "semlayer sql compiles postgres and duckdb sources only: write the golden's query by hand from the model YAML as cross_check_sql, then run semlayer goldens run --name sessions_2025 --emit-sql to plan it.",
     );
   });
 
@@ -405,14 +405,14 @@ describe("goldens the compiler refuses", () => {
     const t = copyAcme();
     const path = join(t.root, "access.yaml");
     writeYaml(path, { ...readYaml<Record<string, unknown>>(path), status: "draft" });
-    const r = await sl(t.root, ["goldens", "check", "--source", "lake", "--json"]);
+    const r = await semlayer(t.root, ["goldens", "check", "--source", "lake", "--json"]);
     expect(r.code).toBe(1);
     const doc = r.json<CheckJson>();
     expect(doc).toMatchObject({ passed: 0, failed: LAKE_GOLDENS.length });
     for (const res of doc.results) {
       expect(res).toMatchObject({ ok: false, compiled: "refused" });
       expect(res.next).toBe(
-        `Read access back to the owner with sl readback --targets access and approve it on their yes, then run sl goldens check --name ${res.name}; if its rows changed, confirm again only on the owner's yes.`,
+        `Read access back to the owner with semlayer readback --targets access and approve it on their yes, then run semlayer goldens check --name ${res.name}; if its rows changed, confirm again only on the owner's yes.`,
       );
     }
   });
@@ -422,12 +422,12 @@ describe("goldens the compiler refuses", () => {
     const path = join(t.root, "goldens", "sessions_2025.yaml");
     const g = readYaml<Golden>(path);
     writeYaml(path, { ...g, cross_check_sql: "delete from sessions" });
-    const r = await sl(t.root, ["goldens", "check", "--name", "sessions_2025"]);
+    const r = await semlayer(t.root, ["goldens", "check", "--name", "sessions_2025"]);
     expect(r.code).toBe(1);
     expect(r.out).toContain('Cannot plan this golden: Golden "sessions_2025": Only read-only queries run here');
-    expect(r.out).toContain("Next: Fix what this says in goldens/sessions_2025.yaml or the layer, then run sl validate and sl goldens check --name sessions_2025.");
-    expect(r.out).not.toContain("Next: sl goldens run");
-    const run = await sl(t.root, ["goldens", "run", "--name", "sessions_2025"]);
+    expect(r.out).toContain("Next: Fix what this says in goldens/sessions_2025.yaml or the layer, then run semlayer validate and semlayer goldens check --name sessions_2025.");
+    expect(r.out).not.toContain("Next: semlayer goldens run");
+    const run = await semlayer(t.root, ["goldens", "run", "--name", "sessions_2025"]);
     expect(run.code).toBe(1);
     expect(run.err).toContain("Only read-only queries run here");
   });
@@ -436,20 +436,20 @@ describe("goldens the compiler refuses", () => {
 describe("goldens and protected values", () => {
   test("a protected column of the compiled rows is masked in run and in check's differences", async () => {
     const { root } = await duckdbAcme();
-    const run = await sl(root, ["goldens", "run", "--name", "analyst_rep_101_by_name_2025", "--json"]);
+    const run = await semlayer(root, ["goldens", "run", "--name", "analyst_rep_101_by_name_2025", "--json"]);
     expect(run.code).toBe(0);
     const ran = run.json<{ rows: Record<string, unknown>[]; protected_columns: string[]; compiled: boolean }>();
     expect(ran.compiled).toBe(true);
     expect(ran.protected_columns).toEqual(["full_name"]);
     expect(ran.rows).toEqual([{ full_name: PROTECTED_VALUE, revenue: 34938.49, order_count: 251 }]);
     expect(run.out).not.toContain("Avery Patel");
-    const human = await sl(root, ["goldens", "run", "--name", "analyst_rep_101_by_name_2025"]);
+    const human = await semlayer(root, ["goldens", "run", "--name", "analyst_rep_101_by_name_2025"]);
     expect(human.out).not.toContain("Avery Patel");
 
     const path = join(root, "goldens", "analyst_rep_101_by_name_2025.yaml");
     const g = readYaml<Golden>(path);
     writeYaml(path, { ...g, expected: { tolerance: 0, rows: [{ full_name: "Synthetic Person", revenue: 34938.49, order_count: 251 }] } });
-    const check = await sl(root, ["goldens", "check", "--name", "analyst_rep_101_by_name_2025"]);
+    const check = await semlayer(root, ["goldens", "check", "--name", "analyst_rep_101_by_name_2025"]);
     expect(check.code).toBe(1);
     expect(check.out).toContain(PROTECTED_VALUE);
     expect(check.out).not.toContain("Avery Patel");
@@ -461,12 +461,12 @@ describe("goldens and protected values", () => {
     const path = join(root, "goldens", "sales_rep_101_2025.yaml");
     const g = readYaml<Golden>(path);
     writeYaml(path, { ...g, user: { ...g.user, employee_id: "101) or (1=1" } });
-    const r = await sl(root, ["goldens", "check", "--name", "sales_rep_101_2025", "--json"]);
+    const r = await semlayer(root, ["goldens", "check", "--name", "sales_rep_101_2025", "--json"]);
     expect(r.code).toBe(1);
     const [res] = r.json<CheckJson>().results;
     expect(res!.ok).toBe(false);
     expect(res!.diffs[0]).toStartWith("The query did not run: ");
-    const emit = await sl(root, ["goldens", "check", "--name", "sales_rep_101_2025", "--emit-sql"]);
+    const emit = await semlayer(root, ["goldens", "check", "--name", "sales_rep_101_2025", "--emit-sql"]);
     expect(emit.json<QueryPlan>().queries[0]!.sql).toContain("'101) or (1=1'");
   }, 60_000);
 });
@@ -492,17 +492,17 @@ describe("goldens new", () => {
 
   test("writes a valid draft golden with the request, prints the compiled SQL and stores none", async () => {
     const t = copyAcme();
-    const r = await sl(t.root, ["goldens", "new", "--name", "revenue_by_ship_region", "--question", "What was revenue by ship region?", "--request", request, "--role", "analyst", "--user", '{"department":"analytics"}']);
+    const r = await semlayer(t.root, ["goldens", "new", "--name", "revenue_by_ship_region", "--question", "What was revenue by ship region?", "--request", request, "--role", "analyst", "--user", '{"department":"analytics"}']);
     expect(r.code).toBe(0);
     const path = join(t.root, "goldens", "revenue_by_ship_region.yaml");
     expect(r.out).toStartWith("Wrote goldens/revenue_by_ship_region.yaml, a draft golden.");
-    const sql = await sl(t.root, ["sql", "--request", path, "--json"]);
+    const sql = await semlayer(t.root, ["sql", "--request", path, "--json"]);
     const compiled = sql.json<{ sql: string }>().sql;
     expect(r.out).toContain(compiled);
     // The next step is the confirm flow, which needs the owner's recorded yes (3.3a): readback, reply, then confirm.
     expect(r.out).toContain(
-      "Run sl goldens run --name revenue_by_ship_region to see its rows; once its measures are approved, confirm it on the owner's yes: " +
-        "sl readback --targets golden:revenue_by_ship_region --tolerance <agreed tolerance>, read it to the owner, record their answer with sl reply",
+      "Run semlayer goldens run --name revenue_by_ship_region to see its rows; once its measures are approved, confirm it on the owner's yes: " +
+        "semlayer readback --targets golden:revenue_by_ship_region --tolerance <agreed tolerance>, read it to the owner, record their answer with semlayer reply",
     );
     const g = readYaml<Golden>(path);
     expect(g).toEqual({
@@ -517,12 +517,12 @@ describe("goldens new", () => {
 
     // The same inputs write the same file in another root.
     const u = copyAcme();
-    const json = await sl(u.root, ["goldens", "new", "--name", "revenue_by_ship_region", "--question", "What was revenue by ship region?", "--request", request, "--role", "analyst", "--user", '{"department":"analytics"}', "--json"]);
+    const json = await semlayer(u.root, ["goldens", "new", "--name", "revenue_by_ship_region", "--question", "What was revenue by ship region?", "--request", request, "--role", "analyst", "--user", '{"department":"analytics"}', "--json"]);
     expect(readFileSync(join(u.root, "goldens", "revenue_by_ship_region.yaml"), "utf8")).toBe(readFileSync(path, "utf8"));
     expect(json.json()).toMatchObject({ name: "revenue_by_ship_region", path: "goldens/revenue_by_ship_region.yaml", written: true, status: "draft", compiled: true, sql: compiled, params: [] });
 
     // An existing name is refused and the file is kept.
-    const again = await sl(t.root, ["goldens", "new", "--name", "revenue_by_ship_region", "--question", "Other?", "--request", request]);
+    const again = await semlayer(t.root, ["goldens", "new", "--name", "revenue_by_ship_region", "--question", "Other?", "--request", request]);
     expect(again.code).toBe(1);
     expect(again.err).toContain('Golden "revenue_by_ship_region" already exists (goldens/revenue_by_ship_region.yaml)');
     expect(readYaml<Golden>(path).question).toBe("What was revenue by ship region?");
@@ -532,14 +532,14 @@ describe("goldens new", () => {
     const t = copyAcme();
     const file = join(t.dir, "req.yaml");
     writeFileSync(file, "measures: [customers.new_customers]\n");
-    const r = await sl(t.root, ["goldens", "new", "--name", "new_customers_q1", "--question", "How many new customers in Q1?", "--request", file, "--source", "warehouse", "--json"]);
+    const r = await semlayer(t.root, ["goldens", "new", "--name", "new_customers_q1", "--question", "How many new customers in Q1?", "--request", file, "--source", "warehouse", "--json"]);
     expect(r.code).toBe(0);
     const doc = r.json<{ compiled: boolean; refused: { reason: string; next: string }; next: string }>();
     expect(doc.compiled).toBe(false);
     expect(doc.refused.reason).toContain("customers.new_customers");
-    expect(doc.next).toContain("sl goldens run --name new_customers_q1");
+    expect(doc.next).toContain("semlayer goldens run --name new_customers_q1");
     // A golden without expected rows is rechecked with goldens run: goldens check refuses it.
-    expect(doc.refused.next).toEndWith("then run sl goldens run --name new_customers_q1.");
+    expect(doc.refused.next).toEndWith("then run semlayer goldens run --name new_customers_q1.");
     expect(doc.refused.next).not.toContain("goldens check");
     expect(readYaml<Golden>(join(t.root, "goldens", "new_customers_q1.yaml")).request).toEqual({ measures: ["customers.new_customers"], source: "warehouse" });
   });
@@ -555,22 +555,22 @@ describe("goldens new", () => {
       [["--request", "not json"], "--request: no file not json"],
       [["--request", request, "--user", "[1]"], "--user must be a JSON object"],
       [["--request", request, "--source", "lake"], "The request is on source warehouse, not lake"],
-      // sl validate would error on it once written: measures of two models.
+      // semlayer validate would error on it once written: measures of two models.
       [["--request", '{"source":"warehouse","measures":["orders.revenue","refunds.refund_amount"]}'], "a request's measures must share one model, or be one metric"],
     ];
     for (const [args, message] of cases) {
-      const r = await sl(t.root, ["goldens", "new", "--name", "nope", "--question", "Q?", ...args]);
+      const r = await semlayer(t.root, ["goldens", "new", "--name", "nope", "--question", "Q?", ...args]);
       expect({ args, code: r.code }).toEqual({ args, code: 1 });
       expect(r.err).toContain(message);
     }
-    const noQuestion = await sl(t.root, ["goldens", "new", "--name", "nope", "--request", request]);
+    const noQuestion = await semlayer(t.root, ["goldens", "new", "--name", "nope", "--request", request]);
     expect(noQuestion.err).toContain('goldens new needs --question "<the question in plain English>".');
-    const badName = await sl(t.root, ["goldens", "new", "--name", "../nope", "--question", "Q?", "--request", request]);
+    const badName = await semlayer(t.root, ["goldens", "new", "--name", "../nope", "--question", "Q?", "--request", request]);
     expect(badName.err).toContain("not a golden name");
     expect(readdirSync(join(t.root, "goldens")).sort()).toEqual(before);
     // A name a .yml file holds is taken too.
     writeFileSync(join(t.root, "goldens", "nope.yml"), "name: nope\nquestion: Q?\nrequest:\n  source: warehouse\n  measures: [orders.revenue]\nstatus: draft\n");
-    const yml = await sl(t.root, ["goldens", "new", "--name", "nope", "--question", "Q?", "--request", request]);
+    const yml = await semlayer(t.root, ["goldens", "new", "--name", "nope", "--question", "Q?", "--request", request]);
     expect(yml.code).toBe(1);
     expect(yml.err).toContain('Golden "nope" already exists (goldens/nope.yml)');
     expect(existsSync(join(t.root, "goldens", "nope.yaml"))).toBe(false);
@@ -578,9 +578,9 @@ describe("goldens new", () => {
 
   test("a new draft golden runs: its preview compiles its draft fields as approved", async () => {
     const { root } = await duckdbAcme();
-    const r = await sl(root, ["goldens", "new", "--name", "revenue_by_ship_region", "--question", "Revenue by ship region?", "--request", request]);
+    const r = await semlayer(root, ["goldens", "new", "--name", "revenue_by_ship_region", "--question", "Revenue by ship region?", "--request", request]);
     expect(r.code).toBe(0);
-    const run = await sl(root, ["goldens", "run", "--name", "revenue_by_ship_region", "--json"]);
+    const run = await semlayer(root, ["goldens", "run", "--name", "revenue_by_ship_region", "--json"]);
     expect(run.code).toBe(0);
     const ran = run.json<{ compiled: boolean; columns: string[]; rows: unknown[] }>();
     expect(ran.compiled).toBe(true);
@@ -625,8 +625,8 @@ describe("goldens on postgres", () => {
       ];
       for (const [name, field, value, want] of cases) {
         const req = JSON.stringify({ source: "wh", measures: ["orders.revenue"], filters: [{ field, op: "eq", value }] });
-        expect((await sl(t.root, ["goldens", "new", "--name", name, "--question", "Q?", "--request", req], env)).code).toBe(0);
-        const r = await sl(t.root, ["goldens", "run", "--name", name, "--json"], env);
+        expect((await semlayer(t.root, ["goldens", "new", "--name", name, "--question", "Q?", "--request", req], env)).code).toBe(0);
+        const r = await semlayer(t.root, ["goldens", "run", "--name", name, "--json"], env);
         expect({ name, code: r.code, err: r.code ? r.err : "" }).toEqual({ name, code: 0, err: "" });
         expect(r.json<{ rows: { revenue: unknown }[] }>().rows).toEqual([{ revenue: want }]);
       }

@@ -19,7 +19,7 @@ const spec: CommandSpec = {
       ctx.out(
         [
           `Added user attribute ${o.entry.name} (${o.entry.type}) to ${o.file}.`,
-          ...accessEditLines(o, `read it in a condition as user.${o.entry.name} (sl add-role --name <role> --assign-when "<condition>") or in a row filter as {{ user.${o.entry.name} }} (sl add-row-filter).`),
+          ...accessEditLines(o, `read it in a condition as user.${o.entry.name} (semlayer add-role --name <role> --assign-when "<condition>") or in a row filter as {{ user.${o.entry.name} }} (semlayer add-row-filter).`),
         ].join("\n"),
       );
     return 0;

@@ -26,7 +26,7 @@ import { Server } from "../skills/semantic-layer/scripts/mcp/server.ts";
 import { assertLocalPg, FIXED_NOW, PG_URL, tempDir, uniqueSchema } from "./helpers.ts";
 
 const SCRIPTS = join(import.meta.dir, "..", "skills", "semantic-layer", "scripts");
-const SL = join(SCRIPTS, "sl.ts");
+const SEMLAYER = join(SCRIPTS, "semlayer.ts");
 const SERVER = join(SCRIPTS, "mcp", "server.ts");
 
 // A synthetic password with every character a URL would need encoded, and one a shell would expand.
@@ -59,22 +59,22 @@ interface Run {
 async function cli(cwd: string, args: string[], env: Env = {}): Promise<Run> {
   const out: string[] = [];
   const err: string[] = [];
-  const code = await runCli(args, { cwd, env: { SL_NOW: FIXED_NOW, ...env }, out: (t) => out.push(t), err: (t) => err.push(t) });
+  const code = await runCli(args, { cwd, env: { SEMLAYER_NOW: FIXED_NOW, ...env }, out: (t) => out.push(t), err: (t) => err.push(t) });
   return { code, out: out.join("\n"), err: err.join("\n") };
 }
 
 // The environment of a spawned CLI or server: nothing of this process's but what it needs to run.
-const BARE_ENV = { PATH: process.env.PATH ?? "", TMPDIR: tmpdir(), HOME: "/root", SL_NOW: FIXED_NOW };
+const BARE_ENV = { PATH: process.env.PATH ?? "", TMPDIR: tmpdir(), HOME: "/root", SEMLAYER_NOW: FIXED_NOW };
 
-// Runs `bun sl.ts` as people do, so Bun loads the working directory's .env before the CLI starts.
+// Runs `bun semlayer.ts` as people do, so Bun loads the working directory's .env before the CLI starts.
 function spawnCli(cwd: string, args: string[], env: Record<string, string> = {}): Run {
-  const p = Bun.spawnSync([process.execPath, SL, ...args], { cwd, env: { ...BARE_ENV, ...env }, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawnSync([process.execPath, SEMLAYER, ...args], { cwd, env: { ...BARE_ENV, ...env }, stdout: "pipe", stderr: "pipe" });
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
 }
 
 // The same without blocking this process, for a run that talks to a server this process runs.
 async function spawnCliAsync(cwd: string, args: string[], env: Record<string, string> = {}): Promise<Run> {
-  const p = Bun.spawn([process.execPath, SL, ...args], { cwd, env: { ...BARE_ENV, ...env }, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn([process.execPath, SEMLAYER, ...args], { cwd, env: { ...BARE_ENV, ...env }, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
   return { code, out, err };
 }
@@ -194,13 +194,13 @@ describe("the lookup order", () => {
     expect(first.value).toBe("from-process");
     expect(first.resolution).toMatchObject({ status: "ok", from: { kind: "environment" }, variables: ["LAKE_URL"], described: "LAKE_URL from the environment" });
 
-    // 2. The named file, by --env-file or by SL_ENV_FILE, relative to the working directory.
+    // 2. The named file, by --env-file or by SEMLAYER_ENV_FILE, relative to the working directory.
     const second = value(p.root, {}, lookup);
     expect(second.value).toBe("from-named");
     expect(second.resolution).toMatchObject({ status: "ok", from: { kind: "env_file", path: named }, described: `LAKE_URL from ${named}` });
-    expect(value(p.root, { SL_ENV_FILE: "named.env" }, { cwd: p.elsewhere }).value).toBe("from-named");
+    expect(value(p.root, { SEMLAYER_ENV_FILE: "named.env" }, { cwd: p.elsewhere }).value).toBe("from-named");
     writeFileSync(join(p.elsewhere, "other.env"), "LAKE_URL=from-other\n");
-    expect(value(p.root, { SL_ENV_FILE: named }, { cwd: p.elsewhere, envFile: "other.env" }).value).toBe("from-other");
+    expect(value(p.root, { SEMLAYER_ENV_FILE: named }, { cwd: p.elsewhere, envFile: "other.env" }).value).toBe("from-other");
 
     // 3. The .env in the directory that holds the semantic root.
     const third = value(p.root, {}, { cwd: p.elsewhere });
@@ -219,21 +219,21 @@ describe("the lookup order", () => {
     expect(value(p.root, { LAKE_URL: "" }, lookup).value).toBe("from-cwd");
   });
 
-  test("a named file that does not exist is an error, for the flag and for SL_ENV_FILE", async () => {
+  test("a named file that does not exist is an error, for the flag and for SEMLAYER_ENV_FILE", async () => {
     const p = project();
     initRoot(p.root, urlSource());
     writeFileSync(join(p.dir, ".env"), "LAKE_URL=postgres://u@127.0.0.1:1/db\n");
     const missing = join(p.elsewhere, "nope.env");
     expect(() => resolveConnection(p.root, urlSource(), {}, { cwd: p.elsewhere, envFile: "nope.env" })).toThrow(`--env-file names ${missing}, which is not a file`);
-    expect(() => resolveConnection(p.root, urlSource(), { SL_ENV_FILE: missing }, { cwd: p.elsewhere })).toThrow(`SL_ENV_FILE names ${missing}, which is not a file`);
+    expect(() => resolveConnection(p.root, urlSource(), { SEMLAYER_ENV_FILE: missing }, { cwd: p.elsewhere })).toThrow(`SEMLAYER_ENV_FILE names ${missing}, which is not a file`);
     // The flag is checked on every command, before it runs.
     const status = await cli(p.elsewhere, ["status", "--root", p.root, "--env-file", "nope.env"]);
     expect(status.code).toBe(1);
     expect(status.err).toContain(`--env-file names ${missing}, which is not a file`);
     expect(status.err).toContain("run the same command again");
-    const run = await cli(p.elsewhere, ["run", "--source", "lake", "--sql", "select 1", "--root", p.root], { SL_ENV_FILE: missing });
+    const run = await cli(p.elsewhere, ["run", "--source", "lake", "--sql", "select 1", "--root", p.root], { SEMLAYER_ENV_FILE: missing });
     expect(run.code).toBe(1);
-    expect(run.err).toContain(`SL_ENV_FILE names ${missing}, which is not a file`);
+    expect(run.err).toContain(`SEMLAYER_ENV_FILE names ${missing}, which is not a file`);
   });
 
   test("the parts of a prefix are looked up one by one", () => {
@@ -269,14 +269,14 @@ describe("a value arrives as written", () => {
 
   test("what Bun loaded from the working directory's .env is passed over; what the shell set wins", () => {
     const p = project();
-    writeFileSync(join(p.dir, ".env"), ["LAKE_URL=pa$$HOME", "QUOTED='a${HOME}b'", "ESCAPED=a\\$b", "DEFAULTED=${NO_SUCH_SL_VAR:-x}y", "PLAIN=same", "SHELL_SET=file$HOME"].join("\n"));
+    writeFileSync(join(p.dir, ".env"), ["LAKE_URL=pa$$HOME", "QUOTED='a${HOME}b'", "ESCAPED=a\\$b", "DEFAULTED=${NO_SUCH_SEMLAYER_VAR:-x}y", "PLAIN=same", "SHELL_SET=file$HOME"].join("\n"));
     // The process environment as Bun leaves it: each value loaded from the file, with $NAME expanded.
     const bun = { HOME: "/root", LAKE_URL: "pa$/root", QUOTED: "a/rootb", ESCAPED: "a$b", DEFAULTED: "xy", PLAIN: "same", SHELL_SET: "from-the-shell" };
     const env = processEnvironment(bun, p.dir);
     // The environment itself is unchanged: only the connection lookup passes over the marked names.
     expect(env).toEqual(bun);
     const lookup = { cwd: p.dir };
-    for (const [name, written] of [["LAKE_URL", "pa$$HOME"], ["QUOTED", "a${HOME}b"], ["ESCAPED", "a\\$b"], ["DEFAULTED", "${NO_SUCH_SL_VAR:-x}y"], ["PLAIN", "same"]] as const) {
+    for (const [name, written] of [["LAKE_URL", "pa$$HOME"], ["QUOTED", "a${HOME}b"], ["ESCAPED", "a\\$b"], ["DEFAULTED", "${NO_SUCH_SEMLAYER_VAR:-x}y"], ["PLAIN", "same"]] as const) {
       const r = readConnection(p.root, urlSource("lake", name), env, lookup);
       expect(r.values[name]).toBe(written);
       expect(r.resolution).toMatchObject({ from: { kind: "env_file", path: join(p.dir, ".env") } });
@@ -302,7 +302,7 @@ describe("a value arrives as written", () => {
     expect(readConnection(p.root, urlSource(), env, { cwd: p.dir, envFile: join(p.elsewhere, "named.env") }).values.LAKE_URL).toBe("from-named");
   });
 
-  test("bun sl.ts: .env.local and a mode's file are Bun's, not the lookup's: never \"the environment\", never ahead of a named file", () => {
+  test("bun semlayer.ts: .env.local and a mode's file are Bun's, not the lookup's: never \"the environment\", never ahead of a named file", () => {
     const setup = ["setup", "--source", "lake", "--dialect", "postgres", "--env-prefix", "LAKE_"];
     for (const file of [".env.local", ".env.development", ".env.development.local"]) {
       const p = project();
@@ -333,7 +333,7 @@ describe("a value arrives as written", () => {
     expect(production.err).toContain(`${join(p.dir, ".env.production")} holds a line for these`);
   });
 
-  test("bun sl.ts: pa$$HOME reaches the driver unchanged from a .env in the working directory and from --env-file", () => {
+  test("bun semlayer.ts: pa$$HOME reaches the driver unchanged from a .env in the working directory and from --env-file", () => {
     const p = project();
     // The host is a socket directory that does not exist, so the message that names it needs no network.
     const lines = "export LAKE_HOST=/nonexistent/pa$$HOME\nLAKE_PORT=6543\nLAKE_USER=reader\nLAKE_DATABASE=acme\n";
@@ -419,7 +419,7 @@ describe("the prefix form", () => {
     }
   });
 
-  test("bun sl.ts: the password on the wire is the source's own, as written, or empty; never one from the working directory's .env", async () => {
+  test("bun semlayer.ts: the password on the wire is the source's own, as written, or empty; never one from the working directory's .env", async () => {
     const p = project();
     initRoot(p.root, prefixSource("LAKE_"));
     const server = fakePostgres();
@@ -432,7 +432,7 @@ describe("the prefix form", () => {
       expect(server.seen).toEqual([`startup:user=${USER},database=acme`, "password:"]);
       // Any other refusal: the driver's words scrubbed, and what to do next.
       expect(none.err).toContain(
-        `sl run: Source "lake": cannot connect to the database at 127.0.0.1 port ${server.port} (LAKE_HOST, LAKE_PORT, LAKE_USER, LAKE_DATABASE from ${join(p.dir, ".env")}): ` +
+        `semlayer run: Source "lake": cannot connect to the database at 127.0.0.1 port ${server.port} (LAKE_HOST, LAKE_PORT, LAKE_USER, LAKE_DATABASE from ${join(p.dir, ".env")}): ` +
           'password authentication failed for user "[redacted]". Ask the owner to check the values of those variables, then run the same command again.',
       );
 
@@ -459,11 +459,11 @@ describe("the prefix form", () => {
     expect(() => driverConnection(prefixSource("X"), { ...parts, XSSLMODE: "yes" }, 1)).toThrow("XSSLMODE must be one of disable, allow, prefer, require, verify-ca, verify-full");
   });
 
-  test("sl setup --env-prefix writes connection.env_prefix; --env with it, and another dialect, are refused", async () => {
+  test("semlayer setup --env-prefix writes connection.env_prefix; --env with it, and another dialect, are refused", async () => {
     const p = project();
     const both = await cli(p.dir, ["setup", "--source", "lake", "--dialect", "postgres", "--env", "LAKE_URL", "--env-prefix", "LAKE_"]);
     expect(both.code).toBe(1);
-    expect(both.err).toContain("a source has one or the other. Run sl setup again with one of them.");
+    expect(both.err).toContain("a source has one or the other. Run semlayer setup again with one of them.");
     const duck = await cli(p.dir, ["setup", "--source", "lake", "--dialect", "duckdb", "--env-prefix", "LAKE_"]);
     expect(duck.err).toContain("--env-prefix names the parts of a postgres connection");
     const value = await cli(p.dir, ["setup", "--source", "lake", "--dialect", "postgres", "--env-prefix", "postgres://u:secret-pw@h/db"]);
@@ -476,7 +476,7 @@ describe("the prefix form", () => {
     assertLocalPg(PG_URL);
     const url = new URL(PG_URL!);
     const p = project();
-    const schema = uniqueSchema("sl_env");
+    const schema = uniqueSchema("semlayer_env");
     const db = new SQL({ url: PG_URL!, max: 1 });
     await db.unsafe(`create schema ${schema}; create table ${schema}.orders (id int primary key, total numeric)`);
     try {
@@ -569,7 +569,7 @@ describe("messages", () => {
     });
     const run = await cli(p.elsewhere, ["run", "--source", "lake", "--sql", "select 1", "--root", p.root]);
     expect(run.code).toBe(1);
-    expect(run.err).toBe(`sl run: ${(r as { message: string }).message}`);
+    expect(run.err).toBe(`semlayer run: ${(r as { message: string }).message}`);
     expectNoCredential(run.err);
     // With a named file, the line goes there.
     const named = resolveConnection(p.root, urlSource(), {}, { cwd: p.elsewhere, envFile: ".env" });
@@ -593,7 +593,7 @@ describe("messages", () => {
     expectNoCredential(JSON.stringify(partial));
   });
 
-  test("sl setup with an unset variable writes nothing under the root, and the .gitignore lines first", async () => {
+  test("semlayer setup with an unset variable writes nothing under the root, and the .gitignore lines first", async () => {
     const p = project();
     const r = await cli(p.dir, ["setup", "--source", "lake", "--dialect", "postgres", "--env", "LAKE_URL"]);
     expect(r.code).toBe(1);
@@ -612,7 +612,7 @@ describe("messages", () => {
     const url = await cli(p.elsewhere, ["run", "--source", "lake", "--sql", "select 1", "--root", p.root]);
     expect(url.code).toBe(1);
     expect(url.err).toContain(
-      `sl run: Source "lake": cannot reach the database at 127.0.0.1 port 1 (LAKE_URL from ${join(p.dir, ".env")}). Check the host and port with the owner, and the network path from this machine: ` +
+      `semlayer run: Source "lake": cannot reach the database at 127.0.0.1 port 1 (LAKE_URL from ${join(p.dir, ".env")}). Check the host and port with the owner, and the network path from this machine: ` +
         "a VPN that must be on, or an allowlist that must include this machine's address. Then run the same command again.",
     );
     expect(url.err.split("\n")[0]).toBe(`Connection for source "lake": LAKE_URL from ${join(p.dir, ".env")}`);
@@ -679,7 +679,7 @@ describe("messages", () => {
       }
       expect(message).toBe(
         'Source "lake": LAKE_URL does not hold a valid Postgres connection URL. It reads like postgres://<user>:<password>@<host>:5432/<database>?sslmode=require, ' +
-          "with any @, / or # of the password percent-encoded (sl setup --env-prefix takes a password as written); ask the owner to correct it, then run the same command again.",
+          "with any @, / or # of the password percent-encoded (semlayer setup --env-prefix takes a password as written); ask the owner to correct it, then run the same command again.",
       );
     }
     // Of a value that does not start as a Postgres URL the driver makes a host: no message names it.
@@ -710,15 +710,15 @@ describe("messages", () => {
 describe(".gitignore beside the semantic root", () => {
   const LINES = ".env\n.env.*\n!.env.example\n";
 
-  test("sl init writes the lines, once, and nothing else outside the root (invariant 6)", async () => {
+  test("semlayer init writes the lines, once, and nothing else outside the root (invariant 6)", async () => {
     const p = project();
     expect((await cli(p.dir, ["init", "--name", "acme"])).code).toBe(0);
     const file = join(p.dir, ".gitignore");
     const first = readFileSync(file, "utf8");
-    expect(first).toBe(`# Env files hold connection secrets; sl init and sl setup keep them out of version control.\n${LINES}`);
+    expect(first).toBe(`# Env files hold connection secrets; semlayer init and semlayer setup keep them out of version control.\n${LINES}`);
     // The directory that holds the root gains that one file and the root; the root keeps its own .gitignore.
     expect(readdirSync(p.dir).sort()).toEqual([".gitignore", "semantic"]);
-    expect(readFileSync(join(p.root, ".gitignore"), "utf8")).toContain(".sl/plans/");
+    expect(readFileSync(join(p.root, ".gitignore"), "utf8")).toContain(".semlayer/plans/");
     ignoreEnvFiles(p.root);
     expect(readFileSync(file, "utf8")).toBe(first);
   });
@@ -747,7 +747,7 @@ describe(".gitignore beside the semantic root", () => {
   });
 });
 
-describe("sl validate", () => {
+describe("semlayer validate", () => {
   test("an env file under the semantic root is an error; .env.example is not", async () => {
     const p = project();
     initRoot(p.root, urlSource());
@@ -758,7 +758,7 @@ describe("sl validate", () => {
     const errors = validateProject(p.root).filter((i) => i.level === "error");
     expect(errors.map((e) => e.file)).toEqual([".env", "sources/.env.local"]);
     expect(errors[0]!.message).toBe(
-      `an env file inside the semantic root, where no secret is kept: move it to ${join(p.dir, ".env")} (sl reads it there and keeps it out of version control), then run sl validate again`,
+      `an env file inside the semantic root, where no secret is kept: move it to ${join(p.dir, ".env")} (semlayer reads it there and keeps it out of version control), then run semlayer validate again`,
     );
     const r = await cli(p.dir, ["validate"]);
     expect(r.code).toBe(1);
@@ -784,7 +784,7 @@ describe("sl validate", () => {
         level: "error",
         file: "../.env",
         path: "",
-        message: `git tracks this env file, so the secrets in it are in the repository: run git -C ${p.dir} rm --cached .env and commit, have the owner rotate the credentials it held, then run sl validate again (sl setup keeps .env out of version control)`,
+        message: `git tracks this env file, so the secrets in it are in the repository: run git -C ${p.dir} rm --cached .env and commit, have the owner rotate the credentials it held, then run semlayer validate again (semlayer setup keeps .env out of version control)`,
       },
     ]);
     // The named file is checked in its own repository.
@@ -805,7 +805,7 @@ describe("sl validate", () => {
         level: "error",
         file: "sources/lake.yaml",
         path: "connection",
-        message: "has both env and env_prefix; a source names one variable that holds the URL or a prefix for the parts, not both: keep one (sl setup --source lake --dialect postgres --env <VAR> or --env-prefix <PREFIX> writes it)",
+        message: "has both env and env_prefix; a source names one variable that holds the URL or a prefix for the parts, not both: keep one (semlayer setup --source lake --dialect postgres --env <VAR> or --env-prefix <PREFIX> writes it)",
       },
     ]);
     writeYaml(join(p.root, "sources", "lake.yaml"), prefixSource("LAKE_"));
@@ -814,7 +814,7 @@ describe("sl validate", () => {
     expect(validateProject(p.root).filter((i) => i.level === "error").map((i) => i.path)).toEqual(["connection.env_prefix"]);
   });
 
-  test("sl setup's edit sets one of env and env_prefix and removes the other, keeping the rest of the file", () => {
+  test("semlayer setup's edit sets one of env and env_prefix and removes the other, keeping the rest of the file", () => {
     const before = "# the owner's file\nsource: lake\ndialect: postgres\nconnection:\n  env: LAKE_URL\nintake:\n  mode: connection # kept\n";
     const prefixed = editYamlText(before, (doc) => applySourceState(doc, { envPrefix: "LAKE_", mode: "connection" }), "sources/lake.yaml");
     expect(prefixed).toBe("# the owner's file\nsource: lake\ndialect: postgres\nconnection:\n  env_prefix: LAKE_\nintake:\n  mode: connection # kept\n");
@@ -830,16 +830,16 @@ describe("the MCP server", () => {
   test("a .env written after the server started is read by the next call", async () => {
     const p = project();
     initRoot(p.root, prefixSource("LAKE_"));
-    const server = new Server({ root: p.root, cwd: p.dir, env: processEnvironment({ SL_NOW: FIXED_NOW }, p.dir), log: () => {} });
-    const before = await call(server, 1, "sl_run", { source: "lake", sql: "select 1" });
+    const server = new Server({ root: p.root, cwd: p.dir, env: processEnvironment({ SEMLAYER_NOW: FIXED_NOW }, p.dir), log: () => {} });
+    const before = await call(server, 1, "semlayer_run", { source: "lake", sql: "select 1" });
     expect(before.result.isError).toBe(true);
     expect(text(before)).toContain("LAKE_HOST, LAKE_USER and LAKE_DATABASE are not set.");
     writeFileSync(join(p.dir, ".env"), "LAKE_HOST=/nonexistent/written-later\nLAKE_USER=u\nLAKE_DATABASE=d\n");
-    const after = await call(server, 2, "sl_run", { source: "lake", sql: "select 1" });
+    const after = await call(server, 2, "semlayer_run", { source: "lake", sql: "select 1" });
     expect(text(after)).toContain(`cannot reach the database at /nonexistent/written-later port 5432 (LAKE_HOST, LAKE_USER, LAKE_DATABASE from ${join(p.dir, ".env")})`);
     // And a change to it by the call after that.
     writeFileSync(join(p.dir, ".env"), "LAKE_HOST=/nonexistent/changed\nLAKE_USER=u\nLAKE_DATABASE=d\n");
-    expect(text(await call(server, 3, "sl_run", { source: "lake", sql: "select 1" }))).toContain("cannot reach the database at /nonexistent/changed port 5432");
+    expect(text(await call(server, 3, "semlayer_run", { source: "lake", sql: "select 1" }))).toContain("cannot reach the database at /nonexistent/changed port 5432");
   });
 
   test("the server process: a .env Bun loaded at start does not hide the file as it is now", async () => {
@@ -851,7 +851,7 @@ describe("the MCP server", () => {
     const decoder = new TextDecoder();
     let buffer = "";
     const ask = async (id: number): Promise<string> => {
-      proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "sl_run", arguments: { source: "lake", sql: "select 1" } } })}\n`);
+      proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "semlayer_run", arguments: { source: "lake", sql: "select 1" } } })}\n`);
       proc.stdin.flush();
       while (!buffer.includes("\n")) {
         const { value, done } = await reader.read();
@@ -876,12 +876,12 @@ describe("the MCP server", () => {
     assertLocalPg(PG_URL);
     const p = project();
     initRoot(p.root, urlSource());
-    const server = new Server({ root: p.root, cwd: p.elsewhere, env: { SL_NOW: FIXED_NOW }, log: () => {} });
-    const before = await call(server, 1, "sl_run", { source: "lake", sql: "select 41 + 1 as answer" });
+    const server = new Server({ root: p.root, cwd: p.elsewhere, env: { SEMLAYER_NOW: FIXED_NOW }, log: () => {} });
+    const before = await call(server, 1, "semlayer_run", { source: "lake", sql: "select 41 + 1 as answer" });
     expect(before.result.isError).toBe(true);
     expect(text(before)).toContain("LAKE_URL is not set");
     writeFileSync(join(p.dir, ".env"), `LAKE_URL='${PG_URL}'\n`);
-    const after = await call(server, 2, "sl_run", { source: "lake", sql: "select 41 + 1 as answer" });
+    const after = await call(server, 2, "semlayer_run", { source: "lake", sql: "select 41 + 1 as answer" });
     expect(after.result.isError).toBeUndefined();
     const json = JSON.parse(after.result.content[0]!.text) as { rows: unknown[]; connection_from: unknown };
     expect(json.rows).toEqual([{ answer: 42 }]);

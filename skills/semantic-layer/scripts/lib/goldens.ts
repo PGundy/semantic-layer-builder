@@ -372,10 +372,10 @@ function approvedLayer(layer: AccessLayer): AccessLayer {
 }
 
 // Compiles a golden's request from the current YAML as the role and user it runs as, the way
-// sl sql does. An approved golden compiles strictly: a draft field, or an approved one changed
+// semlayer sql does. An approved golden compiles strictly: a draft field, or an approved one changed
 // since its approval, is refused. Any other golden previews its request with every item read as
 // approved, so its rows can be read back to the owner before its fields are approved.
-// A layer too malformed for the compiler to read is a refusal that names sl validate.
+// A layer too malformed for the compiler to read is a refusal that names semlayer validate.
 export function compileGolden(root: string, golden: Golden): CompileResult {
   const role = typeof golden.role === "string" ? golden.role : undefined;
   const attributes = isObj(golden.user) ? golden.user : {};
@@ -392,7 +392,7 @@ export function compileGolden(root: string, golden: Golden): CompileResult {
     });
   } catch (e) {
     if (e instanceof UserError || !(e instanceof TypeError)) throw e;
-    const message = `the compiler could not read the layer (${e.message.split("\n")[0]}); run sl validate`;
+    const message = `the compiler could not read the layer (${e.message.split("\n")[0]}); run semlayer validate`;
     return { ok: false, source: source.source, reason: message, refusals: [{ code: "invalid_layer", message }] };
   }
 }
@@ -417,7 +417,7 @@ function awaitedTargets(r: Refused): string[] {
     if (x.code !== "not_visible") continue;
     if (x.awaits?.length) return x.awaits;
     if (x.ref === "access.yaml") return ["access"];
-    const changed = x.message.includes(CHANGED_SINCE_APPROVAL) ? /sl approve --target (\S+)/.exec(x.message)?.[1] : undefined;
+    const changed = x.message.includes(CHANGED_SINCE_APPROVAL) ? /semlayer approve --target (\S+)/.exec(x.message)?.[1] : undefined;
     if (changed) return [changed];
     const hidden = /measure_hidden:([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)/.exec(x.message)?.[1];
     if (hidden) return [`${r.source}.${hidden}`];
@@ -427,27 +427,27 @@ function awaitedTargets(r: Refused): string[] {
 }
 
 // The step that resolves a golden's refusal: the refusal's own, approving the item it waits on
-// (a draft access.yaml included) after the owner's yes, sl validate for a layer error, else sl sql
+// (a draft access.yaml included) after the owner's yes, semlayer validate for a layer error, else semlayer sql
 // for the details. The recheck is goldens check for a golden with expected rows, else goldens run.
 export function refusalNext(golden: Golden, r: Refused): string {
   const own = r.refusals.find((x) => x.next)?.next;
   if (own) return own;
   const targets = awaitedTargets(r);
   const confirmed = (golden.expected?.rows?.length ?? 0) > 0;
-  const recheck = confirmed ? `sl goldens check --name ${golden.name}` : `sl goldens run --name ${golden.name}`;
+  const recheck = confirmed ? `semlayer goldens check --name ${golden.name}` : `semlayer goldens run --name ${golden.name}`;
   if (targets.length) {
     const after = confirmed ? `; if its rows changed, confirm again only on the owner's yes` : "";
     const it = targets.length > 1 ? "them" : "it";
-    return `Read ${andList(targets)} back to the owner with sl readback --targets ${targets.join(",")} and approve ${it} on their yes, then run ${recheck}${after}.`;
+    return `Read ${andList(targets)} back to the owner with semlayer readback --targets ${targets.join(",")} and approve ${it} on their yes, then run ${recheck}${after}.`;
   }
-  if (r.refusals.some((x) => x.code === "invalid_layer")) return `Run sl validate and fix what it reports, then run ${recheck}.`;
+  if (r.refusals.some((x) => x.code === "invalid_layer")) return `Run semlayer validate and fix what it reports, then run ${recheck}.`;
   if (onlyUnsupportedDialect(r)) {
     return (
-      `sl sql compiles postgres and duckdb sources only: write the golden's query by hand from the model YAML as cross_check_sql, ` +
-      `then run sl goldens run --name ${golden.name} --emit-sql to plan it.`
+      `semlayer sql compiles postgres and duckdb sources only: write the golden's query by hand from the model YAML as cross_check_sql, ` +
+      `then run semlayer goldens run --name ${golden.name} --emit-sql to plan it.`
     );
   }
-  return `Run sl sql --request goldens/${golden.name}.yaml to see why, fix the request or the layer, then run ${recheck}.`;
+  return `Run semlayer sql --request goldens/${golden.name}.yaml to see why, fix the request or the layer, then run ${recheck}.`;
 }
 
 // A request value or user attribute as a SQL literal: text quoted, with '' for a quote (and on
@@ -477,7 +477,7 @@ export function inlineParams(sql: string, params: readonly unknown[], dialect: D
   for (const t of tokenize(sql)) {
     if (t.kind !== "param") continue;
     const n = Number(t.text.slice(1));
-    if (!(n >= 1 && n <= params.length)) throw new UserError(`The compiled query reads parameter ${t.text}, which it does not bind; run sl validate.`);
+    if (!(n >= 1 && n <= params.length)) throw new UserError(`The compiled query reads parameter ${t.text}, which it does not bind; run semlayer validate.`);
     out += sql.slice(at, t.pos) + sqlLiteral(params[n - 1], dialect, n);
     at = t.end;
   }
@@ -529,9 +529,9 @@ export function judgeGolden(expected: Row[], compiled: Row[] | undefined, cross:
   return { ok: c.ok && x.ok, diffs, ...verdict("compiled", c), ...verdict("cross_check", x) };
 }
 
-// The measure references a metric combines, in the exact model.measure form sl approve
+// The measure references a metric combines, in the exact model.measure form semlayer approve
 // accepts: a ratio's numerator and denominator, or an expr's {model.measure} placeholders
-// with no spaces. Anything else is left to sl validate and sl approve.
+// with no spaces. Anything else is left to semlayer validate and semlayer approve.
 const MEASURE_REF = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/;
 function metricMeasures(metric: Metric): string[] {
   if (metric.type === "ratio") {
@@ -554,7 +554,7 @@ function readableModel(m: unknown): m is Model {
 // targets (source.model.field, metric:<name>), in the order the request names them.
 // A metric used by the request also contributes the draft measures it combines.
 // References that resolve to nothing, and models or metrics too malformed to read, are
-// left to sl validate.
+// left to semlayer validate.
 export function goldenDraftFields(golden: Golden, models: Model[], metrics: Metric[]): string[] {
   const request = golden.request;
   if (!request || typeof request !== "object") return [];

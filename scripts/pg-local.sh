@@ -3,7 +3,7 @@
 # line to export:   eval "$(bash scripts/pg-local.sh)"
 # Stops it:         bash scripts/pg-local.sh --stop
 #
-# PG_LOCAL_DIR (default ${TMPDIR:-/tmp}/sl-pg-<uid>) holds the cluster and its socket.
+# PG_LOCAL_DIR (default ${TMPDIR:-/tmp}/semlayer-pg-<uid>) holds the cluster and its socket.
 # The directory is private (mode 700), the socket accepts only its owner (0700) and
 # the cluster listens on no TCP address, so no other local user can connect.
 # PG_LOCAL_PORT (default 54329) names the socket; a cluster already running in the directory
@@ -16,7 +16,7 @@ set -euo pipefail
 die() { echo "pg-local: $*" >&2; exit 1; }
 
 TMP="${TMPDIR:-/tmp}"
-DIR="${PG_LOCAL_DIR:-${TMP%/}/sl-pg-$(id -u)}"
+DIR="${PG_LOCAL_DIR:-${TMP%/}/semlayer-pg-$(id -u)}"
 DIR="${DIR%/}"
 PORT="${PG_LOCAL_PORT:-54329}"
 if [ -z "${PG_BIN:-}" ]; then

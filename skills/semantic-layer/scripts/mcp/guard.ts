@@ -13,8 +13,8 @@ export interface McpVerdict {
   message?: string;
 }
 
-// The sl command an MCP tool name runs: the part after the last "__" (Claude Code names a tool
-// mcp__<server>__<tool>) is sl_<command>, with - as _.
+// The semlayer command an MCP tool name runs: the part after the last "__" (Claude Code names a tool
+// mcp__<server>__<tool>) is semlayer_<command>, with - as _.
 export function commandOfTool(tool: string): string | undefined {
   const bare = tool.slice(tool.lastIndexOf("__") + 2);
   return Object.keys(COMMANDS).find((c) => toolName(c) === bare);

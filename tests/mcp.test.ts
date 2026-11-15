@@ -1,11 +1,11 @@
-// The MCP server (PRD FR-7.1): every sl command as a tool, spoken to as a subprocess over stdio.
+// The MCP server (PRD FR-7.1): every semlayer command as a tool, spoken to as a subprocess over stdio.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMANDS } from "../skills/semantic-layer/scripts/commands/index.ts";
 import { argvOf, inputSchema, schemaValidator, toolName } from "../skills/semantic-layer/scripts/mcp/schema.ts";
 import { PROTOCOL_VERSION } from "../skills/semantic-layer/scripts/mcp/server.ts";
-import { FIXED_NOW, sl, tempRoot } from "./helpers.ts";
+import { FIXED_NOW, semlayer, tempRoot } from "./helpers.ts";
 
 const SERVER = join(import.meta.dir, "..", "skills", "semantic-layer", "scripts", "mcp", "server.ts");
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
@@ -27,7 +27,7 @@ class Client {
       stdout: "pipe",
       stderr: "pipe",
       cwd,
-      env: { ...process.env, SL_NOW: FIXED_NOW, ...env },
+      env: { ...process.env, SEMLAYER_NOW: FIXED_NOW, ...env },
     });
     this.reading = this.read();
   }
@@ -106,7 +106,7 @@ describe("the handshake", () => {
     expect(r.result.protocolVersion).toBe("2025-06-18");
     expect(r.result.capabilities).toEqual({ tools: {} });
     expect(r.result.serverInfo).toMatchObject({ name: "semantic-layer", version: "0.1.0" });
-    expect(r.result.instructions).toContain("sl_status");
+    expect(r.result.instructions).toContain("semlayer_status");
   });
 
   test("an unknown protocol version is answered with the server's own", async () => {
@@ -131,18 +131,18 @@ describe("tools/list", () => {
     expect(tools.map((x) => x.name).sort()).toEqual(Object.keys(COMMANDS).map(toolName).sort());
     const ajv = schemaValidator();
     for (const tool of tools) {
-      expect(tool.name).toMatch(/^sl_[a-z0-9_]+$/);
-      expect(tool.description).toContain("Usage: sl ");
+      expect(tool.name).toMatch(/^semlayer_[a-z0-9_]+$/);
+      expect(tool.description).toContain("Usage: semlayer ");
       expect(tool.inputSchema.type).toBe("object");
       expect(ajv.validateSchema(tool.inputSchema)).toBe(true);
       expect(() => ajv.compile(tool.inputSchema)).not.toThrow();
     }
-    const status = tools.find((x) => x.name === "sl_status")!;
+    const status = tools.find((x) => x.name === "semlayer_status")!;
     expect(Object.keys(status.inputSchema.properties).sort()).toEqual(["root", "source"]);
     expect(status.inputSchema.additionalProperties).toBe(false);
-    const goldens = tools.find((x) => x.name === "sl_goldens")!.inputSchema;
+    const goldens = tools.find((x) => x.name === "semlayer_goldens")!.inputSchema;
     expect(goldens.properties.positionals).toEqual(expect.objectContaining({ type: "array", items: { type: "string" } }));
-    expect(tools.find((x) => x.name === "sl_check_join")).toBeDefined();
+    expect(tools.find((x) => x.name === "semlayer_check_join")).toBeDefined();
   });
 
   test("a command's flags map to strings, booleans and arrays for repeatable flags", async () => {
@@ -162,50 +162,50 @@ describe("tools/list", () => {
 });
 
 describe("tools/call", () => {
-  test("sl_status returns the same JSON as `sl status --json`", async () => {
-    const r = await client.call("sl_status", {});
+  test("semlayer_status returns the same JSON as `semlayer status --json`", async () => {
+    const r = await client.call("semlayer_status", {});
     expect(r.error).toBeUndefined();
     expect(r.result.isError).toBeUndefined();
     expect(r.result.content).toHaveLength(1);
     expect(r.result.content[0].type).toBe("text");
-    const cli = await sl(t.root, ["status", "--json"]);
+    const cli = await semlayer(t.root, ["status", "--json"]);
     expect(cli.code).toBe(0);
     expect(JSON.parse(r.result.content[0].text)).toEqual(cli.json());
     expect(r.result.content[0].text).toBe(cli.out);
   });
 
   test("flags and positionals reach the command; missing arguments mean none", async () => {
-    const bySource = await client.call("sl_status", { source: "lake" });
-    expect(bySource.result.content[0].text).toBe((await sl(t.root, ["status", "--source", "lake", "--json"])).out);
-    const noArgs = await client.call("sl_validate");
-    expect(noArgs.result.content[0].text).toBe((await sl(t.root, ["validate", "--json"])).out);
-    const goldens = await client.call("sl_goldens", { positionals: ["check"], name: "revenue_2025", source: "warehouse" });
-    const cli = await sl(t.root, ["goldens", "check", "--name", "revenue_2025", "--source", "warehouse", "--json"]);
+    const bySource = await client.call("semlayer_status", { source: "lake" });
+    expect(bySource.result.content[0].text).toBe((await semlayer(t.root, ["status", "--source", "lake", "--json"])).out);
+    const noArgs = await client.call("semlayer_validate");
+    expect(noArgs.result.content[0].text).toBe((await semlayer(t.root, ["validate", "--json"])).out);
+    const goldens = await client.call("semlayer_goldens", { positionals: ["check"], name: "revenue_2025", source: "warehouse" });
+    const cli = await semlayer(t.root, ["goldens", "check", "--name", "revenue_2025", "--source", "warehouse", "--json"]);
     expect(goldens.result.content.map((c: Msg) => c.text).join("\n")).toBe([cli.out, cli.err].filter(Boolean).join("\n"));
     expect(goldens.result.isError === true).toBe(cli.code !== 0);
   });
 
   test("a non-zero exit returns isError with the plain error text", async () => {
-    const r = await client.call("sl_status", { source: "nope" });
-    const cli = await sl(t.root, ["status", "--source", "nope", "--json"]);
+    const r = await client.call("semlayer_status", { source: "nope" });
+    const cli = await semlayer(t.root, ["status", "--source", "nope", "--json"]);
     expect(cli.code).not.toBe(0);
     expect(r.error).toBeUndefined();
     expect(r.result.isError).toBe(true);
     expect(r.result.content.map((c: Msg) => c.text).join("\n")).toBe([cli.out, cli.err].filter(Boolean).join("\n"));
-    expect(r.result.content.at(-1).text).toStartWith("sl status: ");
+    expect(r.result.content.at(-1).text).toStartWith("semlayer status: ");
   });
 
   test("approve behaves as the CLI: refused without the owner's recorded yes, and nothing is written", async () => {
     const before = readFileSync(join(t.root, "access.yaml"), "utf8");
-    const r = await client.call("sl_approve", { target: "access", by: "Dana" });
-    const cli = await sl(t.root, ["approve", "--target", "access", "--by", "Dana", "--json"]);
+    const r = await client.call("semlayer_approve", { target: "access", by: "Dana" });
+    const cli = await semlayer(t.root, ["approve", "--target", "access", "--by", "Dana", "--json"]);
     expect(r.result.isError === true).toBe(cli.code !== 0);
     expect(r.result.content.map((c: Msg) => c.text).join("\n")).toBe([cli.out, cli.err].filter(Boolean).join("\n"));
     expect(readFileSync(join(t.root, "access.yaml"), "utf8")).toBe(before);
   });
 
   test("an argument value that looks like a flag stays a value", async () => {
-    const r = await client.call("sl_status", { source: "--root=/" });
+    const r = await client.call("semlayer_status", { source: "--root=/" });
     expect(r.result.isError).toBe(true);
     expect(r.result.content.at(-1).text).toContain("--root=/");
     const spec = (await COMMANDS.set!()).default;
@@ -223,22 +223,22 @@ describe("tools/call", () => {
 
 describe("errors", () => {
   test("an unknown tool is a JSON-RPC invalid-params error", async () => {
-    const r = await client.call("sl_frobnicate", {});
+    const r = await client.call("semlayer_frobnicate", {});
     expect(r.result).toBeUndefined();
     expect(r.error.code).toBe(-32602);
-    expect(r.error.message).toBe('Unknown tool "sl_frobnicate". Call tools/list for the tools.');
+    expect(r.error.message).toBe('Unknown tool "semlayer_frobnicate". Call tools/list for the tools.');
   });
 
   test("bad arguments are JSON-RPC invalid-params errors naming the argument", async () => {
-    const wrongType = await client.call("sl_status", { source: 5 });
+    const wrongType = await client.call("semlayer_status", { source: 5 });
     expect(wrongType.error.code).toBe(-32602);
     expect(wrongType.error.message).toContain('"source" must be string');
-    const unknown = await client.call("sl_status", { bogus: "x" });
+    const unknown = await client.call("semlayer_status", { bogus: "x" });
     expect(unknown.error.code).toBe(-32602);
     expect(unknown.error.message).toContain('unknown argument "bogus"');
-    const positionals = await client.call("sl_status", { positionals: ["x"] });
+    const positionals = await client.call("semlayer_status", { positionals: ["x"] });
     expect(positionals.error.message).toContain('unknown argument "positionals"');
-    const notObject = await client.call("sl_status", ["x"] as unknown as Record<string, unknown>);
+    const notObject = await client.call("semlayer_status", ["x"] as unknown as Record<string, unknown>);
     expect(notObject.error.code).toBe(-32602);
     const noName = await client.request("tools/call", {});
     expect(noName.error.code).toBe(-32602);
@@ -275,8 +275,8 @@ describe("errors", () => {
   });
 
   test("json and help are not arguments", async () => {
-    expect((await client.call("sl_status", { json: true })).error.code).toBe(-32602);
-    expect((await client.call("sl_status", { help: true })).error.code).toBe(-32602);
+    expect((await client.call("semlayer_status", { json: true })).error.code).toBe(-32602);
+    expect((await client.call("semlayer_status", { help: true })).error.code).toBe(-32602);
   });
 
   test("a tools/call sent as a notification runs nothing", async () => {
@@ -284,7 +284,7 @@ describe("errors", () => {
     mkdirSync(fresh.dir, { recursive: true });
     const c = new Client(["--root", fresh.root]);
     try {
-      c.notify("tools/call", { name: "sl_init", arguments: { name: "x" } });
+      c.notify("tools/call", { name: "semlayer_init", arguments: { name: "x" } });
       expect((await c.request("ping")).result).toEqual({});
       expect(c.lines.length).toBe(1);
       expect(existsSync(join(fresh.root, "semantic.yaml"))).toBe(false);
@@ -299,13 +299,13 @@ describe("the semantic root", () => {
   test("a call naming a root outside the server's root is refused and nothing runs", async () => {
     const other = tempRoot();
     try {
-      const r = await client.call("sl_init", { name: "elsewhere", root: other.root });
+      const r = await client.call("semlayer_init", { name: "elsewhere", root: other.root });
       expect(r.error.code).toBe(-32602);
       expect(r.error.message).toContain(`This server works only in the semantic root ${t.root}`);
       expect(r.error.message).toContain("--root <dir>");
       expect(existsSync(join(other.root, "semantic.yaml"))).toBe(false);
       for (const root of [join(t.root, ".."), join(t.root, "models"), "/"]) {
-        expect((await client.call("sl_status", { root })).error.code).toBe(-32602);
+        expect((await client.call("semlayer_status", { root })).error.code).toBe(-32602);
       }
     } finally {
       other.cleanup();
@@ -316,7 +316,7 @@ describe("the semantic root", () => {
     const link = join(t.dir, "link");
     symlinkSync(t.root, link);
     for (const root of [t.root, link]) {
-      const r = await client.call("sl_status", { root });
+      const r = await client.call("semlayer_status", { root });
       expect(r.error).toBeUndefined();
       expect(r.result.isError).toBeUndefined();
     }
@@ -325,8 +325,8 @@ describe("the semantic root", () => {
   test("a relative --root and a relative root argument resolve from the server's working directory; an empty root is refused", async () => {
     const c = new Client(["--root", "semantic"], { SEMANTIC_ROOT: "/nonexistent" }, t.dir);
     try {
-      for (const root of ["semantic", t.root, `${t.root}/`, `${t.root}/models/..`]) expect((await c.call("sl_status", { root })).error).toBeUndefined();
-      for (const root of ["", `${t.root}/../semantic2`]) expect((await c.call("sl_status", { root })).error.code).toBe(-32602);
+      for (const root of ["semantic", t.root, `${t.root}/`, `${t.root}/models/..`]) expect((await c.call("semlayer_status", { root })).error).toBeUndefined();
+      for (const root of ["", `${t.root}/../semantic2`]) expect((await c.call("semlayer_status", { root })).error.code).toBe(-32602);
     } finally {
       const { stderr } = await c.close();
       expect(stderr).toContain(`serving the semantic root ${t.root} over stdio`);
@@ -336,9 +336,9 @@ describe("the semantic root", () => {
   test("SEMANTIC_ROOT sets the root when --root is absent", async () => {
     const c = new Client([], { SEMANTIC_ROOT: t.root });
     try {
-      const r = await c.call("sl_status", {});
-      expect(r.result.content[0].text).toBe((await sl(t.root, ["status", "--json"])).out);
-      expect((await c.call("sl_status", { root: t.dir })).error.code).toBe(-32602);
+      const r = await c.call("semlayer_status", {});
+      expect(r.result.content[0].text).toBe((await semlayer(t.root, ["status", "--json"])).out);
+      expect((await c.call("semlayer_status", { root: t.dir })).error.code).toBe(-32602);
     } finally {
       await c.close();
     }
@@ -349,7 +349,7 @@ describe("the semantic root", () => {
     mkdirSync(fresh.dir, { recursive: true });
     const c = new Client(["--root", fresh.root]);
     try {
-      const r = await c.call("sl_init", { name: "fresh" });
+      const r = await c.call("semlayer_init", { name: "fresh" });
       expect(r.result.isError).toBeUndefined();
       expect(existsSync(join(fresh.root, "semantic.yaml"))).toBe(true);
     } finally {
@@ -364,16 +364,16 @@ describe("stdout", () => {
     const dir = tempRoot();
     cpSync(ACME, dir.root, { recursive: true });
     // A command that warns: a postgres source whose variable is unset.
-    writeFileSync(join(dir.root, "sources", "pg.yaml"), "source: pg\ndialect: postgres\nconnection:\n  env: SL_TEST_UNSET_URL\n");
-    const c = new Client(["--root", dir.root], { SL_TEST_UNSET_URL: undefined });
+    writeFileSync(join(dir.root, "sources", "pg.yaml"), "source: pg\ndialect: postgres\nconnection:\n  env: SEMLAYER_TEST_UNSET_URL\n");
+    const c = new Client(["--root", dir.root], { SEMLAYER_TEST_UNSET_URL: undefined });
     try {
       await c.request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "x", version: "1" } });
       c.notify("notifications/initialized");
       await c.request("tools/list");
-      await c.call("sl_status", {});
-      await c.call("sl_introspect", { source: "pg" });
-      await c.call("sl_validate", {});
-      await c.call("sl_nope", {});
+      await c.call("semlayer_status", {});
+      await c.call("semlayer_introspect", { source: "pg" });
+      await c.call("semlayer_validate", {});
+      await c.call("semlayer_nope", {});
       const { code, stderr } = await c.close();
       expect(code).toBe(0);
       expect(c.lines.length).toBe(6);
@@ -382,7 +382,7 @@ describe("stdout", () => {
         expect(msg.jsonrpc).toBe("2.0");
         expect("result" in msg || "error" in msg).toBe(true);
       }
-      expect(stderr).toContain(`sl mcp: serving the semantic root ${dir.root} over stdio`);
+      expect(stderr).toContain(`semlayer mcp: serving the semantic root ${dir.root} over stdio`);
     } finally {
       dir.cleanup();
     }
@@ -406,7 +406,7 @@ describe("the docs", () => {
     expect(section.length).toBeGreaterThan(500);
     expect(section).toContain("`bun skills/semantic-layer/scripts/mcp/server.ts [--root <dir>] [--role <role>]`");
     expect(section).toContain(`\`protocolVersion\` \`${PROTOCOL_VERSION}\``);
-    expect(section).toContain("named `sl_<command>` with `-` as `_`");
+    expect(section).toContain("named `semlayer_<command>` with `-` as `_`");
     expect(section).toContain("any other is refused with an invalid-params error naming the server's root, and nothing runs");
     expect(section).toContain("stdout carries only protocol messages");
     expect(section).toContain("a command that prints nothing gives one `text` item");

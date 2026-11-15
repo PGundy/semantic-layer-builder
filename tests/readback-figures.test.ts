@@ -13,7 +13,7 @@ import { figureTimeout, readbackFigures } from "../skills/semantic-layer/scripts
 import type { PendingReadback } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { schemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, PG_URL, sl, tempDir } from "./helpers.ts";
+import { assertLocalPg, PG_URL, semlayer, tempDir } from "./helpers.ts";
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 const DATA = join(import.meta.dir, "..", "fixtures", "acme", "data");
@@ -46,7 +46,7 @@ interface Item {
 }
 
 async function readback(root: string, targets: string, env: Record<string, string | undefined> = {}): Promise<Item[]> {
-  const r = await sl(root, ["readback", "--targets", targets, "--json"], env);
+  const r = await semlayer(root, ["readback", "--targets", targets, "--json"], env);
   expect(r.err).toBe("");
   expect(r.code).toBe(0);
   return r.json<{ items: Item[] }>().items;
@@ -88,9 +88,9 @@ describe("the figure on a connected source", () => {
       "- On today's data it comes to 132.23 USD, before any role's row filter: orders.revenue 535,381.93 over 4,049 rows; orders.order_count 4,049 over 4,049 rows.",
     );
     // The pending file stores the figure as evidence, and matches the schema.
-    const stored = JSON.parse(readFileSync(join(root, ".sl", "pending", "rb_0001.json"), "utf8")) as PendingReadback;
+    const stored = JSON.parse(readFileSync(join(root, ".semlayer", "pending", "rb_0001.json"), "utf8")) as PendingReadback;
     expect(stored.items[0]!.evidence).toEqual(aov!.evidence!);
-    expect(schemaIssues("pending", stored, ".sl/pending/rb_0001.json")).toEqual([]);
+    expect(schemaIssues("pending", stored, ".semlayer/pending/rb_0001.json")).toEqual([]);
   });
 
   test("the figure is outside the approval hash: byte-identical with and without it, and equal to the recorded approved_hash", async () => {
@@ -110,7 +110,7 @@ describe("the figure on a connected source", () => {
       metrics.metrics.find((m) => m.name === "average_order_value")!.approved_hash,
       metrics.metrics.find((m) => m.name === "net_revenue")!.approved_hash,
     ]);
-    // sl approve accepts the yes to an item read back with its figure.
+    // semlayer approve accepts the yes to an item read back with its figure.
     const items = await readback(root, "warehouse.orders.revenue");
     expect(items[0]!.content_hash).toBe(withFigures[0]!.content_hash);
   });
@@ -129,7 +129,7 @@ describe("a figure that is not shown says why and blocks nothing", () => {
     const root = acme("source: warehouse\ndialect: postgres\nintake:\n  mode: export\n  reason: No outside connections.\n  export:\n    file: exports/warehouse.csv\n");
     const [revenue, aov] = await readback(root, "warehouse.orders.revenue,metric:average_order_value");
     const why =
-      "source warehouse is an export source, which sl does not query; the figure comes once it has a connection (sl setup --source warehouse --dialect postgres --env <VAR>)";
+      "source warehouse is an export source, which semlayer does not query; the figure comes once it has a connection (semlayer setup --source warehouse --dialect postgres --env <VAR>)";
     expect(revenue!.evidence).toEqual({ not_shown: why });
     expect(aov!.evidence).toEqual({ not_shown: why });
     expect(revenue!.text).toContain(`- Figure not shown: ${why}.`);
@@ -144,7 +144,7 @@ describe("a figure that is not shown says why and blocks nothing", () => {
       "  - name: tagged_count\n    agg: count\n    tags: [pii]\n    format: integer\n    description: Customers, counted.\n" +
       "  - name: emails\n    agg: count_distinct\n    expr: email\n    tags: [public]\n    format: integer\n    description: Distinct emails.\n";
     writeFileSync(f, readFileSync(f, "utf8").replace("measures: []\n", `measures:\n${extra}`));
-    const r = await sl(root, ["readback", "--targets", "warehouse.customers.last_email,warehouse.customers.tagged_count,warehouse.customers.emails", "--json"]);
+    const r = await semlayer(root, ["readback", "--targets", "warehouse.customers.last_email,warehouse.customers.tagged_count,warehouse.customers.emails", "--json"]);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     const items = r.json<{ items: Item[] }>().items;
@@ -154,7 +154,7 @@ describe("a figure that is not shown says why and blocks nothing", () => {
     const want = await direct("select count(distinct email) as n, count(*) as rows from acme.dim_customers");
     expect(items[2]!.evidence).toEqual({ figure: Number(want.n), row_count: Number(want.rows) });
     const max = String((await direct("select max(email) as m from acme.dim_customers")).m);
-    const stored = readFileSync(join(root, ".sl", "pending", "rb_0001.json"), "utf8");
+    const stored = readFileSync(join(root, ".semlayer", "pending", "rb_0001.json"), "utf8");
     expect(max).toContain("@");
     for (const out of [r.out, stored]) expect(out).not.toContain(max);
   });
@@ -170,16 +170,16 @@ describe("a figure that is not shown says why and blocks nothing", () => {
     expect(revenue!.evidence!.figure).toBeCloseTo(535381.93, 6);
     const gone = acme(`source: warehouse\ndialect: duckdb\nconnection:\n  database: ${JSON.stringify(join(tempDir("none"), "missing.duckdb"))}\n`);
     const [r] = await readback(gone, "warehouse.orders.revenue");
-    expect(r!.evidence!.not_shown).toStartWith("sl cannot connect to source warehouse");
-    expect(r!.evidence!.not_shown).toEndWith("sl next names the step that connects it");
+    expect(r!.evidence!.not_shown).toStartWith("semlayer cannot connect to source warehouse");
+    expect(r!.evidence!.not_shown).toEndWith("semlayer next names the step that connects it");
     expect(r!.evidence!.not_shown).not.toContain("\n");
   });
 
   test("a figure past its deadline reads timed out with the commands that get it; the figure after it on the source is still computed", async () => {
     expect(figureTimeout({})).toBe(10_000);
-    expect(figureTimeout({ SL_STATEMENT_TIMEOUT_MS: "60000" })).toBe(10_000);
-    expect(figureTimeout({ SL_STATEMENT_TIMEOUT_MS: "250" })).toBe(250);
-    expect(figureTimeout({ SL_STATEMENT_TIMEOUT_MS: "0" })).toBe(10_000);
+    expect(figureTimeout({ SEMLAYER_STATEMENT_TIMEOUT_MS: "60000" })).toBe(10_000);
+    expect(figureTimeout({ SEMLAYER_STATEMENT_TIMEOUT_MS: "250" })).toBe(250);
+    expect(figureTimeout({ SEMLAYER_STATEMENT_TIMEOUT_MS: "0" })).toBe(10_000);
     // The Acme warehouse plus a view over a long range, which makes its total slow to compute.
     const file = join(tempDir("slow"), "slow.duckdb");
     cpSync(warehouse, file);
@@ -192,7 +192,7 @@ describe("a figure that is not shown says why and blocks nothing", () => {
     writeFileSync(join(root, "models", "warehouse", "big.yaml"), BIG);
     const started = Date.now();
     // The slow figure first: the timeout is its own, and the readback goes on to the next one.
-    const figures = await readbackFigures(root, ["warehouse.big.total", "warehouse.orders.revenue"], { SL_STATEMENT_TIMEOUT_MS: "50" });
+    const figures = await readbackFigures(root, ["warehouse.big.total", "warehouse.orders.revenue"], { SEMLAYER_STATEMENT_TIMEOUT_MS: "50" });
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(figures.get("warehouse.big.total")).toEqual({ not_shown: `timed out after 0.05 s, so the readback went on without it; ${BY_HAND}` });
     expect(figures.get("warehouse.orders.revenue")!.figure).toBeCloseTo(535381.93, 6);
@@ -200,7 +200,7 @@ describe("a figure that is not shown says why and blocks nothing", () => {
 });
 
 const BIG = "model: big\ntable: acme.big\nstatus: draft\nprimary_key: [x]\ndimensions: []\nmeasures:\n  - name: total\n    agg: count\n    filter: x % 7 = 3\n    format: integer\n    description: Rows whose x leaves 3 over 7.\n";
-const BY_HAND = `sl sql --source warehouse --request '{"measures":["big.total"]}' prints its query, and sl run --source warehouse --sql runs it with a longer timeout`;
+const BY_HAND = `semlayer sql --source warehouse --request '{"measures":["big.total"]}' prints its query, and semlayer run --source warehouse --sql runs it with a longer timeout`;
 
 describe("the readback reads as the owner's words", () => {
   test("a batch prints a who-sees block once; a different block is printed in full", async () => {
@@ -243,7 +243,7 @@ describe("the readback reads as the owner's words", () => {
 
   test("a golden's tolerance line says it applies to figures with decimals, and whole numbers and grouping columns match exactly", async () => {
     const root = acme();
-    const r = await sl(root, ["readback", "--targets", "golden:revenue_by_region_2025", "--tolerance", "0.005", "--json"]);
+    const r = await semlayer(root, ["readback", "--targets", "golden:revenue_by_region_2025", "--tolerance", "0.005", "--json"]);
     expect(r.code).toBe(0);
     const text = r.json<{ items: Item[] }>().items[0]!.text;
     expect(text).toContain("- Tolerance: 0.005: on later runs a figure with decimals may move up to 0.5% either way; whole numbers and grouping columns must match exactly.");
@@ -251,7 +251,7 @@ describe("the readback reads as the owner's words", () => {
 });
 
 describe("live Postgres", () => {
-  const db = `sl_figures_${process.pid}_${Date.now()}`;
+  const db = `semlayer_figures_${process.pid}_${Date.now()}`;
   let url = "";
   let admin: SQL | undefined;
   beforeAll(async () => {
@@ -289,7 +289,7 @@ describe("live Postgres", () => {
     const root = join(tempDir("figures-pg-slow"), "semantic");
     cpSync(ACME, root, { recursive: true });
     writeFileSync(join(root, "models", "warehouse", "big.yaml"), BIG);
-    const [big, revenue] = await readback(root, "warehouse.big.total,warehouse.orders.revenue", { WAREHOUSE_URL: url, SL_STATEMENT_TIMEOUT_MS: "200" });
+    const [big, revenue] = await readback(root, "warehouse.big.total,warehouse.orders.revenue", { WAREHOUSE_URL: url, SEMLAYER_STATEMENT_TIMEOUT_MS: "200" });
     expect(big!.evidence).toEqual({ not_shown: `timed out after 0.2 s, so the readback went on without it; ${BY_HAND}` });
     expect(revenue!.evidence!.figure).toBeCloseTo(535381.93, 6);
   }, 60_000);
