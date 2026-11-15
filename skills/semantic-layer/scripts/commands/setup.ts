@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { CommandContext, CommandSpec } from "../lib/command.ts";
 import { bool, list, str } from "../lib/command.ts";
 import { redactCredentials } from "../lib/credentials.ts";
-import { ignoreEnvFiles, resolveConnection } from "../lib/env-file.ts";
+import { envExampleNote, ignoreEnvFiles, resolveConnection, writeEnvExample } from "../lib/env-file.ts";
 import { UserError } from "../lib/errors.ts";
 import { writeFileAtomic } from "../lib/lock.ts";
 import { patternFlags } from "../lib/export-filters.ts";
@@ -296,12 +296,12 @@ const spec: CommandSpec = {
     // Where the connection variables would come from, before anything is written.
     const connection = mode === "connection" ? resolveConnection(ctx.root, next, ctx.env) : null;
     if (connection?.status === "unset") {
-      if (read) {
-        // The owner is about to put a secret in an env file, so the lines that keep it out of version control go in first.
-        ignoreEnvFiles(ctx.root);
-        throw new UserError(`${connection.message}\nsemlayer setup reads the catalog through that connection, so nothing was written under the semantic root.`);
-      }
-      warnings.push(`${connection.variables.join(", ")} ${connection.variables.length > 1 ? "are" : "is"} not set in the environment or an env file; semlayer introspect --source ${name} says where it looked and which line to add.`);
+      // The owner is about to put a secret in an env file, so the lines that keep it out of version
+      // control go in first, then a .env.example with the placeholder lines to copy.
+      ignoreEnvFiles(ctx.root);
+      const example = envExampleNote(writeEnvExample(ctx.root, connection.line_to_add, connection.add_to), connection.add_to);
+      if (read) throw new UserError(`${connection.message}\n${example ? `${example}\n` : ""}semlayer setup reads the catalog through that connection, so nothing was written under the semantic root.`);
+      warnings.push(`${connection.variables.join(", ")} ${connection.variables.length > 1 ? "are" : "is"} not set in the environment or an env file; semlayer introspect --source ${name} says where it looked and which line to add.${example ? ` ${example}` : ""}`);
     }
     let before: string[] | null = null;
     if (old && oldSnapshot) {

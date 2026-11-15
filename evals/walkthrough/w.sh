@@ -4,7 +4,8 @@
 # is the record that count.ts counts. WALK is the walkthrough directory (the project is $WALK/work) and
 # PLUGIN the plugin checkout.
 #
-#   w.sh run '<shell command>'        the Bash tool: PreToolUse hook, the command, PostToolUse hook
+#   w.sh run '<shell command>'        the Bash tool: PreToolUse hook, the command (with the plugin's bin/
+#                                     last on PATH, so a bare semlayer runs), PostToolUse hook
 #   w.sh read <file>                  the Read tool: PreToolUse hook, then the file's text
 #   w.sh owner '<question>' '<answer>'   records one owner turn (no command runs)
 #
@@ -72,7 +73,8 @@ case $kind in
       exit 2
     fi
     before=$(tree)
-    (cd "$WORK" && bash -c "$cmd") > "$LOG/$id.out" 2>&1; code=$?
+    # Claude Code puts the plugin's bin/ on the PATH of the Bash tool's shell, after the user's own entries.
+    (cd "$WORK" && PATH="$PATH:$PLUGIN/bin" bash -c "$cmd") > "$LOG/$id.out" 2>&1; code=$?
     after=$(tree)
     event=PostToolUse; [ $code -eq 0 ] || event=PostToolUseFailure
     post=$(hook "$event" Bash "$input"); prc=$?

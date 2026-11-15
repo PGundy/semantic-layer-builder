@@ -426,3 +426,62 @@ export function shellWrites(command: string, cwd: string, depth = 0, bases: stri
   subs.forEach(nested);
   return out;
 }
+
+// --- Which command is semlayer -----------------------------------------------------------------
+
+// Builtins and keywords that change what a command name runs, or the environment it runs in.
+const RENAMERS = new Set(["alias", "unalias", "function", "hash", "source", ".", "eval", "exec", "enable", "builtin", "command", "export", "declare", "typeset", "readonly", "local", "set", "shopt", "unset", "env", "trap", "read", "mapfile", "readarray", "getopts"]);
+// The shell variables that decide which program a command name runs.
+const LOOKUP_VARIABLES = /\b(PATH|BASH_CMDS|BASH_ALIASES)\b/;
+// The variables a bare semlayer may be run with: the CLI's own.
+const SEMLAYER_ASSIGNMENT = /^(SEMLAYER_[A-Z0-9_]+|SEMANTIC_ROOT)=/;
+
+// Why a shell command's bare `semlayer` could run something other than the program the PATH lookup
+// finds, or undefined when it cannot: the command names PATH, defines or aliases a name, sources a
+// file, evaluates text, reads or sets a variable with read or printf -v, holds a $(...) or `...`,
+// or sets a variable other than the CLI's own before semlayer. PATH, BASH_CMDS and BASH_ALIASES are
+// looked for in the raw text and in every word with its quotes and escapes removed (P\ATH is PATH).
+// Only the command text is read; what the shell's profile defines is not seen.
+export function bareSemlayerReach(command: string): string | undefined {
+  const named = (text: string) => LOOKUP_VARIABLES.exec(text)?.[1];
+  const raw = named(command);
+  if (raw) return `it sets or names ${raw}`;
+  const subs: string[] = [];
+  const toks = tokenize(command, subs);
+  if (subs.length) return "it holds a $(...) or `...`";
+  for (const t of toks) {
+    const v = isWord(t) ? named(t.word) : undefined;
+    if (v) return `it sets or names ${v}`;
+  }
+  let start = true;
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i]!;
+    if (!isWord(t)) {
+      start = SEPARATORS.has(t.op);
+      continue;
+    }
+    if (t.word === "semlayer" && toks[i + 1] && !isWord(toks[i + 1]) && (toks[i + 1] as { op: string }).op === "(") return "it defines a function named semlayer";
+    if (!start) continue;
+    if (t.dynamic) return "it runs a command named by a variable";
+    if (RENAMERS.has(t.word)) return `it runs ${t.word}, which can change what the name semlayer runs`;
+    if (t.word === "printf") {
+      // printf -v <name> sets a variable; any word that may expand to -v counts.
+      for (let j = i + 1; j < toks.length; j++) {
+        const a = toks[j]!;
+        if (!isWord(a)) {
+          if (SEPARATORS.has(a.op)) break;
+          continue;
+        }
+        if (a.dynamic || a.word.startsWith("-v")) return "it runs printf -v, which can change what the name semlayer runs";
+      }
+    }
+    // `time` and the keywords run the command after them in this shell.
+    if (KEYWORDS.has(t.word) || t.word === "time") continue;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t.word)) {
+      if (!SEMLAYER_ASSIGNMENT.test(t.word)) return `it sets ${t.word.split("=")[0]}`;
+      continue;
+    }
+    start = false;
+  }
+  return undefined;
+}

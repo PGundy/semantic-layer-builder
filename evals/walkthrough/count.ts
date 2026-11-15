@@ -13,13 +13,16 @@ const GLOBALS = /^(?:--json|--(?:root|env-file)(?:=\S+|\s+\S+))\s+/;
 
 // The semlayer subcommands a call runs, in order: every `semlayer <command> [<subcommand>]` on the call's first
 // line, after a pipe, `&&`, `||` or `;`, past leading VAR=value assignments and global flags. The
-// full form `bun <skill dir>/scripts/semlayer.ts` reads as `semlayer`. Only the first line is read, so a heredoc
+// bare command `semlayer` (the plugin's bin/semlayer on PATH), that file by its path and the full form
+// `bun [run] <skill dir>/scripts/semlayer.ts` all read as `semlayer`. Only the first line is read, so a heredoc
 // body (the owner's words, an edits file) never reads as a command.
 export function semlayerCommands(text: string): string[] {
   const line = text.split("\n")[0]!;
   const found: string[] = [];
   for (const part of line.split(/\|\|?|&&|;/)) {
-    let seg = part.replace(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/, "").replace(/^bun\s+\S*\/scripts\/semlayer\.ts\b/, "semlayer");
+    let seg = part
+      .replace(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/, "")
+      .replace(/^(?:bun\s+(?:run\s+)?\S*\/scripts\/semlayer\.ts|\S*\/bin\/semlayer)(?=\s|$)/, "semlayer");
     if (!/^semlayer\s/.test(seg)) continue;
     seg = seg.slice("semlayer".length).trimStart();
     for (let g = GLOBALS.exec(seg); g; g = GLOBALS.exec(seg)) seg = seg.slice(g[0].length);

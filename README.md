@@ -27,20 +27,20 @@ claude plugin marketplace add PGundy/semantic-layer-builder
 claude plugin install semantic-layer-builder@semantic-layer-builder
 ```
 
-The plugin needs [Bun](https://bun.sh) 1.4 or later on `PATH` and one dependency install in the plugin root, the directory Claude Code runs the plugin from. When the dependencies are missing, a new session starts with a message that names the command with that directory filled in (usually the `installPath` that `claude plugin list --json` prints):
+The plugin needs [Bun](https://bun.sh) 1.4 or later on `PATH`. Claude Code installs the plugin's packages with it and puts the `semlayer` command on the agent's `PATH`. Check the setup with `semlayer doctor` (ask Claude to run it): one line per check, a fix for each that is not ok, and the line that puts `semlayer` on your own shell's `PATH`. When Claude Code's install did not run, a new session starts with a message that names the command with the plugin root filled in (usually the `installPath` that `claude plugin list --json` prints):
 
 ```sh
 cd "<plugin root>" && bun install --frozen-lockfile --production
 ```
 
-Run it again after each plugin update. The plugin ships the `semantic-layer` skill, five agents (`semlayer-interviewer`, `semlayer-connector-runner`, `semlayer-batch-analyst`, `semlayer-readback-verifier`, `semlayer-golden-builder`), the MCP server below (as the interviewer), `PreToolUse` hooks that refuse hand edits to approved items and hold each agent to its role, hooks after each shell command that put back a change to the answer ledger `semlayer` did not make, and a `SessionStart` hook that checks the install. Check it with `claude plugin details semantic-layer-builder`, which lists one skill, five agents, four hook events and one MCP server.
+The plugin ships the `semantic-layer` skill, five agents (`semlayer-interviewer`, `semlayer-connector-runner`, `semlayer-batch-analyst`, `semlayer-readback-verifier`, `semlayer-golden-builder`), the MCP server below (as the interviewer), `PreToolUse` hooks that refuse hand edits to approved items and hold each agent to its role, hooks after each shell command that put back a change to the answer ledger `semlayer` did not make, and a `SessionStart` hook that checks the install. Check it with `claude plugin details semantic-layer-builder`, which lists one skill, five agents, four hook events and one MCP server.
 
 Then ask the agent something like "help me build a semantic layer for our warehouse". For a multi-agent build, run the interviewer as the main session: `claude --agent semantic-layer-builder:semlayer-interviewer`. [`docs/plugin.md`](docs/plugin.md) has the details, how to check the install, and how the plugin runs the MCP server.
 
-Without the plugin, copy `skills/semantic-layer/` into a project's `.claude/skills/`; the CLI needs Bun and one install in the skill directory:
+Without the plugin, copy `skills/semantic-layer/` into a project's `.claude/skills/`; the CLI needs Bun and its packages installed in that copy:
 
 ```sh
-cd skills/semantic-layer && bun install
+cd .claude/skills/semantic-layer && bun add --exact yaml@2.9.1 ajv@8.20.0 @duckdb/node-api@2.0.0-r.1
 ```
 
 ### As an MCP server

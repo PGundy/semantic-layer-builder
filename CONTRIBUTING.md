@@ -8,15 +8,16 @@ You need [Bun](https://bun.sh) 1.4 or later (CI uses 1.4.4). From the repository
 
 ```sh
 bun install
-bun skills/semantic-layer/scripts/semlayer.ts --help    # or: bun run semlayer -- --help
+bin/semlayer --help                                      # or: bun skills/semantic-layer/scripts/semlayer.ts --help, or bun run semlayer -- --help
 ```
 
-The root install also installs the skill's own dependencies (`skills/semantic-layer` is a workspace). The CLI's runtime dependencies are `@duckdb/node-api`, `ajv` and `yaml`; a change that needs another one should say why in its pull request.
+The repository has one `package.json`, at the root, and one `bun.lock` beside it, with no workspaces. The root is the plugin root, and Claude Code installs a plugin's packages itself only when its root holds a `package.json` and a lockfile and every dependency is a registry package (a workspace, folder, git or linked dependency gets no install), with lifecycle scripts off; so the CLI's runtime dependencies (`@duckdb/node-api`, `ajv` and `yaml`) are the root's `dependencies` at exact versions, and the development tools (`typescript`, `@types/bun`) its `devDependencies`, which the plugin's `--production` install leaves out. The skill's scripts find the packages in the root `node_modules`. A change that needs another runtime dependency says why in its pull request, adds it to the root `package.json` at an exact version, and keeps `tests/plugin-package.test.ts` green, which checks this layout and runs a copy of the plugin installed with `--ignore-scripts`. A clone that once ran `bun link` in `skills/semantic-layer` has a `semlayer` in `~/.bun/bin` that comes before the plugin's `bin/semlayer`, so the hooks treat a bare `semlayer` as another program there; `semlayer doctor` reports it, and `rm ~/.bun/bin/semlayer` removes it.
 
 ## Layout
 
 - `skills/semantic-layer/SKILL.md`: the router the agent starts from (principles, how to read `semlayer next`, and which phase card to load); `references/phases/` holds one card per phase, the other files in `references/` the topic guides, and `references/spec.md` the file formats and the CLI table.
-- `skills/semantic-layer/scripts/`: the CLI (`semlayer.ts`, `commands/`, `lib/`), in strict TypeScript.
+- `skills/semantic-layer/scripts/`: the CLI (`semlayer.ts`, `commands/`, `lib/`), in strict TypeScript, and the plugin's hooks (`hooks/`) and MCP server (`mcp/`).
+- `bin/semlayer`: the `semlayer` command Claude Code puts on the agent's `PATH`, a shell script that runs the CLI with Bun. `PLUGIN_BIN_SHA256` in `scripts/lib/plugin-bin.ts` records its bytes for the hooks, so a change to it updates that constant (`tests/bare-semlayer.test.ts` fails until it does).
 - `skills/semantic-layer/schemas/`: JSON Schemas for the YAML files.
 - `tests/`: the test suites; `tests/skill-docs.test.ts` checks the docs against the CLI.
 - `fixtures/acme/`: the synthetic Acme dataset (`bun run fixtures` regenerates it); `examples/`: layers built from it.
@@ -78,7 +79,7 @@ A semantic directory is executable configuration: its `sources/` run setup state
 
 ## The plugin and its version
 
-The repository root is the Claude Code plugin (`.claude-plugin/plugin.json`, listed by `.claude-plugin/marketplace.json`); [`docs/plugin.md`](docs/plugin.md) says what it ships and how users install it. Claude Code keeps a user on the installed version until `version` in `plugin.json` changes, so a release that users should get raises it, and with it the `version` of the root `package.json`, of `skills/semantic-layer/package.json` and of `SERVER_INFO` in `scripts/mcp/server.ts`; `tests/plugin-package.test.ts` fails when they differ. Each version installs to a new directory, and its users run `bun install --frozen-lockfile --production` there once more; the `SessionStart` hook prints that command for them.
+The repository root is the Claude Code plugin (`.claude-plugin/plugin.json`, listed by `.claude-plugin/marketplace.json`); [`docs/plugin.md`](docs/plugin.md) says what it ships and how users install it. Claude Code keeps a user on the installed version until `version` in `plugin.json` changes, so a release that users should get raises it, and with it the `version` of the root `package.json` and of `SERVER_INFO` in `scripts/mcp/server.ts`; `tests/plugin-package.test.ts` fails when they differ. Each version installs to a new directory, where Claude Code installs its packages; when that install did not run, the `SessionStart` hook prints the command that does it.
 
 `tests/plugin-package.test.ts` also checks the manifests, the paths and hook commands they name, the agents, and that the hooks and the MCP server run from a copy of the plugin's files. With the `claude` CLI on `PATH` it runs `claude plugin validate --strict` and `claude plugin details`; CI has no `claude`, so there those two tests skip. To run them yourself:
 

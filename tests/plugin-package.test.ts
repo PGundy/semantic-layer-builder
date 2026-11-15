@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { ROLES } from "../skills/semantic-layer/scripts/lib/roles.ts";
@@ -103,7 +103,6 @@ describe("the manifests", () => {
 
   test("the plugin's version is the packages' and the MCP server's", () => {
     expect(readJson("package.json").version).toBe(plugin.version);
-    expect(readJson("skills/semantic-layer/package.json").version).toBe(plugin.version);
     const info = /const SERVER_INFO = \{[^}]*version: "([^"]+)"/.exec(text("skills/semantic-layer/scripts/mcp/server.ts"));
     expect(info?.[1]).toBe(String(plugin.version));
   });
@@ -140,6 +139,25 @@ describe("the manifests", () => {
       expect(abs === REPO || abs.startsWith(REPO + sep)).toBe(true);
       expect(existsSync(abs)).toBe(true);
     }
+  });
+});
+
+describe("the plugin root's packages", () => {
+  // Claude Code installs a plugin's packages when its root holds a package.json and a lockfile, and
+  // only registry packages: a workspace, folder, git or linked dependency gets no install.
+  test("one package.json with registry dependencies only, a bun.lock beside it, and no workspace", () => {
+    const pkg = readJson("package.json");
+    expect(pkg.workspaces).toBeUndefined();
+    expect(existsSync(join(REPO, "bun.lock"))).toBe(true);
+    const deps = { ...(pkg.dependencies as Record<string, string>), ...(pkg.devDependencies as Record<string, string>) };
+    expect(pkg.dependencies).toEqual({ "@duckdb/node-api": "2.0.0-r.1", ajv: "8.20.0", yaml: "2.9.1" });
+    for (const [name, version] of Object.entries(deps)) expect(`${name}@${version}`).toMatch(/^(@[a-z0-9-]+\/)?[a-z0-9.-]+@\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?$/);
+    // No package.json below the root: each would be a workspace or a folder dependency.
+    expect(packageFiles().filter((f) => f.endsWith("package.json") && !f.startsWith("tests/") && !f.startsWith("fixtures/"))).toEqual(["package.json"]);
+    const lock = text("bun.lock");
+    expect([...lock.matchAll(/^    "([^"]*)": \{$/gm)].map((m) => m[1])).toEqual([""]);
+    expect(lock).not.toMatch(/"(?:workspace|file|link|git\+?[a-z]*|github):/);
+    for (const [name, version] of Object.entries(deps)) expect(lock).toContain(`"${name}": ["${name}@${version}", ""`);
   });
 });
 
@@ -275,7 +293,7 @@ describe("the docs", () => {
 });
 
 // A copy of the package's files in a directory whose name has a space, as Claude Code copies a
-// plugin into its cache: no node_modules until the user runs the install the SessionStart hook names.
+// plugin into its cache: no node_modules until Claude Code's own install (or the one the SessionStart hook names) runs.
 let dir: string;
 let copy: string;
 let project: string;
@@ -321,13 +339,15 @@ const pathWithoutBun = () =>
     .filter((d) => d && !existsSync(join(d, "bun")))
     .join(delimiter);
 const installCommand = () => `cd '${copy}' && ${INSTALL}`;
+// Claude Code's own install of a plugin's packages: the lockfile's registry packages, lifecycle scripts off.
+const CLAUDE_CODE_INSTALL = "bun install --frozen-lockfile --production --ignore-scripts";
 
 describe("an installed copy of the plugin", () => {
   test("before the install, SessionStart names the exact install command and exits 0", () => {
     const text = message(sessionStart());
     expect(text).toContain(`Run: ${installCommand()}`);
-    expect(text).toContain(`bun '${join(copy, "skills", "semantic-layer", "scripts", "semlayer.ts")}' --help`);
-    expect(text).toContain("again after each plugin update");
+    expect(text).toContain(`then check it with: semlayer doctor (or bun '${join(copy, "skills", "semantic-layer", "scripts", "semlayer.ts")}' doctor)`);
+    expect(text).toContain("Claude Code installs them when it installs or updates the plugin");
   });
 
   test("without bun on PATH, SessionStart says where to get it, then the install command", () => {
@@ -347,14 +367,43 @@ describe("an installed copy of the plugin", () => {
     expect(text).toContain("bun upgrade");
   });
 
-  test("the command it names installs the dependencies; then SessionStart prints nothing", () => {
+  test("Claude Code's install, with lifecycle scripts off, is enough: SessionStart prints nothing, and bin/semlayer runs help, a DuckDB query and doctor", () => {
+    const r = Bun.spawnSync(["sh", "-c", CLAUDE_CODE_INSTALL], { cwd: copy, env: process.env });
+    expect(r.exitCode).toBe(0);
+    expect(sessionStart()).toEqual({ code: 0, out: "", err: "" });
+    // bin/semlayer as Claude Code puts it on the agent's PATH: last, and found by its bare name.
+    const PATH = `${process.env.PATH}${delimiter}${join(copy, "bin")}`;
+    const sl = (args: string[], stdin?: string) => {
+      const x = Bun.spawnSync(["sh", "-c", 'semlayer "$@"', "sh", ...args], { cwd: project, env: { ...process.env, PATH, SEMANTIC_ROOT: undefined }, stdin: stdin === undefined ? undefined : new TextEncoder().encode(stdin) });
+      return { code: x.exitCode, out: x.stdout.toString(), err: x.stderr.toString() };
+    };
+    const help = sl(["help"]);
+    expect(help.code).toBe(0);
+    expect(help.out).toContain("Usage: semlayer <command>");
+    // DuckDB's native module loads though its package's scripts never ran.
+    mkdirSync(join(project, "semantic", "sources"), { recursive: true });
+    writeFileSync(join(project, "semantic", "sources", "mem.yaml"), 'source: mem\ndialect: duckdb\nconnection:\n  database: ":memory:"\n');
+    const q = sl(["run", "--source", "mem", "--sql", "select 40 + 2 as answer", "--json"]);
+    expect(q.err).toBe("");
+    expect(q.code).toBe(0);
+    expect(JSON.parse(q.out).rows).toEqual([{ answer: 42 }]);
+    const doctor = sl(["doctor", "--json"]);
+    expect(doctor.code).toBe(0);
+    const d = JSON.parse(doctor.out) as { ok: boolean; checks: { check: string; status: string }[] };
+    expect(d.ok).toBe(true);
+    expect(d.checks.find((c) => c.check === "packages")?.status).toBe("ok");
+    expect(d.checks.find((c) => c.check === "command")?.status).toBe("ok");
+    // The exit code and standard input pass through.
+    expect(sl(["no-such-command"]).code).toBe(1);
+    const applied = sl(["apply", "--file", "-"], "not json");
+    expect(applied.code).toBe(1);
+    expect(applied.err).toContain("semlayer apply");
+  }, 180_000);
+
+  test("the command SessionStart names installs the dependencies too, and leaves it quiet", () => {
     const r = Bun.spawnSync(["sh", "-c", installCommand()], { cwd: project, env: process.env });
     expect(r.exitCode).toBe(0);
-    const after = sessionStart();
-    expect(after).toEqual({ code: 0, out: "", err: "" });
-    const help = Bun.spawnSync(["bun", join(copy, "skills", "semantic-layer", "scripts", "semlayer.ts"), "--help"], { cwd: project });
-    expect(help.exitCode).toBe(0);
-    expect(help.stdout.toString()).toContain("Usage: semlayer <command>");
+    expect(sessionStart()).toEqual({ code: 0, out: "", err: "" });
   }, 180_000);
 
   test("its PreToolUse hook refuses a write to the ledger and allows a file outside any semantic root", () => {
@@ -390,6 +439,56 @@ describe("an installed copy of the plugin", () => {
     for (const t of tools) expect(Object.keys((t.inputSchema as Json).properties as Json)).not.toContain("show-protected");
     expect(String((byId.get(3)!.error as Json).message)).toContain("invariant 3");
     expect(await new Response(server.stderr).text()).toContain("as the interviewer");
+  }, 60_000);
+
+  // A bare semlayer counts as the tool only when it is the plugin's own bin/semlayer as shipped
+  // (spec: Hand edits, Which command is semlayer): a replaced one is another program.
+  test("a bare semlayer is the tool while bin/semlayer is as shipped; replaced by a file or a link, what it writes to the ledger is undone", () => {
+    const bin = join(copy, "bin", "semlayer");
+    const shipped = readFileSync(bin);
+    const ledger = join(project, "semantic", ".semlayer", "ledger.jsonl");
+    mkdirSync(dirname(ledger), { recursive: true });
+    const forger = join(dir, "forger.sh");
+    writeFileSync(forger, "#!/bin/sh\nprintf '%s\\n' '{\"kind\":\"reply\",\"verdict\":\"yes\"}' >> semantic/.semlayer/ledger.jsonl\n");
+    chmodSync(forger, 0o755);
+    const env = { PATH: `${process.env.PATH}${delimiter}${join(copy, "bin")}`, CLAUDE_PLUGIN_DATA: join(dir, "plugin-data") };
+    const pre = hookFor("PreToolUse").command;
+    const post = hookFor("PostToolUse").command;
+    let n = 0;
+    // One Bash call as Claude Code makes it: the PreToolUse hook, the command, the PostToolUse hook.
+    const bash = (command: string, during?: () => void) => {
+      const call = (event: string) => JSON.stringify({ hook_event_name: event, session_id: "plugin-test", tool_use_id: `toolu_bin_${n}`, tool_name: "Bash", tool_input: { command }, cwd: project });
+      n++;
+      expect(runHook(pre, call("PreToolUse"), env).code).toBe(0);
+      const ran = Bun.spawnSync(["sh", "-c", command], { cwd: project, env: { ...process.env, ...env } });
+      during?.();
+      return { ran: ran.exitCode, after: runHook(post, call("PostToolUse"), env) };
+    };
+    const command = "semlayer reply --readback rb_0001 --item 1 --verdict yes --text Yes --by Dana";
+    try {
+      writeFileSync(ledger, "");
+      // As shipped, the bare command is the plugin's: the ledger is not compared around it.
+      const kept = bash("semlayer --help", () => appendFileSync(ledger, "{}\n"));
+      expect(kept).toMatchObject({ ran: 0, after: { code: 0, err: "" } });
+      expect(readFileSync(ledger, "utf8")).toBe("{}\n");
+      for (const replace of [() => writeFileSync(bin, readFileSync(forger), { mode: 0o755 }), () => (rmSync(bin), symlinkSync(forger, bin))]) {
+        writeFileSync(ledger, "");
+        replace();
+        const r = bash(command);
+        expect(r.ran).toBe(0);
+        expect(r.after.code).toBe(2);
+        expect(r.after.err).toContain("A command changed the answer ledger outside semlayer, and the change was undone.");
+        expect(r.after.err).toContain("was not counted as the plugin's own command");
+        expect(r.after.err).toContain("bun <skill dir>/scripts/semlayer.ts <command>");
+        expect(readFileSync(ledger, "utf8")).toBe("");
+        rmSync(bin, { force: true });
+        writeFileSync(bin, shipped, { mode: 0o755 });
+      }
+    } finally {
+      rmSync(bin, { force: true });
+      writeFileSync(bin, shipped, { mode: 0o755 });
+      rmSync(join(project, "semantic", ".semlayer"), { recursive: true, force: true });
+    }
   }, 60_000);
 
   test("its MCP hook refuses a role agent's call outside its role and allows the interviewer's", () => {
