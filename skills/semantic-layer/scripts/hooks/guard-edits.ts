@@ -18,7 +18,8 @@ import { applyFileRefusals, commandList, DENIED_FLAGS, roleOf, semlayerRefusal, 
 import { DIALECTS, type Dialect, type Model } from "../lib/types.ts";
 import { parseYamlText } from "../lib/yaml.ts";
 import { envFileRefusal, realPath, runBefore, semanticRoot } from "./integrity.ts";
-import { shellWrites, tokenize } from "./shell-writes.ts";
+import { bareSemlayer } from "../lib/plugin-bin.ts";
+import { bareSemlayerReach, shellWrites, tokenize } from "./shell-writes.ts";
 
 export { semanticRoot };
 
@@ -30,6 +31,7 @@ export interface Verdict {
 }
 
 type Obj = Record<string, unknown>;
+type Env = Record<string, string | undefined>;
 const isObject = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 
 // Keys only semlayer approve and semlayer goldens confirm write; status counts when it says approved.
@@ -479,10 +481,11 @@ function allWords(command: string, depth = 0): string[] {
 
 // Why a role agent's shell command is refused: one line per problem, none when it may run it. For a
 // role whose shell is "semlayer_only" every simple command must be `bun [run] <the plugin's semlayer.ts> ...`
-// written out (no variable, no $(...), no unquoted pattern) or a `cd`; input comes only from a heredoc with a quoted
+// written out (no variable, no $(...), no unquoted pattern), a bare `semlayer ...` that is provably the
+// plugin's own bin/semlayer (lib/plugin-bin.ts bareSemlayer, shell-writes.ts bareSemlayerReach), or a `cd`; input comes only from a heredoc with a quoted
 // delimiter or a <<< string, and output goes nowhere but the terminal and /dev/null. For any role,
 // every semlayer invocation it can see must be one the role may run.
-function roleShell(role: Role, command: string, cwd: string): string[] {
+function roleShell(role: Role, command: string, cwd: string, env: Env): string[] {
   const strict = role.shell === "semlayer_only";
   const subs: string[] = [];
   const toks = tokenize(command, subs);
@@ -493,6 +496,15 @@ function roleShell(role: Role, command: string, cwd: string): string[] {
   // Every directory a cd may have left the shell in: a relative semlayer path must name the entry from each.
   const dirs = [cwd];
   const entry = realPath(SEMLAYER_ENTRY);
+  let bareWhy: string | undefined | null = null;
+  const bareProblem = () => {
+    if (bareWhy === null) {
+      const reach = bareSemlayerReach(command);
+      const found = reach === undefined ? bareSemlayer(env) : undefined;
+      bareWhy = reach ?? (found?.ok ? undefined : found?.reason);
+    }
+    return bareWhy;
+  };
   for (let i = 0; i < toks.length; i++) {
     const words: Word[] = [];
     for (; i < toks.length; i++) {
@@ -536,17 +548,22 @@ function roleShell(role: Role, command: string, cwd: string): string[] {
       continue;
     }
     const bun = !first.dynamic && (first.word === "bun" || (isAbsolute(first.word) && realPath(first.word) === realPath(process.execPath)));
-    const at = bun && words[k + 1]?.word === "run" ? k + 2 : k + 1;
+    // A bare semlayer: allowed for a strict role only when it is provably the plugin's; any is checked for an interviewer.
+    const bare = !first.dynamic && first.word === "semlayer";
+    const bareOk = bare && (!strict || bareProblem() === undefined);
+    const at = bare ? k : bun && words[k + 1]?.word === "run" ? k + 2 : k + 1;
     const path = words[at];
     const semlayer =
-      bun &&
+      bareOk ||
+      (bun &&
       path !== undefined &&
       !path.dynamic &&
       // To allow a strict role's call the path must name the entry from every directory; to check an
       // interviewer's call, naming it from any is enough.
-      (isAbsolute(expandHome(path.word)) ? [expandHome(path.word)] : dirs.map((d) => resolve(d, path.word)))[strict ? "every" : "some"]((p) => realPath(p) === entry);
+      (isAbsolute(expandHome(path.word)) ? [expandHome(path.word)] : dirs.map((d) => resolve(d, path.word)))[strict ? "every" : "some"]((p) => realPath(p) === entry));
     if (!semlayer) {
-      if (strict) out.push(`it runs ${first.dynamic ? "a command named by a variable" : basename(first.word)}${bun ? " on a file other than the plugin's semlayer.ts" : ""}, and the ${role.title.toLowerCase()} runs only semlayer.`);
+      if (strict && bare) out.push(`it runs semlayer by its bare name, which the hook cannot show is the plugin's own command (${bareProblem()}); run it with no PATH change, alias, function or variable in front, or as bun <skill dir>/scripts/semlayer.ts <command>.`);
+      else if (strict) out.push(`it runs ${first.dynamic ? "a command named by a variable" : basename(first.word)}${bun ? " on a file other than the plugin's semlayer.ts" : ""}, and the ${role.title.toLowerCase()} runs only semlayer.`);
       continue;
     }
     const args = words.slice(at + 1);
@@ -605,7 +622,7 @@ function layerShellWrites(command: string, cwd: string, who: string): string[] {
 
 // The role check of a call from one of the plugin's agents: a refusal, or undefined to go on to the
 // checks every call gets.
-function roleCall(role: Role, tool: string, input: Obj, cwd: string): Verdict | undefined {
+function roleCall(role: Role, tool: string, input: Obj, cwd: string, env: Env): Verdict | undefined {
   const who = `the ${role.title.toLowerCase()} (${role.agent})`;
   if (EDIT_TOOLS.has(tool)) {
     if (role.edits === "none")
@@ -619,13 +636,13 @@ function roleCall(role: Role, tool: string, input: Obj, cwd: string): Verdict | 
     return undefined;
   }
   if (tool !== "Bash" || typeof input.command !== "string") return undefined;
-  const problems = roleShell(role, input.command, cwd);
+  const problems = roleShell(role, input.command, cwd, env);
   if (role.edits === "outside_layer") problems.push(...layerShellWrites(input.command, cwd, who));
   if (!problems.length) return undefined;
   return refuse([
     `semantic-layer: refused this shell command for ${who}:`,
     ...problems.map((p) => `- ${p}`),
-    `It may run ${commandList(role)}, each as bun <skill dir>/scripts/semlayer.ts <command> with the path written out.`,
+    `It may run ${commandList(role)}, each as semlayer <command> (the plugin's own command on PATH) or as bun <skill dir>/scripts/semlayer.ts <command> with the path written out.`,
   ]);
 }
 
@@ -658,7 +675,7 @@ export function checkToolUse(stdin: string, fallbackCwd = process.cwd(), env: Re
   const role = roleOf(input.agent_type);
   if (role) {
     try {
-      const v = roleCall(role, input.tool_name, input.tool_input, cwd);
+      const v = roleCall(role, input.tool_name, input.tool_input, cwd, env);
       if (v) return v;
     } catch (e) {
       return refuse([`semantic-layer: the hook failed while checking this call for the ${role.title.toLowerCase()} (${(e as Error).message}), so it is refused. Retry it.`]);

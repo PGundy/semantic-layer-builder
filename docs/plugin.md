@@ -11,7 +11,8 @@ The `semantic-layer-builder` plugin packages this repository for Claude Code. Th
 | The MCP server `semantic-layer` | `skills/semantic-layer/scripts/mcp/server.ts --role interviewer` | Every `semlayer` command as an MCP tool, in `./semantic` under the directory you start Claude Code in (or `SEMANTIC_ROOT`). No tool takes `--show-protected`. When Claude Code supports MCP elicitation, the owner answers approvals in its dialog. |
 | The `PreToolUse` checks | `skills/semantic-layer/scripts/hooks/guard-edits.ts`, `skills/semantic-layer/scripts/mcp/guard.ts` | Refuse hand edits to approval fields, approved items, the ledger and pending readbacks, refuse to read the `.env` file that holds the connection or to search it with `Grep`, and hold each role agent to the commands its role runs, through `Bash` and through the MCP server's tools alike (spec: Hand edits, Agent roles). |
 | The ledger comparison | `skills/semantic-layer/scripts/hooks/integrity.ts`, on `PostToolUse` and `PostToolUseFailure` for `Bash` and the MCP server's tools; its before half runs in the `PreToolUse` hooks | Copies the answer ledger and the pending readbacks before a `Bash` call that is not `semlayer` or git on its own, compares them after it, and puts back a change `semlayer` did not make, so a yes exists only when `semlayer reply` recorded it (spec: Hand edits). The copies live in the plugin's data directory, `${CLAUDE_PLUGIN_DATA}/ledger-guard`, until the call is checked. |
-| A `SessionStart` hook | `skills/semantic-layer/scripts/hooks/check-install.sh` | Checks that Bun and the plugin's dependencies are installed and, when one is missing, prints the command that installs it. It installs nothing. |
+| The `semlayer` command | `bin/semlayer` | On the agent's `PATH` while the plugin is enabled: runs the CLI with Bun from the plugin it ships in. `semlayer doctor` checks the setup. |
+| A `SessionStart` hook | `skills/semantic-layer/scripts/hooks/check-install.sh` | Checks that Bun and the plugin's dependencies are installed and, when one is missing, prints the command that installs it and `semlayer doctor` to check it. It installs nothing. |
 
 ## Install
 
@@ -24,23 +25,25 @@ claude plugin install semantic-layer-builder@semantic-layer-builder
 
 Or in a Claude Code session: `/plugin marketplace add PGundy/semantic-layer-builder`, then `/plugin install semantic-layer-builder@semantic-layer-builder`.
 
-Then install the plugin's dependencies once, in the plugin root, the directory Claude Code runs the plugin from:
+That is all. The plugin root holds one `package.json` with registry dependencies only and its `bun.lock`, so Claude Code installs the CLI's packages when it installs or updates the plugin, and puts the plugin's `bin/` on the `PATH` of the agent's shell: the agent runs `semlayer <command>` as a plain command. When `semlayer` is not found, the full form `bun "<plugin root>/skills/semantic-layer/scripts/semlayer.ts" <command>` runs the same CLI.
+
+When that install did not run (Bun was missing at the time, there was no network, or the marketplace was added from a local directory, which Claude Code reads in place), the next session starts with a message that names the command with the plugin root filled in:
 
 ```sh
 cd "<plugin root>" && bun install --frozen-lockfile --production
 ```
 
-Claude Code's own dependency install skips a plugin whose `package.json` uses workspaces, as this one does. Without the install, Bun may fetch packages the first time a script runs, which needs the network then and does not follow `bun.lock`; without the network the hand-edit hook fails and refuses nothing. You do not have to look the path up: when the dependencies are missing, the next session starts with a message that names the exact command, with the plugin root filled in. For a marketplace on GitHub that is usually the `installPath` that `claude plugin list --json` prints; for a marketplace added from a local directory, Claude Code reads the plugin in place, so the plugin root is that directory. Run the command again after each plugin update, since an update installs to a new directory.
+For a marketplace on GitHub the plugin root is usually the `installPath` that `claude plugin list --json` prints; for a local one it is that directory.
 
 ## Check the install
 
 ```sh
 claude plugin list                                  # semantic-layer-builder@semantic-layer-builder, enabled
 claude plugin details semantic-layer-builder        # Skills (1), Agents (5), Hooks (4) PreToolUse, PostToolUse, PostToolUseFailure, SessionStart, MCP servers (1) semantic-layer
-bun "<plugin root>/skills/semantic-layer/scripts/semlayer.ts" --help
+bun "<plugin root>/skills/semantic-layer/scripts/semlayer.ts" doctor
 ```
 
-In a session, `/agents` lists the five `semlayer-` agents, `/mcp` lists `plugin:semantic-layer-builder:semantic-layer` as connected, and a new session shows no message from `semantic-layer-builder`.
+In a session, ask Claude to run `semlayer doctor`. It checks Bun, the packages, the project in the current directory, each source's connection (by variable and file name, never the value), whether the role can write, whether git keeps the env file out, and whether `semlayer` on `PATH` is the plugin's, with a fix on every line that is not ok and the next step last. It also prints, once, the line that puts the plugin's `bin/` on your own shell's `PATH`, so you can run `semlayer` yourself; the line names this version's directory, so run `semlayer doctor` again for a new line after an update. `/agents` lists the five `semlayer-` agents, `/mcp` lists `plugin:semantic-layer-builder:semantic-layer` as connected, and a new session shows no message from `semantic-layer-builder`.
 
 ## Use it
 
@@ -74,4 +77,4 @@ Keep `semantic-layer` in the name of a server you add by hand: the plugin's role
 
 ## Without the plugin
 
-Copy `skills/semantic-layer/` into a project's `.claude/skills/` and run `bun install` in that copy. You get the skill and the CLI, but not the agents or the hooks.
+Copy `skills/semantic-layer/` into a project's `.claude/skills/` and install the CLI's packages in that copy: `bun add --exact yaml@2.9.1 ajv@8.20.0 @duckdb/node-api@2.0.0-r.1`. You get the skill and the CLI, run as `bun <skill dir>/scripts/semlayer.ts`, but not the `semlayer` command, the agents or the hooks.

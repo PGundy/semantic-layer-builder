@@ -17,13 +17,13 @@ This file is the router: the principles, how to read `semlayer next`, and which 
 
 ## Setup
 
-Run `bun install` once in the skill directory (the directory holding this file). Then call the CLI as:
+`semlayer` is a command the plugin puts on your shell's `PATH` (its `bin/semlayer`): run `semlayer <command> [flags]`. When `semlayer` is not found, call the CLI by its path instead:
 
 ```
 bun <skill dir>/scripts/semlayer.ts <command> [flags]
 ```
 
-Below, `semlayer` is short for that; from a clone of the repository it is `bun skills/semantic-layer/scripts/semlayer.ts`. Run every command in that full form: the plugin's hook treats only it as `semlayer` for the commands that record answers, so an alias or a shim named `semlayer` gets its ledger writes undone. Every command takes `--root <dir>` (or `SEMANTIC_ROOT`) and `--json`; `--root` is the semantic directory itself, the one holding `semantic.yaml` (default `./semantic`), and relative paths in source files resolve from it. Use `--json` whenever you read output yourself and plain output when you show it to the owner. `semlayer <command> --help` prints the flags.
+From a clone of the repository it is `bun skills/semantic-layer/scripts/semlayer.ts`, after `bun install` at the repository root. `semlayer doctor` checks Bun, the packages, each connection and the command on `PATH`, and names the fix for anything wrong. Run each command as plain `semlayer` or that full form, with no `PATH` change, alias or function in front: the plugin's hook treats any other route to a `semlayer` as another program and undoes its ledger writes. Every command takes `--root <dir>` (or `SEMANTIC_ROOT`) and `--json`; `--root` is the semantic directory itself, the one holding `semantic.yaml` (default `./semantic`), and relative paths in source files resolve from it. Use `--json` whenever you read output yourself and plain output when you show it to the owner. `semlayer <command> --help` prints the flags.
 
 ## Principles
 

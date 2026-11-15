@@ -159,7 +159,8 @@ describe("SKILL.md", () => {
   test("says how to run the CLI and what --root points at", () => {
     const flat = skill.replace(/\s+/g, " ");
     expect(flat).toContain("bun <skill dir>/scripts/semlayer.ts <command> [flags]");
-    expect(flat).toContain("from a clone of the repository it is `bun skills/semantic-layer/scripts/semlayer.ts`");
+    expect(flat).toContain("`semlayer` is a command the plugin puts on your shell's `PATH` (its `bin/semlayer`): run `semlayer <command> [flags]`. When `semlayer` is not found, call the CLI by its path instead");
+    expect(flat).toContain("From a clone of the repository it is `bun skills/semantic-layer/scripts/semlayer.ts`");
     expect(flat).toContain("`--root` is the semantic directory itself, the one holding `semantic.yaml` (default `./semantic`)");
   });
 
@@ -363,7 +364,7 @@ describe("the router and its phase cards", () => {
   // Where each section of the single-file SKILL.md lives now, with a phrase from it.
   const HOMES: [section: string, home: string, phrase: string][] = [
     ["Principles", "SKILL.md", "**Measure facts, ask for meaning.**"],
-    ["Setup", "SKILL.md", "Run `bun install` once in the skill directory"],
+    ["Setup", "SKILL.md", "`semlayer doctor` checks Bun, the packages, each connection and the command on `PATH`"],
     ["Setup: protected output", "SKILL.md", "Never pass `--show-protected`: it exists for the owner, run by hand."],
     ["Phase 0: a turn that only signs off", "SKILL.md", "**A turn that only signs off.**"],
     ["Phase 0: no semantic.yaml yet", "references/phases/intake.md", "**No `semantic.yaml` yet.**"],

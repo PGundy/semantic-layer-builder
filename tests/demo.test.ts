@@ -294,8 +294,8 @@ describe("semlayer demo refuses, changing nothing", () => {
     const base = tempDir("demo-skill");
     const skill = join(base, "skills", "semantic-layer");
     for (const d of ["scripts", "schemas"]) cpSync(join(SKILL, d), join(skill, d), { recursive: true });
-    cpSync(join(SKILL, "package.json"), join(skill, "package.json"));
-    symlinkSync(join(SKILL, "node_modules"), join(skill, "node_modules"));
+    // The copy's packages, as `bun add` in it leaves them (docs/plugin.md, Without the plugin).
+    symlinkSync(join(SKILL, "..", "..", "node_modules"), join(skill, "node_modules"));
     const cwd = tempDir("demo");
     const r = spawn([join(skill, "scripts", "semlayer.ts"), "demo"], cwd);
     expect(r.code).toBe(1);

@@ -9,7 +9,8 @@ what it found hard; the counts come from the log.
 
 - `w.sh`: one tool call, the way Claude Code makes it with the plugin installed.
   - `w.sh run '<command>'` is the Bash tool: the PreToolUse hook (`hooks/guard-edits.ts`), the command
-    in the project folder, then the PostToolUse hook (`hooks/integrity.ts`).
+    in the project folder with the plugin's `bin/` last on `PATH` (so a bare `semlayer` runs, as in Claude
+    Code), then the PostToolUse hook (`hooks/integrity.ts`).
   - `w.sh read <file>` is the Read tool: the PreToolUse hook, then the file's text.
   - `w.sh owner '<question>' '<answer>'` marks one owner turn.
   - Each call writes `log/NNNN.json` (what ran, its exit code, its bytes, whether the hook refused it,

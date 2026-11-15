@@ -27,6 +27,14 @@ describe("count.ts", () => {
     expect(semlayerCommand("cat semantic/semantic.yaml")).toBeUndefined();
   });
 
+  test("names the bare command, the plugin's bin/semlayer by its path and bun run of the full form", () => {
+    expect(semlayerCommand("semlayer reply --readback rb_0001 --answers -")).toBe("reply");
+    expect(semlayerCommand("/plugin/bin/semlayer approve --readback rb_0001")).toBe("approve");
+    expect(semlayerCommand("bun run /plugin/skills/semantic-layer/scripts/semlayer.ts next")).toBe("next");
+    expect(semlayerCommand("semlayerx next")).toBeUndefined();
+    expect(semlayerCommand("/plugin/bin/semlayer-old next")).toBeUndefined();
+  });
+
   test("finds semlayer after a pipe, &&, ;, an env assignment or global flags, and not in a heredoc body", () => {
     expect(semlayerCommand("cat <<EOF | semlayer apply --file -\n{}\nEOF")).toBe("apply");
     expect(semlayerCommand("printf x | semlayer question resolve --answers -")).toBe("question resolve");
@@ -123,5 +131,19 @@ describe("w.sh", () => {
     expect(c.refused_by_hook).toEqual([`0002 read: ${join(walk, "work", ".env")}`]);
     expect(c.secret_in_log).toEqual([]);
     expect(c.semlayer_by_command).toEqual({ next: 1 });
+  }, 60_000);
+
+  test.skipIf(!hasShell)("runs a bare semlayer through the plugin's bin, last on PATH, and the hook keeps what it records", () => {
+    const walk = realpathSync(tempDir("walk"));
+    mkdirSync(join(walk, "work"));
+    const env = { ...process.env, WALK: walk, PLUGIN: REPO };
+    const w = (...args: string[]) => Bun.spawnSync(["bash", join(REPO, "evals", "walkthrough", "w.sh"), ...args], { env, stdout: "pipe", stderr: "pipe" });
+    expect(w("run", "semlayer init --name walk").exitCode).toBe(0);
+    const log = join(walk, "log");
+    expect(JSON.parse(readFileSync(join(log, "0001.json"), "utf8"))).toMatchObject({ kind: "run", exit: 0, changed_layer: true, undone: false });
+    const c = count(log, SECRET);
+    expect(c.semlayer_by_command).toMatchObject({ init: 1 });
+    expect(c.undone_by_hook).toEqual([]);
+    expect(c.layer_changed_by_a_non_semlayer_command).toEqual([]);
   }, 60_000);
 });

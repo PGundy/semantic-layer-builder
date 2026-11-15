@@ -17,7 +17,8 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { nameAt, SHELLS, tokenize } from "./shell-writes.ts";
+import { bareSemlayer } from "../lib/plugin-bin.ts";
+import { bareSemlayerReach, nameAt, SHELLS, tokenize } from "./shell-writes.ts";
 
 type Obj = Record<string, unknown>;
 type Env = Record<string, string | undefined>;
@@ -366,15 +367,23 @@ const QUIET = new Set(["head", "tail", "grep", "wc", "cat", "jq", "cut", "tr", "
 const GIT_MOVES = new Set(["pull", "merge", "rebase", "checkout", "switch", "restore", "reset", "revert", "cherry-pick", "stash"]);
 const GIT_STAYS = new Set(["fetch", "status", "add", "commit", "log", "diff", "show", "branch", "push", "remote", "tag", "rev-parse"]);
 
+// Why a bare `semlayer` in `command` is not provably this plugin's bin/semlayer, or undefined when it
+// is (spec: Hand edits, Which command is semlayer): the command text cannot reach another program by
+// that name, and the first semlayer on the hook's PATH, with the plugin's bin/ last, is the plugin's
+// own file as this version ships it.
+function bareProblem(command: string, env: Env): string | undefined {
+  const reach = bareSemlayerReach(command);
+  if (reach) return reach;
+  const bare = bareSemlayer(env);
+  return bare.ok ? undefined : bare.reason;
+}
+
 // Whether a simple command runs this plugin's semlayer: `bun [run] <semlayer.ts> ...` with the path written out
-// and naming the entry from every directory the shell may be in, or an `semlayer` on PATH that is the entry.
-function isSl(first: Word, args: Word[], dirs: string[]): boolean {
+// and naming the entry from every directory the shell may be in, or a bare `semlayer` when `bare` (bareProblem) holds.
+function isSl(first: Word, args: Word[], dirs: string[], bare: () => boolean): boolean {
   if (first.dynamic) return false;
   const entry = realPath(SEMLAYER_ENTRY);
-  if (first.word === "semlayer") {
-    const found = Bun.which("semlayer");
-    return found !== null && realPath(found) === entry;
-  }
+  if (first.word === "semlayer") return bare();
   if (first.word !== "bun" && !(isAbsolute(first.word) && realPath(first.word) === realPath(process.execPath))) return false;
   const path = args[args[0]?.word === "run" ? 1 : 0];
   if (!path || path.dynamic || path.pattern) return false;
@@ -406,13 +415,22 @@ interface Call {
 interface Ran {
   // The command text names semlayer: this plugin's, an alias, or semlayer.ts behind a variable.
   semlayer: boolean;
+  // Why a bare semlayer it ran was not counted as this plugin's (bareProblem).
+  bare?: string;
   // A git command in it moves commits.
   git: boolean;
 }
 const NAMES_SEMLAYER = /(^|[\s;&|(`'"=\/])semlayer(\.ts)?(\s|["']|$)/;
 
-function classify(command: string, cwd: string): Call {
+function classify(command: string, cwd: string, env: Env = process.env): Call {
   const { commands, subs, background } = parseShell(command);
+  let problem: string | undefined;
+  let checked = false;
+  const bare = () => {
+    if (!checked) problem = bareProblem(command, env);
+    checked = true;
+    return problem === undefined;
+  };
   const dirs = [cwd];
   let trusted = subs.length === 0;
   let semlayer = false;
@@ -427,19 +445,25 @@ function classify(command: string, cwd: string): Call {
     const args = c.words.slice(k + 1);
     if (!first.dynamic && first.word === "cd") {
       if (!follow(args, dirs)) trusted = false;
-    } else if (isSl(first, args, dirs)) semlayer = true;
+    } else if (isSl(first, args, dirs, bare)) semlayer = true;
     else if (!first.dynamic && first.word === "git") {
       const sub = gitSubcommand(args);
       if (sub !== undefined && GIT_MOVES.has(sub)) moves = true;
       else if (sub === undefined || !GIT_STAYS.has(sub)) trusted = false;
       // --output sends what git prints to a file of any name, and a variable may hold that option.
       if (args.some((a) => a.dynamic || a.word.startsWith("--output"))) trusted = false;
-    } else if (first.dynamic || !QUIET.has(first.word) || (first.word === "tee" && args.some((a) => a.dynamic))) {
+    } else if (
+      first.dynamic ||
+      !QUIET.has(first.word) ||
+      (first.word === "tee" && args.some((a) => a.dynamic)) ||
+      // printf -v sets a variable (PATH, or BASH_CMDS[bun]), which can change what a later name runs.
+      (first.word === "printf" && args.some((a) => a.dynamic || a.word.startsWith("-v")))
+    ) {
       trusted = false;
       if (/^(nohup|setsid|disown)$/.test(basename(first.word))) detached = true;
     }
   }
-  const ran = { semlayer: semlayer || NAMES_SEMLAYER.test(command), git: moves };
+  const ran: Ran = { semlayer: semlayer || NAMES_SEMLAYER.test(command), git: moves, ...(problem ? { bare: problem } : {}) };
   return { kind: trusted && semlayer ? "semlayer" : trusted && moves ? "git" : "other", background: detached, dirs, ran };
 }
 
@@ -670,7 +694,12 @@ const UNDONE = "semantic-layer: A command changed the answer ledger outside seml
 const LEFT =
   "semantic-layer: The answer ledger changed while semlayer or git ran at the same time as another command, so the change could not be attributed and was left as it is. " +
   "Run semlayer validate, and record an owner's answer only with semlayer reply, after the owner answers.";
-const ON_ITS_OWN = "on its own, with its path written out (bun <skill dir>/scripts/semlayer.ts <command>) and joined to no other program";
+const ON_ITS_OWN =
+  "on its own and joined to no other program, as semlayer <command> (the plugin's own command on PATH) or with its path written out (bun <skill dir>/scripts/semlayer.ts <command>)";
+// Why a bare semlayer in the call was taken for another program.
+const NOT_PLUGIN_BARE = (why: string) =>
+  `- The semlayer this call ran by its bare name was not counted as the plugin's own command (${why}), so it was treated as another program. ` +
+  "Run it as semlayer <command> with no PATH change, alias, function or variable in front, or as bun <skill dir>/scripts/semlayer.ts <command>.";
 // What follows the list of files, by what the call ran besides the program that may have forged the change.
 const RAN_SEMLAYER =
   "- This call also ran semlayer, whose writes cannot be told from the other program's: what semlayer wrote to the ledger was removed with the rest, and a layer file it edited was not put back. " +
@@ -714,7 +743,7 @@ function settle(dir: string, snap: Entry, diffs: Diff[], all: Entry[], now: numb
       }
     }
     const done = (d: Diff) => (d.what === "added" ? "added, now removed" : d.what === "linked" ? "given a second name, now a file of its own again" : `${d.what}, now restored`);
-    const advice = [...(ran?.semlayer ? [RAN_SEMLAYER] : []), ...(ran?.git ? [RAN_GIT] : [])];
+    const advice = [...(ran?.bare ? [NOT_PLUGIN_BARE(ran.bare)] : []), ...(ran?.semlayer ? [RAN_SEMLAYER] : []), ...(ran?.git ? [RAN_GIT] : [])];
     return [UNDONE, ...listed(diffs, done), ...failed, ...(advice.length ? advice : [ALONE])].join("\n");
   } finally {
     rmSync(claimed, { recursive: true, force: true });
@@ -780,7 +809,7 @@ function record(input: Obj, dir: string, now: number, stream: string, env: Env):
   if (/^mcp__.*__semlayer_[a-z0-9_]+$/.test(tool)) return mark();
   if (tool !== "Bash" || !isObject(args) || typeof args.command !== "string") return;
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
-  const call = classify(args.command, cwd);
+  const call = classify(args.command, cwd, env);
   if (call.kind !== "other") return mark();
   const roots = findRoots(cwd, call.dirs, args.command, env);
   if (!roots.length) return;

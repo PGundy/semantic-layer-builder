@@ -4,9 +4,10 @@
 // read here, as written: nothing in a value is expanded. No function here returns or prints a
 // value except readConnection, which hands the values to the adapter.
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { UserError } from "./errors.ts";
+import { writeFileAtomic } from "./lock.ts";
 import type { SourceConfig } from "./types.ts";
 
 export type Env = Record<string, string | undefined>;
@@ -341,4 +342,58 @@ export function trackedEnvFiles(root: string, env: Env, opts?: EnvLookup): strin
       return false;
     }
   });
+}
+
+// The file of placeholder lines semlayer setup leaves when a source's connection is set nowhere.
+export const ENV_EXAMPLE_HEADER =
+  "# The connection variables semlayer reads. Copy this file to .env beside it and put the real values in place of each <...>.\n" +
+  "# .env stays out of git; this file holds placeholders only and is safe to commit.\n";
+
+// The variable each placeholder line sets (`NAME=...`), and whether `text` already sets it.
+const lineVariable = (line: string) => /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=/.exec(line)?.[1];
+export const setsVariable = (text: string, name: string) => text.split("\n").some((l) => lineVariable(l) === name);
+
+// The .env.example beside the semantic root's .env: its path, and what writeEnvExample did to it.
+export interface EnvExample {
+  path: string;
+  // "created": a new file; "added": the lines it lacked were appended; "unchanged": it had them all;
+  // "skipped": the connection reads a named env file, or the directory does not exist.
+  outcome: "created" | "added" | "unchanged" | "skipped";
+}
+
+// Writes .env.example beside the semantic root's .env with `lines` (placeholders from readConnection,
+// never a value). An existing file keeps everything it holds; only the lines whose variable it does
+// not set yet are appended. Nothing is written when the connection reads `addTo`, a named env file
+// other than the root's .env.
+export function writeEnvExample(root: string, lines: string, addTo: string = rootEnvFile(root)): EnvExample {
+  const path = join(dirname(rootEnvFile(root)), ".env.example");
+  if (resolve(addTo) !== rootEnvFile(root) || !existsSync(dirname(path))) return { path, outcome: "skipped" };
+  if (!existsSync(path)) {
+    writeFileAtomic(path, `${ENV_EXAMPLE_HEADER}${lines}\n`, { exclusive: true });
+    return { path, outcome: "created" };
+  }
+  // A link or anything but a plain file is left alone: the append could land outside this directory.
+  if (!lstatSync(path).isFile()) return { path, outcome: "skipped" };
+  const text = readFileSync(path, "utf8");
+  const missing = lines.split("\n").filter((l) => {
+    const v = lineVariable(l);
+    return v !== undefined && !setsVariable(text, v);
+  });
+  if (!missing.length) return { path, outcome: "unchanged" };
+  writeFileAtomic(path, `${text}${text === "" || text.endsWith("\n") ? "" : "\n"}${missing.join("\n")}\n`);
+  return { path, outcome: "added" };
+}
+
+// The sentence that names the .env.example for the owner, after writeEnvExample.
+export function envExampleNote(example: EnvExample, envFile: string): string {
+  switch (example.outcome) {
+    case "created":
+      return `Wrote ${example.path} with placeholders in place of the values: the owner copies it to ${envFile} and fills in the real values themselves.`;
+    case "added":
+      return `Added the placeholder lines to ${example.path}: the owner copies those lines to ${envFile} and fills in the real values themselves.`;
+    case "unchanged":
+      return `${example.path} already holds the placeholder lines: the owner copies them to ${envFile} and fills in the real values themselves.`;
+    default:
+      return "";
+  }
 }
