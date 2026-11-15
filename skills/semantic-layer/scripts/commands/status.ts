@@ -1,5 +1,6 @@
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
+import { DEMO_NOTE, isDemo } from "../lib/demo.ts";
 import { formatJson } from "../lib/output.ts";
 import { computeStatus, MIN_APPROVED_GOLDENS, preview, rowFilterJoinItems, type ApprovalCount, type ProjectStatus, type SourceStatus } from "../lib/status.ts";
 
@@ -119,6 +120,8 @@ const spec: CommandSpec = {
   writes: false,
   async run({ values }, ctx) {
     const st = computeStatus(ctx.root, str(values, "source"));
+    // In the folder semlayer demo made, the next step says so: OWNER.md is the person's, not evidence.
+    if (isDemo(ctx.root)) st.next_step.message = `${st.next_step.message} ${DEMO_NOTE}`;
     ctx.out(ctx.json ? formatJson(st) : render(st));
     return 0;
   },

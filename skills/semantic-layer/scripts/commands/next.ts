@@ -1,4 +1,5 @@
 import type { CommandSpec } from "../lib/command.ts";
+import { DEMO_NOTE, isDemo } from "../lib/demo.ts";
 import { type NextAction, nextAction } from "../lib/next.ts";
 import { formatJson } from "../lib/output.ts";
 import { actionText, type StepAction } from "../lib/status.ts";
@@ -34,7 +35,9 @@ const spec: CommandSpec = {
   options: {},
   writes: false,
   async run(_input, ctx) {
-    const action = nextAction(ctx.root, ctx.env);
+    const found = nextAction(ctx.root, ctx.env);
+    // In the folder semlayer demo made, the why says so: OWNER.md is the person's, not evidence.
+    const action = isDemo(ctx.root) ? { ...found, why: `${found.why} ${DEMO_NOTE}` } : found;
     ctx.out(ctx.json ? formatJson(action) : render(action));
     return 0;
   },
