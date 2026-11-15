@@ -54,6 +54,20 @@ claude mcp add semantic-layer -- bun "$PWD/skills/semantic-layer/scripts/mcp/ser
 
 A client configured by JSON takes `{"command": "bun", "args": ["<path to>/skills/semantic-layer/scripts/mcp/server.ts", "--root", "<path to>/semantic"]}`. Each call runs one command with `--json` in that directory only. [`spec.md`](skills/semantic-layer/references/spec.md) (MCP server) has the protocol details. No tool takes `--show-protected`, and `--role <role>` limits the tools to one agent role's commands (default `interviewer`, every command). The Claude Code plugin starts the server for you ([`docs/plugin.md`](docs/plugin.md)).
 
+## Try it without a warehouse
+
+`semlayer demo` makes a practice project from the synthetic store data this repository ships: its tables as CSV and Parquet files, a semantic layer already set up over them, and `OWNER.md`, a cheat sheet for you to play the data owner. It needs no connection, no secret and no network, and every value in it is made up.
+
+```sh
+git clone https://github.com/PGundy/semantic-layer-builder
+(cd semantic-layer-builder && bun install)
+bun semantic-layer-builder/skills/semantic-layer/scripts/semlayer.ts demo   # makes ./semlayer-demo
+cd semlayer-demo
+claude
+```
+
+Then say "help me build a semantic layer for the data in this folder", and answer the agent's questions as the owner, from `OWNER.md`. With the plugin installed, the agent can run `semlayer demo` for you in an empty folder instead.
+
 ## Run the CLI
 
 The agent calls the CLI for you, but you can run it yourself. From the repository root:

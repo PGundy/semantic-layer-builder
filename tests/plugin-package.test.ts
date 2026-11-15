@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
+import { DEMO_DIR } from "../skills/semantic-layer/scripts/lib/demo.ts";
 import { ROLES } from "../skills/semantic-layer/scripts/lib/roles.ts";
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { tempDir } from "./helpers.ts";
@@ -262,7 +263,8 @@ describe("the docs", () => {
   test("name every agent the plugin ships, and only those", () => {
     const agents = Object.values(ROLES).map((r) => r.agent);
     for (const [name, body] of docs) {
-      const named = new Set([...body.matchAll(/\bsemlayer-[a-z]+(?:-[a-z]+)*/g)].map((m) => m[0]));
+      // semlayer-demo is the folder semlayer demo makes, not an agent.
+      const named = new Set([...body.matchAll(/\bsemlayer-[a-z]+(?:-[a-z]+)*/g)].map((m) => m[0]).filter((n) => n !== DEMO_DIR));
       for (const a of agents) expect(`${name}: ${named.has(a)}`).toBe(`${name}: true`);
       for (const a of named) expect(agents).toContain(a);
     }
