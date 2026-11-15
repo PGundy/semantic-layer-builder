@@ -11,7 +11,7 @@ import { heldValues } from "../lib/validate.ts";
 
 const SECTIONS = { dimension: "dimensions", measure: "measures", join: "joins" } as const;
 
-// Where a new ignored column goes: before the first entry that sorts after it, as sl ignore-column places it.
+// Where a new ignored column goes: before the first entry that sorts after it, as semlayer ignore-column places it.
 function placeOf(list: string[], column: string): number {
   const at = list.findIndex((x) => x > column);
   return at < 0 ? list.length : at;
@@ -26,10 +26,10 @@ const spec: CommandSpec = {
   async run({ values, positionals }, ctx) {
     loadProject(ctx.root);
     const [ref, ...extra] = positionals;
-    if (!ref || extra.length) throw new UserError("Usage: sl remove-field <source.model.field> [--keep-column] [--force], for example sl remove-field warehouse.orders.discount.");
+    if (!ref || extra.length) throw new UserError("Usage: semlayer remove-field <source.model.field> [--keep-column] [--force], for example semlayer remove-field warehouse.orders.discount.");
     const loc = locate(ctx.root, ref);
     if (loc.kind !== "dimension" && loc.kind !== "measure" && loc.kind !== "join") {
-      throw new UserError(`sl remove-field removes a dimension, measure or join (source.model.field); ${ref} is a ${loc.kind === "access" ? "file" : loc.kind}.`);
+      throw new UserError(`semlayer remove-field removes a dimension, measure or join (source.model.field); ${ref} is a ${loc.kind === "access" ? "file" : loc.kind}.`);
     }
     const kind = loc.kind;
     const [source, modelName] = ref.split(".") as [string, string];
@@ -48,7 +48,7 @@ const spec: CommandSpec = {
     if (approved && !bool(values, "force")) {
       throw new UserError(
         `${ref} is approved: removing it changes ${modelRef} after the owner signed it off. Nothing was written. ` +
-          `Ask the owner first, and only on their yes run sl remove-field ${ref} --force.`,
+          `Ask the owner first, and only on their yes run semlayer remove-field ${ref} --force.`,
       );
     }
 
@@ -93,17 +93,17 @@ const spec: CommandSpec = {
       return 0;
     }
     const lines = [`Removed ${kind} ${name} from ${modelRef} in ${outcome.file}.`];
-    if (columns.length) lines.push(`Added ${columns.join(", ")} to ${modelRef}'s ignored_columns, so sl status and sl draft --new-columns skip ${columns.length === 1 ? "it" : "them"}.`);
-    if (redact.length) lines.push(`The snapshot holds sample values of ${redact.join(", ")}, which ${redact.length === 1 ? "is" : "are"} protected now: run sl profile --source ${source} --redact to keep counts only.`);
+    if (columns.length) lines.push(`Added ${columns.join(", ")} to ${modelRef}'s ignored_columns, so semlayer status and semlayer draft --new-columns skip ${columns.length === 1 ? "it" : "them"}.`);
+    if (redact.length) lines.push(`The snapshot holds sample values of ${redact.join(", ")}, which ${redact.length === 1 ? "is" : "are"} protected now: run semlayer profile --source ${source} --redact to keep counts only.`);
     if (approved && model.status === "approved") {
       lines.push(
         `${ref} was approved, so ${modelRef} changed since the owner approved it: read ${modelRef} back to the owner as it now stands. ` +
-          `Its approval covers its table, grain and keys, so it stays approved; if the owner withdraws it, run sl approve --target ${modelRef} --revoke.`,
+          `Its approval covers its table, grain and keys, so it stays approved; if the owner withdraws it, run semlayer approve --target ${modelRef} --revoke.`,
       );
-    } else if (approved) lines.push(`${ref} was approved: tell the owner it is removed, and read ${modelRef} back to them as it now stands before approving it (sl approve --target ${modelRef} --by "<owner>").`);
+    } else if (approved) lines.push(`${ref} was approved: tell the owner it is removed, and read ${modelRef} back to them as it now stands before approving it (semlayer approve --target ${modelRef} --by "<owner>").`);
     lines.push(...questionLines(model, name, outcome.file));
     lines.push(...reapproveLines(outcome.reapprove));
-    if (!approved && !outcome.reapprove.length && !redact.length) lines.push("Next: sl status.");
+    if (!approved && !outcome.reapprove.length && !redact.length) lines.push("Next: semlayer status.");
     ctx.out(lines.join("\n"));
     return 0;
   },

@@ -1,6 +1,6 @@
 // figures: every approved golden compiles from the run's YAML, and each one mapped to a reference
 // figure produces that figure, and none produces a common mistake's value. A golden's figure comes
-// only from compiling its request with the reference compiler, as sl goldens check does, and running
+// only from compiling its request with the reference compiler, as semlayer goldens check does, and running
 // it on the run's duckdb source; its recorded expected rows are never read. A golden the compiler
 // refuses, or whose compiled SQL the grader cannot run from files, fails with the reason.
 import { existsSync, readFileSync } from "node:fs";
@@ -69,14 +69,14 @@ function matches(entry: FigureEntry, golden: Golden, table: string | undefined):
 // cannot produce them: it has no request, the compiler refuses the request, or the source is not
 // duckdb, whose data the grader cannot read from files.
 async function produce(run: RunFiles, golden: Golden, adapters: Map<string, Adapter>): Promise<Produced | { failure: string }> {
-  if (!golden.request?.source) return { failure: `it has no request to compile; run sl validate and give ${golden.name} a request` };
+  if (!golden.request?.source) return { failure: `it has no request to compile; run semlayer validate and give ${golden.name} a request` };
   const compiled = compileGolden(run.root, golden);
-  if (!compiled.ok) return { failure: `sl sql refuses its request: ${compiled.reason}. ${refusalNext(golden, compiled)}` };
+  if (!compiled.ok) return { failure: `semlayer sql refuses its request: ${compiled.reason}. ${refusalNext(golden, compiled)}` };
   if (compiled.dialect !== "duckdb") {
     return {
       failure:
         `its request compiles, but ${compiled.source} is ${compiled.dialect} and the grader runs compiled SQL only on duckdb sources, whose data it reads from files; ` +
-        `run sl goldens check --name ${golden.name} against ${compiled.source} instead`,
+        `run semlayer goldens check --name ${golden.name} against ${compiled.source} instead`,
     };
   }
   let adapter = adapters.get(compiled.source);
@@ -157,7 +157,7 @@ export async function gradeFigures(run: RunFiles): Promise<GraderResult> {
       try {
         produced = await produce(run, golden, adapters);
       } catch (e) {
-        produced = { failure: `compiling or running its request failed: ${(e as Error).message}; run sl goldens run --name ${golden.name} to see the error` };
+        produced = { failure: `compiling or running its request failed: ${(e as Error).message}; run semlayer goldens run --name ${golden.name} to see the error` };
       }
       // A golden the grader cannot produce from the YAML fails, mapped or not: an approved figure
       // must compile, and its recorded rows are not a stand-in.

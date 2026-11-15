@@ -9,7 +9,7 @@ import { type Compiled, type CompileResult, compileRequest, type Refused } from 
 import type { Model, QueryRequest } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, duckdbSource, initProject, PG_URL, reapprove, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, duckdbSource, initProject, PG_URL, reapprove, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 type Row = Record<string, unknown>;
 
@@ -425,7 +425,7 @@ describe("users with no rows, several roles, and attribute values", () => {
       {
         code: "invalid_layer",
         message: "role rep's row filter on shop.orders has a {{ user.<attribute> }} inside a string or a comment, where it cannot be bound as a parameter",
-        next: "Write the placeholder outside quotes (region = {{ user.region }}, not '{{ user.region }}'). Fix the row filter in access.yaml, run sl validate, and run sl sql again.",
+        next: "Write the placeholder outside quotes (region = {{ user.region }}, not '{{ user.region }}'). Fix the row filter in access.yaml, run semlayer validate, and run semlayer sql again.",
       },
     ]);
     const { root: r2 } = await shop();
@@ -433,7 +433,7 @@ describe("users with no rows, several roles, and attribute values", () => {
     expect(obj.refusals.map((x) => [x.code, x.message])).toEqual([["invalid_request", "user.region is an object; a row filter binds a text, a number, true or false, or a list of them"]]);
   });
 
-  test("a parameter marker in a row filter is refused by sl sql and sl validate, so a request's filter value never reaches a row filter", async () => {
+  test("a parameter marker in a row filter is refused by semlayer sql and semlayer validate, so a request's filter value never reaches a row filter", async () => {
     for (const [expr, marker] of [
       ["region = $1", "$1"],
       ["region = ?", "?"],
@@ -449,7 +449,7 @@ describe("users with no rows, several roles, and attribute values", () => {
         {
           code: "invalid_layer",
           message: `role rep's row filter on shop.orders has the query parameter marker ${marker}; a row filter reads the user's values through {{ user.<attribute> }} only, and only the compiler binds parameters`,
-          next: "Fix the row filter in access.yaml, run sl validate, and run sl sql again.",
+          next: "Fix the row filter in access.yaml, run semlayer validate, and run semlayer sql again.",
         },
       ]);
       expect(validateProject(root).filter((i) => i.file === "access.yaml" && i.level === "error").map((i) => [i.path, i.message])).toContainEqual([
@@ -470,7 +470,7 @@ describe("users with no rows, several roles, and attribute values", () => {
     expect(compiled(compileRequest(r2, req({ measures: ["orders.order_count"] }), as(undefined, { region: "NE" }))).params).toEqual(["NE"]);
   });
 
-  test("a row filter that does not balance its parentheses, holds a semicolon, or writes a placeholder against a name is refused by sl sql and sl validate", async () => {
+  test("a row filter that does not balance its parentheses, holds a semicolon, or writes a placeholder against a name is refused by semlayer sql and semlayer validate", async () => {
     for (const [expr, problem] of [
       ["region = {{ user.region }}) or (1 = 1", "closes a parenthesis it never opened; a row filter must balance its parentheses"],
       ["(region = {{ user.region }}", "leaves a parenthesis open; a row filter must balance its parentheses"],
@@ -512,7 +512,7 @@ describe("users with no rows, several roles, and attribute values", () => {
         {
           code: "invalid_request",
           message: `user.employee_id is ${shown}; role manager's row filter on shop.orders binds one id, a number or a text`,
-          next: "Pass the user's id as a number or a text in --user, and run sl sql again.",
+          next: "Pass the user's id as a number or a text in --user, and run semlayer sql again.",
         },
       ]);
     }
@@ -543,12 +543,12 @@ describe("users with no rows, several roles, and attribute values", () => {
     ]);
   });
 
-  test("sl sql names the row filters it applies, and a model of which the user sees no rows", async () => {
+  test("semlayer sql names the row filters it applies, and a model of which the user sees no rows", async () => {
     const { root } = await shop();
-    const r = await sl(root, ["sql", "--request", JSON.stringify(req({ measures: ["orders.order_count"], dimensions: ["customers.home"] })), "--role", "teamlead"]);
+    const r = await semlayer(root, ["sql", "--request", JSON.stringify(req({ measures: ["orders.order_count"], dimensions: ["customers.home"] })), "--role", "teamlead"]);
     expect(r.code).toBe(0);
-    expect(r.out).toContain("This user sees no rows of customers (role teamlead), so the SQL reads false in the ON clause of its join orders.customer; sl access --user '{}' --roles teamlead says why.");
-    const rep = await sl(root, ["sql", "--request", JSON.stringify(req({ measures: ["orders.order_count"] })), "--user", '{"region":"NE"}']);
+    expect(r.out).toContain("This user sees no rows of customers (role teamlead), so the SQL reads false in the ON clause of its join orders.customer; semlayer access --user '{}' --roles teamlead says why.");
+    const rep = await semlayer(root, ["sql", "--request", JSON.stringify(req({ measures: ["orders.order_count"] })), "--user", '{"region":"NE"}']);
     expect(rep.out).toContain("Row filters of role rep limit orders in WHERE, with the user's attributes bound as parameters.");
     expect(rep.out).toContain('Parameters, bound in order: $1 = "NE"');
   });
@@ -636,7 +636,7 @@ describe("Acme's sales row filters (invariant: a row-filtered user sees only the
     "on postgres, every sales user's orders and order lines stay inside their hierarchy",
     async () => {
       assertLocalPg(PG_URL);
-      const schema = uniqueSchema("sl_access");
+      const schema = uniqueSchema("semlayer_access");
       const db = new SQL({ url: PG_URL!, max: 1 });
       try {
         await loadPostgres(PG_URL!, DATA, schema);

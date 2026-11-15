@@ -1,8 +1,8 @@
-// The statement reader of sl usage (spec: Usage evidence): what one SQL statement someone wrote
+// The statement reader of semlayer usage (spec: Usage evidence): what one SQL statement someone wrote
 // reads, joins, sums and keeps, read from its tokens, never run. It is no parser: it reads the
 // shapes analysts write (select blocks, FROM and JOIN items, CTEs, subqueries, WHERE conjuncts,
 // aggregates, GROUP BY) and leaves out anything it cannot place, never guessing. The tokens are
-// sql-guard's (the reader sl run's protected-value check, sqlMask in lib/output.ts, reads), which
+// sql-guard's (the reader semlayer run's protected-value check, sqlMask in lib/output.ts, reads), which
 // drop comments unread; this file adds placeholders, two-character operators and dbt's Jinja.
 import { type Token, tokenize } from "./sql-guard.ts";
 

@@ -203,7 +203,7 @@ export interface AccessSummary {
 export interface AccessVisibility {
   mode: AccessMode;
   access_file: "missing" | "draft" | "approved" | "invalid";
-  // Present while access_file is draft and access.yaml records the approval sl approve --revoke
+  // Present while access_file is draft and access.yaml records the approval semlayer approve --revoke
   // set aside: that approved version keeps applying where it is deployed.
   last_approved?: LastApproval;
   // The approved models, fields, joins and metrics, and access.yaml ("access"), whose content no
@@ -245,15 +245,15 @@ export function lastApprovedNote(last: LastApproval): string {
   return `The version approved by ${last.by} on ${last.at} keeps applying where it is deployed; tools that load this draft serve nothing.`;
 }
 
-// How sl access and checkRequest name an approved item that changed since its approval.
+// How semlayer access and checkRequest name an approved item that changed since its approval.
 export const CHANGED_SINCE_APPROVAL = "changed since approval; treated as draft until it is read back and approved again";
 
-// How sl access and checkRequest name an approved item whose approved_hash is missing.
+// How semlayer access and checkRequest name an approved item whose approved_hash is missing.
 export const HASH_MISSING = "approved, but its approved_hash is missing while other items carry one; treated as draft until it is read back and approved again";
 
 // The command that approves a changed item again, run only after the owner's yes to its readback.
 export function reapproveCommand(ref: string): string {
-  return `sl approve --target ${ref} --by "<owner>" after the owner's yes`;
+  return `semlayer approve --target ${ref} --by "<owner>" after the owner's yes`;
 }
 
 // The layer the evaluator reads: models, metrics, and access.yaml as parsed (null when missing).
@@ -269,8 +269,8 @@ export interface AccessLayer {
   // The sources the project lists; each is reported, even with no models or metrics.
   sources?: string[];
   // false skips the approved_hash comparison, so no item is treated as changed or missing: set by
-  // the golden checks of sl validate and sl status, which take every item as approved, and by the
-  // sensitivity checks of sl validate, which read what the layer exposes once approved again.
+  // the golden checks of semlayer validate and semlayer status, which take every item as approved, and by the
+  // sensitivity checks of semlayer validate, which read what the layer exposes once approved again.
   compare_hashes?: boolean;
 }
 
@@ -885,7 +885,7 @@ function rowFilterResult(
 // The approved models, fields, joins and metrics of a layer, and its access.yaml, whose content no
 // longer matches their approved_hash ("changed") or that record none while others do ("missing"):
 // the items themselves, to treat as drafts, and their approve targets, sorted. Each model is hashed
-// as sl approve hashes it, reading its second-hop joins from the models of its source and its SQL
+// as semlayer approve hashes it, reading its second-hop joins from the models of its source and its SQL
 // in the source's dialect.
 function unapprovedApprovals(layer: AccessLayer): { items: Map<unknown, "changed" | "missing">; changed: string[]; missing: string[] } {
   const items = new Map<unknown, "changed" | "missing">();
@@ -1236,8 +1236,8 @@ export const andList = (xs: string[]): string => (xs.length < 2 ? xs.join("") : 
 // readback and approval that make it visible.
 function heldMessage(head: string, ref: string, holds: Hold[]): string {
   const targets = holds.map((h) => h.target);
-  const approve = `${targets.map((t) => `sl approve --target ${t} --by "<owner>"`).join(" and ")} after the owner's yes`;
-  const steps = `sl readback --targets ${targets.join(",")}, then ${approve}`;
+  const approve = `${targets.map((t) => `semlayer approve --target ${t} --by "<owner>"`).join(" and ")} after the owner's yes`;
+  const steps = `semlayer readback --targets ${targets.join(",")}, then ${approve}`;
   const [only] = holds;
   if (holds.length === 1 && only!.kind === "self") {
     const why = only!.held === "changed" ? CHANGED_SINCE_APPROVAL : only!.held === "hash_missing" ? `is ${HASH_MISSING}` : "is a draft until it is read back and approved";

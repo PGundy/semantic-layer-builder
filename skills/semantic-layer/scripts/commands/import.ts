@@ -52,21 +52,21 @@ function importFile(root: string, cwd: string, source: SourceConfig, given: stri
   const saved = intakeMode(source) === "export" ? source.intake?.export?.file : undefined;
   if (!saved) {
     throw new UserError(
-      `--file is required: pass the export to import, as in sl import --source ${source.source} --file schema.csv` +
+      `--file is required: pass the export to import, as in semlayer import --source ${source.source} --file schema.csv` +
         " (an export source with intake.export.file set imports that file when --file is left out).",
     );
   }
   if (isAbsolute(saved) || !insideRoot(root, saved)) {
     throw new UserError(
       `intake.export.file in sources/${source.source}.yaml must be a path inside the semantic root; copy the export under the root, ` +
-        "point intake.export.file at it and run sl validate, or pass --file.",
+        "point intake.export.file at it and run semlayer validate, or pass --file.",
     );
   }
   const file = resolve(root, saved);
   if (!existsSync(file)) {
     throw new UserError(
       `intake.export.file in sources/${source.source}.yaml names ${saved}, which does not exist under the semantic root; ` +
-        "copy the export there or fix the path and run sl validate, or pass --file.",
+        "copy the export there or fix the path and run semlayer validate, or pass --file.",
     );
   }
   return file;
@@ -84,12 +84,12 @@ const spec: CommandSpec = {
     "  information_schema  CSV or JSON rows of information_schema.columns: table_schema, table_name, column_name,\n" +
     "                      data_type, is_nullable, ordinal_position; optional table_type, table_comment, row_count,\n" +
     "                      column_comment, and keys: is_primary_key, pk_ordinal, fk_name, fk_ordinal,\n" +
-    "                      references_schema, references_table, references_column. `sl export-sql --dialect <d>`\n" +
+    "                      references_schema, references_table, references_column. `semlayer export-sql --dialect <d>`\n" +
     "                      prints a query that returns exactly these columns.\n" +
     "  dbt_manifest        target/manifest.json; add --catalog target/catalog.json for column types and row counts\n" +
     "  ddl                 a .sql file of CREATE TABLE / CREATE VIEW / COMMENT ON statements (pg_dump, get_ddl, SHOW CREATE TABLE)\n\n" +
     "  --include, --exclude  keep only the tables that match an include and no exclude (the scope pattern grammar),\n" +
-    "                      such as the patterns sl export-sql lists for its query to leave to sl import;\n" +
+    "                      such as the patterns semlayer export-sql lists for its query to leave to semlayer import;\n" +
     "                      they apply to the tables intake.schemas keeps.",
   options: {
     source: { type: "string" },
@@ -131,13 +131,13 @@ const spec: CommandSpec = {
     if (!snapshot.tables.length) {
       throw new UserError(
         `None of the ${left.tables} tables in ${shown} is in intake.schemas (${kept.join(", ")}); the file holds ${schemaListText(left.schemas)}. ` +
-          `Export the listed schemas, or fix intake.schemas in sources/${source.source}.yaml and run sl validate, then rerun sl import --source ${source.source}.`,
+          `Export the listed schemas, or fix intake.schemas in sources/${source.source}.yaml and run semlayer validate, then rerun semlayer import --source ${source.source}.`,
       );
     }
     if (left.tables) {
       warnings.push(
         `Dropped ${droppedText(left)} not in intake.schemas: ${schemaListText(left.schemas)}. ` +
-          `To keep them, add the schema to intake.schemas in sources/${source.source}.yaml, run sl validate and rerun sl import --source ${source.source}.`,
+          `To keep them, add the schema to intake.schemas in sources/${source.source}.yaml, run semlayer validate and rerun semlayer import --source ${source.source}.`,
       );
     }
     // Messages about the patterns say when intake.schemas already narrowed the file.
@@ -156,7 +156,7 @@ const spec: CommandSpec = {
       if (!snapshot.tables.length) {
         throw new UserError(
           `No table in ${shown}${within} matches --include and --exclude, so nothing was imported. ` +
-            `Check the patterns against the table names in the file${left.tables ? " and the schemas in intake.schemas" : ""} and run sl import again.`,
+            `Check the patterns against the table names in the file${left.tables ? " and the schemas in intake.schemas" : ""} and run semlayer import again.`,
         );
       }
       filters = { include, exclude, kept: snapshot.tables.length, dropped: read - snapshot.tables.length };
@@ -183,12 +183,12 @@ const spec: CommandSpec = {
     const { focus_threshold } = projectSettings(project);
     const next =
       inScope > focus_threshold
-        ? `sl tables --source ${source.source} --groups`
+        ? `semlayer tables --source ${source.source} --groups`
         : snapshot.scope_state?.left_scope.length
-          ? "sl status"
+          ? "semlayer status"
           : RUNNABLE_DIALECTS.includes(source.dialect)
-            ? `sl profile --source ${source.source}`
-            : `sl draft --source ${source.source}${tablesFlag(snapshot.scope_state?.new_in_scope ?? [])}`;
+            ? `semlayer profile --source ${source.source}`
+            : `semlayer draft --source ${source.source}${tablesFlag(snapshot.scope_state?.new_in_scope ?? [])}`;
 
     if (ctx.json) {
       ctx.out(

@@ -2,9 +2,9 @@
 
 A first reading of the warehouse schema (postgres, from an information schema import captured 2026-11-05): 12 tables of 22 in scope. Everything below is a guess from names and keys, for the owner to confirm or correct; nothing here is settled.
 
-> 22 tables are in scope, more than the focus threshold of 12: this brief covers the top 12 by size, references and naming and leaves out 10 tables. Narrow the scope with `sl scope --source warehouse --include <pattern> --write` (`sl tables --source warehouse --groups` suggests patterns), or name tables with --tables.
+> 22 tables are in scope, more than the focus threshold of 12: this brief covers the top 12 by size, references and naming and leaves out 10 tables. Narrow the scope with `semlayer scope --source warehouse --include <pattern> --write` (`semlayer tables --source warehouse --groups` suggests patterns), or name tables with --tables.
 
-> Suggested names drop the prefixes fct_, dim_, as `sl draft --strip-prefix fct_,dim_` would.
+> Suggested names drop the prefixes fct_, dim_, as `semlayer draft --strip-prefix fct_,dim_` would.
 
 > No table in this brief has a profile, so key uniqueness, value counts and which columns are near-unique are guesses from names.
 
@@ -289,7 +289,7 @@ Does this match how the business thinks about the data? Which of these facts mat
 
 ## What a profile would measure
 
-`sl profile --source warehouse --tables acme.fct_orders,acme.fct_order_items,acme.fct_refunds,acme.audit_log,acme.dim_sales_reps,acme.dim_regions,acme.dim_products,acme.dim_customers,acme.dim_currency,acme.raw_shopify_orders,acme.raw_stripe_charges` reads the data (counts, distinct values, top values; protected columns are hashed) and would replace these guesses with measurements:
+`semlayer profile --source warehouse --tables acme.fct_orders,acme.fct_order_items,acme.fct_refunds,acme.audit_log,acme.dim_sales_reps,acme.dim_regions,acme.dim_products,acme.dim_customers,acme.dim_currency,acme.raw_shopify_orders,acme.raw_stripe_charges` reads the data (counts, distinct values, top values; protected columns are hashed) and would replace these guesses with measurements:
 - acme.fct_orders: how many distinct values status, ship_region and currency hold, to confirm which are splits and which are near-unique; the values of status and how often each occurs; the range and null share of created_at
 - acme.fct_refunds: how many distinct values reason hold, to confirm which are splits and which are near-unique; the range and null share of refunded_at
 - acme.audit_log: whether audit_id is unique and never null, as a key must be; how many distinct values actor, action and entity hold, to confirm which are splits and which are near-unique; the range and null share of logged_at

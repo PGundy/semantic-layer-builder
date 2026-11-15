@@ -21,12 +21,12 @@ export interface CliRun {
 }
 
 // Runs the CLI in-process against a semantic root, with a fixed clock.
-export async function sl(root: string, args: string[], env: Record<string, string | undefined> = {}): Promise<CliRun> {
+export async function semlayer(root: string, args: string[], env: Record<string, string | undefined> = {}): Promise<CliRun> {
   const out: string[] = [];
   const err: string[] = [];
   const code = await runCli([...args, "--root", root], {
     cwd: root,
-    env: { SL_NOW: FIXED_NOW, ...env },
+    env: { SEMLAYER_NOW: FIXED_NOW, ...env },
     out: (t) => out.push(t),
     err: (t) => err.push(t),
   });
@@ -44,17 +44,17 @@ export function tempRoot(): { root: string; dir: string; cleanup: () => void } {
 
 // Initializes a project and returns its root.
 export async function initProject(root: string, name = "test"): Promise<void> {
-  const r = await sl(root, ["init", "--name", name]);
+  const r = await semlayer(root, ["init", "--name", name]);
   if (r.code !== 0) throw new Error(r.err);
 }
 
-// The owner's yes in a test copy: sl approve approves again each of `refs`, by default every approved
+// The owner's yes in a test copy: semlayer approve approves again each of `refs`, by default every approved
 // item the access evaluator treats as a draft because it changed since its approval. Throws unless
 // each is approved and current afterwards. Returns the refs it approved.
 export async function reapprove(root: string, refs: string[] = evaluateAccess(root).changed_since_approval): Promise<string[]> {
   for (const ref of refs) {
     const r = await approveWithYes(root, ["--target", ref, "--by", "Test Owner"]);
-    if (r.code !== 0) throw new Error(`sl approve --target ${ref}: ${r.err}`);
+    if (r.code !== 0) throw new Error(`semlayer approve --target ${ref}: ${r.err}`);
   }
   const left = evaluateAccess(root).changed_since_approval.filter((r) => refs.includes(r));
   if (left.length) throw new Error(`still changed since approval: ${left.join(", ")}`);
@@ -69,7 +69,7 @@ export function expectRefusedAsChanged(r: CompileResult, source: string, field: 
   if (r.ok) return;
   expect([...new Set(r.refusals.map((x) => `${x.code} ${x.ref}`))]).toEqual([`not_visible ${field}`]);
   for (const x of r.refusals) {
-    expect(x.message).toContain(`${CHANGED_SINCE_APPROVAL}: sl readback --targets ${source}.${field}, then sl approve --target ${source}.${field} --by "<owner>" after the owner's yes`);
+    expect(x.message).toContain(`${CHANGED_SINCE_APPROVAL}: semlayer readback --targets ${source}.${field}, then semlayer approve --target ${source}.${field} --by "<owner>" after the owner's yes`);
     expect(x.message).not.toContain("may not see");
     expect(x).toMatchObject({ reasons: ["draft"], awaits: [`${source}.${field}`] });
   }
@@ -108,15 +108,15 @@ export function isLocalPg(url: string): boolean {
   return host === "" || host.startsWith("/") || LOCAL_HOSTS.has(host);
 }
 
-// Throws unless `url` reaches a local Postgres or SL_TEST_ALLOW_REMOTE=1 is set. Every live test
+// Throws unless `url` reaches a local Postgres or SEMLAYER_TEST_ALLOW_REMOTE=1 is set. Every live test
 // calls it before it creates or drops a schema, so the suite never drops schemas in a remote
 // database that PG_URL happens to name.
 export function assertLocalPg(url: string | undefined, env: Record<string, string | undefined> = process.env): void {
   if (!url) throw new Error("PG_URL is not set.");
-  if (env.SL_TEST_ALLOW_REMOTE === "1" || isLocalPg(url)) return;
+  if (env.SEMLAYER_TEST_ALLOW_REMOTE === "1" || isLocalPg(url)) return;
   throw new Error(
     "PG_URL does not point at localhost, 127.0.0.1, ::1 or a unix socket; live tests create and drop schemas there. " +
-      "Point it at a scratch server (scripts/pg-local.sh), or set SL_TEST_ALLOW_REMOTE=1 to run them against it anyway.",
+      "Point it at a scratch server (scripts/pg-local.sh), or set SEMLAYER_TEST_ALLOW_REMOTE=1 to run them against it anyway.",
   );
 }
 
@@ -135,17 +135,17 @@ export interface ReplyOptions {
 }
 
 // Reads targets back and records the owner's answer to each item, as the skill does before
-// sl approve; returns the readback id.
+// semlayer approve; returns the readback id.
 export async function recordReply(root: string, targets: string | string[], opts: ReplyOptions = {}): Promise<string> {
-  const env = opts.now ? { SL_NOW: opts.now } : {};
-  const rb = await sl(root, ["readback", "--targets", ([] as string[]).concat(targets).join(","), "--json"], env);
+  const env = opts.now ? { SEMLAYER_NOW: opts.now } : {};
+  const rb = await semlayer(root, ["readback", "--targets", ([] as string[]).concat(targets).join(","), "--json"], env);
   if (rb.code !== 0) throw new Error(rb.err);
   const { readback_id, items } = rb.json<{ readback_id: string; items: { n: number }[] }>();
   const verdict = opts.verdict === undefined ? "yes" : opts.verdict;
   for (const item of items) {
     const args = ["reply", "--readback", readback_id, "--item", String(item.n), "--text", "Yes, that's right.", "--by", opts.by ?? "Dana"];
     if (verdict !== null) args.push("--verdict", verdict);
-    const r = await sl(root, args, env);
+    const r = await semlayer(root, args, env);
     if (r.code !== 0) throw new Error(r.err);
   }
   return readback_id;
@@ -158,16 +158,16 @@ export function refsUnder(root: string, ref: string): string[] {
   return [ref, ...(["dimensions", "measures", "joins"] as const).flatMap((k) => (m[k] ?? []).map((f) => `${ref}.${f.name}`))];
 }
 
-// sl approve as the skill runs it: first the owner's yes to the target (and, with --recursive, to
+// semlayer approve as the skill runs it: first the owner's yes to the target (and, with --recursive, to
 // every field of the model) is read back and recorded, by --by (default Dana).
 export async function approveWithYes(root: string, args: string[], opts: Omit<ReplyOptions, "verdict"> = {}): Promise<CliRun> {
   const at = (flag: string) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined);
   const target = at("--target");
   if (target && !args.includes("--revoke")) await recordReply(root, args.includes("--recursive") ? refsUnder(root, target) : target, { by: at("--by")?.trim() || "Dana", ...opts });
-  return sl(root, ["approve", ...args]);
+  return semlayer(root, ["approve", ...args]);
 }
 
-// sl goldens confirm as the skill runs it: first the golden is read back with the same --tolerance,
+// semlayer goldens confirm as the skill runs it: first the golden is read back with the same --tolerance,
 // --results and --plan, and the owner's answer recorded, by --by (default Dana). With --emit-sql
 // nothing is recorded, so no readback is made.
 export async function confirmWithYes(root: string, args: string[], opts: ReplyOptions = {}, env: Record<string, string | undefined> = {}): Promise<CliRun> {
@@ -175,15 +175,15 @@ export async function confirmWithYes(root: string, args: string[], opts: ReplyOp
   const name = at("--name");
   if (name && !args.includes("--emit-sql")) {
     const pass = ["--tolerance", "--results", "--plan"].flatMap((f) => (at(f) === undefined ? [] : [f, at(f)!]));
-    const rb = await sl(root, ["readback", "--targets", `golden:${name}`, ...pass, "--json"], { ...env, ...(opts.now ? { SL_NOW: opts.now } : {}) });
+    const rb = await semlayer(root, ["readback", "--targets", `golden:${name}`, ...pass, "--json"], { ...env, ...(opts.now ? { SEMLAYER_NOW: opts.now } : {}) });
     if (rb.code === 0) {
       const id = rb.json<{ readback_id: string }>().readback_id;
       const verdict = opts.verdict === undefined ? "yes" : opts.verdict;
       const reply = ["reply", "--readback", id, "--item", "1", "--text", "Yes, those rows match.", "--by", opts.by ?? (at("--by")?.trim() || "Dana")];
       if (verdict !== null) reply.push("--verdict", verdict);
-      const r = await sl(root, reply, opts.now ? { SL_NOW: opts.now } : {});
+      const r = await semlayer(root, reply, opts.now ? { SEMLAYER_NOW: opts.now } : {});
       if (r.code !== 0) throw new Error(r.err);
     }
   }
-  return sl(root, ["goldens", "confirm", ...args], env);
+  return semlayer(root, ["goldens", "confirm", ...args], env);
 }

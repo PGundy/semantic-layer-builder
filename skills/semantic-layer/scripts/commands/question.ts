@@ -18,17 +18,17 @@ function holderOf(root: string, ref: string): Located {
   return role ? { ref, kind: "access", ...role } : locate(root, ref);
 }
 
-// sl question add: appends an open question to a model's open_questions (a field's goes to its
+// semlayer question add: appends an open question to a model's open_questions (a field's goes to its
 // model, starting "<field>: "), to access.yaml's top-level open_questions, or to one role's.
 async function add(ref: string | undefined, values: OptionValues, ctx: CommandContext): Promise<number> {
   const raw = str(values, "text");
-  if (!ref || raw === undefined) throw new UserError('Usage: sl question add <source.model | source.model.field | access | access.roles.<role>> --text "<question>".');
-  for (const flag of ["index", "match", "by", "answers"]) if (str(values, flag) !== undefined) throw new UserError(`sl question add takes no --${flag}; that flag is for sl question resolve.`);
+  if (!ref || raw === undefined) throw new UserError('Usage: semlayer question add <source.model | source.model.field | access | access.roles.<role>> --text "<question>".');
+  for (const flag of ["index", "match", "by", "answers"]) if (str(values, flag) !== undefined) throw new UserError(`semlayer question add takes no --${flag}; that flag is for semlayer question resolve.`);
   const text = oneLine(raw);
   if (!text) throw new UserError("--text is empty; write the question as the owner should read it.");
   const loc = holderOf(ctx.root, ref);
   if (loc.kind === "metric")
-    throw new UserError("A metric has no open questions; ask it on the model of one of its measures (sl question add <source.model> --text ...).");
+    throw new UserError("A metric has no open questions; ask it on the model of one of its measures (semlayer question add <source.model> --text ...).");
   const field = loc.kind === "model" || loc.kind === "access" ? undefined : String(loc.item.name);
   const question = field && !text.startsWith(`${field}: `) ? `${field}: ${text}` : text;
   const fileRef = field ? ref.split(".").slice(0, 2).join(".") : ref;
@@ -37,7 +37,7 @@ async function add(ref: string | undefined, values: OptionValues, ctx: CommandCo
   const result = { ref, question, open_questions: current.includes(question) ? current : [...current, question] };
   if (current.includes(question)) {
     if (ctx.json) ctx.out(formatJson({ changed: false, file: relFile(ctx.root, loc.file), reapprove: [], ...result }));
-    else ctx.out(`${fileRef} already has that open question; nothing changed. Next: sl status.`);
+    else ctx.out(`${fileRef} already has that open question; nothing changed. Next: semlayer status.`);
     return 0;
   }
   const outcome = commitEdit(ctx.root, loc.file, `add an open question to ${fileRef}`, (doc) => {
@@ -51,13 +51,13 @@ async function add(ref: string | undefined, values: OptionValues, ctx: CommandCo
     ctx.out(formatJson({ ...outcome, ...result }));
     return 0;
   }
-  ctx.out(`Added an open question to ${fileRef} in ${outcome.file}: ${question}\nAsk the owner; sl status lists the open questions. Next: sl status.`);
+  ctx.out(`Added an open question to ${fileRef} in ${outcome.file}: ${question}\nAsk the owner; semlayer status lists the open questions. Next: semlayer status.`);
   return 0;
 }
 
-const RESOLVE_USAGE = 'Usage: sl question resolve <source.model | source.model.field | access | access.roles.<role>> (--index <n> | --match "<text>") --text "<the owner\'s answer>" --by "<owner>".';
+const RESOLVE_USAGE = 'Usage: semlayer question resolve <source.model | source.model.field | access | access.roles.<role>> (--index <n> | --match "<text>") --text "<the owner\'s answer>" --by "<owner>".';
 const ANSWERS_USAGE =
-  'Usage: sl question resolve --answers <file | -> holding {"by": "<owner>", "answers": [{"target": "<ref>", "match": "<question text>", "text": "<the owner\'s answer>"}, ' +
+  'Usage: semlayer question resolve --answers <file | -> holding {"by": "<owner>", "answers": [{"target": "<ref>", "match": "<question text>", "text": "<the owner\'s answer>"}, ' +
   '{"target": "<ref>", "index": <n>, "text": "<the owner\'s answer>"}]}.';
 
 // One open question picked for resolving: where it is held and its place in that list.
@@ -71,10 +71,10 @@ interface Picked {
   pos: number;
 }
 
-// The open question of `ref` that --index or --match picks, as sl question resolve picks it.
+// The open question of `ref` that --index or --match picks, as semlayer question resolve picks it.
 function pickQuestion(root: string, ref: string, index: string | undefined, match: string | undefined): Picked {
   const loc = holderOf(root, ref);
-  if (loc.kind === "metric") throw new UserError("A metric has no open questions; they are on the models of its measures (sl status lists them).");
+  if (loc.kind === "metric") throw new UserError("A metric has no open questions; they are on the models of its measures (semlayer status lists them).");
   const field = loc.kind === "model" || loc.kind === "access" ? undefined : String(loc.item.name);
   const fileRef = field ? ref.split(".").slice(0, 2).join(".") : ref;
   const holder = field ? (loc.model as unknown as Record<string, unknown>) : loc.item;
@@ -82,7 +82,7 @@ function pickQuestion(root: string, ref: string, index: string | undefined, matc
   const candidates = current.map((q, pos) => ({ q, pos })).filter((c) => !field || c.q.startsWith(`${field}: `));
   const listed = candidates.map((c, i) => `${i + 1}. ${plainText(c.q)}`).join("\n");
   const which = field ? `${fileRef} has no open question for ${field}` : `${fileRef} has no open questions`;
-  if (!candidates.length) throw new UserError(`${which}; nothing to resolve. Run sl status to see the open questions.`);
+  if (!candidates.length) throw new UserError(`${which}; nothing to resolve. Run semlayer status to see the open questions.`);
   let picked: { q: string; pos: number }[];
   if (index !== undefined) {
     const n = /^\d+$/.test(index.trim()) ? Number(index.trim()) : 0;
@@ -116,7 +116,7 @@ function removeQuestions(root: string, picks: Picked[]): (doc: Document) => void
   };
 }
 
-// sl question resolve: removes one open question (for source.model.field, one of the model's that
+// semlayer question resolve: removes one open question (for source.model.field, one of the model's that
 // starts "<field>: ") and records it with the owner's answer in the ledger. The YAML edit validates
 // first; the ledger line is appended after it is written, and a failed append puts the file back.
 async function resolveQuestion(ref: string | undefined, values: OptionValues, ctx: CommandContext): Promise<number> {
@@ -152,12 +152,12 @@ async function resolveQuestion(ref: string | undefined, values: OptionValues, ct
   }
   const lines = [`Resolved an open question of ${fileRef} in ${outcome.file}: ${plainText(q)}`, `Recorded the owner's answer as ${entry.id} in ${LEDGER_FILE}.`];
   if (redacted) lines.push("Warning: the answer held what looks like a credential; it was stored as [redacted]. Ask the owner to change that credential.");
-  lines.push(`If the answer changes the layer, make that change with a typed edit (sl set, sl tag, sl question add) and read it back with sl readback --targets ${fileRef}. Next: sl status.`);
+  lines.push(`If the answer changes the layer, make that change with a typed edit (semlayer set, semlayer tag, semlayer question add) and read it back with semlayer readback --targets ${fileRef}. Next: semlayer status.`);
   ctx.out(lines.join("\n"));
   return 0;
 }
 
-// sl question resolve --answers: every entry is picked and checked first, all or nothing; then each
+// semlayer question resolve --answers: every entry is picked and checked first, all or nothing; then each
 // file's questions are removed in one validated edit and one ledger line per question is appended
 // in one write, each the line the single form writes. A failed append puts every file back.
 async function resolveAnswers(file: string, ctx: CommandContext): Promise<number> {
@@ -217,24 +217,24 @@ async function resolveAnswers(file: string, ctx: CommandContext): Promise<number
   for (const p of picks) lines.push(`  - ${p.fileRef}: ${plainText(p.q)}`);
   if (redacted) lines.push("Warning: an answer held what looks like a credential; it was stored as [redacted]. Ask the owner to change that credential.");
   const refs = [...new Set(picks.map((p) => p.fileRef))];
-  lines.push(`If an answer changes the layer, make those changes with one sl apply --file - and read them back with sl readback --targets ${refs.join(",")}. Next: sl status.`);
+  lines.push(`If an answer changes the layer, make those changes with one semlayer apply --file - and read them back with semlayer readback --targets ${refs.join(",")}. Next: semlayer status.`);
   ctx.out(lines.join("\n"));
   return 0;
 }
 
-// One open question as sl question list gives it: the ref that holds it (a model, access or
-// access.roles.<role>) and its place in that list, which sl question resolve --index takes.
+// One open question as semlayer question list gives it: the ref that holds it (a model, access or
+// access.roles.<role>) and its place in that list, which semlayer question resolve --index takes.
 interface Listed {
   target: string;
   index: number;
   question: string;
 }
 
-// sl question list [<target>]: every open question of the layer, or of one source, model, field
+// semlayer question list [<target>]: every open question of the layer, or of one source, model, field
 // (the model's questions that start "<field>: "), access or role, each with its target and index.
 async function listQuestions(ref: string | undefined, values: OptionValues, ctx: CommandContext): Promise<number> {
-  for (const flag of ["text", "index", "match", "by", "answers"]) if (str(values, flag) !== undefined) throw new UserError(`sl question list takes no --${flag}. Usage: sl question list [<source | source.model | source.model.field | access | access.roles.<role>>].`);
-  // A target with parts names a model, field or role, which must exist as sl question resolve reads it.
+  for (const flag of ["text", "index", "match", "by", "answers"]) if (str(values, flag) !== undefined) throw new UserError(`semlayer question list takes no --${flag}. Usage: semlayer question list [<source | source.model | source.model.field | access | access.roles.<role>>].`);
+  // A target with parts names a model, field or role, which must exist as semlayer question resolve reads it.
   if (ref?.includes(".")) holderOf(ctx.root, ref);
   const out: Listed[] = [];
   const add = (target: string, list: unknown, keep: (q: string) => boolean = () => true) =>
@@ -242,10 +242,10 @@ async function listQuestions(ref: string | undefined, values: OptionValues, ctx:
   const parts = ref?.split(".") ?? [];
   const sources = listSourceNames(ctx.root);
   if (ref === undefined || (parts[0] !== "access" && parts.length <= 3)) {
-    if (ref !== undefined && !sources.includes(parts[0]!)) throw new UserError(`No source "${parts[0]}". Sources: ${sources.join(", ") || "none"}. Run sl question list with no target to list every open question.`);
+    if (ref !== undefined && !sources.includes(parts[0]!)) throw new UserError(`No source "${parts[0]}". Sources: ${sources.join(", ") || "none"}. Run semlayer question list with no target to list every open question.`);
     for (const s of ref === undefined ? sources : [parts[0]!]) {
       const models = listModels(ctx.root, s).filter((l) => parts.length < 2 || stem(basename(l.path)) === parts[1]);
-      if (parts.length >= 2 && !models.length) throw new UserError(`No model "${parts[1]}" in source "${s}". Run sl status to list the models.`);
+      if (parts.length >= 2 && !models.length) throw new UserError(`No model "${parts[1]}" in source "${s}". Run semlayer status to list the models.`);
       for (const l of models) add(`${s}.${stem(basename(l.path))}`, l.model?.open_questions, parts.length === 3 ? (q) => q.startsWith(`${parts[2]}: `) : undefined);
     }
   }
@@ -263,12 +263,12 @@ async function listQuestions(ref: string | undefined, values: OptionValues, ctx:
   }
   const where = ref ?? "the layer";
   if (!out.length) {
-    ctx.out(`No open questions in ${where}. Next: sl next.`);
+    ctx.out(`No open questions in ${where}. Next: semlayer next.`);
     return 0;
   }
-  const lines = [`${out.length} open question${out.length === 1 ? "" : "s"} in ${where}, as target #index (the index sl question resolve takes):`];
+  const lines = [`${out.length} open question${out.length === 1 ? "" : "s"} in ${where}, as target #index (the index semlayer question resolve takes):`];
   for (const q of out) lines.push(`  ${q.target} #${q.index}: ${q.question}`);
-  lines.push(`Ask the owner. Next: record their answers in one sl question resolve --answers - holding {"by": "<owner>", "answers": [{"target": "<target>", "index": <index>, "text": "<the owner's answer>"}]}.`);
+  lines.push(`Ask the owner. Next: record their answers in one semlayer question resolve --answers - holding {"by": "<owner>", "answers": [{"target": "<target>", "index": <index>, "text": "<the owner's answer>"}]}.`);
   ctx.out(lines.join("\n"));
   return 0;
 }
@@ -286,7 +286,7 @@ const spec: CommandSpec = {
     "       question list [<source | source.model | source.model.field | access | access.roles.<role>>]\n" +
     '       question resolve <source.model | source.model.field | access | access.roles.<role>> (--index <n> | --match "<text>") --text "<the owner\'s answer>" --by "<owner>"\n' +
     "       question resolve --answers <file | ->\n\n" +
-    "resolve removes the question from the file and appends it, with the owner's answer, to .sl/ledger.jsonl.\n" +
+    "resolve removes the question from the file and appends it, with the owner's answer, to .semlayer/ledger.jsonl.\n" +
     "--answers resolves every question one owner turn answered: the file, or stdin with -, holds\n" +
     '  {"by": "<owner>", "answers": [{"target": "<ref>", "match": "<question text>", "text": "<the owner\'s answer>"},\n' +
     '                                {"target": "<ref>", "index": <n>, "text": "<the owner\'s answer>"}]}\n' +
@@ -300,7 +300,7 @@ const spec: CommandSpec = {
     loadProject(ctx.root);
     const [sub, ref, ...extra] = positionals;
     const run = sub ? SUBCOMMANDS[sub] : undefined;
-    if (!run || extra.length) throw new UserError(`Usage: sl question ${Object.keys(SUBCOMMANDS).join("|")} <ref> --text "<text>"; resolve also takes --index <n> or --match "<text>", and --by "<owner>", or --answers <file | -> alone; list takes an optional <ref>.`);
+    if (!run || extra.length) throw new UserError(`Usage: semlayer question ${Object.keys(SUBCOMMANDS).join("|")} <ref> --text "<text>"; resolve also takes --index <n> or --match "<text>", and --by "<owner>", or --answers <file | -> alone; list takes an optional <ref>.`);
     return run(ref, values, ctx);
   },
 };

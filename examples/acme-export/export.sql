@@ -1,4 +1,4 @@
--- Schema export for PostgreSQL (12 or later), for `sl import`.
+-- Schema export for PostgreSQL (12 or later), for `semlayer import`.
 --
 -- Reads only the system catalog (pg_catalog): no table data is read and nothing is written.
 -- Returns one row per column, with its table's type, comment and row estimate, its primary
@@ -9,10 +9,10 @@
 --   psql -X "$DATABASE_URL" --csv -f postgres.sql > schema.csv
 -- (-X skips ~/.psqlrc, whose settings, such as \pset null, would change the CSV.)
 -- Then import it:
---   sl import --source <source> --file schema.csv
+--   semlayer import --source <source> --file schema.csv
 --
--- Restrict schemas: uncomment the line marked sl:schema-filter below and list the schemas,
--- or print this query with the filter applied: sl export-sql --dialect postgres --schemas a,b
+-- Restrict schemas: uncomment the line marked semlayer:schema-filter below and list the schemas,
+-- or print this query with the filter applied: semlayer export-sql --dialect postgres --schemas a,b
 --
 -- row_count is the planner's estimate (pg_class.reltuples, kept by ANALYZE and autovacuum);
 -- it is empty for views and for tables never analyzed. Before PostgreSQL 14 a table never
@@ -41,7 +41,7 @@ with rel as (
     and n.nspname not in ('pg_catalog', 'information_schema')
     and n.nspname !~ '^pg_toast'
     and n.nspname !~ '^pg_temp'
-    and n.nspname in ('acme')  -- sl:schema-filter
+    and n.nspname in ('acme')  -- semlayer:schema-filter
 ),
 pk as (
   select con.conrelid as oid, k.attnum, k.ord as pk_ordinal

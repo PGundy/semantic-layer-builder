@@ -1,6 +1,6 @@
-// What the third exit walkthrough still met (docs/PRD-hardening.md HR-15): a refusal or an sl next
-// step that names one typed edit gives it as an entry of the turn's one sl apply; the readback gate's
-// step asks the owner plain questions with the apply input in action.stdin; sl draft describes plain
+// What the third exit walkthrough still met (docs/PRD-hardening.md HR-15): a refusal or a semlayer next
+// step that names one typed edit gives it as an entry of the turn's one semlayer apply; the readback gate's
+// step asks the owner plain questions with the apply input in action.stdin; semlayer draft describes plain
 // counts; the way out of protection is named. On synthetic DuckDB data and copies of examples/acme.
 import { describe, expect, test } from "bun:test";
 import { cpSync, readFileSync, writeFileSync } from "node:fs";
@@ -8,16 +8,16 @@ import { join } from "node:path";
 import { itemHash } from "../skills/semantic-layer/scripts/lib/approval-hash.ts";
 import type { NextAction } from "../skills/semantic-layer/scripts/lib/next.ts";
 import { UNPROTECT } from "../skills/semantic-layer/scripts/lib/output.ts";
-import { duckdbSource, initProject, sl, tempDir, tempRoot } from "./helpers.ts";
+import { duckdbSource, initProject, semlayer, tempDir, tempRoot } from "./helpers.ts";
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 
 async function ok(root: string, args: string[]): Promise<string> {
-  const r = await sl(root, args);
+  const r = await semlayer(root, args);
   expect({ args, code: r.code, err: r.err }).toEqual({ args, code: 0, err: "" });
   return r.out;
 }
-const next = async (root: string) => (await sl(root, ["next", "--json"])).json<NextAction>();
+const next = async (root: string) => (await semlayer(root, ["next", "--json"])).json<NextAction>();
 
 // A shop with one products table whose contact_code looks like personal data by its name.
 async function shop(): Promise<{ root: string; dir: string }> {
@@ -29,7 +29,7 @@ async function shop(): Promise<{ root: string; dir: string }> {
     "CREATE TABLE shop.products (product_id INTEGER PRIMARY KEY, contact_code VARCHAR, category VARCHAR, list_price DECIMAL(12,2))",
     "INSERT INTO shop.products SELECT i, 'C-' || (i % 9), CASE WHEN i % 2 = 0 THEN 'home' ELSE 'garden' END, (i * 7 % 90) / 10.0 FROM range(1, 40) t(i)",
   ]);
-  // Follow sl next through intake, profile and draft until it reaches the interview.
+  // Follow semlayer next through intake, profile and draft until it reaches the interview.
   let a = await next(root);
   for (let i = 0; i < 12 && a.phase !== "interview"; i++) {
     expect(a.kind, `${a.phase}: ${a.why}`).toBe("run");
@@ -39,25 +39,25 @@ async function shop(): Promise<{ root: string; dir: string }> {
   return { root, dir };
 }
 
-describe("item 1: a typed edit a message names goes in the turn's sl apply", () => {
-  test("sl check-rule's ignored-column refusal gives the ignore-column entry, and the apply with it and the rule runs", async () => {
+describe("item 1: a typed edit a message names goes in the turn's semlayer apply", () => {
+  test("semlayer check-rule's ignored-column refusal gives the ignore-column entry, and the apply with it and the rule runs", async () => {
     const { root, dir } = tempRoot();
     cpSync(ACME, root, { recursive: true });
     const customers = join(root, "models", "warehouse", "customers.yaml");
     writeFileSync(customers, readFileSync(customers, "utf8").replace("dimensions:\n", "ignored_columns:\n  - email\ndimensions:\n"));
     const rule = "customer.email like '%@example-test.com'";
-    const r = await sl(root, ["check-rule", "--source", "warehouse", "--model", "orders", "--filter", rule]);
+    const r = await semlayer(root, ["check-rule", "--source", "warehouse", "--model", "orders", "--filter", rule]);
     expect(r.code).toBe(1);
     const entry = ["ignore-column", "--source", "warehouse", "--model", "customers", "--column", "email", "--remove"];
-    expect(r.err).toContain(`with this entry in the turn's sl apply --file -, ahead of the edit that reads it: [${entry.map((w) => JSON.stringify(w)).join(", ")}]`);
-    expect(r.err).toContain("(on its own: sl ignore-column --source warehouse --model customers --column email --remove)");
+    expect(r.err).toContain(`with this entry in the turn's semlayer apply --file -, ahead of the edit that reads it: [${entry.map((w) => JSON.stringify(w)).join(", ")}]`);
+    expect(r.err).toContain("(on its own: semlayer ignore-column --source warehouse --model customers --column email --remove)");
     // The entry and the edit that reads the column, in one apply: no command of their own.
     const file = join(dir, "turn.json");
     writeFileSync(file, JSON.stringify({ edits: [entry, ["add-field", "warehouse.orders", "--kind", "measure", "--name", "test_orders", "--agg", "count", "--filter", rule, "--description", "Orders by test accounts."]] }));
     await ok(root, ["apply", "--file", file]);
   });
 
-  test("an sl next step that names one typed edit gives it as the apply entry", async () => {
+  test("a semlayer next step that names one typed edit gives it as the apply entry", async () => {
     const { root } = tempRoot();
     cpSync(ACME, root, { recursive: true });
     await ok(root, ["approve", "--target", "warehouse.orders", "--revoke"]);
@@ -65,14 +65,14 @@ describe("item 1: a typed edit a message names goes in the turn's sl apply", () 
     await ok(root, ["reply", "--readback", rb.readback_id, "--item", "1", "--text", "Orders should exclude test accounts.", "--verdict", "change", "--by", "Dana"]);
     const a = await next(root);
     expect(a).toMatchObject({ kind: "ask_owner", action: { command: "set", args: ["warehouse.orders", "<key>", "<value>"] } });
-    expect(a.why).toContain(`Record it with this entry in the turn's sl apply --file -, beside the turn's other edits: ["set", "warehouse.orders", "<key>", "<value>"] (on its own: sl set warehouse.orders <key> <value>).`);
+    expect(a.why).toContain(`Record it with this entry in the turn's semlayer apply --file -, beside the turn's other edits: ["set", "warehouse.orders", "<key>", "<value>"] (on its own: semlayer set warehouse.orders <key> <value>).`);
     // The owner hears the question, not the apply.
-    expect(a.ask_owner!.text).not.toContain("sl apply");
+    expect(a.ask_owner!.text).not.toContain("semlayer apply");
   });
 });
 
 describe("item 1: refusals that name another typed edit give its apply entry", () => {
-  test("sl set's owned keys, a taken field or metric name, and a removal that rename suits", async () => {
+  test("semlayer set's owned keys, a taken field or metric name, and a removal that rename suits", async () => {
     const { root } = tempRoot();
     cpSync(ACME, root, { recursive: true });
     const cases: [string[], string][] = [
@@ -84,9 +84,9 @@ describe("item 1: refusals that name another typed edit give its apply entry", (
       [["remove-metric", "metric:average_order_value", "--force"], '["rename", "metric:average_order_value", "<new_name>"]'],
     ];
     for (const [args, entry] of cases) {
-      const r = await sl(root, args);
+      const r = await semlayer(root, args);
       expect(r.code, args.join(" ")).toBe(1);
-      expect(r.err, args.join(" ")).toContain(`in the turn's sl apply --file -: ${entry}`);
+      expect(r.err, args.join(" ")).toContain(`in the turn's semlayer apply --file -: ${entry}`);
     }
   });
 });
@@ -99,7 +99,7 @@ describe("items 3 and 4: the readback gate's step and drafted counts", () => {
     const text = a.ask_owner!.text;
     expect(text).toStartWith("Before I read these back for your sign-off, I need your words:\n1. ");
     expect(text).toContain("What is one row of products?");
-    for (const agentWords of ["<", "{", "[", "sl apply", "sl "]) expect(text).not.toContain(agentWords);
+    for (const agentWords of ["<", "{", "[", "semlayer apply", "semlayer "]) expect(text).not.toContain(agentWords);
     const edits = (JSON.parse(a.action.stdin!) as { edits: string[][] }).edits;
     // The same edits the why names.
     expect(a.why).toContain(a.action.stdin!);
@@ -123,21 +123,21 @@ describe("items 3 and 4: the readback gate's step and drafted counts", () => {
 });
 
 describe("item 5: the way out of protection is named", () => {
-  test("sl run's note and a readback name it, and tagging the field public in one apply shows the values", async () => {
+  test("semlayer run's note and a readback name it, and tagging the field public in one apply shows the values", async () => {
     const { root, dir } = await shop();
-    const run = await sl(root, ["run", "--source", "wh", "--sql", "select contact_code from shop.products order by product_id limit 1"]);
+    const run = await semlayer(root, ["run", "--source", "wh", "--sql", "select contact_code from shop.products order by product_id limit 1"]);
     expect(run.out).toContain("[protected]");
     expect(run.out).toContain(UNPROTECT);
-    const rb = await sl(root, ["readback", "--targets", "wh.products.contact_code"]);
+    const rb = await semlayer(root, ["readback", "--targets", "wh.products.contact_code"]);
     expect(rb.code).toBe(0);
     expect(rb.out).toContain("protected, so counts only and no values");
     expect(rb.out).toEndWith(UNPROTECT);
-    expect((await sl(root, ["readback", "--targets", "wh.products.contact_code", "--json"])).json<{ protected_note: string }>().protected_note).toBe(UNPROTECT);
+    expect((await semlayer(root, ["readback", "--targets", "wh.products.contact_code", "--json"])).json<{ protected_note: string }>().protected_note).toBe(UNPROTECT);
     // The owner says it is not personal data: the two entries the note names, in one apply.
     const file = join(dir, "unprotect.json");
     writeFileSync(file, JSON.stringify({ edits: [["tag", "wh.products.contact_code", "pii", "--remove"], ["tag", "wh.products.contact_code", "public"]] }));
     await ok(root, ["apply", "--file", file]);
-    const shown = await sl(root, ["run", "--source", "wh", "--sql", "select contact_code from shop.products order by product_id limit 1"]);
+    const shown = await semlayer(root, ["run", "--source", "wh", "--sql", "select contact_code from shop.products order by product_id limit 1"]);
     expect(shown.out).toContain("C-1");
     expect(shown.out).not.toContain("[protected]");
   });

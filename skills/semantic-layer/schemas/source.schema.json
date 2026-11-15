@@ -54,7 +54,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "DuckDB only: statements run on every connection, in order. Each is one of an allowlist that sl validate checks and the DuckDB adapter enforces: LOAD or INSTALL of a named core extension, SET of a known safe setting, or CREATE SECRET from a provider chain or the environment, never literal keys."
+          "description": "DuckDB only: statements run on every connection, in order. Each is one of an allowlist that semlayer validate checks and the DuckDB adapter enforces: LOAD or INSTALL of a named core extension, SET of a known safe setting, or CREATE SECRET from a provider chain or the environment, never literal keys."
         },
         "views": {
           "type": "object",
@@ -87,7 +87,7 @@
             "string",
             "null"
           ],
-          "description": "Export mode: why a connection was not possible, in the owner's words. sl validate warns when it is empty in export mode."
+          "description": "Export mode: why a connection was not possible, in the owner's words. semlayer validate warns when it is empty in export mode."
         },
         "schemas": {
           "type": "array",
@@ -95,7 +95,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "The only schemas read. A plain identifier; for BigQuery a dataset or project.dataset, for DuckDB an attached database's database.schema. sl validate errors on a duplicate and on a name that is not one, and warns on an empty list."
+          "description": "The only schemas read. A plain identifier; for BigQuery a dataset or project.dataset, for DuckDB an attached database's database.schema. semlayer validate errors on a duplicate and on a name that is not one, and warns on an empty list."
         },
         "export": {
           "type": "object",
@@ -138,7 +138,7 @@
         "exclude_reasons": {
           "type": "object",
           "additionalProperties": { "type": "string", "minLength": 1 },
-          "description": "Why an exclude pattern leaves tables out, by pattern, in the owner's words; sl scope --exclude <p> --reason <text> --write records it and sl scope --explain shows it."
+          "description": "Why an exclude pattern leaves tables out, by pattern, in the owner's words; semlayer scope --exclude <p> --reason <text> --write records it and semlayer scope --explain shows it."
         },
         "tables_file": {
           "type": "string",
@@ -166,7 +166,7 @@
     },
     "draft": {
       "type": "object",
-      "description": "Settings sl draft remembers for this source.",
+      "description": "Settings semlayer draft remembers for this source.",
       "additionalProperties": false,
       "properties": {
         "strip_prefixes": {

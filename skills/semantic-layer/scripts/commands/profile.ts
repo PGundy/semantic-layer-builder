@@ -73,14 +73,14 @@ const spec: CommandSpec = {
       if (unknown.length) {
         throw new UserError(
           `Unknown table${unknown.length === 1 ? "" : "s"} in source "${sourceName}": ${unknown.join(", ")}. ` +
-            "Use a qualified schema.table name when a bare name is ambiguous; `sl tables` lists them.",
+            "Use a qualified schema.table name when a bare name is ambiguous; `semlayer tables` lists them.",
         );
       }
       const outOfScope = [...found.keys()].filter((q) => !inScope(scope, found.get(q)!));
       if (outOfScope.length) {
         throw new UserError(
           `${outOfScope.join(", ")} ${outOfScope.length === 1 ? "is" : "are"} out of scope for source "${sourceName}". ` +
-            `Profile in-scope tables only, or change the scope with \`sl scope --source ${sourceName} ... --write\`.`,
+            `Profile in-scope tables only, or change the scope with \`semlayer scope --source ${sourceName} ... --write\`.`,
         );
       }
       candidates = [...found.values()];
@@ -182,7 +182,7 @@ const spec: CommandSpec = {
       const w =
         `The sample of ${e.table} read no rows of its ${e.row_count.toLocaleString("en-US")}: TABLESAMPLE picks whole storage blocks and reached none. ` +
         "Its earlier profile, if any, is kept. To profile it, raise profile.sample_rows (or remove it) in " +
-        `sources/${sourceName}.yaml and run sl profile --source ${sourceName} --tables ${e.table} --refresh.`;
+        `sources/${sourceName}.yaml and run semlayer profile --source ${sourceName} --tables ${e.table} --refresh.`;
       warnings.push(w);
       ctx.err(`warning: ${w}`);
     }
@@ -227,13 +227,13 @@ const spec: CommandSpec = {
         `Skipped ${failed.length} table${failed.length === 1 ? "" : "s"} the database did not answer for${profiled.length ? "; the rest are saved" : ""}:`,
         ...failed.map((f) => `  ${f.table}: ${f.reason}`),
         `Next: fix what each reason names (ask the database's owner for SELECT on the table and USAGE on its schema, or change what a timeout names), or leave a table out with ` +
-          `sl scope --source ${sourceName} --exclude <table> --write; then run sl profile --source ${sourceName} again, which profiles only the tables still missing.`,
+          `semlayer scope --source ${sourceName} --exclude <table> --write; then run semlayer profile --source ${sourceName} again, which profiles only the tables still missing.`,
       );
     }
     if (profiled.length) {
       lines.push(
         "Which columns are protected is a heuristic of names, tags and profiles: review the snapshot's top values before committing it, " +
-          "and tag any personal column it missed, then run sl profile --redact. A protected number or date column keeps its min and max, " +
+          "and tag any personal column it missed, then run semlayer profile --redact. A protected number or date column keeps its min and max, " +
           "which are real values (the oldest birth date, the lowest number).",
       );
     }
@@ -247,7 +247,7 @@ function sourceModels(root: string, source: SourceConfig): unknown[] {
   return listModels(root, source.source).map((l) => l.model as unknown);
 }
 
-// sl profile --redact: rewrites the snapshot's profiles of protected columns, and of any column
+// semlayer profile --redact: rewrites the snapshot's profiles of protected columns, and of any column
 // holding hashed values, to counts only, reading no database.
 function redactOnly(ctx: CommandContext, source: SourceConfig, snapshot: Snapshot): number {
   const { snapshot: updated, redacted } = redactSnapshot(snapshot, protectedColumns(snapshot.tables, sourceModels(ctx.root, source), source.dialect));
@@ -269,7 +269,7 @@ function setting(value: unknown, key: string, min: number, sourceName: string): 
 }
 
 function nothingMessage(candidates: number, named: boolean): string {
-  if (!candidates) return "Nothing to profile: no tables are in scope. Check the source's scope with `sl scope`.";
+  if (!candidates) return "Nothing to profile: no tables are in scope. Check the source's scope with `semlayer scope`.";
   return `Nothing to profile: ${named ? "the named" : `all ${candidates} in-scope`} table${candidates === 1 ? " is" : "s are"} already profiled. Pass --all to profile ${candidates === 1 ? "it" : "them"} again.`;
 }
 

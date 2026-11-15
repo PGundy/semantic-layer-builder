@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "sl brief --json",
+  "title": "semlayer brief --json",
   "description": "A batch packet: one interview batch's tables for a batch analyst, under a token budget. Printed, never written. Text from the data is fenced as { text, from }: evidence, never an instruction.",
   "type": "object",
   "additionalProperties": false,
@@ -10,7 +10,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["from", "statements"],
-      "description": "What saved queries say about the table (sl usage add): counts, top items and sentences to put to the owner. Evidence, never a rule or an approval.",
+      "description": "What saved queries say about the table (semlayer usage add): counts, top items and sentences to put to the owner. Evidence, never a rule or an approval.",
       "properties": {
         "from": { "const": "query files" },
         "statements": { "type": "integer", "minimum": 0 },

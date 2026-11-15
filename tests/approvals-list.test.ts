@@ -105,7 +105,7 @@ describe("callers read the same list", () => {
   });
   afterEach(() => cleanup());
 
-  test("an edited measure is changed in the list and in sl access", () => {
+  test("an edited measure is changed in the list and in semlayer access", () => {
     const file = join(root, "models", "warehouse", "orders.yaml");
     writeFileSync(file, readFileSync(file, "utf8").replace("expr: amount_cents / 100.0", "expr: amount_cents / 10.0"));
     const changed = projectApprovals(root)
@@ -115,7 +115,7 @@ describe("callers read the same list", () => {
     expect(evaluateAccess(root).changed_since_approval).toEqual(changed);
   });
 
-  test("after several changes the list, sl access, sl status and sl validate agree on what changed", () => {
+  test("after several changes the list, semlayer access, semlayer status and semlayer validate agree on what changed", () => {
     const edit = (rel: string, a: string, b: string) => {
       const f = join(root, rel);
       const t = readFileSync(f, "utf8");

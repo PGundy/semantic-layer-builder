@@ -4,8 +4,8 @@ import { readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { FIXED_NOW, tempDir } from "../helpers.ts";
 
-// SL_PERF_CLI points the suite at another copy of sl.ts, such as the base branch's, to compare.
-export const SL = process.env.SL_PERF_CLI ?? join(import.meta.dir, "..", "..", "skills", "semantic-layer", "scripts", "sl.ts");
+// SEMLAYER_PERF_CLI points the suite at another copy of semlayer.ts, such as the base branch's, to compare.
+export const SEMLAYER = process.env.SEMLAYER_PERF_CLI ?? join(import.meta.dir, "..", "..", "skills", "semantic-layer", "scripts", "semlayer.ts");
 
 export interface Timed {
   code: number;
@@ -23,9 +23,9 @@ const PRELOAD = join(import.meta.dir, "rss-preload.ts");
 export async function timedSl(root: string, args: string[], env: Record<string, string> = {}): Promise<Timed> {
   const rssFile = join(tempDir("perf-rss"), "rss");
   const start = performance.now();
-  const proc = Bun.spawn(["bun", "--preload", PRELOAD, SL, ...args, "--root", root], {
+  const proc = Bun.spawn(["bun", "--preload", PRELOAD, SEMLAYER, ...args, "--root", root], {
     cwd: root,
-    env: { ...process.env, SL_NOW: FIXED_NOW, SL_PERF_RSS_FILE: rssFile, ...env },
+    env: { ...process.env, SEMLAYER_NOW: FIXED_NOW, SEMLAYER_PERF_RSS_FILE: rssFile, ...env },
     stdout: "pipe",
     stderr: "pipe",
   });

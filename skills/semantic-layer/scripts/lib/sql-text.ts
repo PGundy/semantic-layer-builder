@@ -2,7 +2,7 @@
 // text): a model's dimension and measure exprs and measure filters, a derived metric's expr and a
 // row filter. Each stays one expression the compiler can wrap in parentheses and combine with the
 // rest of the query, and only the compiler binds parameters, so a request's filter values never
-// reach a field's text. sl validate and the compiler report the same problems.
+// reach a field's text. semlayer validate and the compiler report the same problems.
 import { type Token, tokenize } from "./sql-guard.ts";
 import type { Dialect } from "./types.ts";
 

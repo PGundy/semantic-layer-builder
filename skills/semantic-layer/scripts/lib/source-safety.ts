@@ -2,7 +2,7 @@
 // configuration: a cloned or shared semantic directory runs its setup statements and views on the
 // machine of whoever opens the source. connection.setup is limited to an allowlist and each
 // connection.views relation must be one table expression; the DuckDB adapter refuses a source that
-// fails (assertSourceSafe) and sl validate reports it as an error (sourceSafetyIssues). Messages
+// fails (assertSourceSafe) and semlayer validate reports it as an error (sourceSafetyIssues). Messages
 // name where the problem is, never the statement, which may hold a secret.
 import { isAbsolute, resolve } from "node:path";
 import { UserError } from "./errors.ts";

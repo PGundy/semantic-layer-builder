@@ -20,7 +20,7 @@
       "properties": {
         "path": {
           "enum": ["connection", "export", "export_upgrade"],
-          "description": "connection: the project and one source exist; the skill agent carries on from sl status. export: the project exists and the owner's schema export of the views sits at shared/<source>-schema.csv, not yet imported. export_upgrade: as export, and the script later upgrades the source to the views as its connection."
+          "description": "connection: the project and one source exist; the skill agent carries on from semlayer status. export: the project exists and the owner's schema export of the views sits at shared/<source>-schema.csv, not yet imported. export_upgrade: as export, and the script later upgrades the source to the views as its connection."
         },
         "source": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
         "dialect": { "enum": ["duckdb"] },

@@ -7,15 +7,15 @@ import type { NextAction } from "../skills/semantic-layer/scripts/lib/next.ts";
 import { WHO_SEES_STATED } from "../skills/semantic-layer/scripts/lib/readback.ts";
 import type { AccessFile, Golden } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { approveWithYes, FIXED_NOW, sl, tempDir } from "./helpers.ts";
+import { approveWithYes, FIXED_NOW, semlayer, tempDir } from "./helpers.ts";
 
 // Typed commands for every access rule (docs/PRD-hardening.md HR-9), on copies of examples/acme
-// (synthetic data): sl add-attribute, add-role, add-restriction, add-row-filter, their remove-*
-// commands, sl set access <kind>:<name> <key>, and who-sees decided once, in the access phase.
+// (synthetic data): semlayer add-attribute, add-role, add-restriction, add-row-filter, their remove-*
+// commands, semlayer set access <kind>:<name> <key>, and who-sees decided once, in the access phase.
 
 const REPO = join(import.meta.dir, "..");
 const ACME = join(REPO, "examples", "acme", "semantic");
-const SL = join(REPO, "skills", "semantic-layer", "scripts", "sl.ts");
+const SEMLAYER = join(REPO, "skills", "semantic-layer", "scripts", "semlayer.ts");
 const CLOSURE = ["--via", "warehouse.sales_team_closure", "--manager", "manager_id", "--member", "member_id", "--user", "employee_id"];
 
 // The commands that rebuild the example's access.yaml: its attributes, roles, row filters and restriction.
@@ -53,14 +53,14 @@ function bare(): string {
 async function rebuilt(): Promise<string> {
   const root = bare();
   for (const args of REBUILD) {
-    const r = await sl(root, args);
-    if (r.code !== 0) throw new Error(`sl ${args.join(" ")}: ${r.err}`);
+    const r = await semlayer(root, args);
+    if (r.code !== 0) throw new Error(`semlayer ${args.join(" ")}: ${r.err}`);
   }
   return root;
 }
 
 async function ok(root: string, args: string[]): Promise<string> {
-  const r = await sl(root, args);
+  const r = await semlayer(root, args);
   expect({ args, code: r.code, err: r.err }).toEqual({ args, code: 0, err: "" });
   return r.out;
 }
@@ -68,14 +68,14 @@ async function ok(root: string, args: string[]): Promise<string> {
 // A refused edit: exit 1, the phrases in its message, and the file as it was.
 async function refused(root: string, args: string[], ...phrases: string[]): Promise<void> {
   const before = existsSync(join(root, "access.yaml")) ? text(root) : null;
-  const r = await sl(root, args);
+  const r = await semlayer(root, args);
   expect({ args, code: r.code }).toEqual({ args, code: 1 });
   for (const p of phrases) expect(r.err).toContain(p);
   expect(existsSync(join(root, "access.yaml")) ? text(root) : null).toBe(before);
 }
 
 describe("the Acme access.yaml rebuilt from nothing with the access commands", () => {
-  test("gives the same sl access answers as the example for the example's test users", async () => {
+  test("gives the same semlayer access answers as the example for the example's test users", async () => {
     // The users the example tests: each golden's role and user, the default audience, and two it describes.
     const goldens = readdirSync(join(ACME, "goldens")).map((f) => readYaml<Golden>(join(ACME, "goldens", f)));
     const users = new Map<string, string[]>([["default audience", []]]);
@@ -89,12 +89,12 @@ describe("the Acme access.yaml rebuilt from nothing with the access commands", (
     expect(users.size).toBeGreaterThanOrEqual(9);
 
     const root = await rebuilt();
-    expect((await sl(root, ["validate"])).code).toBe(0);
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
     expect(access(root)).toMatchObject({ status: "draft", mode: "open" });
     // The owner's yes to the whole file, then both are approved files a tool applies.
     expect((await approveWithYes(root, ["--target", "access"])).code).toBe(0);
     const answer = async (r: string, args: string[]) => {
-      const { last_approved: _last, ...v } = (await sl(r, ["access", "--show", "all", "--json", ...args])).json<Record<string, unknown>>();
+      const { last_approved: _last, ...v } = (await semlayer(r, ["access", "--show", "all", "--json", ...args])).json<Record<string, unknown>>();
       return v;
     };
     for (const [who, args] of users) {
@@ -105,7 +105,7 @@ describe("the Acme access.yaml rebuilt from nothing with the access commands", (
     // The answers differ by user, so the comparison is not of empty results.
     const hidden = async (args: string[]) => ((await answer(root, args)).summary as { fields: { hidden: number } }).fields.hidden;
     expect(await hidden([])).toBeGreaterThan(await hidden(["--user", '{"department": "analytics"}']));
-    const rep = (await sl(root, ["access", "--user", '{"department": "sales", "employee_id": 101}'])).out;
+    const rep = (await semlayer(root, ["access", "--user", '{"department": "sales", "employee_id": 101}'])).out;
     expect(rep).toContain("warehouse.orders: rows matching any of");
     expect(rep).toContain("warehouse.order_items: rows matching any of");
   });
@@ -161,50 +161,50 @@ describe("the Acme access.yaml rebuilt from nothing with the access commands", (
 });
 
 describe("each access command and its refusals", () => {
-  test("without access.yaml every one names sl set access mode, and writes nothing", async () => {
+  test("without access.yaml every one names semlayer set access mode, and writes nothing", async () => {
     const root = bare();
     for (const args of [...REBUILD.slice(1), ["remove-role", "sales"], ["remove-attribute", "department"], ["remove-restriction", "r"], ["remove-row-filter", "--role", "sales", "--model", "warehouse.orders"], ["set", "access", "role:sales", "description", "x"]]) {
-      await refused(root, args, "No access.yaml", "sl set access mode open");
+      await refused(root, args, "No access.yaml", "semlayer set access mode open");
       expect(existsSync(join(root, "access.yaml"))).toBe(false);
     }
   });
 
   test("add-attribute and remove-attribute", async () => {
     const root = await rebuilt();
-    const r = await sl(root, ["add-attribute", "--name", "teams", "--type", "string_list", "--description", "Teams the user\nbelongs to.", "--json"]);
+    const r = await semlayer(root, ["add-attribute", "--name", "teams", "--type", "string_list", "--description", "Teams the user\nbelongs to.", "--json"]);
     expect(r.json()).toEqual({ changed: true, file: "access.yaml", reapprove: [], warnings: [], entry: { name: "teams", type: "string_list", description: "Teams the user belongs to." }, attribute: "teams" });
     expect(access(root).user_attributes!.map((a) => a.name)).toEqual(["department", "employee_id", "teams"]);
-    await refused(root, ["add-attribute", "--name", "teams", "--type", "string"], 'already has a user attribute "teams"', "sl set access attribute:teams");
+    await refused(root, ["add-attribute", "--name", "teams", "--type", "string"], 'already has a user attribute "teams"', "semlayer set access attribute:teams");
     await refused(root, ["add-attribute", "--name", "Level", "--type", "number"], "lowercase name");
     await refused(root, ["add-attribute", "--name", "level", "--type", "integer"], "type is string, number, string_list or number_list");
     await refused(root, ["add-attribute", "--name", "level"], "needs --type");
     // One key of an attribute is set in place; a required one cannot be removed.
     expect(await ok(root, ["set", "access", "attribute:teams", "type", "number_list"])).toContain("Set type on attribute teams");
-    await refused(root, ["set", "access", "attribute:teams", "type", "--unset"], "needs type", "sl remove-attribute teams");
+    await refused(root, ["set", "access", "attribute:teams", "type", "--unset"], "needs type", "semlayer remove-attribute teams");
     // Removing one a condition, a row filter or a golden reads is refused, naming each and its command.
-    await refused(root, ["remove-attribute", "department"], "role analyst reads it in assign_when", "role finance reads it in assign_when", 'sl set access role:sales assign_when "<condition>"');
-    await refused(root, ["remove-attribute", "employee_id"], "role sales's row filter on warehouse.orders reads it", "sl remove-row-filter --role sales --model warehouse.order_items");
+    await refused(root, ["remove-attribute", "department"], "role analyst reads it in assign_when", "role finance reads it in assign_when", 'semlayer set access role:sales assign_when "<condition>"');
+    await refused(root, ["remove-attribute", "employee_id"], "role sales's row filter on warehouse.orders reads it", "semlayer remove-row-filter --role sales --model warehouse.order_items");
     await ok(root, ["add-row-filter", "--role", "finance", "--model", "warehouse.orders", "--expr", "sales_rep_id = {{ user.employee_id }} or sales_rep_id in ({{ user.teams }})"]);
     await refused(root, ["remove-attribute", "teams"], "role finance's row filter on warehouse.orders reads it");
     await ok(root, ["remove-row-filter", "--role", "finance", "--model", "warehouse.orders"]);
     await refused(root, ["remove-attribute", "nope"], 'No user attribute "nope"', "Known: department, employee_id, teams");
     expect(await ok(root, ["remove-attribute", "teams"])).toContain("Removed user attribute teams from access.yaml.");
     expect(access(root).user_attributes!.map((a) => a.name)).toEqual(["department", "employee_id"]);
-    expect((await sl(root, ["validate"])).code).toBe(0);
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
   });
 
   test("a golden that runs as a role or sets an attribute holds it too", async () => {
     const root = acme();
-    await refused(root, ["remove-role", "finance"], "restriction refunds_and_net_revenue names it in allow.roles (sl set access restriction:refunds_and_net_revenue allow.roles analyst)", "golden finance_net_revenue_2025 runs as it");
+    await refused(root, ["remove-role", "finance"], "restriction refunds_and_net_revenue names it in allow.roles (semlayer set access restriction:refunds_and_net_revenue allow.roles analyst)", "golden finance_net_revenue_2025 runs as it");
     await refused(root, ["remove-attribute", "employee_id"], "golden sales_head_301_2025 sets it in user");
   });
 
-  test("add-role, sl set access role:<name> and remove-role", async () => {
+  test("add-role, semlayer set access role:<name> and remove-role", async () => {
     const root = await rebuilt();
     const out = await ok(root, ["add-role", "--name", "support", "--assign-when", "user.department in ['support', 'success']", "--deny-models", "warehouse.refunds", "--deny-fields", "warehouse.orders.discount", "--deny-tags", "pii"]);
     expect(out).toContain("Added role support to access.yaml.");
-    expect(out).toContain("sl access --roles support");
-    expect(out).toContain("sl readback --targets access");
+    expect(out).toContain("semlayer access --roles support");
+    expect(out).toContain("semlayer readback --targets access");
     expect(access(root).roles![3]).toEqual({ name: "support", assign_when: "user.department in ['support', 'success']", deny: { models: ["warehouse.refunds"], fields: ["warehouse.orders.discount"], tags: ["pii"] } });
     await refused(root, ["add-role", "--name", "support"], 'already has a role "support"');
     await refused(root, ["add-role", "--name", "x", "--assign-when", "department = 'a'"], "not a condition the layer can read", "user.department == 'finance'");
@@ -215,7 +215,7 @@ describe("each access command and its refusals", () => {
     // One key at a time: set, the same again, unset; the last key of allow takes the map with it.
     expect(await ok(root, ["set", "access", "role:support", "allow.tags", "[pii, sensitive]"])).toContain("Set allow.tags on role support in access.yaml.");
     expect(access(root).roles![3]!.allow).toEqual({ tags: ["pii", "sensitive"] });
-    expect((await sl(root, ["set", "access", "role:support", "allow.tags", "pii,sensitive", "--json"])).json()).toMatchObject({ changed: false, role: "support", key: "allow.tags" });
+    expect((await semlayer(root, ["set", "access", "role:support", "allow.tags", "pii,sensitive", "--json"])).json()).toMatchObject({ changed: false, role: "support", key: "allow.tags" });
     await ok(root, ["set", "access", "role:support", "allow.tags", "--unset"]);
     expect("allow" in access(root).roles![3]!).toBe(false);
     await ok(root, ["set", "access", "role:support", "assign_when", "user.department == 'support'"]);
@@ -225,25 +225,25 @@ describe("each access command and its refusals", () => {
     await refused(root, ["set", "access", "role:support", "assign_when", "user.department is"], "not a condition the layer can read");
     await refused(root, ["set", "access", "role:support", "tags", "pii"], 'A role has no key "tags"', "allow.tags");
     await refused(root, ["set", "access", "role:support", "name", "helpdesk"], "does not rename a role");
-    await refused(root, ["set", "access", "role:support", "row_filters", "x"], "sl add-row-filter --role support");
+    await refused(root, ["set", "access", "role:support", "row_filters", "x"], "semlayer add-row-filter --role support");
     await refused(root, ["set", "access", "role:nope", "description", "x"], 'No role "nope"', "Known: analyst, finance, sales, support");
-    await refused(root, ["set", "access", "role:support", "description"], "Usage: sl set access role:<name> <key> <value>");
-    await refused(root, ["set", "access", "roles", "[]"], "sl set access takes mode or default_role at the top level", "sl add-role", "sl set access role:<name>");
+    await refused(root, ["set", "access", "role:support", "description"], "Usage: semlayer set access role:<name> <key> <value>");
+    await refused(root, ["set", "access", "roles", "[]"], "semlayer set access takes mode or default_role at the top level", "semlayer add-role", "semlayer set access role:<name>");
 
     // A role a restriction or default_role names is not removed from under them.
-    await refused(root, ["remove-role", "analyst"], "restriction refunds_and_net_revenue names it in allow.roles (sl set access restriction:refunds_and_net_revenue allow.roles finance)");
+    await refused(root, ["remove-role", "analyst"], "restriction refunds_and_net_revenue names it in allow.roles (semlayer set access restriction:refunds_and_net_revenue allow.roles finance)");
     await ok(root, ["set", "access", "default_role", "support"]);
-    await refused(root, ["remove-role", "support"], "default_role names it (sl set access default_role --unset)");
+    await refused(root, ["remove-role", "support"], "default_role names it (semlayer set access default_role --unset)");
     await ok(root, ["set", "access", "default_role", "--unset"]);
     expect(await ok(root, ["remove-role", "support"])).toContain("Removed role support from access.yaml.");
     expect(access(root).roles!.map((r) => r.name)).toEqual(["analyst", "finance", "sales"]);
     await refused(root, ["remove-role", "support"], 'No role "support"');
-    expect((await sl(root, ["validate"])).code).toBe(0);
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
   });
 
-  test("add-restriction, sl set access restriction:<name> and remove-restriction", async () => {
+  test("add-restriction, semlayer set access restriction:<name> and remove-restriction", async () => {
     const root = await rebuilt();
-    const r = await sl(root, ["add-restriction", "--name", "discounts", "--targets", "warehouse.orders.discount", "--when", "user.department in ['finance', 'analytics']", "--description", "Discounts are for finance and analytics.", "--json"]);
+    const r = await semlayer(root, ["add-restriction", "--name", "discounts", "--targets", "warehouse.orders.discount", "--when", "user.department in ['finance', 'analytics']", "--description", "Discounts are for finance and analytics.", "--json"]);
     expect(r.json()).toMatchObject({
       changed: true,
       restriction: "discounts",
@@ -252,7 +252,7 @@ describe("each access command and its refusals", () => {
     await refused(root, ["add-restriction", "--name", "discounts", "--targets", "warehouse.orders.revenue", "--roles", "finance"], 'already has a restriction "discounts"');
     await refused(root, ["add-restriction", "--name", "x", "--targets", "warehouse.orders.revenue"], "needs --roles or --when");
     await refused(root, ["add-restriction", "--name", "x", "--roles", "finance"], "needs --targets");
-    // A target that matches nothing would hide nothing: refused, though sl validate only warns on one in a file.
+    // A target that matches nothing would hide nothing: refused, though semlayer validate only warns on one in a file.
     await refused(root, ["add-restriction", "--name", "x", "--targets", "warehouse.orders.revenu", "--roles", "finance"], '"warehouse.orders.revenu" matches no model or field');
     await refused(root, ["add-restriction", "--name", "x", "--targets", "metric:nope", "--roles", "finance"], '"metric:nope" matches no metric');
     await refused(root, ["add-restriction", "--name", "x", "--targets", "warehouse.orders.revenue", "--roles", "nobody"], 'names unknown role "nobody"');
@@ -263,28 +263,28 @@ describe("each access command and its refusals", () => {
     await ok(root, ["set", "access", "restriction:discounts", "allow.when", "--unset"]);
     expect(access(root).restrictions![1]).toEqual({ name: "discounts", description: "Discounts are for finance and analytics.", targets: ["warehouse.orders.discount", "metric:net_revenue"], allow: { roles: ["finance"] } });
     await refused(root, ["set", "access", "restriction:discounts", "targets", "warehouse.nope.*"], "matches no model or field");
-    await refused(root, ["set", "access", "restriction:discounts", "targets", "--unset"], "needs targets", "sl remove-restriction discounts");
+    await refused(root, ["set", "access", "restriction:discounts", "targets", "--unset"], "needs targets", "semlayer remove-restriction discounts");
     await refused(root, ["set", "access", "restriction:discounts", "allow.roles", "--unset"], "needs allow.roles or allow.when", "Set allow.when first");
     expect(await ok(root, ["remove-restriction", "discounts"])).toContain("Removed restriction discounts from access.yaml.");
     await ok(root, ["remove-restriction", "refunds_and_net_revenue"]);
     // The last entry takes its section with it, and the file still validates.
     expect("restrictions" in access(root)).toBe(false);
     await refused(root, ["remove-restriction", "discounts"], 'No restriction "discounts"', "Known: none");
-    expect((await sl(root, ["validate"])).code).toBe(0);
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
   });
 
   test("add-row-filter in both forms, and remove-row-filter", async () => {
     const root = await rebuilt();
-    const expr = await sl(root, ["add-row-filter", "--role", "finance", "--model", "warehouse.refunds", "--expr", " order.sales_rep_id = {{ user.employee_id }} "]);
+    const expr = await semlayer(root, ["add-row-filter", "--role", "finance", "--model", "warehouse.refunds", "--expr", " order.sales_rep_id = {{ user.employee_id }} "]);
     expect(expr.code).toBe(0);
     expect(expr.out).toContain("Added a row filter on warehouse.refunds to role finance in access.yaml.");
     expect(access(root).roles![1]!.row_filters).toEqual([{ model: "warehouse.refunds", expr: "order.sales_rep_id = {{ user.employee_id }}" }]);
     // The same filter again changes nothing; a hierarchy without include_self is the same as with it.
-    expect((await sl(root, ["add-row-filter", "--role", "finance", "--model", "warehouse.refunds", "--expr", "order.sales_rep_id = {{ user.employee_id }}", "--json"])).json()).toMatchObject({ changed: false });
-    expect((await sl(root, ["add-row-filter", "--role", "sales", "--model", "warehouse.orders", "--column", "sales_rep_id", ...CLOSURE, "--json"])).json()).toMatchObject({ changed: false });
-    const noSelf = await sl(root, ["add-row-filter", "--role", "finance", "--model", "warehouse.orders", "--column", "sales_rep_id", ...CLOSURE.slice(0, -1), "user.employee_id", "--exclude-self", "--json"]);
+    expect((await semlayer(root, ["add-row-filter", "--role", "finance", "--model", "warehouse.refunds", "--expr", "order.sales_rep_id = {{ user.employee_id }}", "--json"])).json()).toMatchObject({ changed: false });
+    expect((await semlayer(root, ["add-row-filter", "--role", "sales", "--model", "warehouse.orders", "--column", "sales_rep_id", ...CLOSURE, "--json"])).json()).toMatchObject({ changed: false });
+    const noSelf = await semlayer(root, ["add-row-filter", "--role", "finance", "--model", "warehouse.orders", "--column", "sales_rep_id", ...CLOSURE.slice(0, -1), "user.employee_id", "--exclude-self", "--json"]);
     expect(noSelf.json<{ filter: unknown }>().filter).toEqual({ model: "warehouse.orders", hierarchy: { column: "sales_rep_id", via: "warehouse.sales_team_closure", manager: "manager_id", member: "member_id", user: "user.employee_id", include_self: false } });
-    // The warning sl validate gives about rows of child tables arrives with the edit that causes it.
+    // The warning semlayer validate gives about rows of child tables arrives with the edit that causes it.
     expect(noSelf.json<{ warnings: string[] }>().warnings.join("\n")).toContain("rows of warehouse.order_items that belong to warehouse.orders are not limited by warehouse.orders's row filter for role finance");
 
     // What the compiler could not read is refused: the model, a column, a join reference, the closure and its columns, the attribute.
@@ -302,12 +302,12 @@ describe("each access command and its refusals", () => {
     await refused(root, [...add, "--model", "warehouse.orders", "--column", "sales_rep_id", "--via", "warehouse.sales_team_closure"], "missing --manager, --member, --user");
     await refused(root, [...add, "--model", "warehouse.orders"], "missing --expr");
     await refused(root, [...add, "--model", "warehouse.orders", "--expr", "sales_rep_id = 1", "--via", "warehouse.sales_team_closure"], "not both");
-    await refused(root, ["add-row-filter", "--role", "nope", "--model", "warehouse.orders", "--expr", "sales_rep_id = 1"], 'No role "nope"', "sl add-role --name nope");
-    await refused(root, ["add-row-filter", "--model", "warehouse.orders", "--expr", "sales_rep_id = 1"], "Usage: sl add-row-filter");
+    await refused(root, ["add-row-filter", "--role", "nope", "--model", "warehouse.orders", "--expr", "sales_rep_id = 1"], 'No role "nope"', "semlayer add-role --name nope");
+    await refused(root, ["add-row-filter", "--model", "warehouse.orders", "--expr", "sales_rep_id = 1"], "Usage: semlayer add-row-filter");
 
     // Removing: none there, several there, and the one --index picks.
     await ok(root, [...add, "--model", "warehouse.orders", "--expr", "sales_rep_id = {{ user.employee_id }}"]);
-    await refused(root, ["remove-row-filter", "--role", "finance", "--model", "warehouse.products"], "Role finance has no row filter on warehouse.products", "its row filters are on warehouse.refunds, warehouse.orders", "Next: sl access --roles finance");
+    await refused(root, ["remove-row-filter", "--role", "finance", "--model", "warehouse.products"], "Role finance has no row filter on warehouse.products", "its row filters are on warehouse.refunds, warehouse.orders", "Next: semlayer access --roles finance");
     await refused(root, ["remove-row-filter", "--role", "finance", "--model", "warehouse.orders"], "has 2 row filters on warehouse.orders", "1. hierarchy: sales_rep_id under user.employee_id", "2. expr: sales_rep_id = {{ user.employee_id }}");
     await refused(root, ["remove-row-filter", "--role", "finance", "--model", "warehouse.orders", "--index", "3"], "pass --index 1 to 2");
     expect(await ok(root, ["remove-row-filter", "--role", "finance", "--model", "warehouse.orders", "--index", "1"])).toContain("Removed a row filter on warehouse.orders from role finance");
@@ -315,11 +315,11 @@ describe("each access command and its refusals", () => {
     await ok(root, ["remove-row-filter", "--role", "finance", "--model", "warehouse.orders"]);
     await ok(root, ["remove-row-filter", "--role", "finance", "--model", "warehouse.refunds"]);
     expect("row_filters" in access(root).roles![1]!).toBe(false);
-    await refused(root, ["remove-row-filter", "--role", "finance", "--model", "warehouse.orders"], "Role finance has no row filter on warehouse.orders; it has no row filters.", "Next: sl access --roles finance");
-    expect((await sl(root, ["validate"])).code).toBe(0);
+    await refused(root, ["remove-row-filter", "--role", "finance", "--model", "warehouse.orders"], "Role finance has no row filter on warehouse.orders; it has no row filters.", "Next: semlayer access --roles finance");
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
   });
 
-  test("a role's open questions are added and resolved with sl question, outside the approval", async () => {
+  test("a role's open questions are added and resolved with semlayer question, outside the approval", async () => {
     const root = acme();
     const before = text(root);
     const q = "refunds: reps see every refund until finance decides";
@@ -327,12 +327,12 @@ describe("each access command and its refusals", () => {
     expect(access(root).roles![2]!.open_questions).toEqual([q]);
     // open_questions are outside the approval hash, so the file stays approved.
     expect(access(root).status).toBe("approved");
-    expect((await sl(root, ["status", "--json"])).json<{ access: { open_questions: number } }>().access.open_questions).toBe(1);
+    expect((await semlayer(root, ["status", "--json"])).json<{ access: { open_questions: number } }>().access.open_questions).toBe(1);
     await refused(root, ["question", "add", "access.roles.nope", "--text", "x"], 'No role "nope"');
     await ok(root, ["question", "resolve", "access.roles.sales", "--index", "1", "--text", "Reps see no refunds.", "--by", "Dana"]);
     expect(text(root)).toBe(before);
-    expect(text(root, ".sl/ledger.jsonl")).toContain('"target":"access.roles.sales"');
-    expect((await sl(root, ["validate"])).code).toBe(0);
+    expect(text(root, ".semlayer/ledger.jsonl")).toContain('"target":"access.roles.sales"');
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
   });
 });
 
@@ -363,7 +363,7 @@ describe("an access edit keeps the rest of the file", () => {
     await only(["remove-role", "marketing"], [["  - name: marketing\n    deny:\n      tags: [finance_only]\n", ""]]);
     await only(["remove-attribute", "region"], [["  - name: region\n    type: string\n", ""]]);
     expect(text(root)).toContain("# Lines follow their order (Dana Ruiz, session 4)");
-    expect((await sl(root, ["validate"])).code).toBe(0);
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
   });
 });
 
@@ -392,7 +392,7 @@ describe("an edit to an approved access.yaml makes it a draft again", () => {
   };
 
   for (const edit of EDITS) {
-    test(`sl ${edit.join(" ")}`, async () => {
+    test(`semlayer ${edit.join(" ")}`, async () => {
       const prepare = async (root: string) => {
         // Goldens that run as a role or set an attribute hold both; they are not what this test is about.
         rmSync(join(root, "goldens"), { recursive: true });
@@ -406,9 +406,9 @@ describe("an edit to an approved access.yaml makes it a draft again", () => {
       await prepare(revokedFirst);
       expect(access(root)).toMatchObject({ status: "approved" });
       const approved = access(root);
-      const r = await sl(root, edit);
+      const r = await semlayer(root, edit);
       expect({ code: r.code, err: r.err }).toEqual({ code: 0, err: "" });
-      // The file is a draft that keeps the approval it set aside, exactly as sl approve --revoke and then the edit write it.
+      // The file is a draft that keeps the approval it set aside, exactly as semlayer approve --revoke and then the edit write it.
       expect(access(root)).toMatchObject({ status: "draft", last_approved: { by: approved.approved_by, at: approved.approved_at } });
       for (const key of ["approved_by", "approved_at", "approved_hash"]) expect(key in access(root)).toBe(false);
       await ok(revokedFirst, ["approve", "--target", "access", "--revoke"]);
@@ -416,16 +416,16 @@ describe("an edit to an approved access.yaml makes it a draft again", () => {
       expect(text(root)).toBe(text(revokedFirst));
       // It says so, and names the readback; tools that load it serve nothing until it is approved again.
       expect(r.out).toContain(`access.yaml was approved, so this edit made it a draft again: the version approved by ${approved.approved_by} on ${approved.approved_at} keeps applying where it is deployed`);
-      expect(r.out).toContain("sl readback --targets access");
-      const v = (await sl(root, ["access", "--json"])).json<{ access_file: string; last_approved: unknown; changed_since_approval: string[] }>();
+      expect(r.out).toContain("semlayer readback --targets access");
+      const v = (await semlayer(root, ["access", "--json"])).json<{ access_file: string; last_approved: unknown; changed_since_approval: string[] }>();
       expect(v).toMatchObject({ access_file: "draft", last_approved: { by: approved.approved_by, at: approved.approved_at } });
       expect(v.changed_since_approval).not.toContain("access");
-      const next = (await sl(root, ["next", "--json"])).json<NextAction>();
-      expect(next).toMatchObject({ kind: "run", phase: "access", run: { command: "sl readback --targets access" } });
+      const next = (await semlayer(root, ["next", "--json"])).json<NextAction>();
+      expect(next).toMatchObject({ kind: "run", phase: "access", run: { command: "semlayer readback --targets access" } });
       // Approving again takes a new yes: the old one was to other rules.
-      const again = await sl(root, ["approve", "--target", "access"]);
+      const again = await semlayer(root, ["approve", "--target", "access"]);
       expect(again.code).toBe(1);
-      expect(again.err).toContain("sl readback --targets access");
+      expect(again.err).toContain("semlayer readback --targets access");
       expect(access(root).status).toBe("draft");
     });
   }
@@ -433,15 +433,15 @@ describe("an edit to an approved access.yaml makes it a draft again", () => {
   test("--json says so, a refused edit and an edit that changes nothing leave the approval alone", async () => {
     const root = acme();
     const before = text(root);
-    expect((await sl(root, ["set", "access", "role:analyst", "allow.tags", "pii", "--json"])).json()).toMatchObject({ changed: false });
-    expect((await sl(root, ["add-row-filter", "--role", "sales", "--model", "warehouse.orders", "--column", "sales_rep_id", ...CLOSURE, "--json"])).json()).toMatchObject({ changed: false });
+    expect((await semlayer(root, ["set", "access", "role:analyst", "allow.tags", "pii", "--json"])).json()).toMatchObject({ changed: false });
+    expect((await semlayer(root, ["add-row-filter", "--role", "sales", "--model", "warehouse.orders", "--column", "sales_rep_id", ...CLOSURE, "--json"])).json()).toMatchObject({ changed: false });
     await refused(root, ["add-role", "--name", "sales"], "already has a role");
     await refused(root, ["add-restriction", "--name", "x", "--targets", "warehouse.nope", "--roles", "finance"], "matches no model or field");
     expect(text(root)).toBe(before);
-    const r = await sl(root, ["add-role", "--name", "marketing", "--json"]);
+    const r = await semlayer(root, ["add-role", "--name", "marketing", "--json"]);
     expect(r.json()).toMatchObject({ changed: true, reapprove: [], returned_to_draft: true, last_approved: { by: "Dana Ruiz", at: "2026-10-27" }, role: "marketing" });
     // A second edit of the draft keeps the approval the first set aside.
-    expect((await sl(root, ["set", "access", "role:marketing", "description", "Marketing.", "--json"])).json()).not.toHaveProperty("returned_to_draft");
+    expect((await semlayer(root, ["set", "access", "role:marketing", "description", "Marketing.", "--json"])).json()).not.toHaveProperty("returned_to_draft");
     expect(access(root)).toMatchObject({ status: "draft", last_approved: { by: "Dana Ruiz", at: "2026-10-27" } });
   });
 });
@@ -461,10 +461,10 @@ describe("the access commands hold the write lock", () => {
       const release = await acquireLock(root, { command: "profile", started: FIXED_NOW });
       try {
         const runs = [...WRITERS.map((w) => [w]), ["set", "access", "role:sales", "description", "x"]].map(async (args) => {
-          const p = Bun.spawn(["bun", SL, ...args, "--root", root], { env: { ...process.env, SL_LOCK_WAIT_MS: "0" }, stdout: "pipe", stderr: "pipe" });
+          const p = Bun.spawn(["bun", SEMLAYER, ...args, "--root", root], { env: { ...process.env, SEMLAYER_LOCK_WAIT_MS: "0" }, stdout: "pipe", stderr: "pipe" });
           return { args, code: await p.exited, err: await new Response(p.stderr).text() };
         });
-        for (const r of await Promise.all(runs)) expect({ args: r.args, code: r.code, busy: r.err.includes("sl profile (process") && r.err.includes("is writing to this semantic layer") }).toEqual({ args: r.args, code: 1, busy: true });
+        for (const r of await Promise.all(runs)) expect({ args: r.args, code: r.code, busy: r.err.includes("semlayer profile (process") && r.err.includes("is writing to this semantic layer") }).toEqual({ args: r.args, code: 1, busy: true });
       } finally {
         release();
       }
@@ -476,14 +476,14 @@ describe("the access commands hold the write lock", () => {
 
 describe("who sees an item is decided once, in the access phase", () => {
   const REGIONS = "warehouse.regions";
-  const next = async (root: string) => (await sl(root, ["next", "--json"])).json<NextAction>();
-  const reply = (root: string, words: string, ...flags: string[]) => sl(root, ["reply", "--readback", "rb_0001", "--item", "1", "--text", words, ...flags, "--by", "Dana"]);
+  const next = async (root: string) => (await semlayer(root, ["next", "--json"])).json<NextAction>();
+  const reply = (root: string, words: string, ...flags: string[]) => semlayer(root, ["reply", "--readback", "rb_0001", "--item", "1", "--text", words, ...flags, "--by", "Dana"]);
 
   // A table whose sign-off is open: the Acme regions model as a draft, read back as rb_0001.
   async function regionsReadBack(): Promise<{ root: string; readback: string }> {
     const root = acme();
     await ok(root, ["approve", "--target", REGIONS, "--revoke"]);
-    expect(await next(root)).toMatchObject({ kind: "run", phase: "interview", run: { command: `sl readback --targets ${REGIONS}` } });
+    expect(await next(root)).toMatchObject({ kind: "run", phase: "interview", run: { command: `semlayer readback --targets ${REGIONS}` } });
     return { root, readback: await ok(root, ["readback", "--targets", REGIONS]) };
   }
 
@@ -493,7 +493,7 @@ describe("who sees an item is decided once, in the access phase", () => {
     expect(block).toContain("- Default audience (a user with no role): sees it.");
     expect(block).toContain("- Stated, not asked: who sees what is decided once, in the access step, and a change to it does not hold this approval.");
     expect(block).not.toContain("?");
-    const others = (await sl(root, ["readback", "--targets", "warehouse.orders.revenue,metric:net_revenue,access", "--json"])).json<{ items: { target: string; text: string }[] }>().items;
+    const others = (await semlayer(root, ["readback", "--targets", "warehouse.orders.revenue,metric:net_revenue,access", "--json"])).json<{ items: { target: string; text: string }[] }>().items;
     for (const item of others) expect({ target: item.target, stated: item.text.includes(WHO_SEES_STATED) }).toEqual({ target: item.target, stated: item.target !== "access" });
   });
 
@@ -505,22 +505,22 @@ describe("who sees an item is decided once, in the access phase", () => {
     await ok(root, ["add-restriction", "--name", "regions_finance_only", "--targets", REGIONS, "--roles", "finance"]);
     const stuck = await next(root);
     expect(stuck).toMatchObject({ kind: "ask_owner", phase: "interview", action: { command: "set", args: [REGIONS, "<key>", "<value>"], kind: "ask_owner" } });
-    // Both the reply and sl next now name the way out: the change is about access, and the table takes its own answer.
+    // Both the reply and semlayer next now name the way out: the change is about access, and the table takes its own answer.
     expect(r.out).toContain(`If the change is only to who sees ${REGIONS}, record that as well with --verdict change --about access`);
-    expect(stuck.why).toContain('record it with sl reply --readback rb_0001 --item 1 --text "<owner\'s words>" --verdict change --about access --by "<owner>"');
+    expect(stuck.why).toContain('record it with semlayer reply --readback rb_0001 --item 1 --text "<owner\'s words>" --verdict change --about access --by "<owner>"');
     expect(stuck.why).toContain("then ask whether the rest of the item is right");
     // Following it: the visibility change is recorded as such, and the owner's yes to the table approves it.
     expect((await reply(root, "Only finance should see regions.", "--about", "access")).code).toBe(0);
     expect((await reply(root, "Yes, the table itself is right.", "--verdict", "yes")).code).toBe(0);
-    expect(await next(root)).toMatchObject({ kind: "run", phase: "interview", run: { command: `sl approve --target ${REGIONS}` } });
-    expect((await sl(root, ["approve", "--target", REGIONS])).code).toBe(0);
+    expect(await next(root)).toMatchObject({ kind: "run", phase: "interview", run: { command: `semlayer approve --target ${REGIONS}` } });
+    expect((await semlayer(root, ["approve", "--target", REGIONS])).code).toBe(0);
   });
 
-  test("a change recorded as about access does not hold the table: it proceeds on a yes to its content, and sl next routes the change to the access phase", async () => {
+  test("a change recorded as about access does not hold the table: it proceeds on a yes to its content, and semlayer next routes the change to the access phase", async () => {
     const { root } = await regionsReadBack();
-    const change = await sl(root, ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Only finance should see regions.", "--verdict", "change", "--about", "access", "--by", "Dana", "--json"]);
-    expect(change.json()).toMatchObject({ entry: { target: REGIONS, verdict: "change", about: "access" }, next: 'sl reply --readback rb_0001 --item 1 --text "<owner\'s words>" --verdict yes|no|change --by "Dana"' });
-    expect((await sl(root, ["validate"])).code).toBe(0);
+    const change = await semlayer(root, ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Only finance should see regions.", "--verdict", "change", "--about", "access", "--by", "Dana", "--json"]);
+    expect(change.json()).toMatchObject({ entry: { target: REGIONS, verdict: "change", about: "access" }, next: 'semlayer reply --readback rb_0001 --item 1 --text "<owner\'s words>" --verdict yes|no|change --by "Dana"' });
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
 
     // The table still waits for the owner's answer to the table itself, and says the change is kept.
     const ask = await next(root);
@@ -528,41 +528,41 @@ describe("who sees an item is decided once, in the access phase", () => {
     expect(ask.why).toContain(`The owner's change to who sees ${REGIONS} (ans_0001) is kept for the access phase and does not hold the item`);
     expect(ask).not.toHaveProperty("access_changes");
     // A change to who sees it is not a yes: nothing is approved on it.
-    const early = await sl(root, ["approve", "--target", REGIONS]);
+    const early = await semlayer(root, ["approve", "--target", REGIONS]);
     expect(early.code).toBe(1);
     expect(early.err).toContain("nothing was approved");
 
     const yes = await reply(root, "Yes, that is the regions table.", "--verdict", "yes");
-    expect(yes.out).toContain(`Next: sl approve --target ${REGIONS}`);
-    expect(await next(root)).toMatchObject({ kind: "run", phase: "interview", run: { command: `sl approve --target ${REGIONS}` } });
+    expect(yes.out).toContain(`Next: semlayer approve --target ${REGIONS}`);
+    expect(await next(root)).toMatchObject({ kind: "run", phase: "interview", run: { command: `semlayer approve --target ${REGIONS}` } });
     expect(await ok(root, ["approve", "--target", REGIONS])).toContain(`Approved ${REGIONS}`);
 
     // Nothing else is open, so the change reopens the access phase, though access.yaml is approved.
     const routed = await next(root);
-    expect(routed).toMatchObject({ kind: "run", phase: "access", run: { command: "sl access" }, access_changes: [{ id: "ans_0001", target: REGIONS, text: "Only finance should see regions.", by: "Dana" }] });
+    expect(routed).toMatchObject({ kind: "run", phase: "access", run: { command: "semlayer access" }, access_changes: [{ id: "ans_0001", target: REGIONS, text: "Only finance should see regions.", by: "Dana" }] });
     expect(routed.why).toContain(`${REGIONS} (ans_0001, Dana): "Only finance should see regions."`);
-    for (const command of ["sl add-role", "sl add-restriction", "sl add-row-filter", "sl add-attribute", "sl set access role:<name> <key> <value>", "sl remove-restriction", "sl readback --targets access"]) expect(routed.why).toContain(command);
-    expect((await sl(root, ["next"])).out).toContain("Next (access):");
+    for (const command of ["semlayer add-role", "semlayer add-restriction", "semlayer add-row-filter", "semlayer add-attribute", "semlayer set access role:<name> <key> <value>", "semlayer remove-restriction", "semlayer readback --targets access"]) expect(routed.why).toContain(command);
+    expect((await semlayer(root, ["next"])).out).toContain("Next (access):");
 
     // The change is made with an access command, read back with the whole file, and the owner's yes settles it.
     await ok(root, ["add-restriction", "--name", "regions_finance_only", "--targets", REGIONS, "--roles", "finance"]);
     const draft = await next(root);
-    expect(draft).toMatchObject({ kind: "run", phase: "access", run: { command: "sl readback --targets access" }, access_changes: [{ id: "ans_0001" }] });
+    expect(draft).toMatchObject({ kind: "run", phase: "access", run: { command: "semlayer readback --targets access" }, access_changes: [{ id: "ans_0001" }] });
     expect(draft.why).toContain("Only finance should see regions.");
     expect((await approveWithYes(root, ["--target", "access"])).code).toBe(0);
     const after = await next(root);
     expect(after.phase).not.toBe("access");
     expect(after).not.toHaveProperty("access_changes");
     expect(after.why).not.toContain("Only finance should see regions.");
-    expect((await sl(root, ["access", "--show", "hidden"])).out).toContain(`model ${REGIONS}: hidden (restricted:regions_finance_only)`);
+    expect((await semlayer(root, ["access", "--show", "hidden"])).out).toContain(`model ${REGIONS}: hidden (restricted:regions_finance_only)`);
   });
 
   test("a yes already given stands when a change to who sees the item follows it", async () => {
     const { root } = await regionsReadBack();
     await reply(root, "Yes.", "--verdict", "yes");
     const change = await reply(root, "But hide it from marketing.", "--about", "access");
-    expect(change.out).toContain(`The owner's yes to ${REGIONS} itself stands. Next: sl approve --target ${REGIONS}`);
-    expect((await sl(root, ["approve", "--target", REGIONS])).code).toBe(0);
+    expect(change.out).toContain(`The owner's yes to ${REGIONS} itself stands. Next: semlayer approve --target ${REGIONS}`);
+    expect((await semlayer(root, ["approve", "--target", REGIONS])).code).toBe(0);
   });
 
   // Invariant 5: an about-access reply is never the owner's verdict on the item, in either direction.
@@ -571,24 +571,24 @@ describe("who sees an item is decided once, in the access phase", () => {
     await reply(root, "Yes.", "--verdict", "yes");
     await reply(root, "No, the key is wrong.", "--verdict", "no");
     await reply(root, "And hide it from marketing.", "--about", "access");
-    const r = await sl(root, ["approve", "--target", REGIONS]);
+    const r = await semlayer(root, ["approve", "--target", REGIONS]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("nothing was approved");
     // --about access goes with a change only, is refused on access.yaml's own readback, and takes no other word.
     expect((await reply(root, "Yes.", "--verdict", "yes", "--about", "access")).err).toContain("it goes with --verdict change");
     expect((await reply(root, "Hide it.", "--about", "goldens")).err).toContain("--about is access");
-    const rb = (await sl(root, ["readback", "--targets", "access", "--json"])).json<{ readback_id: string }>().readback_id;
-    const own = await sl(root, ["reply", "--readback", rb, "--item", "1", "--text", "Hide regions.", "--about", "access", "--by", "Dana"]);
+    const rb = (await semlayer(root, ["readback", "--targets", "access", "--json"])).json<{ readback_id: string }>().readback_id;
+    const own = await semlayer(root, ["reply", "--readback", rb, "--item", "1", "--text", "Hide regions.", "--about", "access", "--by", "Dana"]);
     expect(own.code).toBe(1);
     expect(own.err).toContain("record it with --verdict change, without --about");
     // A ledger line that claims a yes about access is not a reply an approval can read.
-    const ledger = join(root, ".sl", "ledger.jsonl");
+    const ledger = join(root, ".semlayer", "ledger.jsonl");
     const lines = readFileSync(ledger, "utf8").trimEnd().split("\n");
     const forged = { ...(JSON.parse(lines[lines.length - 1]!) as Record<string, unknown>), id: "ans_0004", verdict: "yes" };
     writeFileSync(ledger, `${lines.join("\n")}\n${JSON.stringify(forged)}\n`);
-    const refusedApprove = await sl(root, ["approve", "--target", REGIONS]);
+    const refusedApprove = await semlayer(root, ["approve", "--target", REGIONS]);
     expect(refusedApprove.code).toBe(1);
     expect(refusedApprove.err).toContain("line 4 is a reply line without the fields an approval needs");
-    expect((await sl(root, ["validate"])).code).toBe(1);
+    expect((await semlayer(root, ["validate"])).code).toBe(1);
   });
 });

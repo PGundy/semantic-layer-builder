@@ -10,11 +10,11 @@ import { loadProject } from "../lib/project.ts";
 import { APPLY_COMMANDS, applyEntryRefusal } from "../lib/roles.ts";
 import { COMMANDS } from "./index.ts";
 
-const USAGE = 'Usage: sl apply --file <path>, or --file - to read stdin, holding {"edits": [["set", "<ref>", "<key>", "<value>"], ...]}.';
+const USAGE = 'Usage: semlayer apply --file <path>, or --file - to read stdin, holding {"edits": [["set", "<ref>", "<key>", "<value>"], ...]}.';
 
 // An entry as the words of its command line, a word with a space or a quote in quotes.
 function shown(words: string[]): string {
-  return `sl ${words.map((w) => (/[\s"'\\]/.test(w) || !w ? JSON.stringify(w) : w)).join(" ")}`;
+  return `semlayer ${words.map((w) => (/[\s"'\\]/.test(w) || !w ? JSON.stringify(w) : w)).join(" ")}`;
 }
 
 async function readEdits(file: string, ctx: CommandContext): Promise<unknown[]> {
@@ -80,7 +80,7 @@ function refusal(refused: Failure[]): UserError {
     lines.push(`Entr${later.length === 1 ? "y" : "ies"} ${later.map((n) => n + 1).join(", ")} ${later.length === 1 ? "was" : "were"} not checked: ${later.length === 1 ? "it reads" : "they read"} what entry ${i + 1} would have created.`);
   }
   const counted = `${own.length === 1 ? "An entry is" : `${own.length} entries are`} refused${skipped ? ` and ${skipped} not checked` : ""}`;
-  return new UserError(`${counted}, so nothing was written:\n${lines.join("\n")}\nRemove or fix each entry named and run sl apply again.`);
+  return new UserError(`${counted}, so nothing was written:\n${lines.join("\n")}\nRemove or fix each entry named and run semlayer apply again.`);
 }
 
 // The names a typed edit would create, as later entries name them.
@@ -121,11 +121,11 @@ const spec: CommandSpec = {
   summary: "Run several typed edits as one: one lock, one validation at the end, and all of them land or none do.",
   usage:
     'apply --file <path | ->\n\n' +
-    'The file (or stdin, with -) holds {"edits": [[...], ...]}: each entry is the words of one typed edit after "sl",\n' +
+    'The file (or stdin, with -) holds {"edits": [[...], ...]}: each entry is the words of one typed edit after "semlayer",\n' +
     'as ["set", "warehouse.orders.revenue", "description", "Order value."]. Entries run in order, each seeing the ones before;\n' +
     "the project is validated once, at the end. Every entry is checked: on any failure no file changes, and one error names every\n" +
     "refused entry with its own message (an entry that reads what a refused one would create is listed as not checked).\n" +
-    `Entries: ${APPLY_COMMANDS.map((c) => `sl ${c}`).join(", ")}.\n` +
+    `Entries: ${APPLY_COMMANDS.map((c) => `semlayer ${c}`).join(", ")}.\n` +
     "An entry that records an owner answer or approval, or reads a database, is refused: run it on its own.",
   options: { file: { type: "string" } },
   writes: "whole",
@@ -156,8 +156,8 @@ const spec: CommandSpec = {
         failed.push({
           i,
           words,
-          text: `Entry ${i + 1}${label}: ${message}. Fix the entry (sl ${words![0]} --help shows its usage).`,
-          alone: `Entry ${i + 1}${label}: ${message}. Nothing was written. Fix the entry (sl ${words![0]} --help shows its usage) and run sl apply again.`,
+          text: `Entry ${i + 1}${label}: ${message}. Fix the entry (semlayer ${words![0]} --help shows its usage).`,
+          alone: `Entry ${i + 1}${label}: ${message}. Nothing was written. Fix the entry (semlayer ${words![0]} --help shows its usage) and run semlayer apply again.`,
         });
         entries.push(undefined);
       }
@@ -189,14 +189,14 @@ const spec: CommandSpec = {
             i,
             words: e.words,
             text: `Entry ${i + 1} (${shown(e.words)}): ${text}`,
-            ...(err instanceof ValueRefusal ? {} : { alone: `Entry ${i + 1} (${shown(e.words)}) failed, so nothing was written: ${err.message}\nFix entry ${i + 1} and run sl apply again.`, next: err.next }),
+            ...(err instanceof ValueRefusal ? {} : { alone: `Entry ${i + 1} (${shown(e.words)}) failed, so nothing was written: ${err.message}\nFix entry ${i + 1} and run semlayer apply again.`, next: err.next }),
           });
           results.push([]);
           continue;
         }
         if (code !== 0) {
           const said = out.join("\n");
-          refused.push({ i, words: e.words, text: `Entry ${i + 1} (${shown(e.words)}): ${said}`, alone: `Entry ${i + 1} (${shown(e.words)}) failed, so nothing was written:\n${said}\nFix entry ${i + 1} and run sl apply again.` });
+          refused.push({ i, words: e.words, text: `Entry ${i + 1} (${shown(e.words)}): ${said}`, alone: `Entry ${i + 1} (${shown(e.words)}) failed, so nothing was written:\n${said}\nFix entry ${i + 1} and run semlayer apply again.` });
           results.push([]);
           continue;
         }
@@ -226,7 +226,7 @@ const spec: CommandSpec = {
     entries.forEach((_, i) => {
       // The batch names the next command once, at its end, so an entry's own is cut.
       // Its warnings are the ones the batch found it added, under it.
-      const own = results[i]!.join("\n").split("\n").filter((l) => l && !l.startsWith("Next: ") && !l.startsWith("Warning: ")).map((l) => l.replace(/ Next: sl .*$/, ""));
+      const own = results[i]!.join("\n").split("\n").filter((l) => l && !l.startsWith("Next: ") && !l.startsWith("Warning: ")).map((l) => l.replace(/ Next: semlayer .*$/, ""));
       lines.push(`${i + 1}. ${[...own, ...entryWarnings(i).map((w) => `Warning: ${w}`)].join("\n   ")}`);
     });
     lines.push(`Applied ${entries.length} edit${entries.length === 1 ? "" : "s"}.`);
@@ -235,8 +235,8 @@ const spec: CommandSpec = {
     const readback = [...new Set([...outcome.reapprove, ...(outcome.access_draft ? ["access"] : [])])];
     if (readback.length) {
       lines.push(...reapproveLines(outcome.reapprove), ...(outcome.access_draft ? accessDraftLines(outcome.access_draft) : []));
-      lines.push(`Next: sl readback --targets ${readback.join(",")}, then sl approve each again only on the owner's yes.`);
-    } else lines.push("Next: sl status.");
+      lines.push(`Next: semlayer readback --targets ${readback.join(",")}, then semlayer approve each again only on the owner's yes.`);
+    } else lines.push("Next: semlayer status.");
     ctx.out(lines.join("\n"));
     return 0;
   },

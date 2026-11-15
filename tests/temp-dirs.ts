@@ -6,14 +6,14 @@ import { join } from "node:path";
 // Every temp directory a test makes comes from tempDir. bunfig.toml preloads this file, so the
 // hooks at the bottom are the run's own: a file's directories are removed when the next file's
 // first test starts, the last file's when the run ends, and whatever is left when a test exits the
-// process or a signal stops it. scripts/verify.sh fails when a run leaves an sl-test-* entry behind.
+// process or a signal stops it. scripts/verify.sh fails when a run leaves a semlayer-test-* entry behind.
 
 // Each directory and the test file that made it. Bun.main names the file being loaded or run.
 const made = new Map<string, string>();
 
-// A fresh directory under the system temp directory, named sl-test-<label>-<random>.
+// A fresh directory under the system temp directory, named semlayer-test-<label>-<random>.
 export function tempDir(label = ""): string {
-  const dir = mkdtempSync(join(tmpdir(), label ? `sl-test-${label}-` : "sl-test-"));
+  const dir = mkdtempSync(join(tmpdir(), label ? `semlayer-test-${label}-` : "semlayer-test-"));
   made.set(dir, Bun.main);
   return dir;
 }

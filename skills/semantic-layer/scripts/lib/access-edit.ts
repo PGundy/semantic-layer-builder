@@ -1,5 +1,5 @@
-// Typed edits of access.yaml's rules: user attributes, roles, restrictions and row filters (sl
-// add-attribute, add-role, add-restriction, add-row-filter, their remove-* commands, and sl set
+// Typed edits of access.yaml's rules: user attributes, roles, restrictions and row filters (semlayer
+// add-attribute, add-role, add-restriction, add-row-filter, their remove-* commands, and semlayer set
 // access role:<name> | restriction:<name> | attribute:<name> <key>). Each goes through commitEdits
 // (lib/edit.ts): comments and untouched bytes stay, the project is validated with the edit, and
 // nothing is written when it adds an error. A restriction target that matches nothing is refused
@@ -28,9 +28,9 @@ export const ENTRY_KINDS: readonly EntryKind[] = ["role", "restriction", "attrib
 const SECTION: Record<EntryKind, string> = { attribute: "user_attributes", role: "roles", restriction: "restrictions" };
 const WORD: Record<EntryKind, string> = { attribute: "user attribute", role: "role", restriction: "restriction" };
 const ADD: Record<EntryKind, string> = {
-  attribute: "sl add-attribute --name <name> --type string|number|string_list|number_list",
-  role: "sl add-role --name <name>",
-  restriction: "sl add-restriction --name <name> --targets <ref>,... (--roles <role>,... | --when <condition>)",
+  attribute: "semlayer add-attribute --name <name> --type string|number|string_list|number_list",
+  role: "semlayer add-role --name <name>",
+  restriction: "semlayer add-restriction --name <name> --targets <ref>,... (--roles <role>,... | --when <condition>)",
 };
 
 export const ATTRIBUTE_TYPES = ["string", "number", "string_list", "number_list"] as const;
@@ -64,7 +64,7 @@ export interface AccessEditOutcome {
   // access.yaml, relative to the semantic root.
   file: string;
   reapprove: string[];
-  // The warnings sl validate gives that the edit added, each as "<path>: <message>".
+  // The warnings semlayer validate gives that the edit added, each as "<path>: <message>".
   warnings: string[];
   // Present when access.yaml was approved and the edit made it a draft again.
   returned_to_draft?: true;
@@ -100,7 +100,7 @@ function commit(root: string, what: string, edit: (doc: Document, map: YAMLMap) 
 export function accessEditLines(o: AccessEditOutcome, next: string): string[] {
   return [...o.warnings.map((w) => `Warning: ${w}`), ...(o.returned_to_draft ? accessDraftLines(o) : []), `Next: ${next}`];
 }
-export const READBACK_NEXT = "when the owner's exceptions are all in, read the file back with sl readback --targets access.";
+export const READBACK_NEXT = "when the owner's exceptions are all in, read the file back with semlayer readback --targets access.";
 
 // A scalar list is written on one line ([pii, sensitive]); anything holding maps in block style.
 function node(doc: Document, value: unknown): Node {
@@ -205,7 +205,7 @@ export function addEntry(root: string, kind: EntryKind, rawName: string | undefi
   const access = locate(root, "access").item;
   const name = checkName(kind, rawName);
   if (names(access, kind).includes(name))
-    throw new UserError(`access.yaml already has a ${WORD[kind]} "${name}". Nothing was written. Pick another name, or change it with sl set access ${kind}:${name} <key> <value> (keys: ${Object.keys(ENTRY_KEYS[kind]).join(", ")}).`);
+    throw new UserError(`access.yaml already has a ${WORD[kind]} "${name}". Nothing was written. Pick another name, or change it with semlayer set access ${kind}:${name} <key> <value> (keys: ${Object.keys(ENTRY_KEYS[kind]).join(", ")}).`);
   const entry: Obj = { name };
   for (const key of Object.keys(ENTRY_KEYS[kind])) {
     const raw = given[key];
@@ -231,22 +231,22 @@ function referrers(root: string, access: Obj, kind: EntryKind, name: string): st
       return false;
     }
   };
-  if (kind === "role" && access.default_role === name) out.push("default_role names it (sl set access default_role --unset)");
+  if (kind === "role" && access.default_role === name) out.push("default_role names it (semlayer set access default_role --unset)");
   for (const r of arr(access.restrictions).filter(isObj)) {
     const allow = isObj(r.allow) ? r.allow : {};
     const rest = strs(allow.roles).filter((x) => x !== name);
     const fix = rest.length ? `allow.roles ${rest.join(",")}` : "allow.roles --unset";
-    if (kind === "role" && strs(allow.roles).includes(name)) out.push(`restriction ${String(r.name)} names it in allow.roles (sl set access restriction:${String(r.name)} ${fix})`);
-    if (kind === "attribute" && reads(allow.when)) out.push(`restriction ${String(r.name)} reads it in allow.when (sl set access restriction:${String(r.name)} allow.when "<condition>")`);
+    if (kind === "role" && strs(allow.roles).includes(name)) out.push(`restriction ${String(r.name)} names it in allow.roles (semlayer set access restriction:${String(r.name)} ${fix})`);
+    if (kind === "attribute" && reads(allow.when)) out.push(`restriction ${String(r.name)} reads it in allow.when (semlayer set access restriction:${String(r.name)} allow.when "<condition>")`);
   }
   if (kind === "attribute") {
     for (const r of arr(access.roles).filter(isObj)) {
-      if (reads(r.assign_when)) out.push(`role ${String(r.name)} reads it in assign_when (sl set access role:${String(r.name)} assign_when "<condition>", or --unset)`);
+      if (reads(r.assign_when)) out.push(`role ${String(r.name)} reads it in assign_when (semlayer set access role:${String(r.name)} assign_when "<condition>", or --unset)`);
       for (const rf of arr(r.row_filters).filter(isObj)) {
         const h = isObj(rf.hierarchy) ? rf.hierarchy : undefined;
         const inExpr = typeof rf.expr === "string" && [...rf.expr.matchAll(USER_PLACEHOLDER)].some((m) => m[1] === name);
         if (inExpr || (typeof h?.user === "string" && h.user.replace(/^user\./, "") === name))
-          out.push(`role ${String(r.name)}'s row filter on ${String(rf.model)} reads it (sl remove-row-filter --role ${String(r.name)} --model ${String(rf.model)})`);
+          out.push(`role ${String(r.name)}'s row filter on ${String(rf.model)} reads it (semlayer remove-row-filter --role ${String(r.name)} --model ${String(rf.model)})`);
       }
     }
   }
@@ -254,11 +254,11 @@ function referrers(root: string, access: Obj, kind: EntryKind, name: string): st
   try {
     goldens = listGoldens(root);
   } catch {
-    // A golden that cannot be read names nothing here; sl validate reports it.
+    // A golden that cannot be read names nothing here; semlayer validate reports it.
   }
   for (const { golden: g } of goldens) {
-    if (kind === "role" && g?.role === name) out.push(`golden ${g.name} runs as it (sl set golden:${g.name} role --unset)`);
-    if (kind === "attribute" && isObj(g?.user) && name in g.user) out.push(`golden ${g.name} sets it in user (sl set golden:${g.name} user '<json>', or --unset)`);
+    if (kind === "role" && g?.role === name) out.push(`golden ${g.name} runs as it (semlayer set golden:${g.name} role --unset)`);
+    if (kind === "attribute" && isObj(g?.user) && name in g.user) out.push(`golden ${g.name} sets it in user (semlayer set golden:${g.name} user '<json>', or --unset)`);
   }
   return out;
 }
@@ -266,7 +266,7 @@ function referrers(root: string, access: Obj, kind: EntryKind, name: string): st
 // Removes an entry, refusing while anything names it.
 export function removeEntry(root: string, kind: EntryKind, rawName: string | undefined): AccessEditOutcome & { name: string } {
   const name = (rawName ?? "").trim();
-  if (!name) throw new UserError(`Usage: sl remove-${kind} <name>.`);
+  if (!name) throw new UserError(`Usage: semlayer remove-${kind} <name>.`);
   const access = locate(root, "access").item;
   const { index } = find(access, kind, name);
   const named = kind === "restriction" ? [] : referrers(root, access, kind, name);
@@ -278,21 +278,21 @@ export function removeEntry(root: string, kind: EntryKind, rawName: string | und
   return { ...commit(root, `remove ${WORD[kind]} ${name}`, (_doc, map) => removeAt(map, SECTION[kind], index)), name };
 }
 
-// sl set access <kind>:<name> <key> (<value> | --unset).
+// semlayer set access <kind>:<name> <key> (<value> | --unset).
 export function setEntryKey(root: string, kind: EntryKind, name: string, key: string, raw: string | undefined): AccessEditOutcome & { value: unknown } {
   const access = locate(root, "access").item;
   const { index, item } = find(access, kind, name);
   const keys = Object.keys(ENTRY_KEYS[kind]);
-  if (key === "name") throw new UserError(`sl set does not rename a ${WORD[kind]}: add it under the new name (${ADD[kind]}) and remove the old one (sl remove-${kind} ${name}).`);
-  if (kind === "role" && key === "row_filters") throw new UserError(`Row filters are added and removed one at a time: sl add-row-filter --role ${name} --model <source.model> ..., sl remove-row-filter --role ${name} --model <source.model>.`);
-  if (kind === "role" && key === "open_questions") throw new UserError(`A role's open questions are added with sl question add access.roles.${name} --text "<question>".`);
-  if (!keys.includes(key)) throw new UserError(`A ${WORD[kind]} has no key "${key}". Keys sl set access ${kind}:${name} takes: ${keys.join(", ")}.`);
-  if (raw === undefined && REQUIRED[kind].includes(key)) throw new UserError(`A ${WORD[kind]} needs ${key}; set another value, or remove the ${WORD[kind]} with sl remove-${kind} ${name}.`);
+  if (key === "name") throw new UserError(`semlayer set does not rename a ${WORD[kind]}: add it under the new name (${ADD[kind]}) and remove the old one (semlayer remove-${kind} ${name}).`);
+  if (kind === "role" && key === "row_filters") throw new UserError(`Row filters are added and removed one at a time: semlayer add-row-filter --role ${name} --model <source.model> ..., semlayer remove-row-filter --role ${name} --model <source.model>.`);
+  if (kind === "role" && key === "open_questions") throw new UserError(`A role's open questions are added with semlayer question add access.roles.${name} --text "<question>".`);
+  if (!keys.includes(key)) throw new UserError(`A ${WORD[kind]} has no key "${key}". Keys semlayer set access ${kind}:${name} takes: ${keys.join(", ")}.`);
+  if (raw === undefined && REQUIRED[kind].includes(key)) throw new UserError(`A ${WORD[kind]} needs ${key}; set another value, or remove the ${WORD[kind]} with semlayer remove-${kind} ${name}.`);
   const value = raw === undefined ? undefined : parse(kind, key, raw);
   if (isDeepStrictEqual(getIn(item, key), value)) return { ...unchanged(root), value: value ?? null };
   const other = key === "allow.roles" ? "allow.when" : "allow.roles";
   if (kind === "restriction" && raw === undefined && key.startsWith("allow.") && getIn(item, other) === undefined)
-    throw new UserError(`Restriction ${name} needs allow.roles or allow.when: with neither, its targets are hidden from everyone. Nothing was written. Set ${other} first, or remove the restriction with sl remove-restriction ${name}.`);
+    throw new UserError(`Restriction ${name} needs allow.roles or allow.when: with neither, its targets are hidden from everyone. Nothing was written. Set ${other} first, or remove the restriction with semlayer remove-restriction ${name}.`);
   const [head, sub] = key.split(".") as [string, string?];
   const outcome = commit(root, `${raw === undefined ? "remove" : "set"} ${key} on ${WORD[kind]} ${name}`, (doc) => {
     const entry = entryMap(doc, kind, index);
@@ -324,7 +324,7 @@ export interface RowFilterInput {
 
 const MODEL_REF = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/;
 const FILTER_USAGE =
-  'sl add-row-filter --role <role> --model <source.model> --expr "<sql predicate>", or for a span of control --column <column> --via <source.model> --manager <column> --member <column> --user <attribute>';
+  'semlayer add-row-filter --role <role> --model <source.model> --expr "<sql predicate>", or for a span of control --column <column> --via <source.model> --manager <column> --member <column> --user <attribute>';
 
 function describe(rf: Obj): string {
   const h = isObj(rf.hierarchy) ? rf.hierarchy : undefined;
@@ -335,14 +335,14 @@ function roleAndModel(root: string, input: RowFilterInput, usage: string): { acc
   const role = (input.role ?? "").trim();
   const model = (input.model ?? "").trim();
   if (!role || !model) throw new UserError(`Usage: ${usage}.`);
-  if (!MODEL_REF.test(model)) throw new UserError(`--model is a model as source.model, such as warehouse.orders; got ${JSON.stringify(model)}. Run sl status to list the models.`);
+  if (!MODEL_REF.test(model)) throw new UserError(`--model is a model as source.model, such as warehouse.orders; got ${JSON.stringify(model)}. Run semlayer status to list the models.`);
   const access = locate(root, "access").item;
   return { access, role, model, ...find(access, "role", role) };
 }
 
-// Why an expr names a column the model's table lacks, as the compiler's rule check reads it (sl
+// Why an expr names a column the model's table lacks, as the compiler's rule check reads it (semlayer
 // validate checks an expr's join references and text, not its plain column names), or undefined:
-// also when the model, its source or its snapshot cannot be read, which sl validate reports.
+// also when the model, its source or its snapshot cannot be read, which semlayer validate reports.
 function unknownColumn(root: string, modelRef: string, expr: string): string | undefined {
   const [source, name] = modelRef.split(".") as [string, string];
   try {
@@ -357,7 +357,7 @@ function unknownColumn(root: string, modelRef: string, expr: string): string | u
 }
 
 // The ignored columns a row filter's expr reads, on its model or through its joins; none when the
-// models cannot be read, which sl validate reports.
+// models cannot be read, which semlayer validate reports.
 function ignoredInFilter(root: string, modelRef: string, expr: string): IgnoredRead[] {
   const [source, name] = modelRef.split(".") as [string, string];
   try {
@@ -399,13 +399,13 @@ export function addRowFilter(root: string, input: RowFilterInput): AccessEditOut
 
 // Removes a role's row filter on a model; --index picks one when the role has several there.
 export function removeRowFilter(root: string, input: RowFilterInput & { index?: string }): AccessEditOutcome & { filter: Obj } {
-  const { role, index, item, model } = roleAndModel(root, input, "sl remove-row-filter --role <role> --model <source.model> [--index <n>]");
+  const { role, index, item, model } = roleAndModel(root, input, "semlayer remove-row-filter --role <role> --model <source.model> [--index <n>]");
   const all = arr(item.row_filters);
   const on = all.map((rf, at) => ({ rf, at })).filter((x): x is { rf: Obj; at: number } => isObj(x.rf) && x.rf.model === model);
   if (!on.length) {
     const models = [...new Set(all.filter(isObj).map((rf) => String(rf.model)))];
     const has = models.length ? `its row filters are on ${models.join(", ")}` : "it has no row filters";
-    throw new UserError(`Role ${role} has no row filter on ${model}; ${has}. Nothing was written. Next: sl access --roles ${role} shows what the role sees.`);
+    throw new UserError(`Role ${role} has no row filter on ${model}; ${has}. Nothing was written. Next: semlayer access --roles ${role} shows what the role sees.`);
   }
   const listed = on.map((x, i) => `  ${i + 1}. ${describe(x.rf)}`).join("\n");
   const n = input.index === undefined ? (on.length === 1 ? 1 : 0) : /^\d+$/.test(input.index.trim()) ? Number(input.index.trim()) : 0;
@@ -416,7 +416,7 @@ export function removeRowFilter(root: string, input: RowFilterInput & { index?: 
   return { ...outcome, filter: picked.rf };
 }
 
-// --- a role's open questions (sl question add|resolve access.roles.<role>) --------------------
+// --- a role's open questions (semlayer question add|resolve access.roles.<role>) --------------------
 
 // The role an access.roles.<role> ref names: its path in access.yaml and its parsed value.
 export function locateRole(root: string, ref: string): { file: string; path: (string | number)[]; item: Obj } | undefined {

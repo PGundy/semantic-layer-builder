@@ -1,5 +1,5 @@
-# Query plans and their results, written by --emit-sql and sl results add.
-.sl/plans/
-.sl/lock
-.sl/lock.takeover
-*.sl-tmp
+# Query plans and their results, written by --emit-sql and semlayer results add.
+.semlayer/plans/
+.semlayer/lock
+.semlayer/lock.takeover
+*.semlayer-tmp

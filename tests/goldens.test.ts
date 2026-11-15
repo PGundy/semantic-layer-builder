@@ -6,7 +6,7 @@ import { goldenHash } from "../skills/semantic-layer/scripts/lib/approval-hash.t
 import { compareRows, currencyColumns, displayRows, goldenDraftFields, goldenPlan, twoDecimals } from "../skills/semantic-layer/scripts/lib/goldens.ts";
 import type { Golden, Metric, Model, QueryPlan } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { confirmWithYes, duckdbSource, initProject, sl, tempRoot } from "./helpers.ts";
+import { confirmWithYes, duckdbSource, initProject, semlayer, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -261,7 +261,7 @@ describe("goldenDraftFields", () => {
     expect(goldenDraftFields(golden({ source: "wh", measures: ["net"] }), [ordersModel("approved")], metrics)).toEqual([]);
   });
 
-  test("a metric reference sl approve rejects (spaces in a placeholder or a ratio side) resolves to nothing", () => {
+  test("a metric reference semlayer approve rejects (spaces in a placeholder or a ratio side) resolves to nothing", () => {
     const metrics: Metric[] = [
       { name: "spaced", source: "wh", type: "derived", expr: "{ orders.revenue } - {orders.order_count}", ...APPROVED },
       { name: "odd_ratio", source: "wh", type: "ratio", numerator: " orders.revenue", denominator: "orders.order_count", ...APPROVED },
@@ -346,7 +346,7 @@ describe("goldens CLI on duckdb", () => {
   test("run, confirm, check, then a data change fails the check", async () => {
     const t = await setup();
 
-    const run = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region", "--json"]);
+    const run = await semlayer(t.root, ["goldens", "run", "--name", "revenue_by_region", "--json"]);
     expect(run.code).toBe(0);
     const ran = run.json<{ name: string; columns: string[]; rows: Record<string, unknown>[] }>();
     expect(ran.name).toBe("revenue_by_region");
@@ -354,14 +354,14 @@ describe("goldens CLI on duckdb", () => {
     expect(ran.rows).toHaveLength(3);
     expect(ran.rows).toContainEqual({ region: "east", revenue: 150.5 });
 
-    const human = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
+    const human = await semlayer(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
     expect(human.code).toBe(0);
     expect(human.out).toContain("west");
     expect(human.out).toContain("(3 rows)");
     expect(human.out).toContain(
       "Confirm only once its measures are approved and the owner says these rows match a figure they trust: " +
-        "sl readback --targets golden:revenue_by_region --tolerance <agreed tolerance>, read it to the owner, record their answer with " +
-          'sl reply --readback <readback_id> --item <n> --text "<owner\'s words>" --verdict yes --by "<owner>", then sl goldens confirm --name revenue_by_region --tolerance <agreed tolerance>.',
+        "semlayer readback --targets golden:revenue_by_region --tolerance <agreed tolerance>, read it to the owner, record their answer with " +
+          'semlayer reply --readback <readback_id> --item <n> --text "<owner\'s words>" --verdict yes --by "<owner>", then semlayer goldens confirm --name revenue_by_region --tolerance <agreed tolerance>.',
     );
     expect(human.out).not.toContain("Already confirmed");
 
@@ -381,31 +381,31 @@ describe("goldens CLI on duckdb", () => {
     expect(saved.expected?.tolerance).toBe(0.005);
     expect(saved.expected?.rows).toContainEqual({ region: "west", revenue: 200 });
 
-    const rerun = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
+    const rerun = await semlayer(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
     expect(rerun.code).toBe(0);
-    expect(rerun.out).toContain("Already confirmed; sl goldens check --name revenue_by_region compares these rows with the recorded ones.");
-    expect(rerun.out).not.toContain("sl goldens confirm");
+    expect(rerun.out).toContain("Already confirmed; semlayer goldens check --name revenue_by_region compares these rows with the recorded ones.");
+    expect(rerun.out).not.toContain("semlayer goldens confirm");
 
-    const validate = await sl(t.root, ["validate", "--json"]);
+    const validate = await semlayer(t.root, ["validate", "--json"]);
     // The fixture has no models or access file; only the fields confirm writes are checked here.
     const written = validate
       .json<{ issues: { file: string; path: string }[] }>()
       .issues.filter((i) => i.file.startsWith("goldens/") && /^(expected|status|confirmed|$)/.test(i.path));
     expect(written).toEqual([]);
 
-    const pass = await sl(t.root, ["goldens", "check", "--json"]);
+    const pass = await semlayer(t.root, ["goldens", "check", "--json"]);
     expect(pass.code).toBe(0);
     // The request compiled from the YAML and the golden's cross_check_sql (written as sql) both give the rows.
     expect(pass.json()).toEqual({ passed: 1, failed: 0, results: [{ name: "revenue_by_region", ok: true, diffs: [], compiled: "pass", cross_check: "pass" }] });
 
-    const passHuman = await sl(t.root, ["goldens", "check"]);
+    const passHuman = await semlayer(t.root, ["goldens", "check"]);
     expect(passHuman.out).toContain("pass  revenue_by_region");
 
     // A change inside the tolerance still passes; a larger one fails with the cell named.
     await mutate(join(t.dir, "wh.duckdb"), "update orders set amount = 200.50 where id = 3");
-    expect((await sl(t.root, ["goldens", "check"])).code).toBe(0);
+    expect((await semlayer(t.root, ["goldens", "check"])).code).toBe(0);
     await mutate(join(t.dir, "wh.duckdb"), "update orders set amount = 250.00 where id = 3");
-    const fail = await sl(t.root, ["goldens", "check", "--json"]);
+    const fail = await semlayer(t.root, ["goldens", "check", "--json"]);
     expect(fail.code).toBe(1);
     const failed = fail.json<{ passed: number; failed: number; results: { name: string; ok: boolean; diffs: string[] }[] }>();
     expect(failed.failed).toBe(1);
@@ -416,7 +416,7 @@ describe("goldens CLI on duckdb", () => {
       `cross_check_sql: Row ${westRow} (region="west"), column revenue: expected 200, got 250 (whole numbers compare exactly).`,
     ]);
 
-    const failHuman = await sl(t.root, ["goldens", "check", "--name", "revenue_by_region"]);
+    const failHuman = await semlayer(t.root, ["goldens", "check", "--name", "revenue_by_region"]);
     expect(failHuman.code).toBe(1);
     expect(failHuman.out).toContain("FAIL  revenue_by_region");
     expect(failHuman.out).toContain("expected 200, got 250");
@@ -429,10 +429,10 @@ describe("goldens CLI on duckdb", () => {
     );
     const t = await setup(ordered);
     expect((await confirmWithYes(t.root, ["--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0"])).code).toBe(0);
-    expect((await sl(t.root, ["goldens", "check"])).code).toBe(0);
+    expect((await semlayer(t.root, ["goldens", "check"])).code).toBe(0);
     const reversed = readFileSync(t.goldenPath, "utf8").replace("order by region", "order by region desc");
     writeFileSync(t.goldenPath, reversed);
-    const r = await sl(t.root, ["goldens", "check", "--json"]);
+    const r = await semlayer(t.root, ["goldens", "check", "--json"]);
     expect(r.code).toBe(1);
     // Only the cross-check changed: the difference names it, and the compiled rows still pass.
     expect(r.json<{ results: { diffs: string[] }[] }>().results[0]).toMatchObject({
@@ -465,10 +465,10 @@ describe("goldens CLI on duckdb", () => {
 
   test("write SQL is refused", async () => {
     const t = await setup(GOLDEN_YAML.replace(/sql: \|\n(  .*\n)+/, "sql: delete from orders\n"));
-    const r = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
+    const r = await semlayer(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("read-only");
-    const emit = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region", "--emit-sql"]);
+    const emit = await semlayer(t.root, ["goldens", "run", "--name", "revenue_by_region", "--emit-sql"]);
     expect(emit.code).toBe(1);
   });
 
@@ -480,8 +480,8 @@ describe("goldens CLI on duckdb", () => {
     const notice = human.out.indexOf("This golden's request uses draft field(s): wh.orders.revenue.");
     expect(notice).toBe(0);
     expect(human.out).toContain(
-      "Approve each field after its readback, then run sl goldens check --name revenue_by_region; if it passes the recorded rows stand, " +
-        "and only changed rows need a new confirm. sl validate warns until then.",
+      "Approve each field after its readback, then run semlayer goldens check --name revenue_by_region; if it passes the recorded rows stand, " +
+        "and only changed rows need a new confirm. semlayer validate warns until then.",
     );
     expect(human.out).not.toContain("rests on draft definitions");
     expect(human.out.indexOf("Recorded 3 expected rows")).toBeGreaterThan(notice);
@@ -492,15 +492,15 @@ describe("goldens CLI on duckdb", () => {
     expect(json.json<{ draft_fields: string[]; tolerance: number }>()).toMatchObject({ draft_fields: ["wh.orders.revenue"], tolerance: 0 });
 
     // The approved golden on a draft field: validate says how to keep its recorded rows.
-    const validate = await sl(t.root, ["validate", "--json"]);
+    const validate = await semlayer(t.root, ["validate", "--json"]);
     const warning = validate.json<{ issues: { path: string; message: string }[] }>().issues.find((i) => i.path === "request.measures[0]");
     expect(warning?.message).toContain(
-      "approve it after its readback, then run sl goldens check --name revenue_by_region; if it passes the recorded rows stand, and only changed rows need a new confirm",
+      "approve it after its readback, then run semlayer goldens check --name revenue_by_region; if it passes the recorded rows stand, and only changed rows need a new confirm",
     );
 
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), approvedOrders());
     // Once the field is approved, the recorded rows stand when the check passes.
-    const check = await sl(t.root, ["goldens", "check", "--name", "revenue_by_region"]);
+    const check = await semlayer(t.root, ["goldens", "check", "--name", "revenue_by_region"]);
     expect(check.code).toBe(0);
     expect(check.out).toContain("1 passed, 0 failed.");
     const clean = await confirmWithYes(t.root, ["--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0"]);
@@ -533,7 +533,7 @@ describe("goldens CLI on duckdb", () => {
     expect(broken.code).toBe(0);
     expect(broken.json<{ written: boolean; draft_fields: string[] }>()).toMatchObject({ written: true, draft_fields: ["wh.orders.revenue"] });
     expect(broken.err).toContain("Could not read models/wh/broken.yaml, metrics.yaml to list draft fields (");
-    expect(broken.err).toContain("run sl validate.");
+    expect(broken.err).toContain("run semlayer validate.");
     expect(readYaml<Golden>(join(t.root, "goldens", "revenue_by_region.yaml")).status).toBe("approved");
   });
 
@@ -564,9 +564,9 @@ describe("goldens CLI on duckdb", () => {
   test("a SQL error from the database is a plain user error in run, confirm and check", async () => {
     const t = await setup(GOLDEN_YAML.replace("from orders\n", "from no_such_table\n"));
     for (const sub of ["run", "confirm"]) {
-      const r = await sl(t.root, ["goldens", sub, "--name", "revenue_by_region", "--by", "Dana"]);
+      const r = await semlayer(t.root, ["goldens", sub, "--name", "revenue_by_region", "--by", "Dana"]);
       expect(r.code).toBe(1);
-      expect(r.err).toStartWith(`sl goldens: Query failed: `);
+      expect(r.err).toStartWith(`semlayer goldens: Query failed: `);
       expect(r.err).toContain("no_such_table");
       expect(r.err).not.toContain("unexpected error");
       expect(r.err).not.toMatch(/\n\s+at /);
@@ -575,7 +575,7 @@ describe("goldens CLI on duckdb", () => {
 
     const g = readYaml<Golden>(t.goldenPath);
     writeYaml(t.goldenPath, { ...g, status: "approved", confirmed_by: "Dana", confirmed_at: "2026-01-15", expected: { tolerance: 0, rows: [{ n: 1 }] } });
-    const check = await sl(t.root, ["goldens", "check", "--json"]);
+    const check = await semlayer(t.root, ["goldens", "check", "--json"]);
     expect(check.code).toBe(1);
     const diff = check.json<{ results: { diffs: string[] }[] }>().results[0]!.diffs[0]!;
     expect(diff).toStartWith("cross_check_sql did not run: ");
@@ -585,18 +585,18 @@ describe("goldens CLI on duckdb", () => {
 
   test("usage errors are user errors", async () => {
     const t = await setup();
-    expect((await sl(t.root, ["goldens"])).code).toBe(1);
-    expect((await sl(t.root, ["goldens", "nope"])).code).toBe(1);
-    expect((await sl(t.root, ["goldens", "run"])).err).toContain("--name");
-    expect((await sl(t.root, ["goldens", "run", "--name", "missing"])).err).toContain('No golden "missing"');
-    expect((await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", " "])).err).toContain("--by is empty");
+    expect((await semlayer(t.root, ["goldens"])).code).toBe(1);
+    expect((await semlayer(t.root, ["goldens", "nope"])).code).toBe(1);
+    expect((await semlayer(t.root, ["goldens", "run"])).err).toContain("--name");
+    expect((await semlayer(t.root, ["goldens", "run", "--name", "missing"])).err).toContain('No golden "missing"');
+    expect((await semlayer(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--by", " "])).err).toContain("--by is empty");
     const tol = await confirmWithYes(t.root, ["--name", "revenue_by_region", "--by", "D", "--tolerance", "abc"]);
     expect(tol.code).toBe(1);
     expect(tol.err).toContain("--tolerance");
-    const draftCheck = await sl(t.root, ["goldens", "check", "--name", "revenue_by_region"]);
+    const draftCheck = await semlayer(t.root, ["goldens", "check", "--name", "revenue_by_region"]);
     expect(draftCheck.code).toBe(1);
     expect(draftCheck.err).toContain("no expected rows");
-    const none = await sl(t.root, ["goldens", "check", "--json"]);
+    const none = await semlayer(t.root, ["goldens", "check", "--json"]);
     expect(none.code).toBe(0);
     expect(none.json()).toEqual({ passed: 0, failed: 0, results: [] });
   });
@@ -664,11 +664,11 @@ describe("currency display", () => {
     model.measures[0]!.format = "currency";
     model.measures[0]!.currency = "USD";
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), model);
-    const run = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
+    const run = await semlayer(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
     expect(run.code).toBe(0);
     expect(run.out).toMatch(/east\s+150\.50\n/);
     expect(run.out).toMatch(/west\s+200\.00\n/);
-    const json = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region", "--json"]);
+    const json = await semlayer(t.root, ["goldens", "run", "--name", "revenue_by_region", "--json"]);
     expect(json.json<{ rows: unknown[] }>().rows).toContainEqual({ region: "east", revenue: 150.5 });
     const confirm = await confirmWithYes(t.root, ["--name", "revenue_by_region", "--by", "Dana", "--tolerance", "0"]);
     expect(confirm.code).toBe(0);
@@ -692,7 +692,7 @@ describe("goldens confirm: who it ran as", () => {
     expect(saved.role).toBeUndefined();
     expect(saved.confirmed_as).toEqual({});
     // The written fields pass the schema.
-    const validate = await sl(t.root, ["validate", "--json"]);
+    const validate = await semlayer(t.root, ["validate", "--json"]);
     const issues = validate.json<{ issues: { file: string; path: string }[] }>().issues.filter((i) => i.file.startsWith("goldens/") && i.path.startsWith("confirmed"));
     expect(issues).toEqual([]);
   });
@@ -705,7 +705,7 @@ describe("goldens confirm: who it ran as", () => {
     expect(human.code).toBe(0);
     const warning =
       'Golden "revenue_by_region" runs as role analyst, which is defined only in a draft access.yaml: its rules may still change before ' +
-      "access is approved. Confirm a golden that runs as a role after access.yaml is approved; confirmed now, rerun sl goldens check " +
+      "access is approved. Confirm a golden that runs as a role after access.yaml is approved; confirmed now, rerun semlayer goldens check " +
       "--name revenue_by_region and read it back to the owner after every change to role analyst.";
     expect(human.err).toContain(warning);
     expect(human.out).toContain("Recorded 3 expected rows");
@@ -738,30 +738,30 @@ describe("goldens confirm records the compiled rows on a yes to exactly them", (
 
   test("the readback shows the compiled rows, its hash covers them, and confirm records them", async () => {
     const t = await setup();
-    const run = (await sl(t.root, ["goldens", "run", "--name", "revenue_by_region", "--json"])).json<{ compiled: boolean; rows: Record<string, unknown>[] }>();
+    const run = (await semlayer(t.root, ["goldens", "run", "--name", "revenue_by_region", "--json"])).json<{ compiled: boolean; rows: Record<string, unknown>[] }>();
     expect(run.compiled).toBe(true);
-    const rb = await sl(t.root, ["readback", "--targets", "golden:revenue_by_region", "--tolerance", "0"]);
+    const rb = await semlayer(t.root, ["readback", "--targets", "golden:revenue_by_region", "--tolerance", "0"]);
     expect(rb.code).toBe(0);
     expect(rb.out).toContain("Its request, compiled from the current YAML, returns now 3 rows:");
     expect(rb.out).toContain("Its cross_check_sql gives the same rows.");
-    const item = JSON.parse(readFileSync(join(t.root, ".sl", "pending", "rb_0001.json"), "utf8")).items[0];
+    const item = JSON.parse(readFileSync(join(t.root, ".semlayer", "pending", "rb_0001.json"), "utf8")).items[0];
     expect(item.content_hash).toBe(goldenHash(readYaml(t.goldenPath), run.rows, 0));
     const reply = ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Matches the Q1 pack.", "--verdict", "yes", "--by", "Dana"];
-    expect((await sl(t.root, reply)).code).toBe(0);
-    const confirm = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--json"]);
+    expect((await semlayer(t.root, reply)).code).toBe(0);
+    const confirm = await semlayer(t.root, ["goldens", "confirm", "--name", "revenue_by_region", "--json"]);
     expect(confirm.code).toBe(0);
     expect(readYaml<Golden>(t.goldenPath).expected).toEqual({ tolerance: 0, rows: run.rows });
   });
 
   test("a layer edit after the yes changes the compiled rows, and confirm refuses that yes though the golden is unchanged", async () => {
     const t = await setup(NO_CROSS_CHECK);
-    expect((await sl(t.root, ["readback", "--targets", "golden:revenue_by_region", "--tolerance", "0"])).code).toBe(0);
-    expect((await sl(t.root, ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Yes.", "--verdict", "yes", "--by", "Dana"])).code).toBe(0);
+    expect((await semlayer(t.root, ["readback", "--targets", "golden:revenue_by_region", "--tolerance", "0"])).code).toBe(0);
+    expect((await semlayer(t.root, ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Yes.", "--verdict", "yes", "--by", "Dana"])).code).toBe(0);
     const model = approvedOrders();
     model.measures[0]!.expr = "amount * 2";
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), model);
     const before = readFileSync(t.goldenPath, "utf8");
-    const refused = await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region"]);
+    const refused = await semlayer(t.root, ["goldens", "confirm", "--name", "revenue_by_region"]);
     expect(refused.code).toBe(1);
     expect(refused.err).toContain("the golden, the rows its request compiles to now or the tolerance changed since the owner said yes");
     expect(readFileSync(t.goldenPath, "utf8")).toBe(before);
@@ -773,19 +773,19 @@ describe("goldens confirm records the compiled rows on a yes to exactly them", (
 
   test("a cross_check_sql that disagrees with the compiled request is refused at readback, writing nothing", async () => {
     const t = await setup(GOLDEN_YAML.replace("sum(amount) as revenue", "sum(amount) + 1 as revenue"));
-    const rb = await sl(t.root, ["readback", "--targets", "golden:revenue_by_region", "--tolerance", "0"]);
+    const rb = await semlayer(t.root, ["readback", "--targets", "golden:revenue_by_region", "--tolerance", "0"]);
     expect(rb.code).toBe(1);
     expect(rb.err).toContain("cross_check_sql gives other rows than the request compiled from the YAML");
-    expect(existsSync(join(t.root, ".sl", "pending"))).toBe(false);
+    expect(existsSync(join(t.root, ".semlayer", "pending"))).toBe(false);
   });
 
   test("renaming sql to cross_check_sql keeps the owner's yes", async () => {
     const t = await setup();
-    expect((await sl(t.root, ["readback", "--targets", "golden:revenue_by_region", "--tolerance", "0"])).code).toBe(0);
-    expect((await sl(t.root, ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Yes.", "--verdict", "yes", "--by", "Dana"])).code).toBe(0);
+    expect((await semlayer(t.root, ["readback", "--targets", "golden:revenue_by_region", "--tolerance", "0"])).code).toBe(0);
+    expect((await semlayer(t.root, ["reply", "--readback", "rb_0001", "--item", "1", "--text", "Yes.", "--verdict", "yes", "--by", "Dana"])).code).toBe(0);
     writeFileSync(t.goldenPath, readFileSync(t.goldenPath, "utf8").replace("\nsql: |", "\ncross_check_sql: |"));
-    expect((await sl(t.root, ["goldens", "confirm", "--name", "revenue_by_region"])).code).toBe(0);
-    const issues = (await sl(t.root, ["validate", "--json"])).json<{ issues: { file: string; message: string }[] }>().issues;
+    expect((await semlayer(t.root, ["goldens", "confirm", "--name", "revenue_by_region"])).code).toBe(0);
+    const issues = (await semlayer(t.root, ["validate", "--json"])).json<{ issues: { file: string; message: string }[] }>().issues;
     expect(issues.filter((i) => i.file === "goldens/revenue_by_region.yaml" && i.message.includes("no recorded owner yes"))).toEqual([]);
   });
 });
@@ -801,15 +801,15 @@ describe("goldens CLI on a snowflake source", () => {
     const goldenPath = join(t.root, "goldens", "revenue_by_region.yaml");
     writeFileSync(goldenPath, GOLDEN_YAML);
 
-    const live = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
+    const live = await semlayer(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
     expect(live.code).toBe(1);
     expect(live.err).toContain("--emit-sql");
 
-    const emit = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region", "--emit-sql"]);
+    const emit = await semlayer(t.root, ["goldens", "run", "--name", "revenue_by_region", "--emit-sql"]);
     expect(emit.code).toBe(0);
     const plan = emit.json<QueryPlan>();
     expect(plan.dialect).toBe("snowflake");
-    // sl sql compiles postgres and duckdb sources, so a snowflake golden runs its cross_check_sql alone.
+    // semlayer sql compiles postgres and duckdb sources, so a snowflake golden runs its cross_check_sql alone.
     expect(plan.queries.map((q) => q.id)).toEqual(["golden:revenue_by_region:cross_check"]);
     expect(plan.queries[0]!.sql).toContain("group by region");
 
@@ -823,7 +823,7 @@ describe("goldens CLI on a snowflake source", () => {
         ],
       }),
     );
-    const run = await sl(t.root, ["goldens", "run", "--name", "revenue_by_region", "--results", resultsFile, "--json"]);
+    const run = await semlayer(t.root, ["goldens", "run", "--name", "revenue_by_region", "--results", resultsFile, "--json"]);
     expect(run.code).toBe(0);
     expect(run.json<{ columns: string[] }>().columns).toEqual(["region", "revenue"]);
 
@@ -831,11 +831,11 @@ describe("goldens CLI on a snowflake source", () => {
     expect(confirm.code).toBe(0);
     expect(readFileSync(goldenPath, "utf8")).toContain("# keep this note");
 
-    const checkEmit = await sl(t.root, ["goldens", "check", "--emit-sql"]);
+    const checkEmit = await semlayer(t.root, ["goldens", "check", "--emit-sql"]);
     expect(checkEmit.code).toBe(0);
     expect(checkEmit.json<QueryPlan>().queries.map((q) => q.id)).toEqual(["golden:revenue_by_region:cross_check"]);
 
-    const noResults = await sl(t.root, ["goldens", "check"]);
+    const noResults = await semlayer(t.root, ["goldens", "check"]);
     expect(noResults.code).toBe(1);
     expect(noResults.err).toContain("--results");
 
@@ -849,7 +849,7 @@ describe("goldens CLI on a snowflake source", () => {
         ],
       }),
     );
-    const check = await sl(t.root, ["goldens", "check", "--results", resultsFile, "--json"]);
+    const check = await semlayer(t.root, ["goldens", "check", "--results", resultsFile, "--json"]);
     expect(check.code).toBe(0);
     expect(check.json<{ passed: number }>().passed).toBe(1);
   });
@@ -865,8 +865,8 @@ describe("goldens CLI safety and resilience", () => {
       const r = await confirmWithYes(t.root, ["--name", name, "--by", "X", "--json"]);
       expect(r.code).toBe(1);
       expect(r.err).toContain("not a golden name");
-      expect((await sl(t.root, ["goldens", "run", "--name", name])).code).toBe(1);
-      expect((await sl(t.root, ["goldens", "check", "--name", name])).code).toBe(1);
+      expect((await semlayer(t.root, ["goldens", "run", "--name", name])).code).toBe(1);
+      expect((await semlayer(t.root, ["goldens", "check", "--name", name])).code).toBe(1);
     }
     expect(readFileSync(outside, "utf8")).toBe(before);
   });
@@ -884,7 +884,7 @@ describe("goldens CLI safety and resilience", () => {
     expect((await confirmWithYes(t.root, ["--name", "revenue_by_region", "--by", "Dana"])).code).toBe(0);
     const broken = GOLDEN_YAML.replace("name: revenue_by_region", "name: broken").replace("source: wh", "source: gone");
     writeFileSync(join(t.root, "goldens", "broken.yaml"), broken.replace("status: draft", "status: approved"));
-    const r = await sl(t.root, ["goldens", "check", "--json"]);
+    const r = await semlayer(t.root, ["goldens", "check", "--json"]);
     expect(r.code).toBe(1);
     const doc = r.json<{ passed: number; failed: number; results: { name: string; ok: boolean; diffs: string[] }[] }>();
     expect(doc.passed).toBe(1);
@@ -900,7 +900,7 @@ describe("goldens CLI safety and resilience", () => {
   test("check refuses --source together with --name", async () => {
     const t = await setup();
     expect((await confirmWithYes(t.root, ["--name", "revenue_by_region", "--by", "Dana"])).code).toBe(0);
-    const r = await sl(t.root, ["goldens", "check", "--name", "revenue_by_region", "--source", "zzz"]);
+    const r = await semlayer(t.root, ["goldens", "check", "--name", "revenue_by_region", "--source", "zzz"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("not both");
   });
@@ -911,7 +911,7 @@ describe("goldens CLI safety and resilience", () => {
       "expected:\n  rows:\n    - { region: east, revenue: 150.0 }\n    - { region: west, revenue: 200 }\n    - { region: north, revenue: 10.25 }\n",
     );
     writeFileSync(t.goldenPath, handWritten);
-    const r = await sl(t.root, ["goldens", "check", "--json"]);
+    const r = await semlayer(t.root, ["goldens", "check", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<{ passed: number }>().passed).toBe(1);
   });

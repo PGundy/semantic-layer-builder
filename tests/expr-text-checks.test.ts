@@ -142,7 +142,7 @@ async function runDuckdb(file: string, sql: string, params: unknown[]) {
   }
 }
 
-describe("sl validate", () => {
+describe("semlayer validate", () => {
   test("reports each problem at the field's path: dimension and measure exprs, measure filters and metric exprs", async () => {
     for (const [text, problem] of HOSTILE) {
       const { root } = await shop(
@@ -194,7 +194,7 @@ describe("sl validate", () => {
   });
 });
 
-describe("sl sql", () => {
+describe("semlayer sql", () => {
   test("refuses a hostile dimension expr, measure expr or filter as a layer error naming the field's path", async () => {
     for (const [text, problem] of HOSTILE) {
       for (const [edit, path, role, request] of [
@@ -208,7 +208,7 @@ describe("sl sql", () => {
         const r = compileRequest(root, request);
         expect(r.ok).toBe(false);
         expect(refusals(r)).toContainEqual(["invalid_layer", `model orders ${path} ${problem(role as TextRole)}`]);
-        if (!r.ok) expect(r.refusals.find((x) => x.code === "invalid_layer")!.next).toContain("run sl validate");
+        if (!r.ok) expect(r.refusals.find((x) => x.code === "invalid_layer")!.next).toContain("run semlayer validate");
       }
     }
   }, 30_000);
@@ -239,7 +239,7 @@ describe("sl sql", () => {
     // The metric compiler reads only {model.measure} placeholders, numbers and + - * / ( ), so the
     // marker never reaches the query.
     expect(refusals(r)).toEqual([
-      ["invalid_layer", "metric double_revenue has an expr sl sql cannot read: it combines {model.measure} placeholders with numbers and + - * / ( ) only; run sl validate"],
+      ["invalid_layer", "metric double_revenue has an expr semlayer sql cannot read: it combines {model.measure} placeholders with numbers and + - * / ( ) only; run semlayer validate"],
     ]);
   });
 });

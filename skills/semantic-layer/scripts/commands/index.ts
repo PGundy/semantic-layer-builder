@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 
 // Every file in this directory except this one is a command named after the file
-// (add-source.ts is `sl add-source`). Commands load lazily, so a broken or slow
+// (add-source.ts is `semlayer add-source`). Commands load lazily, so a broken or slow
 // module never affects the others, and adding a command needs no edit here.
 const DIR = import.meta.dir;
 

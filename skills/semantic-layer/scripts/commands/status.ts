@@ -50,7 +50,7 @@ function sourceLines(s: SourceStatus): string[] {
     for (const w of s.waiting_on_connection) lines.push(`    ${w.message}`);
   }
   if (s.approved_joins_without_evidence.length) {
-    const why = s.intake_mode === "export" ? "their evidence waits on a connection" : "run sl check-join";
+    const why = s.intake_mode === "export" ? "their evidence waits on a connection" : "run semlayer check-join";
     lines.push(`  warning: approved joins without evidence (${why}): ${preview(s.approved_joins_without_evidence, 8)}`);
   }
   if (s.missing_columns.length) {

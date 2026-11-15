@@ -7,9 +7,9 @@ import { schemaValidator } from "../skills/semantic-layer/scripts/mcp/schema.ts"
 import type { ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
 import type { Snapshot, SnapshotColumn, SnapshotTable } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readJson, readYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { initProject, sl, tempDir } from "./helpers.ts";
+import { initProject, semlayer, tempDir } from "./helpers.ts";
 
-// sl brief (FR-4.2), on copies of the Acme example layer and a 200-table synthetic snapshot. All data is synthetic.
+// semlayer brief (FR-4.2), on copies of the Acme example layer and a 200-table synthetic snapshot. All data is synthetic.
 
 const REPO = join(import.meta.dir, "..");
 const ACME = join(REPO, "examples", "acme", "semantic");
@@ -44,12 +44,12 @@ function tree(root: string): Record<string, string> {
   return out;
 }
 
-// sl brief --json, checked against the schema, to write nothing, and to print the same bytes twice.
+// semlayer brief --json, checked against the schema, to write nothing, and to print the same bytes twice.
 async function brief(root: string, args: string[]): Promise<BriefPacket & { raw: string }> {
   const before = tree(root);
-  const a = await sl(root, ["brief", ...args, "--json"]);
+  const a = await semlayer(root, ["brief", ...args, "--json"]);
   if (a.code !== 0) throw new Error(a.err);
-  const b = await sl(root, ["brief", ...args, "--json"]);
+  const b = await semlayer(root, ["brief", ...args, "--json"]);
   expect(b.out).toBe(a.out);
   expect(tree(root)).toEqual(before);
   const p = a.json<BriefPacket>();
@@ -82,9 +82,9 @@ function holders(value: unknown, needle: string, parent: Record<string, unknown>
 }
 
 describe("which tables a batch holds", () => {
-  test("batch 1 is exactly sl status's next_batch, and batch 2 the rest in the same order", async () => {
+  test("batch 1 is exactly semlayer status's next_batch, and batch 2 the rest in the same order", async () => {
     const root = acme();
-    const st = (await sl(root, ["status", "--json"])).json<ProjectStatus>();
+    const st = (await semlayer(root, ["status", "--json"])).json<ProjectStatus>();
     expect(st.next_batch?.source).toBe("warehouse");
     const one = await brief(root, ["--source", "warehouse", "--batch", "1"]);
     expect(one.batch).toBe(1);
@@ -103,7 +103,7 @@ describe("which tables a batch holds", () => {
     const y = readYaml<{ settings: Record<string, unknown> }>(path);
     y.settings.batch_size = 3;
     writeYaml(path, y);
-    const st = (await sl(root, ["status", "--json"])).json<ProjectStatus>();
+    const st = (await semlayer(root, ["status", "--json"])).json<ProjectStatus>();
     const p = await brief(root, ["--source", "warehouse", "--batch", "1"]);
     expect(p.batches).toBe(3);
     expect(p.tables.map((t) => t.table)).toEqual(st.next_batch!.tables.map((t) => t.table));
@@ -112,27 +112,27 @@ describe("which tables a batch holds", () => {
 
   test("a batch past the last, a bad number and a missing or doubled selection are refused with the command to run", async () => {
     const root = acme();
-    const r = await sl(root, ["brief", "--source", "warehouse", "--batch", "3"]);
+    const r = await semlayer(root, ["brief", "--source", "warehouse", "--batch", "3"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("has 2 batches of up to 5 tables to interview (8 tables), so there is no batch 3");
-    expect(r.err).toContain("sl brief --source warehouse --batch 2");
+    expect(r.err).toContain("semlayer brief --source warehouse --batch 2");
     for (const bad of ["0", "1.5", "two"]) {
-      const x = await sl(root, ["brief", "--source", "warehouse", "--batch", bad]);
+      const x = await semlayer(root, ["brief", "--source", "warehouse", "--batch", bad]);
       expect(x.code).toBe(1);
       expect(x.err).toContain("--batch needs a whole number of 1 or more");
     }
-    expect((await sl(root, ["brief", "--source", "warehouse"])).err).toContain("sl brief --source warehouse --batch 1");
-    expect((await sl(root, ["brief", "--source", "warehouse", "--batch", "1", "--tables", "fct_orders"])).err).toContain("not both");
-    expect((await sl(root, ["brief", "--source", "warehouse", "--batch", "1", "--budget", "lots"])).err).toContain("--budget needs a whole number");
+    expect((await semlayer(root, ["brief", "--source", "warehouse"])).err).toContain("semlayer brief --source warehouse --batch 1");
+    expect((await semlayer(root, ["brief", "--source", "warehouse", "--batch", "1", "--tables", "fct_orders"])).err).toContain("not both");
+    expect((await semlayer(root, ["brief", "--source", "warehouse", "--batch", "1", "--budget", "lots"])).err).toContain("--budget needs a whole number");
   });
 
-  test("a source with every in-scope table approved has no batch, and the refusal names sl next", async () => {
+  test("a source with every in-scope table approved has no batch, and the refusal names semlayer next", async () => {
     const root = join(tempDir(), "semantic");
     cpSync(ACME, root, { recursive: true });
-    const r = await sl(root, ["brief", "--source", "warehouse", "--batch", "1"]);
+    const r = await semlayer(root, ["brief", "--source", "warehouse", "--batch", "1"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("No table in \"warehouse\" is left to interview");
-    expect(r.err).toContain("sl next");
+    expect(r.err).toContain("semlayer next");
   });
 
   test("--tables names the tables instead, in rank order, approved models included", async () => {
@@ -148,9 +148,9 @@ describe("which tables a batch holds", () => {
     expect(orders.grain).toBe("One row per order.");
     expect(orders.drafted_fields.find((f) => f.ref === "warehouse.orders.revenue")).toMatchObject({ kind: "measure", agg: "sum", status: "approved" });
     expect(orders.joins.find((j) => j.name === "customer")).toMatchObject({ to: "customers", relationship: "many_to_one", evidence: { right_key_unique: true } });
-    const unknown = await sl(root, ["brief", "--source", "warehouse", "--tables", "no_such_table"]);
+    const unknown = await semlayer(root, ["brief", "--source", "warehouse", "--tables", "no_such_table"]);
     expect(unknown.code).toBe(1);
-    expect(unknown.err).toContain("sl tables --source warehouse --all");
+    expect(unknown.err).toContain("semlayer tables --source warehouse --all");
   });
 });
 
@@ -190,7 +190,7 @@ describe("the token budget", () => {
     expect(tiny.budget).toMatchObject({ truncated: true, within_limit: false });
     expect(tiny.tables.every((t) => !t.baseline_guesses && t.columns.every((c) => !c.top_values))).toBe(true);
     expect(keep(tiny)).toEqual(keep(full));
-    const human = await sl(root, ["brief", "--source", "warehouse", "--batch", "1", "--budget", "100"]);
+    const human = await semlayer(root, ["brief", "--source", "warehouse", "--batch", "1", "--budget", "100"]);
     expect(human.out).toContain("Still over the budget");
     expect(human.out).toMatch(/tokens; trimmed \(top values of \d+ tables?, column details of \d+ tables?, baseline guesses of 5 tables\)\./);
     expect(human.out).not.toContain("trimmed to fit");
@@ -205,7 +205,7 @@ describe("the token budget", () => {
     const less = await brief(root, ["--source", "warehouse", "--batch", "1", "--budget", String(full.budget.used - 1)]);
     expect(less.budget).toMatchObject({ truncated: true, within_limit: true });
     expect(less.budget.dropped).toEqual([{ table: less.budget.dropped[0]!.table, what: "top_values", columns: 1 }]);
-    const human = await sl(root, ["brief", "--source", "warehouse", "--batch", "1", "--budget", String(full.budget.used - 1)]);
+    const human = await semlayer(root, ["brief", "--source", "warehouse", "--batch", "1", "--budget", String(full.budget.used - 1)]);
     expect(human.out).toContain("trimmed to fit (top values of 1 table).");
   });
 
@@ -213,7 +213,7 @@ describe("the token budget", () => {
     const root = acme();
     const full = await brief(root, ["--source", "warehouse", "--batch", "1"]);
     for (let limit = 50; limit <= full.budget.used; limit += 97) {
-      const r = await sl(root, ["brief", "--source", "warehouse", "--batch", "1", "--budget", String(limit), "--json"]);
+      const r = await semlayer(root, ["brief", "--source", "warehouse", "--batch", "1", "--budget", String(limit), "--json"]);
       const p = r.json<BriefPacket>();
       expect(p.budget.used).toBe(Math.ceil(r.out.length / 4));
       expect(p.budget.within_limit).toBe(p.budget.used <= limit);
@@ -327,16 +327,16 @@ describe("protected columns and data text", () => {
 
   test("the plain output names the tables and the command for the packet", async () => {
     const root = acme();
-    const r = await sl(root, ["brief", "--source", "warehouse", "--batch", "1"]);
+    const r = await semlayer(root, ["brief", "--source", "warehouse", "--batch", "1"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Batch 1 of 2 for warehouse: 5 tables.");
     expect(r.out).toContain("acme.fct_orders  no model");
-    expect(r.out).toContain("For the packet: sl brief --source warehouse --batch 1 --json");
-    expect(r.out).toContain("Next batch: sl brief --source warehouse --batch 2");
-    const last = await sl(root, ["brief", "--source", "warehouse", "--batch", "2"]);
-    expect(last.out).toContain("Then: sl next");
-    const named = await sl(root, ["brief", "--source", "warehouse", "--tables", "fct_*"]);
-    expect(named.out).toContain("For the packet: sl brief --source warehouse --tables 'fct_*' --json");
+    expect(r.out).toContain("For the packet: semlayer brief --source warehouse --batch 1 --json");
+    expect(r.out).toContain("Next batch: semlayer brief --source warehouse --batch 2");
+    const last = await semlayer(root, ["brief", "--source", "warehouse", "--batch", "2"]);
+    expect(last.out).toContain("Then: semlayer next");
+    const named = await semlayer(root, ["brief", "--source", "warehouse", "--tables", "fct_*"]);
+    expect(named.out).toContain("For the packet: semlayer brief --source warehouse --tables 'fct_*' --json");
   });
 });
 

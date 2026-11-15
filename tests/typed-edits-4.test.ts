@@ -4,13 +4,13 @@ import { join } from "node:path";
 import { checkToolUse } from "../skills/semantic-layer/scripts/hooks/guard-edits.ts";
 import type { Model } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { sl, tempRoot } from "./helpers.ts";
+import { semlayer, tempRoot } from "./helpers.ts";
 
-// Typed edits, part 3 (sl rename <source.model>, sl add-metric, sl remove-metric) on a copy of
+// Typed edits, part 3 (semlayer rename <source.model>, semlayer add-metric, semlayer remove-metric) on a copy of
 // examples/acme, whose models, metrics and access.yaml are approved with content hashes.
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
-const SL = join(import.meta.dir, "..", "skills", "semantic-layer", "scripts", "sl.ts");
+const SEMLAYER = join(import.meta.dir, "..", "skills", "semantic-layer", "scripts", "semlayer.ts");
 
 let root = "";
 let dir = "";
@@ -56,9 +56,9 @@ function expectUntouched(before: Map<string, string>, changed: string[]): void {
 }
 
 const errors = async () =>
-  (await sl(root, ["validate", "--json"])).json<{ issues: { level: string; file: string; message: string }[] }>().issues.filter((i) => i.level === "error");
+  (await semlayer(root, ["validate", "--json"])).json<{ issues: { level: string; file: string; message: string }[] }>().issues.filter((i) => i.level === "error");
 
-describe("sl rename <source.model>", () => {
+describe("semlayer rename <source.model>", () => {
   test("moves the file, renames its model key and every reference, keeps comments, and routes approved items to re-approval", async () => {
     const commented = text(REFUNDS).replace("model: refunds\n", "# Refunds as Finance books them.\nmodel: refunds # the table's model\n");
     writeFileSync(join(root, REFUNDS), commented);
@@ -66,7 +66,7 @@ describe("sl rename <source.model>", () => {
     const access = text("access.yaml");
     const golden = text("goldens/refunds_2025.yaml");
     const before = tree();
-    const r = await sl(root, ["rename", "warehouse.refunds", "refund_events", "--json"]);
+    const r = await semlayer(root, ["rename", "warehouse.refunds", "refund_events", "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<{ changed: boolean; file: string; files: string[]; reapprove: string[]; references: { file: string; path: string; from: string; to: string }[]; renamed_file: unknown; goldens: string[] }>();
     expect(out).toMatchObject({
@@ -98,17 +98,17 @@ describe("sl rename <source.model>", () => {
     // validate passes but for the re-approval the rename asks for.
     expect((await errors()).every((e) => out.reapprove.some((ref) => e.message.startsWith(`${ref} changed since it was approved`)))).toBe(true);
     // Renaming back restores every file byte for byte, and with it every approval.
-    const back = await sl(root, ["rename", "warehouse.refund_events", "refunds", "--json"]);
+    const back = await semlayer(root, ["rename", "warehouse.refund_events", "refunds", "--json"]);
     expect(back.json()).toMatchObject({ changed: true, reapprove: [] });
     expectUntouched(before, []);
     expect(existsSync(join(root, "models/warehouse/refund_events.yaml"))).toBe(false);
   });
 
   test("renames joins to it with their evidence, and row filters' model and hierarchy via", async () => {
-    const r = await sl(root, ["rename", "warehouse.sales_team_closure", "team_closure", "--json"]);
+    const r = await semlayer(root, ["rename", "warehouse.sales_team_closure", "team_closure", "--json"]);
     expect(r.code).toBe(0);
     expect(text("access.yaml").match(/via: warehouse\.team_closure/g)).toHaveLength(2);
-    const o = await sl(root, ["rename", "warehouse.orders", "sales", "--json"]);
+    const o = await semlayer(root, ["rename", "warehouse.orders", "sales", "--json"]);
     expect(o.code).toBe(0);
     const refunds = readYaml<Model>(join(root, REFUNDS));
     const join_ = refunds.joins!.find((j) => j.name === "order")!;
@@ -122,48 +122,48 @@ describe("sl rename <source.model>", () => {
     expect(out.reapprove).toContain("warehouse.refunds.order");
     expect(out.reapprove).toContain("warehouse.refunds.refund_amount");
     expect(out.reapprove).toContain("warehouse.sales.revenue");
-    const human = await sl(root, ["rename", "warehouse.sales", "orders"]);
+    const human = await semlayer(root, ["rename", "warehouse.sales", "orders"]);
     expect(human.out).toContain("Renamed model warehouse.sales to warehouse.orders: models/warehouse/sales.yaml is now models/warehouse/orders.yaml");
-    expect(human.out).toContain("run sl goldens check");
+    expect(human.out).toContain("run semlayer goldens check");
   });
 
   test("names the items it sends back and one readback for them", async () => {
-    const r = await sl(root, ["rename", "warehouse.regions", "geo_regions"]);
+    const r = await semlayer(root, ["rename", "warehouse.regions", "geo_regions"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("approved items changed and go back to the owner for re-approval; tools treat them as drafts until then.");
-    expect(r.out).toMatch(/Read them back with sl readback --targets [^ ]*warehouse\.geo_regions,warehouse\.geo_regions\.country_code/);
-    expect(r.out).toContain("approve each again only on their yes (sl approve --target <ref>)");
+    expect(r.out).toMatch(/Read them back with semlayer readback --targets [^ ]*warehouse\.geo_regions,warehouse\.geo_regions\.country_code/);
+    expect(r.out).toContain("approve each again only on their yes (semlayer approve --target <ref>)");
     // The approved model is a draft to tools until the owner approves it again: approve refuses without a new yes.
-    const a = await sl(root, ["approve", "--target", "warehouse.geo_regions"]);
+    const a = await semlayer(root, ["approve", "--target", "warehouse.geo_regions"]);
     expect(a.code).toBe(1);
   });
 
   test("rewrites access patterns written under the model and refuses one whose coverage would change", async () => {
-    expect((await sl(root, ["approve", "--target", "access", "--revoke"])).code).toBe(0);
+    expect((await semlayer(root, ["approve", "--target", "access", "--revoke"])).code).toBe(0);
     const withPatterns = text("access.yaml").replace("    assign_when: user.department == 'finance'\n", "    assign_when: user.department == 'finance'\n    deny:\n      fields: [warehouse.customers.e*]\n");
     writeFileSync(join(root, "access.yaml"), withPatterns);
-    const ok = await sl(root, ["rename", "warehouse.customers", "clients", "--json"]);
+    const ok = await semlayer(root, ["rename", "warehouse.customers", "clients", "--json"]);
     expect(ok.code).toBe(0);
     expect(text("access.yaml")).toContain("fields: [warehouse.clients.e*]");
     // A pattern that names the old model only by a glob would stop covering it.
     writeFileSync(join(root, "access.yaml"), text("access.yaml").replace('"metric:net_revenue"]', '"metric:net_revenue", "warehouse.ref*"]'));
     const before = tree();
-    const r = await sl(root, ["rename", "warehouse.refunds", "returns"]);
+    const r = await semlayer(root, ["rename", "warehouse.refunds", "returns"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("a rename never changes who sees what. Nothing was written:");
     // The model's own entry is renamed with it, but the glob covers its fields under the old name only.
     expect(r.err).toContain("access.yaml restrictions[0].targets[2]: warehouse.ref* matches warehouse.refunds.refund_amount but not warehouse.returns.refund_amount");
     // And one that would start covering it.
-    const s = await sl(root, ["rename", "warehouse.products", "refurbished"]);
+    const s = await semlayer(root, ["rename", "warehouse.products", "refurbished"]);
     expect(s.err).toContain("warehouse.ref* matches warehouse.refurbished but not warehouse.products");
     expectUntouched(before, []);
   });
 
   test("refuses a taken name, a bad name, and does nothing for the current name", async () => {
-    expect((await sl(root, ["rename", "warehouse.orders", "customers"])).err).toContain('Source warehouse already has a model "customers"');
-    expect((await sl(root, ["rename", "warehouse.orders", "Sales"])).err).toContain("is not a name");
-    expect((await sl(root, ["rename", "warehouse.nope", "x"])).err).toContain('No model "nope"');
-    const same = await sl(root, ["rename", "warehouse.orders", "orders", "--json"]);
+    expect((await semlayer(root, ["rename", "warehouse.orders", "customers"])).err).toContain('Source warehouse already has a model "customers"');
+    expect((await semlayer(root, ["rename", "warehouse.orders", "Sales"])).err).toContain("is not a name");
+    expect((await semlayer(root, ["rename", "warehouse.nope", "x"])).err).toContain('No model "nope"');
+    const same = await semlayer(root, ["rename", "warehouse.orders", "orders", "--json"]);
     expect(same.json()).toMatchObject({ changed: false, files: [], reapprove: [], references: [], renamed_file: null });
   });
 
@@ -171,7 +171,7 @@ describe("sl rename <source.model>", () => {
   test("refuses when a link is at the new path, writing nothing", async () => {
     symlinkSync(join(dir, "nowhere.yaml"), join(root, "models", "warehouse", "returns.yaml"));
     const before = tree();
-    const r = await sl(root, ["rename", "warehouse.refunds", "returns"]);
+    const r = await semlayer(root, ["rename", "warehouse.refunds", "returns"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("something is already there");
     expect(existsSync(join(dir, "nowhere.yaml"))).toBe(false);
@@ -184,7 +184,7 @@ describe("sl rename <source.model>", () => {
     writeFileSync(join(root, items), text(items).replace("measures:", `${draft}measures:`));
     const known = (await errors()).filter((e) => e.file === items);
     expect(known.length).toBeGreaterThan(0);
-    const r = await sl(root, ["rename", "warehouse.order_items", "order_lines"]);
+    const r = await semlayer(root, ["rename", "warehouse.order_items", "order_lines"]);
     expect(r.code).toBe(0);
     const now = (await errors()).filter((e) => e.file === "models/warehouse/order_lines.yaml" && !e.message.includes("changed since it was approved"));
     expect(now.map((e) => e.message)).toEqual(known.map((e) => e.message));
@@ -195,7 +195,7 @@ describe("sl rename <source.model>", () => {
     const self = "  - name: referrer\n    to: customers\n    keys:\n      - from: customer_id\n        to: customer_id\n    relationship: many_to_one\n    status: draft\n";
     const t = text(f);
     writeFileSync(join(root, f), t.includes("\njoins:\n") ? t.replace("\njoins:\n", `\njoins:\n${self}`) : `${t}joins:\n${self}`);
-    const r = await sl(root, ["rename", "warehouse.customers", "clients", "--json"]);
+    const r = await semlayer(root, ["rename", "warehouse.customers", "clients", "--json"]);
     expect(r.code).toBe(0);
     expect(existsSync(join(root, f))).toBe(false);
     expect(text("models/warehouse/clients.yaml")).toContain("model: clients");
@@ -207,34 +207,34 @@ describe("sl rename <source.model>", () => {
     const draft = text(REFUNDS).replace("model: refunds", "model: refunds_copy").replace(/status: approved\n(\s*approved_by:.*\n\s*approved_at:.*\n(\s*approved_hash:.*\n)?)?/g, "status: draft\n");
     expect(draft).toContain("to: orders");
     writeFileSync(join(root, copy), draft);
-    const r = await sl(root, ["rename", "warehouse.orders", "sales"]);
+    const r = await semlayer(root, ["rename", "warehouse.orders", "sales"]);
     expect(r.code).toBe(0);
     expect(text(copy)).not.toContain("to: orders");
     expect(text(copy)).toContain("to: sales");
   });
 
   test("refuses when an access pattern covers the old name only", async () => {
-    expect((await sl(root, ["approve", "--target", "access", "--revoke"])).code).toBe(0);
+    expect((await semlayer(root, ["approve", "--target", "access", "--revoke"])).code).toBe(0);
     writeFileSync(join(root, "access.yaml"), text("access.yaml").replace('"warehouse.refunds", "metric:net_revenue"]', '"re:^warehouse\\\\.refunds$", "metric:net_revenue"]'));
     expect(text("access.yaml")).toContain("re:^warehouse");
     const before = tree();
-    expect((await sl(root, ["rename", "warehouse.refunds", "returns"])).code).toBe(1);
+    expect((await semlayer(root, ["rename", "warehouse.refunds", "returns"])).code).toBe(1);
     expectUntouched(before, []);
   });
 
-  test("sl set model names sl rename", async () => {
-    const r = await sl(root, ["set", "warehouse.orders", "model", "sales"]);
+  test("semlayer set model names semlayer rename", async () => {
+    const r = await semlayer(root, ["set", "warehouse.orders", "model", "sales"]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain(`in the turn's sl apply --file -: ["rename", "warehouse.orders", "<new_name>"] (on its own: sl rename warehouse.orders <new_name>)`);
+    expect(r.err).toContain(`in the turn's semlayer apply --file -: ["rename", "warehouse.orders", "<new_name>"] (on its own: semlayer rename warehouse.orders <new_name>)`);
     expect(r.err).not.toContain("does not rename models");
   });
 });
 
-describe("sl add-metric", () => {
+describe("semlayer add-metric", () => {
   test("appends a draft ratio, keeping every other byte, and names the readback", async () => {
     const before = text("metrics.yaml").replace("metrics:\n", "# Finance's metrics.\nmetrics:\n");
     writeFileSync(join(root, "metrics.yaml"), before);
-    const r = await sl(root, [
+    const r = await semlayer(root, [
       "add-metric", "--name", "revenue_per_line", "--type", "ratio", "--numerator", "orders.revenue", "--denominator", "orders.order_count",
       "--format", "currency", "--currency", "USD", "--description", "Revenue per\norder.", "--set", "synonyms=[rpo]", "--json",
     ]);
@@ -256,18 +256,18 @@ describe("sl add-metric", () => {
         "  - name: revenue_per_line\n    source: warehouse\n    type: ratio\n    numerator: orders.revenue\n    denominator: orders.order_count\n" +
         "    format: currency\n    currency: USD\n    description: Revenue per order.\n    synonyms: [rpo]\n    status: draft\n",
     );
-    const human = await sl(root, ["add-metric", "--name", "gross_less_discount", "--type", "derived", "--expr", "{orders.revenue} - {orders.discount}", "--format", "currency", "--currency", "USD"]);
+    const human = await semlayer(root, ["add-metric", "--name", "gross_less_discount", "--type", "derived", "--expr", "{orders.revenue} - {orders.discount}", "--format", "currency", "--currency", "USD"]);
     expect(human.code).toBe(0);
     expect(human.out).toContain("Added draft derived metric gross_less_discount to metrics.yaml.");
-    expect(human.out).toContain("sl readback --targets metric:gross_less_discount");
-    expect(human.out).toContain("approve it only on their yes (sl approve --target metric:gross_less_discount)");
+    expect(human.out).toContain("semlayer readback --targets metric:gross_less_discount");
+    expect(human.out).toContain("approve it only on their yes (semlayer approve --target metric:gross_less_discount)");
     expect(text("metrics.yaml")).toContain('    expr: "{orders.revenue} - {orders.discount}"\n');
     expect((await errors()).length).toBe(0);
   });
 
   test("refuses a taken name, a wrong shape, a formula the compiler cannot read and a measure that does not resolve", async () => {
     const before = tree();
-    const add = (...args: string[]) => sl(root, ["add-metric", ...args]);
+    const add = (...args: string[]) => semlayer(root, ["add-metric", ...args]);
     expect((await add("--name", "net_revenue", "--type", "derived", "--expr", "{orders.revenue}")).err).toContain('metrics.yaml already has a metric "net_revenue"');
     expect((await add("--name", "Bad", "--type", "ratio")).err).toContain("is not a name");
     expect((await add("--name", "x", "--type", "simple")).err).toContain("--type is ratio");
@@ -290,8 +290,8 @@ describe("sl add-metric", () => {
     rmSync(join(root, "metrics.yaml"));
     // Goldens that name the removed metrics already error; the new file adds no error of its own.
     const known = (await errors()).length;
-    expect((await sl(root, ["add-field", "warehouse.orders", "--kind", "measure", "--name", "shipped_count", "--agg", "count"])).code).toBe(0);
-    const r = await sl(root, ["add-metric", "--name", "shipped_share", "--type", "ratio", "--numerator", "orders.shipped_count", "--denominator", "orders.order_count", "--format", "percent", "--json"]);
+    expect((await semlayer(root, ["add-field", "warehouse.orders", "--kind", "measure", "--name", "shipped_count", "--agg", "count"])).code).toBe(0);
+    const r = await semlayer(root, ["add-metric", "--name", "shipped_share", "--type", "ratio", "--numerator", "orders.shipped_count", "--denominator", "orders.order_count", "--format", "percent", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json()).toMatchObject({ created: true, draft_measures: ["orders.shipped_count"] });
     expect(text("metrics.yaml")).toBe(
@@ -299,13 +299,13 @@ describe("sl add-metric", () => {
     );
     expect((await errors()).length).toBe(known);
     rmSync(join(root, "metrics.yaml"));
-    const human = await sl(root, ["add-metric", "--name", "shipped_share", "--type", "ratio", "--numerator", "orders.shipped_count", "--denominator", "orders.order_count"]);
+    const human = await semlayer(root, ["add-metric", "--name", "shipped_share", "--type", "ratio", "--numerator", "orders.shipped_count", "--denominator", "orders.order_count"]);
     expect(human.out).toContain("Added draft ratio metric shipped_share to metrics.yaml, which is new.");
     expect(human.out).toContain("It uses draft measure orders.shipped_count: an approved metric may use approved measures only");
   });
   test("keeps the comments of an empty flow list it adds to", async () => {
     writeFileSync(join(root, "metrics.yaml"), "# Finance's metrics.\nmetrics: [] # none yet\n");
-    const r = await sl(root, ["add-metric", "--name", "x", "--type", "ratio", "--numerator", "orders.revenue", "--denominator", "orders.order_count"]);
+    const r = await semlayer(root, ["add-metric", "--name", "x", "--type", "ratio", "--numerator", "orders.revenue", "--denominator", "orders.order_count"]);
     expect(r.code).toBe(0);
     const now = text("metrics.yaml");
     expect(now).toContain("# Finance's metrics.");
@@ -314,23 +314,23 @@ describe("sl add-metric", () => {
   });
 });
 
-describe("sl remove-metric", () => {
+describe("semlayer remove-metric", () => {
   test("refuses while a golden or access.yaml names it, naming each", async () => {
     const before = tree();
-    const r = await sl(root, ["remove-metric", "metric:net_revenue"]);
+    const r = await semlayer(root, ["remove-metric", "metric:net_revenue"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("Cannot remove metric:net_revenue: these name it, so nothing was written:");
     expect(r.err).toContain("  - goldens/net_revenue_2025.yaml request.measures[0]: net_revenue");
     expect(r.err).toContain("  - goldens/finance_net_revenue_2025.yaml request.measures[0]: net_revenue");
     expect(r.err).toContain("  - access.yaml restrictions[0].targets[1]: metric:net_revenue");
-    expect((await sl(root, ["remove-metric", "nope"])).err).toContain('No metric "nope"');
+    expect((await semlayer(root, ["remove-metric", "nope"])).err).toContain('No metric "nope"');
     expectUntouched(before, []);
   });
 
   test("removes a draft metric, leaving the file as it was before it was added", async () => {
     const before = text("metrics.yaml");
-    expect((await sl(root, ["add-metric", "--name", "tmp", "--type", "derived", "--expr", "{orders.revenue} * 2"])).code).toBe(0);
-    const r = await sl(root, ["remove-metric", "tmp", "--json"]);
+    expect((await semlayer(root, ["add-metric", "--name", "tmp", "--type", "derived", "--expr", "{orders.revenue} * 2"])).code).toBe(0);
+    const r = await semlayer(root, ["remove-metric", "tmp", "--json"]);
     expect(r.json()).toEqual({ changed: true, file: "metrics.yaml", reapprove: [], ref: "metric:tmp", was_approved: false });
     expect(text("metrics.yaml")).toBe(before);
   });
@@ -341,20 +341,20 @@ describe("sl remove-metric", () => {
     writeFileSync(join(root, g), text(g).replace(", average_order_value]", "]"));
     expect(text(g)).toContain("  measures: [orders.revenue, orders.order_count]\n");
     const before = tree();
-    const r = await sl(root, ["remove-metric", "average_order_value"]);
+    const r = await semlayer(root, ["remove-metric", "average_order_value"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("metric:average_order_value is approved");
-    expect(r.err).toContain("only on their yes run sl remove-metric average_order_value --force");
+    expect(r.err).toContain("only on their yes run semlayer remove-metric average_order_value --force");
     expectUntouched(before, []);
-    const f = await sl(root, ["remove-metric", "average_order_value", "--force"]);
+    const f = await semlayer(root, ["remove-metric", "average_order_value", "--force"]);
     expect(f.code).toBe(0);
     expect(f.out).toContain("metric:average_order_value was approved: tell the owner it is removed.");
     expect(text("metrics.yaml")).not.toContain("average_order_value");
     expect(text("metrics.yaml")).toContain("approved_hash: sha256:a03b15c0");
     for (const n of ["net_revenue_2025", "finance_net_revenue_2025"]) rmSync(join(root, "goldens", `${n}.yaml`));
-    expect((await sl(root, ["approve", "--target", "access", "--revoke"])).code).toBe(0);
+    expect((await semlayer(root, ["approve", "--target", "access", "--revoke"])).code).toBe(0);
     writeFileSync(join(root, "access.yaml"), text("access.yaml").replace(', "metric:net_revenue"]', "]"));
-    const last = await sl(root, ["remove-metric", "net_revenue", "--force", "--json"]);
+    const last = await semlayer(root, ["remove-metric", "net_revenue", "--force", "--json"]);
     expect(last.json()).toMatchObject({ changed: true, was_approved: true });
     expect(text("metrics.yaml")).toBe("metrics: []\n");
     expect((await errors()).length).toBe(0);
@@ -363,14 +363,14 @@ describe("sl remove-metric", () => {
 
 describe("the hook lets the interviewer run them", () => {
   const bash = (command: string) =>
-    checkToolUse(JSON.stringify({ tool_name: "Bash", cwd: root, agent_type: "semantic-layer-builder:sl-interviewer", agent_id: "a1", tool_input: { command }, hook_event_name: "PreToolUse" }));
-  test("sl rename of a model, sl add-metric and sl remove-metric are allowed; a hand rename of the model file is not", () => {
+    checkToolUse(JSON.stringify({ tool_name: "Bash", cwd: root, agent_type: "semantic-layer-builder:semlayer-interviewer", agent_id: "a1", tool_input: { command }, hook_event_name: "PreToolUse" }));
+  test("semlayer rename of a model, semlayer add-metric and semlayer remove-metric are allowed; a hand rename of the model file is not", () => {
     for (const args of [
       "rename warehouse.orders sales",
       "add-metric --name aov --type ratio --numerator orders.revenue --denominator orders.order_count",
       "remove-metric average_order_value --force",
     ]) {
-      const v = bash(`bun ${SL} ${args} --root ${root}`);
+      const v = bash(`bun ${SEMLAYER} ${args} --root ${root}`);
       expect(v.message ?? "").toBe("");
       expect(v.allow).toBe(true);
     }
@@ -378,19 +378,19 @@ describe("the hook lets the interviewer run them", () => {
     expect(mv.allow).toBe(false);
   });
 
-  test("a hand edit of an approved model's key names sl rename", () => {
+  test("a hand edit of an approved model's key names semlayer rename", () => {
     const file = join(root, "models", "warehouse", "orders.yaml");
     const v = checkToolUse(JSON.stringify({ tool_name: "Edit", cwd: root, tool_input: { file_path: file, old_string: "model: orders\n", new_string: "model: sales\n" }, hook_event_name: "PreToolUse" }));
     expect(v.allow).toBe(false);
-    expect(v.message).toContain("sl rename warehouse.orders <new_name>");
+    expect(v.message).toContain("semlayer rename warehouse.orders <new_name>");
   });
 
-  test("a hand removal of an approved metric names sl remove-metric", () => {
+  test("a hand removal of an approved metric names semlayer remove-metric", () => {
     const file = join(root, "metrics.yaml");
     const t = readFileSync(file, "utf8");
     const start = t.indexOf("  - name: net_revenue");
     const v = checkToolUse(JSON.stringify({ tool_name: "Write", cwd: root, tool_input: { file_path: file, content: t.slice(0, start) }, hook_event_name: "PreToolUse" }));
     expect(v.allow).toBe(false);
-    expect(v.message).toContain("sl remove-metric net_revenue");
+    expect(v.message).toContain("semlayer remove-metric net_revenue");
   });
 });

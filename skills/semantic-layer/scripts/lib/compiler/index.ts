@@ -90,7 +90,7 @@ export interface CompileInput {
   paramStart?: number;
 }
 
-const LATER = "a later version of sl sql adds";
+const LATER = "a later version of semlayer sql adds";
 
 interface Field {
   ref: string;
@@ -121,7 +121,7 @@ export function compileLayer(input: CompileInput): CompileResult {
   const request = input.request as QueryRequest;
   if (request.source !== source.source) return refuse(source.source, [{ code: "invalid_request", message: `request.source is ${request.source}, not ${source.source}` }]);
   if (!COMPILER_DIALECTS.includes(dialect))
-    add("unsupported_dialect", `source ${source.source} is ${dialect}; sl sql compiles for ${COMPILER_DIALECTS.join(" and ")} sources, and ${LATER} other dialects`);
+    add("unsupported_dialect", `source ${source.source} is ${dialect}; semlayer sql compiles for ${COMPILER_DIALECTS.join(" and ")} sources, and ${LATER} other dialects`);
 
   // Visibility first: a request names only what its user may see (access.ts checkRequest).
   const vis = evaluateLayer(layer, input.user ?? {});
@@ -169,16 +169,16 @@ export function compileLayer(input: CompileInput): CompileResult {
       if (t === undefined && !dim) continue;
       const problem = typeof t === "string" ? sqlTextProblem(t, role) : undefined;
       if (problem) {
-        add("invalid_layer", `model ${p.model} ${at}.${key} (${p.field}) ${problem}`, ref, `Fix the ${role} of ${p.model}.${p.field} in its model file, run sl validate, and run sl sql again.`);
+        add("invalid_layer", `model ${p.model} ${at}.${key} (${p.field}) ${problem}`, ref, `Fix the ${role} of ${p.model}.${p.field} in its model file, run semlayer validate, and run semlayer sql again.`);
         continue;
       }
       if (typeof t !== "string" || !t.trim() || sqlNames(t, dialect).subquery) {
-        add("invalid_layer", `${p.model}.${p.field} has an expr or filter the compiler cannot use; run sl validate`, ref);
+        add("invalid_layer", `${p.model}.${p.field} has an expr or filter the compiler cannot use; run semlayer validate`, ref);
         continue;
       }
     }
     if (typeof mea?.expr === "string" && readsJoin(mea.expr, model))
-      add("invalid_layer", `${p.model}.${p.field} has an expr that reads a join reference; a measure expr reads only its model's own columns; run sl validate`, ref);
+      add("invalid_layer", `${p.model}.${p.field} has an expr that reads a join reference; a measure expr reads only its model's own columns; run semlayer validate`, ref);
     return { ref, model, kind, item, ...(p.grain ? { grain: p.grain as TimeGrain } : {}) };
   };
 
@@ -226,7 +226,7 @@ export function compileLayer(input: CompileInput): CompileResult {
   for (const f of selected) {
     const m = f.item as Measure;
     if (!(AGGREGATIONS as readonly string[]).includes(m.agg) || (m.expr === undefined && m.agg !== "count"))
-      add("invalid_layer", `${f.ref} needs an agg, and an expr unless it is a count; run sl validate`, f.ref);
+      add("invalid_layer", `${f.ref} needs an agg, and an expr unless it is a count; run semlayer validate`, f.ref);
   }
   if (refusals.length) return refuse(source.source, refusals);
 
@@ -289,7 +289,7 @@ export function compileLayer(input: CompileInput): CompileResult {
     const root = input.root;
     assertReadOnly(sql, root ? { globAllowed: (p) => globInsideViews(root, source, p) } : {});
   } catch (e) {
-    return refuse(source.source, [{ code: "invalid_layer", message: `the compiled SQL is not read-only (${(e as Error).message}); run sl validate` }]);
+    return refuse(source.source, [{ code: "invalid_layer", message: `the compiled SQL is not read-only (${(e as Error).message}); run semlayer validate` }]);
   }
   return {
     ok: true,

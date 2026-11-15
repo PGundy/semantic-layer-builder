@@ -15,23 +15,23 @@ function reapproveBlock(refs: string[]): string[] {
   if (refs.length <= 1) return reapproveLines(refs);
   return [
     `${refs.length} approved items changed and go back to the owner for re-approval; tools treat them as drafts until then. ` +
-      `Read them back with sl readback --targets ${refs.join(",")}, record the owner's answers with sl reply, and approve each again only on their yes (sl approve --target <ref>).`,
+      `Read them back with semlayer readback --targets ${refs.join(",")}, record the owner's answers with semlayer reply, and approve each again only on their yes (semlayer approve --target <ref>).`,
   ];
 }
 
-// sl rename <source.model> <new_name>: moves the model file and renames every reference to it.
+// semlayer rename <source.model> <new_name>: moves the model file and renames every reference to it.
 function renameModel(ctx: CommandContext, loc: Located, ref: string, name: string): number {
   const [source, old] = ref.split(".") as [string, string];
   const newRef = `${source}.${name}`;
   const fromFile = relFile(ctx.root, loc.file);
   if (name === old) {
     if (ctx.json) ctx.out(formatJson({ changed: false, file: fromFile, files: [], reapprove: [], ref, new_ref: newRef, references: [], renamed_file: null, goldens: [] }));
-    else ctx.out(`${ref} is already named ${name}; nothing changed. Next: sl status.`);
+    else ctx.out(`${ref} is already named ${name}; nothing changed. Next: semlayer status.`);
     return 0;
   }
   const to = paths(ctx.root).model(source, name);
   if (existsSync(to) || existsSync(to.replace(/\.yaml$/, ".yml"))) {
-    throw new UserError(`Source ${source} already has a model "${name}" (${relFile(ctx.root, to)}); pick another name, or run sl status to list the models.`);
+    throw new UserError(`Source ${source} already has a model "${name}" (${relFile(ctx.root, to)}); pick another name, or run semlayer status to list the models.`);
   }
   const model = loc.model!;
   const fields = [...(model.dimensions ?? []), ...(model.measures ?? []), ...(model.joins ?? [])].map((f) => String(f.name));
@@ -41,7 +41,7 @@ function renameModel(ctx: CommandContext, loc: Located, ref: string, name: strin
       `Cannot rename ${ref}: an access.yaml pattern would change what it covers, and a rename never changes who sees what. Nothing was written:\n` +
         conflicts.map((c) => `  - ${c}`).join("\n") +
         `\nWith the owner, make each list cover ${newRef} as it covers ${ref}: add ${newRef} (or ${newRef}.<field>) to the same list as its own entry, or narrow the pattern, or pick another name. ` +
-        `Revoke access.yaml first if it is approved (sl approve --target access --revoke), then run this again.`,
+        `Revoke access.yaml first if it is approved (semlayer approve --target access --revoke), then run this again.`,
     );
   }
   const renamed = new Map([[newRef, ref], ...fields.map((f): [string, string] => [`${newRef}.${f}`, `${ref}.${f}`])]);
@@ -67,10 +67,10 @@ function renameModel(ctx: CommandContext, loc: Located, ref: string, name: strin
   if (goldens.length) {
     lines.push(
       `The request of ${goldens.length === 1 ? "a confirmed golden" : `${goldens.length} confirmed goldens`} changed (${goldens.map((g) => `golden:${g}`).join(", ")}): ` +
-        `run sl goldens check, then read ${goldens.length === 1 ? "it" : "each"} back (sl readback --targets golden:<g>) and confirm it again only on the owner's yes (sl goldens confirm --name <g>).`,
+        `run semlayer goldens check, then read ${goldens.length === 1 ? "it" : "each"} back (semlayer readback --targets golden:<g>) and confirm it again only on the owner's yes (semlayer goldens confirm --name <g>).`,
     );
   }
-  if (!outcome.reapprove.length && !goldens.length) lines.push("Next: sl status.");
+  if (!outcome.reapprove.length && !goldens.length) lines.push("Next: semlayer status.");
   ctx.out(lines.join("\n"));
   return 0;
 }
@@ -84,9 +84,9 @@ const spec: CommandSpec = {
   async run({ positionals }, ctx) {
     loadProject(ctx.root);
     const [ref, raw, ...extra] = positionals;
-    if (!ref || !raw || extra.length) throw new UserError("Usage: sl rename <source.model | source.model.field | metric:<name>> <new_name>, for example sl rename warehouse.orders.revenue gross_revenue.");
+    if (!ref || !raw || extra.length) throw new UserError("Usage: semlayer rename <source.model | source.model.field | metric:<name>> <new_name>, for example semlayer rename warehouse.orders.revenue gross_revenue.");
     const loc = locate(ctx.root, ref);
-    if (loc.kind === "access") throw new UserError("access.yaml has no name to rename; rename a model, field or metric instead (sl rename <source.model.field> <new_name>).");
+    if (loc.kind === "access") throw new UserError("access.yaml has no name to rename; rename a model, field or metric instead (semlayer rename <source.model.field> <new_name>).");
     const metric = loc.kind === "metric";
     const name = metric ? raw.replace(/^metric:/, "") : raw;
     if (!NAME_PATTERN.test(name)) throw new UserError(`"${raw}" is not a name: a name is lowercase and matches ^[a-z][a-z0-9_]*$, such as gross_revenue.`);
@@ -97,7 +97,7 @@ const spec: CommandSpec = {
     const result = { ref, new_ref: newRef };
     if (name === old) {
       if (ctx.json) ctx.out(formatJson({ changed: false, file: relFile(ctx.root, loc.file), files: [], reapprove: [], ...result, references: [] }));
-      else ctx.out(`${ref} is already named ${name}; nothing changed. Next: sl status.`);
+      else ctx.out(`${ref} is already named ${name}; nothing changed. Next: semlayer status.`);
       return 0;
     }
     if (metric) {
@@ -115,7 +115,7 @@ const spec: CommandSpec = {
         `Cannot rename ${ref}: an access.yaml pattern would change what it covers, and a rename never changes who sees what. Nothing was written:\n` +
           conflicts.map((c) => `  - ${c}`).join("\n") +
           `\nWith the owner, make each list cover ${newRef} as it covers ${ref}: when a pattern covers ${ref} only, add ${newRef} to the same list as its own entry; ` +
-          `when it covers ${newRef} only, narrow the pattern or pick another name. Revoke access.yaml first if it is approved (sl approve --target access --revoke), then run this again.`,
+          `when it covers ${newRef} only, narrow the pattern or pick another name. Revoke access.yaml first if it is approved (semlayer approve --target access --revoke), then run this again.`,
       );
     }
     const own = { file: loc.file, path: [...loc.path, "name"], from: old, to: name };
@@ -132,7 +132,7 @@ const spec: CommandSpec = {
     ];
     if (!metric) lines.push(...questionLines(loc.model, old, relFile(ctx.root, loc.file)));
     lines.push(...reapproveLines(outcome.reapprove));
-    if (!outcome.reapprove.length) lines.push("Next: sl status.");
+    if (!outcome.reapprove.length) lines.push("Next: semlayer status.");
     ctx.out(lines.join("\n"));
     return 0;
   },

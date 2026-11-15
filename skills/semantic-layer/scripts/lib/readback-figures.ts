@@ -1,6 +1,6 @@
 // The figure a measure or metric readback shows: its total on today's data and the rows behind it,
 // computed through the reference compiler on a connected source, read-only, under a short timeout.
-// The figure is evidence: it is outside the approval hash, and sl readback stores it beside the
+// The figure is evidence: it is outside the approval hash, and semlayer readback stores it beside the
 // item. A protected value is never computed, and a failure is one line that does not block.
 import { canRun } from "./adapters/index.ts";
 import type { Adapter } from "./adapters/types.ts";
@@ -20,7 +20,7 @@ import type { FigureEvidence, FigurePart, Measure, Metric, Model, SourceConfig }
 import { PROTECTED_TAGS } from "./types.ts";
 import { existsSync } from "node:fs";
 
-// The longest the readback waits for one figure's query; SL_STATEMENT_TIMEOUT_MS can only shorten it.
+// The longest the readback waits for one figure's query; SEMLAYER_STATEMENT_TIMEOUT_MS can only shorten it.
 export const FIGURE_TIMEOUT_MS = 10_000;
 
 type Obj = Record<string, unknown>;
@@ -29,9 +29,9 @@ const list = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v.filter(isObj) as T[
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 const COUNTS = new Set(["count", "count_distinct"]);
 
-// The timeout in milliseconds: SL_STATEMENT_TIMEOUT_MS when it is shorter, else FIGURE_TIMEOUT_MS.
+// The timeout in milliseconds: SEMLAYER_STATEMENT_TIMEOUT_MS when it is shorter, else FIGURE_TIMEOUT_MS.
 export function figureTimeout(env: Record<string, string | undefined>): number {
-  const raw = env.SL_STATEMENT_TIMEOUT_MS?.trim();
+  const raw = env.SEMLAYER_STATEMENT_TIMEOUT_MS?.trim();
   const n = raw && /^\d+$/.test(raw) ? Number(raw) : 0;
   return n > 0 ? Math.min(n, FIGURE_TIMEOUT_MS) : FIGURE_TIMEOUT_MS;
 }
@@ -65,7 +65,7 @@ function protectedWhy(root: string, source: string, model: Model, m: Measure): s
     snapshot = null;
   }
   const table = snapshot ? findTable(snapshot.tables, model.table) : undefined;
-  if (!snapshot || !table) return `${model.table} is not in the snapshot, so sl cannot tell whether it reads a protected column (sl introspect --source ${source})`;
+  if (!snapshot || !table) return `${model.table} is not in the snapshot, so semlayer cannot tell whether it reads a protected column (semlayer introspect --source ${source})`;
   const models = list<Model>(loadAccessLayer(root).models).filter((x) => x.source === source);
   const prot = protectedColumns(snapshot.tables, models, loadSource(root, source).dialect).get(qualifiedName(table)) ?? new Set();
   const alone = { ...model, dimensions: [], measures: [{ ...m, filter: undefined }], primary_key: [], joins: list<Obj>(model.joins).map((j) => ({ ...j, keys: [] })) } as unknown as Model;
@@ -77,7 +77,7 @@ function protectedWhy(root: string, source: string, model: Model, m: Measure): s
 // A name for the row-count measure that the model does not use.
 function freeName(model: Model): string {
   const used = new Set([...list<Obj>(model.dimensions), ...list<Obj>(model.measures)].map((x) => x.name));
-  let name = "sl_rows_behind";
+  let name = "semlayer_rows_behind";
   while (used.has(name)) name += "_";
   return name;
 }
@@ -159,18 +159,18 @@ function jobFor(root: string, layer: () => AccessLayer, target: string): Job | u
   };
 }
 
-// Why a source's figures are not computed, or undefined when sl can query it.
+// Why a source's figures are not computed, or undefined when semlayer can query it.
 function sourceWhy(root: string, name: string): string | undefined {
   let source: SourceConfig;
   try {
     source = loadSource(root, name);
   } catch (e) {
-    if (e instanceof UserError) return `source ${name} cannot be read (sl validate)`;
+    if (e instanceof UserError) return `source ${name} cannot be read (semlayer validate)`;
     throw e;
   }
   if (intakeMode(source) === "export")
-    return `source ${name} is an export source, which sl does not query; the figure comes once it has a connection (${upgradeCommand(name, source.dialect)})`;
-  if (!canRun(source)) return `sl does not connect to ${source.dialect} sources`;
+    return `source ${name} is an export source, which semlayer does not query; the figure comes once it has a connection (${upgradeCommand(name, source.dialect)})`;
+  if (!canRun(source)) return `semlayer does not connect to ${source.dialect} sources`;
   return undefined;
 }
 
@@ -180,7 +180,7 @@ class NotConnected extends Error {
     const first = (e instanceof Error ? e.message : String(e)).replace(/^Source "[^"]*":\s*/, "").split(/\.(\s|$)/)[0]!.split("\n")[0]!.trim();
     // A connection message is redacted like the owner's words, so no credential reaches the readback.
     const said = redactCredentials(first).text;
-    super(`sl cannot connect to source ${source}${said ? ` (${said})` : ""}; sl next names the step that connects it`);
+    super(`semlayer cannot connect to source ${source}${said ? ` (${said})` : ""}; semlayer next names the step that connects it`);
   }
 }
 
@@ -221,12 +221,12 @@ async function timed(adapter: Adapter, sql: string, ms: number, running: Promise
   throw new TimedOut(!stopped);
 }
 
-// A request sl sql compiles for one measure or metric target, so the owner can get its figure with
-// sl run, which waits longer.
+// A request semlayer sql compiles for one measure or metric target, so the owner can get its figure with
+// semlayer run, which waits longer.
 function byHand(target: string, source: string): string {
   const t = parseTarget(target);
   const name = t.kind === "metric" ? t.name : t.kind === "field" ? `${t.model}.${t.field}` : target;
-  return `sl sql --source ${source} --request '{"measures":["${name}"]}' prints its query, and sl run --source ${source} --sql runs it with a longer timeout`;
+  return `semlayer sql --source ${source} --request '{"measures":["${name}"]}' prints its query, and semlayer run --source ${source} --sql runs it with a longer timeout`;
 }
 
 // The evidence for each measure and metric target, computed per source over one connection. A
@@ -270,7 +270,7 @@ export async function readbackFigures(root: string, targets: readonly string[], 
           }
           if (!adapter) {
             try {
-              adapter = await openQueryAdapter(root, src, { ...env, SL_STATEMENT_TIMEOUT_MS: String(ms) }, { warn: () => {} });
+              adapter = await openQueryAdapter(root, src, { ...env, SEMLAYER_STATEMENT_TIMEOUT_MS: String(ms) }, { warn: () => {} });
             } catch (e) {
               throw new NotConnected(source, e);
             }
@@ -285,7 +285,7 @@ export async function readbackFigures(root: string, targets: readonly string[], 
           // A connection that did not open serves no figure; a statement still running holds it.
           if (e instanceof NotConnected) stop = () => reason;
           else if (e instanceof TimedOut && e.busy)
-            stop = (target) => `not computed, as an earlier figure on source ${source} timed out and is still running; run sl readback --targets ${target} on its own`;
+            stop = (target) => `not computed, as an earlier figure on source ${source} timed out and is still running; run semlayer readback --targets ${target} on its own`;
         }
       }
     } finally {

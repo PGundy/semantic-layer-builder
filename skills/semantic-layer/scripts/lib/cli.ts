@@ -13,7 +13,7 @@ export interface CliIO {
   env: Record<string, string | undefined>;
   out: (text: string) => void;
   err: (text: string) => void;
-  // Standard input, for a command that reads it (sl apply --file -).
+  // Standard input, for a command that reads it (semlayer apply --file -).
   stdin?: () => Promise<string>;
 }
 
@@ -25,7 +25,7 @@ export const GLOBAL_OPTIONS = {
 } as const;
 
 // The line every command's --help ends with.
-export const GLOBAL_HELP = "Every command also takes --root <dir> (or SEMANTIC_ROOT), --env-file <path> (or SL_ENV_FILE) and --json.";
+export const GLOBAL_HELP = "Every command also takes --root <dir> (or SEMANTIC_ROOT), --env-file <path> (or SEMLAYER_ENV_FILE) and --json.";
 
 // A command's --json object with connection_from added: where the first connection it opened came from.
 function withConnectionFrom(text: string, uses: ConnectionUse[]): string {
@@ -41,17 +41,17 @@ function withConnectionFrom(text: string, uses: ConnectionUse[]): string {
 }
 
 function clock(env: Record<string, string | undefined>): () => Date {
-  const fixed = env.SL_NOW;
+  const fixed = env.SEMLAYER_NOW;
   if (fixed) {
     const d = new Date(fixed);
-    if (Number.isNaN(d.getTime())) throw new UserError(`SL_NOW is not a valid date: ${fixed}`);
+    if (Number.isNaN(d.getTime())) throw new UserError(`SEMLAYER_NOW is not a valid date: ${fixed}`);
     return () => new Date(d.getTime());
   }
   return () => new Date();
 }
 
 async function usage(io: CliIO): Promise<void> {
-  const lines = ["Usage: sl <command> [flags]", GLOBAL_HELP, ""];
+  const lines = ["Usage: semlayer <command> [flags]", GLOBAL_HELP, ""];
   // The summaries start in one column, past the longest command name.
   const width = Math.max(...Object.keys(COMMANDS).map((n) => n.length));
   for (const [name, load] of Object.entries(COMMANDS)) {
@@ -73,7 +73,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
   }
   const load = COMMANDS[name];
   if (!load) {
-    io.err(`Unknown command "${name}". Run \`sl help\` for the list.`);
+    io.err(`Unknown command "${name}". Run \`semlayer help\` for the list.`);
     return 1;
   }
   let json = false;
@@ -90,7 +90,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     const values = parsed.values as Record<string, string | boolean | string[] | undefined>;
     json = values.json === true;
     if (values.help) {
-      io.out(`${spec.summary}\n\nUsage: sl ${spec.usage}\n\n${GLOBAL_HELP}`);
+      io.out(`${spec.summary}\n\nUsage: semlayer ${spec.usage}\n\n${GLOBAL_HELP}`);
       return 0;
     }
     // Each connection a command opens is said once on stderr; with --json the output carries the first as connection_from instead.
@@ -126,7 +126,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     };
     const input = { values, positionals: parsed.positionals };
     // A command that reads, changes and writes holds the root's lock from before its first read.
-    // Outside a semantic root there is nothing to guard, and no .sl directory is made for a lock.
+    // Outside a semantic root there is nothing to guard, and no .semlayer directory is made for a lock.
     const writes = typeof spec.writes === "function" ? spec.writes(input) : spec.writes;
     if (writes === "whole" && existsSync(paths(root).project)) await lock();
     return await spec.run(input, ctx);
@@ -136,10 +136,10 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
       // malformed file, a directory with no layer) is also, with --json, one JSON object on stdout.
       const next = e instanceof UserError ? e.next : undefined;
       if (json && next) io.out(JSON.stringify({ error: (e as Error).message, next }, null, 2));
-      io.err(`sl ${name}: ${(e as Error).message}`);
+      io.err(`semlayer ${name}: ${(e as Error).message}`);
       return 1;
     }
-    io.err(`sl ${name}: unexpected error: ${(e as Error).stack ?? e}`);
+    io.err(`semlayer ${name}: unexpected error: ${(e as Error).stack ?? e}`);
     return 2;
   } finally {
     for (const release of releases.reverse()) release();

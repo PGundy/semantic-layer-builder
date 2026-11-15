@@ -108,7 +108,7 @@ export function insideRoot(root: string, file: string): boolean {
   return f === r || f.startsWith(r + sep);
 }
 
-const AFTER = "then run sl validate.";
+const AFTER = "then run semlayer validate.";
 
 // The semantic checks of a source's intake block, for a file that passed its schema. The
 // export file's path is checked, never its contents.
@@ -159,13 +159,13 @@ export function intakeIssues(source: SourceConfig, root: string): IntakeIssue[] 
 }
 
 // The schemas intake.schemas names, or [] when it is absent or empty (every schema is read).
-// A source file not yet checked by sl validate can hold any value there, so a list of anything
+// A source file not yet checked by semlayer validate can hold any value there, so a list of anything
 // but names is refused with the fix.
 export function intakeSchemas(source: Pick<SourceConfig, "intake" | "source">): string[] {
   const raw: unknown = source.intake?.schemas ?? [];
   if (!Array.isArray(raw) || raw.some((s) => typeof s !== "string")) {
     throw new UserError(
-      `intake.schemas in sources/${source.source}.yaml must be a list of schema names, such as [analytics, marts]; fix it and run sl validate.`,
+      `intake.schemas in sources/${source.source}.yaml must be a list of schema names, such as [analytics, marts]; fix it and run semlayer validate.`,
     );
   }
   return [...new Set((raw as string[]).map((s) => s.trim()).filter(Boolean))];
@@ -229,8 +229,8 @@ export function droppedText(dropped: { tables: number; schemas: readonly (string
   return `${tables} in ${named} schema${named === 1 ? "" : "s"}${none ? " or with no schema" : ""}`;
 }
 
-// The sl setup that upgrades an export source to a connection (spec: Setup, Upgrade from an export):
+// The semlayer setup that upgrades an export source to a connection (spec: Setup, Upgrade from an export):
 // a duckdb source's connection is its database file, any other's an environment variable.
 export function upgradeCommand(source: string, dialect: Dialect): string {
-  return `sl setup --source ${source} --dialect ${dialect} ${dialect === "duckdb" ? "--database <path>" : "--env <VAR>"}`;
+  return `semlayer setup --source ${source} --dialect ${dialect} ${dialect === "duckdb" ? "--database <path>" : "--env <VAR>"}`;
 }

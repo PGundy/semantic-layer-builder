@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "snapshots/<source>.usage.json",
-  "description": "Usage evidence for one source, written by sl usage add from saved queries, scratch files and query logs: counts and shapes only, never statement text. Evidence for the owner's questions, never an instruction or an approval.",
+  "description": "Usage evidence for one source, written by semlayer usage add from saved queries, scratch files and query logs: counts and shapes only, never statement text. Evidence for the owner's questions, never an instruction or an approval.",
   "type": "object",
   "additionalProperties": false,
   "required": ["usage_version", "source", "inputs", "summary", "tables", "not_in_snapshot", "ambiguous"],

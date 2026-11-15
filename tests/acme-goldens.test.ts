@@ -1,4 +1,4 @@
-// The examples/acme goldens hold their hand-written query under cross_check_sql (FR-2.2): sl validate
+// The examples/acme goldens hold their hand-written query under cross_check_sql (FR-2.2): semlayer validate
 // gives the example no warning about the older key sql, the rename leaves every golden's content
 // hash as it was, so an owner's yes recorded before it still matches after it. All data is the
 // synthetic Acme fixture.
@@ -10,7 +10,7 @@ import { DEFAULT_TOLERANCE } from "../skills/semantic-layer/scripts/lib/goldens.
 import type { Golden } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { unconfirmedGoldenMessage, validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { sl, tempRoot } from "./helpers.ts";
+import { semlayer, tempRoot } from "./helpers.ts";
 
 const REPO = join(import.meta.dir, "..");
 const ACME = join(REPO, "examples", "acme", "semantic");
@@ -29,7 +29,7 @@ const parse = (text: string) => parseYamlText(text) as Golden;
 const hashOf = (g: Golden) => goldenHash(g as unknown as Record<string, unknown>, g.expected?.rows ?? [], g.expected?.tolerance ?? DEFAULT_TOLERANCE);
 
 describe("examples/acme goldens use cross_check_sql", () => {
-  test("every golden has cross_check_sql and no key sql, and sl validate gives the example no error and no alias warning", () => {
+  test("every golden has cross_check_sql and no key sql, and semlayer validate gives the example no error and no alias warning", () => {
     expect(FILES.length).toBe(17);
     for (const f of FILES) {
       const text = readFileSync(join(GOLDENS, f), "utf8");
@@ -40,7 +40,7 @@ describe("examples/acme goldens use cross_check_sql", () => {
     const issues = validateProject(ACME);
     expect(issues.filter((i) => i.level === "error")).toEqual([]);
     expect(issues.filter((i) => i.path === "sql" || i.message.includes("is now cross_check_sql"))).toEqual([]);
-    // Beyond the confirmations made before sl goldens confirm required a recorded yes, the goldens'
+    // Beyond the confirmations made before semlayer goldens confirm required a recorded yes, the goldens'
     // only warning is the draft golden that names a measure engineering has not added yet.
     const goldenIssues = issues.filter((i) => i.file.startsWith("goldens/") && !i.message.startsWith("golden:"));
     expect(goldenIssues.map((i) => [i.level, i.file, i.path])).toEqual([["warning", "goldens/new_customers_2025.yaml", "request.measures[0]"]]);
@@ -69,16 +69,16 @@ describe("examples/acme goldens use cross_check_sql", () => {
     const unconfirmed = () => validateProject(t.root).filter((i) => i.file === "goldens/sessions_2025.yaml" && i.message === unconfirmedGoldenMessage("sessions_2025"));
     expect(unconfirmed().length).toBe(1);
 
-    const rb = await sl(t.root, ["readback", "--targets", "golden:sessions_2025", "--tolerance", "0", "--json"]);
+    const rb = await semlayer(t.root, ["readback", "--targets", "golden:sessions_2025", "--tolerance", "0", "--json"]);
     expect(rb.code).toBe(0);
     const id = rb.json<{ readback_id: string }>().readback_id;
-    const reply = await sl(t.root, ["reply", "--readback", id, "--item", "1", "--text", "Yes, 4,551 sessions.", "--verdict", "yes", "--by", "Dana Ruiz"]);
+    const reply = await semlayer(t.root, ["reply", "--readback", id, "--item", "1", "--text", "Yes, 4,551 sessions.", "--verdict", "yes", "--by", "Dana Ruiz"]);
     expect(reply.code).toBe(0);
     expect(unconfirmed()).toEqual([]);
 
     writeFileSync(path, committed);
     expect(validateProject(t.root).filter((i) => i.file === "goldens/sessions_2025.yaml")).toEqual([]);
-    const confirm = await sl(t.root, ["goldens", "confirm", "--name", "sessions_2025", "--by", "Dana Ruiz", "--tolerance", "0"]);
+    const confirm = await semlayer(t.root, ["goldens", "confirm", "--name", "sessions_2025", "--by", "Dana Ruiz", "--tolerance", "0"]);
     expect(confirm.code).toBe(0);
   });
 });

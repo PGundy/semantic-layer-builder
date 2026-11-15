@@ -46,13 +46,13 @@ export function stem(file: string): string {
 }
 
 // The command a refused file's message names.
-const FIX_WITH = "sl validate";
+const FIX_WITH = "semlayer validate";
 
 // Reads one layer file and checks its shape against the schema of its kind (shapeIssue in
 // lib/schema.ts). A file that cannot be read, does not parse, or holds a map, a list or a single
 // value where its schema names another is refused in one plain line that names the file from
 // the semantic root, so no caller meets a number where it reads a list. Anything else wrong with
-// the file is sl validate's to report. With `emptyOk`, a file of nothing but comments is null.
+// the file is semlayer validate's to report. With `emptyOk`, a file of nothing but comments is null.
 export function loadFile<T>(root: string, path: string, kind: SchemaKind, emptyOk = false): T {
   const file = relative(root, path).split("\\").join("/");
   const refuse = (why: string) => new UserError(`${file}: ${why} ${SHAPE_FIX}`, FIX_WITH);
@@ -78,7 +78,7 @@ export function loadFile<T>(root: string, path: string, kind: SchemaKind, emptyO
 
 // The message and next command for a directory with no semantic layer in it.
 export function noLayer(root: string): UserError {
-  return new UserError(`No semantic layer at ${root}. Run \`sl init --name <name>\` first, or pass --root.`, "sl init --name <name>");
+  return new UserError(`No semantic layer at ${root}. Run \`semlayer init --name <name>\` first, or pass --root.`, "semlayer init --name <name>");
 }
 
 export function loadProject(root: string): Project {
@@ -114,7 +114,7 @@ export function loadSnapshot(root: string, source: string): Snapshot | null {
 
 export function requireSnapshot(root: string, source: string): Snapshot {
   const s = loadSnapshot(root, source);
-  if (!s) throw new UserError(`No snapshot for "${source}". Run \`sl introspect --source ${source}\` or \`sl import\` first.`);
+  if (!s) throw new UserError(`No snapshot for "${source}". Run \`semlayer introspect --source ${source}\` or \`semlayer import\` first.`);
   return s;
 }
 
@@ -133,7 +133,7 @@ export function sortTables<T extends { schema?: string | null; name: string }>(t
 export function saveSnapshot(root: string, snapshot: Snapshot): void {
   const path = paths(root).snapshot(snapshot.source);
   const tables = sortTables(snapshot.tables);
-  const marker = "\u0000sl tables\u0000";
+  const marker = "\u0000semlayer tables\u0000";
   const head = JSON.stringify({ ...snapshot, tables: marker }, null, 2);
   // Top-level keys are the only ones indented by two spaces, so this occurs once.
   const slot = `\n  "tables": ${JSON.stringify(marker)}`;

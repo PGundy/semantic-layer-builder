@@ -27,11 +27,11 @@ import { formatJson } from "../lib/output.ts";
 import { listModels, loadProject, paths } from "../lib/project.ts";
 import { createAccess, GOLDEN_KEYS, setGolden, setSource, type SetOutcome, SOURCE_KEYS } from "../lib/set-targets.ts";
 
-// Keys another command owns, with the command to use instead, given as the turn's sl apply entry.
-const FIELDS = () => "fields are added and removed one at a time with sl add-field <source.model> and sl remove-field <source.model.field>";
+// Keys another command owns, with the command to use instead, given as the turn's semlayer apply entry.
+const FIELDS = () => "fields are added and removed one at a time with semlayer add-field <source.model> and semlayer remove-field <source.model.field>";
 const OWNED: Record<string, (ref: string) => string> = {
-  name: (ref) => `renaming changes every reference to the item, which sl rename updates in one write, ${inTurnApply([["rename", ref, "<new_name>"]])}`,
-  model: (ref) => `a model's name is its file name, and renaming it moves the file and updates every reference, which sl rename does in one write, ${inTurnApply([["rename", ref, "<new_name>"]])}`,
+  name: (ref) => `renaming changes every reference to the item, which semlayer rename updates in one write, ${inTurnApply([["rename", ref, "<new_name>"]])}`,
+  model: (ref) => `a model's name is its file name, and renaming it moves the file and updates every reference, which semlayer rename does in one write, ${inTurnApply([["rename", ref, "<new_name>"]])}`,
   dimensions: FIELDS,
   measures: FIELDS,
   joins: FIELDS,
@@ -40,28 +40,28 @@ const OWNED: Record<string, (ref: string) => string> = {
     return `a column is left out of the layer ${inTurnApply([["ignore-column", "--source", source, "--model", model, "--column", "<column>"]])}`;
   },
   open_questions: (ref) => `a question is added ${inTurnApply([["question", "add", ref, "--text", "<question>"]])}`,
-  evidence: () => "sl check-join measures the join and writes its evidence",
+  evidence: () => "semlayer check-join measures the join and writes its evidence",
 };
 
-// The access.yaml keys sl set takes at the top level; a role, restriction or user attribute is named as <kind>:<name>.
+// The access.yaml keys semlayer set takes at the top level; a role, restriction or user attribute is named as <kind>:<name>.
 const ACCESS_KEYS = ["mode", "default_role"];
 const ACCESS_ENTRY = new RegExp(`^(${ENTRY_KINDS.join("|")}):(.*)$`, "s");
 const ACCESS_COMMANDS =
-  "A role, restriction or user attribute is added with sl add-role, sl add-restriction or sl add-attribute (sl remove-* removes one), a row filter with sl add-row-filter, " +
-  "and one key of an existing one is set with sl set access role:<name> | restriction:<name> | attribute:<name> <key> <value>";
+  "A role, restriction or user attribute is added with semlayer add-role, semlayer add-restriction or semlayer add-attribute (semlayer remove-* removes one), a row filter with semlayer add-row-filter, " +
+  "and one key of an existing one is set with semlayer set access role:<name> | restriction:<name> | attribute:<name> <key> <value>";
 
 function scalarsOnly(v: unknown): boolean {
   return Array.isArray(v) && v.every((x) => x === null || typeof x !== "object");
 }
 
-// Prints the outcome of a golden, source or new access.yaml edit as the other sl set calls print theirs.
+// Prints the outcome of a golden, source or new access.yaml edit as the other semlayer set calls print theirs.
 function report(ctx: Parameters<CommandSpec["run"]>[1], ref: string, key: string, unset: boolean, o: SetOutcome): number {
   const { notes, value, ...rest } = o;
   if (ctx.json) {
     ctx.out(formatJson({ ...rest, ref, key, value }));
     return 0;
   }
-  if (!o.changed) ctx.out(`${ref} already has ${unset ? `no ${key}` : `that ${key}`}; nothing changed. Next: sl status.`);
+  if (!o.changed) ctx.out(`${ref} already has ${unset ? `no ${key}` : `that ${key}`}; nothing changed. Next: semlayer status.`);
   else ctx.out([...(o.created ? [] : [unset ? `Removed ${key} from ${ref} in ${o.file}.` : `Set ${key} on ${ref} in ${o.file}.`]), ...notes].join("\n"));
   return 0;
 }
@@ -70,16 +70,16 @@ const spec: CommandSpec = {
   summary: "Set one key of a model, field, metric, golden, source or the access file, validating before it writes.",
   usage:
     "set <source.model | source.model.field | metric:<name> | access> <key> (<value> | --unset)\n" +
-    `       sl set access (${ENTRY_KINDS.map((k) => `${k}:<name>`).join(" | ")}) <key> (<value> | --unset)\n` +
-    `       sl set golden:<name> (${GOLDEN_KEYS.join(" | ")}) (<value> | --unset)\n` +
-    `       sl set source:<name> ${SOURCE_KEYS.join(" | ")} (<value> | --unset)\n\n` +
-    "With no access.yaml, sl set access mode open|closed creates a draft one holding that mode.\n" +
+    `       semlayer set access (${ENTRY_KINDS.map((k) => `${k}:<name>`).join(" | ")}) <key> (<value> | --unset)\n` +
+    `       semlayer set golden:<name> (${GOLDEN_KEYS.join(" | ")}) (<value> | --unset)\n` +
+    `       semlayer set source:<name> ${SOURCE_KEYS.join(" | ")} (<value> | --unset)\n\n` +
+    "With no access.yaml, semlayer set access mode open|closed creates a draft one holding that mode.\n" +
     `Keys of a role: ${Object.keys(ENTRY_KEYS.role).join(", ")}; of a restriction: ${Object.keys(ENTRY_KEYS.restriction).join(", ")};\n` +
     `of an attribute: ${Object.keys(ENTRY_KEYS.attribute).join(", ")}. A list of names (primary_key, tags, synonyms, time_grains, a role's\n` +
     "allow_models, ...) is written a,b or [a, b]: primary_key order_id,line_no and primary_key '[order_id, line_no]' write the same.\n" +
     "One name is written [a], as primary_key '[order_id]'. An edit to an approved access.yaml makes it a draft again.\n" +
     "A model has no filter: a rule for every figure of a model goes on each measure's filter, and\n" +
-    "sl set <s>.<m> filter \"<rule>\" prints the one sl apply that writes it on every measure.",
+    "semlayer set <s>.<m> filter \"<rule>\" prints the one semlayer apply that writes it on every measure.",
   options: { unset: { type: "boolean" } },
   positionals: true,
   writes: "whole",
@@ -91,43 +91,43 @@ const spec: CommandSpec = {
       const [, , k, v, ...more] = positionals;
       const [, kind, name] = entry as unknown as [string, EntryKind, string];
       if (!k || (unset ? v !== undefined : v === undefined) || more.length)
-        throw new UserError(`Usage: sl set access ${kind}:<name> <key> <value>, or --unset in place of the value. Keys of a ${kind}: ${Object.keys(ENTRY_KEYS[kind]).join(", ")}.`);
+        throw new UserError(`Usage: semlayer set access ${kind}:<name> <key> <value>, or --unset in place of the value. Keys of a ${kind}: ${Object.keys(ENTRY_KEYS[kind]).join(", ")}.`);
       const o = setEntryKey(ctx.root, kind, name, k, unset ? undefined : v);
       const target = `${kind} ${name}`;
       if (ctx.json) ctx.out(formatJson({ ...o, ref: "access", [kind]: name, key: k }));
-      else if (!o.changed) ctx.out(`${target} already has ${unset ? `no ${k}` : `that ${k}`}; nothing changed. Next: sl status.`);
-      else ctx.out([unset ? `Removed ${k} from ${target} in ${o.file}.` : `Set ${k} on ${target} in ${o.file}.`, ...accessEditLines(o, `sl access shows what people see; ${READBACK_NEXT}`)].join("\n"));
+      else if (!o.changed) ctx.out(`${target} already has ${unset ? `no ${k}` : `that ${k}`}; nothing changed. Next: semlayer status.`);
+      else ctx.out([unset ? `Removed ${k} from ${target} in ${o.file}.` : `Set ${k} on ${target} in ${o.file}.`, ...accessEditLines(o, `semlayer access shows what people see; ${READBACK_NEXT}`)].join("\n"));
       return 0;
     }
     const [ref, key, raw, ...extra] = positionals;
     if (!ref || !key || (unset ? raw !== undefined : raw === undefined) || extra.length) {
       throw new UserError(
-        'Usage: sl set <ref> <key> <value>, or sl set <ref> <key> --unset. Quote a value with spaces: sl set warehouse.orders.revenue description "Order value."',
+        'Usage: semlayer set <ref> <key> <value>, or semlayer set <ref> <key> --unset. Quote a value with spaces: semlayer set warehouse.orders.revenue description "Order value."',
       );
     }
     const named = /^(golden|source):(.*)$/s.exec(ref);
     if (named) {
       const [, kind, name] = named as unknown as [string, "golden" | "source", string];
       if (!/^[a-z][a-z0-9_]*$/.test(name))
-        throw new UserError(`${kind} names are lower-case letters, digits and _, starting with a letter, not ${JSON.stringify(name)}; sl status lists them.`);
+        throw new UserError(`${kind} names are lower-case letters, digits and _, starting with a letter, not ${JSON.stringify(name)}; semlayer status lists them.`);
       const set = kind === "golden" ? setGolden : setSource;
       return report(ctx, ref, key, unset, set(ctx.root, name, key, unset ? undefined : raw));
     }
     if (ref === "access" && !existsSync(paths(ctx.root).access)) {
       if (key !== "mode" || unset)
-        throw new UserError(`No access.yaml yet. Ask the owner the exceptions question first (sl status names it), then create it with sl set access mode open (or closed for an allowlist).`);
+        throw new UserError(`No access.yaml yet. Ask the owner the exceptions question first (semlayer status names it), then create it with semlayer set access mode open (or closed for an allowlist).`);
       return report(ctx, ref, key, unset, createAccess(ctx.root, raw!.trim()));
     }
     const loc = locate(ctx.root, ref);
     if (APPROVAL_FIELDS.includes(key)) {
       throw new UserError(
-        `${key} is an approval field, which only sl approve writes, after the owner's yes to a readback: sl approve --target ${ref} --by "<owner>".`,
+        `${key} is an approval field, which only semlayer approve writes, after the owner's yes to a readback: semlayer approve --target ${ref} --by "<owner>".`,
       );
     }
     const props = schemaProperties(loc.kind);
-    if (OWNED[key] && key in props) throw new UserError(`sl set does not change ${key}: ${OWNED[key](ref)}.`);
+    if (OWNED[key] && key in props) throw new UserError(`semlayer set does not change ${key}: ${OWNED[key](ref)}.`);
     if (loc.kind === "access" && !ACCESS_KEYS.includes(key)) {
-      throw new UserError(`sl set access takes ${ACCESS_KEYS.join(" or ")} at the top level. ${ACCESS_COMMANDS}. sl access shows the result.`);
+      throw new UserError(`semlayer set access takes ${ACCESS_KEYS.join(" or ")} at the top level. ${ACCESS_COMMANDS}. semlayer access shows the result.`);
     }
     // A rule for every figure of a model is written on each of its measures, joined to a filter it has.
     if (!(key in props) && key === "filter" && loc.kind === "model") {
@@ -140,23 +140,23 @@ const spec: CommandSpec = {
     }
     if (!(key in props)) {
       const known = Object.keys(props).filter((k) => !APPROVAL_FIELDS.includes(k) && !OWNED[k]);
-      throw new UserError(`A ${loc.kind} has no key "${key}". Keys sl set takes on a ${loc.kind}: ${known.join(", ")}.`);
+      throw new UserError(`A ${loc.kind} has no key "${key}". Keys semlayer set takes on a ${loc.kind}: ${known.join(", ")}.`);
     }
     const value = unset ? undefined : parseValue(key, raw!, props[key]!);
     const result = { ref, key, value: value ?? null };
     if (unset ? !(key in loc.item) : isDeepStrictEqual(loc.item[key], value)) {
       if (ctx.json) ctx.out(formatJson({ changed: false, file: relFile(ctx.root, loc.file), reapprove: [], ...result }));
-      else ctx.out(`${ref} already has ${unset ? `no ${key}` : `that ${key}`}; nothing changed. Next: sl status.`);
+      else ctx.out(`${ref} already has ${unset ? `no ${key}` : `that ${key}`}; nothing changed. Next: semlayer status.`);
       return 0;
     }
-    // An expr or filter that newly reads an ignored column is refused, as sl add-field refuses it.
+    // An expr or filter that newly reads an ignored column is refused, as semlayer add-field refuses it.
     if ((loc.kind === "dimension" || loc.kind === "measure") && (key === "expr" || key === "filter") && typeof value === "string") {
       const models = listModels(ctx.root, loc.source).map((l) => l.model);
       const had = ignoredReads(loc.model!, models, [loc.item[key]].filter((t): t is string => typeof t === "string"));
       const reads = ignoredReads(loc.model!, models, [value]).filter((r) => !had.some((h) => h.model === r.model && h.column === r.column));
       if (reads.length) throw ignoredRefusal(loc.source!, `The ${key} of ${ref}`, reads);
     }
-    // So is a join's keys or target that newly reads one, as sl add-join refuses it.
+    // So is a join's keys or target that newly reads one, as semlayer add-join refuses it.
     if (loc.kind === "join" && (key === "keys" || key === "to") && value !== undefined) {
       const models = listModels(ctx.root, loc.source).map((l) => l.model);
       const keyReads = (keys: unknown, to: unknown): IgnoredRead[] => {
@@ -200,7 +200,7 @@ const spec: CommandSpec = {
     }
     const lines = [unset ? `Removed ${key} from ${ref} in ${outcome.file}.` : `Set ${key} on ${ref} in ${outcome.file}.`];
     lines.push(...reapproveLines(outcome.reapprove), ...(drafted ? accessDraftLines(drafted) : []));
-    if (!outcome.reapprove.length) lines.push("Next: sl status.");
+    if (!outcome.reapprove.length) lines.push("Next: semlayer status.");
     ctx.out(lines.join("\n"));
     return 0;
   },

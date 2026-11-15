@@ -1,12 +1,12 @@
-// sl approve requires the owner's recorded yes (PRD FR-3.4, invariant 5): an approval rests on the
-// owner's latest reply in .sl/ledger.jsonl being a yes to the item as it now stands.
+// semlayer approve requires the owner's recorded yes (PRD FR-3.4, invariant 5): an approval rests on the
+// owner's latest reply in .semlayer/ledger.jsonl being a yes to the item as it now stands.
 import { afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { Model } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { initProject, recordReply, sl, tempDir, tempRoot } from "./helpers.ts";
+import { initProject, recordReply, semlayer, tempDir, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
@@ -49,10 +49,10 @@ async function project(): Promise<string> {
 }
 
 const ORDERS_FILE = "models/wh/orders.yaml";
-const LEDGER = ".sl/ledger.jsonl";
+const LEDGER = ".semlayer/ledger.jsonl";
 const text = (root: string, rel: string) => (existsSync(join(root, rel)) ? readFileSync(join(root, rel), "utf8") : "");
 const orders = (root: string) => readYaml<Model>(join(root, ORDERS_FILE));
-const approve = (root: string, args: string[]) => sl(root, ["approve", ...args]);
+const approve = (root: string, args: string[]) => semlayer(root, ["approve", ...args]);
 
 interface Result {
   changed: { target: string; from: string; to: string }[];
@@ -66,16 +66,16 @@ describe("approve without a matching yes", () => {
     const r = await approve(root, ["--target", "wh.orders.revenue", "--by", "Dana"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("Cannot approve wh.orders.revenue: no owner reply to its readback is recorded; nothing was approved.");
-    expect(r.err).toContain("sl readback --targets wh.orders.revenue, read it to the owner");
-    expect(r.err).toContain('sl reply --readback <readback_id> --item <n> --text "<owner\'s words>" --verdict yes --by "<owner>"');
-    expect(r.err).toContain("then sl approve --target wh.orders.revenue.");
+    expect(r.err).toContain("semlayer readback --targets wh.orders.revenue, read it to the owner");
+    expect(r.err).toContain('semlayer reply --readback <readback_id> --item <n> --text "<owner\'s words>" --verdict yes --by "<owner>"');
+    expect(r.err).toContain("then semlayer approve --target wh.orders.revenue.");
     expect(text(root, ORDERS_FILE)).toBe(ORDERS);
     expect(existsSync(join(root, LEDGER))).toBe(false);
   });
 
   test("a readback alone is not a yes", async () => {
     const root = await project();
-    expect((await sl(root, ["readback", "--targets", "access"])).code).toBe(0);
+    expect((await semlayer(root, ["readback", "--targets", "access"])).code).toBe(0);
     const r = await approve(root, ["--target", "access"]);
     expect(r.code).toBe(1);
     expect(text(root, "access.yaml")).toBe(ACCESS);
@@ -89,7 +89,7 @@ describe("approve without a matching yes", () => {
     const r = await approve(root, ["--target", "wh.orders.revenue"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("it changed since the owner said yes (ans_0001, to item 1 of rb_0001)");
-    expect(r.err).toContain("sl readback --targets wh.orders.revenue");
+    expect(r.err).toContain("semlayer readback --targets wh.orders.revenue");
     expect(text(root, ORDERS_FILE)).toBe(before);
   });
 
@@ -127,7 +127,7 @@ describe("approve without a matching yes", () => {
   test("a yes to another target, or an answered open question, approves nothing", async () => {
     const root = await project();
     await recordReply(root, "wh.orders.order_count");
-    mkdirSync(join(root, ".sl"), { recursive: true });
+    mkdirSync(join(root, ".semlayer"), { recursive: true });
     appendFileSync(
       join(root, LEDGER),
       `${JSON.stringify({ at: "2026-01-15T12:00:00.000Z", by: "Dana", id: "ans_0002", kind: "question", question: "revenue: gross?", target: "wh.orders.revenue", text: "Yes." })}\n`,
@@ -143,8 +143,8 @@ describe("approve without a matching yes", () => {
     appendFileSync(join(root, LEDGER), "not json\n");
     const r = await approve(root, ["--target", "wh.orders.revenue"]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain(".sl/ledger.jsonl cannot be read: line 2 is not JSON");
-    expect(r.err).toContain("git checkout -- .sl/ledger.jsonl");
+    expect(r.err).toContain(".semlayer/ledger.jsonl cannot be read: line 2 is not JSON");
+    expect(r.err).toContain("git checkout -- .semlayer/ledger.jsonl");
     expect(text(root, ORDERS_FILE)).toBe(ORDERS);
   });
 
@@ -164,17 +164,17 @@ describe("approve without a matching yes", () => {
     expect(text(root, ORDERS_FILE)).toBe(ORDERS);
   });
 
-  test("a yes in a ledger behind a linked .sl directory outside the root approves nothing", async () => {
+  test("a yes in a ledger behind a linked .semlayer directory outside the root approves nothing", async () => {
     const root = await project();
     await recordReply(root, "wh.orders.revenue");
     const outside = tempDir("outside");
     try {
-      cpSync(join(root, ".sl"), outside, { recursive: true });
-      rmSync(join(root, ".sl"), { recursive: true });
-      symlinkSync(outside, join(root, ".sl"));
+      cpSync(join(root, ".semlayer"), outside, { recursive: true });
+      rmSync(join(root, ".semlayer"), { recursive: true });
+      symlinkSync(outside, join(root, ".semlayer"));
       const r = await approve(root, ["--target", "wh.orders.revenue"]);
       expect(r.code).toBe(1);
-      expect(r.err).toContain(".sl/ledger.jsonl is not a plain file inside the semantic root");
+      expect(r.err).toContain(".semlayer/ledger.jsonl is not a plain file inside the semantic root");
       expect(text(root, ORDERS_FILE)).toBe(ORDERS);
     } finally {
       rmSync(outside, { recursive: true, force: true });
@@ -190,7 +190,7 @@ describe("approve a metric", () => {
     writeFileSync(join(root, "metrics.yaml"), METRICS);
     const r = await approve(root, ["--target", "metric:aov"]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain("sl readback --targets metric:aov");
+    expect(r.err).toContain("semlayer readback --targets metric:aov");
     expect(r.err).toContain("Before reading it back, fix: it references draft measures: wh.orders.revenue, wh.orders.order_count. Approve them first.");
     expect(r.err).not.toContain("..");
     expect(text(root, "metrics.yaml")).toBe(METRICS);
@@ -208,7 +208,7 @@ describe("approve a metric", () => {
     expect((await approve(root, ["--target", "wh.orders.revenue"])).code).toBe(0);
     expect((await approve(root, ["--target", "wh.orders.order_count"])).code).toBe(0);
     await recordReply(root, "metric:aov", { by: "Lee", now: "2026-05-05T01:00:00.000Z" });
-    const r = await sl(root, ["approve", "--target", "metric:aov"], { SL_NOW: "2027-01-01T00:00:00.000Z" });
+    const r = await semlayer(root, ["approve", "--target", "metric:aov"], { SEMLAYER_NOW: "2027-01-01T00:00:00.000Z" });
     expect(r.code).toBe(0);
     expect(text(root, "metrics.yaml")).toContain("approved_by: Lee");
     expect(text(root, "metrics.yaml")).toContain("approved_at: 2026-05-05");
@@ -241,7 +241,7 @@ describe("approve with a matching yes", () => {
     const r = await approve(root, ["--target", "wh.orders.revenue", "--by", "Lee"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain('--by "Lee" is not the owner who said yes (ans_0001, to item 1 of rb_0001), "Dana Ruiz"');
-    expect(r.err).toContain("sl approve --target wh.orders.revenue (it records the owner who said yes)");
+    expect(r.err).toContain("semlayer approve --target wh.orders.revenue (it records the owner who said yes)");
     expect(text(root, ORDERS_FILE)).toBe(ORDERS);
   });
 
@@ -251,7 +251,7 @@ describe("approve with a matching yes", () => {
     const r = await approve(root, ["--target", "wh.orders.revenue", "--date", "2026-03-01"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("--date is no longer taken: an approval's date now comes from the owner's recorded reply");
-    expect(r.err).toContain("sl approve --target wh.orders.revenue.");
+    expect(r.err).toContain("semlayer approve --target wh.orders.revenue.");
     expect(text(root, ORDERS_FILE)).toBe(ORDERS);
   });
 });
@@ -276,8 +276,8 @@ describe("approve --recursive", () => {
     expect(r.out).toContain("Approved wh.orders.revenue (draft -> approved) by Dana Ruiz on 2026-01-15 (reply ans_0002).");
     expect(r.out).toContain("  - wh.orders.order_status: no owner reply to its readback is recorded");
     expect(r.out).toContain('  - wh.orders.order_count: the owner\'s latest reply (ans_0003, to item 1 of rb_0002) is "no", not yes');
-    expect(r.out).toContain("Next: sl readback --targets wh.orders.order_status,wh.orders.order_count, read it to the owner");
-    expect(r.out).toContain("then sl approve --target wh.orders --recursive.");
+    expect(r.out).toContain("Next: semlayer readback --targets wh.orders.order_status,wh.orders.order_count, read it to the owner");
+    expect(r.out).toContain("then semlayer approve --target wh.orders --recursive.");
     const o = orders(root);
     expect([o.status, o.dimensions[0]!.status, o.measures[0]!.status, o.measures[1]!.status]).toEqual(["approved", "draft", "approved", "draft"]);
     expect(o.dimensions[0]!.approved_by).toBeUndefined();
@@ -291,7 +291,7 @@ describe("approve --recursive", () => {
     const res = r.json<Result>();
     expect(res.changed).toEqual([{ target: "wh.orders.revenue", from: "draft", to: "approved" }]);
     expect(res.refused!.map((x) => x.target)).toEqual(["wh.orders", "wh.orders.order_status", "wh.orders.order_count"]);
-    expect(res.refused![0]!.next).toContain("sl readback --targets wh.orders,");
+    expect(res.refused![0]!.next).toContain("semlayer readback --targets wh.orders,");
   });
 
   test("without any yes it is refused and writes nothing", async () => {
@@ -299,7 +299,7 @@ describe("approve --recursive", () => {
     const r = await approve(root, ["--target", "wh.orders", "--recursive"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("Cannot approve wh.orders; nothing was approved:");
-    expect(r.err).toContain("sl readback --targets wh.orders,wh.orders.order_status,wh.orders.revenue,wh.orders.order_count");
+    expect(r.err).toContain("semlayer readback --targets wh.orders,wh.orders.order_status,wh.orders.revenue,wh.orders.order_count");
     expect(text(root, ORDERS_FILE)).toBe(ORDERS);
   });
 
@@ -345,11 +345,11 @@ describe("revoke and stamp-hashes need no ledger", () => {
 });
 
 describe("validate warns on approvals without a matching yes", () => {
-  const WARNING = "no recorded owner yes in .sl/ledger.jsonl";
+  const WARNING = "no recorded owner yes in .semlayer/ledger.jsonl";
 
   test("one summary warning per file, with the count, the first items and their readback; none once each has a yes", async () => {
     const root = await project();
-    // Approved by hand, as before sl approve required a yes: the model and its three fields.
+    // Approved by hand, as before semlayer approve required a yes: the model and its three fields.
     writeFileSync(join(root, ORDERS_FILE), ORDERS.replace(/^( *)status: draft(.*)$/gm, "$1status: approved$2\n$1approved_by: Dana\n$1approved_at: 2026-01-02"));
     expect(orders(root).status).toBe("approved");
     const ours = () => validateProject(root).filter((i) => i.message.includes(WARNING));
@@ -359,15 +359,15 @@ describe("validate warns on approvals without a matching yes", () => {
         file: ORDERS_FILE,
         path: "",
         message:
-          "4 approved items have no recorded owner yes in .sl/ledger.jsonl that matches them as they stand (approved before sl approve required one): " +
+          "4 approved items have no recorded owner yes in .semlayer/ledger.jsonl that matches them as they stand (approved before semlayer approve required one): " +
           "wh.orders, wh.orders.order_status, wh.orders.revenue and 1 more; they stay approved. To record a yes, read them back with " +
-          "sl readback --targets wh.orders,wh.orders.order_status,wh.orders.revenue, then record the owner's answer with sl reply",
+          "semlayer readback --targets wh.orders,wh.orders.order_status,wh.orders.revenue, then record the owner's answer with semlayer reply",
       },
     ]);
     // A warning, not an error.
-    expect((await sl(root, ["validate"])).out).toContain(`warning 4 approved items have ${WARNING}`);
+    expect((await semlayer(root, ["validate"])).out).toContain(`warning 4 approved items have ${WARNING}`);
     await recordReply(root, ["wh.orders", "wh.orders.order_status", "wh.orders.revenue"]);
-    expect(ours()[0]!.message).toContain("1 approved item has no recorded owner yes in .sl/ledger.jsonl that matches it as it stands (approved before sl approve required one): wh.orders.order_count; it stays approved. To record a yes, read it back with sl readback --targets wh.orders.order_count");
+    expect(ours()[0]!.message).toContain("1 approved item has no recorded owner yes in .semlayer/ledger.jsonl that matches it as it stands (approved before semlayer approve required one): wh.orders.order_count; it stays approved. To record a yes, read it back with semlayer readback --targets wh.orders.order_count");
     await recordReply(root, "wh.orders.order_count");
     expect(ours()).toEqual([]);
     // A later no brings the warning back.
@@ -375,7 +375,7 @@ describe("validate warns on approvals without a matching yes", () => {
     expect(ours()[0]!.message).toStartWith("1 approved item has");
   });
 
-  test("an approval made by sl approve on a yes draws no warning", async () => {
+  test("an approval made by semlayer approve on a yes draws no warning", async () => {
     const root = await project();
     await recordReply(root, "access");
     expect((await approve(root, ["--target", "access"])).code).toBe(0);

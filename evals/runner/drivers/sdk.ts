@@ -2,12 +2,12 @@
 // it is imported only when this driver is selected, and its absence is a plain message.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ROLES, roleOf, slRefusal } from "../../../skills/semantic-layer/scripts/lib/roles.ts";
+import { ROLES, roleOf, semlayerRefusal } from "../../../skills/semantic-layer/scripts/lib/roles.ts";
 import { REPO_ROOT } from "../files.ts";
 import { redactSecrets } from "../redact.ts";
 import type { AgentRole, CommandRun, Driver, OwnerTurnInput, RoleTurn, SkillTurnInput } from "../types.ts";
 import { EvalError } from "../types.ts";
-import { refuseSkillTool, SKILL_DIR, SKILL_TOOLS, SL } from "./guard.ts";
+import { refuseSkillTool, SKILL_DIR, SKILL_TOOLS, SEMLAYER } from "./guard.ts";
 
 export const SDK_PACKAGE = "@anthropic-ai/claude-agent-sdk";
 // The line the skill agent ends its message with when the session is over.
@@ -18,7 +18,7 @@ const SKILL_MD = join(SKILL_DIR, "SKILL.md");
 const OTHER_TOOLS = ["WebFetch", "WebSearch", "Task", "NotebookEdit", "MultiEdit", "TodoWrite", "KillShell", "BashOutput"];
 // The tool the interviewer dispatches a role agent with; the SDK has named it Task and Agent.
 const DISPATCH_TOOLS = ["Task", "Agent"];
-// The agent names the role agents take tasks under, as agents/sl-*.md name them.
+// The agent names the role agents take tasks under, as agents/semlayer-*.md name them.
 const ROLE_AGENTS = Object.values(ROLES)
   .filter((r) => r.name !== "interviewer")
   .map((r) => r.agent);
@@ -37,7 +37,7 @@ type QueryFn = (args: { prompt: string; options?: Record<string, unknown> }) => 
 
 export interface SdkDriverOptions {
   model?: string;
-  // "multi": the skill agent is the interviewer and may dispatch the role agents of agents/sl-*.md.
+  // "multi": the skill agent is the interviewer and may dispatch the role agents of agents/semlayer-*.md.
   agents?: "single" | "multi";
   env?: Record<string, string | undefined>;
   // Replaced in tests; defaults to a dynamic import.
@@ -79,17 +79,17 @@ function tokensOf(usage: Record<string, unknown> | undefined): number {
 const resultText = (content: unknown) =>
   typeof content === "string" ? content : Array.isArray(content) ? (content as Block[]).filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n") : "";
 const blocks = (m: SdkMessage): Block[] => (Array.isArray(m.message?.content) ? (m.message!.content as Block[]) : []);
-// "sl <args>" for a Bash command that runs the CLI, as a transcript writes it: without a leading
+// "semlayer <args>" for a Bash command that runs the CLI, as a transcript writes it: without a leading
 // `cd <dir> &&` and without --root; any other command comes back trimmed.
-function slCommand(command: string): string {
+function semlayerCommand(command: string): string {
   const c = command.trim().replace(/^cd\s+\S+\s*&&\s*/, "");
-  if (!c.startsWith(`bun ${SL} `)) return command.trim();
-  return `sl ${c.slice(SL.length + 5)}`.replace(/\s+--root(?:=|\s+)\S+/g, "").trim();
+  if (!c.startsWith(`bun ${SEMLAYER} `)) return command.trim();
+  return `semlayer ${c.slice(SEMLAYER.length + 5)}`.replace(/\s+--root(?:=|\s+)\S+/g, "").trim();
 }
 
 // Runs one query and returns its final text and the tokens it used. In a multi-agent query, each task
 // the interviewer dispatched comes back as a role turn: the role its subagent_type names, the tokens
-// of the subagent's own messages (parent_tool_use_id), its sl commands and the result it returned;
+// of the subagent's own messages (parent_tool_use_id), its semlayer commands and the result it returned;
 // the interviewer keeps the query's tokens less the roles'.
 async function ask(query: QueryFn, prompt: string, options: Record<string, unknown>): Promise<{ text: string; tokens: number; dispatches: RoleTurn[] }> {
   const tasks = new Map<string, RoleTurn>();
@@ -106,8 +106,8 @@ async function ask(query: QueryFn, prompt: string, options: Record<string, unkno
         if (b.type !== "tool_use" || !b.id) continue;
         const role = roleOf(b.input?.subagent_type);
         if (!parent && DISPATCH_TOOLS.includes(b.name ?? "") && role && role.name !== "interviewer") tasks.set(b.id, { agent: role.name as AgentRole, text: "", tokens: 0 });
-        const command = slCommand(String(b.input?.command ?? ""));
-        if (parent && b.name === "Bash" && command.startsWith("sl ")) pending.set(b.id, { role: parent, command });
+        const command = semlayerCommand(String(b.input?.command ?? ""));
+        if (parent && b.name === "Bash" && command.startsWith("semlayer ")) pending.set(b.id, { role: parent, command });
       }
     }
     if (m.type === "user") {
@@ -131,12 +131,12 @@ async function ask(query: QueryFn, prompt: string, options: Record<string, unkno
   throw new EvalError("The agent SDK returned no result message; check the SDK version and rerun.");
 }
 
-// The role agents' definitions for the SDK's agents option, from agents/sl-*.md (the interviewer is
+// The role agents' definitions for the SDK's agents option, from agents/semlayer-*.md (the interviewer is
 // the main agent): the frontmatter's description, the body as the prompt with the CLI's path, and
 // its tools less any that edit files or dispatch, since only the interviewer does either.
 export function agentDefinitions(dir = join(REPO_ROOT, "agents")): Record<string, { description: string; prompt: string; tools: string[] }> {
   const out: Record<string, { description: string; prompt: string; tools: string[] }> = {};
-  for (const file of readdirSync(dir).filter((f) => /^sl-.*\.md$/.test(f)).sort()) {
+  for (const file of readdirSync(dir).filter((f) => /^semlayer-.*\.md$/.test(f)).sort()) {
     const text = readFileSync(join(dir, file), "utf8");
     const m = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(text);
     if (!m) continue;
@@ -146,7 +146,7 @@ export function agentDefinitions(dir = join(REPO_ROOT, "agents")): Record<string
     const listed = front.tools ? front.tools.split(",").map((t: string) => t.trim()) : SKILL_TOOLS;
     out[front.name!] = {
       description: front.description ?? "",
-      prompt: `${m[2]!.trim()}\n\nThe sl CLI here is \`bun ${SL} <command> --root .\`, run in the semantic root, the current directory.`,
+      prompt: `${m[2]!.trim()}\n\nThe semlayer CLI here is \`bun ${SEMLAYER} <command> --root .\`, run in the semantic root, the current directory.`,
       tools: listed.filter((t: string) => SKILL_TOOLS.includes(t) && t !== "Write" && t !== "Edit"),
     };
   }
@@ -189,15 +189,15 @@ export function ownerReply(reply: string): { text: string; files?: Record<string
 }
 
 // Why a role agent's call is refused, or undefined: it edits no files and dispatches nothing, and runs
-// only the sl commands its role may (lib/roles.ts). The interviewer, the query's own agent, is held
+// only the semlayer commands its role may (lib/roles.ts). The interviewer, the query's own agent, is held
 // to the skill agent's guard alone.
 export function refuseRoleTool(agentType: unknown, tool: string, input: Record<string, unknown>): string | undefined {
   const role = roleOf(agentType);
   if (!role || role.name === "interviewer") return undefined;
   if (tool === "Write" || tool === "Edit" || DISPATCH_TOOLS.includes(tool)) return `The ${role.title.toLowerCase()} may not use ${tool}: only the interviewer edits files and dispatches tasks.`;
   if (tool !== "Bash") return undefined;
-  const args = (slCommand(String(input.command ?? "")).match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((a) => a.replace(/^(["'])(.*)\1$/, "$2"));
-  const why = args[0] === "sl" ? slRefusal(role, args.slice(1)) : undefined;
+  const args = (semlayerCommand(String(input.command ?? "")).match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((a) => a.replace(/^(["'])(.*)\1$/, "$2"));
+  const why = args[0] === "semlayer" ? semlayerRefusal(role, args.slice(1)) : undefined;
   return why ? `Running "${String(input.command)}" is refused: ${why}` : undefined;
 }
 
@@ -241,11 +241,11 @@ function makeDriver(query: QueryFn, model: string | undefined, multi = false): D
     async skillTurn(input) {
       const system =
         `You are the interviewer agent building a semantic layer with a data owner. Read ${SKILL_MD} and follow it. ` +
-        `The semantic root is the current directory; run the CLI as \`bun ${SL} <command> --root .\`, starting with sl status. ` +
+        `The semantic root is the current directory; run the CLI as \`bun ${SEMLAYER} <command> --root .\`, starting with semlayer status. ` +
         `You may read only the current directory and ${SKILL_DIR}, and write only in the current directory. ` +
         "You remember nothing from earlier turns: the files and the owner's latest message are all you have. " +
         (multi
-          ? "Dispatch tasks to the role agents (sl-batch-analyst, sl-readback-verifier, sl-golden-builder, sl-connector-runner) with the Task tool, as agents/sl-interviewer.md says, and keep the owner's words and every approval to yourself. "
+          ? "Dispatch tasks to the role agents (semlayer-batch-analyst, semlayer-readback-verifier, semlayer-golden-builder, semlayer-connector-runner) with the Task tool, as agents/semlayer-interviewer.md says, and keep the owner's words and every approval to yourself. "
           : "") +
         `Reply with your next message to the owner. When the layer is done or the session should end, end the message with the line ${DONE_MARKER}.`;
       const r = await ask(query, skillPrompt(input), {

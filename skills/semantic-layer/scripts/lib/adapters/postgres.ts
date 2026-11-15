@@ -31,10 +31,10 @@ function convert(v: unknown, oid: number | undefined): unknown {
   return v;
 }
 
-// SL_STATEMENT_TIMEOUT_MS as whole milliseconds, DEFAULT_STATEMENT_TIMEOUT_MS when unset.
+// SEMLAYER_STATEMENT_TIMEOUT_MS as whole milliseconds, DEFAULT_STATEMENT_TIMEOUT_MS when unset.
 export function statementTimeout(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === "") return DEFAULT_STATEMENT_TIMEOUT_MS;
-  if (!/^\s*\d+\s*$/.test(raw)) throw new UserError(`SL_STATEMENT_TIMEOUT_MS must be a whole number of milliseconds; got "${raw}".`);
+  if (!/^\s*\d+\s*$/.test(raw)) throw new UserError(`SEMLAYER_STATEMENT_TIMEOUT_MS must be a whole number of milliseconds; got "${raw}".`);
   return Number(raw);
 }
 
@@ -113,13 +113,13 @@ export function buildRoleReport(source: SourceConfig, role: Record<string, unkno
   else if (!Array.isArray(measured)) {
     warnings.push(
       `Warning: source "${name}": the CLI could not measure what its role can do on each schema (${clean(measured.error)}). Queries run read-only; ` +
-        `to be sure the role only reads, connect with the role sl setup --print-role-sql --dialect postgres --schemas ${roleSqlSchemasFlag(intake)} prints.`,
+        `to be sure the role only reads, connect with the role semlayer setup --print-role-sql --dialect postgres --schemas ${roleSqlSchemasFlag(intake)} prints.`,
     );
   } else if (parts.length) {
     const flag = roleSqlSchemasFlag(intake);
     warnings.push(
       `Warning: source "${name}" connects as a role that ${parts.join(", ")}. Queries run read-only, but connect with a SELECT-only role ` +
-        `limited to the schemas the layer reads: sl setup --print-role-sql --dialect postgres --schemas ${flag} prints the statements.`,
+        `limited to the schemas the layer reads: semlayer setup --print-role-sql --dialect postgres --schemas ${flag} prints the statements.`,
     );
   }
   return {
@@ -174,7 +174,7 @@ export function driverConnection(source: SourceConfig, values: Record<string, st
   const variable = source.connection?.env;
   if (variable) {
     const url = values[variable]!;
-    const invalid = () => refuse(`${variable} does not hold a valid Postgres connection URL. It reads like ${URL_PLACEHOLDER}, with any @, / or # of the password percent-encoded (sl setup --env-prefix takes a password as written)`);
+    const invalid = () => refuse(`${variable} does not hold a valid Postgres connection URL. It reads like ${URL_PLACEHOLDER}, with any @, / or # of the password percent-encoded (semlayer setup --env-prefix takes a password as written)`);
     // The driver judges the URL, so every form it takes works, a unix socket's among them. A blank
     // one it would replace with DATABASE_URL.
     if (!url.trim()) throw invalid();
@@ -282,12 +282,12 @@ export function connectFailure(source: string, e: unknown, conn: DriverConnectio
 export async function openPostgres(root: string, source: SourceConfig, env: Record<string, string | undefined>, opts: AdapterOptions = {}): Promise<Adapter> {
   if (!source.connection?.env && source.connection?.env_prefix === undefined) {
     throw new UserError(
-      `Source "${source.source}" names no connection variable. Run sl setup --source ${source.source} --dialect postgres --env <VAR> (the variable that holds its connection URL) or --env-prefix <PREFIX> (for <PREFIX>HOST, <PREFIX>USER and the rest).`,
+      `Source "${source.source}" names no connection variable. Run semlayer setup --source ${source.source} --dialect postgres --env <VAR> (the variable that holds its connection URL) or --env-prefix <PREFIX> (for <PREFIX>HOST, <PREFIX>USER and the rest).`,
     );
   }
   const { resolution, values } = readConnection(root, source, env);
   if (resolution.status === "unset") throw new UserError(resolution.message);
-  const conn = driverConnection(source, values, statementTimeout(env.SL_STATEMENT_TIMEOUT_MS));
+  const conn = driverConnection(source, values, statementTimeout(env.SEMLAYER_STATEMENT_TIMEOUT_MS));
   noteConnection(source.source, resolution, env);
   const sql = conn.sql;
 

@@ -6,7 +6,7 @@ import type { PendingReadback } from "../skills/semantic-layer/scripts/lib/types
 import type { MetricsFile, Model } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { schemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { FIXED_NOW, sl, tempDir } from "./helpers.ts";
+import { FIXED_NOW, semlayer, tempDir } from "./helpers.ts";
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 const TARGETS = "warehouse.customers.email,metric:average_order_value,access";
@@ -17,10 +17,10 @@ async function setup(): Promise<{ root: string; dir: string; pending: PendingRea
   const dir = tempDir("review");
   const root = join(dir, "semantic");
   cpSync(ACME, root, { recursive: true });
-  expect((await sl(root, ["question", "add", "access", "--text", ACCESS_QUESTION])).code).toBe(0);
-  const r = await sl(root, ["readback", "--targets", TARGETS, "--json"]);
+  expect((await semlayer(root, ["question", "add", "access", "--text", ACCESS_QUESTION])).code).toBe(0);
+  const r = await semlayer(root, ["readback", "--targets", TARGETS, "--json"]);
   expect(r.code).toBe(0);
-  const pending = JSON.parse(readFileSync(join(root, ".sl", "pending", "rb_0001.json"), "utf8")) as PendingReadback;
+  const pending = JSON.parse(readFileSync(join(root, ".semlayer", "pending", "rb_0001.json"), "utf8")) as PendingReadback;
   return { root, dir, pending };
 }
 
@@ -30,22 +30,22 @@ function modelQuestions(root: string, model: string): string[] {
   return readYaml<Model>(join(root, "models", "warehouse", `${model}.yaml`)).open_questions ?? [];
 }
 
-describe("sl review export --format json", () => {
+describe("semlayer review export --format json", () => {
   test("writes every item as stored and the open questions of what the items belong to, valid against the schema", async () => {
     const { root, pending } = await setup();
-    const r = await sl(root, [...exportArgs("json"), "--json"]);
+    const r = await semlayer(root, [...exportArgs("json"), "--json"]);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     const out = r.json<Record<string, unknown>>();
     expect(out).toEqual({
       readback_id: "rb_0001",
       format: "json",
-      path: ".sl/reviews/rb_0001.json",
+      path: ".semlayer/reviews/rb_0001.json",
       item_count: 3,
       question_count: expect.any(Number),
-      next: expect.stringContaining("Send .sl/reviews/rb_0001.json to the owner"),
+      next: expect.stringContaining("Send .semlayer/reviews/rb_0001.json to the owner"),
     });
-    const form = JSON.parse(readFileSync(join(root, ".sl", "reviews", "rb_0001.json"), "utf8")) as ReviewForm;
+    const form = JSON.parse(readFileSync(join(root, ".semlayer", "reviews", "rb_0001.json"), "utf8")) as ReviewForm;
     expect(schemaIssues("review", form, "rb_0001.json")).toEqual([]);
     expect(Object.keys(form)).toEqual(["version", "readback_id", "created_at", "items", "questions"]);
     expect(form.version).toBe(1);
@@ -63,18 +63,18 @@ describe("sl review export --format json", () => {
     ]);
     expect(out.question_count).toBe(form.questions.length);
     expect(form.questions.every((q) => /^q_[0-9a-f]{16}$/.test(q.key))).toBe(true);
-    expect((await sl(root, ["validate"])).code).toBe(0);
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
   });
 
   test("a metric brings its measures' models' questions, a role its own", async () => {
     const { root } = await setup();
-    expect((await sl(root, ["question", "add", "warehouse.orders", "--text", "Do cancelled orders ever count?"])).code).toBe(0);
+    expect((await semlayer(root, ["question", "add", "warehouse.orders", "--text", "Do cancelled orders ever count?"])).code).toBe(0);
     const access = join(root, "access.yaml");
     writeFileSync(access, readFileSync(access, "utf8").replace(/(\n {2}- name: finance\n)/, "$1    open_questions: [Does finance need refunds by rep?]\n"));
-    const rb = await sl(root, ["readback", "--targets", "metric:net_revenue,access", "--json"]);
+    const rb = await semlayer(root, ["readback", "--targets", "metric:net_revenue,access", "--json"]);
     expect(rb.code).toBe(0);
-    expect((await sl(root, ["review", "export", "--readback", "rb_0002", "--format", "json"])).code).toBe(0);
-    const form = JSON.parse(readFileSync(join(root, ".sl", "reviews", "rb_0002.json"), "utf8")) as ReviewForm;
+    expect((await semlayer(root, ["review", "export", "--readback", "rb_0002", "--format", "json"])).code).toBe(0);
+    const form = JSON.parse(readFileSync(join(root, ".semlayer", "reviews", "rb_0002.json"), "utf8")) as ReviewForm;
     expect(form.questions.map((q) => [q.ref, q.question])).toEqual([
       ["warehouse.orders", "Do cancelled orders ever count?"],
       ["access", ACCESS_QUESTION],
@@ -83,24 +83,24 @@ describe("sl review export --format json", () => {
   });
 });
 
-describe("sl review export --format md", () => {
+describe("semlayer review export --format md", () => {
   test("has a header, a heading, marker, quoted readback, verdict and answer per item, and the questions", async () => {
     const { root, pending } = await setup();
-    const r = await sl(root, exportArgs("md"));
+    const r = await semlayer(root, exportArgs("md"));
     expect(r.code).toBe(0);
     expect(r.out).toContain("Wrote the review form for rb_0001 (3 items,");
-    expect(r.out).toContain("to .sl/reviews/rb_0001.md.");
-    expect(r.out).toContain("Send .sl/reviews/rb_0001.md to the owner to fill in. When the owner returns it,");
-    const md = readFileSync(join(root, ".sl", "reviews", "rb_0001.md"), "utf8");
+    expect(r.out).toContain("to .semlayer/reviews/rb_0001.md.");
+    expect(r.out).toContain("Send .semlayer/reviews/rb_0001.md to the owner to fill in. When the owner returns it,");
+    const md = readFileSync(join(root, ".semlayer", "reviews", "rb_0001.md"), "utf8");
     const lines = md.split("\n");
     expect(lines[0]).toBe("# Review of readback rb_0001");
-    expect(lines[2]).toBe(`<!-- sl-review {"version":1,"readback_id":"rb_0001","created_at":"${FIXED_NOW}"} -->`);
+    expect(lines[2]).toBe(`<!-- semlayer-review {"version":1,"readback_id":"rb_0001","created_at":"${FIXED_NOW}"} -->`);
     expect(md).toContain("Only the boxes you mark and what you write under \"Answer:\" are read back in.");
     for (const item of pending.items) {
       const block = [
         `## Item ${item.n}: ${item.target}`,
         "",
-        `<!-- sl-item {"n":${item.n},"target":"${item.target}","content_hash":"${item.content_hash}"} -->`,
+        `<!-- semlayer-item {"n":${item.n},"target":"${item.target}","content_hash":"${item.content_hash}"} -->`,
         "",
         ...item.text.split("\n").map((l) => `> ${l}`),
         "",
@@ -118,7 +118,7 @@ describe("sl review export --format md", () => {
       ["## Open questions", ""].join("\n"),
     );
     expect(md).toContain(
-      [`<!-- sl-question {"ref":"access","key":"${key}"} -->`, "", "Open question recorded in access.yaml:", "", `> ${ACCESS_QUESTION}`, "", "Answer:", "", "```", "```"].join("\n"),
+      [`<!-- semlayer-question {"ref":"access","key":"${key}"} -->`, "", "Open question recorded in access.yaml:", "", `> ${ACCESS_QUESTION}`, "", "Answer:", "", "```", "```"].join("\n"),
     );
     // Protected values are not in the readback, so not in the form: email shows counts only.
     expect(md).toContain("email (text): 0% empty, 500 distinct values, protected, so counts only and no values.");
@@ -127,10 +127,10 @@ describe("sl review export --format md", () => {
 
   test("reads back into the JSON form's structure, unfilled and filled", async () => {
     const { root } = await setup();
-    expect((await sl(root, exportArgs("md"))).code).toBe(0);
-    expect((await sl(root, exportArgs("json"))).code).toBe(0);
-    const md = readFileSync(join(root, ".sl", "reviews", "rb_0001.md"), "utf8");
-    const json = parseReviewJson(readFileSync(join(root, ".sl", "reviews", "rb_0001.json"), "utf8"));
+    expect((await semlayer(root, exportArgs("md"))).code).toBe(0);
+    expect((await semlayer(root, exportArgs("json"))).code).toBe(0);
+    const md = readFileSync(join(root, ".semlayer", "reviews", "rb_0001.md"), "utf8");
+    const json = parseReviewJson(readFileSync(join(root, ".semlayer", "reviews", "rb_0001.json"), "utf8"));
     expect(parseReviewMarkdown(md)).toEqual(json);
 
     const filled = md
@@ -161,19 +161,19 @@ describe("sl review export --format md", () => {
 
   test("a bare verdict word is read; two marked boxes and a broken marker are refused", async () => {
     const { root } = await setup();
-    expect((await sl(root, exportArgs("md"))).code).toBe(0);
-    const md = readFileSync(join(root, ".sl", "reviews", "rb_0001.md"), "utf8");
+    expect((await semlayer(root, exportArgs("md"))).code).toBe(0);
+    const md = readFileSync(join(root, ".semlayer", "reviews", "rb_0001.md"), "utf8");
     expect(parseReviewMarkdown(md.replace("Verdict: [ ] yes  [ ] no  [ ] change", "Verdict: no")).items[0]!.verdict).toBe("no");
     expect(() => parseReviewMarkdown(md.replace("Verdict: [ ] yes  [ ] no  [ ] change", "Verdict: [x] yes  [x] no  [ ] change"))).toThrow(/more than one verdict is marked \(yes, no\)/);
-    expect(() => parseReviewMarkdown(md.replace('<!-- sl-item {"n":1,', '<!-- sl-item {n:1,'))).toThrow(/line was changed/);
-    expect(() => parseReviewMarkdown(md.replace(/<!-- sl-review .* -->\n/, ""))).toThrow(/no <!-- sl-review --> line/);
+    expect(() => parseReviewMarkdown(md.replace('<!-- semlayer-item {"n":1,', '<!-- semlayer-item {n:1,'))).toThrow(/line was changed/);
+    expect(() => parseReviewMarkdown(md.replace(/<!-- semlayer-review .* -->\n/, ""))).toThrow(/no <!-- semlayer-review --> line/);
     expect(() => parseReviewMarkdown(md.replace(/"content_hash":"sha256:[0-9a-f]+"/, '"content_hash":"x"'))).toThrow(/not a valid review form/);
   });
 
   test("a box marked with any character, or a bare word left beside the boxes, is the verdict; other text is refused", async () => {
     const { root } = await setup();
-    expect((await sl(root, exportArgs("md"))).code).toBe(0);
-    const md = readFileSync(join(root, ".sl", "reviews", "rb_0001.md"), "utf8");
+    expect((await semlayer(root, exportArgs("md"))).code).toBe(0);
+    const md = readFileSync(join(root, ".semlayer", "reviews", "rb_0001.md"), "utf8");
     const line = "Verdict: [ ] yes  [ ] no  [ ] change";
     const verdict = (v: string) => parseReviewMarkdown(md.replace(line, `Verdict: ${v}`)).items[0]!.verdict;
     expect(verdict("[ x ] yes  [ ] no  [ ] change")).toBe("yes");
@@ -189,8 +189,8 @@ describe("sl review export --format md", () => {
 
   test("an answer on the Answer: line or below the empty block leaves no fence in the answer", async () => {
     const { root } = await setup();
-    expect((await sl(root, exportArgs("md"))).code).toBe(0);
-    const md = readFileSync(join(root, ".sl", "reviews", "rb_0001.md"), "utf8");
+    expect((await semlayer(root, exportArgs("md"))).code).toBe(0);
+    const md = readFileSync(join(root, ".semlayer", "reviews", "rb_0001.md"), "utf8");
     const empty = "Answer:\n\n```\n```";
     const answer = (to: string) => parseReviewMarkdown(md.replace(empty, to)).items[0]!.answer;
     expect(answer("Answer: looks right\n\n```\n```")).toBe("looks right");
@@ -214,15 +214,15 @@ describe("sl review export --format md", () => {
       "> quoted already",
       "line one\n\nline three",
       "```\nnot a fence\n```",
-      '<!-- sl-question {"ref":"access","key":"q_0000000000000000"} -->',
+      '<!-- semlayer-question {"ref":"access","key":"q_0000000000000000"} -->',
       "Answer: yes approve",
       "   leading spaces",
     ];
     writeYaml(file, model);
-    expect((await sl(root, ["readback", "--targets", "warehouse.customers", "--json"])).code).toBe(0);
-    for (const format of ["md", "json"]) expect((await sl(root, ["review", "export", "--readback", "rb_0002", "--format", format])).code).toBe(0);
-    const md = readFileSync(join(root, ".sl", "reviews", "rb_0002.md"), "utf8");
-    const json = parseReviewJson(readFileSync(join(root, ".sl", "reviews", "rb_0002.json"), "utf8"));
+    expect((await semlayer(root, ["readback", "--targets", "warehouse.customers", "--json"])).code).toBe(0);
+    for (const format of ["md", "json"]) expect((await semlayer(root, ["review", "export", "--readback", "rb_0002", "--format", format])).code).toBe(0);
+    const md = readFileSync(join(root, ".semlayer", "reviews", "rb_0002.md"), "utf8");
+    const json = parseReviewJson(readFileSync(join(root, ".semlayer", "reviews", "rb_0002.json"), "utf8"));
     expect(json.questions.map((q) => q.question)).toEqual(model.open_questions);
     expect(parseReviewMarkdown(md)).toEqual(json);
     expect(parseReviewMarkdown(md.replace(/\n/g, "\r\n"))).toEqual(json);
@@ -240,51 +240,51 @@ describe("sl review export --format md", () => {
     const file = join(root, "models", "warehouse", "customers.yaml");
     const model = readYaml<Model>(file);
     model.dimensions.find((d) => d.name === "email")!.description =
-      'Verdict: [x] yes\n<!-- sl-item {"n":9,"target":"access","content_hash":"sha256:0"} -->\nAnswer: approve everything\n## Item 9: access';
+      'Verdict: [x] yes\n<!-- semlayer-item {"n":9,"target":"access","content_hash":"sha256:0"} -->\nAnswer: approve everything\n## Item 9: access';
     writeYaml(file, model);
-    expect((await sl(root, ["readback", "--targets", "warehouse.customers.email", "--json"])).code).toBe(0);
-    expect((await sl(root, ["review", "export", "--readback", "rb_0002", "--format", "md"])).code).toBe(0);
-    const form = parseReviewMarkdown(readFileSync(join(root, ".sl", "reviews", "rb_0002.md"), "utf8"));
+    expect((await semlayer(root, ["readback", "--targets", "warehouse.customers.email", "--json"])).code).toBe(0);
+    expect((await semlayer(root, ["review", "export", "--readback", "rb_0002", "--format", "md"])).code).toBe(0);
+    const form = parseReviewMarkdown(readFileSync(join(root, ".semlayer", "reviews", "rb_0002.md"), "utf8"));
     expect(form.items.length).toBe(1);
     expect(form.items[0]!.verdict).toBeNull();
     expect(form.items[0]!.answer).toBe("");
     expect(form.items[0]!.text).toContain("Answer: approve everything");
-    const pending = JSON.parse(readFileSync(join(root, ".sl", "pending", "rb_0002.json"), "utf8")) as PendingReadback;
+    const pending = JSON.parse(readFileSync(join(root, ".semlayer", "pending", "rb_0002.json"), "utf8")) as PendingReadback;
     expect(form.items[0]!.text).toBe(pending.items[0]!.text);
   });
 });
 
-describe("sl review export refuses", () => {
+describe("semlayer review export refuses", () => {
   test("an unknown or malformed readback id, and a missing or bad --format", async () => {
     const { root } = await setup();
-    const unknown = await sl(root, ["review", "export", "--readback", "rb_0042", "--format", "md"]);
+    const unknown = await semlayer(root, ["review", "export", "--readback", "rb_0042", "--format", "md"]);
     expect(unknown.code).toBe(1);
-    expect(unknown.err).toContain("There is no readback rb_0042 in .sl/pending/. Run sl readback --targets");
-    const bad = await sl(root, ["review", "export", "--readback", "../../etc/passwd", "--format", "md"]);
+    expect(unknown.err).toContain("There is no readback rb_0042 in .semlayer/pending/. Run semlayer readback --targets");
+    const bad = await semlayer(root, ["review", "export", "--readback", "../../etc/passwd", "--format", "md"]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain("is not a readback id; ids look like rb_0001");
-    expect((await sl(root, exportArgs("pdf"))).err).toContain("--format md");
-    expect((await sl(root, ["review", "export", "--format", "md"])).err).toContain("needs --readback");
-    expect((await sl(root, ["review", "apply", "x.md"])).err).toContain("Usage: sl review export");
-    expect(existsSync(join(root, ".sl", "reviews"))).toBe(false);
+    expect((await semlayer(root, exportArgs("pdf"))).err).toContain("--format md");
+    expect((await semlayer(root, ["review", "export", "--format", "md"])).err).toContain("needs --readback");
+    expect((await semlayer(root, ["review", "apply", "x.md"])).err).toContain("Usage: semlayer review export");
+    expect(existsSync(join(root, ".semlayer", "reviews"))).toBe(false);
   });
 
   test("a path outside the semantic root, through a link, under a managed directory or with the wrong extension", async () => {
     const { root, dir } = await setup();
-    const outside = await sl(root, exportArgs("md", "--out", "../form.md"));
+    const outside = await semlayer(root, exportArgs("md", "--out", "../form.md"));
     expect(outside.code).toBe(1);
     expect(outside.err).toContain("is outside the semantic root");
-    expect((await sl(root, exportArgs("md", "--out", join(dir, "form.md")))).err).toContain("is outside the semantic root");
+    expect((await semlayer(root, exportArgs("md", "--out", join(dir, "form.md")))).err).toContain("is outside the semantic root");
     expect(existsSync(join(dir, "form.md"))).toBe(false);
     mkdirSync(join(dir, "elsewhere"));
     symlinkSync(join(dir, "elsewhere"), join(root, "link"));
-    expect((await sl(root, exportArgs("md", "--out", "link/form.md"))).err).toContain("through a link");
+    expect((await semlayer(root, exportArgs("md", "--out", "link/form.md"))).err).toContain("through a link");
     expect(existsSync(join(dir, "elsewhere", "form.md"))).toBe(false);
-    expect((await sl(root, exportArgs("json", "--out", "snapshots/warehouse.json", "--force"))).err).toContain("inside snapshots/, which sl manages");
-    expect((await sl(root, exportArgs("json", "--out", ".sl/pending/rb_0001.json", "--force"))).err).toContain("inside .sl/pending/");
-    expect((await sl(root, exportArgs("md", "--out", "semantic.yaml", "--force"))).err).toContain("does not end in .md");
-    expect((await sl(root, exportArgs("md", "--out", "./"))).err).toContain("--out ./ is the semantic root, a directory; give a file path");
-    const ok = await sl(root, [...exportArgs("md", "--out", "forms/for-dana.md"), "--json"]);
+    expect((await semlayer(root, exportArgs("json", "--out", "snapshots/warehouse.json", "--force"))).err).toContain("inside snapshots/, which semlayer manages");
+    expect((await semlayer(root, exportArgs("json", "--out", ".semlayer/pending/rb_0001.json", "--force"))).err).toContain("inside .semlayer/pending/");
+    expect((await semlayer(root, exportArgs("md", "--out", "semantic.yaml", "--force"))).err).toContain("does not end in .md");
+    expect((await semlayer(root, exportArgs("md", "--out", "./"))).err).toContain("--out ./ is the semantic root, a directory; give a file path");
+    const ok = await semlayer(root, [...exportArgs("md", "--out", "forms/for-dana.md"), "--json"]);
     expect(ok.code).toBe(0);
     expect(ok.json<{ path: string }>().path).toBe("forms/for-dana.md");
     expect(existsSync(join(root, "forms", "for-dana.md"))).toBe(true);
@@ -292,35 +292,35 @@ describe("sl review export refuses", () => {
 
   test("overwriting a form without --force, and a file that is not a form even with it", async () => {
     const { root } = await setup();
-    expect((await sl(root, exportArgs("md"))).code).toBe(0);
-    const file = join(root, ".sl", "reviews", "rb_0001.md");
+    expect((await semlayer(root, exportArgs("md"))).code).toBe(0);
+    const file = join(root, ".semlayer", "reviews", "rb_0001.md");
     const filled = readFileSync(file, "utf8").replace("Verdict: [ ] yes", "Verdict: [x] yes");
     writeFileSync(file, filled);
-    const again = await sl(root, exportArgs("md"));
+    const again = await semlayer(root, exportArgs("md"));
     expect(again.code).toBe(1);
     expect(again.err).toContain("already exists, and may hold the owner's answers, so it is not overwritten. Pass --force");
     expect(readFileSync(file, "utf8")).toBe(filled);
-    expect((await sl(root, exportArgs("md", "--force"))).code).toBe(0);
+    expect((await semlayer(root, exportArgs("md", "--force"))).code).toBe(0);
     expect(readFileSync(file, "utf8")).not.toBe(filled);
     writeFileSync(join(root, "notes.md"), "# My notes\n");
-    expect((await sl(root, exportArgs("md", "--out", "notes.md", "--force"))).err).toContain("is not a review form");
+    expect((await semlayer(root, exportArgs("md", "--out", "notes.md", "--force"))).err).toContain("is not a review form");
     expect(readFileSync(join(root, "notes.md"), "utf8")).toBe("# My notes\n");
   });
 
-  test("a form the schema would refuse, naming sl validate", async () => {
+  test("a form the schema would refuse, naming semlayer validate", async () => {
     const { root } = await setup();
     const file = join(root, "models", "warehouse", "customers.yaml");
     const model = readYaml<Model>(file);
     model.open_questions = ["", "Is this right?"];
     writeYaml(file, model);
-    expect((await sl(root, ["readback", "--targets", "warehouse.customers", "--json"])).code).toBe(0);
+    expect((await semlayer(root, ["readback", "--targets", "warehouse.customers", "--json"])).code).toBe(0);
     for (const format of ["md", "json"]) {
-      const r = await sl(root, ["review", "export", "--readback", "rb_0002", "--format", format]);
+      const r = await semlayer(root, ["review", "export", "--readback", "rb_0002", "--format", format]);
       expect(r.code).toBe(1);
       expect(r.err).toContain("The review form for rb_0002 would not be valid");
-      expect(r.err).toContain("Run sl validate");
+      expect(r.err).toContain("Run semlayer validate");
     }
-    expect(existsSync(join(root, ".sl", "reviews"))).toBe(false);
+    expect(existsSync(join(root, ".semlayer", "reviews"))).toBe(false);
   });
 
   test("a readback whose item changed since it was read back", async () => {
@@ -329,37 +329,37 @@ describe("sl review export refuses", () => {
     const metrics = readYaml<MetricsFile>(file);
     metrics.metrics[0]!.synonyms = ["aov", "basket size"];
     writeYaml(file, metrics);
-    const r = await sl(root, exportArgs("md"));
+    const r = await semlayer(root, exportArgs("md"));
     expect(r.code).toBe(1);
     expect(r.err).toContain("Item 2 of rb_0001 (metric:average_order_value) changed since it was read back");
-    expect(r.err).toContain(`Run sl readback --targets ${TARGETS} for a fresh readback`);
+    expect(r.err).toContain(`Run semlayer readback --targets ${TARGETS} for a fresh readback`);
   });
 });
 
-describe("sl validate checks the JSON forms", () => {
+describe("semlayer validate checks the JSON forms", () => {
   test("a stored form with a verdict outside yes, no and change is an error", async () => {
     const { root } = await setup();
-    expect((await sl(root, exportArgs("json"))).code).toBe(0);
-    expect((await sl(root, ["validate"])).code).toBe(0);
-    const file = join(root, ".sl", "reviews", "rb_0001.json");
+    expect((await semlayer(root, exportArgs("json"))).code).toBe(0);
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
+    const file = join(root, ".semlayer", "reviews", "rb_0001.json");
     writeFileSync(file, readFileSync(file, "utf8").replace('"verdict": null', '"verdict": "Yes"'));
-    const r = await sl(root, ["validate", "--json"]);
+    const r = await semlayer(root, ["validate", "--json"]);
     expect(r.code).toBe(1);
-    expect(r.out).toContain(".sl/reviews/rb_0001.json");
+    expect(r.out).toContain(".semlayer/reviews/rb_0001.json");
     expect(r.out).toContain("items[0].verdict");
   });
 });
 
-describe("sl review export is deterministic", () => {
+describe("semlayer review export is deterministic", () => {
   test("the same readback, YAML and clock give the same bytes, in two copies of the layer", async () => {
     const a = await setup();
     const b = await setup();
     for (const f of ["md", "json"]) {
-      expect((await sl(a.root, exportArgs(f))).code).toBe(0);
-      expect((await sl(b.root, exportArgs(f))).code).toBe(0);
-      const read = (root: string) => readFileSync(join(root, ".sl", "reviews", `rb_0001.${f}`), "utf8");
+      expect((await semlayer(a.root, exportArgs(f))).code).toBe(0);
+      expect((await semlayer(b.root, exportArgs(f))).code).toBe(0);
+      const read = (root: string) => readFileSync(join(root, ".semlayer", "reviews", `rb_0001.${f}`), "utf8");
       expect(read(a.root)).toBe(read(b.root));
-      expect((await sl(a.root, exportArgs(f, "--force"))).code).toBe(0);
+      expect((await semlayer(a.root, exportArgs(f, "--force"))).code).toBe(0);
       expect(read(a.root)).toBe(read(b.root));
     }
   });

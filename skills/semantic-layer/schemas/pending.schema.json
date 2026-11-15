@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": ".sl/pending/<readback_id>.json",
-  "description": "A readback waiting for the owner's answer, written by sl readback: numbered items, each an approve target with its rendered text and the content hash it had when it was read back.",
+  "title": ".semlayer/pending/<readback_id>.json",
+  "description": "A readback waiting for the owner's answer, written by semlayer readback: numbered items, each an approve target with its rendered text and the content hash it had when it was read back.",
   "type": "object",
   "additionalProperties": false,
   "required": ["readback_id", "created_at", "items"],
@@ -28,24 +28,24 @@
           "target": {
             "type": "string",
             "pattern": "^(access|(metric|golden):[a-z][a-z0-9_]*|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)?)$",
-            "description": "The approve target: source.model, source.model.field, metric:<name> or access, or golden:<name>, a golden sl goldens confirm records."
+            "description": "The approve target: source.model, source.model.field, metric:<name> or access, or golden:<name>, a golden semlayer goldens confirm records."
           },
           "kind": { "const": "approve", "description": "What the owner is asked: approve the item." },
           "text": { "type": "string", "minLength": 1, "description": "The readback as rendered for the owner." },
           "content_hash": {
             "type": "string",
             "pattern": "^sha256:[0-9a-f]{64}$",
-            "description": "The target's content hash when it was read back, the value sl approve records as approved_hash; for a golden, the hash of the golden with the rows and tolerance read back."
+            "description": "The target's content hash when it was read back, the value semlayer approve records as approved_hash; for a golden, the hash of the golden with the rows and tolerance read back."
           },
           "tolerance": {
             "type": "number",
             "minimum": 0,
-            "description": "golden:<name> items only: the tolerance read back, which sl goldens confirm records when it is not given --tolerance."
+            "description": "golden:<name> items only: the tolerance read back, which semlayer goldens confirm records when it is not given --tolerance."
           },
           "rows_from": {
             "type": "string",
             "minLength": 1,
-            "description": "golden:<name> items read back from stored rows only: the --results <file> or --plan <plan_id> the readback took, which that golden's sl goldens confirm --name takes too."
+            "description": "golden:<name> items read back from stored rows only: the --results <file> or --plan <plan_id> the readback took, which that golden's semlayer goldens confirm --name takes too."
           },
           "evidence": {
             "type": "object",

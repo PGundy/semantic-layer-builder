@@ -16,7 +16,7 @@ import {
 } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { conditionAttributes, parseCondition } from "../skills/semantic-layer/scripts/lib/conditions.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { approveWithYes, recordReply, sl, tempDir } from "./helpers.ts";
+import { approveWithYes, recordReply, semlayer, tempDir } from "./helpers.ts";
 
 const FIXTURE = join(import.meta.dir, "fixtures", "valid");
 const SPEC = join(import.meta.dir, "..", "skills", "semantic-layer", "references", "spec.md");
@@ -68,7 +68,7 @@ const withoutApprovalHashes = (issues: Issue[]) =>
       !i.message.includes("changed since it was approved") &&
       !i.message.includes("approved before content hashes") &&
       !i.message.includes("approved_hash is missing while other approved items carry one") &&
-      !i.message.includes("no recorded owner yes in .sl/ledger.jsonl"),
+      !i.message.includes("no recorded owner yes in .semlayer/ledger.jsonl"),
   );
 
 describe("valid fixture", () => {
@@ -76,11 +76,11 @@ describe("valid fixture", () => {
     expect(validateProject(FIXTURE)).toEqual([]);
   });
 
-  test("sl validate exits 0 and reports ok", async () => {
-    const r = await sl(FIXTURE, ["validate", "--json"]);
+  test("semlayer validate exits 0 and reports ok", async () => {
+    const r = await semlayer(FIXTURE, ["validate", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json()).toEqual({ ok: true, errors: 0, warnings: 0, issues: [] });
-    const human = await sl(FIXTURE, ["validate"]);
+    const human = await semlayer(FIXTURE, ["validate"]);
     expect(human.code).toBe(0);
     expect(human.out).toContain("Valid");
   });
@@ -394,7 +394,7 @@ const CASES: Case[] = [
   { name: "golden source unknown", file: GOLDEN, edit: (d) => (d.request.source = "crm"), expect: ["error", GOLDEN, "request.source", "unknown source"] },
   { name: "golden measure unresolved", file: GOLDEN, edit: (d) => (d.request.measures = ["orders.gmv"]), expect: ["error", GOLDEN, "request.measures[0]", "no measure \"gmv\""] },
   { name: "golden metric unknown", file: GOLDEN, edit: (d) => (d.request.measures[0] = "aov"), expect: ["error", GOLDEN, "request.measures[0]", "not a metric"] },
-  { name: "draft golden metric unknown", file: GOLDEN2, edit: (d) => (d.request.measures[0] = "aov"), expect: ["warning", GOLDEN2, "request.measures[0]", '"aov" is not a metric; a draft golden may name a field before it exists; add the field before confirming the golden, because sl validate errors on it once the golden is approved'] },
+  { name: "draft golden metric unknown", file: GOLDEN2, edit: (d) => (d.request.measures[0] = "aov"), expect: ["warning", GOLDEN2, "request.measures[0]", '"aov" is not a metric; a draft golden may name a field before it exists; add the field before confirming the golden, because semlayer validate errors on it once the golden is approved'] },
   { name: "draft golden model unknown", file: GOLDEN3, edit: (d) => (d.request.measures = ["new_customers.new_customer_count"]), expect: ["warning", GOLDEN3, "request.measures[0]", '"new_customers" is not a model of source warehouse; a draft golden'] },
   { name: "draft golden measure in a dimension slot stays an error", file: GOLDEN3, edit: (d) => (d.request.dimensions = ["orders.revenue"]), expect: ["error", GOLDEN3, "request.dimensions[0]", 'model orders has no dimension "revenue"'] },
   { name: "draft golden malformed field stays an error", file: GOLDEN3, edit: (d) => (d.request.dimensions = ["orders"]), expect: ["error", GOLDEN3, "request.dimensions[0]", '"orders" must be model.field'] },
@@ -885,7 +885,7 @@ const CASES: Case[] = [
       GOLDEN,
       "cross_check_sql",
       "calls round(); a golden's SQL applies the measure exactly as written; round() hides float noise, so remove it. This warning never stands, whatever the golden's reference says; " +
-        "once round() is removed, sl goldens check --name revenue_by_month_2025 fails on rows recorded rounded until the owner says yes to the unrounded figure and it is confirmed again",
+        "once round() is removed, semlayer goldens check --name revenue_by_month_2025 fails on rows recorded rounded until the owner says yes to the unrounded figure and it is confirmed again",
     ],
   },
   {
@@ -909,7 +909,7 @@ const CASES: Case[] = [
         "warning",
         GOLDEN,
         "request.measures[0]",
-        "an approved golden uses draft measure orders.revenue; approve it after its readback, then run sl goldens check --name revenue_by_month_2025; " +
+        "an approved golden uses draft measure orders.revenue; approve it after its readback, then run semlayer goldens check --name revenue_by_month_2025; " +
           "if it passes the recorded rows stand, and only changed rows need a new confirm",
       ],
     ],
@@ -1050,7 +1050,7 @@ const CASES: Case[] = [
     name: "evidence measured on other keys",
     file: ORDERS,
     edit: (d) => (d.joins[0].keys = [{ from: "order_id", to: "customer_id" }]),
-    expect: ["warning", ORDERS, "joins[0].evidence.keys", "the evidence was measured on keys customer_id = customer_id, but the join's keys are now order_id = customer_id; run `sl check-join` again"],
+    expect: ["warning", ORDERS, "joins[0].evidence.keys", "the evidence was measured on keys customer_id = customer_id, but the join's keys are now order_id = customer_id; run `semlayer check-join` again"],
   },
   {
     name: "evidence measured for another target",
@@ -1662,16 +1662,16 @@ describe("access modes, conditions, restrictions, hierarchy filters, ignored col
     });
   }
 
-  test("sl validate --json reports the sensitivity warning and stays ok", async () => {
+  test("semlayer validate --json reports the sensitivity warning and stays ok", async () => {
     const root = copyFixture();
     addOrdersColumn(root, { name: "internal_notes", type: "text" });
     approvedDimension(root, { name: "notes", expr: "internal_notes" });
     // The fixture's other items carry hashes, so the hand-approved dimension is stamped only on
     // --confirm-unchanged.
-    expect((await sl(root, ["approve", "--stamp-hashes", "--confirm-unchanged"])).code).toBe(0);
+    expect((await semlayer(root, ["approve", "--stamp-hashes", "--confirm-unchanged"])).code).toBe(0);
     // With the owner's yes recorded, validate does not warn that it has none.
     await recordReply(root, "warehouse.orders.notes", { by: "Dana Ruiz" });
-    const r = await sl(root, ["validate", "--json"]);
+    const r = await semlayer(root, ["validate", "--json"]);
     expect(r.code).toBe(0);
     const body = r.json<{ ok: boolean; warnings: number; issues: Issue[] }>();
     expect(body).toMatchObject({ ok: true, errors: 0, warnings: 1 });
@@ -1712,7 +1712,7 @@ function emailProfile(root: string, profile: Doc): void {
 }
 
 // Gives dim_customers.email a redacted profile whose top values are the hashes of `values`.
-// A value as earlier versions of sl profile stored a protected column's top values: "sha256:" and
+// A value as earlier versions of semlayer profile stored a protected column's top values: "sha256:" and
 // the first 16 hex characters of the SHA-256 of its text, lowercased and trimmed.
 const oldHash = (v: string) => `sha256:${createHash("sha256").update(v.toLowerCase().trim()).digest("hex").slice(0, 16)}`;
 
@@ -1725,7 +1725,7 @@ const HASHED_EMAIL: Expected = [
   "warning",
   SNAP_WH,
   "tables[0].columns[1].profile",
-  "public.dim_customers.email is protected but the snapshot holds hashed top values, which a list of likely values reverses; run sl profile --source warehouse --redact to remove them",
+  "public.dim_customers.email is protected but the snapshot holds hashed top values, which a list of likely values reverses; run semlayer profile --source warehouse --redact to remove them",
 ];
 
 // The snapshot holds dim_customers.email's raw top values, which emailTopValue writes.
@@ -1733,7 +1733,7 @@ const RAW_EMAIL: Expected = [
   "warning",
   SNAP_WH,
   "tables[0].columns[1].profile",
-  "public.dim_customers.email is protected but the snapshot holds raw sample values; run sl profile --source warehouse --redact",
+  "public.dim_customers.email is protected but the snapshot holds raw sample values; run semlayer profile --source warehouse --redact",
 ];
 
 const QUOTES_EMAIL =
@@ -1890,7 +1890,7 @@ const JOIN_ACCESS_CASES: Case[] = [
       "warning",
       GOLDEN,
       "confirmed_as",
-      'the golden was confirmed as role sales_rep with user {"region":"west"} but now runs as role analyst; run sl goldens check --name revenue_by_month_2025, read the change back and confirm again on the owner\'s yes',
+      'the golden was confirmed as role sales_rep with user {"region":"west"} but now runs as role analyst; run semlayer goldens check --name revenue_by_month_2025, read the change back and confirm again on the owner\'s yes',
     ],
   },
   { name: "the golden's user changed after it was confirmed", file: GOLDEN, edit: (d) => ((d.user = { region: "east" }), (d.confirmed_as = { role: "analyst", user: {} })), expect: ["warning", GOLDEN, "confirmed_as", 'but now runs as role analyst with user {"region":"east"}'] },
@@ -1993,7 +1993,7 @@ const JOIN_ACCESS_CASES: Case[] = [
     expect: HASHED_EMAIL,
   },
   {
-    name: "a protected text column whose min and max an earlier sl profile hashed holds hashed values, not raw ones",
+    name: "a protected text column whose min and max an earlier semlayer profile hashed holds hashed values, not raw ones",
     file: "",
     setup: (r) => emailProfile(r, { null_fraction: 0, distinct_count: 2000, min: oldHash("a@example.com"), max: oldHash("z@example.com"), sampled: false, redacted: true }),
     expect: HASHED_EMAIL,
@@ -2065,7 +2065,7 @@ const JOIN_ACCESS_CASES: Case[] = [
       "warning",
       SNAP_WH,
       "tables[0].columns[3].profile",
-      "public.dim_customers.is_test_account is protected but the snapshot holds raw sample values; run sl profile --source warehouse --redact",
+      "public.dim_customers.is_test_account is protected but the snapshot holds raw sample values; run semlayer profile --source warehouse --redact",
     ],
   },
   {
@@ -2075,7 +2075,7 @@ const JOIN_ACCESS_CASES: Case[] = [
       mutate(r, SNAP_WH, (d) => d.tables.find((t: Doc) => t.name === "fct_orders").columns.push({ name: "gift_message", type: "text", nullable: true, description: null, profile: { null_fraction: 0.5, distinct_count: 3, top_values: [{ value: "Happy birthday", count: 2 }] } })),
       mutate(r, ORDERS, (d) => (d.ignored_columns = ["gift_message"]))
     ),
-    expect: ["warning", SNAP_WH, "tables[1].columns[6].profile", "public.fct_orders.gift_message is protected but the snapshot holds raw sample values; run sl profile --source warehouse --redact"],
+    expect: ["warning", SNAP_WH, "tables[1].columns[6].profile", "public.fct_orders.gift_message is protected but the snapshot holds raw sample values; run semlayer profile --source warehouse --redact"],
   },
 ];
 
@@ -2091,10 +2091,10 @@ describe("row filters through joins, child tables, goldens against access and pe
     });
   }
 
-  test("sl validate exits 1 when an approved golden names a field its role may not see", async () => {
+  test("semlayer validate exits 1 when an approved golden names a field its role may not see", async () => {
     const root = copyFixture();
     mutate(root, ACCESS, (d) => d.restrictions.push({ name: "revenue_detail", targets: ["warehouse.orders.revenue"], allow: { roles: ["sales_rep"] } }));
-    const r = await sl(root, ["validate"]);
+    const r = await semlayer(root, ["validate"]);
     expect(r.code).toBe(1);
     expect(r.out).toContain("request.measures[0]: names orders.revenue, which role analyst may not see (restricted:revenue_detail)");
   });
@@ -2118,18 +2118,18 @@ describe("mutations of the valid fixture", () => {
   test("a warning alone keeps the project valid; an error exits 1", async () => {
     const warnRoot = copyFixture();
     mutate(warnRoot, ORDERS, (d) => delete d.joins[0].evidence);
-    const w = await sl(warnRoot, ["validate", "--json"]);
+    const w = await semlayer(warnRoot, ["validate", "--json"]);
     expect(w.code).toBe(0);
     expect(w.json<{ ok: boolean; warnings: number }>()).toMatchObject({ ok: true, warnings: 1 });
 
     const errRoot = copyFixture();
     mutate(errRoot, ORDERS, (d) => (d.measures[1].agg = "total"));
-    const e = await sl(errRoot, ["validate", "--json"]);
+    const e = await semlayer(errRoot, ["validate", "--json"]);
     expect(e.code).toBe(1);
     const body = e.json<{ ok: boolean; errors: number; issues: Issue[] }>();
     expect(body.ok).toBe(false);
     expect(body.errors).toBeGreaterThan(0);
-    const human = await sl(errRoot, ["validate"]);
+    const human = await semlayer(errRoot, ["validate"]);
     expect(human.code).toBe(1);
     expect(human.out).toContain(ORDERS);
     expect(human.out).toContain("measures[1].agg");
@@ -2161,7 +2161,7 @@ describe("mutations of the valid fixture", () => {
   });
 
   test("a missing root is a user error", async () => {
-    const r = await sl(join(tmpdir(), "sl-validate-does-not-exist"), ["validate"]);
+    const r = await semlayer(join(tmpdir(), "semlayer-validate-does-not-exist"), ["validate"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("No semantic layer");
   });
@@ -2326,12 +2326,12 @@ describe("spec examples", () => {
 });
 
 const CHANGED = "changed since it was approved";
-const UNHASHED = "approved before content hashes; run sl approve --stamp-hashes to record them";
+const UNHASHED = "approved before content hashes; run semlayer approve --stamp-hashes to record them";
 const MISSING = "approved_hash is missing while other approved items carry one; it may have been removed";
 const atIssues = (issues: Issue[], text: string) => issues.filter((i) => i.message.includes(text)).map((i) => [i.level, i.file, i.path]);
 
 describe("approval hashes", () => {
-  test("the analytics review's edit of the approved revenue measure is an error, and sl validate exits 1", async () => {
+  test("the analytics review's edit of the approved revenue measure is an error, and semlayer validate exits 1", async () => {
     // The reviewer summed cancelled orders times 1000 while revenue stayed approved by Dana Ruiz;
     // validate used to pass it and every golden still passed.
     const root = copyFixture();
@@ -2343,10 +2343,10 @@ describe("approval hashes", () => {
     expect(atIssues(issues, CHANGED)).toEqual([["error", ORDERS, "measures[0]"]]);
     expect(issues.find((i) => i.message.includes(CHANGED))!.message).toBe(
       "warehouse.orders.revenue changed since it was approved by Dana Ruiz on 2026-01-15: its definition, or a join it reads through, no longer matches approved_hash. " +
-        'Read it back to the owner as it now stands and approve it again only after they confirm (sl approve --target warehouse.orders.revenue --by "<owner>"), ' +
+        'Read it back to the owner as it now stands and approve it again only after they confirm (semlayer approve --target warehouse.orders.revenue --by "<owner>"), ' +
         "or restore the approved definition",
     );
-    const r = await sl(root, ["validate"]);
+    const r = await semlayer(root, ["validate"]);
     expect(r.code).toBe(1);
     expect(r.out).toContain("measures[0]: warehouse.orders.revenue changed since it was approved");
   });
@@ -2389,8 +2389,8 @@ describe("approval hashes", () => {
     // had it removed: a warning of its own, and --stamp-hashes needs --confirm-unchanged.
     expect(atIssues(validateProject(root), MISSING)).toEqual([["warning", ACCESS, ""]]);
     expect(atIssues(validateProject(root), UNHASHED)).toEqual([]);
-    expect((await sl(root, ["approve", "--stamp-hashes", "--target", "access"])).code).toBe(1);
-    expect((await sl(root, ["approve", "--stamp-hashes", "--target", "access", "--confirm-unchanged"])).code).toBe(0);
+    expect((await semlayer(root, ["approve", "--stamp-hashes", "--target", "access"])).code).toBe(1);
+    expect((await semlayer(root, ["approve", "--stamp-hashes", "--target", "access", "--confirm-unchanged"])).code).toBe(0);
     expect(atIssues(validateProject(root), MISSING)).toEqual([]);
     mutate(root, ACCESS, (d) => {
       d.open_questions = ["Does finance need its own role?"];
@@ -2413,7 +2413,7 @@ describe("approval hashes", () => {
       ["warning", "metrics.yaml", "", `1 approved item was ${UNHASHED}, after checking in version control that none changed since approved_at`],
     ]);
     expect(atIssues(before, MISSING)).toEqual([]);
-    const r = await sl(root, ["approve", "--stamp-hashes", "--json"]);
+    const r = await semlayer(root, ["approve", "--stamp-hashes", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<{ stamped: string[] }>().stamped).toEqual([
       "warehouse.orders",
@@ -2448,7 +2448,7 @@ describe("approval hashes", () => {
   test("pointing a model at another table is an error on the model and every approved field under it", async () => {
     const root = copyFixture();
     // Revoking only the model, then editing table, leaves the approved fields to catch it.
-    expect((await sl(root, ["approve", "--target", "warehouse.orders", "--revoke"])).code).toBe(0);
+    expect((await semlayer(root, ["approve", "--target", "warehouse.orders", "--revoke"])).code).toBe(0);
     mutate(root, ORDERS, (d) => (d.table = "public.fct_orders_lookalike"));
     expect(atIssues(validateProject(root), CHANGED)).toEqual([
       ["error", ORDERS, "dimensions[0]"],
@@ -2481,15 +2481,15 @@ describe("approval hashes", () => {
     expect(atIssues(issues, UNHASHED)).toEqual([]);
     expect(issues.find((i) => i.message.includes(MISSING))!.message).toBe(
       "warehouse.orders.revenue is approved, but approved_hash is missing while other approved items carry one; it may have been removed. " +
-        'Read it back to the owner as it now stands and approve it again only after they confirm (sl approve --target warehouse.orders.revenue --by "<owner>")',
+        'Read it back to the owner as it now stands and approve it again only after they confirm (semlayer approve --target warehouse.orders.revenue --by "<owner>")',
     );
-    const stamp = await sl(root, ["approve", "--stamp-hashes"]);
+    const stamp = await semlayer(root, ["approve", "--stamp-hashes"]);
     expect(stamp.code).toBe(1);
     expect(stamp.err).toContain("may have had theirs removed after an edit: warehouse.orders.revenue");
     expect(readYaml<Doc>(join(root, ORDERS)).measures[0].approved_hash).toBeUndefined();
-    const st = (await sl(root, ["status", "--json"])).json<{ hash_missing: string[]; next_step: { phase: string; command: string } }>();
+    const st = (await semlayer(root, ["status", "--json"])).json<{ hash_missing: string[]; next_step: { phase: string; command: string } }>();
     expect(st.hash_missing).toEqual(["warehouse.orders.revenue"]);
-    expect(st.next_step).toMatchObject({ phase: "reapprove", command: "sl readback --targets warehouse.orders.revenue" });
+    expect(st.next_step).toMatchObject({ phase: "reapprove", command: "semlayer readback --targets warehouse.orders.revenue" });
     // Approving it again on the owner's yes records the hash; it is not "already approved".
     const again = await approveWithYes(root, ["--target", "warehouse.orders.revenue", "--by", "Dana Ruiz"], { now: "2026-02-01T12:00:00.000Z" });
     expect(again.code).toBe(0);
@@ -2499,16 +2499,16 @@ describe("approval hashes", () => {
 
   test("--stamp-hashes --target that names nothing is refused", async () => {
     const root = copyFixture();
-    const r = await sl(root, ["approve", "--stamp-hashes", "--target", "warehouse.orders.revnue"]);
+    const r = await semlayer(root, ["approve", "--stamp-hashes", "--target", "warehouse.orders.revnue"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("--target warehouse.orders.revnue names no model, field, metric or access file of this project.");
-    expect((await sl(root, ["approve", "--stamp-hashes", "--target", "warehouse.orders.revenue"])).out).toContain("nothing changed");
+    expect((await semlayer(root, ["approve", "--stamp-hashes", "--target", "warehouse.orders.revenue"])).out).toContain("nothing changed");
   });
 
   test("--confirm-unchanged is only for --stamp-hashes", async () => {
-    const r = await sl(copyFixture(), ["approve", "--target", "warehouse.orders", "--by", "Dana", "--confirm-unchanged"]);
+    const r = await semlayer(copyFixture(), ["approve", "--target", "warehouse.orders", "--by", "Dana", "--confirm-unchanged"]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain("--confirm-unchanged applies only to sl approve --stamp-hashes.");
+    expect(r.err).toContain("--confirm-unchanged applies only to semlayer approve --stamp-hashes.");
   });
 
   test("a malformed approved_hash is a schema error", () => {
@@ -2534,7 +2534,7 @@ describe("joins whose evidence shows fan-out", () => {
         ORDERS,
         "joins[0].evidence",
         "is approved as many_to_one, but its evidence contradicts that: the key of customers is not unique, and a row of orders matches up to 5 rows of customers, " +
-          'so the join fans out and multiplies the measures of orders; fix the keys or the relationship and run sl check-join again, or record why the owner accepts the data in fanout_override: "<reason>"',
+          'so the join fans out and multiplies the measures of orders; fix the keys or the relationship and run semlayer check-join again, or record why the owner accepts the data in fanout_override: "<reason>"',
       ],
     ]);
   });
@@ -2559,21 +2559,21 @@ describe("joins whose evidence shows fan-out", () => {
     expect(errors(withoutApprovalHashes(validateProject(stale)))).toEqual([]);
   });
 
-  test("sl readback refuses such a join, since approving it would add validate's error, and names fanout_override (HR-15)", async () => {
+  test("semlayer readback refuses such a join, since approving it would add validate's error, and names fanout_override (HR-15)", async () => {
     const root = copyFixture();
     fanOut(root, { status: "draft", approved_by: undefined, approved_at: undefined, approved_hash: undefined });
-    const refused = await sl(root, ["readback", "--targets", "warehouse.orders.customer"]);
+    const refused = await semlayer(root, ["readback", "--targets", "warehouse.orders.customer"]);
     expect(refused.code).toBe(1);
-    expect(refused.err).toContain("warehouse.orders.customer: once approved, sl validate says models/warehouse/orders.yaml joins[0].evidence: is approved as many_to_one");
+    expect(refused.err).toContain("warehouse.orders.customer: once approved, semlayer validate says models/warehouse/orders.yaml joins[0].evidence: is approved as many_to_one");
     expect(refused.err).toContain('fanout_override: "<reason>"');
     expect(refused.err).toContain('["set","warehouse.orders.customer","fanout_override","<why the owner accepts the data, in their words>"]');
-    expect((await sl(root, ["set", "warehouse.orders.customer", "fanout_override", "Duplicate customer rows from the 2019 migration; the owner accepts them."])).code).toBe(0);
+    expect((await semlayer(root, ["set", "warehouse.orders.customer", "fanout_override", "Duplicate customer rows from the 2019 migration; the owner accepts them."])).code).toBe(0);
     const r = await approveWithYes(root, ["--target", "warehouse.orders.customer", "--by", "Dana Ruiz", "--json"]);
     expect(r.code).toBe(0);
     expect(errors(withoutApprovalHashes(validateProject(root)))).toEqual([]);
   });
 
-  test("sl approve words the fan-out from the evidence it has, names many_to_many's bridge table and skips stale evidence", async () => {
+  test("semlayer approve words the fan-out from the evidence it has, names many_to_many's bridge table and skips stale evidence", async () => {
     const draft = { status: "draft", approved_by: undefined, approved_at: undefined, approved_hash: undefined };
     const approveWarnings = async (root: string) => {
       const r = await approveWithYes(root, ["--target", "warehouse.orders.customer", "--by", "Dana Ruiz", "--json"]);
@@ -2585,7 +2585,7 @@ describe("joins whose evidence shows fan-out", () => {
     mutate(keyOnly, ORDERS, (d) => Object.assign(d.joins[0], draft, { evidence: { ...d.joins[0].evidence, right_key_unique: false, max_fanout: undefined } }));
     const w = await approveWarnings(keyOnly);
     expect(w).toEqual([
-      'Join warehouse.orders.customer is many_to_one, but its evidence shows fan-out (the key of customers is not unique); sl validate errors on it until the keys or the relationship are fixed, or fanout_override: "<reason>" records why the owner accepts it.',
+      'Join warehouse.orders.customer is many_to_one, but its evidence shows fan-out (the key of customers is not unique); semlayer validate errors on it until the keys or the relationship are fixed, or fanout_override: "<reason>" records why the owner accepts it.',
     ]);
     expect(w[0]).not.toContain("undefined");
 
@@ -2593,7 +2593,7 @@ describe("joins whose evidence shows fan-out", () => {
     fanOut(m2m, { ...draft, fanout_override: "The owner accepts it." });
     mutate(m2m, ORDERS, (d) => (d.joins[0].evidence.suggested_relationship = "many_to_many"));
     expect(await approveWarnings(m2m)).toEqual([
-      "Join warehouse.orders.customer's evidence shows many_to_many: neither key is unique, so sl validate errors on it once approved, whatever fanout_override says; the join needs a bridge table or a pre-aggregated model.",
+      "Join warehouse.orders.customer's evidence shows many_to_many: neither key is unique, so semlayer validate errors on it once approved, whatever fanout_override says; the join needs a bridge table or a pre-aggregated model.",
     ]);
 
     const stale = copyFixture();
@@ -2634,10 +2634,10 @@ describe("golden requests and their hand-written SQL", () => {
         GOLDEN,
         "cross_check_sql",
         "this hand-written SQL may not apply orders.revenue's rule: it never names status, is_test_account, which the measure's expr or filter reads. " +
-          "Write the measure's expr and filter into the SQL as the model defines them, then run sl goldens check --name revenue_by_month_2025 and read any change back to the owner",
+          "Write the measure's expr and filter into the SQL as the model defines them, then run semlayer goldens check --name revenue_by_month_2025 and read any change back to the owner",
       ],
       // The owner's yes was to the golden with its old SQL.
-      ["warning", GOLDEN, "", "golden:revenue_by_month_2025 is confirmed, but no recorded owner yes in .sl/ledger.jsonl matches it as it stands"],
+      ["warning", GOLDEN, "", "golden:revenue_by_month_2025 is confirmed, but no recorded owner yes in .semlayer/ledger.jsonl matches it as it stands"],
     ]);
   });
 
@@ -2695,7 +2695,7 @@ describe("time zones on time dimensions", () => {
         "warning",
         ORDERS,
         "dimensions[0].time_zone",
-        "names the zone timestamps without a time zone are stored in, but column created_at is timestamp with time zone, which carries its own; remove time_zone, and to count days in America/New_York write the expr as created_at at time zone 'America/New_York' (without it, days are counted in UTC when sl runs the query)",
+        "names the zone timestamps without a time zone are stored in, but column created_at is timestamp with time zone, which carries its own; remove time_zone, and to count days in America/New_York write the expr as created_at at time zone 'America/New_York' (without it, days are counted in UTC when semlayer runs the query)",
       ],
     ]);
   });
@@ -2731,7 +2731,7 @@ describe("DuckDB source setup and views", () => {
     ]);
     expect(issues[0]!.message).toStartWith("is not an allowed setup statement: ");
     expect(issues[2]!.message).toStartWith("is not one table expression: ");
-    const r = await sl(root, ["validate"]);
+    const r = await semlayer(root, ["validate"]);
     expect(r.code).toBe(1);
   });
 

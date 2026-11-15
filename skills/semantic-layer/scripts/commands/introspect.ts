@@ -53,8 +53,8 @@ export function schemasToRead(
       from: "flag",
       note:
         `--schemas (${given.join(", ")}) differs from intake.schemas in ${file} (${saved.join(", ")}); this run reads ${given.join(", ")}. ` +
-        `To read them every time, set intake.schemas in ${file} to [${given.join(", ")}] and run sl validate; ` +
-        `to read the saved schemas, run sl introspect --source ${source.source} without --schemas.`,
+        `To read them every time, set intake.schemas in ${file} to [${given.join(", ")}] and run semlayer validate; ` +
+        `to read the saved schemas, run semlayer introspect --source ${source.source} without --schemas.`,
     };
   }
   if (saved.length) return { schemas: saved, from: "intake" };
@@ -88,10 +88,10 @@ function countByKind(tables: SnapshotTable[]): Map<TableKind, number> {
 }
 
 // Counts the in-scope tables that have no row count, by kind, and says how they get one,
-// e.g. "3 views have no row count yet; sl profile measures them." A table profiled before
-// (a view whose row count a re-introspect cleared) is skipped by plain sl profile, so those
-// are named apart with the sl profile --refresh command that measures them. Out-of-scope
-// tables are left out, since sl profile reads in-scope tables only. Null when every
+// e.g. "3 views have no row count yet; semlayer profile measures them." A table profiled before
+// (a view whose row count a re-introspect cleared) is skipped by plain semlayer profile, so those
+// are named apart with the semlayer profile --refresh command that measures them. Out-of-scope
+// tables are left out, since semlayer profile reads in-scope tables only. Null when every
 // in-scope table has a row count.
 export function rowCountNote(snapshot: Snapshot, scope?: Scope): { count: number; note: string } | null {
   const missing = filterInScope(scope, snapshot.tables).filter((t) => typeof t.row_count !== "number");
@@ -101,13 +101,13 @@ export function rowCountNote(snapshot: Snapshot, scope?: Scope): { count: number
   const sentences: string[] = [];
   if (fresh.length) {
     const one = fresh.length === 1;
-    sentences.push(`${kindPhrase(countByKind(fresh))} ${one ? "has" : "have"} no row count yet; sl profile measures ${one ? "it" : "them"}.`);
+    sentences.push(`${kindPhrase(countByKind(fresh))} ${one ? "has" : "have"} no row count yet; semlayer profile measures ${one ? "it" : "them"}.`);
   }
   if (profiled.length) {
     const one = profiled.length === 1;
     sentences.push(
       `${kindPhrase(countByKind(profiled))} profiled earlier ${one ? "has" : "have"} no row count; ` +
-        `sl profile --refresh${tablesFlag(profiled.map(qualifiedName))} measures ${one ? "it" : "them"}.`,
+        `semlayer profile --refresh${tablesFlag(profiled.map(qualifiedName))} measures ${one ? "it" : "them"}.`,
     );
   }
   return { count: missing.length, note: sentences.join(" ") };
@@ -115,7 +115,7 @@ export function rowCountNote(snapshot: Snapshot, scope?: Scope): { count: number
 
 // Whether a diff touches a table one of `models` is built on: a modeled table that gained, lost or
 // retyped columns, or one the new snapshot no longer has. Model files that do not parse count as
-// touched, so the hint sends the agent to sl validate, which names them.
+// touched, so the hint sends the agent to semlayer validate, which names them.
 function touchesModeledTables(diff: SnapshotDiff | null, previous: Snapshot | null | undefined, next: Snapshot, models: () => unknown[]): boolean {
   if (!diff || (!diff.columns.length && !diff.tables_removed.length)) return false;
   let list: unknown[];
@@ -130,19 +130,19 @@ function touchesModeledTables(diff: SnapshotDiff | null, previous: Snapshot | nu
   return diff.columns.some((c) => modeled.has(c.table)) || diff.tables_removed.some((t) => modeled.has(t));
 }
 
-// The hint introspect ends with once the snapshot holds tables and the scope is focused: sl status
+// The hint introspect ends with once the snapshot holds tables and the scope is focused: semlayer status
 // while the snapshot records approved models that left scope (status's scope step comes before
-// profiling and names what to do), else sl profile while an in-scope table's profile is not
-// complete (profiled_at unset, partial ones included), else sl validate when a modeled table
-// changed, else sl draft for the tables new in scope with no model yet (this run's and earlier
-// ones'), else sl status.
+// profiling and names what to do), else semlayer profile while an in-scope table's profile is not
+// complete (profiled_at unset, partial ones included), else semlayer validate when a modeled table
+// changed, else semlayer draft for the tables new in scope with no model yet (this run's and earlier
+// ones'), else semlayer status.
 function nextHint(snapshot: Snapshot, scope: Scope | undefined, modeledChanged: boolean): string {
-  if (snapshot.scope_state?.left_scope.length) return "Next: sl status";
+  if (snapshot.scope_state?.left_scope.length) return "Next: semlayer status";
   const unprofiled = filterInScope(scope, snapshot.tables).filter((t) => profileState(t) !== "yes");
-  if (unprofiled.length) return `Next: sl profile --source ${snapshot.source}`;
-  if (modeledChanged) return "Next: sl validate";
+  if (unprofiled.length) return `Next: semlayer profile --source ${snapshot.source}`;
+  if (modeledChanged) return "Next: semlayer validate";
   const fresh = snapshot.scope_state?.new_in_scope ?? [];
-  return fresh.length ? `Next: sl draft --source ${snapshot.source}${tablesFlag(fresh)}` : "Next: sl status";
+  return fresh.length ? `Next: semlayer draft --source ${snapshot.source}${tablesFlag(fresh)}` : "Next: semlayer status";
 }
 
 const spec: CommandSpec = {
@@ -185,7 +185,7 @@ const spec: CommandSpec = {
     const left = dropOtherSchemas(source, snapshot, schemas);
     const leftNote = left.tables
       ? `Left out ${droppedText(left)} that this run does not read: ${schemaListText(left.schemas)}. ` +
-        `To read them, add them to intake.schemas in ${sourceFile} and run sl validate, or pass them in --schemas.`
+        `To read them, add them to intake.schemas in ${sourceFile} and run semlayer validate, or pass them in --schemas.`
       : undefined;
     if ((from === "flag" || from === "scope") && previous) {
       // A run restricted by --schemas (or a BigQuery scope) leaves other schemas' tables as they
@@ -212,9 +212,9 @@ const spec: CommandSpec = {
     const unknownRows = rowCountNote(snapshot, scope);
     const next =
       counts.tables === 0
-        ? `No tables found. Check that the connection can read the catalog${schemas.length ? ` and that ${schemas.join(", ")} exist` : ""}${from === "intake" ? " (intake.schemas in the source file)" : ""}, then rerun sl introspect --source ${source.source}.`
+        ? `No tables found. Check that the connection can read the catalog${schemas.length ? ` and that ${schemas.join(", ")} exist` : ""}${from === "intake" ? " (intake.schemas in the source file)" : ""}, then rerun semlayer introspect --source ${source.source}.`
         : inScope > focus_threshold
-          ? `${inScope} tables are in scope, more than the focus threshold of ${focus_threshold}. Run \`sl tables --source ${source.source} --groups\` to pick a focus.`
+          ? `${inScope} tables are in scope, more than the focus threshold of ${focus_threshold}. Run \`semlayer tables --source ${source.source} --groups\` to pick a focus.`
           : nextHint(snapshot, scope, touchesModeledTables(diff, previous, snapshot, loadModels));
 
     if (ctx.json) {

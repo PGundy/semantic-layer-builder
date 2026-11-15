@@ -42,7 +42,7 @@ fi
 
 for dep in yaml ajv @duckdb/node-api; do
   if [ ! -f "$skill/node_modules/$dep/package.json" ] && [ ! -f "$root/node_modules/$dep/package.json" ]; then
-    say "semantic-layer-builder's dependencies are not installed. Run: $install (once, and again after each plugin update), then check it with: bun $(quote "$skill/scripts/sl.ts") --help. $nodeps"
+    say "semantic-layer-builder's dependencies are not installed. Run: $install (once, and again after each plugin update), then check it with: bun $(quote "$skill/scripts/semlayer.ts") --help. $nodeps"
   fi
 done
 exit 0

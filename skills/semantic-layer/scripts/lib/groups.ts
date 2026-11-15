@@ -258,7 +258,7 @@ export interface SuggestedScope {
 // One scope built from the groups: the patterns of the include-suggested groups
 // (less one whose tables another included group already holds), and excludes for
 // the excludable tables those includes select. A table is excludable when classifyTable
-// (lib/rank.ts, the judgement sl baseline uses) calls it excludable: noise, or staging by a raw or
+// (lib/rank.ts, the judgement semlayer baseline uses) calls it excludable: noise, or staging by a raw or
 // staging name prefix, schema or comment phrase, not by an int_ prefix alone. A table is also excludable when its
 // schema group is exclude-suggested (raw.*, tmp.*, staging.*). An exclude-suggested group's
 // pattern is used when every table it adds to the excludes is excludable; the excludable tables

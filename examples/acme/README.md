@@ -12,10 +12,10 @@ To check it yourself:
 ```sh
 eval "$(bash scripts/pg-local.sh)"     # a throwaway local Postgres on port 54329
 psql "$PG_URL" -c "create database acme"
-export WAREHOUSE_URL='postgres://postgres@localhost:54329/acme?host=/tmp/sl-pg'
+export WAREHOUSE_URL='postgres://postgres@localhost:54329/acme?host=/tmp/semlayer-pg'
 PG_URL="$WAREHOUSE_URL" bun fixtures/acme/load-postgres.ts
 psql "$WAREHOUSE_URL" -v ON_ERROR_STOP=1 -f fixtures/acme/evolve.sql   # the later schema change
 cd examples/acme
-bun ../../skills/semantic-layer/scripts/sl.ts validate --root semantic
-bun ../../skills/semantic-layer/scripts/sl.ts goldens check --root semantic
+bun ../../skills/semantic-layer/scripts/semlayer.ts validate --root semantic
+bun ../../skills/semantic-layer/scripts/semlayer.ts goldens check --root semantic
 ```

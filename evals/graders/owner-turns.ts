@@ -45,6 +45,6 @@ export function ownerTurnCheck(run: RunFiles, approved: number): { passed: boole
   if (turns <= max) return { passed: true, detail: `transcript.jsonl: the owner answered ${turns} time(s)${per}, within the scenario's max_owner_turns of ${max}.` };
   return {
     passed: false,
-    detail: `transcript.jsonl: the owner answered ${turns} time(s)${per}, above the scenario's max_owner_turns of ${max}; batch the questions into fewer messages and send each batch's readback as one review form (sl review export --readback <id> --format md).`,
+    detail: `transcript.jsonl: the owner answered ${turns} time(s)${per}, above the scenario's max_owner_turns of ${max}; batch the questions into fewer messages and send each batch's readback as one review form (semlayer review export --readback <id> --format md).`,
   };
 }

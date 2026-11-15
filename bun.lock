@@ -14,7 +14,7 @@
       "name": "semantic-layer-skill",
       "version": "0.1.0",
       "bin": {
-        "sl": "scripts/sl.ts",
+        "semlayer": "scripts/semlayer.ts",
       },
       "dependencies": {
         "@duckdb/node-api": "2.0.0-r.1",

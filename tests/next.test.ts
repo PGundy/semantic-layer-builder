@@ -11,9 +11,9 @@ import type { ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.
 import type { Golden, LedgerEntry, Snapshot } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { duckdbSource, initProject, sl, tempDir, tempRoot } from "./helpers.ts";
+import { duckdbSource, initProject, semlayer, tempDir, tempRoot } from "./helpers.ts";
 
-// sl next (FR-3.1), walked through copies of the Acme example layer. All data is synthetic.
+// semlayer next (FR-3.1), walked through copies of the Acme example layer. All data is synthetic.
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 const ORDERS = "warehouse.orders";
@@ -42,12 +42,12 @@ function tree(root: string): Record<string, string> {
   return out;
 }
 
-// sl next --json, checked to write nothing and to print the same bytes twice; plus its plain output.
+// semlayer next --json, checked to write nothing and to print the same bytes twice; plus its plain output.
 async function next(root: string): Promise<NextAction & { human: string }> {
   const before = tree(root);
-  const a = await sl(root, ["next", "--json"]);
-  const b = await sl(root, ["next", "--json"]);
-  const human = await sl(root, ["next"]);
+  const a = await semlayer(root, ["next", "--json"]);
+  const b = await semlayer(root, ["next", "--json"]);
+  const human = await semlayer(root, ["next"]);
   expect(a.code).toBe(0);
   expect(a.err).toBe("");
   expect(b.out).toBe(a.out);
@@ -58,17 +58,17 @@ async function next(root: string): Promise<NextAction & { human: string }> {
     ["action", "blocked_on", "kind", "phase", "why", ...(action.kind === "done" ? [] : [action.kind === "dispatch" ? "dispatch" : action.kind === "ask_owner" ? "ask_owner" : "run"]), ...(action.connection ? ["connection"] : [])].sort(),
   );
   // The printed command is the action's.
-  if (action.kind === "run") expect(action.run!.command).toBe(["sl", action.action.command, ...action.action.args].join(" "));
+  if (action.kind === "run") expect(action.run!.command).toBe(["semlayer", action.action.command, ...action.action.args].join(" "));
   return { ...action, human: human.out };
 }
 
 async function status(root: string): Promise<ProjectStatus> {
-  return (await sl(root, ["status", "--json"])).json<ProjectStatus>();
+  return (await semlayer(root, ["status", "--json"])).json<ProjectStatus>();
 }
 
 async function ok(root: string, args: string[]): Promise<string> {
-  const r = await sl(root, args);
-  if (r.code !== 0) throw new Error(`sl ${args.join(" ")}: ${r.err}`);
+  const r = await semlayer(root, args);
+  if (r.code !== 0) throw new Error(`semlayer ${args.join(" ")}: ${r.err}`);
   return r.out;
 }
 
@@ -86,19 +86,19 @@ async function ordersDraft(): Promise<string> {
 
 // The refs status asks to read back for orders: its draft fields, then the model.
 function readbackRefs(st: ProjectStatus): string[] {
-  const m = /^sl readback --targets (\S+)$/.exec(st.next_step.command);
+  const m = /^semlayer readback --targets (\S+)$/.exec(st.next_step.command);
   expect(m).not.toBeNull();
   return m![1]!.split(",");
 }
 
-describe("sl next through the phases", () => {
+describe("semlayer next through the phases", () => {
   test("a fresh project -> ask the owner, then add-source", async () => {
     const root = join(tempDir(), "semantic");
     await initProject(root);
     const a = await next(root);
     expect(a).toMatchObject({ kind: "ask_owner", phase: "add-source", blocked_on: null, action: { command: "add-source", args: ["--name", "<source>", "--dialect", "<dialect>"], kind: "ask_owner" } });
     expect(a.why).toContain("Ask the owner which database");
-    expect(a.human).toBe(`Next (add-source): ${a.why}\n  Ask the owner, then: sl add-source --name <source> --dialect <dialect>`);
+    expect(a.human).toBe(`Next (add-source): ${a.why}\n  Ask the owner, then: semlayer add-source --name <source> --dialect <dialect>`);
   });
 
   test("after introspect, with no profiles -> run profile", async () => {
@@ -111,7 +111,7 @@ describe("sl next through the phases", () => {
     }
     writeFileSync(file, `${JSON.stringify(snap, null, 2)}\n`);
     const a = await next(root);
-    expect(a).toMatchObject({ kind: "run", phase: "profile", run: { command: "sl profile --source warehouse" } });
+    expect(a).toMatchObject({ kind: "run", phase: "profile", run: { command: "semlayer profile --source warehouse" } });
     expect(a.why).toContain("have no profile");
   });
 
@@ -140,11 +140,11 @@ describe("sl next through the phases", () => {
     expect(a.ask_owner!.items).toEqual(refs.map((target, i) => ({ n: i + 1, target, kind: "approve" })));
     expect(a.ask_owner!.text.startsWith(`1. ${rb.items[0]!.text.split("\n")[0]}`)).toBe(true);
     expect(a.ask_owner!.text).toContain(`\n\n3. ${ORDERS} (table)`);
-    expect(a.why).toContain(`sl reply --readback ${rb.readback_id} --item <n>`);
+    expect(a.why).toContain(`semlayer reply --readback ${rb.readback_id} --item <n>`);
     // Three open items: the action is the batched reply, one answer per open item on its stdin.
     expect(a.action).toMatchObject({ command: "reply", args: ["--readback", rb.readback_id, "--answers", "-", "--approve"], kind: "ask_owner" });
     expect(JSON.parse(a.action.stdin!)).toEqual({ by: "<owner>", answers: [1, 2, 3].map((item) => ({ item, verdict: "yes|no|change", text: "<owner's words>" })) });
-    expect(a.human).toContain(`sl review export --readback ${rb.readback_id} --format md`);
+    expect(a.human).toContain(`semlayer review export --readback ${rb.readback_id} --format md`);
     expect(a.human.split("\n")).toHaveLength(2);
 
     // Words without a verdict keep item 2 open; a no on item 3 closes it without approving it.
@@ -155,16 +155,16 @@ describe("sl next through the phases", () => {
     expect(a.ask_owner!.text).not.toContain(`${ORDERS} (table)`);
   });
 
-  test("a recorded yes -> run sl approve, and status names it with after_owner_yes", async () => {
+  test("a recorded yes -> run semlayer approve, and status names it with after_owner_yes", async () => {
     const root = await ordersDraft();
     const rb = JSON.parse(await ok(root, ["readback", "--targets", `${ORDERS}.order_count,${ORDERS}.revenue`, "--json"])) as { readback_id: string };
     await reply(root, rb.readback_id, 2, "yes");
     const a = await next(root);
-    expect(a).toMatchObject({ kind: "run", phase: "interview", run: { command: `sl approve --target ${ORDERS}.revenue` }, blocked_on: "open_questions" });
+    expect(a).toMatchObject({ kind: "run", phase: "interview", run: { command: `semlayer approve --target ${ORDERS}.revenue` }, blocked_on: "open_questions" });
     expect(a.why).toContain("ans_0001");
     const st = await status(root);
-    expect(st.next_step).toMatchObject({ phase: "interview", command: `sl approve --target ${ORDERS}.revenue`, after_owner_yes: true });
-    expect((await sl(root, ["status"])).out).toContain(`meanwhile, only after the owner says yes to its readback: sl approve --target ${ORDERS}.revenue`);
+    expect(st.next_step).toMatchObject({ phase: "interview", command: `semlayer approve --target ${ORDERS}.revenue`, after_owner_yes: true });
+    expect((await semlayer(root, ["status"])).out).toContain(`meanwhile, only after the owner says yes to its readback: semlayer approve --target ${ORDERS}.revenue`);
 
     // Once approved, the open item 1 is what remains.
     await ok(root, ["approve", "--target", `${ORDERS}.revenue`]);
@@ -183,14 +183,14 @@ describe("sl next through the phases", () => {
     await ok(root, ["set", `${ORDERS}.revenue`, "expr", "amount_cents / 100.00"]);
     const a = await next(root);
     expect(a.kind).toBe("run");
-    expect(a.run!.command).toStartWith("sl readback --targets ");
+    expect(a.run!.command).toStartWith("semlayer readback --targets ");
     expect(a.run!.command).toContain(`${ORDERS}.revenue`);
   });
 
   test("an owner's no to everything read back -> the typed edit they asked for", async () => {
     const root = acme();
     await ok(root, ["approve", "--target", ORDERS, "--revoke"]);
-    expect((await status(root)).next_step.command).toBe(`sl readback --targets ${ORDERS}`);
+    expect((await status(root)).next_step.command).toBe(`semlayer readback --targets ${ORDERS}`);
     const rb = JSON.parse(await ok(root, ["readback", "--targets", ORDERS, "--json"])) as { readback_id: string };
     await reply(root, rb.readback_id, 1, "change");
     const a = await next(root);
@@ -204,14 +204,14 @@ describe("sl next through the phases", () => {
     const refs = readbackRefs(await status(root));
     const rb = JSON.parse(await ok(root, ["readback", "--targets", refs.join(","), "--json"])) as { readback_id: string; items: { n: number }[] };
     for (const item of rb.items) await reply(root, rb.readback_id, item.n, "yes");
-    // The yeses of one readback are approved in one sl approve --readback (HR-15).
+    // The yeses of one readback are approved in one semlayer approve --readback (HR-15).
     expect(refs.length).toBeGreaterThan(1);
     const all = await next(root);
-    expect(all.run!.command).toBe(`sl approve --readback ${rb.readback_id}`);
+    expect(all.run!.command).toBe(`semlayer approve --readback ${rb.readback_id}`);
     expect(all.why).toContain(`The owner said yes to ${refs.join(", ")} as they now stand (readback ${rb.readback_id} in the ledger)`);
     await ok(root, ["approve", "--readback", rb.readback_id]);
     const a = await next(root);
-    expect(a).toMatchObject({ kind: "run", phase: "access", run: { command: "sl readback --targets access" } });
+    expect(a).toMatchObject({ kind: "run", phase: "access", run: { command: "semlayer readback --targets access" } });
   });
 
   test("a no among the yeses keeps the batched approve; a yes edited since falls back to the single approve", async () => {
@@ -226,13 +226,13 @@ describe("sl next through the phases", () => {
     await reply(a.root, a.rb, 1, "yes");
     await reply(a.root, a.rb, 2, "yes");
     await reply(a.root, a.rb, 3, "no");
-    expect((await next(a.root)).run?.command).toBe(`sl approve --readback ${a.rb}`);
+    expect((await next(a.root)).run?.command).toBe(`semlayer approve --readback ${a.rb}`);
     expect(await ok(a.root, ["approve", "--readback", a.rb])).toContain("Approved 2 of the 3 items");
     const b = await setup();
     for (const i of [1, 2, 3]) await reply(b.root, b.rb, i, "yes");
     await ok(b.root, ["set", `${ORDERS}.discount`, "expr", "discount_cents / 100"]);
     const step = await next(b.root);
-    expect(step.run?.command).toStartWith("sl approve --target");
+    expect(step.run?.command).toStartWith("semlayer approve --target");
     await ok(b.root, [step.action.command, ...step.action.args]);
   });
 
@@ -241,8 +241,8 @@ describe("sl next through the phases", () => {
     const root = join(dir, "semantic");
     await initProject(root);
     writeYaml(join(root, "sources", "wh.yaml"), { source: "wh", dialect: "snowflake" });
-    expect((await next(root)).run!.command).toBe("sl introspect --source wh --emit-sql");
-    const emitted = await sl(root, ["introspect", "--source", "wh", "--emit-sql", "--json"]);
+    expect((await next(root)).run!.command).toBe("semlayer introspect --source wh --emit-sql");
+    const emitted = await semlayer(root, ["introspect", "--source", "wh", "--emit-sql", "--json"]);
     expect(emitted.code).toBe(0);
     const plan = emitted.json<{ plan_id: string; queries: { id: string; purpose: string; sql: string; max_rows: number }[] }>();
     let a = await next(root);
@@ -254,8 +254,8 @@ describe("sl next through the phases", () => {
         source: "wh",
         dialect: "snowflake",
         queries: plan.queries.map(({ id, purpose, sql, max_rows }) => ({ id, purpose, sql, max_rows })),
-        store: `sl results add --plan ${plan.plan_id} --query <query id> --file <rows.json>`,
-        finish: `sl introspect --source wh --plan ${plan.plan_id}`,
+        store: `semlayer results add --plan ${plan.plan_id} --query <query id> --file <rows.json>`,
+        finish: `semlayer introspect --source wh --plan ${plan.plan_id}`,
       },
     });
     expect(a.human).toContain(`Dispatch to a connector runner: plan ${plan.plan_id}, queries ${plan.queries.map((q) => q.id).join(", ")}`);
@@ -268,7 +268,7 @@ describe("sl next through the phases", () => {
     expect(a.dispatch!.task.queries.map((q) => q.id)).toEqual(plan.queries.slice(1).map((q) => q.id));
     for (const q of plan.queries.slice(1)) await ok(root, ["results", "add", "--plan", plan.plan_id, "--query", q.id, "--file", rows]);
     a = await next(root);
-    expect(a).toMatchObject({ kind: "run", phase: "introspect", run: { command: `sl introspect --source wh --plan ${plan.plan_id}` } });
+    expect(a).toMatchObject({ kind: "run", phase: "introspect", run: { command: `semlayer introspect --source wh --plan ${plan.plan_id}` } });
     expect(a.why).toContain(`Every query of plan ${plan.plan_id} has its result stored`);
   });
 
@@ -278,7 +278,7 @@ describe("sl next through the phases", () => {
     expect(st.next_step.phase).toBe("done");
     expect(st.approved_without_yes.length).toBeGreaterThan(20);
     let a = await next(root);
-    expect(a).toMatchObject({ kind: "run", phase: "done", run: { command: `sl readback --targets ${st.approved_without_yes.slice(0, 8).join(",")}` } });
+    expect(a).toMatchObject({ kind: "run", phase: "done", run: { command: `semlayer readback --targets ${st.approved_without_yes.slice(0, 8).join(",")}` } });
     expect(a.why).toContain(`${st.approved_without_yes.length} approved item(s) have no recorded owner yes`);
 
     // The owner's yes to each, as a readback hashes it (a golden over its recorded rows).
@@ -294,8 +294,8 @@ describe("sl next through the phases", () => {
           return { readback_id: "rb_0002", item: i + 1, target, content_hash: goldenHash(g as never, g.expected!.rows, g.expected!.tolerance ?? DEFAULT_TOLERANCE) };
         }),
     ].map((x, i) => ledgerLine({ id: `ans_${String(i + 1).padStart(4, "0")}`, kind: "reply", ...x, text: "Yes.", verdict: "yes", by: "Dana", at: "2026-01-15T12:00:00.000Z" } as LedgerEntry));
-    mkdirSync(join(root, ".sl"), { recursive: true });
-    appendFileSync(join(root, ".sl", "ledger.jsonl"), lines.join(""));
+    mkdirSync(join(root, ".semlayer"), { recursive: true });
+    appendFileSync(join(root, ".semlayer", "ledger.jsonl"), lines.join(""));
     expect(validateProject(root).filter((i) => i.message.includes("no recorded owner yes"))).toEqual([]);
     expect((await status(root)).approved_without_yes).toEqual([]);
 
@@ -304,7 +304,7 @@ describe("sl next through the phases", () => {
   });
 });
 
-describe("sl status sign-off steps and approved_without_yes", () => {
+describe("semlayer status sign-off steps and approved_without_yes", () => {
   test("approved_without_yes lists approved items and goldens without a matching yes, in JSON and plain output", async () => {
     const root = acme();
     const st = await status(root);
@@ -316,7 +316,7 @@ describe("sl status sign-off steps and approved_without_yes", () => {
     expect(st.approved_without_yes).not.toContain("golden:new_customers_2025");
     expect(st.approved_without_yes).not.toContain("warehouse.products.launched_on");
     expect(st.next_step.phase).toBe("done");
-    expect((await sl(root, ["status"])).out).toContain(`approved without a recorded owner yes (they stay approved): ${st.approved_without_yes.slice(0, 8).join(", ")} and`);
+    expect((await semlayer(root, ["status"])).out).toContain(`approved without a recorded owner yes (they stay approved): ${st.approved_without_yes.slice(0, 8).join(", ")} and`);
 
     // A yes to an item as it stands takes it off the list; a no does not.
     const rb = JSON.parse(await ok(root, ["readback", "--targets", `${ORDERS}.revenue,${ORDERS}.discount`, "--json"])) as { readback_id: string };
@@ -330,7 +330,7 @@ describe("sl status sign-off steps and approved_without_yes", () => {
     const changed = await status(root);
     expect(changed.changed_since_approval).toContain(`${ORDERS}.order_count`);
     expect(changed.approved_without_yes).not.toContain(`${ORDERS}.order_count`);
-    expect(changed.next_step).toMatchObject({ phase: "reapprove", command: `sl readback --targets ${ORDERS}.order_count`, after_owner_yes: false });
+    expect(changed.next_step).toMatchObject({ phase: "reapprove", command: `semlayer readback --targets ${ORDERS}.order_count`, after_owner_yes: false });
   });
 
   test("the done phase leaves out items already answered, and an answered no never holds done", async () => {
@@ -342,20 +342,20 @@ describe("sl status sign-off steps and approved_without_yes", () => {
     expect((await next(root)).kind).toBe("ask_owner");
     for (const item of rb.items) await reply(root, rb.readback_id, item.n, "no");
     const a = await next(root);
-    expect(a.run!.command).toBe(`sl readback --targets ${st.approved_without_yes.slice(8, 16).join(",")}`);
+    expect(a.run!.command).toBe(`semlayer readback --targets ${st.approved_without_yes.slice(8, 16).join(",")}`);
     expect((await status(root)).next_step.phase).toBe("done");
   });
 
-  test("a reapprove step names sl approve once the owner's yes to the item as it stands is recorded", async () => {
+  test("a reapprove step names semlayer approve once the owner's yes to the item as it stands is recorded", async () => {
     const root = acme();
     await ok(root, ["set", `${ORDERS}.revenue`, "expr", "amount_cents / 100.00"]);
-    expect((await status(root)).next_step).toMatchObject({ phase: "reapprove", command: `sl readback --targets ${ORDERS}.revenue`, after_owner_yes: false });
-    expect(await next(root)).toMatchObject({ kind: "run", phase: "reapprove", run: { command: `sl readback --targets ${ORDERS}.revenue` } });
+    expect((await status(root)).next_step).toMatchObject({ phase: "reapprove", command: `semlayer readback --targets ${ORDERS}.revenue`, after_owner_yes: false });
+    expect(await next(root)).toMatchObject({ kind: "run", phase: "reapprove", run: { command: `semlayer readback --targets ${ORDERS}.revenue` } });
     const rb = JSON.parse(await ok(root, ["readback", "--targets", `${ORDERS}.revenue`, "--json"])) as { readback_id: string };
     expect(await next(root)).toMatchObject({ kind: "ask_owner", phase: "reapprove" });
     await reply(root, rb.readback_id, 1, "yes");
-    expect((await status(root)).next_step).toMatchObject({ phase: "reapprove", command: `sl approve --target ${ORDERS}.revenue`, after_owner_yes: true });
-    expect(await next(root)).toMatchObject({ kind: "run", phase: "reapprove", run: { command: `sl approve --target ${ORDERS}.revenue` } });
+    expect((await status(root)).next_step).toMatchObject({ phase: "reapprove", command: `semlayer approve --target ${ORDERS}.revenue`, after_owner_yes: true });
+    expect(await next(root)).toMatchObject({ kind: "run", phase: "reapprove", run: { command: `semlayer approve --target ${ORDERS}.revenue` } });
   });
 
   test("open access questions pass through as blocked_on", async () => {
@@ -363,12 +363,12 @@ describe("sl status sign-off steps and approved_without_yes", () => {
     await ok(root, ["approve", "--target", "access", "--revoke"]);
     await ok(root, ["question", "add", "access", "--text", "Should sales see refunds?"]);
     const a = await next(root);
-    expect(a).toMatchObject({ kind: "run", phase: "access", blocked_on: "open_questions", run: { command: "sl access" } });
-    expect(a.human).toContain("\n  Meanwhile: sl access");
+    expect(a).toMatchObject({ kind: "run", phase: "access", blocked_on: "open_questions", run: { command: "semlayer access" } });
+    expect(a.human).toContain("\n  Meanwhile: semlayer access");
   });
 });
 
-describe("following sl next makes progress", () => {
+describe("following semlayer next makes progress", () => {
   for (const first of ["yes", "no"] as const) {
     test(`a ${first} then a reply without a verdict reopens the item; following each action changes the next`, async () => {
       const root = acme();
@@ -381,31 +381,31 @@ describe("following sl next makes progress", () => {
       let a = await next(root);
       expect(a).toMatchObject({ kind: "ask_owner", phase: "reapprove", ask_owner: { readback_id: rb.readback_id, items: [{ n: 1, target: T }] } });
       // With that readback set aside, a fresh one is named; once it is written, its item is put to the owner.
-      rmSync(join(root, ".sl", "pending", `${rb.readback_id}.json`));
+      rmSync(join(root, ".semlayer", "pending", `${rb.readback_id}.json`));
       a = await next(root);
-      expect(a).toMatchObject({ kind: "run", run: { command: `sl readback --targets ${T}` } });
+      expect(a).toMatchObject({ kind: "run", run: { command: `semlayer readback --targets ${T}` } });
       const rb2 = JSON.parse(await ok(root, ["readback", "--targets", T, "--json"])) as { readback_id: string };
       a = await next(root);
       expect(a).toMatchObject({ kind: "ask_owner", ask_owner: { readback_id: rb2.readback_id } });
-      expect(a.why).toContain(`sl readback --discard ${rb2.readback_id}`);
+      expect(a.why).toContain(`semlayer readback --discard ${rb2.readback_id}`);
       await reply(root, rb2.readback_id, 1, "yes");
-      expect((await next(root)).run!.command).toBe(`sl approve --target ${T}`);
+      expect((await next(root)).run!.command).toBe(`semlayer approve --target ${T}`);
     });
   }
 
-  test("a ledger behind a linked .sl directory, which sl approve refuses, is not read", async () => {
+  test("a ledger behind a linked .semlayer directory, which semlayer approve refuses, is not read", async () => {
     const root = acme();
     await ok(root, ["approve", "--target", ORDERS, "--revoke"]);
     const rb = JSON.parse(await ok(root, ["readback", "--targets", ORDERS, "--json"])) as { readback_id: string };
     await reply(root, rb.readback_id, 1, "yes");
-    expect((await next(root)).run!.command).toBe(`sl approve --target ${ORDERS}`);
-    const outside = join(root, "..", "outside-sl");
-    renameSync(join(root, ".sl"), outside);
-    symlinkSync(outside, join(root, ".sl"));
+    expect((await next(root)).run!.command).toBe(`semlayer approve --target ${ORDERS}`);
+    const outside = join(root, "..", "outside-semlayer");
+    renameSync(join(root, ".semlayer"), outside);
+    symlinkSync(outside, join(root, ".semlayer"));
     const st = await status(root);
-    expect(st.next_step.command).toBe(`sl readback --targets ${ORDERS}`);
+    expect(st.next_step.command).toBe(`semlayer readback --targets ${ORDERS}`);
     expect(st.approved_without_yes).toContain(`${ORDERS}.revenue`);
-    expect((await sl(root, ["next", "--json"])).json<NextAction>().run?.command ?? "").not.toContain("sl approve");
+    expect((await semlayer(root, ["next", "--json"])).json<NextAction>().run?.command ?? "").not.toContain("semlayer approve");
   });
 
   test("blocked_on stays open_questions while a pending readback is put to the owner", async () => {
@@ -416,15 +416,15 @@ describe("following sl next makes progress", () => {
     expect(await next(root)).toMatchObject({ kind: "ask_owner", phase: "access", blocked_on: "open_questions" });
   });
 
-  test("a yes to a golden whose source sl cannot run, with no plan of its rows stored, names writing one, never a <plan_id> placeholder", async () => {
+  test("a yes to a golden whose source semlayer cannot run, with no plan of its rows stored, names writing one, never a <plan_id> placeholder", async () => {
     const root = acme();
     writeYaml(join(root, "sources", "sf.yaml"), { source: "sf", dialect: "snowflake" });
     const file = join(root, "goldens", "revenue_2025.yaml");
     writeFileSync(file, readFileSync(file, "utf8").replace(/^(\s+source:) warehouse$/m, "$1 sf"));
     const line = { id: "ans_0001", kind: "reply", readback_id: "rb_0001", item: 1, target: "golden:revenue_2025", content_hash: `sha256:${"0".repeat(64)}`, text: "Yes.", verdict: "yes", by: "Dana", at: "2026-01-15T12:00:00.000Z" };
-    mkdirSync(join(root, ".sl"), { recursive: true });
-    writeFileSync(join(root, ".sl", "ledger.jsonl"), ledgerLine(line as LedgerEntry));
-    expect((await next(root)).run!.command).toBe("sl goldens run --name revenue_2025 --emit-sql");
+    mkdirSync(join(root, ".semlayer"), { recursive: true });
+    writeFileSync(join(root, ".semlayer", "ledger.jsonl"), ledgerLine(line as LedgerEntry));
+    expect((await next(root)).run!.command).toBe("semlayer goldens run --name revenue_2025 --emit-sql");
   });
 
   test("the done phase reads goldens back last, one per readback; an item missing its hash is not listed", async () => {
@@ -435,14 +435,14 @@ describe("following sl next makes progress", () => {
       ledgerLine({ id: `ans_${String(i + 1).padStart(4, "0")}`, kind: "reply", readback_id: "rb_0001", item: i + 1, target, content_hash: `sha256:${"0".repeat(64)}`, text: "No.", verdict: "no", by: "Dana", at: "2026-01-15T12:00:00.000Z" } as LedgerEntry),
     );
     // A no at another hash leaves the items unanswered as they stand; at their own hash it answers them.
-    mkdirSync(join(root, ".sl"), { recursive: true });
-    writeFileSync(join(root, ".sl", "ledger.jsonl"), lines.join(""));
-    expect((await next(root)).run!.command).toBe(`sl readback --targets ${items.slice(0, 8).join(",")}`);
+    mkdirSync(join(root, ".semlayer"), { recursive: true });
+    writeFileSync(join(root, ".semlayer", "ledger.jsonl"), lines.join(""));
+    expect((await next(root)).run!.command).toBe(`semlayer readback --targets ${items.slice(0, 8).join(",")}`);
     const rb = JSON.parse(await ok(root, ["readback", "--targets", items.join(","), "--json"])) as { readback_id: string; items: { n: number }[] };
     for (const item of rb.items) await reply(root, rb.readback_id, item.n, "no");
     const goldens = st.approved_without_yes.filter((r) => r.startsWith("golden:"));
     expect(goldens.length).toBeGreaterThan(1);
-    expect(await next(root)).toMatchObject({ kind: "run", phase: "done", run: { command: `sl readback --targets ${goldens[0]}` } });
+    expect(await next(root)).toMatchObject({ kind: "run", phase: "done", run: { command: `semlayer readback --targets ${goldens[0]}` } });
 
     // Items without approved_hash are listed in hash_missing only.
     const metrics = join(root, "metrics.yaml");
@@ -453,7 +453,7 @@ describe("following sl next makes progress", () => {
   });
 });
 
-describe("sl next on a golden of a source sl runs", () => {
+describe("semlayer next on a golden of a source semlayer runs", () => {
   test("readback -> ask_owner -> yes -> goldens confirm -> confirm is not named again; odd files do not stop next", async () => {
     const t = tempRoot();
     try {
@@ -470,18 +470,18 @@ describe("sl next on a golden of a source sl runs", () => {
       const rb = JSON.parse(await ok(t.root, ["readback", "--targets", "golden:revenue_by_region", "--json"])) as { readback_id: string };
       expect((await next(t.root)).kind).toBe("ask_owner");
       await reply(t.root, rb.readback_id, 1, "yes");
-      expect((await next(t.root)).run!.command).toBe("sl goldens confirm --name revenue_by_region");
+      expect((await next(t.root)).run!.command).toBe("semlayer goldens confirm --name revenue_by_region");
       await ok(t.root, ["goldens", "confirm", "--name", "revenue_by_region"]);
       expect((await next(t.root)).run?.command ?? "").not.toContain("goldens confirm");
       expect((await status(t.root)).approved_without_yes).not.toContain("golden:revenue_by_region");
 
-      // A malformed pending readback, plan and ledger line are skipped (sl validate reports them).
-      writeFileSync(join(t.root, ".sl", "pending", "rb_0009.json"), "{not json");
-      mkdirSync(join(t.root, ".sl", "plans"), { recursive: true });
-      writeFileSync(join(t.root, ".sl", "plans", "abcdefabcdef.json"), "garbage");
-      appendFileSync(join(t.root, ".sl", "ledger.jsonl"), 'garbage\n{"kind":"reply"}\n');
-      expect((await sl(t.root, ["next", "--json"])).code).toBe(0);
-      expect((await sl(t.root, ["status", "--json"])).code).toBe(0);
+      // A malformed pending readback, plan and ledger line are skipped (semlayer validate reports them).
+      writeFileSync(join(t.root, ".semlayer", "pending", "rb_0009.json"), "{not json");
+      mkdirSync(join(t.root, ".semlayer", "plans"), { recursive: true });
+      writeFileSync(join(t.root, ".semlayer", "plans", "abcdefabcdef.json"), "garbage");
+      appendFileSync(join(t.root, ".semlayer", "ledger.jsonl"), 'garbage\n{"kind":"reply"}\n');
+      expect((await semlayer(t.root, ["next", "--json"])).code).toBe(0);
+      expect((await semlayer(t.root, ["status", "--json"])).code).toBe(0);
     } finally {
       t.cleanup();
     }

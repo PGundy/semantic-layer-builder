@@ -8,31 +8,31 @@ Access is open by default. In `mode: open`, and with no `access.yaml` at all, ev
 - the targets of `restrictions`, unless the user holds one of the restriction's `allow.roles` or satisfies its `allow.when`;
 - what the roles the user holds deny.
 
-Draft items are never exposed, in either mode. In `mode: closed` the layer is an allowlist: a user sees only what `allow.models` of a role they hold matches, minus the same denials, protected tags and restrictions, and every role needs `allow.models`. `allow.models` has no effect in open mode, and `sl validate` warns when it is set there.
+Draft items are never exposed, in either mode. In `mode: closed` the layer is an allowlist: a user sees only what `allow.models` of a role they hold matches, minus the same denials, protected tags and restrictions, and every role needs `allow.models`. `allow.models` has no effect in open mode, and `semlayer validate` warns when it is set there.
 
 So approving a model in open mode also makes it visible to everyone, and who sees what is decided once, in this phase, never table by table. Every table, field and metric readback states who will see the item once it is approved and does not ask (`interview-guide.md`); a change the owner asks for there is recorded for this phase and does not hold the item's sign-off (Exceptions found during the interview).
 
-Run the access phase after the important models are approved, so you can name real tables and columns. Access is about what the semantic layer exposes to tools built on it; it does not change permissions in the database itself. Say so to the owner. `sl status` holds `next_step` at `access` until `access.yaml` exists and is approved, even when the answer is "everyone sees everything": an approved `access.yaml` with `mode: open` and no roles is a complete access phase, and it records that the owner said so.
+Run the access phase after the important models are approved, so you can name real tables and columns. Access is about what the semantic layer exposes to tools built on it; it does not change permissions in the database itself. Say so to the owner. `semlayer status` holds `next_step` at `access` until `access.yaml` exists and is approved, even when the answer is "everyone sees everything": an approved `access.yaml` with `mode: open` and no roles is a complete access phase, and it records that the owner said so.
 
 ## Draft and approved access
 
-Tools serve only an approved `access.yaml`. A tool that loads an `access.yaml` in draft serves nothing and says access is awaiting sign-off. So a change to access is edited in version control (a branch or the working copy) while the approved version that is deployed keeps applying, and it reaches users only once the new version is approved and deployed. `sl access` still explains a draft file, labelled as a draft awaiting sign-off, so you can read it back before approval. Tell the owner which applies:
+Tools serve only an approved `access.yaml`. A tool that loads an `access.yaml` in draft serves nothing and says access is awaiting sign-off. So a change to access is edited in version control (a branch or the working copy) while the approved version that is deployed keeps applying, and it reaches users only once the new version is approved and deployed. `semlayer access` still explains a draft file, labelled as a draft awaiting sign-off, so you can read it back before approval. Tell the owner which applies:
 
 - A first `access.yaml`, still a draft: "Until you approve it, tools that read this file serve nothing."
-- An edit to an approved file, which makes it a draft again in the same write (as `sl approve --target access --revoke` does on its own): "The last approved version keeps applying where it is deployed until you approve the new one." Never say "nobody is shown anything" without saying under which version. The edit keeps the sign-off as `last_approved: { by, at }`, and on such a draft `sl access` says "This explains a draft. The version approved by <by> on <at> keeps applying where it is deployed; tools that load this draft serve nothing."
+- An edit to an approved file, which makes it a draft again in the same write (as `semlayer approve --target access --revoke` does on its own): "The last approved version keeps applying where it is deployed until you approve the new one." Never say "nobody is shown anything" without saying under which version. The edit keeps the sign-off as `last_approved: { by, at }`, and on such a draft `semlayer access` says "This explains a draft. The version approved by <by> on <at> keeps applying where it is deployed; tools that load this draft serve nothing."
 
 ## The access interview
 
 Start from the exceptions, not from a list of roles. Batch it like the rest of the interview: numbered items, one topic each, each with a suggestion, except the default-role question, which is asked open; up to about 8 per message. The roles, models, attributes and values in this file's examples are illustrative, not defaults: the owner's answers decide. The topics, in order:
 
-1. **Exceptions.** "Once a table is approved, everyone who uses these tools can see it. Is there anything some people should not see?" Suggest from the layer: the columns tagged `pii` or `sensitive`, money that looks like pay or margin, tables the owner hesitated over in the interview. When the answer is "nothing", create `access.yaml` with `sl set access mode open` (a draft in open mode with no roles), read the open baseline back (Readback) and approve it. When most of the layer is an exception ("only finance should see most of this", a layer shared with customers or partners), suggest `mode: closed`, where nothing is visible unless a role allows it.
+1. **Exceptions.** "Once a table is approved, everyone who uses these tools can see it. Is there anything some people should not see?" Suggest from the layer: the columns tagged `pii` or `sensitive`, money that looks like pay or margin, tables the owner hesitated over in the interview. When the answer is "nothing", create `access.yaml` with `semlayer set access mode open` (a draft in open mode with no roles), read the open baseline back (Readback) and approve it. When most of the layer is an exception ("only finance should see most of this", a layer shared with customers or partners), suggest `mode: closed`, where nothing is visible unless a role allows it.
 2. **Protected tags.** Confirm every `pii` and `sensitive` tag, and who may see each (Protected tags).
 3. **Roles from attributes.** For each group that should see more (a protected tag, a restriction) or less (a denial, fewer rows), a role, held by an attribute the calling tool knows about the user (Roles).
 4. **The default.** Ask it open (Roles, The default role).
 5. **Restrictions on metrics and fields.** "Are there figures only some people should see: margin, salaries, the board's numbers?" (Restrictions).
 6. **What a role must never see.** Whole models ("support never sees payments"), single fields ("sales reps never see discount rates"), or a tag, as the role's `deny`.
 7. **Row-level rules.** "Should a sales rep see every order, or only their region's?" "Should a manager see only their own team's tickets, including people further down?" (Row filters, Span of control). Then, for each row-filtered model, list every model with a to-one join into it (order lines, refunds, shipments) and settle each one (Child tables).
-8. **The readback with `sl access`**: what the default audience and each role see, before the whole-file readback (Showing the owner what people see).
+8. **The readback with `semlayer access`**: what the default audience and each role see, before the whole-file readback (Showing the owner what people see).
 
 Use the profile to make row rules concrete: "`ship_region` has 4 values: `north` (3,100 orders), `south`, `east`, `west`. Is a rep assigned one of those?"
 
@@ -51,10 +51,10 @@ Once the roles are named, one item per role can carry a fill-in template. The br
 A readback states who will see the item and does not ask, so an exception arrives as the owner's own remark: "only finance should see this table", "hide that from sales". Record it in their words on that readback item, as a change to who sees it and not to the item:
 
 ```
-sl reply --readback rb_0003 --item 2 --text "Only finance should see this table." --verdict change --about access --by "Dana Ruiz"
+semlayer reply --readback rb_0003 --item 2 --text "Only finance should see this table." --verdict change --about access --by "Dana Ruiz"
 ```
 
-It does not hold the item: the table or field is approved on the owner's yes to the item itself, recorded in its own `sl reply`. `sl next` brings the change up in the access phase (in `why`, and as `access_changes` in `--json`), and when `access.yaml` is already approved it reopens the phase. There, make the change with an access command (Writing access.yaml) and read the whole file back; the owner's yes to that readback settles it. A column the owner calls personal or sensitive is tagged at once, a `pii` or `sensitive` tag on the field or model in the model file (`sl tag <ref> pii`), since a tag is part of the item. Check with `sl access` that the default audience sees an excepted item hidden for a reason other than `draft` (`protected_tag`, `restricted` or `denied`); before approval everything is hidden as `draft`, which proves nothing.
+It does not hold the item: the table or field is approved on the owner's yes to the item itself, recorded in its own `semlayer reply`. `semlayer next` brings the change up in the access phase (in `why`, and as `access_changes` in `--json`), and when `access.yaml` is already approved it reopens the phase. There, make the change with an access command (Writing access.yaml) and read the whole file back; the owner's yes to that readback settles it. A column the owner calls personal or sensitive is tagged at once, a `pii` or `sensitive` tag on the field or model in the model file (`semlayer tag <ref> pii`), since a tag is part of the item. Check with `semlayer access` that the default audience sees an excepted item hidden for a reason other than `draft` (`protected_tag`, `restricted` or `denied`); before approval everything is hidden as `draft`, which proves nothing.
 
 ### "Totals only"
 
@@ -68,7 +68,7 @@ There is no aggregates-only grant. When the owner wants a role to see a model on
 - `sensitive` is for what is not identifying but not for everyone: pay (`salary`, `bonus`, `comp_band`), bank and card details, health, secrets and tokens, free text (`notes`, `comment`, `message`), and near-unique text that is not a key.
 - `public` records that the owner confirmed everyone may see a field although it looks sensitive (a support queue's `notes` that hold only product names). It never overrides `pii` or `sensitive` on the same field: replace the tag, do not add to it.
 
-`sl draft` tags `pii` or `sensitive` by name on the columns it drafts, each with an open question. A text column that is not a key and differs on nearly every row (the profile rule) is left out and listed in `ignored_columns`, with an open question naming the tag to add if the owner wants it as a field. `sl draft --new-columns` does the same for new columns. Never write a value of a `pii` or `sensitive` column (a person's name, an email) into a description, a synonym, a golden question or a golden reference: descriptions are visible to everyone the item is. Use the id or a count ("rep 301", "16 reps"). `sl validate` warns when such text holds a top value the snapshot keeps. `sl profile` keeps only counts for a protected column (tagged, listed in `ignored_columns`, or looking personal or sensitive by name or by being near-unique text): its null fraction and distinct count, and a `min` and `max` only for a number or a date; its top values are not stored, raw or hashed (`spec.md`, Profiles of protected columns). So the check never sees a protected column's values, and keeping them out of the files rests on you. When a column is tagged after it was profiled, `sl validate` warns until `sl profile --source <s> --redact` rewrites its profile. The name rules behind protection are a heuristic: they miss columns such as `nickname` or `contact_person`, so tell the owner to review `snapshots/` before committing them, and tag what the rules missed. A golden's `expected.rows` are not checked: they are the answer as the golden's role, which may see the column. Before writing access, read every tag back as one item per tag ("These 6 columns are tagged personal: `customers.email`, `customers.phone`, ... Hidden from everyone unless a role is allowed them. Which people may see them?"), and check the approved models for untagged ones: search dimension names and descriptions, and look at the top values of unprotected columns for anything that looks like a person. `sl validate` warns about an approved field the default audience can see that looks sensitive and carries no `pii`, `sensitive` or `public` tag: "`<field>` is visible to everyone and looks sensitive (<reason>); tag it pii or sensitive, or tag it public if everyone may see it". Settle every such warning with the owner; none of them stands without an answer.
+`semlayer draft` tags `pii` or `sensitive` by name on the columns it drafts, each with an open question. A text column that is not a key and differs on nearly every row (the profile rule) is left out and listed in `ignored_columns`, with an open question naming the tag to add if the owner wants it as a field. `semlayer draft --new-columns` does the same for new columns. Never write a value of a `pii` or `sensitive` column (a person's name, an email) into a description, a synonym, a golden question or a golden reference: descriptions are visible to everyone the item is. Use the id or a count ("rep 301", "16 reps"). `semlayer validate` warns when such text holds a top value the snapshot keeps. `semlayer profile` keeps only counts for a protected column (tagged, listed in `ignored_columns`, or looking personal or sensitive by name or by being near-unique text): its null fraction and distinct count, and a `min` and `max` only for a number or a date; its top values are not stored, raw or hashed (`spec.md`, Profiles of protected columns). So the check never sees a protected column's values, and keeping them out of the files rests on you. When a column is tagged after it was profiled, `semlayer validate` warns until `semlayer profile --source <s> --redact` rewrites its profile. The name rules behind protection are a heuristic: they miss columns such as `nickname` or `contact_person`, so tell the owner to review `snapshots/` before committing them, and tag what the rules missed. A golden's `expected.rows` are not checked: they are the answer as the golden's role, which may see the column. Before writing access, read every tag back as one item per tag ("These 6 columns are tagged personal: `customers.email`, `customers.phone`, ... Hidden from everyone unless a role is allowed them. Which people may see them?"), and check the approved models for untagged ones: search dimension names and descriptions, and look at the top values of unprotected columns for anything that looks like a person. `semlayer validate` warns about an approved field the default audience can see that looks sensitive and carries no `pii`, `sensitive` or `public` tag: "`<field>` is visible to everyone and looks sensitive (<reason>); tag it pii or sensitive, or tag it public if everyone may see it". Settle every such warning with the owner; none of them stands without an answer.
 
 Grant a tag to the roles that may see it:
 
@@ -100,7 +100,7 @@ Prefer `assign_when` over an attribute the calling tool already knows (`user.dep
 - presence: `user.employee_id is set`, `user.region is not set`;
 - `and`, `or`, `not` and parentheses: `user.department == 'sales' and user.region is set`.
 
-A comparison, `in`, `not in` or `contains` on an attribute the user lacks is false, and so is a comparison or `in` on a value of the wrong type. `not` reverses that and `is not set` is true for a missing attribute, so a grant using either one is true for a user the tool knows nothing about. Pair it with a presence test (`user.department is set and not (user.department == 'contractor')`) and check the default audience with `sl access`. Every attribute a condition reads must be declared in `user_attributes`; `sl validate` errors otherwise, and warns on a test that is false for every user because of the attribute's type.
+A comparison, `in`, `not in` or `contains` on an attribute the user lacks is false, and so is a comparison or `in` on a value of the wrong type. `not` reverses that and `is not set` is true for a missing attribute, so a grant using either one is true for a user the tool knows nothing about. Pair it with a presence test (`user.department is set and not (user.department == 'contractor')`) and check the default audience with `semlayer access`. Every attribute a condition reads must be declared in `user_attributes`; `semlayer validate` errors otherwise, and warns on a test that is false for every user because of the attribute's type.
 
 ### The default role
 
@@ -121,7 +121,7 @@ restrictions:
 
 - `targets` are `metric:<name>`, `source.model` or `source.model.field`, with scope-pattern globs (`metric:margin_*`, `warehouse.payroll.*`).
 - A target is visible only to users who hold one of `allow.roles` or satisfy `allow.when`; give at least one of the two. Prefer `allow.when` when an attribute says who may see it; name `allow.roles` only for a role that exists for other reasons too.
-- A metric is visible only when the metric itself is visible and every measure it uses is visible: restricting `orders.margin` also hides every metric built on it, which `sl access` reports as `measure_hidden:orders.margin`. Say so in the readback.
+- A metric is visible only when the metric itself is visible and every measure it uses is visible: restricting `orders.margin` also hides every metric built on it, which `semlayer access` reports as `measure_hidden:orders.margin`. Say so in the readback.
 - A request may never name a hidden field anywhere: selected, grouped, filtered or sorted. A user who may not see `orders.margin` cannot filter on it either.
 
 Prefer a restriction to a denial on every role when one group alone may see something: it is one place to read back, and a new role does not see it by accident.
@@ -177,9 +177,9 @@ A row filter limits only its own model. A model that reaches a row-filtered mode
 
 - a row filter of its own that reads the filtered model through its join (`order.ship_region = {{ user.region }}`, or a hierarchy whose `column` is `order.sales_rep_id`);
 - deny the model to the role (`deny.models`);
-- or record why it stays unfiltered in the role's `open_questions`, naming the model (`sl question add access.roles.<role> --text "<model>: <why>"`).
+- or record why it stays unfiltered in the role's `open_questions`, naming the model (`semlayer question add access.roles.<role> --text "<model>: <why>"`).
 
-`sl validate` warns until each is settled: "rows of <N> that belong to <M> are not limited by <M>'s row filter for role <R>; add a row filter on <N> (it may read <join>.<column>), deny <N> to <R>, or record why in the role's open_questions". A role's `open_questions` entry naming the model silences it.
+`semlayer validate` warns until each is settled: "rows of <N> that belong to <M> are not limited by <M>'s row filter for role <R>; add a row filter on <N> (it may read <join>.<column>), deny <N> to <R>, or record why in the role's open_questions". A role's `open_questions` entry naming the model silences it.
 
 ### Span of control
 
@@ -200,7 +200,7 @@ with recursive lines (manager_id, member_id) as (
 select manager_id, member_id from lines;
 ```
 
-Model the closure table like any other (grain: one row per manager and member pair), approve it, and settle who may see it as a model: in open mode everyone could browse the org chart through it, so ask, and tag it `sensitive` or restrict it if not. Then add the filter, `sl add-row-filter --role support_manager --model warehouse.tickets --column assignee_id --via warehouse.reporting_lines --manager manager_id --member member_id --user employee_id`, which writes:
+Model the closure table like any other (grain: one row per manager and member pair), approve it, and settle who may see it as a model: in open mode everyone could browse the org chart through it, so ask, and tag it `sensitive` or restrict it if not. Then add the filter, `semlayer add-row-filter --role support_manager --model warehouse.tickets --column assignee_id --via warehouse.reporting_lines --manager manager_id --member member_id --user employee_id`, which writes:
 
 ```yaml
 row_filters:
@@ -214,7 +214,7 @@ row_filters:
       include_self: true        # the default: the manager's own tickets count too
 ```
 
-The compiler renders it as `assignee_id = :user_id or assignee_id in (select member_id from reporting_lines where manager_id = :user_id)`, with the user's id bound as a parameter, and reads the closure model without its own row filters. A user without `employee_id` sees no tickets, as with any row filter. `sl validate` checks that the closure model is a model of the same source, that the columns exist, and that the attribute is declared and holds one value. Read it back with a real count: "Priya manages 14 people, 9 of them through her two team leads; she sees their 1,240 open tickets and her own."
+The compiler renders it as `assignee_id = :user_id or assignee_id in (select member_id from reporting_lines where manager_id = :user_id)`, with the user's id bound as a parameter, and reads the closure model without its own row filters. A user without `employee_id` sees no tickets, as with any row filter. `semlayer validate` checks that the closure model is a model of the same source, that the columns exist, and that the attribute is declared and holds one value. Read it back with a real count: "Priya manages 14 people, 9 of them through her two team leads; she sees their 1,240 open tickets and her own."
 
 ### Definition joins
 
@@ -224,9 +224,9 @@ A join that a measure `filter` or a dimension `expr` reads through (`customer.is
 - A role that may not see `warehouse.customers` still gets revenue without test accounts.
 - Role visibility governs only what a request may name: models, dimensions, measures, and joins to reach other models' fields.
 
-A dimension shows values of the model it reads through, so `sl validate` warns when a role is allowed a dimension whose `expr` reads through a join to a model the role is not allowed or is denied, for example sales reps allowed `orders.ship_region_name`, which reads `regions` through the `ship_to_region` join. Settle each warning with the owner: allow the target model, or deny the dimension with `deny.fields`. A measure filter does not warn, because it shows no values of the joined model.
+A dimension shows values of the model it reads through, so `semlayer validate` warns when a role is allowed a dimension whose `expr` reads through a join to a model the role is not allowed or is denied, for example sales reps allowed `orders.ship_region_name`, which reads `regions` through the `ship_to_region` join. Settle each warning with the owner: allow the target model, or deny the dimension with `deny.fields`. A measure filter does not warn, because it shows no values of the joined model.
 
-A dimension that reads through a join to a model the role may see but row-filters shows that model's values for every row, because the definition join carries no row filter; `sl validate` does not warn. For each role with a row filter, check the dimensions of its other models that read the filtered model, and deny each one with `deny.fields` or read the consequence back.
+A dimension that reads through a join to a model the role may see but row-filters shows that model's values for every row, because the definition join carries no row filter; `semlayer validate` does not warn. For each role with a row filter, check the dimensions of its other models that read the filtered model, and deny each one with `deny.fields` or read the consequence back.
 
 ## Writing access.yaml
 
@@ -234,14 +234,14 @@ Build the file with the access commands, never by hand. Each validates the proje
 
 | Rule | Command |
 |---|---|
-| the mode, the default role | `sl set access mode open` (or `closed`; with no file it creates a draft one), `sl set access default_role <role>` |
-| a user attribute | `sl add-attribute --name <n> --type string`, `sl remove-attribute <name>`, `sl set access attribute:<name> description "<text>"` |
-| a role | `sl add-role --name <n> --assign-when "<condition>" --allow-tags pii`, `sl remove-role <name>`, `sl set access role:<name> <key> <value>` |
-| a restriction | `sl add-restriction --name <n> --targets <ref>,... --roles <role>,...` (or `--when "<condition>"`), `sl remove-restriction <name>`, `sl set access restriction:<name> <key> <value>` |
-| a row filter | `sl add-row-filter --role <r> --model <source.model> --expr "<predicate>"`, or with `--column`, `--via`, `--manager`, `--member` and `--user` for a span of control; `sl remove-row-filter --role <r> --model <source.model>` |
-| an open question | `sl question add access --text "<question>"`, or on one role `sl question add access.roles.<role> --text "<question>"` |
+| the mode, the default role | `semlayer set access mode open` (or `closed`; with no file it creates a draft one), `semlayer set access default_role <role>` |
+| a user attribute | `semlayer add-attribute --name <n> --type string`, `semlayer remove-attribute <name>`, `semlayer set access attribute:<name> description "<text>"` |
+| a role | `semlayer add-role --name <n> --assign-when "<condition>" --allow-tags pii`, `semlayer remove-role <name>`, `semlayer set access role:<name> <key> <value>` |
+| a restriction | `semlayer add-restriction --name <n> --targets <ref>,... --roles <role>,...` (or `--when "<condition>"`), `semlayer remove-restriction <name>`, `semlayer set access restriction:<name> <key> <value>` |
+| a row filter | `semlayer add-row-filter --role <r> --model <source.model> --expr "<predicate>"`, or with `--column`, `--via`, `--manager`, `--member` and `--user` for a span of control; `semlayer remove-row-filter --role <r> --model <source.model>` |
+| an open question | `semlayer question add access --text "<question>"`, or on one role `semlayer question add access.roles.<role> --text "<question>"` |
 
-`sl <command> --help` shows each one's flags and the condition syntax; `references/phases/access.md` has the same table with the keys `sl set access` takes. This is the file they write, as a draft:
+`semlayer <command> --help` shows each one's flags and the condition syntax; `references/phases/access.md` has the same table with the keys `semlayer set access` takes. This is the file they write, as a draft:
 
 ```yaml
 status: draft
@@ -299,23 +299,23 @@ restrictions:
 ```
 
 - `deny.models`, `deny.fields` (`source.model.field`) and `deny.tags` subtract from what the role would see; `allow.tags` grants protected tags. In closed mode, `allow.models` uses scope patterns over `source.model` (`warehouse.*` is every model in a source, `warehouse.fct_*` a prefix, `*.orders` the orders model in every source); avoid `*` alone, so a new source is not exposed by accident.
-- `deny.fields` names dimensions and measures only, never a join. A join is hidden from a role when its target model is hidden from it: to stop sales reps reaching customers through `orders.customer`, add `warehouse.customers` to their `deny.models` (in closed mode, leave it out of their `allow.models`). `sl validate` says so when a join is named in `deny.fields`. A hidden join still serves the definitions that read through it (see Definition joins).
+- `deny.fields` names dimensions and measures only, never a join. A join is hidden from a role when its target model is hidden from it: to stop sales reps reaching customers through `orders.customer`, add `warehouse.customers` to their `deny.models` (in closed mode, leave it out of their `allow.models`). `semlayer validate` says so when a join is named in `deny.fields`. A hidden join still serves the definitions that read through it (see Definition joins).
 - A denial applies to the people who hold that role, and an item is visible when any role they hold shows it: a person who is both a sales rep and on the people team sees refunds through `people_team`. When something must be hidden from everyone in a group whatever else they hold, use a restriction: only its `allow.roles` or `allow.when` see the target, whatever other roles a person holds. Closed mode does not help, because there too an item is visible when any held role shows it. A protected tag works only while no role the group may also hold lists it in `allow.tags`.
-- `open_questions`, at the top level and on each role, holds what is still unsettled about access, such as notes for tool builders ("A downstream tool must not show sales reps single orders by hour"). `sl status` counts them, and while a draft `access.yaml` holds any, its `next_step` waits on the owner's answers (`blocked_on: open_questions`, command `sl access`, `after_owner_yes: false`) and names the first question: raise the questions and never push the approval. Read them back with the whole file. Approval may stand with open questions that are notes for tool builders or are waiting on someone, when the owner approves with them named in the whole-file readback; list them in the handoff. Delete the ones the owner has answered, writing the answer where it belongs. Writing the answer into roles, patterns, denials or row filters is a change (see Readback); only the question's own deletion or addition is not.
+- `open_questions`, at the top level and on each role, holds what is still unsettled about access, such as notes for tool builders ("A downstream tool must not show sales reps single orders by hour"). `semlayer status` counts them, and while a draft `access.yaml` holds any, its `next_step` waits on the owner's answers (`blocked_on: open_questions`, command `semlayer access`, `after_owner_yes: false`) and names the first question: raise the questions and never push the approval. Read them back with the whole file. Approval may stand with open questions that are notes for tool builders or are waiting on someone, when the owner approves with them named in the whole-file readback; list them in the handoff. Delete the ones the owner has answered, writing the answer where it belongs. Writing the answer into roles, patterns, denials or row filters is a change (see Readback); only the question's own deletion or addition is not.
 
-Run `sl validate`; it checks that every referenced model, field, role and attribute exists and that every condition parses.
+Run `semlayer validate`; it checks that every referenced model, field, role and attribute exists and that every condition parses.
 
-## Showing the owner what people see: `sl access`
+## Showing the owner what people see: `semlayer access`
 
-`sl access` explains what one user sees: the roles they hold and why (`assigned`, `condition`, `default`), per source the visible and hidden models, fields and metrics with the reason each is hidden, and the row filters that apply per model with the attribute values they bind (shown, never pasted into SQL), or "no rows" when an attribute is missing.
+`semlayer access` explains what one user sees: the roles they hold and why (`assigned`, `condition`, `default`), per source the visible and hidden models, fields and metrics with the reason each is hidden, and the row filters that apply per model with the attribute values they bind (shown, never pasted into SQL), or "no rows" when an attribute is missing.
 
 ```
-sl access
-sl access --roles people_team
-sl access --user '{"department": "sales", "region": "north"}'
-sl access --user '{"department": "finance"}'
-sl access --user '{"department": "support", "employee_id": 1042}' --show all
-sl access --user-file <scratch>/priya.json --roles support_manager
+semlayer access
+semlayer access --roles people_team
+semlayer access --user '{"department": "sales", "region": "north"}'
+semlayer access --user '{"department": "finance"}'
+semlayer access --user '{"department": "support", "employee_id": 1042}' --show all
+semlayer access --user-file <scratch>/priya.json --roles support_manager
 ```
 
 With no `--user` and no `--roles` it explains the default audience: a user with no attributes and no assigned roles. Plain output gives the visible counts across all sources, on the line "Items visible across N source(s) (row filters limit rows, not these counts)", and per source on each `Source <s>:` line; those counts are the tool's, not something to read back. Each source always prints its row filters, as "row filters: none (every row of every visible model)" when none applies, and the user line names assigned roles only when `--roles` was given. `--show hidden` is the default for plain output; `--show visible` or `--show all` lists the rest, and `--json` carries everything. Keep `--user-file` files in your scratch space, outside the semantic root: they describe real people.
@@ -341,17 +341,17 @@ Read each role back as what its members can and cannot see compared with everyon
 
 When the change moves the mode (open to closed, or closed to open), say the old and new mode and who gains or loses visibility, naming the users who hold no role: "Access moves from closed to open. Today someone with no role, such as marketing or anyone whose login carries no department, sees nothing; once approved, they see every approved table except personal details and the finance figures."
 
-Then the whole file, with the mode, what is hidden from the default audience (`sl access`) and the default role's consequence, every restriction, and every change settled along the way (a model denied to a role, a join made inner, a new restriction): "Access is open: once approved, a table is visible to everyone, except personal details and pay, which only HR sees, and margin and net revenue, which only finance and the executive team see. Three roles change that: ... Anyone the tool knows nothing about sees the open view with every row. Since the per-role readbacks we added refunds to the sales reps' denials. Approve?" With no exceptions, the whole file is one sentence: "Access is open with no exceptions: everyone who uses these tools sees every approved table, field and metric, except personal details, which no one sees. Approve?"
+Then the whole file, with the mode, what is hidden from the default audience (`semlayer access`) and the default role's consequence, every restriction, and every change settled along the way (a model denied to a role, a join made inner, a new restriction): "Access is open: once approved, a table is visible to everyone, except personal details and pay, which only HR sees, and margin and net revenue, which only finance and the executive team see. Three roles change that: ... Anyone the tool knows nothing about sees the open view with every row. Since the per-role readbacks we added refunds to the sales reps' denials. Approve?" With no exceptions, the whole file is one sentence: "Access is open with no exceptions: everyone who uses these tools sees every approved table, field and metric, except personal details, which no one sees. Approve?"
 
-The per-role readbacks and the whole-file readback may share one message as separate "Approve?" items, the whole file last; a no or a correction to any of them voids the yes to the whole file. Any change after the per-role readbacks, however small, means the whole-file readback comes again before `sl approve --target access`. A change is a change to the mode, roles, patterns, tags, denials, restrictions, row filters, user attributes or the default; an edit to comments only is not one, and neither is deleting an answered open question or adding a new one. Mention such an open-question edit in your next message to the owner. Writing the answer into roles, patterns, denials or row filters is a change; only the question's own deletion or addition is not.
+The per-role readbacks and the whole-file readback may share one message as separate "Approve?" items, the whole file last; a no or a correction to any of them voids the yes to the whole file. Any change after the per-role readbacks, however small, means the whole-file readback comes again before `semlayer approve --target access`. A change is a change to the mode, roles, patterns, tags, denials, restrictions, row filters, user attributes or the default; an edit to comments only is not one, and neither is deleting an answered open question or adding a new one. Mention such an open-question edit in your next message to the owner. Writing the answer into roles, patterns, denials or row filters is a change; only the question's own deletion or addition is not.
 
 After an explicit yes:
 
 ```
-sl approve --target access --by "Dana Ruiz"
-sl validate
+semlayer approve --target access --by "Dana Ruiz"
+semlayer validate
 ```
 
 Approval covers the whole file. Any later change (a new role, a new restriction, a tag granted, a new source in closed mode) needs a new approval; deleting an answered open question or adding one does not, and you mention it in the next message, but writing its answer into a role is a change. For a change: make it with an access command, which makes the approved file a draft again and keeps its sign-off as `last_approved`, and read the whole file back before approving again. Tell the owner that the last approved version keeps applying where it is deployed until the new one is approved (Draft and approved access); while the file is a draft, each table readback says who will see the table under it. A new model or field approved later needs no new access approval in open mode, but its own readback says that everyone will be able to see it.
 
-A role often relies on fields that are still draft (marketing's agreed breakdown by `orders.status`). Before approving access, check each role's agreed breakdowns against `draft_fields` in `sl status --json`; read those fields back and approve them, or name them in the handoff.
+A role often relies on fields that are still draft (marketing's agreed breakdown by `orders.status`). Before approving access, check each role's agreed breakdowns against `draft_fields` in `semlayer status --json`; read those fields back and approve them, or name them in the handoff.

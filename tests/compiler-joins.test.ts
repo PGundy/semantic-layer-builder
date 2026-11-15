@@ -13,7 +13,7 @@ import { listGoldens } from "../skills/semantic-layer/scripts/lib/project.ts";
 import { sqlNames } from "../skills/semantic-layer/scripts/lib/sql-names.ts";
 import type { Golden, Model, QueryRequest } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, duckdbSource, expectRefusedAsChanged, initProject, PG_URL, reapprove, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, duckdbSource, expectRefusedAsChanged, initProject, PG_URL, reapprove, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 type Row = Record<string, unknown>;
 
@@ -327,14 +327,14 @@ describe("request paths", () => {
         code: "ambiguous_join_path",
         ref: "customers.region",
         message: "customers.region is on model customers, which a request on orders reaches by 2 paths of one join each, orders.customer and orders.buyer, so the request does not say which it means",
-        next: "Ask the owner which path the figure means, then add a dimension to orders that reads the field through that join (as customer.<column>) or a join to orders that reaches customers directly, and run sl sql again.",
+        next: "Ask the owner which path the figure means, then add a dimension to orders that reads the field through that join (as customer.<column>) or a join to orders that reaches customers directly, and run semlayer sql again.",
       },
     ]);
     const two = refused(compileRequest(root, req({ measures: ["orders.revenue"], dimensions: ["segments.label"] })));
     expect(two.reason).toContain("reaches by 2 paths of two joins each, orders.customer.segment and orders.buyer.segment");
     // A definition join names its join, so it never ties.
     expect(compileRequest(root, req({ measures: ["orders.real_revenue"] })).ok).toBe(true);
-    const cli = await sl(root, ["sql", "--request", JSON.stringify(req({ measures: ["orders.revenue"], dimensions: ["customers.region"] }))]);
+    const cli = await semlayer(root, ["sql", "--request", JSON.stringify(req({ measures: ["orders.revenue"], dimensions: ["customers.region"] }))]);
     expect(cli.code).toBe(1);
     expect(cli.err).toContain("orders.customer and orders.buyer");
     expect(cli.err).toContain("Ask the owner which path the figure means");
@@ -358,7 +358,7 @@ describe("request paths", () => {
 describe("fan-out safety", () => {
   const fanning = { right_key_unique: false, max_fanout: 2 };
 
-  test("a to-one join whose current evidence shows fan-out is refused naming sl check-join, unless fanout_override says why", async () => {
+  test("a to-one join whose current evidence shows fan-out is refused naming semlayer check-join, unless fanout_override says why", async () => {
     const { root, write } = await shop((m) => {
       join_(m, "orders", "customer").evidence = evidence("customers", CUSTOMER_KEYS, fanning) as never;
     });
@@ -368,16 +368,16 @@ describe("fan-out safety", () => {
       expect(x.reason).toBe(
         "join orders.customer is many_to_one, but its evidence shows fan-out (the key of customers is not unique and a row matches up to 2 rows of customers), so it would repeat rows of orders and multiply its measures",
       );
-      expect(x.refusals[0]!.next).toContain("sl check-join --source shop --model orders --join customer");
+      expect(x.refusals[0]!.next).toContain("semlayer check-join --source shop --model orders --join customer");
     }
-    const cli = await sl(root, ["sql", "--request", JSON.stringify(req({ measures: ["orders.real_revenue"] })), "--json"]);
-    expect(cli.json<{ next: string }>().next).toContain("Measure the join again with sl check-join --source shop --model orders --join customer");
+    const cli = await semlayer(root, ["sql", "--request", JSON.stringify(req({ measures: ["orders.real_revenue"] })), "--json"]);
+    expect(cli.json<{ next: string }>().next).toContain("Measure the join again with semlayer check-join --source shop --model orders --join customer");
 
     write((m) => {
       join_(m, "orders", "customer").fanout_override = "Customer 10 has two rows in the export; the owner accepts it.";
     });
     expect(compileRequest(root, req({ measures: ["orders.real_revenue"] })).ok).toBe(true);
-    // Evidence measured for another target is stale (sl validate warns), and refuses nothing.
+    // Evidence measured for another target is stale (semlayer validate warns), and refuses nothing.
     write((m) => {
       const j = join_(m, "orders", "customer");
       delete j.fanout_override;
@@ -399,8 +399,8 @@ describe("fan-out safety", () => {
       m.orders!.measures.push({ name: "bad", expr: "customer.customer_id", agg: "count_distinct", ...ok } as never);
     });
     const many = refused(compileRequest(root, req({ dimensions: ["customers.first_status"] })));
-    expect(many.reason).toBe("customers.first_status reads through join customers.orders, which is one_to_many; a join reference reads only through many_to_one and one_to_one joins; run sl validate");
-    expect(refused(compileRequest(root, req({ measures: ["orders.bad"] }))).reason).toContain("a measure expr reads only its model's own columns; run sl validate");
+    expect(many.reason).toBe("customers.first_status reads through join customers.orders, which is one_to_many; a join reference reads only through many_to_one and one_to_one joins; run semlayer validate");
+    expect(refused(compileRequest(root, req({ measures: ["orders.bad"] }))).reason).toContain("a measure expr reads only its model's own columns; run semlayer validate");
   });
 
   test("a joined model's expr that is not read-only is refused by the read-only check (invariant 1)", async () => {
@@ -419,8 +419,8 @@ describe("determinism and qualification", () => {
     const r = req({ measures: ["orders.real_revenue"], dimensions: ["segments.label", "regions.name"], filters: [{ field: "customers.region", op: "eq", value: "NE" }] });
     const a = compiled(compileRequest(root, r));
     expect(compiled(compileRequest(root, structuredClone(r)))).toEqual(a);
-    const cli1 = await sl(root, ["sql", "--request", JSON.stringify(r), "--json"]);
-    const cli2 = await sl(root, ["sql", "--request", JSON.stringify(r), "--json"]);
+    const cli1 = await semlayer(root, ["sql", "--request", JSON.stringify(r), "--json"]);
+    const cli2 = await semlayer(root, ["sql", "--request", JSON.stringify(r), "--json"]);
     expect(cli1.out).toBe(cli2.out);
     expect(cli1.json<Compiled>().joins).toEqual(a.joins);
     const plain = compiled(compileRequest(root, req({ measures: ["orders.revenue"], dimensions: ["orders.status"] })));
@@ -653,7 +653,7 @@ describe("Acme's approved goldens that need joins", () => {
     "compile to their recorded rows on postgres; revenue counting cancelled orders is refused until approved again, then changes every one using revenue",
     async () => {
       assertLocalPg(PG_URL);
-      const schema = uniqueSchema("sl_joins");
+      const schema = uniqueSchema("semlayer_joins");
       const db = new SQL({ url: PG_URL!, max: 1 });
       try {
         await loadPostgres(PG_URL!, DATA, schema);
@@ -839,10 +839,10 @@ describe("edge cases: self-joins, struct and JSON reads, interval units, second-
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.refusals.map((x) => x.code)).toEqual(["join_fans_out"]);
-    expect(r.refusals[0]!.next).toContain("sl check-join --source shop --model customers --join segment");
-    const cli = await sl(root, ["sql", "--request", JSON.stringify(req({ measures: ["orders.n"], dimensions: ["segments.label"] }))]);
+    expect(r.refusals[0]!.next).toContain("semlayer check-join --source shop --model customers --join segment");
+    const cli = await semlayer(root, ["sql", "--request", JSON.stringify(req({ measures: ["orders.n"], dimensions: ["segments.label"] }))]);
     expect(cli.code).toBe(1);
-    expect(cli.err).toContain("sl check-join --source shop --model customers --join segment");
+    expect(cli.err).toContain("semlayer check-join --source shop --model customers --join segment");
   });
 
   test("joins follow reading order: a WHERE filter's request join before a HAVING filter's definition join", async () => {

@@ -141,7 +141,7 @@ export function modeledTables(snapshot: Snapshot, models: unknown[] | (() => unk
   return out;
 }
 
-// The lines sl introspect and sl import print about how the schema changed since the previous
+// The lines semlayer introspect and semlayer import print about how the schema changed since the previous
 // snapshot, with the command that drafts new columns and the check for removed ones. With
 // `modeled` (from modeledTables), the drafting hint names only the modeled in-scope tables that
 // gained columns, and is left out when there are none.
@@ -151,14 +151,14 @@ export function changeLines(diff: SnapshotDiff | null, source: string, modeled?:
   const lines = ["Changes since the previous snapshot:", ...describeDiff(diff).map((l) => `  ${l}`)];
   const gained = diff.columns.filter((c) => c.added.length).map((c) => c.table);
   const lost = diff.columns.some((c) => c.removed.length || c.retyped.length) || diff.tables_removed.length > 0;
-  const command = `\`sl draft --source ${source} --new-columns\``;
+  const command = `\`semlayer draft --source ${source} --new-columns\``;
   if (!modeled) {
     if (gained.length) lines.push(`Columns were added: ${command} drafts the new columns of modeled tables.`);
   } else {
     const tables = gained.filter((t) => modeled.has(t));
     if (tables.length) lines.push(`Modeled tables gained columns (${shortList(tables, 10)}): ${command} drafts them.`);
   }
-  if (lost) lines.push("Removed or retyped columns and tables: `sl validate` reports the fields that read a removed column; read the affected fields back to the owner.");
+  if (lost) lines.push("Removed or retyped columns and tables: `semlayer validate` reports the fields that read a removed column; read the affected fields back to the owner.");
   return lines;
 }
 
@@ -181,7 +181,7 @@ type Named = { schema?: string | null; name: string };
 
 // Whether a table is in the source's selection: in the effective scope and, when intake.schemas
 // lists schemas, in one of them. An intake.schemas that is not a list of names is left out, so
-// sl status still reads a source sl validate would refuse.
+// semlayer status still reads a source semlayer validate would refuse.
 export function selectionMatcher(source: Pick<SourceConfig, "source" | "dialect" | "connection" | "intake">, scope: Scope | undefined): (t: Named) => boolean {
   let schemas: string[] = [];
   try {
@@ -270,7 +270,7 @@ export function tablesFlag(names: string[]): string {
   return names.length && names.length <= MAX_NAMED && names.every((n) => PLAIN_NAME.test(n)) ? ` --tables ${names.join(",")}` : "";
 }
 
-// The lines sl introspect and sl import print about tables that entered or left the selection,
+// The lines semlayer introspect and semlayer import print about tables that entered or left the selection,
 // with the command that drafts the new ones and what to do about approved models that left.
 // Tables in `removed` (gone from the database, which the change lines name) are not named again.
 export function scopeLines(changes: ScopeChanges | null, source: string, removed: string[] = []): string[] {
@@ -279,22 +279,22 @@ export function scopeLines(changes: ScopeChanges | null, source: string, removed
   const { new_in_scope: entered, left_scope: left, left_scope_with_models: models } = changes;
   if (entered.length) {
     lines.push(
-      `New in scope, with no model yet: ${shortList(entered, 10)}. \`sl draft --source ${source}${tablesFlag(entered)}\` drafts ${entered.length === 1 ? "it" : "them"}.`,
+      `New in scope, with no model yet: ${shortList(entered, 10)}. \`semlayer draft --source ${source}${tablesFlag(entered)}\` drafts ${entered.length === 1 ? "it" : "them"}.`,
     );
   }
   const gone = new Set(removed.map((n) => n.toLowerCase()));
   const unmatched = left.filter((n) => !gone.has(n.toLowerCase()));
   if (unmatched.length) {
     lines.push(
-      `Left scope, no longer matching the scope or intake.schemas: ${shortList(unmatched, 10)}. \`sl scope --source ${source}\` shows what the scope selects.`,
+      `Left scope, no longer matching the scope or intake.schemas: ${shortList(unmatched, 10)}. \`semlayer scope --source ${source}\` shows what the scope selects.`,
     );
   }
   if (models.length) {
     const items = models.map((m) => `${m.model} (${m.table})`);
     lines.push(
       `Warning: left scope with approved models: ${shortList(items, 10)}. The models are kept and still served. Ask the owner whether each still belongs: ` +
-        `to keep it, bring its table back into scope (\`sl scope --source ${source} --tables <table> --write\`, or restore the pattern or intake.schemas entry that selected it); ` +
-        `otherwise revoke it with \`sl approve --target ${source}.<model> --revoke\` or remove its model file. \`sl status\` lists them until then.`,
+        `to keep it, bring its table back into scope (\`semlayer scope --source ${source} --tables <table> --write\`, or restore the pattern or intake.schemas entry that selected it); ` +
+        `otherwise revoke it with \`semlayer approve --target ${source}.<model> --revoke\` or remove its model file. \`semlayer status\` lists them until then.`,
     );
   }
   return lines;
@@ -507,7 +507,7 @@ export function unreferencedColumns(model: Model, table: SnapshotTable, dialect?
 }
 
 // Bare columns a model's fields name that are not columns of `table`, per field. Only exprs that are
-// a single bare or quoted identifier are checked, the way sl validate checks them.
+// a single bare or quoted identifier are checked, the way semlayer validate checks them.
 export function missingColumns(model: Model, table: SnapshotTable): { field: string; column: string }[] {
   const has = (name: string, quoted: boolean) =>
     table.columns.some((c) => (quoted ? c.name === name : c.name.toLowerCase() === name.toLowerCase()));

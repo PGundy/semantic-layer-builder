@@ -1,4 +1,4 @@
-// HR-8, invariant 3: SQL the compiler did not write (sl run, a golden's cross_check_sql) never shows
+// HR-8, invariant 3: SQL the compiler did not write (semlayer run, a golden's cross_check_sql) never shows
 // a protected column's values because it renamed or wrapped the column. Each statement runs on
 // DuckDB and, with PG_URL set, on Postgres. All data is synthetic.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -9,7 +9,7 @@ import { type ProtectedNames, PROTECTED_VALUE, protectedNames, sqlMask } from ".
 import { loadSource } from "../skills/semantic-layer/scripts/lib/project.ts";
 import type { Golden } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, confirmWithYes, duckdbSource, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, confirmWithYes, duckdbSource, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 
@@ -66,13 +66,13 @@ async function duckdbProject(): Promise<Project> {
   await initProject(t.root);
   await duckdbSource(t.root, t.dir, "wh", TABLES);
   const p: Project = { dialect: "duckdb", root: t.root, env: {}, t: (name) => name };
-  expect((await sl(p.root, ["introspect", "--source", "wh"])).code).toBe(0);
+  expect((await semlayer(p.root, ["introspect", "--source", "wh"])).code).toBe(0);
   writeModels(p);
   return p;
 }
 
 async function run(p: Project, sql: string, ...flags: string[]): Promise<RunJson> {
-  const r = await sl(p.root, ["run", "--source", "wh", "--sql", sql, "--json", ...flags], p.env);
+  const r = await semlayer(p.root, ["run", "--source", "wh", "--sql", sql, "--json", ...flags], p.env);
   // On failure the message shows the statement and what the command said.
   expect({ sql, code: r.code, err: r.code === 0 ? "" : r.err }).toEqual({ sql, code: 0, err: "" });
   return r.json<RunJson>();
@@ -100,7 +100,7 @@ const failsOnAValue: Record<Project["dialect"], (c: string) => string[]> = {
   ],
 };
 
-const PG_SCHEMA = uniqueSchema("sl_mask");
+const PG_SCHEMA = uniqueSchema("semlayer_mask");
 let pg: SQL | undefined;
 
 beforeAll(async () => {
@@ -122,7 +122,7 @@ async function postgresProject(): Promise<Project> {
   await initProject(t.root);
   writeYaml(join(t.root, "sources", "wh.yaml"), { source: "wh", dialect: "postgres", connection: { env: "MASK_PG_URL" } });
   const p: Project = { dialect: "postgres", root: t.root, env: { MASK_PG_URL: PG_URL }, t: (name) => `${PG_SCHEMA}.${name}` };
-  expect((await sl(p.root, ["introspect", "--source", "wh", "--schemas", PG_SCHEMA], p.env)).code).toBe(0);
+  expect((await semlayer(p.root, ["introspect", "--source", "wh", "--schemas", PG_SCHEMA], p.env)).code).toBe(0);
   writeModels(p);
   return p;
 }
@@ -133,7 +133,7 @@ const DIALECTS: ["duckdb" | "postgres", () => Promise<Project>][] = [
 ];
 
 for (const [dialect, project] of DIALECTS) {
-  describe.skipIf(dialect === "postgres" && !PG_URL)(`sl run masks protected values under any name (${dialect})`, () => {
+  describe.skipIf(dialect === "postgres" && !PG_URL)(`semlayer run masks protected values under any name (${dialect})`, () => {
     let p: Project;
     let c: string;
     let o: string;
@@ -156,7 +156,7 @@ for (const [dialect, project] of DIALECTS) {
     });
 
     test("the masked output says why, once", async () => {
-      const r = await sl(p.root, ["run", "--source", "wh", "--sql", `select id, email as e, lower(email) as le from ${c} order by id`], p.env);
+      const r = await semlayer(p.root, ["run", "--source", "wh", "--sql", `select id, email as e, lower(email) as le from ${c} order by id`], p.env);
       expect(r.code).toBe(0);
       noSecrets(r.out);
       expect(r.out).toContain(
@@ -165,7 +165,7 @@ for (const [dialect, project] of DIALECTS) {
       );
       expect(r.out.match(/masked:/g)!.length).toBe(1);
       expect(r.out).not.toContain("Protected column");
-      const one = await sl(p.root, ["run", "--source", "wh", "--sql", `select email as e from ${c}`], p.env);
+      const one = await semlayer(p.root, ["run", "--source", "wh", "--sql", `select email as e from ${c}`], p.env);
       expect(one.out).toContain("1 column masked: the statement reads protected column customers.email.");
     });
 
@@ -227,7 +227,7 @@ for (const [dialect, project] of DIALECTS) {
       expect(out).toMatchObject({ columns: ["city", "n", "ids"], protected_columns: [], protected_reads: [] });
       expect(out.rows.map((r) => [r.city, Number(r.n), Number(r.ids)])).toEqual([["Lisbon", 2, 4], ["Porto", 1, 2]]);
       expect("protected_note" in out).toBe(false);
-      const plain = await sl(p.root, ["run", "--source", "wh", "--sql", sql], p.env);
+      const plain = await semlayer(p.root, ["run", "--source", "wh", "--sql", sql], p.env);
       expect(plain.out).not.toContain("masked");
       expect(plain.out).not.toContain(PROTECTED_VALUE);
       // An alias written without `as` that is also a table's name, or a table's alias, is still an alias.
@@ -305,23 +305,23 @@ for (const [dialect, project] of DIALECTS) {
     });
 
     test("a failed statement that reads a protected column does not print the database's message", async () => {
-      const cast = await sl(p.root, ["run", "--source", "wh", "--sql", `select cast(email as integer) as n from ${c}`], p.env);
+      const cast = await semlayer(p.root, ["run", "--source", "wh", "--sql", `select cast(email as integer) as n from ${c}`], p.env);
       expect(cast.code).toBe(1);
       noSecrets(cast.err + cast.out);
       expect(cast.err).toContain("Query failed. The database's message can quote a value, and the statement reads protected column customers.email, so it is not shown.");
-      expect(cast.err).toContain("then run sl run again");
+      expect(cast.err).toContain("then run semlayer run again");
       // A name the statement gets wrong quotes no value: the message stays.
-      const typo = await sl(p.root, ["run", "--source", "wh", "--sql", `select emial, email from ${c}`], p.env);
+      const typo = await semlayer(p.root, ["run", "--source", "wh", "--sql", `select emial, email from ${c}`], p.env);
       expect(typo.code).toBe(1);
       expect(typo.err).toContain("Query failed:");
       expect(typo.err).toContain("emial");
       // A statement that reads nothing protected keeps the database's message.
-      const plain = await sl(p.root, ["run", "--source", "wh", "--sql", `select cast(city as integer) from ${c}`], p.env);
+      const plain = await semlayer(p.root, ["run", "--source", "wh", "--sql", `select cast(city as integer) from ${c}`], p.env);
       expect(plain.err).toContain("Query failed:");
       expect(plain.err).toContain("Lisbon");
       // A count shows no value, but its failure would: the message is guarded there and in a filter too.
       for (const sql of [`select count(cast(email as integer)) from ${c}`, `select id from ${c} where cast(email as integer) = 1`, ...failsOnAValue[p.dialect](c)]) {
-        const r = await sl(p.root, ["run", "--source", "wh", "--sql", sql], p.env);
+        const r = await semlayer(p.root, ["run", "--source", "wh", "--sql", sql], p.env);
         expect({ sql, code: r.code }).toEqual({ sql, code: 1 });
         noSecrets(r.err + r.out);
         expect(r.err).not.toContain("ana@");
@@ -329,7 +329,7 @@ for (const [dialect, project] of DIALECTS) {
       }
       // A whole row inside a count: its failure would quote the row.
       const row = p.dialect === "postgres" ? `select count((x.*)::text::integer) + count(x::text::integer) from ${c} x` : `select count(cast(x::varchar as integer)) from ${c} x`;
-      const counted = await sl(p.root, ["run", "--source", "wh", "--sql", row], p.env);
+      const counted = await semlayer(p.root, ["run", "--source", "wh", "--sql", row], p.env);
       expect(counted.code).toBe(1);
       noSecrets(counted.err + counted.out);
       expect(counted.err).toContain("Query failed. The database's message can quote a value, and the statement reads rows or columns the tool cannot place (");
@@ -354,40 +354,40 @@ for (const [dialect, project] of DIALECTS) {
         cross_check_sql: `select email as contact, max(email) as latest, count(*) as n from ${c} group by 1 order by 1`,
         status: "draft",
       });
-      const text = await sl(p.root, ["goldens", "run", "--name", "by_mail"], p.env);
+      const text = await semlayer(p.root, ["goldens", "run", "--name", "by_mail"], p.env);
       expect(text.code).toBe(0);
       noSecrets(text.out + text.err);
       expect(text.out).toContain("2 columns masked: the statement reads protected column customers.email. Counts are shown; values are not.");
-      const json = await sl(p.root, ["goldens", "run", "--name", "by_mail", "--json"], p.env);
+      const json = await semlayer(p.root, ["goldens", "run", "--name", "by_mail", "--json"], p.env);
       noSecrets(json.out);
       const doc = json.json<{ rows: Record<string, unknown>[]; protected_columns: string[]; protected_note: string }>();
       expect(doc.protected_columns).toEqual(["contact", "latest"]);
       expect(doc.rows.map((r) => [r.contact, r.latest, Number(r.n)])).toEqual([1, 2, 3].map(() => [PROTECTED_VALUE, PROTECTED_VALUE, 1]));
       expect(doc.protected_note).toContain("2 columns masked");
       // The readback the owner hears, and the file it is stored in, hold no value either.
-      const rb = await sl(p.root, ["readback", "--targets", "golden:by_mail", "--json"], p.env);
+      const rb = await semlayer(p.root, ["readback", "--targets", "golden:by_mail", "--json"], p.env);
       expect(rb.code).toBe(0);
       noSecrets(rb.out + rb.err);
-      for (const f of readdirSync(join(p.root, ".sl", "pending"))) noSecrets(readFileSync(join(p.root, ".sl", "pending", f), "utf8"));
-      expect((await sl(p.root, ["goldens", "run", "--name", "by_mail", "--show-protected"], p.env)).out).toContain("ana@example.com");
+      for (const f of readdirSync(join(p.root, ".semlayer", "pending"))) noSecrets(readFileSync(join(p.root, ".semlayer", "pending", f), "utf8"));
+      expect((await semlayer(p.root, ["goldens", "run", "--name", "by_mail", "--show-protected"], p.env)).out).toContain("ana@example.com");
 
-      // Its plan stores SQL only, and sl results add refuses rows that hold the renamed column.
-      const emitted = await sl(p.root, ["goldens", "run", "--name", "by_mail", "--emit-sql"], p.env);
+      // Its plan stores SQL only, and semlayer results add refuses rows that hold the renamed column.
+      const emitted = await semlayer(p.root, ["goldens", "run", "--name", "by_mail", "--emit-sql"], p.env);
       expect(emitted.code).toBe(0);
       const plan = emitted.json<{ plan_id: string; queries: { id: string }[] }>();
       expect(plan.queries.map((q) => q.id)).toEqual(["golden:by_mail:cross_check"]);
       const rows = join(p.root, "..", "rows.json");
       writeJson(rows, [{ contact: "ana@example.com", latest: "ana@example.com", n: 1 }, { contact: "bo@example.com", latest: "bo@example.com", n: 1 }]);
-      const add = await sl(p.root, ["results", "add", "--plan", plan.plan_id, "--query", "golden:by_mail:cross_check", "--file", rows], p.env);
+      const add = await semlayer(p.root, ["results", "add", "--plan", plan.plan_id, "--query", "golden:by_mail:cross_check", "--file", rows], p.env);
       expect(add.code).toBe(1);
-      expect(add.err).toContain("has protected columns contact, latest, and .sl/plans keeps no protected values, so it is not stored");
+      expect(add.err).toContain("has protected columns contact, latest, and .semlayer/plans keeps no protected values, so it is not stored");
       noSecrets(add.err);
-      expect(existsSync(join(p.root, ".sl", "plans", plan.plan_id))).toBe(false);
-      noSecrets(readFileSync(join(p.root, ".sl", "plans", `${plan.plan_id}.json`), "utf8"));
+      expect(existsSync(join(p.root, ".semlayer", "plans", plan.plan_id))).toBe(false);
+      noSecrets(readFileSync(join(p.root, ".semlayer", "plans", `${plan.plan_id}.json`), "utf8"));
       // Finished from a scratch file, the rows are in no order the statement gives: all are masked but none shown.
       const fromFile = join(p.root, "..", "results.json");
       writeJson(fromFile, { "golden:by_mail:cross_check": [{ n: 1, latest: "ana@example.com", contact: "ana@example.com" }] });
-      const finished = await sl(p.root, ["goldens", "run", "--name", "by_mail", "--results", fromFile, "--json"], p.env);
+      const finished = await semlayer(p.root, ["goldens", "run", "--name", "by_mail", "--results", fromFile, "--json"], p.env);
       expect(finished.code).toBe(0);
       noSecrets(finished.out);
       expect(finished.json<{ protected_columns: string[] }>().protected_columns.sort()).toEqual(["contact", "latest"]);
@@ -400,24 +400,24 @@ for (const [dialect, project] of DIALECTS) {
         cross_check_sql: `select city, count(*) as n from ${c} where email like '%example.com' group by 1`,
         status: "draft",
       });
-      const cityPlan = (await sl(p.root, ["goldens", "run", "--name", "by_city", "--emit-sql"], p.env)).json<{ plan_id: string }>();
+      const cityPlan = (await semlayer(p.root, ["goldens", "run", "--name", "by_city", "--emit-sql"], p.env)).json<{ plan_id: string }>();
       writeJson(rows, [{ n: 2, city: "Lisbon" }, { n: 1, city: "Porto" }]);
-      const stored = await sl(p.root, ["results", "add", "--plan", cityPlan.plan_id, "--query", "golden:by_city:cross_check", "--file", rows], p.env);
+      const stored = await semlayer(p.root, ["results", "add", "--plan", cityPlan.plan_id, "--query", "golden:by_city:cross_check", "--file", rows], p.env);
       expect({ code: stored.code, err: stored.code === 0 ? "" : stored.err }).toEqual({ code: 0, err: "" });
       writeJson(rows, [{ n: 1, city: "ana@example.com" }]);
       writeFileSync(join(goldens, "by_city.yaml"), readFileSync(join(goldens, "by_city.yaml"), "utf8").replace("select city, count", "select email as city, count"));
-      const leaky = (await sl(p.root, ["goldens", "run", "--name", "by_city", "--emit-sql"], p.env)).json<{ plan_id: string }>();
-      const refused = await sl(p.root, ["results", "add", "--plan", leaky.plan_id, "--query", "golden:by_city:cross_check", "--file", rows], p.env);
+      const leaky = (await semlayer(p.root, ["goldens", "run", "--name", "by_city", "--emit-sql"], p.env)).json<{ plan_id: string }>();
+      const refused = await semlayer(p.root, ["results", "add", "--plan", leaky.plan_id, "--query", "golden:by_city:cross_check", "--file", rows], p.env);
       expect(refused.code).toBe(1);
       expect(refused.err).toContain("has protected column city");
 
       // The compiled rows and cross_check_sql disagree: the difference shows no value of the renamed column.
-      const diff = await sl(p.root, ["goldens", "run", "--name", "by_city"], p.env);
+      const diff = await semlayer(p.root, ["goldens", "run", "--name", "by_city"], p.env);
       expect(diff.code).toBe(0);
       noSecrets(diff.out + diff.err);
       expect(diff.out).toContain("cross_check_sql gives other rows");
       expect(diff.out).toContain(PROTECTED_VALUE);
-      const refusedReadback = await sl(p.root, ["readback", "--targets", "golden:by_city"], p.env);
+      const refusedReadback = await semlayer(p.root, ["readback", "--targets", "golden:by_city"], p.env);
       expect(refusedReadback.code).toBe(1);
       noSecrets(refusedReadback.out + refusedReadback.err);
 
@@ -433,32 +433,32 @@ for (const [dialect, project] of DIALECTS) {
       expect({ code: confirm.code, err: confirm.code === 0 ? "" : confirm.err }).toEqual({ code: 0, err: "" });
       const path = join(goldens, "cities.yaml");
       writeFileSync(path, readFileSync(path, "utf8").replace("select city, count", "select email as city, count"));
-      const check = await sl(p.root, ["goldens", "check", "--name", "cities"], p.env);
+      const check = await semlayer(p.root, ["goldens", "check", "--name", "cities"], p.env);
       expect(check.code).toBe(1);
       noSecrets(check.out + check.err);
       expect(check.out).toContain("cross_check_sql:");
       expect(check.out).toContain(PROTECTED_VALUE);
-      expect((await sl(p.root, ["goldens", "check", "--name", "cities", "--show-protected"], p.env)).out).toContain("ana@example.com");
+      expect((await semlayer(p.root, ["goldens", "check", "--name", "cities", "--show-protected"], p.env)).out).toContain("ana@example.com");
       // A cross_check_sql that fails on a protected value does not print the database's message.
       writeFileSync(path, readFileSync(path, "utf8").replace("select email as city, count", "select cast(email as integer) as city, count"));
       for (const args of [["goldens", "check", "--name", "cities"], ["goldens", "run", "--name", "cities"]]) {
-        const failed = await sl(p.root, args, p.env);
+        const failed = await semlayer(p.root, args, p.env);
         expect(failed.code).toBe(1);
         noSecrets(failed.out + failed.err);
         expect(failed.out + failed.err).toContain(`cross_check_sql of golden "cities" failed. The database's message can quote a value`);
       }
 
-      // None of these commands wrote a value to the snapshot or to .sl/plans.
+      // None of these commands wrote a value to the snapshot or to .semlayer/plans.
       expect(readFileSync(join(p.root, "snapshots", "wh.json"), "utf8")).toBe(snapshot);
       noSecrets(snapshot);
-      const plans = join(p.root, ".sl", "plans");
+      const plans = join(p.root, ".semlayer", "plans");
       const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
       for (const f of walk(plans)) noSecrets(readFileSync(f, "utf8"));
     });
   });
 }
 
-describe("sl run masks what only DuckDB writes", () => {
+describe("semlayer run masks what only DuckDB writes", () => {
   test("a column by position, columns(), * replace, SUMMARIZE and a later use of an alias", async () => {
     const p = await duckdbProject();
     for (const sql of [
@@ -504,7 +504,7 @@ describe("sl run masks what only DuckDB writes", () => {
   });
 });
 
-describe.skipIf(!PG_URL)("sl run masks what only Postgres writes", () => {
+describe.skipIf(!PG_URL)("semlayer run masks what only Postgres writes", () => {
   test("a row function called as a column, a U& name and the planner's statistics", async () => {
     const p = await postgresProject();
     const c = p.t("customers");
@@ -627,7 +627,7 @@ describe("Acme's goldens under the scan", () => {
   });
 
   test("the lake's goldens still check with their cross_check_sql", async () => {
-    const r = await sl(ACME, ["goldens", "check", "--source", "lake", "--json"]);
+    const r = await semlayer(ACME, ["goldens", "check", "--source", "lake", "--json"]);
     expect(r.code).toBe(0);
     const doc = r.json<{ passed: number; failed: number; results: { cross_check?: string }[] }>();
     expect(doc.failed).toBe(0);

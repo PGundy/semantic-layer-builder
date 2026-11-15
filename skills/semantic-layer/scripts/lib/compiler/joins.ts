@@ -59,7 +59,7 @@ export function readsJoin(text: string, model: Model): boolean {
 }
 
 // Why a to-one join's current evidence says it fans out, or undefined when it does not (or the
-// evidence was measured for another target or other keys, which sl validate reports as stale).
+// evidence was measured for another target or other keys, which semlayer validate reports as stale).
 function fanOut(j: Join): { why: string; bridge: boolean } | undefined {
   const ev = j.evidence;
   if (!ev || (ev.to !== undefined && ev.to !== j.to) || (Array.isArray(ev.keys) && keySig(ev.keys) !== keySig(j.keys))) return undefined;
@@ -107,16 +107,16 @@ export class JoinPlan {
     const target = this.model(j.to);
     const via = `${owner.model.model}.${j.name}`;
     if (!target) {
-      add("invalid_layer", `join ${via} goes to ${j.to}, which is not a model of source ${source}; run sl validate`, ref);
+      add("invalid_layer", `join ${via} goes to ${j.to}, which is not a model of source ${source}; run semlayer validate`, ref);
       return undefined;
     }
     if (!toOne(j)) {
-      add("invalid_layer", `${ref} reads through join ${via}, which is ${j.relationship}; a join reference reads only through many_to_one and one_to_one joins; run sl validate`, ref);
+      add("invalid_layer", `${ref} reads through join ${via}, which is ${j.relationship}; a join reference reads only through many_to_one and one_to_one joins; run semlayer validate`, ref);
       return undefined;
     }
     const fan = fanOut(j);
     if (fan && (fan.bridge || !(typeof j.fanout_override === "string" && j.fanout_override.trim()))) {
-      const check = `sl check-join --source ${source} --model ${owner.model.model} --join ${j.name}`;
+      const check = `semlayer check-join --source ${source} --model ${owner.model.model} --join ${j.name}`;
       add(
         "join_fans_out",
         fan.bridge
@@ -124,8 +124,8 @@ export class JoinPlan {
           : `join ${via} is ${j.relationship}, but its evidence shows fan-out (${fan.why}), so it would repeat rows of ${owner.model.model} and multiply its measures`,
         ref,
         fan.bridge
-          ? `Ask the owner for a bridge table or a view with one row per ${owner.model.model} row, model it, and run sl sql again.`
-          : `Measure the join again with ${check}; fix its keys or relationship, or record why the owner accepts the data in fanout_override, then run sl sql again.`,
+          ? `Ask the owner for a bridge table or a view with one row per ${owner.model.model} row, model it, and run semlayer sql again.`
+          : `Measure the join again with ${check}; fix its keys or relationship, or record why the owner accepts the data in fanout_override, then run semlayer sql again.`,
       );
       return undefined;
     }
@@ -174,7 +174,7 @@ export class JoinPlan {
         "ambiguous_join_path",
         `${lead} reaches by ${found.length} paths of ${n === 1 ? "one join" : "two joins"} each, ${found.map(name).join(" and ")}, so the request does not say which it means`,
         ref,
-        `Ask the owner which path the figure means, then add a dimension to ${base.model} that reads the field through that join (as ${found[0]!.map((j) => j.name).join(".")}.<column>) or a join to ${base.model} that reaches ${target.model} directly, and run sl sql again.`,
+        `Ask the owner which path the figure means, then add a dimension to ${base.model} that reads the field through that join (as ${found[0]!.map((j) => j.name).join(".")}.<column>) or a join to ${base.model} that reaches ${target.model} directly, and run semlayer sql again.`,
       );
     } else {
       const fanning = routes(() => true);
@@ -186,8 +186,8 @@ export class JoinPlan {
           : `${lead} reaches through no many_to_one or one_to_one join within two hops`,
         ref,
         many
-          ? `Ask the owner for a view with one row per ${base.model} row that holds the field, model it, and run sl sql again.`
-          : `Add a many_to_one or one_to_one join from ${base.model} toward ${target.model} (sl check-join measures it), or ask the owner for a view; then run sl sql again.`,
+          ? `Ask the owner for a view with one row per ${base.model} row that holds the field, model it, and run semlayer sql again.`
+          : `Add a many_to_one or one_to_one join from ${base.model} toward ${target.model} (semlayer check-join measures it), or ask the owner for a view; then run semlayer sql again.`,
       );
     }
     this.paths.set(target.model, inst);

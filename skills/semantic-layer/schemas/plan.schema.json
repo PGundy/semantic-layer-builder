@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": ".sl/plans/<plan_id>.json",
+  "title": ".semlayer/plans/<plan_id>.json",
   "description": "A query plan written by --emit-sql, finished from its stored results with --plan <plan_id>. A working file: gitignored, holds SQL and no data.",
   "type": "object",
   "additionalProperties": false,

@@ -50,7 +50,7 @@ async function queryOrFail(adapter: Adapter, dialect: string, sql: string, guard
     if (reason === undefined || (await failsUnread(adapter, dialect, sql, e))) throw new UserError(`Query failed: ${errorMessage(e, sql)}`);
     throw new UserError(
       `Query failed. The database's message can quote a value, and ${reason}, so it is not shown.\n` +
-        "Check the statement's casts and comparisons against each column's type, then run sl run again.",
+        "Check the statement's casts and comparisons against each column's type, then run semlayer run again.",
     );
   }
 }

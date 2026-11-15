@@ -47,13 +47,13 @@ export function runIdFor(scenario: string, at: Date): string {
   return `${scenario}-${at.toISOString().replace(/[-:.]/g, "")}`;
 }
 
-// Runs sl in-process in the working root with the run's clock, capturing its output.
-export async function slIn(root: string, args: string[], clock: Clock): Promise<{ code: number; out: string; err: string }> {
+// Runs semlayer in-process in the working root with the run's clock, capturing its output.
+export async function semlayerIn(root: string, args: string[], clock: Clock): Promise<{ code: number; out: string; err: string }> {
   const out: string[] = [];
   const err: string[] = [];
   const code = await runCli([...args, "--root", root], {
     cwd: root,
-    env: { SL_NOW: clock().toISOString() },
+    env: { SEMLAYER_NOW: clock().toISOString() },
     out: (t) => out.push(t),
     err: (t) => err.push(t),
   });
@@ -63,11 +63,11 @@ export async function slIn(root: string, args: string[], clock: Clock): Promise<
 // Where an export intake puts the schema export the owner shares, relative to the working root.
 export const sharedExportPath = (source: string) => `shared/${source}-schema.csv`;
 
-// The schema export an owner would share for the scenario's views: sl export-sql's duckdb catalog
+// The schema export an owner would share for the scenario's views: semlayer export-sql's duckdb catalog
 // query, run over an in-memory database holding the views, saved as CSV. It reads no table data.
 async function writeSchemaExport(root: string, scenario: Scenario, clock: Clock): Promise<void> {
-  const q = await slIn(root, ["export-sql", "--dialect", "duckdb", "--schemas", "main", "--json"], clock);
-  if (q.code !== 0) throw new EvalError(`Writing the schema export failed at sl export-sql: ${q.err || q.out}`);
+  const q = await semlayerIn(root, ["export-sql", "--dialect", "duckdb", "--schemas", "main", "--json"], clock);
+  if (q.code !== 0) throw new EvalError(`Writing the schema export failed at semlayer export-sql: ${q.err || q.out}`);
   const query = (JSON.parse(q.out) as { sql: string }).sql.trim().replace(/;\s*$/, "");
   const fixtureDir = join(REPO_ROOT, "fixtures", scenario.fixture).split("\\").join("/");
   const file = join(root, sharedExportPath(scenario.intake.source));
@@ -128,15 +128,15 @@ async function prepareRoot(scenario: Scenario, root: string, clock: Clock): Prom
     ]);
   }
   for (const args of steps) {
-    const r = await slIn(root, args, clock);
-    if (r.code !== 0) throw new EvalError(`Setting up the working root failed at sl ${args[0]}: ${r.err || r.out}`);
+    const r = await semlayerIn(root, args, clock);
+    if (r.code !== 0) throw new EvalError(`Setting up the working root failed at semlayer ${args[0]}: ${r.err || r.out}`);
   }
   if (scenario.intake.path !== "connection") await writeSchemaExport(root, scenario, clock);
 }
 
-// The review forms sl review export wrote in the root, by path: what the owner has been handed.
+// The review forms semlayer review export wrote in the root, by path: what the owner has been handed.
 function reviewForms(root: string): Record<string, string> {
-  return Object.fromEntries(Object.entries(readTree(join(root, ".sl", "reviews"))).map(([f, text]) => [`.sl/reviews/${f}`, text]));
+  return Object.fromEntries(Object.entries(readTree(join(root, ".semlayer", "reviews"))).map(([f, text]) => [`.semlayer/reviews/${f}`, text]));
 }
 
 // The owner's brief, with the fixture's reference figures appended when it has them, since the

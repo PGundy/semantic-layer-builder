@@ -12,10 +12,10 @@ const spec: CommandSpec = {
   writes: "whole",
   async run({ positionals }, ctx) {
     loadProject(ctx.root);
-    if (positionals.length !== 1) throw new UserError("Usage: sl remove-role <name>.");
+    if (positionals.length !== 1) throw new UserError("Usage: semlayer remove-role <name>.");
     const o = removeEntry(ctx.root, "role", positionals[0]);
     if (ctx.json) ctx.out(formatJson({ ...o, role: o.name }));
-    else ctx.out([`Removed role ${o.name} from ${o.file}.`, ...accessEditLines(o, `sl access shows what its holders see without it; ${READBACK_NEXT}`)].join("\n"));
+    else ctx.out([`Removed role ${o.name} from ${o.file}.`, ...accessEditLines(o, `semlayer access shows what its holders see without it; ${READBACK_NEXT}`)].join("\n"));
     return 0;
   },
 };

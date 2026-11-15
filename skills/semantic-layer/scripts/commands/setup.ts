@@ -30,7 +30,7 @@ import introspectCommand from "./introspect.ts";
 import profileCommand from "./profile.ts";
 
 const CONNECTION_FIRST =
-  "sl setup needs a connection, or a schema export when a connection is not possible. A connection gives a much better layer: " +
+  "semlayer setup needs a connection, or a schema export when a connection is not possible. A connection gives a much better layer: " +
   "the tool can measure which values exist and how often, which keys are unique, how tables join and whether a join repeats rows, " +
   "and check figures the owner trusts (profiles, join evidence, goldens). Pass --env <VAR>, the name of the environment variable " +
   "that holds the connection URL, or --env-prefix <PREFIX> when the owner has the parts (<PREFIX>HOST, <PREFIX>USER and the rest); " +
@@ -51,7 +51,7 @@ function plannedCopy(root: string, from: string, rel: string, what: string): Cop
   const to = rootPath(root, rel, what);
   const data = readFileSync(from);
   if (resolve(from) === to || !existsSync(to)) return { to, rel, data, status: resolve(from) === to ? null : "added" };
-  if (!statSync(to).isFile()) throw new UserError(`${rel} is not a file; move it away and run sl setup again.`);
+  if (!statSync(to).isFile()) throw new UserError(`${rel} is not a file; move it away and run semlayer setup again.`);
   return { to, rel, data, status: readFileSync(to).equals(data) ? null : "replaced" };
 }
 
@@ -124,9 +124,9 @@ const spec: CommandSpec = {
     "setup --source <source> --dialect duckdb|postgres|snowflake|bigquery|databricks (--env VAR | --env-prefix PREFIX | --export <file> [--reason <text>])\n" +
     "      [--schemas a,b] [--include <pattern>]... [--exclude <pattern>]... [--tables-file <path>]\n" +
     "      [--database <path>] [--view name=relation]... [--name <project>]\n" +
-    "setup --print-role-sql --dialect postgres|redshift|snowflake|bigquery|databricks --schemas a,b [--role-name sl_reader]\n" +
+    "setup --print-role-sql --dialect postgres|redshift|snowflake|bigquery|databricks --schemas a,b [--role-name semlayer_reader]\n" +
     "      [--database <name>] [--warehouse <name>] [--catalog <name>] [--project <id>]\n\n" +
-    "  Runs sl init when there is no project, writes or updates sources/<source>.yaml in place, sets the scope,\n" +
+    "  Runs semlayer init when there is no project, writes or updates sources/<source>.yaml in place, sets the scope,\n" +
     "  reads the catalog (introspect, or import of the export copied to exports/<source>.<ext>) and previews the scope.\n" +
     "  A connection comes first: --export with --reason is the fallback. --env names the variable that holds a connection\n" +
     "  URL; --env-prefix names a postgres connection in parts (PG reads PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE and\n" +
@@ -134,7 +134,7 @@ const spec: CommandSpec = {
     "  root, which setup keeps out of version control (.gitignore). The same arguments again change nothing;\n" +
     "  a group of flags left out (--schemas; the scope flags; --database; --view) leaves that part of the source as it is.\n" +
     "  An export source given its connection is upgraded: it introspects, profiles, checks every join and lists the items\n" +
-    "  the data contradicts, for sl readback.",
+    "  the data contradicts, for semlayer readback.",
   options: {
     source: { type: "string" },
     dialect: { type: "string" },
@@ -159,7 +159,7 @@ const spec: CommandSpec = {
   async run({ values }, ctx) {
     if (bool(values, "print-role-sql")) return printRoleSql(values, ctx);
     for (const f of ["role-name", "warehouse", "catalog", "project"]) {
-      if (values[f] !== undefined) throw new UserError(`--${f} goes with --print-role-sql; run sl setup again without it, or add --print-role-sql.`);
+      if (values[f] !== undefined) throw new UserError(`--${f} goes with --print-role-sql; run semlayer setup again without it, or add --print-role-sql.`);
     }
     // Every flag is checked before anything is written.
     const name = str(values, "source");
@@ -179,29 +179,29 @@ const spec: CommandSpec = {
     const mode = exportArg !== undefined ? "export" : "connection";
 
     if (env !== undefined && envPrefix !== undefined) {
-      throw new UserError("--env names one variable that holds the connection URL and --env-prefix names the connection in parts; a source has one or the other. Run sl setup again with one of them.");
+      throw new UserError("--env names one variable that holds the connection URL and --env-prefix names the connection in parts; a source has one or the other. Run semlayer setup again with one of them.");
     }
     if (exportArg !== undefined && (env !== undefined || envPrefix !== undefined || database !== undefined || views.length)) {
       throw new UserError(
-        "--export is the fallback for when no connection is possible, so it takes no --env, --database or --view. Run sl setup again with the connection, or with --export and --reason alone.",
+        "--export is the fallback for when no connection is possible, so it takes no --env, --database or --view. Run semlayer setup again with the connection, or with --export and --reason alone.",
       );
     }
     if (exportArg === undefined && env === undefined && envPrefix === undefined && !(duck && (database !== undefined || views.length))) {
       if (!existsSync(paths(ctx.root).source(name))) throw new UserError(CONNECTION_FIRST);
       throw new UserError(
-        `Source "${name}" exists, and sl setup needs its connection flags again (--env or --env-prefix, or for duckdb --database or --view; --export for an export source), as they were. ` +
-          `To change only its scope, run sl scope --source ${name} --include <pattern> --write.`,
+        `Source "${name}" exists, and semlayer setup needs its connection flags again (--env or --env-prefix, or for duckdb --database or --view; --export for an export source), as they were. ` +
+          `To change only its scope, run semlayer scope --source ${name} --include <pattern> --write.`,
       );
     }
-    if (reasonArg !== undefined && exportArg === undefined) throw new UserError('--reason records why a connection is not possible, so it goes with --export; run sl setup again without it.');
+    if (reasonArg !== undefined && exportArg === undefined) throw new UserError('--reason records why a connection is not possible, so it goes with --export; run semlayer setup again without it.');
     if (env !== undefined) checkEnv(env, dialect);
     if (envPrefix !== undefined) checkEnvPrefix(envPrefix, dialect);
-    if (!duck && (database !== undefined || views.length)) throw new UserError("--database and --view apply only to duckdb sources; run sl setup again without them.");
+    if (!duck && (database !== undefined || views.length)) throw new UserError("--database and --view apply only to duckdb sources; run semlayer setup again without them.");
     if (database !== undefined) {
       if (!database.trim()) throw new UserError("--database must not be empty.");
       refuseCredentials("--database", database);
       if (database !== ":memory:" && !NOT_A_FILE.test(database) && !existsSync(resolve(ctx.root, database))) {
-        throw new UserError(`--database: no DuckDB file at ${resolve(ctx.root, database)} (the path resolves from the semantic root). Fix the path and run sl setup again.`);
+        throw new UserError(`--database: no DuckDB file at ${resolve(ctx.root, database)} (the path resolves from the semantic root). Fix the path and run semlayer setup again.`);
       }
     }
     const viewMap = views.length ? parseViews(views) : undefined;
@@ -209,33 +209,33 @@ const spec: CommandSpec = {
     if (values.schemas !== undefined && !schemas.length) throw new UserError(`--schemas needs at least one schema name; ${SCHEMA_NAME_HINT}.`);
     const schemaIssues = schemaListIssues(schemas, { dialect, connection: { database } }, (i) => `name ${i + 1}`);
     const schemaError = schemaIssues.find((x) => x.level === "error");
-    if (schemaError) throw new UserError(`--schemas: ${schemaError.path} ${schemaError.message}. Fix it and run sl setup again.`);
+    if (schemaError) throw new UserError(`--schemas: ${schemaError.path} ${schemaError.message}. Fix it and run semlayer setup again.`);
     const include = patternFlags(values, "include");
     const exclude = patternFlags(values, "exclude");
     let tablesFrom: string | undefined;
     if (tablesArg !== undefined) {
       tablesFrom = inputFile(ctx, tablesArg, "--tables-file", "a text file with one table or pattern per line");
       const parsed = parseTableList(readFileSync(tablesFrom, "utf8"));
-      if (parsed.problems.length) throw new UserError(`${problemsMessage(tablesArg, parsed.problems)}\nFix the file and run sl setup again.`);
+      if (parsed.problems.length) throw new UserError(`${problemsMessage(tablesArg, parsed.problems)}\nFix the file and run semlayer setup again.`);
     }
-    const exportFrom = exportArg === undefined ? undefined : inputFile(ctx, exportArg, "--export", "the schema export (sl export-sql prints the query that makes one)");
+    const exportFrom = exportArg === undefined ? undefined : inputFile(ctx, exportArg, "--export", "the schema export (semlayer export-sql prints the query that makes one)");
     if (projectArg !== undefined && !NAME_PATTERN.test(projectArg)) throw new UserError("--name must match ^[a-z][a-z0-9_]*$.");
 
     // The source as it is, and the checks that need it.
     const p = paths(ctx.root);
     const rel = `sources/${name}.yaml`;
     const file = rootPath(ctx.root, rel, "The source file");
-    if (existsSync(file.replace(/\.yaml$/, ".yml"))) throw new UserError(`sources/${name}.yml exists; sl setup edits sources/${name}.yaml. Rename the file and run sl setup again.`);
+    if (existsSync(file.replace(/\.yaml$/, ".yml"))) throw new UserError(`sources/${name}.yml exists; semlayer setup edits sources/${name}.yaml. Rename the file and run semlayer setup again.`);
     const oldText = existsSync(file) ? readFileSync(file, "utf8") : null;
     const old = oldText === null ? null : (parseYamlText(oldText, rel) as SourceConfig | null);
-    if (oldText !== null && (old === null || typeof old !== "object")) throw new UserError(`${rel} is not a source file; fix it (sl validate names the problem) and run sl setup again.`);
+    if (oldText !== null && (old === null || typeof old !== "object")) throw new UserError(`${rel} is not a source file; fix it (semlayer validate names the problem) and run semlayer setup again.`);
     if (old && old.dialect !== dialect) {
-      throw new UserError(`Source "${name}" is a ${old.dialect} source, and sl setup does not change a dialect. Run sl setup with --dialect ${old.dialect}, or pick another --source name.`);
+      throw new UserError(`Source "${name}" is a ${old.dialect} source, and semlayer setup does not change a dialect. Run semlayer setup with --dialect ${old.dialect}, or pick another --source name.`);
     }
     // An export source given its connection is upgraded (spec: Setup, Upgrade from an export).
     const upgrading = old !== null && intakeMode(old) === "export" && mode === "connection";
     if (old && intakeMode(old) === "connection" && mode === "export") {
-      throw new UserError(`Source "${name}" reads the catalog through a connection; sl setup does not turn it into an export source. Keep using the connection, or set up the export under another --source name.`);
+      throw new UserError(`Source "${name}" reads the catalog through a connection; semlayer setup does not turn it into an export source. Keep using the connection, or set up the export under another --source name.`);
     }
 
     const warnings = schemaIssues.map((x) => `--schemas: ${x.path} ${x.message}.`);
@@ -265,7 +265,7 @@ const spec: CommandSpec = {
     const next = parseYamlText(newText, rel) as SourceConfig;
     if (mode === "export" && !next.intake?.reason) {
       warnings.push(
-        'intake.reason is recorded as empty. The skill asks the owner for a connection first and uses an export only when one is not possible; record why with sl setup ... --reason "<why>".',
+        'intake.reason is recorded as empty. The skill asks the owner for a connection first and uses an export only when one is not possible; record why with semlayer setup ... --reason "<why>".',
       );
     }
     const tablesCopy = tablesFrom === undefined ? undefined : plannedCopy(ctx.root, tablesFrom, state.scope!.tables_file!, "The table-list copy");
@@ -299,9 +299,9 @@ const spec: CommandSpec = {
       if (read) {
         // The owner is about to put a secret in an env file, so the lines that keep it out of version control go in first.
         ignoreEnvFiles(ctx.root);
-        throw new UserError(`${connection.message}\nsl setup reads the catalog through that connection, so nothing was written under the semantic root.`);
+        throw new UserError(`${connection.message}\nsemlayer setup reads the catalog through that connection, so nothing was written under the semantic root.`);
       }
-      warnings.push(`${connection.variables.join(", ")} ${connection.variables.length > 1 ? "are" : "is"} not set in the environment or an env file; sl introspect --source ${name} says where it looked and which line to add.`);
+      warnings.push(`${connection.variables.join(", ")} ${connection.variables.length > 1 ? "are" : "is"} not set in the environment or an env file; semlayer introspect --source ${name} says where it looked and which line to add.`);
     }
     let before: string[] | null = null;
     if (old && oldSnapshot) {
@@ -315,13 +315,13 @@ const spec: CommandSpec = {
     // The writes, undone together when reading the catalog fails. The project, the source file and
     // the copies are written under the lock, which is released while the catalog is read.
     const unlock = await ctx.lock();
-    if ((existsSync(file) ? readFileSync(file, "utf8") : null) !== oldText) throw new UserError(`${rel} changed while sl setup read it; nothing was written. Run the same sl setup command again.`);
+    if ((existsSync(file) ? readFileSync(file, "utf8") : null) !== oldText) throw new UserError(`${rel} changed while semlayer setup read it; nothing was written. Run the same semlayer setup command again.`);
     let projectCreated = false;
     if (!existsSync(p.project)) {
       await runQuiet(initCommand, { name: projectArg ?? projectName(ctx.root) }, ctx);
       projectCreated = true;
     } else if (projectArg !== undefined && loadProject(ctx.root).name !== projectArg) {
-      warnings.push(`The project already exists as ${loadProject(ctx.root).name}; --name is used only when sl setup creates the project.`);
+      warnings.push(`The project already exists as ${loadProject(ctx.root).name}; --name is used only when semlayer setup creates the project.`);
     }
     ignoreEnvFiles(ctx.root);
     const project = loadProject(ctx.root);
@@ -336,7 +336,7 @@ const spec: CommandSpec = {
     try {
       if (created || updated) write(file, newText);
       for (const c of [tablesCopy, exportCopy]) if (c?.status) write(c.to, c.data);
-      // sl import queries nothing and writes under this lock; sl introspect takes it again for its write.
+      // semlayer import queries nothing and writes under this lock; semlayer introspect takes it again for its write.
       if (mode !== "export") unlock();
       if (read) {
         const snap = p.snapshot(name);
@@ -354,14 +354,14 @@ const spec: CommandSpec = {
       if (!(e instanceof UserError)) throw e;
       const kept = projectCreated ? " (the project it created stays)" : "";
       const models = upgrading ? ", the snapshot and the model files" : " and the snapshot";
-      throw new UserError(`${e.message}\nsl setup put ${rel}, the copies${models} back as they were${kept}; fix the problem and run the same sl setup command again.`);
+      throw new UserError(`${e.message}\nsemlayer setup put ${rel}, the copies${models} back as they were${kept}; fix the problem and run the same semlayer setup command again.`);
     }
 
     const snapshot = loadSnapshot(ctx.root, name);
     const scope = effectiveScope(ctx.root, next);
     const { focus_threshold } = projectSettings(project);
     const preview = snapshot ? scopePreview(next.scope, scope, snapshot, before, focus_threshold) : null;
-    for (const pat of preview?.unmatched_patterns ?? []) warnings.push(`Pattern "${pat}" matches no table in the snapshot; check its spelling against sl tables --source ${name} --all.`);
+    for (const pat of preview?.unmatched_patterns ?? []) warnings.push(`Pattern "${pat}" matches no table in the snapshot; check its spelling against semlayer tables --source ${name} --all.`);
     for (const w of (result?.warnings as string[] | undefined) ?? []) warnings.push(w);
     // The role's warnings: the adapter prints them on stderr, so the plain output adds only the note.
     const roleReport = result?.role_report as RoleReport | undefined;
@@ -374,16 +374,16 @@ const spec: CommandSpec = {
     const unread = refresh || (mode === "connection" && !live && snapshot !== null && snapshot.method !== "live");
     const contradicted = contradictedRefs(upgrade?.contradictions ?? []);
     const nextAction = contradicted.length
-      ? `sl readback --targets ${contradicted.join(",")}`
+      ? `semlayer readback --targets ${contradicted.join(",")}`
       : unread && !read
-        ? `sl introspect --source ${name} --emit-sql`
+        ? `semlayer introspect --source ${name} --emit-sql`
         : !preview || preview.in_scope === 0
-          ? `sl tables --source ${name} --all`
+          ? `semlayer tables --source ${name} --all`
           : preview.needs_focus
-            ? `sl tables --source ${name} --groups`
+            ? `semlayer tables --source ${name} --groups`
             : mode === "connection" && filterInScope(scope, snapshot!.tables).some((t) => profileState(t) !== "yes")
-              ? `sl profile --source ${name}${dialectFlag}`
-              : `sl baseline --source ${name}`;
+              ? `semlayer profile --source ${name}${dialectFlag}`
+              : `semlayer baseline --source ${name}`;
     const changed = projectCreated || created || updated || Boolean(tablesCopy?.status) || Boolean(exportCopy?.status) || read;
     const intake = { mode, schemas: intakeSchemas(next), ...(mode === "export" ? { reason: next.intake?.reason ?? "", export_file: exportRel } : {}) };
     const counts = result ? { tables: Number(result.tables ?? 0), columns: Number(result.columns ?? 0) } : null;
@@ -415,7 +415,7 @@ const spec: CommandSpec = {
     const lines: string[] = [];
     if (!changed) lines.push(`Nothing changed: ${rel}, its scope and the snapshot are as they were.`);
     if (projectCreated) lines.push(`Created semantic.yaml for project ${project.name}.`);
-    // The database value and the view relations stay out of the output, as sl add-source keeps them.
+    // The database value and the view relations stay out of the output, as semlayer add-source keeps them.
     const viewNames = Object.keys(next.connection?.views ?? {});
     const prefix = next.connection?.env_prefix;
     const how = mode === "export" ? `schema export ${exportRel}` : env ? `connection through ${env}` : prefix !== undefined ? `connection through ${prefix}HOST and the other ${prefix} variables` : viewNames.length ? `views ${viewNames.join(", ")}` : "a database file";
@@ -441,7 +441,7 @@ const spec: CommandSpec = {
     } else if (unread) {
       lines.push(`The snapshot came from a schema export, not the connection; the CLI does not connect to ${dialect}, so read it through the query plan below.`);
     } else if (snapshot) {
-      lines.push(`The snapshot was not read again: the connection, schemas and export are unchanged (sl ${mode === "export" ? "import" : "introspect"} --source ${name} reads it again).`);
+      lines.push(`The snapshot was not read again: the connection, schemas and export are unchanged (semlayer ${mode === "export" ? "import" : "introspect"} --source ${name} reads it again).`);
     }
     if (preview) {
       lines.push("", `Scope: ${preview.in_scope} of ${plural(preview.total, "table")} in scope.`);
@@ -450,14 +450,14 @@ const spec: CommandSpec = {
       if (preview.removed.length) lines.push(`Removed from scope (${preview.removed.length}): ${preview.removed.join(", ")}`);
       const rows = preview.tables.slice(0, MAX_SHOWN).map((t) => ({ table: t.table, rows: t.rows === null ? "?" : t.rows.toLocaleString("en-US") }));
       if (rows.length) lines.push(formatTable(rows, ["table", "rows"]));
-      if (preview.tables.length > MAX_SHOWN) lines.push(`... and ${preview.tables.length - MAX_SHOWN} more (sl tables --source ${name}).`);
+      if (preview.tables.length > MAX_SHOWN) lines.push(`... and ${preview.tables.length - MAX_SHOWN} more (semlayer tables --source ${name}).`);
     }
     if (upgrading) lines.push("", ...upgradeLines(rel, name, old?.intake?.export?.file, upgrade));
     for (const w of warnings) if (!roleWarnings.includes(w)) lines.push(`Warning: ${w}`);
     lines.push("");
     lines.push(
       unread && !read && !contradicted.length
-        ? `Next: ${nextAction}, run the queries it prints with your own SQL tool, save the results as a JSON file, then run sl introspect --source ${name} --results <file>.`
+        ? `Next: ${nextAction}, run the queries it prints with your own SQL tool, save the results as a JSON file, then run semlayer introspect --source ${name} --results <file>.`
         : `Next: ${nextAction}`,
     );
     ctx.out(lines.join("\n"));

@@ -45,7 +45,7 @@ function statusCommand(ctx: CommandContext, values: OptionValues): number {
     return 0;
   }
   const done = status.queries.length - status.remaining.length;
-  const lines = [`Plan ${status.plan_id} (sl ${status.command}, source ${status.source}): ${done} of ${status.queries.length} results stored.`];
+  const lines = [`Plan ${status.plan_id} (semlayer ${status.command}, source ${status.source}): ${done} of ${status.queries.length} results stored.`];
   for (const q of status.queries) {
     lines.push(`  ${q.stored ? "stored " : "missing"}  ${q.id}${q.stored ? ` (${q.rows} row${q.rows === 1 ? "" : "s"})` : ` (max_rows ${q.max_rows})`}`);
   }
@@ -67,15 +67,15 @@ const spec: CommandSpec = {
   async run({ values, positionals }, ctx) {
     const [sub, ...rest] = positionals;
     if (!sub || !(SUBCOMMANDS as readonly string[]).includes(sub)) {
-      throw new UserError(`Pass a subcommand: ${SUBCOMMANDS.join(", ")}. sl results status --plan <plan_id> shows a plan's progress.`);
+      throw new UserError(`Pass a subcommand: ${SUBCOMMANDS.join(", ")}. semlayer results status --plan <plan_id> shows a plan's progress.`);
     }
     if (rest.length) {
       throw new UserError(
-        `Unexpected argument "${rest[0]}". Run sl results add --plan <plan_id> --query <query id> --file <rows.json> or sl results status --plan <plan_id>.`,
+        `Unexpected argument "${rest[0]}". Run semlayer results add --plan <plan_id> --query <query id> --file <rows.json> or semlayer results status --plan <plan_id>.`,
       );
     }
     if (sub === "status" && (str(values, "query") !== undefined || str(values, "file") !== undefined)) {
-      throw new UserError("results status takes only --plan <plan_id>; store a result with sl results add.");
+      throw new UserError("results status takes only --plan <plan_id>; store a result with semlayer results add.");
     }
     return sub === "add" ? addCommand(ctx, values) : statusCommand(ctx, values);
   },

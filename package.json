@@ -5,7 +5,7 @@
   "type": "module",
   "workspaces": ["skills/*"],
   "scripts": {
-    "sl": "bun skills/semantic-layer/scripts/sl.ts",
+    "semlayer": "bun skills/semantic-layer/scripts/semlayer.ts",
     "mcp": "bun skills/semantic-layer/scripts/mcp/server.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit -p .",
@@ -13,7 +13,7 @@
     "eval": "bun evals/runner/run.ts",
     "eval:smoke": "bun evals/smoke.ts",
     "verify": "bash scripts/verify.sh",
-    "perf": "SL_PERF=1 bun test tests/perf --timeout 900000"
+    "perf": "SEMLAYER_PERF=1 bun test tests/perf --timeout 900000"
   },
   "devDependencies": {
     "@duckdb/node-api": "2.0.0-r.1",

@@ -28,9 +28,9 @@ export function schemaValidator(): Ajv2020 {
   return new Ajv2020({ allErrors: true, strict: true });
 }
 
-// sl_<command>, with - as _ (check-join is sl_check_join).
+// semlayer_<command>, with - as _ (check-join is semlayer_check_join).
 export function toolName(command: string): string {
-  return `sl_${command.replaceAll("-", "_")}`;
+  return `semlayer_${command.replaceAll("-", "_")}`;
 }
 
 function optionSchema(name: string, o: OptionSpec): JsonSchema {
@@ -64,7 +64,7 @@ export function toolOf(command: string, spec: CommandSpec): Tool {
     (omitted.length ? ` The batched form${omitted.length === 1 ? "" : "s"} (${omitted.join(", ")}) ${omitted.length === 1 ? "is" : "are"} CLI only: here each answer and approval is its own call, which the server can ask the owner about.` : "");
   return {
     name: toolName(command),
-    description: `${spec.summary}\n\nUsage: sl ${spec.usage}\n\nRuns as \`sl ${command} --json\` in the server's semantic root and returns its JSON output.${masked}`,
+    description: `${spec.summary}\n\nUsage: semlayer ${spec.usage}\n\nRuns as \`semlayer ${command} --json\` in the server's semantic root and returns its JSON output.${masked}`,
     inputSchema: inputSchema(spec),
   };
 }

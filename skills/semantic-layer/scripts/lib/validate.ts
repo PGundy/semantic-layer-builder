@@ -207,7 +207,7 @@ class Validator {
 
   // The YAML files of a directory paired with their stems. A stem defined by both a .yaml and a
   // .yml file is an error and only the .yaml file is read; a lone .yml file gets a warning because
-  // other sl commands open <stem>.yaml. A file only in overrides is read as if it were written.
+  // other semlayer commands open <stem>.yaml. A file only in overrides is read as if it were written.
   yamlEntries(dir: string): { file: string; stem: string }[] {
     const added = [...(this.overrides?.keys() ?? [])].filter((p) => dirname(p) === dir && /\.ya?ml$/.test(p)).map((p) => basename(p));
     const files = [...new Set([...yamlFiles(dir), ...added])].filter((f) => !this.removed?.has(join(dir, f))).sort();
@@ -219,7 +219,7 @@ class Validator {
           this.error(this.rel(join(dir, f)), "", `${stem} is defined twice (${stem}.yaml and ${f}); delete one`);
           continue;
         }
-        this.warn(this.rel(join(dir, f)), "", `other sl commands read ${stem}.yaml; rename this file`);
+        this.warn(this.rel(join(dir, f)), "", `other semlayer commands read ${stem}.yaml; rename this file`);
       }
       out.push({ file: f, stem });
     }
@@ -260,7 +260,7 @@ class Validator {
 
   loadAll(): void {
     const projectPath = join(this.root, "semantic.yaml");
-    if (!existsSync(projectPath)) this.error("semantic.yaml", "", "missing: run `sl init --name <name>` to create it");
+    if (!existsSync(projectPath)) this.error("semantic.yaml", "", "missing: run `semlayer init --name <name>` to create it");
     else this.project = this.load<Project>(projectPath, "project", "semantic");
 
     const sourcesDir = join(this.root, "sources");
@@ -272,11 +272,11 @@ class Validator {
     const snapshotsDir = join(this.root, "snapshots");
     if (existsSync(snapshotsDir)) {
       for (const f of readdirSync(snapshotsDir).filter((x) => x.endsWith(".json")).sort()) {
-        // snapshots/<source>.usage.json is the usage evidence sl usage add writes (spec: Usage evidence).
+        // snapshots/<source>.usage.json is the usage evidence semlayer usage add writes (spec: Usage evidence).
         if (f.endsWith(".usage.json")) {
           const stem = f.replace(/\.usage\.json$/, "");
           const l = this.load<{ source?: unknown }>(join(snapshotsDir, f), "usage", stem);
-          if (l && l.data.source !== stem) this.error(l.file, "source", `is "${String(l.data.source)}" but the file is ${f}; run sl usage clear --source ${stem} and add the files again`);
+          if (l && l.data.source !== stem) this.error(l.file, "source", `is "${String(l.data.source)}" but the file is ${f}; run semlayer usage clear --source ${stem} and add the files again`);
           continue;
         }
         const stem = f.replace(/\.json$/, "");
@@ -305,10 +305,10 @@ class Validator {
     }
 
     const metricsPath = join(this.root, "metrics.yaml");
-    // A metrics.yaml only in overrides is read as if it were written (sl add-metric creates one).
+    // A metrics.yaml only in overrides is read as if it were written (semlayer add-metric creates one).
     if (existsSync(metricsPath) || this.overrides?.has(metricsPath)) this.metrics = this.load<MetricsFile>(metricsPath, "metrics", "metrics");
     const accessPath = join(this.root, "access.yaml");
-    // An access.yaml only in overrides is read as if it were written (sl set access mode creates one).
+    // An access.yaml only in overrides is read as if it were written (semlayer set access mode creates one).
     this.accessPresent = existsSync(accessPath) || !!this.overrides?.has(accessPath);
     if (this.accessPresent) this.access = this.load<AccessFile>(accessPath, "access", "access");
 
@@ -318,35 +318,35 @@ class Validator {
       if (l) this.goldens.push(l);
     }
 
-    // Readbacks sl readback stored, waiting for the owner: their structure, and an id equal to the file name.
-    const pendingDir = join(this.root, ".sl", "pending");
+    // Readbacks semlayer readback stored, waiting for the owner: their structure, and an id equal to the file name.
+    const pendingDir = join(this.root, ".semlayer", "pending");
     if (existsSync(pendingDir)) {
       for (const f of readdirSync(pendingDir).filter((x) => x.endsWith(".json")).sort()) {
         const l = this.load<{ readback_id?: unknown }>(join(pendingDir, f), "pending", f.replace(/\.json$/, ""));
         if (l?.valid && l.data.readback_id !== l.stem)
-          this.error(l.file, "readback_id", `is "${String(l.data.readback_id)}" but the file is ${f}; the id equals the file name, so run sl readback again instead of renaming`);
+          this.error(l.file, "readback_id", `is "${String(l.data.readback_id)}" but the file is ${f}; the id equals the file name, so run semlayer readback again instead of renaming`);
       }
     }
 
-    // JSON review forms sl review export wrote: their structure.
-    const reviewsDir = join(this.root, ".sl", "reviews");
+    // JSON review forms semlayer review export wrote: their structure.
+    const reviewsDir = join(this.root, ".semlayer", "reviews");
     if (existsSync(reviewsDir)) {
       for (const f of readdirSync(reviewsDir).filter((x) => x.endsWith(".json")).sort()) this.load(join(reviewsDir, f), "review", f.replace(/\.json$/, ""));
     }
     this.checkLedger();
   }
 
-  // The answer ledger, .sl/ledger.jsonl: every line a JSON object matching schemas/ledger.schema.json,
+  // The answer ledger, .semlayer/ledger.jsonl: every line a JSON object matching schemas/ledger.schema.json,
   // the last one ending in a line break, and ids that only go up. Append-only cannot be checked, but
   // a reused or out-of-order id shows a line that was edited, moved or copied.
   checkLedger(): void {
-    const abs = join(this.root, ".sl", "ledger.jsonl");
+    const abs = join(this.root, ".semlayer", "ledger.jsonl");
     if (!existsSync(abs)) return;
     const file = this.rel(abs);
-    const fix = "the ledger is append-only: restore it from version control (git checkout -- .sl/ledger.jsonl)";
-    // sl approve reads only a plain file inside the root, so a link is refused there (lib/ledger.ts readReplies).
+    const fix = "the ledger is append-only: restore it from version control (git checkout -- .semlayer/ledger.jsonl)";
+    // semlayer approve reads only a plain file inside the root, so a link is refused there (lib/ledger.ts readReplies).
     if (!lstatSync(dirname(abs)).isDirectory() || !lstatSync(abs).isFile()) {
-      return this.error(file, "", `is not a plain file inside the semantic root (it or its .sl directory is a link), so sl approve refuses it; replace the link with the file it points to, or ${fix}`);
+      return this.error(file, "", `is not a plain file inside the semantic root (it or its .semlayer directory is a link), so semlayer approve refuses it; replace the link with the file it points to, or ${fix}`);
     }
     const text = this.overrides?.get(abs) ?? readFileSync(abs, "utf8");
     if (text && !text.endsWith("\n")) this.error(file, "", `the last line has no line break, as when an append is cut off; ${fix}`);
@@ -442,7 +442,7 @@ class Validator {
   }
 
   // source.model for every model file, from its path (models/<source>/<model>.yaml), which is how
-  // every lookup and every other sl command finds a model.
+  // every lookup and every other semlayer command finds a model.
   allModelRefs(): string[] {
     const refs: string[] = [];
     for (const [source, byName] of this.models) for (const name of byName.keys()) refs.push(`${source}.${name}`);
@@ -493,7 +493,7 @@ class Validator {
       this.error(
         file,
         "scope.tables_file",
-        `names ${rel}, which does not exist; import a table-list file with \`sl scope --source ${source} --from-file <path> --write\`, or remove scope.tables_file`,
+        `names ${rel}, which does not exist; import a table-list file with \`semlayer scope --source ${source} --from-file <path> --write\`, or remove scope.tables_file`,
       );
       return;
     }
@@ -519,7 +519,7 @@ class Validator {
       if (typeof s.scope?.tables_file === "string") this.checkTablesFile(l.file, s.source, s.scope.tables_file);
       for (const x of intakeIssues(s, this.root)) this.issues.push({ level: x.level, file: l.file, path: x.path, message: x.message });
       if (s.connection?.env !== undefined && s.connection.env_prefix !== undefined) {
-        this.error(l.file, "connection", `has both env and env_prefix; a source names one variable that holds the URL or a prefix for the parts, not both: keep one (sl setup --source ${s.source} --dialect ${s.dialect} --env <VAR> or --env-prefix <PREFIX> writes it)`);
+        this.error(l.file, "connection", `has both env and env_prefix; a source names one variable that holds the URL or a prefix for the parts, not both: keep one (semlayer setup --source ${s.source} --dialect ${s.dialect} --env <VAR> or --env-prefix <PREFIX> writes it)`);
       }
       if (s.connection?.env_prefix !== undefined && s.dialect !== "postgres") this.warn(l.file, "connection.env_prefix", `is used only by postgres sources, not ${s.dialect}`);
       if (s.dialect !== "duckdb") {
@@ -572,7 +572,7 @@ class Validator {
   }
 
   // Errors when a physical column name (a join key or primary key entry) is not a column of the
-  // table: an exact match first, then a case-insensitive one, as sl check-join resolves keys.
+  // table: an exact match first, then a case-insensitive one, as semlayer check-join resolves keys.
   checkColumnName(file: string, path: string, name: string | undefined, table: SnapshotTable | undefined): void {
     if (!table || !table.columns.length || typeof name !== "string") return;
     if (table.columns.some((c) => c.name === name)) return;
@@ -830,20 +830,20 @@ class Validator {
           const src = this.sources.get(m.source)?.data;
           // Decision D2: an export source may approve a join, which carries this warning until a connection measures it.
           if (src && intakeMode(src) === "export") {
-            this.warn(f, p, `is approved without evidence, and source ${m.source} is a schema export, so its evidence waits on a connection: ${upgradeCommand(m.source, src.dialect)}, then \`sl check-join\``);
-          } else this.warn(f, p, "is approved without evidence; run `sl check-join`");
+            this.warn(f, p, `is approved without evidence, and source ${m.source} is a schema export, so its evidence waits on a connection: ${upgradeCommand(m.source, src.dialect)}, then \`semlayer check-join\``);
+          } else this.warn(f, p, "is approved without evidence; run `semlayer check-join`");
         }
         // Evidence measured for another target or other keys no longer describes the join; evidence
         // without them predates their recording and is taken as current.
         const staleTo = ev?.to !== undefined && ev.to !== j.to;
         const staleKeys = Array.isArray(ev?.keys) && keySignature(ev.keys) !== keySignature(j.keys);
         if (staleTo)
-          this.warn(f, `${p}.evidence.to`, `the evidence was measured for a join to ${ev!.to}, but the join now goes to ${j.to}; run \`sl check-join\` again`);
+          this.warn(f, `${p}.evidence.to`, `the evidence was measured for a join to ${ev!.to}, but the join now goes to ${j.to}; run \`semlayer check-join\` again`);
         if (staleKeys)
           this.warn(
             f,
             `${p}.evidence.keys`,
-            `the evidence was measured on keys ${describeKeys(ev!.keys!)}, but the join's keys are now ${describeKeys(j.keys)}; run \`sl check-join\` again`,
+            `the evidence was measured on keys ${describeKeys(ev!.keys!)}, but the join's keys are now ${describeKeys(j.keys)}; run \`semlayer check-join\` again`,
           );
         // An approved to-one join whose current evidence shows fan-out multiplies every measure a
         // request reaches through it, unless the owner recorded why the data may be trusted.
@@ -866,7 +866,7 @@ class Validator {
             f,
             `${p}.evidence`,
             `is approved as ${j.relationship}, but its evidence contradicts that: ${why.join(", and ")}, so the join fans out and multiplies ` +
-              `the measures of ${m.model}; fix the keys or the relationship and run sl check-join again, or record why the owner accepts the data ` +
+              `the measures of ${m.model}; fix the keys or the relationship and run semlayer check-join again, or record why the owner accepts the data ` +
               'in fanout_override: "<reason>"',
           );
         }
@@ -876,7 +876,7 @@ class Validator {
     }
   }
 
-  // The dialect a source file names, as sl approve reads it when it records an approval's hash.
+  // The dialect a source file names, as semlayer approve reads it when it records an approval's hash.
   sourceDialect(source: string): Dialect | undefined {
     const d = this.sources.get(source)?.data.dialect;
     return isDialect(d) ? d : undefined;
@@ -892,11 +892,11 @@ class Validator {
     return this.projectHashedCache;
   }
 
-  // The kind: reply lines of .sl/ledger.jsonl; checkLedger reports the lines it cannot read.
+  // The kind: reply lines of .semlayer/ledger.jsonl; checkLedger reports the lines it cannot read.
   repliesCache?: LedgerReply[];
   replies(): LedgerReply[] {
     if (this.repliesCache) return this.repliesCache;
-    const abs = join(this.root, ".sl", "ledger.jsonl");
+    const abs = join(this.root, ".semlayer", "ledger.jsonl");
     const text = this.overrides?.get(abs) ?? (existsSync(abs) && statSync(abs).isFile() ? readFileSync(abs, "utf8") : "");
     this.repliesCache = countedReplies(text).replies;
     return this.repliesCache;
@@ -906,7 +906,7 @@ class Validator {
   // when approved items carry no hash and no item of the project records one (approved before
   // content hashes), and on each approved item without a hash once other items record one, since
   // its hash may have been removed. Warns once per file, too, on approved items whose owner's latest
-  // reply in the ledger is not a yes to them as they stand (approved before sl approve required one).
+  // reply in the ledger is not a yes to them as they stand (approved before semlayer approve required one).
   checkApprovals(file: string, entries: ApprovalEntry[]): void {
     let unhashed = 0;
     const unanswered: string[] = [];
@@ -942,7 +942,7 @@ class Validator {
         path,
         `names the zone timestamps without a time zone are stored in, but column ${col.name} is ${col.type}, which carries its own; ` +
           `remove time_zone, and to count days in ${zone} write the expr as ${zonedExpr(d.expr as string, zone, rules.dialect)} ` +
-          "(without it, days are counted in UTC when sl runs the query)",
+          "(without it, days are counted in UTC when semlayer runs the query)",
       );
   }
 
@@ -963,7 +963,7 @@ class Validator {
     const used = new Set(referencedColumns(m, listed, rules.dialect, incoming));
     const elsewhere = layerReads(models, sourceRowFilters(this.access?.data, m.source)).filter((r) => r.model === m.model);
     ignored.forEach((c, i) => {
-      const back = `take it back in with sl ignore-column --source ${m.source} --model ${m.model} --column ${c} --remove`;
+      const back = `take it back in with semlayer ignore-column --source ${m.source} --model ${m.model} --column ${c} --remove`;
       const other = elsewhere.find((r) => r.column.toLowerCase() === c.toLowerCase());
       if (used.has(c))
         this.warn(
@@ -1714,7 +1714,7 @@ class Validator {
         this.warn(
           f,
           "sql",
-          `is now cross_check_sql: rename the key; until then it is read as cross_check_sql, a hand-written query that sl goldens check runs next to the request compiled from the YAML, and both must give expected.rows`,
+          `is now cross_check_sql: rename the key; until then it is read as cross_check_sql, a hand-written query that semlayer goldens check runs next to the request compiled from the YAML, and both must give expected.rows`,
         );
       if (crossKey && callsRound(g[crossKey]!, this.identRules(g.request.source).dialect))
         this.warn(
@@ -1722,7 +1722,7 @@ class Validator {
           crossKey,
           "calls round(); a golden's SQL applies the measure exactly as written; round() hides float noise, so remove it. " +
             "This warning never stands, whatever the golden's reference says; once round() is removed, " +
-            `sl goldens check --name ${g.name} fails on rows recorded rounded until the owner says yes to the unrounded figure and it is confirmed again`,
+            `semlayer goldens check --name ${g.name} fails on rows recorded rounded until the owner says yes to the unrounded figure and it is confirmed again`,
         );
 
       const req = g.request;
@@ -1741,7 +1741,7 @@ class Validator {
         if (problem) {
           // A draft golden may record the owner's figure before its field exists.
           if (problem.unknown && g.status !== "approved")
-            this.warn(f, path, `${problem.message}; a draft golden may name a field before it exists; add the field before confirming the golden, because sl validate errors on it once the golden is approved`);
+            this.warn(f, path, `${problem.message}; a draft golden may name a field before it exists; add the field before confirming the golden, because semlayer validate errors on it once the golden is approved`);
           else this.error(f, path, problem.message);
           return;
         }
@@ -1778,7 +1778,7 @@ class Validator {
           this.warn(
             f,
             path,
-            `an approved golden uses draft ${label}; approve it after its readback, then run sl goldens check --name ${g.name}; ` +
+            `an approved golden uses draft ${label}; approve it after its readback, then run semlayer goldens check --name ${g.name}; ` +
               "if it passes the recorded rows stand, and only changed rows need a new confirm",
           );
       this.checkGoldenAccess(l, roles);
@@ -1825,7 +1825,7 @@ class Validator {
 
   // Warns when a golden's cross_check_sql never names a column that a requested measure's expr or
   // filter reads (for a metric, each of its measures'): such SQL leaves out the measure's rule, and
-  // sl goldens check fails when it disagrees with the request compiled from the YAML.
+  // semlayer goldens check fails when it disagrees with the request compiled from the YAML.
   checkGoldenSqlRules(l: Loaded<Golden>): void {
     const g = l.data;
     const req = g.request;
@@ -1860,7 +1860,7 @@ class Validator {
         crossKey,
         `this hand-written SQL may not apply ${key}'s rule: it never names ${missing.join(", ")}, which the measure's ` +
           `${measure.filter ? "expr or filter" : "expr"} reads. Write the measure's expr and filter into the SQL as the model defines them, ` +
-          `then run sl goldens check --name ${g.name} and read any change back to the owner`,
+          `then run semlayer goldens check --name ${g.name} and read any change back to the owner`,
       );
     }
   }
@@ -1955,13 +1955,13 @@ class Validator {
       l.file,
       "confirmed_as",
       `the golden was confirmed as ${describeRunAs(g.confirmed_as)} but now runs as ${describeRunAs({ role: g.role, user: g.user })}; ` +
-        `run sl goldens check --name ${g.name}, read the change back and confirm again on the owner's yes`,
+        `run semlayer goldens check --name ${g.name}, read the change back and confirm again on the owner's yes`,
     );
   }
 
   // Warns when a snapshot holds sample values of a protected column (see protectedColumns in
   // lib/profile.ts): raw top values or a min or max of a column that is not a number or a date, or
-  // top values hashed by an earlier sl profile, which a list of likely values reverses.
+  // top values hashed by an earlier semlayer profile, which a list of likely values reverses.
   checkProtectedProfiles(): void {
     for (const [source, l] of this.snapshots) {
       const raw = arr<unknown>(l.data.tables);
@@ -1982,9 +1982,9 @@ class Validator {
             l.file,
             `tables[${i}].columns[${j}].profile`,
             held === "raw"
-              ? `${qualified(t)}.${c.name} is protected but the snapshot holds raw sample values; run sl profile --source ${source} --redact`
+              ? `${qualified(t)}.${c.name} is protected but the snapshot holds raw sample values; run semlayer profile --source ${source} --redact`
               : `${qualified(t)}.${c.name} is protected but the snapshot holds hashed top values, which a list of likely values reverses; ` +
-                  `run sl profile --source ${source} --redact to remove them`,
+                  `run semlayer profile --source ${source} --redact to remove them`,
           );
         });
       });
@@ -2092,7 +2092,7 @@ class Validator {
   // Errors on each env file under the root: a secret is never kept inside it.
   checkEnvFiles(): void {
     for (const file of envFilesInRoot(this.root)) {
-      this.error(file, "", `an env file inside the semantic root, where no secret is kept: move it to ${rootEnvFile(this.root)} (sl reads it there and keeps it out of version control), then run sl validate again`);
+      this.error(file, "", `an env file inside the semantic root, where no secret is kept: move it to ${rootEnvFile(this.root)} (semlayer reads it there and keeps it out of version control), then run semlayer validate again`);
     }
   }
 
@@ -2184,7 +2184,7 @@ function isBareColumn(expr: string, column: string): boolean {
 }
 
 // What sample values a protected column's profile still holds: raw (a top value that is not hashed,
-// or a min or max of a column that is not a number or a date), hashed (only values an earlier sl
+// or a min or max of a column that is not a number or a date), hashed (only values an earlier semlayer
 // profile stored hashed), or nothing (null). A profile keeps counts only, with min and max for
 // numbers and dates.
 export function heldValues(profile: unknown, type: string): "raw" | "hashed" | null {
@@ -2263,9 +2263,9 @@ export function unansweredMessage(refs: string[]): string {
   const shown = refs.slice(0, 3);
   const more = n > shown.length ? ` and ${n - shown.length} more` : "";
   return (
-    `${n} approved item${n === 1 ? " has" : "s have"} no recorded owner yes in .sl/ledger.jsonl that matches ${n === 1 ? "it" : "them"} as ${n === 1 ? "it stands" : "they stand"} ` +
-    `(approved before sl approve required one): ${shown.join(", ")}${more}; ${n === 1 ? "it stays" : "they stay"} approved. To record a yes, ` +
-    `read ${n === 1 ? "it" : "them"} back with sl readback --targets ${shown.join(",")}, then record the owner's answer with sl reply`
+    `${n} approved item${n === 1 ? " has" : "s have"} no recorded owner yes in .semlayer/ledger.jsonl that matches ${n === 1 ? "it" : "them"} as ${n === 1 ? "it stands" : "they stand"} ` +
+    `(approved before semlayer approve required one): ${shown.join(", ")}${more}; ${n === 1 ? "it stays" : "they stay"} approved. To record a yes, ` +
+    `read ${n === 1 ? "it" : "them"} back with semlayer readback --targets ${shown.join(",")}, then record the owner's answer with semlayer reply`
   );
 }
 
@@ -2273,9 +2273,9 @@ export function unansweredMessage(refs: string[]): string {
 // stands: its question, request, sql, role, user, tolerance and recorded rows.
 export function unconfirmedGoldenMessage(name: string): string {
   return (
-    `golden:${name} is confirmed, but no recorded owner yes in .sl/ledger.jsonl matches it as it stands (its question, request, cross_check_sql, ` +
-    "role, user, tolerance and expected rows; confirmed before sl goldens confirm required one, or edited since); it stays confirmed. " +
-    `To record a yes, read it back with sl readback --targets golden:${name}, record the owner's answer with sl reply, then run sl goldens confirm --name ${name}`
+    `golden:${name} is confirmed, but no recorded owner yes in .semlayer/ledger.jsonl matches it as it stands (its question, request, cross_check_sql, ` +
+    "role, user, tolerance and expected rows; confirmed before semlayer goldens confirm required one, or edited since); it stays confirmed. " +
+    `To record a yes, read it back with semlayer readback --targets golden:${name}, record the owner's answer with semlayer reply, then run semlayer goldens confirm --name ${name}`
   );
 }
 
@@ -2288,14 +2288,14 @@ export function validateProject(root: string, overrides?: ReadonlyMap<string, st
   return new Validator(root, overrides, removed).run();
 }
 
-// An error for each env file the connection lookup reads (lib/env-file.ts) that git tracks. sl
+// An error for each env file the connection lookup reads (lib/env-file.ts) that git tracks. semlayer
 // validate adds these; they depend on the environment and the working directory, not on the root alone.
 export function trackedEnvFileIssues(root: string, env: Env): Issue[] {
   return trackedEnvFiles(root, env).map((path) => ({
     level: "error" as const,
     file: relative(root, path).split("\\").join("/"),
     path: "",
-    message: `git tracks this env file, so the secrets in it are in the repository: run git -C ${dirname(path)} rm --cached ${basename(path)} and commit, have the owner rotate the credentials it held, then run sl validate again (sl setup keeps .env out of version control)`,
+    message: `git tracks this env file, so the secrets in it are in the repository: run git -C ${dirname(path)} rm --cached ${basename(path)} and commit, have the owner rotate the credentials it held, then run semlayer validate again (semlayer setup keeps .env out of version control)`,
   }));
 }
 

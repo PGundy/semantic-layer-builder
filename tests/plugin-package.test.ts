@@ -37,7 +37,7 @@ const COMPONENT_KEYS = ["skills", "commands", "agents", "outputStyles", "workflo
 const HOOK_TOOLS = ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "Read", "Grep"];
 const INTEGRITY = "skills/semantic-layer/scripts/hooks/integrity.ts";
 // The PreToolUse matcher of the MCP hook, and the names Claude Code gives the plugin server's tools.
-const MCP_MATCHER = "mcp__.*semantic-layer.*__sl_.*";
+const MCP_MATCHER = "mcp__.*semantic-layer.*__semlayer_.*";
 const MCP_TOOL = (tool: string) => `mcp__plugin_semantic-layer-builder_semantic-layer__${tool}`;
 const INSTALL = "bun install --frozen-lockfile --production";
 const PLUGIN_ID = `${String(entries[0]?.name)}@${String(market.name)}`;
@@ -177,8 +177,8 @@ describe("what Claude Code discovers", () => {
       expect(hookCommands().filter((h) => h.event === event).map((h) => [h.matcher, hookScript(h.command)])).toEqual([[`Bash|${MCP_MATCHER}`, INTEGRITY]]);
     }
     const matches = (name: string) => new RegExp(`^(?:${MCP_MATCHER})$`).test(name);
-    expect(matches(MCP_TOOL("sl_reply"))).toBe(true);
-    expect(matches("mcp__semantic-layer__sl_status")).toBe(true); // the server added by hand as docs/plugin.md shows
+    expect(matches(MCP_TOOL("semlayer_reply"))).toBe(true);
+    expect(matches("mcp__semantic-layer__semlayer_status")).toBe(true); // the server added by hand as docs/plugin.md shows
     for (const t of [...HOOK_TOOLS, "mcp__warehouse__query", "mcp__semantic-layer__other"]) expect(matches(t)).toBe(false);
     const start = hookFor("SessionStart");
     expect(start.matcher).toBeUndefined();
@@ -224,7 +224,7 @@ describe("the package's files", () => {
     // and redacted; the plugin loads none of them. CI's throwaway Postgres service is postgres:postgres.
     // Placeholders such as user:...@ are not credentials.
     const shipped = files.filter((f) => isText(f) && !/^(tests|evals|fixtures)\//.test(f));
-    for (const f of [".claude-plugin/plugin.json", "agents/sl-interviewer.md", ".github/workflows/ci.yml", "scripts/verify.sh"]) expect(shipped).toContain(f);
+    for (const f of [".claude-plugin/plugin.json", "agents/semlayer-interviewer.md", ".github/workflows/ci.yml", "scripts/verify.sh"]) expect(shipped).toContain(f);
     expect(shipped.some((f) => /^examples\/[^/]+\/semantic\/sources\/[^/]+\.yaml$/.test(f))).toBe(true);
     const tokens = /AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\bgh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}|\bxox[abprs]-[A-Za-z0-9-]{10,}/;
     const urlCredential = /[a-z][a-z0-9+.-]*:\/\/([^\s/'"`@:]+):([^\s/'"`@]+)@/g;
@@ -262,7 +262,7 @@ describe("the docs", () => {
   test("name every agent the plugin ships, and only those", () => {
     const agents = Object.values(ROLES).map((r) => r.agent);
     for (const [name, body] of docs) {
-      const named = new Set([...body.matchAll(/\bsl-[a-z]+(?:-[a-z]+)*/g)].map((m) => m[0]));
+      const named = new Set([...body.matchAll(/\bsemlayer-[a-z]+(?:-[a-z]+)*/g)].map((m) => m[0]));
       for (const a of agents) expect(`${name}: ${named.has(a)}`).toBe(`${name}: true`);
       for (const a of named) expect(agents).toContain(a);
     }
@@ -326,7 +326,7 @@ describe("an installed copy of the plugin", () => {
   test("before the install, SessionStart names the exact install command and exits 0", () => {
     const text = message(sessionStart());
     expect(text).toContain(`Run: ${installCommand()}`);
-    expect(text).toContain(`bun '${join(copy, "skills", "semantic-layer", "scripts", "sl.ts")}' --help`);
+    expect(text).toContain(`bun '${join(copy, "skills", "semantic-layer", "scripts", "semlayer.ts")}' --help`);
     expect(text).toContain("again after each plugin update");
   });
 
@@ -352,15 +352,15 @@ describe("an installed copy of the plugin", () => {
     expect(r.exitCode).toBe(0);
     const after = sessionStart();
     expect(after).toEqual({ code: 0, out: "", err: "" });
-    const help = Bun.spawnSync(["bun", join(copy, "skills", "semantic-layer", "scripts", "sl.ts"), "--help"], { cwd: project });
+    const help = Bun.spawnSync(["bun", join(copy, "skills", "semantic-layer", "scripts", "semlayer.ts"), "--help"], { cwd: project });
     expect(help.exitCode).toBe(0);
-    expect(help.stdout.toString()).toContain("Usage: sl <command>");
+    expect(help.stdout.toString()).toContain("Usage: semlayer <command>");
   }, 180_000);
 
   test("its PreToolUse hook refuses a write to the ledger and allows a file outside any semantic root", () => {
     const pre = hookFor("PreToolUse").command;
     const call = (file: string) => JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: file, content: "{}\n" }, cwd: project });
-    const refused = runHook(pre, call(join(project, "semantic", ".sl", "ledger.jsonl")));
+    const refused = runHook(pre, call(join(project, "semantic", ".semlayer", "ledger.jsonl")));
     expect(refused.code).toBe(2);
     expect(refused.err).toContain("ledger");
     const allowed = runHook(pre, call(join(project, "notes.txt")));
@@ -379,14 +379,14 @@ describe("an installed copy of the plugin", () => {
     const send = (m: Json) => server.stdin.write(`${JSON.stringify(m)}\n`);
     send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "plugin-test", version: "1" } } });
     send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-    send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "sl_run", arguments: { source: "x", sql: "select 1", "show-protected": true } } });
+    send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "semlayer_run", arguments: { source: "x", sql: "select 1", "show-protected": true } } });
     await server.stdin.end();
     const out = await new Response(server.stdout).text();
     expect(await server.exited).toBe(0);
     const byId = new Map((out.trim().split("\n").map((l) => JSON.parse(l)) as Json[]).map((m) => [m.id, m]));
     expect(String((byId.get(1)!.result as Json).instructions)).toContain(join(project, "semantic"));
     const tools = (byId.get(2)!.result as Json).tools as Json[];
-    expect(tools.map((t) => t.name)).toContain("sl_approve");
+    expect(tools.map((t) => t.name)).toContain("semlayer_approve");
     for (const t of tools) expect(Object.keys((t.inputSchema as Json).properties as Json)).not.toContain("show-protected");
     expect(String((byId.get(3)!.error as Json).message)).toContain("invariant 3");
     expect(await new Response(server.stderr).text()).toContain("as the interviewer");
@@ -397,12 +397,12 @@ describe("an installed copy of the plugin", () => {
     const call = (tool: string, agent?: string, input: Json = {}) =>
       JSON.stringify({ hook_event_name: "PreToolUse", tool_name: MCP_TOOL(tool), tool_input: input, cwd: project, ...(agent ? { agent_type: agent } : {}) });
     const runner = `${String(plugin.name)}:${ROLES.connector_runner.agent}`;
-    const refused = runHook(mcpHook, call("sl_reply", runner, { readback: "rb", item: "1", verdict: "yes" }));
+    const refused = runHook(mcpHook, call("semlayer_reply", runner, { readback: "rb", item: "1", verdict: "yes" }));
     expect(refused.code).toBe(2);
     expect(refused.err).toContain("only the interviewer");
-    expect(runHook(mcpHook, call("sl_results", runner, { positionals: ["status"], plan: "abc" })).code).toBe(0);
-    expect(runHook(mcpHook, call("sl_reply", `${String(plugin.name)}:${ROLES.interviewer.agent}`))).toEqual({ code: 0, out: "", err: "" });
-    expect(runHook(mcpHook, call("sl_run", undefined, { show_protected: true })).code).toBe(2);
+    expect(runHook(mcpHook, call("semlayer_results", runner, { positionals: ["status"], plan: "abc" })).code).toBe(0);
+    expect(runHook(mcpHook, call("semlayer_reply", `${String(plugin.name)}:${ROLES.interviewer.agent}`))).toEqual({ code: 0, out: "", err: "" });
+    expect(runHook(mcpHook, call("semlayer_run", undefined, { show_protected: true })).code).toBe(2);
   }, 30_000);
 
   test("the MCP server the docs name starts from it and answers initialize, tools/list and a call", async () => {
@@ -416,7 +416,7 @@ describe("an installed copy of the plugin", () => {
     send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "plugin-test", version: "1" } } });
     send({ jsonrpc: "2.0", method: "notifications/initialized" });
     send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-    send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "sl_status", arguments: {} } });
+    send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "semlayer_status", arguments: {} } });
     await server.stdin.end();
     const out = await new Response(server.stdout).text();
     expect(await server.exited).toBe(0);
@@ -424,7 +424,7 @@ describe("an installed copy of the plugin", () => {
     const init = byId.get(1)!;
     expect(init.protocolVersion).toBe("2025-06-18");
     expect((init.serverInfo as Json).version).toBe(plugin.version);
-    expect((byId.get(2)!.tools as Json[]).map((t) => t.name)).toContain("sl_status");
+    expect((byId.get(2)!.tools as Json[]).map((t) => t.name)).toContain("semlayer_status");
     const status = byId.get(3)!;
     expect(status.isError).not.toBe(true);
     expect(JSON.parse(String(((status.content as Json[])[0] as Json).text))).toBeTruthy();

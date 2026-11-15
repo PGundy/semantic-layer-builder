@@ -37,7 +37,7 @@ export interface ListEntry {
   pattern: string;
 }
 
-const NEXT = "Fix the pattern and run the command again; sl validate lists every pattern problem in the project.";
+const NEXT = "Fix the pattern and run the command again; semlayer validate lists every pattern problem in the project.";
 
 function shown(pattern: string): string {
   return pattern.length > 80 ? `${pattern.slice(0, 77)}...` : pattern;

@@ -2,7 +2,7 @@
 // in the selection grammar (patterns.ts) turned into a predicate on a schema export query's
 // table names, per dialect. A pattern is pushed into the SQL only when the SQL means exactly
 // what the grammar means (for every name but the two kinds spec Table filters lists); any
-// other is deferred to sl import (decision D4), so the export reads a wider set of table
+// other is deferred to semlayer import (decision D4), so the export reads a wider set of table
 // definitions and never a different one. Every pattern value is written as a SQL string
 // literal, escaped for the dialect, never spliced in raw.
 import type { OptionValues } from "./command.ts";
@@ -415,7 +415,7 @@ function compile(dialect: FilterDialect, pattern: string): Compiled {
 // ---- The filter for a query ----
 
 // Repeated pattern flags; a value may hold several globs separated by commas, and a re:
-// pattern is taken whole, as sl scope reads them.
+// pattern is taken whole, as semlayer scope reads them.
 export function patternFlags(values: OptionValues, key: string): string[] {
   const v = values[key];
   const raw = Array.isArray(v) ? (v as unknown[]).map(String) : typeof v === "string" ? [v] : [];
@@ -428,11 +428,11 @@ export interface AppliedFilter extends TableFilter {
   sql: string;
 }
 
-const TABLE_FILTER_LINE = /^([ \t]*)-- sl:table-filter\b.*$/m;
+const TABLE_FILTER_LINE = /^([ \t]*)-- semlayer:table-filter\b.*$/m;
 
 // Writes the include and exclude patterns into a dialect's export query at its
-// sl:table-filter line, and lists what was pushed and deferred in a header comment.
-// `importCommand` is the sl import line the header names for deferred patterns.
+// semlayer:table-filter line, and lists what was pushed and deferred in a header comment.
+// `importCommand` is the semlayer import line the header names for deferred patterns.
 export function applyTableFilter(dialect: FilterDialect, sql: string, include: string[], exclude: string[], importCommand: string): AppliedFilter {
   const pushed: PushedFilter[] = [];
   const deferred: DeferredFilter[] = [];
@@ -466,7 +466,7 @@ export function applyTableFilter(dialect: FilterDialect, sql: string, include: s
   let out = sql;
   const m = TABLE_FILTER_LINE.exec(sql);
   if ((inc.length || exc.length) && !m) {
-    throw new UserError(`references/exports/${dialect}.sql has lost its sl:table-filter line; restore the file and run sl export-sql again.`);
+    throw new UserError(`references/exports/${dialect}.sql has lost its semlayer:table-filter line; restore the file and run semlayer export-sql again.`);
   }
   if (m && (inc.length || exc.length)) {
     const [line, indent] = m;
@@ -477,7 +477,7 @@ export function applyTableFilter(dialect: FilterDialect, sql: string, include: s
       [exc, "not (", "exclude"],
     ] as const) {
       if (!conds.length) continue;
-      lines.push(`${indent}${lead} ${open}  -- sl:table-filter: ${label}`, ...conds.map((c, i) => `${indent}  ${i ? "or " : ""}${c}`), `${indent})`);
+      lines.push(`${indent}${lead} ${open}  -- semlayer:table-filter: ${label}`, ...conds.map((c, i) => `${indent}  ${i ? "or " : ""}${c}`), `${indent})`);
       lead = "and";
     }
     out = sql.replace(line, () => lines.join("\n"));
@@ -486,13 +486,13 @@ export function applyTableFilter(dialect: FilterDialect, sql: string, include: s
 }
 
 function filterHeader(dialect: FilterDialect, pushed: PushedFilter[], deferred: DeferredFilter[], importCommand: string): string[] {
-  const lines = ["--", "-- Table filter (sl export-sql --include/--exclude). The query reads table definitions only, never table data."];
+  const lines = ["--", "-- Table filter (semlayer export-sql --include/--exclude). The query reads table definitions only, never table data."];
   if (pushed.length) {
-    lines.push("-- In this query, at the lines marked sl:table-filter:");
+    lines.push("-- In this query, at the lines marked semlayer:table-filter:");
     for (const p of pushed) lines.push(`--   ${p.kind} ${p.pattern}`);
   }
   if (deferred.length) {
-    lines.push(`-- Left out of this query, so it reads more table definitions; sl import applies them (${dialect}):`);
+    lines.push(`-- Left out of this query, so it reads more table definitions; semlayer import applies them (${dialect}):`);
     for (const p of deferred) lines.push(`--   ${p.kind} ${p.pattern}: ${p.reason}`);
     lines.push(`-- Import with: ${importCommand} ${importFlags(deferred)}`);
   }

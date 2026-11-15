@@ -12,10 +12,10 @@ const spec: CommandSpec = {
   writes: "whole",
   async run({ positionals }, ctx) {
     loadProject(ctx.root);
-    if (positionals.length !== 1) throw new UserError("Usage: sl remove-attribute <name>.");
+    if (positionals.length !== 1) throw new UserError("Usage: semlayer remove-attribute <name>.");
     const o = removeEntry(ctx.root, "attribute", positionals[0]);
     if (ctx.json) ctx.out(formatJson({ ...o, attribute: o.name }));
-    else ctx.out([`Removed user attribute ${o.name} from ${o.file}.`, ...accessEditLines(o, `sl access shows what people see; ${READBACK_NEXT}`)].join("\n"));
+    else ctx.out([`Removed user attribute ${o.name} from ${o.file}.`, ...accessEditLines(o, `semlayer access shows what people see; ${READBACK_NEXT}`)].join("\n"));
     return 0;
   },
 };

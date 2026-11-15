@@ -31,17 +31,17 @@ const spec: CommandSpec = {
     ignorePlans(ctx.root);
     ignoreEnvFiles(ctx.root);
     if (ctx.json) ctx.out(JSON.stringify({ root: ctx.root, project }));
-    else ctx.out(`Created ${p.project}. Next: sl add-source --name <source> --dialect <dialect>.`);
+    else ctx.out(`Created ${p.project}. Next: semlayer add-source --name <source> --dialect <dialect>.`);
     return 0;
   },
 };
-// Query plans and their results (.sl/plans/), the lock a writing command holds (.sl/lock and
-// .sl/lock.takeover) and a whole-file write's temp file (*.sl-tmp) are working files, never committed: init adds them to the root's .gitignore, appending to one that exists.
-const PLANS_IGNORE = ".sl/plans/";
+// Query plans and their results (.semlayer/plans/), the lock a writing command holds (.semlayer/lock and
+// .semlayer/lock.takeover) and a whole-file write's temp file (*.semlayer-tmp) are working files, never committed: init adds them to the root's .gitignore, appending to one that exists.
+const PLANS_IGNORE = ".semlayer/plans/";
 function ignorePlans(root: string): void {
   const file = join(root, ".gitignore");
   if (!existsSync(file)) {
-    writeFileSync(file, `# Query plans and their results, written by --emit-sql and sl results add.\n${PLANS_IGNORE}\n`);
+    writeFileSync(file, `# Query plans and their results, written by --emit-sql and semlayer results add.\n${PLANS_IGNORE}\n`);
     return ignoreLock(root);
   }
   const text = readFileSync(file, "utf8");

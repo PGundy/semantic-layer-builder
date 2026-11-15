@@ -53,7 +53,7 @@ function resolveTable(snapshot: Snapshot | null, model: Model, keyColumns: strin
   if (!table) {
     throw new UserError(
       `Model "${model.model}" reads table "${model.table}", which is not in the snapshot for "${snapshot.source}". ` +
-        `Run \`sl introspect --source ${snapshot.source}\` or fix the model's table.`,
+        `Run \`semlayer introspect --source ${snapshot.source}\` or fix the model's table.`,
     );
   }
   if (!table.columns.length) return { ref: { schema: table.schema, name: table.name }, columns: keyColumns };
@@ -281,7 +281,7 @@ const spec: CommandSpec = {
           `Skipped ${refused.length} join${refused.length === 1 ? "" : "s"} the database did not answer for${answered.length ? "; the others are checked" : ""}:`,
           ...refused.map((r) => `  ${r.model}.${r.join}: ${r.reason}`),
           `Next: fix what each reason names (ask the database's owner for SELECT on both tables and USAGE on their schemas, or raise the timeout), then check each again: ` +
-            `sl check-join --source ${sourceName} --model ${refused[0]!.model} --join ${refused[0]!.join}.`,
+            `semlayer check-join --source ${sourceName} --model ${refused[0]!.model} --join ${refused[0]!.join}.`,
         );
       }
       tail.push(

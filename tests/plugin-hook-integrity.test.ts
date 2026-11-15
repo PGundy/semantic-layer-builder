@@ -5,17 +5,17 @@ import { basename, join } from "node:path";
 import { checkToolUse } from "../skills/semantic-layer/scripts/hooks/guard-edits.ts";
 import { envFileRefusal, runAfter, runBefore, type Outcome } from "../skills/semantic-layer/scripts/hooks/integrity.ts";
 import { runCli } from "../skills/semantic-layer/scripts/lib/cli.ts";
-import { initProject, sl, tempDir } from "./helpers.ts";
+import { initProject, semlayer, tempDir } from "./helpers.ts";
 
 // The answer ledger's before-and-after comparison and the env file refusals (docs/PRD-hardening.md
 // HR-6; spec: Hand edits). A project is a temp directory holding semantic/, and each test gives the
 // hook a state directory of its own.
 
 const REPO = join(import.meta.dir, "..");
-const SL = join(REPO, "skills", "semantic-layer", "scripts", "sl.ts");
-const UNDONE = "A command changed the answer ledger outside sl, and the change was undone. An owner's answer is recorded only with sl reply, after the owner answers.";
-const LEFT = "could not be attributed and was left as it is. Run sl validate";
-const SECRET = "This file holds the connection secret. sl reads it itself, and you never need its contents. To check the connection, run sl setup --source <s>.";
+const SEMLAYER = join(REPO, "skills", "semantic-layer", "scripts", "semlayer.ts");
+const UNDONE = "A command changed the answer ledger outside semlayer, and the change was undone. An owner's answer is recorded only with semlayer reply, after the owner answers.";
+const LEFT = "could not be attributed and was left as it is. Run semlayer validate";
+const SECRET = "This file holds the connection secret. semlayer reads it itself, and you never need its contents. To check the connection, run semlayer setup --source <s>.";
 
 const ORDERS = `model: orders
 source: wh
@@ -45,7 +45,7 @@ async function project(): Promise<Project> {
   await initProject(root);
   mkdirSync(join(root, "models", "wh"), { recursive: true });
   writeFileSync(join(root, "models", "wh", "orders.yaml"), ORDERS);
-  return { dir, root, state: join(tempDir("integrity-state"), "ledger-guard"), ledger: join(root, ".sl", "ledger.jsonl"), pending: join(root, ".sl", "pending") };
+  return { dir, root, state: join(tempDir("integrity-state"), "ledger-guard"), ledger: join(root, ".semlayer", "ledger.jsonl"), pending: join(root, ".semlayer", "pending") };
 }
 
 const read = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : null);
@@ -53,21 +53,21 @@ const stateEntries = (p: Project) => (existsSync(p.state) ? readdirSync(p.state)
 
 // Reads revenue back and returns the readback id; with `reply`, records the owner's yes.
 async function readback(p: Project, reply = false): Promise<string> {
-  const rb = await sl(p.root, ["readback", "--targets", "wh.orders.revenue", "--json"]);
+  const rb = await semlayer(p.root, ["readback", "--targets", "wh.orders.revenue", "--json"]);
   expect(rb.code).toBe(0);
   const id = rb.json<{ readback_id: string }>().readback_id;
-  if (reply) expect((await sl(p.root, replyArgs(id))).code).toBe(0);
+  if (reply) expect((await semlayer(p.root, replyArgs(id))).code).toBe(0);
   return id;
 }
 const replyArgs = (id: string) => ["reply", "--readback", id, "--item", "1", "--text", "Yes, that is revenue.", "--verdict", "yes", "--by", "Dana"];
-const replyCommand = (p: Project, id: string) => `bun ${SL} ${replyArgs(id).map((a) => JSON.stringify(a)).join(" ")} --root ${p.root}`;
+const replyCommand = (p: Project, id: string) => `bun ${SEMLAYER} ${replyArgs(id).map((a) => JSON.stringify(a)).join(" ")} --root ${p.root}`;
 
-// The ledger line sl reply writes for the owner's yes to a readback, made in a copy of the project.
+// The ledger line semlayer reply writes for the owner's yes to a readback, made in a copy of the project.
 async function yesLine(p: Project, id: string): Promise<string> {
   const twin = tempDir("integrity-twin");
   cpSync(p.dir, twin, { recursive: true });
-  expect((await sl(join(twin, "semantic"), replyArgs(id))).code).toBe(0);
-  return readFileSync(join(twin, "semantic", ".sl", "ledger.jsonl"), "utf8");
+  expect((await semlayer(join(twin, "semantic"), replyArgs(id))).code).toBe(0);
+  return readFileSync(join(twin, "semantic", ".semlayer", "ledger.jsonl"), "utf8");
 }
 
 let calls = 0;
@@ -103,26 +103,26 @@ function around(p: Project, command: string, write: () => void, o: CallOptions =
   return after(p, call, o.now === undefined ? undefined : o.now + 1);
 }
 
-const PYTHON = "python3 -c \"open('semantic/.sl/ledger.jsonl','a').write(open('forged.jsonl').read())\"";
+const PYTHON = "python3 -c \"open('semantic/.semlayer/ledger.jsonl','a').write(open('forged.jsonl').read())\"";
 // The write the command above makes, by python3 when the machine has one.
 function forge(p: Project, line: string): void {
   writeFileSync(join(p.dir, "forged.jsonl"), line);
-  mkdirSync(join(p.root, ".sl"), { recursive: true });
+  mkdirSync(join(p.root, ".semlayer"), { recursive: true });
   if (Bun.which("python3")) expect(Bun.spawnSync(["sh", "-c", PYTHON], { cwd: p.dir }).exitCode).toBe(0);
   else appendFileSync(p.ledger, line);
 }
 
-describe("a change to the ledger that sl did not make", () => {
-  test("a yes forged with python3 -c passes the checks before the call, is undone after it, and sl approve then refuses", async () => {
+describe("a change to the ledger that semlayer did not make", () => {
+  test("a yes forged with python3 -c passes the checks before the call, is undone after it, and semlayer approve then refuses", async () => {
     const p = await project();
     const id = await readback(p);
     const line = await yesLine(p, id);
-    // The gap: the hook's checks on the command let it through, and sl approve accepts the line.
+    // The gap: the hook's checks on the command let it through, and semlayer approve accepts the line.
     expect(checkToolUse(JSON.stringify({ tool_name: "Bash", cwd: p.dir, tool_input: { command: PYTHON } }))).toEqual({ allow: true });
     const twin = tempDir("integrity-gap");
     cpSync(p.dir, twin, { recursive: true });
-    forge({ ...p, dir: twin, root: join(twin, "semantic"), ledger: join(twin, "semantic", ".sl", "ledger.jsonl") }, line);
-    expect((await sl(join(twin, "semantic"), ["approve", "--target", "wh.orders.revenue", "--by", "Dana"])).code).toBe(0);
+    forge({ ...p, dir: twin, root: join(twin, "semantic"), ledger: join(twin, "semantic", ".semlayer", "ledger.jsonl") }, line);
+    expect((await semlayer(join(twin, "semantic"), ["approve", "--target", "wh.orders.revenue", "--by", "Dana"])).code).toBe(0);
 
     const out = around(p, PYTHON, () => {
       forge(p, line);
@@ -130,9 +130,9 @@ describe("a change to the ledger that sl did not make", () => {
     });
     expect(out.block).toBe(true);
     expect(out.message).toContain(UNDONE);
-    expect(out.message).toContain(`- in ${p.root}: .sl/ledger.jsonl (added, now removed)`);
+    expect(out.message).toContain(`- in ${p.root}: .semlayer/ledger.jsonl (added, now removed)`);
     expect(existsSync(p.ledger)).toBe(false);
-    const approve = await sl(p.root, ["approve", "--target", "wh.orders.revenue", "--by", "Dana"]);
+    const approve = await semlayer(p.root, ["approve", "--target", "wh.orders.revenue", "--by", "Dana"]);
     expect(approve.code).toBe(1);
     expect(approve.err).toContain("no owner reply to its readback is recorded; nothing was approved");
     expect(readFileSync(join(p.root, "models", "wh", "orders.yaml"), "utf8")).toBe(ORDERS);
@@ -151,13 +151,13 @@ describe("a change to the ledger that sl did not make", () => {
     });
     expect(out.block).toBe(true);
     expect(out.message).toContain(UNDONE);
-    expect(out.message).toContain(`.sl/ledger.jsonl (changed, now restored), .sl/pending/${id}.json (changed, now restored), .sl/pending/rb_9999.json (added, now removed)`);
+    expect(out.message).toContain(`.semlayer/ledger.jsonl (changed, now restored), .semlayer/pending/${id}.json (changed, now restored), .semlayer/pending/rb_9999.json (added, now removed)`);
     expect(read(p.ledger)).toBe(ledger);
     expect(read(join(p.pending, `${id}.json`))).toBe(rb);
     expect(readdirSync(p.pending)).toEqual([`${id}.json`]);
 
-    // A deleted ledger, a deleted pending directory and a deleted .sl come back too.
-    for (const gone of [p.ledger, p.pending, join(p.root, ".sl")]) {
+    // A deleted ledger, a deleted pending directory and a deleted .semlayer come back too.
+    for (const gone of [p.ledger, p.pending, join(p.root, ".semlayer")]) {
       expect(around(p, "node rewrite.js", () => rmSync(gone, { recursive: true })).message).toContain("now restored");
       expect(read(p.ledger)).toBe(ledger);
       expect(read(join(p.pending, `${id}.json`))).toBe(rb);
@@ -190,65 +190,65 @@ describe("a change to the ledger that sl did not make", () => {
     const ledger = read(p.ledger)!;
     const hard = join(p.dir, "hard");
     // The checks on the command see no write to the ledger in either call.
-    for (const command of ["ln semantic/.sl/ledger.jsonl hard", `bun ${SL} status --root ${p.root}; cat forged.jsonl >> hard`])
+    for (const command of ["ln semantic/.semlayer/ledger.jsonl hard", `bun ${SEMLAYER} status --root ${p.root}; cat forged.jsonl >> hard`])
       expect(checkToolUse(JSON.stringify({ tool_name: "Bash", cwd: p.dir, tool_input: { command } }))).toEqual({ allow: true });
-    const out = around(p, "ln semantic/.sl/ledger.jsonl hard", () => {
+    const out = around(p, "ln semantic/.semlayer/ledger.jsonl hard", () => {
       linkSync(p.ledger, hard);
       linkSync(join(p.pending, `${id}.json`), join(p.dir, "hard-readback"));
     });
     expect(out.block).toBe(true);
     expect(out.message).toContain(UNDONE);
-    expect(out.message).toContain(`.sl/ledger.jsonl (given a second name, now a file of its own again), .sl/pending/${id}.json (given a second name, now a file of its own again)`);
+    expect(out.message).toContain(`.semlayer/ledger.jsonl (given a second name, now a file of its own again), .semlayer/pending/${id}.json (given a second name, now a file of its own again)`);
     expect(read(p.ledger)).toBe(ledger);
     expect(statSync(p.ledger).nlink).toBe(1);
     expect(statSync(join(p.pending, `${id}.json`)).nlink).toBe(1);
-    // The next call is a plain sl command joined to a redirection, which gets no copy.
+    // The next call is a plain semlayer command joined to a redirection, which gets no copy.
     const forged = '{"id":"ans_0009","kind":"reply","verdict":"yes"}\n';
-    const call = payload(p, `bun ${SL} status --root ${p.root}; cat forged.jsonl >> hard`);
+    const call = payload(p, `bun ${SEMLAYER} status --root ${p.root}; cat forged.jsonl >> hard`);
     expect(before(p, call)).toEqual({ block: false });
-    expect(stateEntries(p)).toEqual(["sl"]);
+    expect(stateEntries(p)).toEqual(["semlayer"]);
     appendFileSync(hard, forged);
     appendFileSync(join(p.dir, "hard-readback"), "forged");
     expect(after(p, call)).toEqual({ block: false });
     expect(read(hard)).toBe(ledger + forged);
     expect(read(p.ledger)).toBe(ledger);
     expect(read(join(p.pending, `${id}.json`))).not.toContain("forged");
-    // While sl runs at the same time the link is left with the rest, and reported.
-    expect(before(p, payload(p, `bun ${SL} status`, { agent: "other" }), 1000)).toEqual({ block: false });
-    const left = around(p, "ln semantic/.sl/ledger.jsonl again", () => linkSync(p.ledger, join(p.dir, "again")), { now: 1100 });
+    // While semlayer runs at the same time the link is left with the rest, and reported.
+    expect(before(p, payload(p, `bun ${SEMLAYER} status`, { agent: "other" }), 1000)).toEqual({ block: false });
+    const left = around(p, "ln semantic/.semlayer/ledger.jsonl again", () => linkSync(p.ledger, join(p.dir, "again")), { now: 1100 });
     expect(left.message).toContain(LEFT);
-    expect(left.message).toContain(".sl/ledger.jsonl (linked)");
+    expect(left.message).toContain(".semlayer/ledger.jsonl (linked)");
   });
 
-  test("when the call also ran sl or git, the report says what sl left behind and how to record the answer again", async () => {
+  test("when the call also ran semlayer or git, the report says what semlayer left behind and how to record the answer again", async () => {
     const p = await project();
     const ask = ["question", "add", "wh.orders", "--text", "Is revenue net of refunds?"];
     const resolveArgs = ["question", "resolve", "wh.orders", "--index", "1", "--text", "Net of refunds.", "--by", "Dana"];
-    expect((await sl(p.root, ask)).code).toBe(0);
+    expect((await semlayer(p.root, ask)).code).toBe(0);
     const asked = read(join(p.root, "models", "wh", "orders.yaml"))!;
-    // sl question resolve piped to sed: sed is not on the list of commands that write no file, so the call is compared.
-    const call = payload(p, `bun ${SL} ${resolveArgs.map((a) => JSON.stringify(a)).join(" ")} --root ${p.root} | sed -n '1,5p'`);
+    // semlayer question resolve piped to sed: sed is not on the list of commands that write no file, so the call is compared.
+    const call = payload(p, `bun ${SEMLAYER} ${resolveArgs.map((a) => JSON.stringify(a)).join(" ")} --root ${p.root} | sed -n '1,5p'`);
     expect(before(p, call)).toEqual({ block: false });
     expect(stateEntries(p)).toEqual(["snap"]);
-    expect((await sl(p.root, resolveArgs)).code).toBe(0);
+    expect((await semlayer(p.root, resolveArgs)).code).toBe(0);
     const out = after(p, call);
     expect(out.block).toBe(true);
     expect(out.message).toContain(UNDONE);
-    expect(out.message).toContain("- This call also ran sl");
+    expect(out.message).toContain("- This call also ran semlayer");
     expect(out.message).toContain("a layer file it edited was not put back");
-    expect(out.message).toContain("sl reply, sl question resolve and sl review apply record an owner's answer");
-    expect(out.message).toContain("add it again first with sl question add");
+    expect(out.message).toContain("semlayer reply, semlayer question resolve and semlayer review apply record an owner's answer");
+    expect(out.message).toContain("add it again first with semlayer question add");
     expect(out.message).not.toContain("also ran git");
     // The answer is gone and so is the question; the report's steps record it again.
     expect(existsSync(p.ledger)).toBe(false);
     expect(read(join(p.root, "models", "wh", "orders.yaml"))).toBe(ORDERS);
-    expect((await sl(p.root, resolveArgs)).err).toContain("has no open questions; nothing to resolve");
-    expect((await sl(p.root, ask)).code).toBe(0);
+    expect((await semlayer(p.root, resolveArgs)).err).toContain("has no open questions; nothing to resolve");
+    expect((await semlayer(p.root, ask)).code).toBe(0);
     expect(read(join(p.root, "models", "wh", "orders.yaml"))).toBe(asked);
-    const again = payload(p, `bun ${SL} ${resolveArgs.map((a) => JSON.stringify(a)).join(" ")} --root ${p.root}`);
+    const again = payload(p, `bun ${SEMLAYER} ${resolveArgs.map((a) => JSON.stringify(a)).join(" ")} --root ${p.root}`);
     expect(before(p, again)).toEqual({ block: false });
-    expect(stateEntries(p)).toEqual(["sl"]);
-    expect((await sl(p.root, resolveArgs)).code).toBe(0);
+    expect(stateEntries(p)).toEqual(["semlayer"]);
+    expect((await semlayer(p.root, resolveArgs)).code).toBe(0);
     expect(after(p, again)).toEqual({ block: false });
     expect(read(p.ledger)).toContain("Net of refunds.");
     const ledger = read(p.ledger)!;
@@ -258,19 +258,19 @@ describe("a change to the ledger that sl did not make", () => {
     expect(pulled.message).toContain(UNDONE);
     expect(pulled.message).toContain("- This call also ran git.");
     expect(pulled.message).toContain("git checkout -- <file> for each file listed above");
-    expect(pulled.message).not.toContain("also ran sl");
+    expect(pulled.message).not.toContain("also ran semlayer");
     // git with no commit-moving command, and a command that names neither: no such advice.
     for (const command of ["git status && python3 forge.py", "node rewrite.js"]) {
       const plain = around(p, command, () => appendFileSync(p.ledger, "forged\n"));
       expect(plain.message).toContain(UNDONE);
       expect(plain.message).not.toContain("This call also ran");
-      expect(plain.message).toContain("- sl reply, sl question resolve and sl review apply record an owner's answer. If one of them made that change (run through a script or a variable), run it again on its own");
+      expect(plain.message).toContain("- semlayer reply, semlayer question resolve and semlayer review apply record an owner's answer. If one of them made that change (run through a script or a variable), run it again on its own");
     }
     expect(read(p.ledger)).toBe(ledger);
     // The call that was never checked carries the same advice to the next before-call.
-    expect(before(p, payload(p, `SL="bun ${SL}"; $SL reply --readback rb_0001 --item 1 --verdict yes; exit 1`))).toEqual({ block: false });
+    expect(before(p, payload(p, `SEMLAYER="bun ${SEMLAYER}"; $SEMLAYER reply --readback rb_0001 --item 1 --verdict yes; exit 1`))).toEqual({ block: false });
     appendFileSync(p.ledger, "forged\n");
-    expect(before(p, payload(p, "ls")).message).toContain("- This call also ran sl");
+    expect(before(p, payload(p, "ls")).message).toContain("- This call also ran semlayer");
     expect(read(p.ledger)).toBe(ledger);
   });
 
@@ -287,70 +287,70 @@ describe("a change to the ledger that sl did not make", () => {
   });
 });
 
-describe("what sl and git write is kept", () => {
-  test("sl reply followed by a read-only command keeps the reply", async () => {
+describe("what semlayer and git write is kept", () => {
+  test("semlayer reply followed by a read-only command keeps the reply", async () => {
     const p = await project();
     const id = await readback(p);
     let ran = 0;
     const reply = payload(p, replyCommand(p, id));
     expect(before(p, reply)).toEqual({ block: false });
-    expect(stateEntries(p)).toEqual(["sl"]);
-    expect((await sl(p.root, replyArgs(id))).code).toBe(0);
+    expect(stateEntries(p)).toEqual(["semlayer"]);
+    expect((await semlayer(p.root, replyArgs(id))).code).toBe(0);
     expect(after(p, reply)).toEqual({ block: false });
     const ledger = read(p.ledger)!;
     expect(ledger).toContain('"verdict":"yes"');
-    for (const command of ["cat semantic/.sl/ledger.jsonl | head -5", "ls -la semantic && git status", "python3 -c \"print(open('semantic/.sl/ledger.jsonl').read())\""]) {
+    for (const command of ["cat semantic/.semlayer/ledger.jsonl | head -5", "ls -la semantic && git status", "python3 -c \"print(open('semantic/.semlayer/ledger.jsonl').read())\""]) {
       expect(around(p, command, () => ran++)).toEqual({ block: false });
     }
     expect(ran).toBe(3);
     expect(read(p.ledger)).toBe(ledger);
     expect(stateEntries(p)).toEqual([]);
-    expect((await sl(p.root, ["approve", "--target", "wh.orders.revenue", "--by", "Dana"])).code).toBe(0);
+    expect((await semlayer(p.root, ["approve", "--target", "wh.orders.revenue", "--by", "Dana"])).code).toBe(0);
   });
 
   // docs/PRD-hardening.md HR-15: an owner turn's batched forms, run as the skill runs them (the
-  // answers in a quoted heredoc), are sl commands, and what they write stays.
-  test("sl reply --answers, sl approve --readback and sl question resolve --answers keep what they record", async () => {
+  // answers in a quoted heredoc), are semlayer commands, and what they write stays.
+  test("semlayer reply --answers, semlayer approve --readback and semlayer question resolve --answers keep what they record", async () => {
     const p = await project();
-    expect((await sl(p.root, ["question", "add", "wh.orders", "--text", "Do gift orders count?"])).code).toBe(0);
+    expect((await semlayer(p.root, ["question", "add", "wh.orders", "--text", "Do gift orders count?"])).code).toBe(0);
     const id = await readback(p);
     const replies = JSON.stringify({ by: "Dana", answers: [{ item: 1, verdict: "yes", text: "Yes, that is revenue." }] });
     const questions = JSON.stringify({ by: "Dana", answers: [{ target: "wh.orders", match: "gift orders", text: "No, they do not." }] });
     const runs: [string, string[], string?][] = [
-      [`bun ${SL} reply --readback ${id} --answers - --root ${p.root} <<'JSON'\n${replies}\nJSON`, ["reply", "--readback", id, "--answers", "-"], replies],
-      [`bun ${SL} approve --readback ${id} --root ${p.root}`, ["approve", "--readback", id]],
-      [`cd ${p.dir} && bun ${SL} question resolve --answers - <<'JSON'\n${questions}\nJSON`, ["question", "resolve", "--answers", "-"], questions],
+      [`bun ${SEMLAYER} reply --readback ${id} --answers - --root ${p.root} <<'JSON'\n${replies}\nJSON`, ["reply", "--readback", id, "--answers", "-"], replies],
+      [`bun ${SEMLAYER} approve --readback ${id} --root ${p.root}`, ["approve", "--readback", id]],
+      [`cd ${p.dir} && bun ${SEMLAYER} question resolve --answers - <<'JSON'\n${questions}\nJSON`, ["question", "resolve", "--answers", "-"], questions],
     ];
     for (const [command, args, stdin] of runs) {
       const call = payload(p, command);
       expect(before(p, call)).toEqual({ block: false });
-      expect(stateEntries(p)).toEqual(["sl"]);
+      expect(stateEntries(p)).toEqual(["semlayer"]);
       const out: string[] = [];
-      const code = await runCli([...args, "--root", p.root], { cwd: p.root, env: { SL_NOW: "2026-01-15T12:00:00.000Z" }, out: (t) => out.push(t), err: (t) => out.push(t), ...(stdin ? { stdin: async () => stdin } : {}) });
+      const code = await runCli([...args, "--root", p.root], { cwd: p.root, env: { SEMLAYER_NOW: "2026-01-15T12:00:00.000Z" }, out: (t) => out.push(t), err: (t) => out.push(t), ...(stdin ? { stdin: async () => stdin } : {}) });
       expect({ args, code, out: out.join("\n") }).toEqual({ args, code: 0, out: expect.any(String) });
       expect(after(p, call)).toEqual({ block: false });
     }
     const ledger = read(p.ledger)!;
     expect(ledger.split("\n").filter(Boolean).map((l) => (JSON.parse(l) as { kind: string }).kind)).toEqual(["reply", "question"]);
-    expect(around(p, "cat semantic/.sl/ledger.jsonl | head -5", () => undefined)).toEqual({ block: false });
+    expect(around(p, "cat semantic/.semlayer/ledger.jsonl | head -5", () => undefined)).toEqual({ block: false });
     expect(read(p.ledger)).toBe(ledger);
     expect(readFileSync(join(p.root, "models", "wh", "orders.yaml"), "utf8")).toContain("approved_by: Dana");
     expect(stateEntries(p)).toEqual([]);
   });
 
-  // HR-15 exit condition 4: the one-command form of a readback turn is an sl command like the
+  // HR-15 exit condition 4: the one-command form of a readback turn is a semlayer command like the
   // two-step form, and the answers and approvals it writes stay.
-  test("sl reply --answers --approve keeps what it records and approves", async () => {
+  test("semlayer reply --answers --approve keeps what it records and approves", async () => {
     const p = await project();
     const id = await readback(p);
     const replies = JSON.stringify({ by: "Dana", answers: [{ item: 1, verdict: "yes", text: "Yes, that is revenue." }] });
-    const command = `bun ${SL} reply --readback ${id} --answers - --approve --root ${p.root} <<'JSON'\n${replies}\nJSON`;
+    const command = `bun ${SEMLAYER} reply --readback ${id} --answers - --approve --root ${p.root} <<'JSON'\n${replies}\nJSON`;
     const call = payload(p, command);
     expect(before(p, call)).toEqual({ block: false });
-    expect(stateEntries(p)).toEqual(["sl"]);
+    expect(stateEntries(p)).toEqual(["semlayer"]);
     const out: string[] = [];
     const args = ["reply", "--readback", id, "--answers", "-", "--approve", "--root", p.root];
-    const code = await runCli(args, { cwd: p.root, env: { SL_NOW: "2026-01-15T12:00:00.000Z" }, out: (t) => out.push(t), err: (t) => out.push(t), stdin: async () => replies });
+    const code = await runCli(args, { cwd: p.root, env: { SEMLAYER_NOW: "2026-01-15T12:00:00.000Z" }, out: (t) => out.push(t), err: (t) => out.push(t), stdin: async () => replies });
     expect({ code, out: out.join("\n") }).toEqual({ code: 0, out: expect.stringContaining("Approved 1 of the 1 items") });
     expect(after(p, call)).toEqual({ block: false });
     const ledger = read(p.ledger)!;
@@ -359,7 +359,7 @@ describe("what sl and git write is kept", () => {
     expect(stateEntries(p)).toEqual([]);
   });
 
-  test("sl with a cd, a pipe to head, tail or tee, an echo, a test and a redirection is still a plain sl command; anything else is copied", async () => {
+  test("semlayer with a cd, a pipe to head, tail or tee, an echo, a test and a redirection is still a plain semlayer command; anything else is copied", async () => {
     const p = await project();
     const kind = (command: string, o: CallOptions = {}) => {
       rmSync(p.state, { recursive: true, force: true });
@@ -367,44 +367,44 @@ describe("what sl and git write is kept", () => {
       return stateEntries(p).join();
     };
     for (const plain of [
-      `bun ${SL} status --json`,
-      `bun run ${SL} next`,
-      `cd ${p.dir} && bun ${SL} readback --targets wh.orders.revenue 2>&1 | tail -20; echo "exit $?"`,
-      `SL_NOW=2026-01-15T12:00:00.000Z bun ${SL} status --json > /dev/null && bun ${SL} next | grep -c step | wc -l`,
-      `bun ${SL} apply --file - <<'EOF'\n[["set","wh.orders.revenue","description","Gross $(revenue)"]]\nEOF`,
-      `git pull && bun ${SL} validate`,
-      `test -f semantic/semantic.yaml && bun ${SL} status 2>&1 | tee status.txt | cut -c1-200 || exit 1`,
-      `ls semantic; bun ${SL} next; sleep 1; printf done`,
+      `bun ${SEMLAYER} status --json`,
+      `bun run ${SEMLAYER} next`,
+      `cd ${p.dir} && bun ${SEMLAYER} readback --targets wh.orders.revenue 2>&1 | tail -20; echo "exit $?"`,
+      `SEMLAYER_NOW=2026-01-15T12:00:00.000Z bun ${SEMLAYER} status --json > /dev/null && bun ${SEMLAYER} next | grep -c step | wc -l`,
+      `bun ${SEMLAYER} apply --file - <<'EOF'\n[["set","wh.orders.revenue","description","Gross $(revenue)"]]\nEOF`,
+      `git pull && bun ${SEMLAYER} validate`,
+      `test -f semantic/semantic.yaml && bun ${SEMLAYER} status 2>&1 | tee status.txt | cut -c1-200 || exit 1`,
+      `ls semantic; bun ${SEMLAYER} next; sleep 1; printf done`,
     ])
-      expect(`${plain}: ${kind(plain)}`).toBe(`${plain}: sl`);
+      expect(`${plain}: ${kind(plain)}`).toBe(`${plain}: semlayer`);
     for (const other of [
-      `bun ${SL} reply --readback rb_0001 --item 1 --text "$(cat answer.txt)" --verdict yes`,
-      `SL="bun ${SL}"; $SL reply --readback rb_0001 --item 1 --verdict yes`,
-      `bun ${SL} status && python3 forge.py`,
-      `bun ${SL} status | tee "$OUT"`,
-      `bun ${SL} status | sort -o out.txt`,
-      `if bun ${SL} validate; then echo ok; fi`,
-      `bun ${SL} status > "$OUT"`,
-      "bun sl.ts reply --readback rb_0001 --item 1 --verdict yes",
-      `cd semantic && bun ../skills/semantic-layer/scripts/sl.ts status`,
-      `NODE_OPTIONS=--require=./x.js bun ${SL} status`,
-      `env X=1 bun ${SL} status`,
+      `bun ${SEMLAYER} reply --readback rb_0001 --item 1 --text "$(cat answer.txt)" --verdict yes`,
+      `SEMLAYER="bun ${SEMLAYER}"; $SEMLAYER reply --readback rb_0001 --item 1 --verdict yes`,
+      `bun ${SEMLAYER} status && python3 forge.py`,
+      `bun ${SEMLAYER} status | tee "$OUT"`,
+      `bun ${SEMLAYER} status | sort -o out.txt`,
+      `if bun ${SEMLAYER} validate; then echo ok; fi`,
+      `bun ${SEMLAYER} status > "$OUT"`,
+      "bun semlayer.ts reply --readback rb_0001 --item 1 --verdict yes",
+      `cd semantic && bun ../skills/semantic-layer/scripts/semlayer.ts status`,
+      `NODE_OPTIONS=--require=./x.js bun ${SEMLAYER} status`,
+      `env X=1 bun ${SEMLAYER} status`,
       "git status",
       "git -c core.hooksPath=evil pull",
       "git apply forged.patch",
       "git pull && python3 forge.py",
       // git writes what it prints to the file --output names.
-      `git log -1 --format='format:{"verdict":"yes"}%n' --output=semantic/.sl/ledger.jsonl; git stash list`,
-      `bun ${SL} status; git show --output=semantic/.sl/ledger.jsonl HEAD`,
-      "git log $SL_OPTS -1 && git pull",
+      `git log -1 --format='format:{"verdict":"yes"}%n' --output=semantic/.semlayer/ledger.jsonl; git stash list`,
+      `bun ${SEMLAYER} status; git show --output=semantic/.semlayer/ledger.jsonl HEAD`,
+      "git log $SEMLAYER_OPTS -1 && git pull",
     ])
       expect(`${other}: ${kind(other)}`).toBe(`${other}: snap`);
-    // Other tools are never copied, and an MCP sl tool counts as sl.
+    // Other tools are never copied, and an MCP semlayer tool counts as semlayer.
     expect(kind("", { tool: "Read", input: { file_path: join(p.root, "semantic.yaml") } })).toBe("");
-    expect(kind("", { tool: "mcp__plugin_semantic-layer-builder_semantic-layer__sl_reply", input: { readback: "rb_0001" } })).toBe("sl");
+    expect(kind("", { tool: "mcp__plugin_semantic-layer-builder_semantic-layer__semlayer_reply", input: { readback: "rb_0001" } })).toBe("semlayer");
   });
 
-  test("sl reply running at the same time as another agent's command is left and reported, in either order", async () => {
+  test("semlayer reply running at the same time as another agent's command is left and reported, in either order", async () => {
     for (const slFirst of [true, false]) {
       const p = await project();
       const id = await readback(p);
@@ -412,15 +412,15 @@ describe("what sl and git write is kept", () => {
       const other = payload(p, "python3 long_report.py", { agent: "analyst" });
       expect(before(p, slFirst ? reply : other, 1000)).toEqual({ block: false });
       expect(before(p, slFirst ? other : reply, 1100)).toEqual({ block: false });
-      expect(stateEntries(p).sort()).toEqual(["sl", "snap"]);
-      expect((await sl(p.root, replyArgs(id))).code).toBe(0);
+      expect(stateEntries(p).sort()).toEqual(["semlayer", "snap"]);
+      expect((await semlayer(p.root, replyArgs(id))).code).toBe(0);
       const ledger = read(p.ledger)!;
-      // In one order sl's own after-check has run by the time the other command ends; in the other it has not.
+      // In one order semlayer's own after-check has run by the time the other command ends; in the other it has not.
       if (!slFirst) expect(after(p, reply, 1200)).toEqual({ block: false });
       const out = after(p, other, 1300);
       expect(out.block).toBe(true);
       expect(out.message).toContain(LEFT);
-      expect(out.message).toContain(".sl/ledger.jsonl (added)");
+      expect(out.message).toContain(".semlayer/ledger.jsonl (added)");
       expect(out.message).not.toContain("undone");
       expect(read(p.ledger)).toBe(ledger);
       if (slFirst) expect(after(p, reply, 1400)).toEqual({ block: false });
@@ -428,13 +428,13 @@ describe("what sl and git write is kept", () => {
     }
   });
 
-  test("an sl command that ended without its after-check does not excuse the same agent's next command", async () => {
+  test("a semlayer command that ended without its after-check does not excuse the same agent's next command", async () => {
     const p = await project();
     const id = await readback(p);
     const line = await yesLine(p, id);
-    // sl approve refuses and exits 1; no after-call follows it. The forged yes comes next.
-    expect(before(p, payload(p, `bun ${SL} approve --target wh.orders.revenue --by Dana --root ${p.root}`), 1000)).toEqual({ block: false });
-    expect((await sl(p.root, ["approve", "--target", "wh.orders.revenue", "--by", "Dana"])).code).toBe(1);
+    // semlayer approve refuses and exits 1; no after-call follows it. The forged yes comes next.
+    expect(before(p, payload(p, `bun ${SEMLAYER} approve --target wh.orders.revenue --by Dana --root ${p.root}`), 1000)).toEqual({ block: false });
+    expect((await semlayer(p.root, ["approve", "--target", "wh.orders.revenue", "--by", "Dana"])).code).toBe(1);
     const out = around(p, PYTHON, () => forge(p, line), { now: 2000 });
     expect(out.message).toContain(UNDONE);
     expect(existsSync(p.ledger)).toBe(false);
@@ -459,15 +459,15 @@ describe("what sl and git write is kept", () => {
     const mate = tempDir("integrity-mate");
     git(mate, "clone", origin, "work");
     const theirs = `${read(p.ledger)!}${read(p.ledger)!.replace("ans_0001", "ans_0002")}`;
-    writeFileSync(join(mate, "work", "semantic", ".sl", "ledger.jsonl"), theirs);
-    writeFileSync(join(mate, "work", "semantic", ".sl", "pending", "rb_0002.json"), read(join(p.pending, `${id}.json`))!);
+    writeFileSync(join(mate, "work", "semantic", ".semlayer", "ledger.jsonl"), theirs);
+    writeFileSync(join(mate, "work", "semantic", ".semlayer", "pending", "rb_0002.json"), read(join(p.pending, `${id}.json`))!);
     git(join(mate, "work"), "add", "-A");
     git(join(mate, "work"), "commit", "-m", "another answer and its readback");
     git(join(mate, "work"), "push");
 
     const pull = payload(p, "git pull --ff-only 2>&1 | tail -5");
     expect(before(p, pull)).toEqual({ block: false });
-    expect(stateEntries(p)).toEqual(["sl"]);
+    expect(stateEntries(p)).toEqual(["semlayer"]);
     git(p.dir, "pull", "--ff-only");
     expect(after(p, pull)).toEqual({ block: false });
     expect(read(p.ledger)).toBe(theirs);
@@ -482,9 +482,9 @@ describe("a call whose after-check never ran", () => {
     const id = await readback(p);
     const line = await yesLine(p, id);
     for (const next of [
-      payload(p, `bun ${SL} approve --target wh.orders.revenue --by Dana --root ${p.root}`),
+      payload(p, `bun ${SEMLAYER} approve --target wh.orders.revenue --by Dana --root ${p.root}`),
       payload(p, "", { tool: "Read", input: { file_path: join(p.root, "semantic.yaml") } }),
-      payload(p, "", { tool: "mcp__plugin_semantic-layer-builder_semantic-layer__sl_approve", input: { target: "wh.orders.revenue" } }),
+      payload(p, "", { tool: "mcp__plugin_semantic-layer-builder_semantic-layer__semlayer_approve", input: { target: "wh.orders.revenue" } }),
     ]) {
       expect(before(p, payload(p, `${PYTHON}; exit 1`))).toEqual({ block: false });
       forge(p, line);
@@ -505,7 +505,7 @@ describe("a call whose after-check never ran", () => {
     expect(refused.message).toEndWith("This was found before the current call.");
     expect(existsSync(p.ledger)).toBe(false);
     expect(stateEntries(p)).toEqual([]);
-    expect((await sl(p.root, ["approve", "--target", "wh.orders.revenue", "--by", "Dana"])).code).toBe(1);
+    expect((await semlayer(p.root, ["approve", "--target", "wh.orders.revenue", "--by", "Dana"])).code).toBe(1);
   });
 
   test("without a tool_use_id the call is keyed by its session and command", async () => {
@@ -530,7 +530,7 @@ describe("a call whose after-check never ran", () => {
       expect(before(p, call)).toEqual({ block: false });
       expect(after(p, call)).toEqual({ block: false });
       appendFileSync(p.ledger, "forged later\n");
-      expect(before(p, payload(p, `bun ${SL} status`)).message).toContain(UNDONE);
+      expect(before(p, payload(p, `bun ${SEMLAYER} status`)).message).toContain(UNDONE);
       expect(read(p.ledger)).toBe(ledger);
     }
   });
@@ -540,7 +540,7 @@ describe("a call whose after-check never ran", () => {
     await readback(p, true);
     const day = 24 * 60 * 60_000;
     expect(before(p, payload(p, "node rewrite.js"), 1000)).toEqual({ block: false });
-    expect(before(p, payload(p, `bun ${SL} status`, { agent: "other" }), 2000)).toEqual({ block: false });
+    expect(before(p, payload(p, `bun ${SEMLAYER} status`, { agent: "other" }), 2000)).toEqual({ block: false });
     appendFileSync(p.ledger, "a later line\n");
     expect(before(p, payload(p, "ls", { tool: "Read", input: { file_path: join(p.dir, "notes.txt") } }), 1000 + day + 1)).toEqual({ block: false });
     expect(read(p.ledger)).toEndWith("a later line\n");
@@ -584,9 +584,9 @@ describe("the hook's own files and failures", () => {
       writeFileSync(join(outside, "rb_9999.json"), "{}\n");
     });
     expect(out.block).toBe(true);
-    expect(out.message).toContain("could not put back .sl/pending/rb_0001.json");
-    expect(out.message).toContain(".sl/pending leads outside the semantic root");
-    expect(out.message).toContain("git checkout -- .sl/pending/rb_0001.json");
+    expect(out.message).toContain("could not put back .semlayer/pending/rb_0001.json");
+    expect(out.message).toContain(".semlayer/pending leads outside the semantic root");
+    expect(out.message).toContain("git checkout -- .semlayer/pending/rb_0001.json");
     expect(readdirSync(outside).sort()).toEqual(["rb_9999.json", "theirs.json"]);
     expect(read(join(outside, "theirs.json"))).toBe("kept\n");
   });
@@ -617,9 +617,9 @@ describe("the hook's own files and failures", () => {
     const dir = tempDir("integrity-acme");
     const root = join(dir, "semantic");
     cpSync(join(REPO, "examples", "acme", "semantic"), root, { recursive: true });
-    mkdirSync(join(root, ".sl", "pending"), { recursive: true });
-    writeFileSync(join(root, ".sl", "ledger.jsonl"), `${JSON.stringify({ id: "ans_0001", kind: "reply", text: "Yes, that is right.".repeat(8) })}\n`.repeat(400));
-    for (let i = 1; i <= 40; i++) writeFileSync(join(root, ".sl", "pending", `rb_${String(i).padStart(4, "0")}.json`), JSON.stringify({ readback_id: i, items: "x".repeat(2000) }));
+    mkdirSync(join(root, ".semlayer", "pending"), { recursive: true });
+    writeFileSync(join(root, ".semlayer", "ledger.jsonl"), `${JSON.stringify({ id: "ans_0001", kind: "reply", text: "Yes, that is right.".repeat(8) })}\n`.repeat(400));
+    for (let i = 1; i <= 40; i++) writeFileSync(join(root, ".semlayer", "pending", `rb_${String(i).padStart(4, "0")}.json`), JSON.stringify({ readback_id: i, items: "x".repeat(2000) }));
     const p: Project = { dir, root, state: join(tempDir("integrity-state"), "ledger-guard"), ledger: "", pending: "" };
     const times: number[] = [];
     for (let i = 0; i < 20; i++) {
@@ -645,14 +645,14 @@ describe("the env file that holds the connection secret", () => {
   }
   const check = (p: Project, tool: string, input: Record<string, unknown>, cwd = p.dir) => checkToolUse(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: tool, tool_input: input, cwd }));
 
-  test("the Read tool is refused on .env and .env.<name>, with the message that names sl setup", async () => {
+  test("the Read tool is refused on .env and .env.<name>, with the message that names semlayer setup", async () => {
     const p = await withEnv();
     for (const f of [".env", ".env.local"]) {
       const v = check(p, "Read", { file_path: join(p.dir, f) });
       expect(v.allow).toBe(false);
       expect(v.message).toBe(`semantic-layer: refused Read:\n- it reads ${join(p.dir, f)}. ${SECRET}`);
     }
-    // A link to it, and one kept inside the semantic root, are the same file to sl.
+    // A link to it, and one kept inside the semantic root, are the same file to semlayer.
     symlinkSync(join(p.dir, ".env"), join(p.dir, "settings.txt"));
     expect(check(p, "Read", { file_path: join(p.dir, "settings.txt") }).allow).toBe(false);
     writeFileSync(join(p.root, ".env"), "PG_URL=x\n");
@@ -714,11 +714,11 @@ describe("the env file that holds the connection secret", () => {
     expect(check(p, "Bash", { command: "grep PG_URL .env" }).message).not.toContain(hint);
   });
 
-  test("the file SL_ENV_FILE names is refused too", async () => {
+  test("the file SEMLAYER_ENV_FILE names is refused too", async () => {
     const p = await withEnv();
     const named = join(tempDir("integrity-secrets"), "warehouse.env");
     writeFileSync(named, "PG_URL=postgres://reader:synthetic@localhost:5432/acme\n");
-    const env = { SL_ENV_FILE: named };
+    const env = { SEMLAYER_ENV_FILE: named };
     expect(envFileRefusal("Read", { file_path: named }, p.dir, env)).toContain(SECRET);
     expect(envFileRefusal("Bash", { command: `cat ${named}` }, p.dir, env)).toContain(SECRET);
     expect(envFileRefusal("Read", { file_path: named }, p.dir, {})).toBeUndefined();
@@ -750,7 +750,7 @@ describe("the env file that holds the connection secret", () => {
       "ls -la .env",
       "test -f .env && echo present",
       `cat ${join(elsewhere, ".env")}`,
-      `bun ${SL} setup --source wh --dialect postgres --env PG_URL --root ${p.root}`,
+      `bun ${SEMLAYER} setup --source wh --dialect postgres --env PG_URL --root ${p.root}`,
       "cat \"$FILE\"",
       "cat *",
     ])
@@ -831,17 +831,17 @@ describe("the Grep tool and the env file", () => {
     allowed(p, {});
   });
 
-  test("the file SL_ENV_FILE names is reached by a Grep on it or on a directory above it", async () => {
+  test("the file SEMLAYER_ENV_FILE names is reached by a Grep on it or on a directory above it", async () => {
     const p = await withEnv();
     rmSync(p.env);
     mkdirSync(join(p.dir, "secrets"));
     const named = join(p.dir, "secrets", "warehouse.env");
     writeFileSync(named, "PG_URL=postgres://reader:synthetic@localhost:5432/acme\n");
-    const env = { SL_ENV_FILE: named };
+    const env = { SEMLAYER_ENV_FILE: named };
     expect(grep(p, { path: named }, p.dir, env).message).toBe(refusal([named], ""));
     for (const input of [{}, { path: "secrets" }, { type: "sh" }, { glob: "*.env" }]) expect(grep(p, input, p.dir, env).message).toBe(refusal([named]));
     for (const input of [{ path: "semantic" }, { glob: "*.yaml" }, { glob: "!*.env" }]) expect(grep(p, input, p.dir, env)).toEqual({ allow: true });
-    expect(grep(p, {}, p.dir, { SL_ENV_FILE: "secrets/warehouse.env" }).message).toBe(refusal([named]));
+    expect(grep(p, {}, p.dir, { SEMLAYER_ENV_FILE: "secrets/warehouse.env" }).message).toBe(refusal([named]));
     // The glob the refusal suggests leaves the file out.
     expect(grep(p, { glob: "!warehouse.env" }, p.dir, env)).toEqual({ allow: true });
     expect(grep(p, {}, p.dir, {})).toEqual({ allow: true });
@@ -886,9 +886,9 @@ describe("the plugin registers the comparison", () => {
   }
   const hooks = (JSON.parse(readFileSync(join(REPO, ".claude-plugin", "plugin.json"), "utf8")) as { hooks: Record<string, Group[]> }).hooks;
   const INTEGRITY = 'bun "${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/hooks/integrity.ts"';
-  const MCP = "mcp__.*semantic-layer.*__sl_.*";
+  const MCP = "mcp__.*semantic-layer.*__semlayer_.*";
 
-  test("before Bash, Read and Grep, after Bash whether it succeeds or fails, and around the MCP server's sl tools", () => {
+  test("before Bash, Read and Grep, after Bash whether it succeeds or fails, and around the MCP server's semlayer tools", () => {
     expect(hooks.PreToolUse![0]!.matcher!.split("|")).toEqual(expect.arrayContaining(["Bash", "Read", "Grep"]));
     // Glob lists names only, and nothing is compared after a search.
     for (const group of [...hooks.PreToolUse!, ...hooks.PostToolUse!, ...hooks.PostToolUseFailure!]) expect(group.matcher!.split("|")).not.toContain("Glob");
@@ -908,7 +908,7 @@ describe("the plugin registers the comparison", () => {
     const r = Bun.spawnSync(["sh", "-c", command], {
       cwd: p.dir,
       stdin: new TextEncoder().encode(JSON.stringify({ hook_event_name: event, ...call })),
-      env: { ...process.env, CLAUDE_PLUGIN_ROOT: REPO, CLAUDE_PROJECT_DIR: p.dir, SL_ENV_FILE: undefined, SEMANTIC_ROOT: undefined, ...env },
+      env: { ...process.env, CLAUDE_PLUGIN_ROOT: REPO, CLAUDE_PROJECT_DIR: p.dir, SEMLAYER_ENV_FILE: undefined, SEMANTIC_ROOT: undefined, ...env },
     });
     return { code: r.exitCode, err: r.stderr.toString() };
   }
@@ -949,7 +949,7 @@ describe("the plugin registers the comparison", () => {
     expect(readdirSync(tmp)).toEqual([]);
   }, 30_000);
 
-  test("the registered commands refuse the env file to Read and to Grep, and the MCP sl tools are marked as sl and stopped by an earlier forged change", async () => {
+  test("the registered commands refuse the env file to Read and to Grep, and the MCP semlayer tools are marked as semlayer and stopped by an earlier forged change", async () => {
     const p = await project();
     await readback(p, true);
     const ledger = read(p.ledger)!;
@@ -968,7 +968,7 @@ describe("the plugin registers the comparison", () => {
     expect(grep({ path: "semantic" })).toEqual({ code: 0, err: "" });
     expect(existsSync(join(env.CLAUDE_PLUGIN_DATA, "ledger-guard"))).toBe(false);
     const mcp = hooks.PreToolUse![1]!.hooks.find((h) => h.command === INTEGRITY)!.command;
-    const tool = payload(p, "", { tool: "mcp__plugin_semantic-layer-builder_semantic-layer__sl_approve", input: { target: "wh.orders.revenue" } });
+    const tool = payload(p, "", { tool: "mcp__plugin_semantic-layer-builder_semantic-layer__semlayer_approve", input: { target: "wh.orders.revenue" } });
     expect(run(pre, p, "PreToolUse", payload(p, "node rewrite.js; exit 1"), env)).toEqual({ code: 0, err: "" });
     appendFileSync(p.ledger, "forged\n");
     const stopped = run(mcp, p, "PreToolUse", tool, env);
@@ -976,7 +976,7 @@ describe("the plugin registers the comparison", () => {
     expect(stopped.err).toContain(UNDONE);
     expect(read(p.ledger)).toBe(ledger);
     expect(run(mcp, p, "PreToolUse", tool, env)).toEqual({ code: 0, err: "" });
-    expect(readdirSync(join(env.CLAUDE_PLUGIN_DATA, "ledger-guard")).map((n) => n.replace(/^.*\./, ""))).toEqual(["sl"]);
+    expect(readdirSync(join(env.CLAUDE_PLUGIN_DATA, "ledger-guard")).map((n) => n.replace(/^.*\./, ""))).toEqual(["semlayer"]);
     expect(run(hooks.PostToolUse![0]!.hooks[0]!.command, p, "PostToolUse", tool, env)).toEqual({ code: 0, err: "" });
     expect(readdirSync(env.CLAUDE_PLUGIN_DATA)).toEqual([]);
   }, 30_000);

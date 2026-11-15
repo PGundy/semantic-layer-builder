@@ -1,4 +1,4 @@
-// Review forms: a pending readback (.sl/pending/<readback_id>.json) written out for the owner to fill
+// Review forms: a pending readback (.semlayer/pending/<readback_id>.json) written out for the owner to fill
 // in, as Markdown for a person or JSON for a tool. Each item carries the readback text exactly as
 // stored, its content hash and an empty verdict and answer; the open questions of the models and
 // access.yaml the items belong to follow, each with a stable reference (ref and key) and an empty
@@ -21,7 +21,7 @@ import type { LedgerEntry, LedgerQuestion, LedgerReply, PendingReadback } from "
 import { schemaIssues } from "./schema.ts";
 import { readYamlIfExists } from "./yaml.ts";
 
-export const REVIEWS_DIR = join(".sl", "reviews");
+export const REVIEWS_DIR = join(".semlayer", "reviews");
 export const REVIEW_FORMATS = ["md", "json"] as const;
 export type ReviewFormat = (typeof REVIEW_FORMATS)[number];
 export const VERDICTS = ["yes", "no", "change"] as const;
@@ -54,7 +54,7 @@ export interface ReviewForm {
 }
 
 const READBACK_ID = /^rb_\d{4,}$/;
-const MARKER = /^<!-- sl-(review|item|question) (\{.*\}) -->$/;
+const MARKER = /^<!-- semlayer-(review|item|question) (\{.*\}) -->$/;
 const FENCE = /^(`{3,}|~{3,})/;
 
 export function questionKey(question: string): string {
@@ -63,10 +63,10 @@ export function questionKey(question: string): string {
 
 // The stored readback, refused when the id is malformed, unknown or its file is not a valid readback.
 export function loadPending(root: string, id: string): PendingReadback {
-  const how = "Run sl readback --targets <ref>,... to make one, then export the id it prints.";
+  const how = "Run semlayer readback --targets <ref>,... to make one, then export the id it prints.";
   if (!READBACK_ID.test(id)) throw new UserError(`--readback ${id} is not a readback id; ids look like rb_0001. ${how}`);
   const file = join(root, PENDING_DIR, `${id}.json`);
-  if (!existsSync(file)) throw new UserError(`There is no readback ${id} in .sl/pending/. ${how}`);
+  if (!existsSync(file)) throw new UserError(`There is no readback ${id} in .semlayer/pending/. ${how}`);
   let data: unknown;
   try {
     data = JSON.parse(readFileSync(file, "utf8"));
@@ -74,7 +74,7 @@ export function loadPending(root: string, id: string): PendingReadback {
     data = undefined;
   }
   if (data === undefined || schemaIssues("pending", data, file).length || (data as PendingReadback).readback_id !== id)
-    throw new UserError(`.sl/pending/${id}.json is not a valid readback. Run sl validate to see why, then sl readback again.`, "sl validate");
+    throw new UserError(`.semlayer/pending/${id}.json is not a valid readback. Run semlayer validate to see why, then semlayer readback again.`, "semlayer validate");
   return data as PendingReadback;
 }
 
@@ -86,7 +86,7 @@ export function assertCurrent(root: string, pending: PendingReadback): void {
       const targets = pending.items.map((i) => i.target).join(",");
       throw new UserError(
         `Item ${item.n} of ${pending.readback_id} (${item.target}) changed since it was read back, so the owner would review text that no longer holds. ` +
-          `Run sl readback --targets ${targets} for a fresh readback, then sl review export --readback <its id>.`,
+          `Run semlayer readback --targets ${targets} for a fresh readback, then semlayer review export --readback <its id>.`,
       );
     }
   }
@@ -149,7 +149,7 @@ export function renderReviewJson(form: ReviewForm): string {
 
 // Each line of text behind "> ", so no line of it can pass for a heading, a marker or a fill-in line.
 const quote = (text: string) => text.split("\n").map((l) => (l ? `> ${l}` : ">"));
-const marker = (kind: string, data: object) => `<!-- sl-${kind} ${JSON.stringify(data)} -->`;
+const marker = (kind: string, data: object) => `<!-- semlayer-${kind} ${JSON.stringify(data)} -->`;
 const where = (ref: string) => (ref === "access" || ref.startsWith("access.roles.") ? "access.yaml" : `models/${ref.replace(".", "/")}.yaml`);
 
 function answerBlock(answer: string): string[] {
@@ -262,11 +262,11 @@ export function parseReviewMarkdown(text: string, file = "the review form"): Rev
       try {
         data = JSON.parse(m[2]!);
       } catch {
-        throw new UserError(`${at}: the <!-- sl-${m[1]} --> line was changed; export the form again with sl review export --force.`);
+        throw new UserError(`${at}: the <!-- semlayer-${m[1]} --> line was changed; export the form again with semlayer review export --force.`);
       }
-      if (!isObj(data)) throw new UserError(`${at}: the <!-- sl-${m[1]} --> line was changed; export the form again with sl review export --force.`);
+      if (!isObj(data)) throw new UserError(`${at}: the <!-- semlayer-${m[1]} --> line was changed; export the form again with semlayer review export --force.`);
       if (m[1] === "review") {
-        if (header) throw new UserError(`${at}: the form has more than one <!-- sl-review --> line.`);
+        if (header) throw new UserError(`${at}: the form has more than one <!-- semlayer-review --> line.`);
         header = data;
         block = undefined;
       } else blocks.push((block = { kind: m[1] as Block["kind"], data, line: i + 1, quoted: [], quoting: 0, verdict: null, answer: null }));
@@ -292,7 +292,7 @@ export function parseReviewMarkdown(text: string, file = "the review form"): Rev
     if (answer) block.answer = answer[1]!.trim() ? [answer[1]!.trim()] : [];
     else if (verdict && block.kind === "item") block.verdict = verdictOf(verdict[1]!, at);
   });
-  if (!header) throw new UserError(`${file} has no <!-- sl-review --> line, so it is not a review form sl review export wrote.`);
+  if (!header) throw new UserError(`${file} has no <!-- semlayer-review --> line, so it is not a review form semlayer review export wrote.`);
   const form: ReviewForm = {
     version: header.version as 1,
     readback_id: header.readback_id as string,
@@ -321,7 +321,7 @@ export function parseReviewJson(text: string, file = "the review form"): ReviewF
   try {
     data = JSON.parse(text);
   } catch {
-    throw new UserError(`${file} is not JSON; export the form again with sl review export --format json --force.`);
+    throw new UserError(`${file} is not JSON; export the form again with semlayer review export --format json --force.`);
   }
   const issues = schemaIssues("review", data, file);
   if (issues.length) throw new UserError(`${file} is not a valid review form: ${issues.map((x) => `${x.path || "(top)"} ${x.message}`).join("; ")}.`);
@@ -333,24 +333,24 @@ function inside(base: string, path: string): boolean {
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
-// Directories sl manages, relative to the semantic root: a form is never written there.
-const MANAGED = ["sources", "snapshots", "models", "goldens", ".sl/pending", ".sl/plans"];
+// Directories semlayer manages, relative to the semantic root: a form is never written there.
+const MANAGED = ["sources", "snapshots", "models", "goldens", ".semlayer/pending", ".semlayer/plans"];
 
-// Where a form goes: --out resolved from the semantic root, or .sl/reviews/<readback_id>.<format>.
-// Refused: a path outside the root (also through a symbolic link), one under a directory sl
+// Where a form goes: --out resolved from the semantic root, or .semlayer/reviews/<readback_id>.<format>.
+// Refused: a path outside the root (also through a symbolic link), one under a directory semlayer
 // manages, an extension other than the format's, a link or a directory, and an existing file unless
 // force is set and the file is itself a review form.
 export function reviewPath(root: string, id: string, format: ReviewFormat, out: string | undefined, force: boolean): string {
   const base = resolve(root);
   const shown = out ?? join(REVIEWS_DIR, `${id}.${format}`);
-  const example = `.sl/reviews/${id}.${format}`;
+  const example = `.semlayer/reviews/${id}.${format}`;
   if (out !== undefined && !out.trim()) throw new UserError(`--out needs a file path, such as ${example}.`);
   const target = resolve(base, shown);
   if (target === base) throw new UserError(`--out ${shown} is the semantic root, a directory; give a file path, such as ${example}.`);
   if (!inside(base, target)) throw new UserError(`--out ${shown} is outside the semantic root ${root}; give a path inside it, such as ${example}.`);
   const rel = relative(base, target).split(sep).join("/").toLowerCase();
   const dir = MANAGED.find((d) => rel.startsWith(`${d}/`));
-  if (dir) throw new UserError(`--out ${shown} is inside ${dir}/, which sl manages; give another path, such as ${example}.`);
+  if (dir) throw new UserError(`--out ${shown} is inside ${dir}/, which semlayer manages; give another path, such as ${example}.`);
   if (extname(target).toLowerCase() !== `.${format}`) throw new UserError(`--out ${shown} does not end in .${format}, the --format given; give a path such as ${example}.`);
   let parent = dirname(target);
   while (!existsSync(parent)) parent = dirname(parent);
@@ -371,7 +371,7 @@ export function reviewPath(root: string, id: string, format: ReviewFormat, out: 
   return target;
 }
 
-// Whether a file is a form sl review export wrote: Markdown with its sl-review line, or JSON with
+// Whether a file is a form semlayer review export wrote: Markdown with its semlayer-review line, or JSON with
 // version 1, a readback id and items.
 function isReviewForm(text: string, format: ReviewFormat): boolean {
   if (format === "md") return text.split(/\r?\n/).some((l) => MARKER.exec(l.trim())?.[1] === "review");
@@ -389,9 +389,9 @@ function isReviewForm(text: string, format: ReviewFormat): boolean {
 export function readReviewFile(cwd: string, file: string): ReviewForm {
   const abs = resolve(cwd, file);
   const ext = extname(abs).toLowerCase();
-  if (ext !== ".md" && ext !== ".json") throw new UserError(`${file} does not end in .md or .json; give the form sl review export wrote, such as .sl/reviews/rb_0001.md.`);
+  if (ext !== ".md" && ext !== ".json") throw new UserError(`${file} does not end in .md or .json; give the form semlayer review export wrote, such as .semlayer/reviews/rb_0001.md.`);
   const stat = statSync(abs, { throwIfNoEntry: false });
-  if (!stat?.isFile()) throw new UserError(`${file} ${stat ? "is not a file" : "does not exist"}; give the path of the filled form, such as .sl/reviews/rb_0001.md.`);
+  if (!stat?.isFile()) throw new UserError(`${file} ${stat ? "is not a file" : "does not exist"}; give the path of the filled form, such as .semlayer/reviews/rb_0001.md.`);
   const text = readFileSync(abs, "utf8");
   return ext === ".md" ? parseReviewMarkdown(text, file) : parseReviewJson(text, file);
 }
@@ -458,15 +458,15 @@ function truncateLedger(root: string, size: number | null): void {
   }
 }
 
-// Records a filled form: each answered item as a reply line exactly as sl reply writes it, unless
-// its hash changed since the form was exported, and each answered open question as sl question
+// Records a filled form: each answered item as a reply line exactly as semlayer reply writes it, unless
+// its hash changed since the form was exported, and each answered open question as semlayer question
 // resolve does. Everything is checked first; the ledger lines are appended, then the YAML edited, and
 // a failure puts every file and the ledger back, so a question is never gone without its answer. An answer already in the ledger, or a question no
 // longer open, records nothing, so applying a form twice records it once. It never approves.
 export function applyReview(root: string, form: ReviewForm, by: string, at: string, append: LedgerAppend = appendEntry): ReviewApplyOutcome {
   const id = form.readback_id;
   const pending = loadPending(root, id);
-  const again = `export the form again with sl review export --readback ${id} --format md|json --force`;
+  const again = `export the form again with semlayer review export --readback ${id} --format md|json --force`;
   const seen = new Set<number>();
   for (const it of form.items) {
     const p = pending.items.find((x) => x.n === it.n);
@@ -562,7 +562,7 @@ export function applyReview(root: string, form: ReviewForm, by: string, at: stri
     for (const w of written.reverse()) writeFileAtomic(w.file, w.before);
     if (appended) truncateLedger(root, size);
     const why = e instanceof Error ? e.message : String(e);
-    throw new UserError(`${why}\nNothing was recorded: ${LEDGER_FILE} and the YAML files are as they were. Fix the cause and run sl review apply again.`);
+    throw new UserError(`${why}\nNothing was recorded: ${LEDGER_FILE} and the YAML files are as they were. Fix the cause and run semlayer review apply again.`);
   }
 
   const owner = shellQuote(by);
@@ -574,14 +574,14 @@ export function applyReview(root: string, form: ReviewForm, by: string, at: stri
     const read = pending.items.find((x) => x.n === r.item)?.content_hash;
     return r.verdict === "yes" && read !== undefined && currentHash(root, r.target, read) === read;
   });
-  steps.push(...afterYesSteps(root, yeses.map((r) => r.target), (t) => (t.startsWith("golden:") ? `sl goldens confirm --name ${t.slice(7)}` : `sl approve --target ${t} --by ${owner}`)));
+  steps.push(...afterYesSteps(root, yeses.map((r) => r.target), (t) => (t.startsWith("golden:") ? `semlayer goldens confirm --name ${t.slice(7)}` : `semlayer approve --target ${t} --by ${owner}`)));
   const edits = [...new Set(replied.filter((r) => r.verdict === "no" || r.verdict === "change").map((r) => r.target))];
-  if (edits.length) steps.push(`make the corrections and changes the owner asked for with typed edits (sl set, sl tag, sl ignore-column or sl question add), then sl readback --targets ${edits.join(",")}`);
+  if (edits.length) steps.push(`make the corrections and changes the owner asked for with typed edits (semlayer set, semlayer tag, semlayer ignore-column or semlayer question add), then semlayer readback --targets ${edits.join(",")}`);
   for (const r of replied.filter((x) => x.verdict === null))
-    steps.push(`ask the owner whether item ${r.item} is a yes, a no or a change, then sl reply --readback ${id} --item ${r.item} --text "<owner's words>" --verdict yes|no|change --by ${owner}`);
-  if (out.refused.length) steps.push(`sl readback --targets ${out.refused.map((r) => r.target).join(",")}, then sl review export --readback <its id> --format md for a new form`);
-  if (out.unanswered.items.length || out.unanswered.questions.length) steps.push(`ask the owner for what is still unanswered, then sl review apply again with the form they return`);
-  if (out.questions_not_found.length) steps.push("sl status lists the open questions that remain");
-  if (!steps.length) steps.push("sl status");
+    steps.push(`ask the owner whether item ${r.item} is a yes, a no or a change, then semlayer reply --readback ${id} --item ${r.item} --text "<owner's words>" --verdict yes|no|change --by ${owner}`);
+  if (out.refused.length) steps.push(`semlayer readback --targets ${out.refused.map((r) => r.target).join(",")}, then semlayer review export --readback <its id> --format md for a new form`);
+  if (out.unanswered.items.length || out.unanswered.questions.length) steps.push(`ask the owner for what is still unanswered, then semlayer review apply again with the form they return`);
+  if (out.questions_not_found.length) steps.push("semlayer status lists the open questions that remain");
+  if (!steps.length) steps.push("semlayer status");
   return out;
 }

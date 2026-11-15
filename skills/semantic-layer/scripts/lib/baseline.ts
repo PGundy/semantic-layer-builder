@@ -3,8 +3,8 @@
 // should not be splits and the questions to ask, and for the source a star-schema sketch. It reads the
 // snapshot alone; profiles and existing models sharpen it when present. Column classification (money,
 // counts, time, currency, time zones, sensitivity, keys) comes from lib/draft.ts and lib/sensitivity.ts,
-// so the brief and sl draft read a column the same way, and noise and staging from classifyTable in
-// lib/rank.ts, as sl tables --groups reads a table. Every statement is a guess for the owner to confirm.
+// so the brief and semlayer draft read a column the same way, and noise and staging from classifyTable in
+// lib/rank.ts, as semlayer tables --groups reads a table. Every statement is a guess for the owner to confirm.
 import type { UsageBlock } from "./usage.ts";
 import { classifyType, isNumeric } from "./column-types.ts";
 import {
@@ -65,7 +65,7 @@ export interface BaselineOptions {
   // Existing models of the source; their grain, keys and joins take precedence over guesses.
   models?: Model[];
   // The source's connection, when sources/<source>.yaml has one: an imported snapshot's note says
-  // whether sl profile still needs one.
+  // whether semlayer profile still needs one.
   connection?: SourceConnection;
 }
 
@@ -170,7 +170,7 @@ export interface TableBaseline {
   // Columns whose fitness as a split the snapshot cannot tell without a profile.
   unclear: { column: string; reason: string }[];
   questions: OwnerQuestion[];
-  // What sl profile would measure on this table; empty once it is profiled.
+  // What semlayer profile would measure on this table; empty once it is profiled.
   profile_would_measure: string[];
 }
 
@@ -325,7 +325,7 @@ export function resolveTables(snapshot: Snapshot, refs: string[]): SnapshotTable
   if (unknown.length) {
     throw new UserError(
       `No table matches ${unknown.map((n) => `"${n}"`).join(", ")} in the ${snapshot.source} snapshot. ` +
-        `Run \`sl tables --source ${snapshot.source} --all\` for the names.`,
+        `Run \`semlayer tables --source ${snapshot.source} --all\` for the names.`,
     );
   }
   return snapshot.tables.filter((t) => picked.has(keyOf(t)));
@@ -344,7 +344,7 @@ interface Neighbourhood {
 }
 
 // The tables a set of tables may join to or be joined from, within `eligible`. Out: declared
-// foreign keys, and for each <x>_id column the tables sl draft would join it to (keyed by <x>_id,
+// foreign keys, and for each <x>_id column the tables semlayer draft would join it to (keyed by <x>_id,
 // or named for x), two hops. In: declared foreign keys and tables carrying the table's key column
 // by name, one hop, at most INCOMING_READ_MAX of them by rank. Each step looks up an index, so
 // the reach stays small on a snapshot of thousands of tables.
@@ -378,7 +378,7 @@ function neighbourhood(focus: SnapshotTable[], eligible: SnapshotTable[], stripP
     for (const c of t.columns) {
       const norm = toSpecName(c.name);
       // A column named like another table's single-column key (sku -> products keyed by sku), by the
-      // rule sl draft joins by name: no generic or personal-data name, no noise table as the target.
+      // rule semlayer draft joins by name: no generic or personal-data name, no noise table as the target.
       if (nameMatchKeyEligible(c.name)) out.push(...(byKeyColumn.get(norm) ?? []).filter((n) => intrinsicRole(n)?.role !== "noise"));
       const m = norm.match(/^(.+)_id$/);
       if (!m) continue;
@@ -743,7 +743,7 @@ function ownSplits(r: Pick<Reading, "table" | "q" | "draft" | "keyColumns">, dia
 }
 
 // noise or staging by the table's own name, schema and comment (classifyTable, the judgement
-// sl tables --groups suggests a scope by), or null.
+// semlayer tables --groups suggests a scope by), or null.
 function intrinsicRole(table: SnapshotTable): { role: "noise" | "staging"; reasons: string[] } | null {
   return classifyTable(table);
 }
@@ -843,7 +843,7 @@ export function buildBaseline(snapshot: Snapshot, opts: BaselineOptions): Baseli
     const inScopeRanked = ranked.map((r) => r.table).filter((t) => inScope(opts.scope, t));
     if (inScopeRanked.length > opts.focusThreshold) {
       // The top tables by rank, skipping those that look like noise, with raw and staging tables
-      // only where room is left: the judgement sl tables --groups suggests a scope by.
+      // only where room is left: the judgement semlayer tables --groups suggests a scope by.
       const role = (t: SnapshotTable) => intrinsicRole(t)?.role;
       const noise = inScopeRanked.filter((t) => role(t) === "noise");
       const candidates = [...inScopeRanked.filter((t) => !role(t)), ...inScopeRanked.filter((t) => role(t) === "staging")];
@@ -860,7 +860,7 @@ export function buildBaseline(snapshot: Snapshot, opts: BaselineOptions): Baseli
       notes.push(
         `${inScopeRanked.length} tables are in scope, more than the focus threshold of ${opts.focusThreshold}: this brief covers ${selected.length} of the ${inScopeRanked.length} in-scope tables, ` +
           `the top by size, references and naming, and leaves out ${plural(leftOut.length, "table")} (${listPhrase(skipped)}). ` +
-          `Narrow the scope with \`sl scope --source ${opts.source} --include <pattern> --write\` (\`sl tables --source ${opts.source} --groups\` suggests patterns), ` +
+          `Narrow the scope with \`semlayer scope --source ${opts.source} --include <pattern> --write\` (\`semlayer tables --source ${opts.source} --groups\` suggests patterns), ` +
           `or name tables with --tables.`,
       );
     } else {
@@ -870,7 +870,7 @@ export function buildBaseline(snapshot: Snapshot, opts: BaselineOptions): Baseli
   }
   const present = usedDefaults ? DEFAULT_NAME_PREFIXES.filter((p) => selected.some((t) => t.name.toLowerCase().startsWith(p))) : [];
   if (present.length) {
-    notes.push(`Suggested names drop the prefix${present.length === 1 ? "" : "es"} ${present.join(", ")}, as \`sl draft --strip-prefix ${present.join(",")}\` would.`);
+    notes.push(`Suggested names drop the prefix${present.length === 1 ? "" : "es"} ${present.join(", ")}, as \`semlayer draft --strip-prefix ${present.join(",")}\` would.`);
   }
 
   // Tables a join may reach: in scope, modeled, or named by --tables.
@@ -930,7 +930,7 @@ export function buildBaseline(snapshot: Snapshot, opts: BaselineOptions): Baseli
         relationship: j.relationship,
         origin: "model",
         basis: `the ${j.status === "approved" ? "approved" : "draft"} join ${existing!.model}.${j.name}${
-          ev ? `; sl check-join measured a ${Math.round(ev.match_rate * 1000) / 10}% match and a largest fan-out of ${ev.max_fanout}` : ""
+          ev ? `; semlayer check-join measured a ${Math.round(ev.match_rate * 1000) / 10}% match and a largest fan-out of ${ev.max_fanout}` : ""
         }`,
       });
       covered.add(colsKey(j.keys.map((x) => x.from)));
@@ -1098,8 +1098,8 @@ export function buildBaseline(snapshot: Snapshot, opts: BaselineOptions): Baseli
   if (!profiledAny && tables.length) {
     notes.push("No table in this brief has a profile, so key uniqueness, value counts and which columns are near-unique are guesses from names.");
   }
-  const profileCommand = unprofiled.length ? `sl profile --source ${opts.source} --tables ${unprofiled.join(",")}` : null;
-  // An imported snapshot (DDL, dbt manifest, catalog export) was read without a connection, and sl
+  const profileCommand = unprofiled.length ? `semlayer profile --source ${opts.source} --tables ${unprofiled.join(",")}` : null;
+  // An imported snapshot (DDL, dbt manifest, catalog export) was read without a connection, and semlayer
   // profile needs one: one to configure when the source has none, or one that reaches the database.
   const imported = snapshot.method !== "live";
   const conn = opts.connection;
@@ -1108,14 +1108,14 @@ export function buildBaseline(snapshot: Snapshot, opts: BaselineOptions): Baseli
   if (imported && profileCommand) {
     notes.push(
       connected
-        ? `This snapshot came from ${how} import, so nothing has read the data yet: \`sl profile\` reads it through the connection in sources/${opts.source}.yaml; run it where the database is reachable.`
-        : `This snapshot came from ${how} import, so \`sl profile\` needs a connection to the database first: ` +
+        ? `This snapshot came from ${how} import, so nothing has read the data yet: \`semlayer profile\` reads it through the connection in sources/${opts.source}.yaml; run it where the database is reachable.`
+        : `This snapshot came from ${how} import, so \`semlayer profile\` needs a connection to the database first: ` +
             `set connection.env, or connection.database for DuckDB, in sources/${opts.source}.yaml.`,
     );
   }
   // With more tables than the focus threshold, the owner picks a focus before anything is profiled or drafted.
   const next = selection === "focus"
-    ? `Read this brief to the owner and agree which tables to focus on first (\`sl tables --source ${opts.source} --groups\`, then \`sl scope --source ${opts.source} --include <pattern> --write\`); profile and draft only the scoped tables.`
+    ? `Read this brief to the owner and agree which tables to focus on first (\`semlayer tables --source ${opts.source} --groups\`, then \`semlayer scope --source ${opts.source} --include <pattern> --write\`); profile and draft only the scoped tables.`
     : profileCommand
     ? `Read this brief to the owner and note their answers; ${
         imported
@@ -1123,8 +1123,8 @@ export function buildBaseline(snapshot: Snapshot, opts: BaselineOptions): Baseli
             ? "where the database is reachable (this snapshot came from an import, read without a connection), "
             : `once sources/${opts.source}.yaml has a connection (this snapshot came from an import, read without one), `
           : ""
-      }\`${profileCommand}\` measures what it guesses, then \`sl draft --source ${opts.source}\` writes the draft models.`
-    : `Read this brief to the owner and note their answers, then \`sl draft --source ${opts.source}\` writes the draft models.`;
+      }\`${profileCommand}\` measures what it guesses, then \`semlayer draft --source ${opts.source}\` writes the draft models.`
+    : `Read this brief to the owner and note their answers, then \`semlayer draft --source ${opts.source}\` writes the draft models.`;
 
   return {
     source: opts.source,
@@ -1390,7 +1390,7 @@ function questionsOf(
     });
   }
   // Timestamps without a time zone that the date question above does not name (a dimension table's
-  // one timestamp, a deletion time): the zone their values are stored in, as sl draft asks. With a
+  // one timestamp, a deletion time): the zone their values are stored in, as semlayer draft asks. With a
   // date question, it asks this too; without one, this is the date question.
   const dateQuestion = out.find((x) => x.topic === "date");
   const unasked = r.draft.dimensions
@@ -1671,14 +1671,14 @@ export function renderBaseline(report: BaselineReport): string {
   return `${L.join("\n")}\n`;
 }
 
-// What sl baseline --json gives by default: the brief scoped to the phase sl next names, so the
+// What semlayer baseline --json gives by default: the brief scoped to the phase semlayer next names, so the
 // agent reads what that phase uses. The source-level fields stay whole; each table keeps its role,
 // grain guess, key columns and first questions, and the metrics phase adds the candidate ratios and
-// shares. sl brief gives an interview batch its guesses in full, and --full gives the whole report.
+// shares. semlayer brief gives an interview batch its guesses in full, and --full gives the whole report.
 export type BaselineView = "tables" | "metrics";
 
 export const VIEW_GIVES: Record<BaselineView, string> = {
-  tables: "each table's role and reasons, grain guess, key and first question, and the source's star sketch, notes and left-out tables; sl brief gives a batch the rest",
+  tables: "each table's role and reasons, grain guess, key and first question, and the source's star sketch, notes and left-out tables; semlayer brief gives a batch the rest",
   metrics: "the tables view plus each table's candidate ratios and shares in full",
 };
 
@@ -1697,7 +1697,7 @@ export interface TableOverview {
   question_count: number;
   // metrics view only: the candidate measures of kind ratio or share.
   measures?: CandidateMeasure[];
-  // Only when the source has usage evidence (sl usage add): what saved queries say about the table.
+  // Only when the source has usage evidence (semlayer usage add): what saved queries say about the table.
   usage?: UsageBlock;
 }
 

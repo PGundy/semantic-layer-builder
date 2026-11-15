@@ -23,24 +23,24 @@ import {
 import { schemaIssues } from "../lib/schema.ts";
 
 const USAGE =
-  'Usage: sl review export --readback <readback_id> --format md|json [--out <path>] [--force], or sl review apply <file> --by "<owner>".';
+  'Usage: semlayer review export --readback <readback_id> --format md|json [--out <path>] [--force], or semlayer review apply <file> --by "<owner>".';
 
-// sl review export: writes a pending readback as a form the owner fills in.
+// semlayer review export: writes a pending readback as a form the owner fills in.
 async function exportForm(args: string[], values: OptionValues, ctx: CommandContext): Promise<number> {
   if (args.length) throw new UserError(USAGE);
-  if (str(values, "by") !== undefined) throw new UserError('sl review export takes no --by; that flag is for sl review apply <file> --by "<owner>".');
+  if (str(values, "by") !== undefined) throw new UserError('semlayer review export takes no --by; that flag is for semlayer review apply <file> --by "<owner>".');
   const id = str(values, "readback");
-  if (!id) throw new UserError("sl review export needs --readback <readback_id>, such as rb_0001; sl readback prints it.");
+  if (!id) throw new UserError("semlayer review export needs --readback <readback_id>, such as rb_0001; semlayer readback prints it.");
   const format = str(values, "format");
   if (!format || !(REVIEW_FORMATS as readonly string[]).includes(format))
-    throw new UserError(`sl review export needs --format md (for the owner to read and fill in) or --format json (for a tool).`);
+    throw new UserError(`semlayer review export needs --format md (for the owner to read and fill in) or --format json (for a tool).`);
   const pending = loadPending(ctx.root, id);
   assertCurrent(ctx.root, pending);
   const target = reviewPath(ctx.root, id, format as ReviewFormat, str(values, "out"), bool(values, "force"));
   const form = buildReviewForm(ctx.root, pending, ctx.now().toISOString());
   const issues = schemaIssues("review", form, "the review form");
   if (issues.length)
-    throw new UserError(`The review form for ${id} would not be valid (${issues.map((x) => `${x.path || "(top)"} ${x.message}`).join("; ")}). Run sl validate to find the YAML that causes it, fix it, then export again.`);
+    throw new UserError(`The review form for ${id} would not be valid (${issues.map((x) => `${x.path || "(top)"} ${x.message}`).join("; ")}). Run semlayer validate to find the YAML that causes it, fix it, then export again.`);
   const text = format === "md" ? renderReviewMarkdown(form) : renderReviewJson(form);
   mkdirSync(dirname(target), { recursive: true });
   try {
@@ -50,7 +50,7 @@ async function exportForm(args: string[], values: OptionValues, ctx: CommandCont
     throw new UserError(`${target} was written by another run just now; pass --force to replace it, or --out <another path>.`);
   }
   const path = relative(ctx.root, target).split("\\").join("/");
-  const next = `Send ${path} to the owner to fill in. When the owner returns it, record the answers with sl review apply ${relative(ctx.cwd, target).split("\\").join("/") || target} --by "<owner>".`;
+  const next = `Send ${path} to the owner to fill in. When the owner returns it, record the answers with semlayer review apply ${relative(ctx.cwd, target).split("\\").join("/") || target} --by "<owner>".`;
   if (ctx.json) {
     ctx.out(formatJson({ readback_id: id, format, path, item_count: form.items.length, question_count: form.questions.length, next }));
     return 0;
@@ -60,13 +60,13 @@ async function exportForm(args: string[], values: OptionValues, ctx: CommandCont
   return 0;
 }
 
-// sl review apply: records a filled form's answers in the ledger, as sl reply and sl question
+// semlayer review apply: records a filled form's answers in the ledger, as semlayer reply and semlayer question
 // resolve do, refusing an item whose hash changed since export. It never approves.
 async function applyForm(args: string[], values: OptionValues, ctx: CommandContext): Promise<number> {
   const byRaw = str(values, "by");
   if (args.length !== 1 || byRaw === undefined) throw new UserError(USAGE);
   for (const flag of ["readback", "format", "out", "force"])
-    if (values[flag] !== undefined) throw new UserError(`sl review apply takes no --${flag}; the form names its readback. Usage: sl review apply <file> --by "<owner>".`);
+    if (values[flag] !== undefined) throw new UserError(`semlayer review apply takes no --${flag}; the form names its readback. Usage: semlayer review apply <file> --by "<owner>".`);
   const by = ownerText(oneLine(byRaw)).text;
   if (!by) throw new UserError('--by is empty; give the name of the owner who filled in the form (--by "<owner>").');
   const form = readReviewFile(ctx.cwd, args[0]!);
@@ -107,10 +107,10 @@ const spec: CommandSpec = {
   usage:
     "review export --readback <readback_id> --format md|json [--out <path>] [--force]\n" +
     '       review apply <file> --by "<owner>"\n\n' +
-    "export writes .sl/reviews/<readback_id>.<md|json>, or --out (a path inside the semantic root), never over\n" +
+    "export writes .semlayer/reviews/<readback_id>.<md|json>, or --out (a path inside the semantic root), never over\n" +
     "an existing file unless --force. Markdown is for the owner to fill in; JSON is for a tool.\n" +
-    "apply reads a filled form (.md or .json, from any path) and records each answer as sl reply and\n" +
-    "sl question resolve do, refusing an item that changed since export. It never approves.",
+    "apply reads a filled form (.md or .json, from any path) and records each answer as semlayer reply and\n" +
+    "semlayer question resolve do, refusing an item that changed since export. It never approves.",
   options: {
     readback: { type: "string" },
     format: { type: "string" },

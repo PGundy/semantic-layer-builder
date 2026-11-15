@@ -16,7 +16,7 @@ const spec: CommandSpec = {
     if (ctx.json) ctx.out(formatJson({ ...o, role }));
     else
       ctx.out(
-        [`Removed a row filter on ${o.filter.model} from role ${role} in ${o.file}.`, ...accessEditLines(o, `sl access --roles ${role} shows what it sees; ${READBACK_NEXT}`)].join("\n"),
+        [`Removed a row filter on ${o.filter.model} from role ${role} in ${o.file}.`, ...accessEditLines(o, `semlayer access --roles ${role} shows what it sees; ${READBACK_NEXT}`)].join("\n"),
       );
     return 0;
   },

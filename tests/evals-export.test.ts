@@ -12,7 +12,7 @@ import type { GradeReport, GraderResult } from "../evals/graders/types.ts";
 import { computeStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
 import type { Model, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { sl, tempDir } from "./helpers.ts";
+import { semlayer, tempDir } from "./helpers.ts";
 
 // The export intake paths of the eval harness (docs/PRD.md FR-6.2) and the connection_first rows
 // for them (FR-6.3): acme-export ends waiting on a connection with no golden confirmed, and
@@ -51,7 +51,7 @@ async function replay(name: string, script?: Script, out = temp()) {
 const grader = (r: GradeReport, name: string): GraderResult => r.graders.find((g) => g.grader === name)!;
 const yaml = <T,>(root: string, rel: string) => parseYamlText(readFileSync(join(root, rel), "utf8")) as T;
 const ledger = (root: string) =>
-  readFileSync(join(root, ".sl", "ledger.jsonl"), "utf8")
+  readFileSync(join(root, ".semlayer", "ledger.jsonl"), "utf8")
     .trimEnd()
     .split("\n")
     .map((l) => JSON.parse(l) as { kind: string; target?: string; verdict?: string; readback_id?: string; by?: string });
@@ -66,9 +66,9 @@ function expectConnectionFirst(transcript: TranscriptTurn[]) {
   expect(transcript[1]!.text).toContain("can you give me a read-only connection to the lake?");
   expect(transcript[1]!.text).not.toMatch(/export/i);
   expect(transcript[2]!.text).toContain("a connection is not possible");
-  const exportTurn = transcript.find((t) => (t.commands ?? []).some((c) => /^sl (export-sql|setup .*--export)/.test(c.command)))!;
+  const exportTurn = transcript.find((t) => (t.commands ?? []).some((c) => /^semlayer (export-sql|setup .*--export)/.test(c.command)))!;
   expect(exportTurn.turn).toBe(4);
-  expect(exportTurn.commands![0]!.command).toBe("sl export-sql --dialect duckdb --schemas main");
+  expect(exportTurn.commands![0]!.command).toBe("semlayer export-sql --dialect duckdb --schemas main");
 }
 
 describe("acme-export", () => {
@@ -108,18 +108,18 @@ describe("acme-export", () => {
     expect(events).toMatchObject({ status: "approved", approved_by: "Dana Ruiz" });
     expect(events.joins![0]).toMatchObject({ name: "session", status: "approved" });
     expect(events.joins![0]!.evidence).toBeUndefined();
-    expect(r.transcript.flatMap((t) => t.commands ?? []).some((c) => c.command.startsWith("sl goldens"))).toBe(false);
+    expect(r.transcript.flatMap((t) => t.commands ?? []).some((c) => c.command.startsWith("semlayer goldens"))).toBe(false);
 
-    // sl status: the data-dependent steps wait on a connection, the step is not done, and the
+    // semlayer status: the data-dependent steps wait on a connection, the step is not done, and the
     // upgrade is named; the last turn names it to the owner too.
     const status = computeStatus(r.root);
     expect(status.sources[0]!.waiting_on_connection.map((w) => w.step)).toEqual(["profiles", "join_evidence", "goldens", "drift_from_data"]);
     expect(status.sources[0]!.approved_joins_without_evidence).toEqual(["web_events.session"]);
     expect(status.next_step.phase).not.toBe("done");
-    expect(status.next_step.connection_upgrade).toStartWith("sl setup --source lake --dialect duckdb");
-    expect((await sl(r.root, ["status"])).out).toContain("With a connection, the waiting steps run: sl setup --source lake --dialect duckdb");
-    expect(r.transcript.at(-1)!.text).toContain("sl setup --source lake --dialect duckdb");
-    expect(r.transcript.at(-1)!.commands!.map((c) => c.command).slice(-3)).toEqual(["sl validate", "sl status", "sl next"]);
+    expect(status.next_step.connection_upgrade).toStartWith("semlayer setup --source lake --dialect duckdb");
+    expect((await semlayer(r.root, ["status"])).out).toContain("With a connection, the waiting steps run: semlayer setup --source lake --dialect duckdb");
+    expect(r.transcript.at(-1)!.text).toContain("semlayer setup --source lake --dialect duckdb");
+    expect(r.transcript.at(-1)!.commands!.map((c) => c.command).slice(-3)).toEqual(["semlayer validate", "semlayer status", "semlayer next"]);
 
     expect(r.grades.passed).toBe(true);
     expect(r.grades.graders.map((g) => [g.grader, g.score])).toEqual([
@@ -134,7 +134,7 @@ describe("acme-export", () => {
     expect(grader(r.grades, "connection_first").details).toEqual([
       "transcript.jsonl: the skill asks for a connection in turn 2, and offers an export in turn 4 only after the owner says one is not possible in turn 3.",
       "semantic/goldens/: no golden is confirmed on this export scenario.",
-      "sl status: the next step is metrics, not done, while lake waits on a connection (profiles, join_evidence, goldens, drift_from_data).",
+      "semlayer status: the next step is metrics, not done, while lake waits on a connection (profiles, join_evidence, goldens, drift_from_data).",
     ]);
     expect(grader(r.grades, "approvals").details).toEqual(["All 7 approved item(s) have the owner's latest reply as a yes with a matching hash."]);
   }, 60_000);
@@ -150,12 +150,12 @@ describe("acme-export", () => {
     expect(g).toMatchObject({ passed: false, score: 2 / 3 });
     expect(g.details).toContain("semantic/goldens/: an export scenario has no data to confirm against, but sessions_2025 is confirmed.");
 
-    // sl status never reports done for an export source; a status that did fails the row.
+    // semlayer status never reports done for an export source; a status that did fails the row.
     const status = computeStatus(r.root);
     expect(statusWhileWaiting(status).ok).toBe(true);
     expect(statusWhileWaiting({ ...status, next_step: { ...status.next_step, phase: "done" } })).toEqual({
       ok: false,
-      detail: "sl status: the next step is done while lake waits on a connection (profiles, join_evidence, goldens, drift_from_data).",
+      detail: "semlayer status: the next step is done while lake waits on a connection (profiles, join_evidence, goldens, drift_from_data).",
     });
 
     // A source hand-edited to connection mode leaves no export source to wait on.
@@ -164,7 +164,7 @@ describe("acme-export", () => {
     writeFileSync(file, readFileSync(file, "utf8").replace("mode: export", "mode: connection").replace(/ {2}reason:.*\n/, "").replace(/ {2}export:\n {4}file:.*\n/, ""));
     const l = grader(await gradeRun(lost.dir), "connection_first");
     expect(l).toMatchObject({ passed: false, score: 2 / 3 });
-    expect(l.details.at(-1)).toBe("semantic/sources/: no source is a schema export at the end of this export scenario (never set up with sl setup --export, or upgraded).");
+    expect(l.details.at(-1)).toBe("semantic/sources/: no source is a schema export at the end of this export scenario (never set up with semlayer setup --export, or upgraded).");
   }, 60_000);
 });
 
@@ -185,7 +185,7 @@ describe("acme-export-upgrade", () => {
     for (const t of transcript) for (const c of t.commands ?? []) expect(c).toMatchObject({ exit_code: 0 });
     expectConnectionFirst(transcript);
     // The transcript keeps the script's {fixture}, so it reads the same wherever the run is written.
-    const upgrade = transcript.flatMap((t) => (t.commands ?? []).map((c) => ({ turn: t.turn, ...c }))).find((c) => c.command.startsWith("sl setup") && !c.command.includes("--export"))!;
+    const upgrade = transcript.flatMap((t) => (t.commands ?? []).map((c) => ({ turn: t.turn, ...c }))).find((c) => c.command.startsWith("semlayer setup") && !c.command.includes("--export"))!;
     expect(upgrade.turn).toBe(14);
     expect(upgrade.command).toContain("--view sessions=read_parquet('{fixture}/data/lake/sessions.parquet')");
 
@@ -206,8 +206,8 @@ describe("acme-export-upgrade", () => {
     const eventType = events.dimensions!.find((d) => d.name === "event_type")!;
     expect(eventType).toMatchObject({ status: "approved", approved_by: "Dana Ruiz" });
     expect(eventType.description).toContain("page_view, search, add_to_cart, checkout_start or purchase");
-    expect(JSON.parse(bytes["semantic/.sl/pending/rb_0002.json"]!).items.map((i: { target: string }) => i.target)).toEqual(["lake.web_events.event_type"]);
-    expect((await sl(root, ["validate"])).code).toBe(0);
+    expect(JSON.parse(bytes["semantic/.semlayer/pending/rb_0002.json"]!).items.map((i: { target: string }) => i.target)).toEqual(["lake.web_events.event_type"]);
+    expect((await semlayer(root, ["validate"])).code).toBe(0);
 
     const grades = JSON.parse(bytes["grades.json"]!) as GradeReport;
     expect(grades.passed).toBe(true);
@@ -221,19 +221,19 @@ describe("acme-export-upgrade", () => {
   test("the upgrade the script runs lists exactly the contradicted draft and reads it back next", async () => {
     // The script up to the approvals from the export, then the upgrade by hand with --json.
     const { scenario, script } = scenarioNamed("acme-export-upgrade");
-    const at = script.skill.findIndex((t) => (t.sl ?? []).some((a) => a[0] === "setup" && !a.includes("--export")));
+    const at = script.skill.findIndex((t) => (t.semlayer ?? []).some((a) => a[0] === "setup" && !a.includes("--export")));
     const before: Script = { skill: script.skill.slice(0, at - 1).concat({ ...script.skill[at - 1]!, done: true }), owner: script.owner.slice(0, at - 1) };
     const r = await replay("acme-export-upgrade", before);
     expect(r.summary.stop_reason).toBe("done");
     const fixtureDir = relative(r.root, join(REPO_ROOT, "fixtures", scenario.fixture));
-    const args = script.skill[at]!.sl!.find((a) => a[0] === "setup")!.map((a) => a.replaceAll("{fixture}", fixtureDir));
-    const u = await sl(r.root, [...args, "--json"]);
+    const args = script.skill[at]!.semlayer!.find((a) => a[0] === "setup")!.map((a) => a.replaceAll("{fixture}", fixtureDir));
+    const u = await semlayer(r.root, [...args, "--json"]);
     expect(u.code).toBe(0);
     const j = u.json<{ upgraded: boolean; joins_checked: string[]; profiled: string[]; contradictions: { ref: string; kind: string; approved: boolean; evidence: string }[]; next: string }>();
     expect(j).toMatchObject({ upgraded: true, joins_checked: ["lake.web_events.session"], profiled: ["main.marketing_spend", "main.sessions", "main.web_events"] });
     expect(j.contradictions.map((c) => [c.ref, c.kind, c.approved])).toEqual([["lake.web_events.event_type", "unlisted_value", false]]);
     expect(j.contradictions[0]!.evidence).toContain('"search" (2,542 rows)');
-    expect(j.next).toBe("sl readback --targets lake.web_events.event_type");
+    expect(j.next).toBe("semlayer readback --targets lake.web_events.event_type");
   }, 60_000);
 
   test("a join without current evidence, a source never upgraded and a confirm before the upgrade each fail connection_first", async () => {
@@ -247,7 +247,7 @@ describe("acme-export-upgrade", () => {
     expect(readFileSync(file, "utf8")).not.toContain("evidence:");
     const n = await rows(noEvidence.dir);
     expect(n).toMatchObject({ passed: false, score: 2 / 3 });
-    expect(n.details.at(-1)).toBe("semantic/models/lake/web_events.yaml: after the upgrade, join lake.web_events.session has no evidence for its current keys; run sl check-join on it.");
+    expect(n.details.at(-1)).toBe("semantic/models/lake/web_events.yaml: after the upgrade, join lake.web_events.session has no evidence for its current keys; run semlayer check-join on it.");
 
     // Evidence measured for other keys is not evidence for the join as it stands.
     const stale = copyOf(r.runDir);
@@ -262,20 +262,20 @@ describe("acme-export-upgrade", () => {
     writeFileSync(summaryFile, JSON.stringify({ ...JSON.parse(readFileSync(summaryFile, "utf8")), intake: "export_upgrade" }));
     const v = await rows(never.dir);
     expect(v).toMatchObject({ passed: false, score: 2 / 3 });
-    expect(v.details.at(-1)).toBe("semantic/sources/lake.yaml: the source is still a schema export; the upgrade (sl setup --source lake with its connection) never ran.");
+    expect(v.details.at(-1)).toBe("semantic/sources/lake.yaml: the source is still a schema export; the upgrade (semlayer setup --source lake with its connection) never ran.");
 
     // A confirm that succeeded before the upgrade had no data behind it.
     const early = copyOf(r.runDir);
     const tfile = join(early.dir, "transcript.jsonl");
     const turns = readFileSync(tfile, "utf8").trimEnd().split("\n").map((l) => JSON.parse(l) as TranscriptTurn);
-    turns[11]!.commands = [...(turns[11]!.commands ?? []), { command: "sl goldens confirm --name sessions_2025 --by Dana Ruiz", exit_code: 0 }];
+    turns[11]!.commands = [...(turns[11]!.commands ?? []), { command: "semlayer goldens confirm --name sessions_2025 --by Dana Ruiz", exit_code: 0 }];
     writeFileSync(tfile, turns.map((t) => `${JSON.stringify(t)}\n`).join(""));
     const e = await rows(early.dir);
     expect(e).toMatchObject({ passed: false, score: 2 / 3 });
-    expect(e.details).toContain("transcript.jsonl turn 12: sl goldens confirm succeeded while the source was still an export, before the upgrade.");
+    expect(e.details).toContain("transcript.jsonl turn 12: semlayer goldens confirm succeeded while the source was still an export, before the upgrade.");
     // A confirm after the upgrade is fine.
     turns[11]!.commands!.pop();
-    turns[15]!.commands = [...(turns[15]!.commands ?? []), { command: "sl goldens confirm --name sessions_2025 --by Dana Ruiz", exit_code: 0 }];
+    turns[15]!.commands = [...(turns[15]!.commands ?? []), { command: "semlayer goldens confirm --name sessions_2025 --by Dana Ruiz", exit_code: 0 }];
     writeFileSync(tfile, turns.map((t) => `${JSON.stringify(t)}\n`).join(""));
     expect((await rows(early.dir)).passed).toBe(true);
   }, 120_000);
@@ -288,9 +288,9 @@ describe("acme-export-upgrade", () => {
     expect(u.details.at(-1)).toBe("semantic/sources/lake.yaml: no source; the export was never set up or upgraded.");
     expect(grader((await replay("acme-export", empty)).grades, "connection_first")).toMatchObject({ passed: false, score: 2 / 3 });
 
-    // sl setup --print-role-sql reads no connection, so it is not the upgrade.
+    // semlayer setup --print-role-sql reads no connection, so it is not the upgrade.
     const role: Script = {
-      skill: [{ text: "Can you give me a read-only connection?", sl: [["setup", "--print-role-sql", "--dialect", "postgres", "--schemas", "main"]] }, { text: "Understood.", done: true }],
+      skill: [{ text: "Can you give me a read-only connection?", semlayer: [["setup", "--print-role-sql", "--dialect", "postgres", "--schemas", "main"]] }, { text: "Understood.", done: true }],
       owner: [{ text: "A connection is not possible." }],
     };
     const p = grader((await replay("acme-export-upgrade", role)).grades, "connection_first");

@@ -14,10 +14,10 @@ WALK=${WALK:?set WALK to the walkthrough directory}
 PLUGIN=${PLUGIN:?set PLUGIN to the plugin checkout}
 WORK=$WALK/work
 LOG=$WALK/log
-ROLE=${WALK_ROLE:-sl-interviewer}
+ROLE=${WALK_ROLE:-semlayer-interviewer}
 export CLAUDE_PLUGIN_ROOT=$PLUGIN CLAUDE_PLUGIN_DATA=$WALK/plugin-data CLAUDE_PROJECT_DIR=$WORK
 export TMPDIR=$WALK/tmp
-unset PG_URL WAREHOUSE_URL SEMANTIC_ROOT SL_ENV_FILE 2>/dev/null
+unset PG_URL WAREHOUSE_URL SEMANTIC_ROOT SEMLAYER_ENV_FILE 2>/dev/null
 mkdir -p "$LOG" "$CLAUDE_PLUGIN_DATA" "$TMPDIR" "$WORK"
 HOOKS=$PLUGIN/skills/semantic-layer/scripts/hooks
 

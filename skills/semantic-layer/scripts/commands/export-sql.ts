@@ -29,8 +29,8 @@ const RUN: Record<ExportDialect, { command: string; output: string }> = {
   duckdb: { command: "duckdb <database>.duckdb -csv < export.sql > schema.csv", output: "schema.csv" },
 };
 
-const FILTER_LINE = /^(\s*)--\s*and\s+(.+?)\s+in\s*\(.*\)\s*--\s*sl:schema-filter.*$/m;
-const DATASET_BLOCK = /^[ \t]*-- sl:per-dataset\n([\s\S]*?)^[ \t]*-- sl:end-per-dataset$/gm;
+const FILTER_LINE = /^(\s*)--\s*and\s+(.+?)\s+in\s*\(.*\)\s*--\s*semlayer:schema-filter.*$/m;
+const DATASET_BLOCK = /^[ \t]*-- semlayer:per-dataset\n([\s\S]*?)^[ \t]*-- semlayer:end-per-dataset$/gm;
 const DATASET_TOKEN = "`my_dataset`";
 
 // Rejects a schema name a string literal or quoted identifier could not hold safely in every
@@ -88,15 +88,15 @@ export function applySchemas(dialect: ExportDialect, sql: string, schemas: strin
     });
   }
   const m = FILTER_LINE.exec(sql);
-  if (!m) throw new UserError(`The ${dialect} export has no sl:schema-filter line.`);
+  if (!m) throw new UserError(`The ${dialect} export has no semlayer:schema-filter line.`);
   const [line, indent, column] = m;
-  return sql.replace(line, () => `${indent}and ${predicate(dialect, column!, schemas)}  -- sl:schema-filter`);
+  return sql.replace(line, () => `${indent}and ${predicate(dialect, column!, schemas)}  -- semlayer:schema-filter`);
 }
 
 export interface ExportFilters {
   pushed: PushedFilter[];
   deferred: DeferredFilter[];
-  // The sl import line that applies the deferred patterns, or null when none are deferred.
+  // The semlayer import line that applies the deferred patterns, or null when none are deferred.
   import_command: string | null;
 }
 
@@ -107,7 +107,7 @@ export function exportSql(
 ): { sql: string; run_hint: string; filters?: ExportFilters } {
   let sql = applySchemas(dialect, readFileSync(join(EXPORTS_DIR, `${dialect}.sql`), "utf8"), schemas);
   const run = RUN[dialect];
-  const importBase = `sl import --source <source> --file ${run.output}`;
+  const importBase = `semlayer import --source <source> --file ${run.output}`;
   let filters: ExportFilters | undefined;
   if (tables.include?.length || tables.exclude?.length) {
     const applied = applyTableFilter(dialect, sql, tables.include ?? [], tables.exclude ?? [], importBase);
@@ -121,7 +121,7 @@ export function exportSql(
 }
 
 const spec: CommandSpec = {
-  summary: "Print a read-only catalog query that exports a database's schema for sl import.",
+  summary: "Print a read-only catalog query that exports a database's schema for semlayer import.",
   usage:
     `export-sql --dialect ${EXPORT_DIALECTS.join("|")} [--schemas a,b] [--include <pattern>]... [--exclude <pattern>]...\n\n` +
     "  Prints the query on stdout and, on stderr, how to run it and import the result. The query reads only the\n" +
@@ -131,7 +131,7 @@ const spec: CommandSpec = {
     "  --schemas  restrict the export to these schemas (BigQuery: the datasets to read, dataset or project.dataset).\n" +
     "  --include, --exclude  keep the tables matching an include and no exclude (the scope pattern grammar), in the\n" +
     "             query where the dialect can express the pattern; any other is listed in the query's header and on\n" +
-    "             stderr with the sl import --include/--exclude that applies it.\n" +
+    "             stderr with the semlayer import --include/--exclude that applies it.\n" +
     "  --json     print { dialect, sql, run_hint }, plus filters: { pushed, deferred, import_command } with patterns.",
   options: {
     dialect: { type: "string" },

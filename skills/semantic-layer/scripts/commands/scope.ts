@@ -126,14 +126,14 @@ function checkReplace(path: string, shown: string, text: string, force: boolean,
 }
 
 // The --to-file target, resolved from the semantic root: refused outside it and on the project's
-// own files and the directories sl manages.
+// own files and the directories semlayer manages.
 function toFilePath(root: string, arg: string): string {
   const target = rootPath(root, arg, "--to-file");
   const rel = relative(resolve(root), target).split(sep).join("/").toLowerCase();
   const own = ["semantic.yaml", "metrics.yaml", "access.yaml", ".gitignore"];
-  const dirs = ["sources", "snapshots", "models", "goldens", ".sl"];
+  const dirs = ["sources", "snapshots", "models", "goldens", ".semlayer"];
   if (own.includes(rel) || dirs.some((d) => rel === d || rel.startsWith(`${d}/`))) {
-    throw new UserError(`--to-file ${arg} is one of the files sl manages; give another path, such as scope/<source>.txt.`);
+    throw new UserError(`--to-file ${arg} is one of the files semlayer manages; give another path, such as scope/<source>.txt.`);
   }
   return target;
 }
@@ -207,7 +207,7 @@ function explainTable(tables: SnapshotTable[], ref: string, source: string): Sna
     .sort((a, b) => a.d - b.d || compare(a.name, b.name))
     .slice(0, 5);
   const hint = close.length ? ` Close names: ${close.map((c) => c.name).join(", ")}.` : "";
-  throw new UserError(`No table named "${ref}" in the ${source} snapshot.${hint} Run \`sl tables --source ${source} --all\` for every name.`);
+  throw new UserError(`No table named "${ref}" in the ${source} snapshot.${hint} Run \`semlayer tables --source ${source} --all\` for every name.`);
 }
 
 function entryText(e: ScopeEntry, file: string | undefined): string {
@@ -221,9 +221,9 @@ const spec: CommandSpec = {
     "scope --source <source> [--include <pattern>]... [--exclude <pattern>]... [--remove <pattern>]... " +
     "[--tables a,b] [--from-file <path>] [--to-file <path>] [--force] [--clear] [--write] [--explain <table>] [--reason <text>]\n\n" +
     "--include, --exclude and --tables add to the saved scope, whose entries stay: leaving one more table out is\n" +
-    "sl scope --source <s> --exclude <table> --write. --remove takes an entry out; --clear starts over.\n" +
+    "semlayer scope --source <s> --exclude <table> --write. --remove takes an entry out; --clear starts over.\n" +
     "--reason records why the --exclude patterns of this command leave tables out (the owner's words), in\n" +
-    "scope.exclude_reasons with --write; sl scope --explain shows it for a table such a pattern excludes.",
+    "scope.exclude_reasons with --write; semlayer scope --explain shows it for a table such a pattern excludes.",
   options: {
     "from-file": { type: "string" },
     "to-file": { type: "string" },
@@ -252,7 +252,7 @@ const spec: CommandSpec = {
     const removes = patterns(values, "remove");
     const reasonArg = str(values, "reason");
     if (reasonArg !== undefined && !excludes.length) {
-      throw new UserError(`--reason records why --exclude leaves tables out; add the --exclude pattern it is for, such as \`sl scope --source ${sourceName} --exclude <pattern> --reason "<why>" --write\`.`);
+      throw new UserError(`--reason records why --exclude leaves tables out; add the --exclude pattern it is for, such as \`semlayer scope --source ${sourceName} --exclude <pattern> --reason "<why>" --write\`.`);
     }
     const reason = reasonArg === undefined ? undefined : ownerText(reasonArg).text;
     if (reason !== undefined && !reason) throw new UserError(`--reason is empty; give the owner's reason in words, then run the same command again.`);
@@ -278,7 +278,7 @@ const spec: CommandSpec = {
     if (unknown.length) {
       throw new UserError(
         `No table named ${unknown.map((n) => `"${n}"`).join(", ")} in the ${sourceName} snapshot. ` +
-          `Run \`sl tables --source ${sourceName} --all\` for the names.`,
+          `Run \`semlayer tables --source ${sourceName} --all\` for the names.`,
       );
     }
 
@@ -314,7 +314,7 @@ const spec: CommandSpec = {
       fromText = readFileSync(fromPath, "utf8");
       const parsed = parseTableList(fromText);
       if (parsed.problems.length) {
-        throw new UserError(`${problemsMessage(fromArg, parsed.problems)}\nFix the file and run \`sl scope --source ${sourceName} --from-file ${fromArg}\` again.`);
+        throw new UserError(`${problemsMessage(fromArg, parsed.problems)}\nFix the file and run \`semlayer scope --source ${sourceName} --from-file ${fromArg}\` again.`);
       }
       nextList = { rel: `scope/${sourceName}.txt`, entries: parsed.entries, line: (p) => parsed.entries.find((e) => e.pattern === p)?.line };
     }
@@ -378,10 +378,10 @@ const spec: CommandSpec = {
     const explainArg = str(values, "explain");
     if (explainArg !== undefined) {
       if (bool(values, "write") || toArg !== undefined) {
-        throw new UserError(`--explain only reads; run \`sl scope --source ${sourceName} --explain ${shellArg(explainArg)}\` without --write or --to-file.`);
+        throw new UserError(`--explain only reads; run \`semlayer scope --source ${sourceName} --explain ${shellArg(explainArg)}\` without --write or --to-file.`);
       }
       if (!explainArg.trim()) {
-        throw new UserError(`--explain needs a table name, such as \`sl scope --source ${sourceName} --explain orders\`; run \`sl tables --source ${sourceName} --all\` for the names.`);
+        throw new UserError(`--explain needs a table name, such as \`semlayer scope --source ${sourceName} --explain orders\`; run \`semlayer tables --source ${sourceName} --all\` for the names.`);
       }
       const t = explainTable(tables, explainArg, sourceName);
       const name = qualifiedName(t);
@@ -416,7 +416,7 @@ const spec: CommandSpec = {
         );
         return 0;
       }
-      const cmd = `sl scope --source ${sourceName}`;
+      const cmd = `semlayer scope --source ${sourceName}`;
       // The table-list file a fix goes in, as --from-file reads it from the working directory.
       const listFile = fileShown ?? `scope/${sourceName}.txt`;
       const listArg = shellArg(fromArg ?? (relative(ctx.cwd, resolve(ctx.root, nextList?.rel ?? listFile)) || listFile));
@@ -481,7 +481,7 @@ const spec: CommandSpec = {
     for (const p of unmatched) {
       const line = inLists.has(p) ? undefined : nextList?.line(p);
       const where = line === undefined ? "" : ` (${nextList!.rel} line ${line})`;
-      warnings.push(`Pattern "${p}"${where} matches no table in the snapshot; check its spelling against \`sl tables --source ${sourceName} --all\`.`);
+      warnings.push(`Pattern "${p}"${where} matches no table in the snapshot; check its spelling against \`semlayer tables --source ${sourceName} --all\`.`);
     }
     const fileKeys = new Set((nextList?.entries ?? []).map((e) => patternKey(e.pattern)));
     for (const p of notFound) {
@@ -504,7 +504,7 @@ const spec: CommandSpec = {
     let copyTo: string | undefined;
     if (write && fromText !== undefined) {
       copyTo = rootPath(ctx.root, nextList!.rel, "The table-list file");
-      checkReplace(copyTo, nextList!.rel, fromText, force, `rerun \`sl scope --source ${sourceName} --from-file ${fromArg} --write\``);
+      checkReplace(copyTo, nextList!.rel, fromText, force, `rerun \`semlayer scope --source ${sourceName} --from-file ${fromArg} --write\``);
     }
     let toPath: string | undefined;
     let toText: string | undefined;
@@ -512,7 +512,7 @@ const spec: CommandSpec = {
       if (!afterTables.length) throw new UserError("No table is in scope, so there is nothing to write; an empty table-list file would select every table. Widen the scope first.");
       toPath = toFilePath(ctx.root, toArg);
       toText = renderTableList(sourceName, afterTables, tables);
-      checkReplace(toPath, toArg, toText, force, `rerun \`sl scope --source ${sourceName} --to-file ${toArg}\``);
+      checkReplace(toPath, toArg, toText, force, `rerun \`semlayer scope --source ${sourceName} --to-file ${toArg}\``);
     }
     if (copyTo !== undefined && fromText !== undefined) {
       mkdirSync(dirname(copyTo), { recursive: true });
@@ -606,11 +606,11 @@ const spec: CommandSpec = {
     if (toRel !== null) {
       const shown = relative(ctx.cwd, toPath!) || toPath!;
       lines.push(`Wrote ${plural(afterTables.length, "table")} to ${toRel}.`);
-      if (!write) lines.push(`The source file is unchanged. To make the file this source's selection, run \`sl scope --source ${sourceName} --from-file ${shown} --write\`.`);
+      if (!write) lines.push(`The source file is unchanged. To make the file this source's selection, run \`semlayer scope --source ${sourceName} --from-file ${shown} --write\`.`);
     }
     if (write) {
       if (copyTo !== undefined) lines.push(`Copied ${fromArg} to ${nextList!.rel}.`);
-      lines.push(`Saved the scope to ${paths(ctx.root).source(sourceName)}. Next: \`sl validate\`.`);
+      lines.push(`Saved the scope to ${paths(ctx.root).source(sourceName)}. Next: \`semlayer validate\`.`);
     } else if (toRel === null) {
       lines.push(
         fromArg !== undefined

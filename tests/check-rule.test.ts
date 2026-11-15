@@ -9,7 +9,7 @@ import { checkRule, closestNames, ruleCounts } from "../skills/semantic-layer/sc
 import { listModels, loadModel, loadSnapshot, loadSource } from "../skills/semantic-layer/scripts/lib/project.ts";
 import type { Model } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -96,14 +96,14 @@ function withCustomerOrders(root: string): void {
   writeYaml(path, m);
 }
 
-// Every file under root with its size and modification time, .sl/plans left out.
+// Every file under root with its size and modification time, .semlayer/plans left out.
 function files(root: string): Record<string, string> {
   const out: Record<string, string> = {};
   const walk = (dir: string) => {
     for (const f of readdirSync(dir)) {
       const p = join(dir, f);
       const rel = relative(root, p);
-      if (rel.startsWith(join(".sl", "plans"))) continue;
+      if (rel.startsWith(join(".semlayer", "plans"))) continue;
       const s = statSync(p);
       if (s.isDirectory()) walk(p);
       else out[rel] = `${s.size}:${s.mtimeMs}`;
@@ -114,7 +114,7 @@ function files(root: string): Record<string, string> {
 }
 
 const rule = (root: string, source: string, model: string, flag: "--filter" | "--dimension-expr", text: string, extra: string[] = [], env = {}) =>
-  sl(root, ["check-rule", "--source", source, "--model", model, flag, text, ...extra], env);
+  semlayer(root, ["check-rule", "--source", source, "--model", model, flag, text, ...extra], env);
 
 // Expected counts on the fixture, from hand-written SQL over its tables.
 const ONE_HOP = "customer.acquisition_channel = 'paid_search'";
@@ -138,18 +138,18 @@ describe("check-rule on Acme's lake (duckdb)", () => {
     const y = r.json<Yes>();
     expect(y).toMatchObject({ expressible: true, source: "lake", model: "sessions", kind: "filter", joins_used: [], joins: [], rows_matched: 4380, rows_total: 8000 });
     expect(y.sql).toBe('select\n  count(*) filter (where device = \'mobile\') as "rows_matched",\n  count(*) as "rows_total"\nfrom "main"."sessions"');
-    expect(y.next).toContain("sl set lake.sessions.<measure> filter 'device = '\\''mobile'\\'''");
+    expect(y.next).toContain("semlayer set lake.sessions.<measure> filter 'device = '\\''mobile'\\'''");
     const plain = await rule(root, "lake", "sessions", "--filter", "device = 'mobile'");
     expect(plain.out).toBe(
       "The layer can express this filter on lake.sessions.\nIt matches 4380 of 8000 rows of sessions (54.8%).\n" +
-        "Put it on a field with this entry in the turn's sl apply --file -: [\"set\", \"lake.sessions.<measure>\", \"filter\", \"device = 'mobile'\"] " +
-          "(on its own: sl set lake.sessions.<measure> filter 'device = '\\''mobile'\\'''), read it back to the owner, and approve it only after they say yes.",
+        "Put it on a field with this entry in the turn's semlayer apply --file -: [\"set\", \"lake.sessions.<measure>\", \"filter\", \"device = 'mobile'\"] " +
+          "(on its own: semlayer set lake.sessions.<measure> filter 'device = '\\''mobile'\\'''), read it back to the owner, and approve it only after they say yes.",
     );
     const dim = (await rule(root, "lake", "sessions", "--dimension-expr", "utm_channel -- the raw channel", ["--json"])).json<Yes>();
     expect(dim.sql).toBe('select\n  count((utm_channel -- the raw channel\n)) as "rows_matched",\n  count(*) as "rows_total"\nfrom "main"."sessions"');
     expect(dim.rows_total).toBe(8000);
     expect(dim.rows_matched).toBeLessThan(8000);
-    expect(dim.next).toContain("sl set lake.sessions.<dimension> expr");
+    expect(dim.next).toContain("semlayer set lake.sessions.<dimension> expr");
   }, 30_000);
 
   test("an aggregate, a window function, a subquery and an unknown column are refused with what to do", async () => {
@@ -162,7 +162,7 @@ describe("check-rule on Acme's lake (duckdb)", () => {
     expect(await no("count(*) > 1")).toMatchObject({
       code: "aggregate",
       reason: "the filter needs an aggregate (count()) over sessions; a rule is read row by row on sessions",
-      suggestion: "Ask the owner for a view with one row per session and count_sessions, model it with a join from sessions, and run sl check-rule again with the rule over that join.",
+      suggestion: "Ask the owner for a view with one row per session and count_sessions, model it with a join from sessions, and run semlayer check-rule again with the rule over that join.",
     });
     expect((await no("started_at = min(started_at) over (partition by device)")).suggestion).toContain("one row per device and min_started_at");
     expect((await no("row_number() over (order by started_at)", "--dimension-expr")).code).toBe("aggregate");
@@ -173,7 +173,7 @@ describe("check-rule on Acme's lake (duckdb)", () => {
     expect(unknown).toMatchObject({
       code: "unknown_column",
       reason: '"devise" is not a column of main.sessions, the table of model sessions; the closest names are device',
-      suggestion: "Write one of the closest names (device), or, if the column is new, run sl introspect --source lake and check the rule again.",
+      suggestion: "Write one of the closest names (device), or, if the column is new, run semlayer introspect --source lake and check the rule again.",
     });
     const plain = await rule(root, "lake", "sessions", "--filter", "devise = 'mobile'");
     expect(plain.out.split("\n")[0]).toBe('The layer cannot express this filter on lake.sessions: "devise" is not a column of main.sessions, the table of model sessions; the closest names are device.');
@@ -199,7 +199,7 @@ describe("check-rule on Acme's lake (duckdb)", () => {
     expect(fromFile.json()).toEqual(live);
     const rows = join(root, "..", "rows.json");
     writeJson(rows, [row]);
-    expect((await sl(root, ["results", "add", "--plan", plan.plan_id, "--query", id, "--file", rows])).code).toBe(0);
+    expect((await semlayer(root, ["results", "add", "--plan", plan.plan_id, "--query", id, "--file", rows])).code).toBe(0);
     const fromPlan = await rule(root, "lake", "sessions", "--filter", "utm_channel is null", ["--plan", plan.plan_id, "--json"]);
     expect(fromPlan.json()).toEqual(live);
     expect(files(root)).toEqual(before);
@@ -275,14 +275,14 @@ describe("check-rule on Acme's warehouse, loaded into duckdb", () => {
     expect(await no("customers", "min(orders.created_at) >= date '2025-01-01'")).toMatchObject({
       code: "aggregate",
       reason: "the filter needs an aggregate (min()) over orders; a rule is read row by row on customers",
-      suggestion: "Ask the owner for a view with one row per customer and min_created_at, model it with a join from customers, and run sl check-rule again with the rule over that join.",
+      suggestion: "Ask the owner for a view with one row per customer and min_created_at, model it with a join from customers, and run semlayer check-rule again with the rule over that join.",
     });
     expect((await no("orders", "created_at = min(created_at) over (partition by customer_id)")).suggestion).toContain("one row per customer and min_created_at");
     expect(await no("customers", "orders.status = 'cancelled'")).toMatchObject({
       code: "to_many_join",
       reason: "orders.status reads through join customers.orders, which is one_to_many: it would repeat rows of customers",
       suggestion:
-        "Add a many_to_one or one_to_one join from customers that reaches the column (sl check-join measures it), or ask the owner for a view with one row per customer that holds what the rule needs, model it, and run sl check-rule on it.",
+        "Add a many_to_one or one_to_one join from customers that reaches the column (semlayer check-join measures it), or ask the owner for a view with one row per customer that holds what the rule needs, model it, and run semlayer check-rule on it.",
     });
     expect((await no("orders", "acme.dim_customers.email like '%@x.test'")).code).toBe("other_table");
     expect((await no("orders", "dim_regions.region_name = 'x'")).code).toBe("other_table");
@@ -296,15 +296,15 @@ describe("check-rule on Acme's warehouse, loaded into duckdb", () => {
     expect((await no("refunds", "order.customer.home_region.region_name = 'x'")).code).toBe("too_many_hops");
     expect(await no("orders", "customer.address = 'x'")).toMatchObject({
       reason: 'customer.address: "address" is not a column of acme.dim_customers, the table of model customers that customer reaches; no name of it is close',
-      suggestion: "Write customer.<column> with a column of acme.dim_customers, or, if the column is new, run sl introspect --source warehouse and check the rule again.",
+      suggestion: "Write customer.<column> with a column of acme.dim_customers, or, if the column is new, run semlayer introspect --source warehouse and check the rule again.",
     });
     expect((await no("orders", "customr = 1")).reason).toContain("the closest names are customer.<column>");
     // Aggregates quoted or schema-qualified, and a schema-qualified function, are refused before the database reads them.
     for (const t of [`"count"(*) > 1`, "main.count(*) > 1", "status.count() > 1"]) expect((await no("orders", t)).code).toBe("aggregate");
-    expect(await no("orders", "pg_catalog.lower(status) = 'x'")).toMatchObject({ code: "other_table", suggestion: "Write lower(...) without pg_catalog., and run sl check-rule again." });
+    expect(await no("orders", "pg_catalog.lower(status) = 'x'")).toMatchObject({ code: "other_table", suggestion: "Write lower(...) without pg_catalog., and run semlayer check-rule again." });
   });
 
-  test("a join whose evidence shows fan-out is refused naming sl check-join", async () => {
+  test("a join whose evidence shows fan-out is refused naming semlayer check-join", async () => {
     const root = acmeCopy({ dialect: "duckdb", schema: "acme", database: ":memory:" });
     const path = join(root, "models", "warehouse", "orders.yaml");
     const m = readYaml<Model>(path);
@@ -314,8 +314,8 @@ describe("check-rule on Acme's warehouse, loaded into duckdb", () => {
     writeYaml(path, m);
     const r = (await rule(root, "warehouse", "orders", "--filter", ONE_HOP, ["--json"])).json<No>();
     expect(r.code).toBe("join_fans_out");
-    expect(r.suggestion).toContain("sl check-join --source warehouse --model orders --join customer");
-    expect(r.suggestion).toEndWith("then run sl check-rule again.");
+    expect(r.suggestion).toContain("semlayer check-join --source warehouse --model orders --join customer");
+    expect(r.suggestion).toEndWith("then run semlayer check-rule again.");
   });
 
   test("a rule that is not one read-only expression is refused (invariant 1)", async () => {
@@ -337,7 +337,7 @@ describe("check-rule on Acme's warehouse, loaded into duckdb", () => {
     expect(await code("status in (table acme.dim_customers)")).toBe("subquery");
     // An unterminated string or comment is a refusal that --json prints, naming what to close.
     const open = (await rule(root, "lake", "sessions", "--filter", "device = 'mobile", ["--json"])).json<No>();
-    expect(open).toMatchObject({ code: "invalid_rule", reason: "the filter has an unterminated string, so it is not one SQL expression", suggestion: "Close the string and run sl check-rule again." });
+    expect(open).toMatchObject({ code: "invalid_rule", reason: "the filter has an unterminated string, so it is not one SQL expression", suggestion: "Close the string and run semlayer check-rule again." });
     expect(await code("device = 'x' /* note")).toBe("invalid_rule");
     // A comment of its own, and a line comment, are still read.
     expect((await rule(root, "lake", "sessions", "--filter", "device = 'mobile' /* the app */ -- note", ["--json"])).json<Yes>().rows_matched).toBe(4380);
@@ -349,7 +349,7 @@ describe("check-rule on Acme's warehouse, loaded into duckdb", () => {
     expect(r.code).toBe(1);
     expect(`${r.out}\n${r.err}`).not.toMatch(/@[a-z0-9-]+\.example\.com/);
     expect(r.err).toContain("The rule reads the protected column email");
-    expect(r.err).toContain("run sl check-rule again");
+    expect(r.err).toContain("run semlayer check-rule again");
     // Over unprotected columns the database's message is kept.
     const plain = await rule(root, "warehouse", "orders", "--filter", "cast(status as integer) > 0");
     expect(plain.code).toBe(1);
@@ -388,7 +388,7 @@ describe("check-rule on Acme's warehouse on postgres", () => {
     "a one-hop and a two-hop filter count exactly; an aggregate and a to-many reference are refused",
     async () => {
       assertLocalPg(PG_URL);
-      const schema = uniqueSchema("sl_rule");
+      const schema = uniqueSchema("semlayer_rule");
       const db = new SQL({ url: PG_URL!, max: 1 });
       try {
         await loadPostgres(PG_URL!, DATA, schema);

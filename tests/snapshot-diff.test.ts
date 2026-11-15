@@ -137,11 +137,11 @@ describe("diffSnapshots", () => {
     expect(lines).toEqual([
       "Changes since the previous snapshot:",
       "  s.t: added x (int).",
-      "Columns were added: `sl draft --source wh --new-columns` drafts the new columns of modeled tables.",
+      "Columns were added: `semlayer draft --source wh --new-columns` drafts the new columns of modeled tables.",
     ]);
     const lost = changeLines({ tables_added: [], tables_removed: ["s.gone"], columns: [] }, "wh");
     expect(lost[lost.length - 1]).toBe(
-      "Removed or retyped columns and tables: `sl validate` reports the fields that read a removed column; read the affected fields back to the owner.",
+      "Removed or retyped columns and tables: `semlayer validate` reports the fields that read a removed column; read the affected fields back to the owner.",
     );
   });
 
@@ -155,7 +155,7 @@ describe("diffSnapshots", () => {
         { table: "s.v", added: [], removed: [], retyped: [{ name: "z", from: "int", to: "bigint" }] },
       ],
     };
-    expect(changeLines(diff, "wh", new Set(["s.u", "s.v"]))).toContain("Modeled tables gained columns (s.u): `sl draft --source wh --new-columns` drafts them.");
+    expect(changeLines(diff, "wh", new Set(["s.u", "s.v"]))).toContain("Modeled tables gained columns (s.u): `semlayer draft --source wh --new-columns` drafts them.");
     const none = changeLines(diff, "wh", new Set(["s.v"]));
     expect(none.some((l) => l.includes("--new-columns"))).toBe(false);
   });

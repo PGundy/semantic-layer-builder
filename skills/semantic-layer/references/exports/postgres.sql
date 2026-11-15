@@ -1,4 +1,4 @@
--- Schema export for PostgreSQL (12 or later), for `sl import`.
+-- Schema export for PostgreSQL (12 or later), for `semlayer import`.
 --
 -- Reads only the system catalog (pg_catalog): no table data is read and nothing is written.
 -- Returns one row per column, with its table's type, comment and row estimate, its primary
@@ -9,13 +9,13 @@
 --   psql -X "$DATABASE_URL" --csv -f postgres.sql > schema.csv
 -- (-X skips ~/.psqlrc, whose settings, such as \pset null, would change the CSV.)
 -- Then import it:
---   sl import --source <source> --file schema.csv
+--   semlayer import --source <source> --file schema.csv
 --
--- Restrict schemas: uncomment the line marked sl:schema-filter below and list the schemas,
--- or print this query with the filter applied: sl export-sql --dialect postgres --schemas a,b
+-- Restrict schemas: uncomment the line marked semlayer:schema-filter below and list the schemas,
+-- or print this query with the filter applied: semlayer export-sql --dialect postgres --schemas a,b
 --
--- Restrict tables: sl export-sql --include/--exclude prints this query with a table filter at the
--- line marked sl:table-filter (a pattern the dialect cannot express is applied by sl import).
+-- Restrict tables: semlayer export-sql --include/--exclude prints this query with a table filter at the
+-- line marked semlayer:table-filter (a pattern the dialect cannot express is applied by semlayer import).
 --
 -- row_count is the planner's estimate (pg_class.reltuples, kept by ANALYZE and autovacuum);
 -- it is empty for views and for tables never analyzed. Before PostgreSQL 14 a table never
@@ -44,8 +44,8 @@ with rel as (
     and n.nspname not in ('pg_catalog', 'information_schema')
     and n.nspname !~ '^pg_toast'
     and n.nspname !~ '^pg_temp'
-    -- and n.nspname in ('public')  -- sl:schema-filter: uncomment and list the schemas to export
-    -- sl:table-filter: sl export-sql --include/--exclude writes the table filter here
+    -- and n.nspname in ('public')  -- semlayer:schema-filter: uncomment and list the schemas to export
+    -- semlayer:table-filter: semlayer export-sql --include/--exclude writes the table filter here
 ),
 pk as (
   select con.conrelid as oid, k.attnum, k.ord as pk_ordinal

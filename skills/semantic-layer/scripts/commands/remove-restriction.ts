@@ -12,10 +12,10 @@ const spec: CommandSpec = {
   writes: "whole",
   async run({ positionals }, ctx) {
     loadProject(ctx.root);
-    if (positionals.length !== 1) throw new UserError("Usage: sl remove-restriction <name>.");
+    if (positionals.length !== 1) throw new UserError("Usage: semlayer remove-restriction <name>.");
     const o = removeEntry(ctx.root, "restriction", positionals[0]);
     if (ctx.json) ctx.out(formatJson({ ...o, restriction: o.name }));
-    else ctx.out([`Removed restriction ${o.name} from ${o.file}.`, ...accessEditLines(o, `sl access shows what the default audience sees again; ${READBACK_NEXT}`)].join("\n"));
+    else ctx.out([`Removed restriction ${o.name} from ${o.file}.`, ...accessEditLines(o, `semlayer access shows what the default audience sees again; ${READBACK_NEXT}`)].join("\n"));
     return 0;
   },
 };

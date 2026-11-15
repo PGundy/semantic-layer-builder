@@ -24,7 +24,7 @@ export interface TableRow {
   profile_state: ProfileState;
   score: number;
   reasons: string[];
-  // Statements of the saved queries that read the table (sl usage add); only when there are any.
+  // Statements of the saved queries that read the table (semlayer usage add); only when there are any.
   usage?: number;
 }
 
@@ -37,7 +37,7 @@ export function sourceFlag(values: Record<string, unknown>, project: Project): s
   return s;
 }
 
-// Whether a table's profile is complete, by the rule sl status applies: profiled_at is set.
+// Whether a table's profile is complete, by the rule semlayer status applies: profiled_at is set.
 export function isProfiled(t: SnapshotTable): boolean {
   return profileState(t) === "yes";
 }
@@ -75,7 +75,7 @@ function shellQuote(s: string): string {
 
 export function scopeCommand(source: string, scope: SuggestedScope): string {
   return [
-    `sl scope --source ${source}`,
+    `semlayer scope --source ${source}`,
     ...scope.include.map((p) => `--include ${shellQuote(p)}`),
     ...scope.exclude.map((p) => `--exclude ${shellQuote(p)}`),
   ].join(" ");
@@ -171,7 +171,7 @@ const spec: CommandSpec = {
     if (usage) {
       const unused = rows.filter((r) => r.in_scope && !r.usage).map((r) => r.table);
       lines.push(
-        `used: statements of the saved queries that read each table (sl usage show --source ${sourceName} for what they do). ` +
+        `used: statements of the saved queries that read each table (semlayer usage show --source ${sourceName} for what they do). ` +
           (unused.length
             ? `${unused.length} in-scope table${unused.length === 1 ? " appears" : "s appear"} in no saved query: ${unused.slice(0, 12).join(", ")}${unused.length > 12 ? ", …" : ""}. Ask the owner whether to leave ${unused.length === 1 ? "it" : "them"} out.`
             : "Every in-scope table appears in a saved query."),
@@ -180,13 +180,13 @@ const spec: CommandSpec = {
     if (needsFocus) {
       lines.push(
         `${inScopeCount} in-scope tables is more than the focus threshold of ${focus_threshold}. ` +
-          `Ask the owner which tables to focus on first; run \`sl tables --source ${sourceName} --groups\` to see patterns to choose from, ` +
-          `then preview with \`sl scope --source ${sourceName} --include <pattern>\`.`,
+          `Ask the owner which tables to focus on first; run \`semlayer tables --source ${sourceName} --groups\` to see patterns to choose from, ` +
+          `then preview with \`semlayer scope --source ${sourceName} --include <pattern>\`.`,
       );
     }
     if (groups) {
       lines.push("");
-      lines.push("Groups (use a pattern with `sl scope --include` or `--exclude`):");
+      lines.push("Groups (use a pattern with `semlayer scope --include` or `--exclude`):");
       lines.push(groups.length ? formatTable(groupRows(groups)) : "(no groups of 2 or more tables)");
       if (groups.some((g) => g.pattern.length > PATTERN_WIDTH)) {
         lines.push(`Patterns longer than ${PATTERN_WIDTH} characters end in …; pass --json for the full text.`);

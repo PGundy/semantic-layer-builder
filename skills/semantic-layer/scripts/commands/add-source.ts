@@ -109,7 +109,7 @@ const spec: CommandSpec = {
     if (values.schemas !== undefined && !schemas.length) throw new UserError(`--schemas needs at least one schema name; ${SCHEMA_NAME_HINT}.`);
     const schemaIssues = schemaListIssues(schemas, { dialect, connection: { database } }, (i) => `name ${i + 1}`);
     const schemaError = schemaIssues.find((x) => x.level === "error");
-    if (schemaError) throw new UserError(`--schemas: ${schemaError.path} ${schemaError.message}. Fix it and run sl add-source again.`);
+    if (schemaError) throw new UserError(`--schemas: ${schemaError.path} ${schemaError.message}. Fix it and run semlayer add-source again.`);
 
     if (env !== undefined) checkEnv(env, dialect);
     if (dialect === "postgres" && !env) {
@@ -154,8 +154,8 @@ const spec: CommandSpec = {
     const schemaArg = schemaList.includes("$") ? `'${schemaList}'` : schemaList;
     const schemaFlag = schemas.length ? ` --schemas ${schemaArg}` : dialect === "bigquery" ? " --schemas <dataset>" : "";
     const next = runnable
-      ? `sl introspect --source ${name}${schemaFlag}`
-      : `sl introspect --source ${name}${schemaFlag} --emit-sql, run the queries with your own tool, then rerun with --results <file>`;
+      ? `semlayer introspect --source ${name}${schemaFlag}`
+      : `semlayer introspect --source ${name}${schemaFlag} --emit-sql, run the queries with your own tool, then rerun with --results <file>`;
     // Setup statements and the database value stay out of the output.
     const viewNames = Object.keys(connection.views ?? {});
     const setupCount = connection.setup?.length ?? 0;

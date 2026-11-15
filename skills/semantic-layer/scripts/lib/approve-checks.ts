@@ -1,8 +1,8 @@
-// What an item needs before sl approve records its approval: a model's grain and primary_key, a
-// measure's or metric's description, a metric's measure references, and whatever else sl validate
-// would raise of the item once it is approved (approvedIssues). sl approve refuses an item that lacks
-// one, and sl readback refuses to read such an item back, so the owner never says yes to an item the
-// approval would then refuse, and approving never adds a validate issue (spec: sl readback).
+// What an item needs before semlayer approve records its approval: a model's grain and primary_key, a
+// measure's or metric's description, a metric's measure references, and whatever else semlayer validate
+// would raise of the item once it is approved (approvedIssues). semlayer approve refuses an item that lacks
+// one, and semlayer readback refuses to read such an item back, so the owner never says yes to an item the
+// approval would then refuse, and approving never adds a validate issue (spec: semlayer readback).
 import { existsSync, readFileSync } from "node:fs";
 import { UNHASHED_MESSAGE } from "./approval-hash.ts";
 import { itemMap, locate, pathText, relFile } from "./edit.ts";
@@ -24,7 +24,7 @@ export function describedProblem(ref: string, kind: string, item: { description?
   return item.description && item.description.trim() ? null : `${kind} ${ref} has no description`;
 }
 
-// Whether a reference is exactly model.measure, the form sl validate accepts.
+// Whether a reference is exactly model.measure, the form semlayer validate accepts.
 function isMeasureRef(r: string): boolean {
   const parts = r.split(".");
   return parts.length === 2 && parts.every((p) => NAME_PATTERN.test(p));
@@ -59,7 +59,7 @@ export function metricMeasureRefs(m: Metric): { refs: { ref: string; key: Metric
 }
 
 // A metric's own problems and the measures it names that are drafts. A draft measure is refused by
-// sl approve only: the owner may approve it before the metric, in the same readback.
+// semlayer approve only: the owner may approve it before the metric, in the same readback.
 export function metricProblems(root: string, metric: Metric): { problems: string[]; drafts: string[] } {
   const { problems, drafts } = metricChecks(root, metric);
   return { problems: problems.map((p) => p.text), drafts };
@@ -70,7 +70,7 @@ function metricChecks(root: string, metric: Metric): { problems: MetricProblem[]
   const missing = describedProblem(`metric:${metric.name}`, "Metric", metric);
   if (missing) problems.push({ text: missing, key: "description" });
   const drafts: string[] = [];
-  // A metric whose source is not a name has no measures to look up: sl validate reports it.
+  // A metric whose source is not a name has no measures to look up: semlayer validate reports it.
   if (typeof metric.source !== "string") return { problems, drafts };
   const { refs, problems: refProblems } = metricMeasureRefs(metric);
   problems.push(...refProblems);
@@ -85,7 +85,7 @@ function metricChecks(root: string, metric: Metric): { problems: MetricProblem[]
   return { problems, drafts: [...new Set(drafts)] };
 }
 
-// One thing an item lacks, and the typed edit (the words after "sl") that gives it, when one does.
+// One thing an item lacks, and the typed edit (the words after "semlayer") that gives it, when one does.
 export interface Lack {
   target: string;
   text: string;
@@ -93,9 +93,9 @@ export interface Lack {
 }
 
 // Issues an approval adds that are not the item's to fix before it: the approval's own bookkeeping
-// (its hash and the owner's recorded yes, which sl approve writes and checks), the lacks checked
-// above, a join without evidence (sl approve warns of it, and on an export source it waits on a
-// connection, decision D2), and a metric's draft measures (sl approve refuses the metric until they
+// (its hash and the owner's recorded yes, which semlayer approve writes and checks), the lacks checked
+// above, a join without evidence (semlayer approve warns of it, and on an export source it waits on a
+// connection, decision D2), and a metric's draft measures (semlayer approve refuses the metric until they
 // are approved, which may happen in the same readback).
 const APPROVAL_OWN = [
   "changed since it was approved",
@@ -107,14 +107,14 @@ const APPROVAL_OWN = [
   "an approved metric may use only approved measures",
 ];
 
-// The words of sl validate's warning on an untagged field that looks sensitive, which a tag fixes.
+// The words of semlayer validate's warning on an untagged field that looks sensitive, which a tag fixes.
 const SENSITIVE_UNTAGGED = "is visible to everyone and looks sensitive";
 
-// The words of sl validate's error on an approved to-one join whose evidence fans out, which the
+// The words of semlayer validate's error on an approved to-one join whose evidence fans out, which the
 // owner's reason in fanout_override settles when the keys and relationship are right.
 const FANS_OUT = "so the join fans out";
 
-// The sl set that records the owner's reason on the join an issue at `path` is about: the target
+// The semlayer set that records the owner's reason on the join an issue at `path` is about: the target
 // itself when it is the join, or the join of the model target the path names.
 function fanoutEdit(root: string, target: string, path: string): string[] | undefined {
   let ref = target;
@@ -132,7 +132,7 @@ const PLACEHOLDER: Record<string, string> = {
   currency: "<ISO 4217 code, such as USD, as the owner said>",
 };
 
-// What sl validate would raise of `refs` once they are approved that it does not raise now: the
+// What semlayer validate would raise of `refs` once they are approved that it does not raise now: the
 // layer is validated as it is and as it would read with every target approved (its hash left out,
 // which APPROVAL_OWN passes over).
 export function approvedIssues(root: string, refs: string[]): Lack[] {
@@ -167,7 +167,7 @@ export function approvedIssues(root: string, refs: string[]): Lack[] {
           ),
         );
       } catch {
-        // A file that is not a mapping is left to the readback and to sl validate, which name it.
+        // A file that is not a mapping is left to the readback and to semlayer validate, which name it.
       }
     }
     return overrides;
@@ -194,14 +194,14 @@ export function approvedIssues(root: string, refs: string[]): Lack[] {
           : i.message.includes(FANS_OUT)
             ? fanoutEdit(root, target, i.path)
             : undefined;
-    out.push({ target, text: `once approved, sl validate says ${i.file}${i.path ? ` ${i.path}` : ""}: ${i.message}`, ...(edit ? { edit } : {}) });
+    out.push({ target, text: `once approved, semlayer validate says ${i.file}${i.path ? ` ${i.path}` : ""}: ${i.message}`, ...(edit ? { edit } : {}) });
   }
   return out;
 }
 
 const DESCRIBE = "<what it means, in the owner's words>";
 
-// What each target lacks that sl approve would refuse it for, besides the owner's yes. Unknown
+// What each target lacks that semlayer approve would refuse it for, besides the owner's yes. Unknown
 // targets are left to the readback, which names them.
 export function approvalLacks(root: string, refs: string[]): Lack[] {
   const out: Lack[] = [];
@@ -239,40 +239,40 @@ export function approvalLacks(root: string, refs: string[]): Lack[] {
   return [...out, ...approvedIssues(root, refs)];
 }
 
-// The sl apply input that gives every item what it lacks, for the lacks a typed edit gives.
+// The semlayer apply input that gives every item what it lacks, for the lacks a typed edit gives.
 export function lacksFile(lacks: Lack[]): string {
   return JSON.stringify({ edits: lacks.flatMap((l) => (l.edit ? [l.edit] : [])) });
 }
 
-// The sentence sl next gives in place of a readback its targets are not ready for: what each lacks
-// and the one sl apply that gives it.
+// The sentence semlayer next gives in place of a readback its targets are not ready for: what each lacks
+// and the one semlayer apply that gives it.
 export function lacksNote(lacks: Lack[]): string {
   const head =
-    `sl readback would refuse ${lacks.length === 1 ? "this item" : "these items"} first, because sl approve would refuse ${lacks.length === 1 ? "it" : "them"} after the owner's yes: ` +
+    `semlayer readback would refuse ${lacks.length === 1 ? "this item" : "these items"} first, because semlayer approve would refuse ${lacks.length === 1 ? "it" : "them"} after the owner's yes: ` +
     `${lacks.map((l) => `${l.target}: ${l.text}`).join("; ")}.`;
-  if (!lacks.some((l) => l.edit)) return `${head} Fix each with a typed edit as its words say (sl validate lists them), then read them back.`;
+  if (!lacks.some((l) => l.edit)) return `${head} Fix each with a typed edit as its words say (semlayer validate lists them), then read them back.`;
   const other = lacks.some((l) => !l.edit) ? " Add a typed edit to that input for each lack it does not cover, as its words say." : "";
   return `${head} Ask the owner for each <placeholder> you do not know, then run the command below with this on its standard input: ${lacksFile(lacks)}.${other} Then read them back.`;
 }
 
-// sl readback's refusal of targets sl approve would refuse after the owner's yes: each item, what it
-// lacks, and the one sl apply that gives them all.
+// semlayer readback's refusal of targets semlayer approve would refuse after the owner's yes: each item, what it
+// lacks, and the one semlayer apply that gives them all.
 export function readbackGate(root: string, refs: string[]): void {
   const lacks = approvalLacks(root, refs);
   if (!lacks.length) return;
   const edits = lacks.filter((l) => l.edit);
   const fix = edits.length
     ? [
-        `Give ${lacks.length === 1 ? "it" : "them"} in one command, each <placeholder> filled in from what the owner said (ask them for what you do not know)${edits.length < lacks.length ? ", fix the other lines as their words say" : ""}, then run the same sl readback again:`,
-        `  sl apply --file - with this on its standard input: ${lacksFile(lacks)}`,
+        `Give ${lacks.length === 1 ? "it" : "them"} in one command, each <placeholder> filled in from what the owner said (ask them for what you do not know)${edits.length < lacks.length ? ", fix the other lines as their words say" : ""}, then run the same semlayer readback again:`,
+        `  semlayer apply --file - with this on its standard input: ${lacksFile(lacks)}`,
       ]
-    : ["Fix each as its words say, with a typed edit (several in one sl apply --file -), then run the same sl readback again."];
+    : ["Fix each as its words say, with a typed edit (several in one semlayer apply --file -), then run the same semlayer readback again."];
   throw new UserError(
     [
-      `Cannot read ${lacks.length === 1 ? "this item" : "these items"} back yet: sl approve would refuse ${lacks.length === 1 ? "it" : "them"} after the owner's yes, so nothing was written.`,
+      `Cannot read ${lacks.length === 1 ? "this item" : "these items"} back yet: semlayer approve would refuse ${lacks.length === 1 ? "it" : "them"} after the owner's yes, so nothing was written.`,
       ...lacks.map((l) => `  - ${l.target}: ${l.text}`),
       ...fix,
     ].join("\n"),
-    "sl apply --file -",
+    "semlayer apply --file -",
   );
 }

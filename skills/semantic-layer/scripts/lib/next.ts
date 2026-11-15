@@ -1,4 +1,4 @@
-// The one next action of the skill (sl next): sl status's next step, read together with the answer
+// The one next action of the skill (semlayer next): semlayer status's next step, read together with the answer
 // ledger, the pending readbacks and the stored query plans. It reads files only and writes nothing.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -35,12 +35,12 @@ export interface ConnectorTask {
   finish: string;
 }
 
-// The action as data: the sl command, its arguments and the kind. run.command is it printed.
+// The action as data: the semlayer command, its arguments and the kind. run.command is it printed.
 export interface NextStepAction {
   command: string;
   args: string[];
   kind: NextKind;
-  // What the command reads on its standard input (sl apply --file -, sl reply --answers -), with <placeholders> for the owner's answers.
+  // What the command reads on its standard input (semlayer apply --file -, semlayer reply --answers -), with <placeholders> for the owner's answers.
   stdin?: string;
 }
 
@@ -62,7 +62,7 @@ export interface NextAction {
   // and the line or lines to add, with <placeholders> for the values.
   connection?: { source: string; variables: string[]; add_to: string; line_to_add: string };
   // On an action of the access phase: the owner's changes to who sees an item, recorded on that
-  // item's readback (sl reply --about access) and not yet settled by a yes to access.yaml.
+  // item's readback (semlayer reply --about access) and not yet settled by a yes to access.yaml.
   access_changes?: { id: string; target: string; text: string; by: string }[];
 }
 
@@ -74,18 +74,18 @@ function fromAction(a: StepAction | NextStepAction, phase: string, why: string, 
   return { kind: a.kind, phase, why, action, blocked_on };
 }
 
-const REPLY = (id: string) => `sl reply --readback ${id} --item <n> --text "<owner's words>" --verdict yes|no|change --by "<owner>"`;
+const REPLY = (id: string) => `semlayer reply --readback ${id} --item <n> --text "<owner's words>" --verdict yes|no|change --by "<owner>"`;
 const EDITS =
-  "a typed edit (sl set, sl tag, sl ignore-column, sl question add, sl add-field, sl remove-field, sl add-metric, sl remove-metric, sl add-join, sl remove-join or sl rename), " +
-  "every edit of the owner's turn as one entry of one sl apply --file -";
+  "a typed edit (semlayer set, semlayer tag, semlayer ignore-column, semlayer question add, semlayer add-field, semlayer remove-field, semlayer add-metric, semlayer remove-metric, semlayer add-join, semlayer remove-join or semlayer rename), " +
+  "every edit of the owner's turn as one entry of one semlayer apply --file -";
 // Who sees an item is decided once, in the access phase, so a change to it never holds the item.
 const ABOUT_ACCESS = "--verdict change --about access";
 const ACCESS_EDITS =
-  "sl add-role, sl add-restriction, sl add-row-filter, sl add-attribute, sl set access role:<name> <key> <value> (also restriction:<name>, attribute:<name>, mode, default_role), " +
-  "sl tag <ref> pii|sensitive, or sl remove-role, sl remove-restriction, sl remove-row-filter, sl remove-attribute";
+  "semlayer add-role, semlayer add-restriction, semlayer add-row-filter, semlayer add-attribute, semlayer set access role:<name> <key> <value> (also restriction:<name>, attribute:<name>, mode, default_role), " +
+  "semlayer tag <ref> pii|sensitive, or semlayer remove-role, semlayer remove-restriction, semlayer remove-row-filter, semlayer remove-attribute";
 
 // A target's content hash as it now stands, or null when it no longer exists. A golden's hash covers
-// rows only a run gives, so while its file exists the hash a readback stored stands, as sl reply reads it.
+// rows only a run gives, so while its file exists the hash a readback stored stands, as semlayer reply reads it.
 function hashNow(root: string, d: StatusDetail, target: string, stored: string): string | null {
   const golden = /^golden:([a-z][a-z0-9_]*)$/.exec(target)?.[1];
   if (golden) return existsSync(paths(root).golden(golden)) ? stored : null;
@@ -110,18 +110,18 @@ function goldenSource(root: string, name: string): SourceConfig | undefined {
   }
 }
 
-// Whether sl can run a golden's SQL itself, as sl status reads it (a dialect sl runs, not an export,
+// Whether semlayer can run a golden's SQL itself, as semlayer status reads it (a dialect semlayer runs, not an export,
 // a connection named); otherwise its readback and confirm take --plan or --results.
 function goldenRunnable(root: string, name: string): boolean {
   const source = goldenSource(root, name);
   return !source || liveRunnable(source);
 }
 
-// For a golden sl cannot run: `args` with --plan <id> of a stored plan of `sl goldens run --name <name>`
+// For a golden semlayer cannot run: `args` with --plan <id> of a stored plan of `semlayer goldens run --name <name>`
 // that has every result; an action writing that plan when none is stored; undefined while one waits
 // on results (the connector runner's dispatch comes first).
 function withGoldenPlan(root: string, name: string, command: string, args: string[]): StepAction | undefined {
-  const plans = storedPlans(root).filter((p) => p.finish === `sl goldens run --name ${name} --plan ${p.plan_id}`);
+  const plans = storedPlans(root).filter((p) => p.finish === `semlayer goldens run --name ${name} --plan ${p.plan_id}`);
   const done = plans.find((p) => p.complete);
   if (done) return act(command, [...args, "--plan", done.plan_id]);
   return plans.length ? undefined : act("goldens", ["run", "--name", name, "--emit-sql"]);
@@ -151,7 +151,7 @@ function approvalReady(root: string, d: StatusDetail): NextAction | undefined {
     if (golden !== undefined) {
       if (!existsSync(paths(root).golden(golden)) || t?.hash === r.content_hash) continue;
       // An export source's golden confirm refuses (Decision D2): the yes stays in the ledger for after
-      // the upgrade, and sl status's connect step names that upgrade.
+      // the upgrade, and semlayer status's connect step names that upgrade.
       const source = goldenSource(root, golden);
       if (source && intakeMode(source) === "export") continue;
       const confirm = goldenRunnable(root, golden) ? act("goldens", ["confirm", "--name", golden]) : withGoldenPlan(root, golden, "goldens", ["confirm", "--name", golden]);
@@ -162,14 +162,14 @@ function approvalReady(root: string, d: StatusDetail): NextAction | undefined {
         targetPhase(d.status, target),
         `The owner said yes to golden:${golden} as read back (${r.id} in the ledger) and it is not confirmed with those rows yet. ` +
           (write
-            ? `sl cannot run its SQL and no plan of its rows has every result: write one with the command below, store the rows with sl results add, then run sl next again.`
+            ? `semlayer cannot run its SQL and no plan of its rows has every result: write one with the command below, store the rows with semlayer results add, then run semlayer next again.`
             : "Confirm it, passing the same --results or --plan the readback used; confirm refuses if the rows changed since."),
         blocked_on,
       );
     }
     if (!t || t.hash !== r.content_hash || t.state === "current" || t.state === "unhashed") continue;
     // Yeses of one readback, each ready to approve and none that approve would refuse, are approved
-    // in one sl approve --readback, as the owner's turn answered them.
+    // in one semlayer approve --readback, as the owner's turn answered them.
     const ofReadback = [...last.keys()].filter((x) => !x.startsWith("golden:") && latestReply(d.replies, x)?.verdict === "yes" && latestReply(d.replies, x)?.readback_id === r.readback_id);
     const ready = ofReadback.filter((x) => {
       const tx = d.targets.get(x);
@@ -195,7 +195,7 @@ function approvalReady(root: string, d: StatusDetail): NextAction | undefined {
   return undefined;
 }
 
-// The readbacks in .sl/pending/, oldest first; a file that is not a valid readback is skipped (sl validate reports it).
+// The readbacks in .semlayer/pending/, oldest first; a file that is not a valid readback is skipped (semlayer validate reports it).
 function pendingReadbacks(root: string): PendingReadback[] {
   const dir = join(root, PENDING_DIR);
   if (!existsSync(dir)) return [];
@@ -254,10 +254,10 @@ function askOwner(root: string, d: StatusDetail): NextAction | undefined {
         `Readback ${p.readback_id} has ${open.length} item(s) waiting for the owner's answer: ${open.map((i) => `${i.n} (${i.target})`).join(", ")}. ` +
         `Read each to the owner as written, ending with "Approve?", then ` +
         (open.length > 1
-          ? `record the turn's answers, each item with its own verdict and their words, and approve each yes in one sl reply --readback ${p.readback_id} --answers - --approve (one answer alone: ${REPLY(p.readback_id)}). `
+          ? `record the turn's answers, each item with its own verdict and their words, and approve each yes in one semlayer reply --readback ${p.readback_id} --answers - --approve (one answer alone: ${REPLY(p.readback_id)}). `
           : `record the answer in their words with ${REPLY(p.readback_id)}. `) +
         `A change only to who sees an item is recorded with ${ABOUT_ACCESS} and never holds the item.${kept}${asked} ` +
-        `A readback the owner will not answer is set aside with sl readback --discard ${p.readback_id}.`,
+        `A readback the owner will not answer is set aside with semlayer readback --discard ${p.readback_id}.`,
       // More than one open item: the batched reply, its answers on stdin, one entry per item.
       action:
         open.length > 1
@@ -275,9 +275,9 @@ function askOwner(root: string, d: StatusDetail): NextAction | undefined {
   return undefined;
 }
 
-// The stored plans of .sl/plans/, by plan id, each with its status; a plan that cannot be read is skipped.
+// The stored plans of .semlayer/plans/, by plan id, each with its status; a plan that cannot be read is skipped.
 function storedPlans(root: string): ReturnType<typeof planStatus>[] {
-  const dir = join(root, ".sl", "plans");
+  const dir = join(root, ".semlayer", "plans");
   if (!existsSync(dir)) return [];
   const ids = readdirSync(dir)
     .filter((f) => f.endsWith(".json") && PLAN_ID_PATTERN.test(f.slice(0, -5)))
@@ -306,8 +306,8 @@ function dispatchRunner(root: string, d: StatusDetail): NextAction | undefined {
     phase: PLAN_PHASE[plan.command] ?? d.status.next_step.phase,
     why:
       `Query plan ${plan.plan_id} (${plan.command} on "${plan.source}") still needs results for ${queries.length} of ${plan.queries.length} queries. ` +
-      `A connector runner runs each read-only query with a row limit of its max_rows and stores the rows with sl results add; then run ${plan.finish}. ` +
-      `A plan nobody needs any more is removed by deleting .sl/plans/${plan.plan_id}.json.`,
+      `A connector runner runs each read-only query with a row limit of its max_rows and stores the rows with semlayer results add; then run ${plan.finish}. ` +
+      `A plan nobody needs any more is removed by deleting .semlayer/plans/${plan.plan_id}.json.`,
     // The runner's own check of what the plan still needs.
     action: { command: "results", args: ["status", "--plan", plan.plan_id], kind: "dispatch" },
     dispatch: {
@@ -317,7 +317,7 @@ function dispatchRunner(root: string, d: StatusDetail): NextAction | undefined {
         source: plan.source,
         dialect: plan.dialect,
         queries,
-        store: `sl results add --plan ${plan.plan_id} --query <query id> --file <rows.json>`,
+        store: `semlayer results add --plan ${plan.plan_id} --query <query id> --file <rows.json>`,
         finish: plan.finish,
       },
     },
@@ -325,7 +325,7 @@ function dispatchRunner(root: string, d: StatusDetail): NextAction | undefined {
   };
 }
 
-// sl status's next step as one action. A readback whose targets the owner already declined as they
+// semlayer status's next step as one action. A readback whose targets the owner already declined as they
 // stand leaves them out and quotes the owner's words; with none left it asks for the edit they want.
 // An --emit-sql step whose plan has every result becomes the plan's finish command; done reads back
 // approved items without a recorded yes first.
@@ -333,14 +333,14 @@ function fromStatus(root: string, d: StatusDetail): NextAction {
   const st = d.status;
   const step = st.next_step;
   const blocked_on = step.blocked_on ?? null;
-  // A draft golden on a source sl cannot run is read back from its plan once every result is stored.
+  // A draft golden on a source semlayer cannot run is read back from its plan once every result is stored.
   const draft = step.phase === "verify" && step.action.command === "goldens" && step.action.args[0] === "run" ? flagValue(step.action, "--name") : undefined;
   const planned = draft !== undefined && step.action.args.includes("--emit-sql") ? withGoldenPlan(root, draft, "readback", ["--targets", `golden:${draft}`]) : undefined;
   if (planned?.command === "readback") {
     return fromAction(
       planned,
       step.phase,
-      `Every query of plan ${flagValue(planned, "--plan")} has its result stored, so golden ${draft}'s rows are read back from it. ${step.message.replace(/ sl cannot run its source[^.]*\./, "")}`,
+      `Every query of plan ${flagValue(planned, "--plan")} has its result stored, so golden ${draft}'s rows are read back from it. ${step.message.replace(/ semlayer cannot run its source[^.]*\./, "")}`,
       blocked_on,
     );
   }
@@ -358,7 +358,7 @@ function fromStatus(root: string, d: StatusDetail): NextAction {
     const accessOut =
       first.ref === "access" || first.ref.startsWith("golden:")
         ? ""
-        : ` If the change is only to who sees it, the item itself is not held: record it with sl reply --readback ${first.r.readback_id} --item ${first.r.item} --text "<owner's words>" ${ABOUT_ACCESS} --by "<owner>", ` +
+        : ` If the change is only to who sees it, the item itself is not held: record it with semlayer reply --readback ${first.r.readback_id} --item ${first.r.item} --text "<owner's words>" ${ABOUT_ACCESS} --by "<owner>", ` +
           "then ask whether the rest of the item is right and record that answer the same way, with --verdict yes|no|change.";
     const note = ` The owner answered no or change to ${declined.map((x) => x.ref).join(", ")} as it now stands; their words, quoted as data: ${words}.`;
     if (rest.length) {
@@ -403,9 +403,9 @@ function fromStatus(root: string, d: StatusDetail): NextAction {
     return fromAction(
       planned ?? readback,
       "done",
-      `Every phase is done, but ${refs.length} approved item(s) have no recorded owner yes that matches them as they stand (approved before sl approve required one). ` +
+      `Every phase is done, but ${refs.length} approved item(s) have no recorded owner yes that matches them as they stand (approved before semlayer approve required one). ` +
         "They stay approved: read them back so the owner's answer is in the ledger, and revoke any the owner no longer confirms." +
-        (planned?.command === "goldens" ? ` sl cannot run golden:${golden}'s SQL: write its plan with the command below, store the rows with sl results add, then run sl next again.` : ""),
+        (planned?.command === "goldens" ? ` semlayer cannot run golden:${golden}'s SQL: write its plan with the command below, store the rows with semlayer results add, then run semlayer next again.` : ""),
       blocked_on,
     );
   }
@@ -430,7 +430,7 @@ function connectionSource(root: string, a: NextStepAction): string | undefined {
 }
 
 // An action whose connection variable nothing sets cannot run: the owner adds the line to the env
-// file instead (no value is read or printed here), and sl setup with the source's own arguments
+// file instead (no value is read or printed here), and semlayer setup with the source's own arguments
 // checks the connection.
 function connectionBlock(root: string, env: Env, a: NextAction): NextAction | undefined {
   const name = connectionSource(root, a.action);
@@ -445,8 +445,8 @@ function connectionBlock(root: string, env: Env, a: NextAction): NextAction | un
   try {
     res = resolveConnection(root, source, env);
   } catch {
-    // A connection block sl cannot read (connection.env beside env_prefix): sl validate names it.
-    return fromAction(act("validate", []), a.phase, `The next step (${actionText(a.action as StepAction)}) connects to source "${name}", whose connection block cannot be read. sl validate names what to fix.`, a.blocked_on);
+    // A connection block semlayer cannot read (connection.env beside env_prefix): semlayer validate names it.
+    return fromAction(act("validate", []), a.phase, `The next step (${actionText(a.action as StepAction)}) connects to source "${name}", whose connection block cannot be read. semlayer validate names what to fix.`, a.blocked_on);
   }
   if (res.status !== "unset") return undefined;
   const how = source.connection?.env ? ["--env", source.connection.env] : ["--env-prefix", source.connection?.env_prefix ?? ""];
@@ -456,7 +456,7 @@ function connectionBlock(root: string, env: Env, a: NextAction): NextAction | un
       act("setup", ["--source", name, "--dialect", source.dialect, ...how], "ask_owner"),
       a.phase,
       `The next step (${actionText(a.action as StepAction)}) connects to source "${name}", and ${res.message.replace(/^Source "[^"]*": /, "").replace(/, then run the same command again:\n/, ":\n")}\n` +
-        `Once the owner has added it, check the connection with the command below, then run sl next again. Never read or print the env file.`,
+        `Once the owner has added it, check the connection with the command below, then run semlayer next again. Never read or print the env file.`,
       blocked,
       `Please add ${res.variables.length > 1 ? "these lines" : "this line"} to ${res.add_to}, with the real values in place of each <...> (the values stay out of the chat):\n${res.line_to_add}`,
     ),
@@ -470,7 +470,7 @@ function noLayerAction(root: string): NextAction {
     `No semantic layer at ${root} yet, so the first step creates it (if one exists elsewhere, pass --root <dir>). Follow references/phases/intake.md, ` +
     "First turn: ask the owner for a read-only connection to their data, and propose a default <name> for the layer from the company or the source " +
     "(a short name such as acme, in lowercase letters, digits and _; it can be changed later in semantic.yaml). Once they name the connection, " +
-    "sl setup with --name <name> creates the layer and its first source in one command; without a connection, run the command below.";
+    "semlayer setup with --name <name> creates the layer and its first source in one command; without a connection, run the command below.";
   const ask =
     "Which database should the layer read, through a read-only connection? Name the environment variable or env file that holds it, never its value. " +
     "I suggest calling the layer <name> (a short name from the company or the source, such as acme); say if you prefer another.";
@@ -478,8 +478,8 @@ function noLayerAction(root: string): NextAction {
 }
 
 // The one action the skill takes next: approve what the owner said yes to, ask the owner what a
-// pending readback holds, dispatch a plan that waits on results, else sl status's next step. A
-// ledger sl approve would refuse comes first, and a step whose connection is not set waits on it.
+// pending readback holds, dispatch a plan that waits on results, else semlayer status's next step. A
+// ledger semlayer approve would refuse comes first, and a step whose connection is not set waits on it.
 // record_reply is not returned yet: an answer the owner gave in chat is the agent's to record.
 export function nextAction(root: string, env: Env = {}): NextAction {
   if (!existsSync(paths(root).project)) return noLayerAction(root);
@@ -490,7 +490,7 @@ export function nextAction(root: string, env: Env = {}): NextAction {
   return connectionBlock(root, env, action) ?? action;
 }
 
-// An action that names one typed edit says where it goes: one owner turn's edits go in one sl apply,
+// An action that names one typed edit says where it goes: one owner turn's edits go in one semlayer apply,
 // so `why` gives the entry that apply takes beside the command on its own.
 function inApply(a: NextAction): NextAction {
   const words = [a.action.command, ...a.action.args];
@@ -499,14 +499,14 @@ function inApply(a: NextAction): NextAction {
   return { ...a, why: `${a.why} Record it ${inTurnApply([words], "beside the turn's other edits")}.` };
 }
 
-// A readback (or an approve) of items sl readback would refuse for what their files lack (a
-// description, a grain, a primary_key, a metric's measure, what sl validate would raise once they
-// are approved) becomes the one sl apply that gives it, the owner's words in
+// A readback (or an approve) of items semlayer readback would refuse for what their files lack (a
+// description, a grain, a primary_key, a metric's measure, what semlayer validate would raise once they
+// are approved) becomes the one semlayer apply that gives it, the owner's words in
 // place of each <placeholder>, so the command named runs.
 function lacking(root: string, a: NextAction): NextAction {
   const command = a.action.command;
   if (!((a.kind === "run" && command === "readback") || command === "approve")) return a;
-  // An sl approve the gate would refuse (a yes recorded before the item lacked something) gets the same apply.
+  // A semlayer approve the gate would refuse (a yes recorded before the item lacked something) gets the same apply.
   const rb = command === "approve" ? flagValue(a.action as StepAction, "--readback") : undefined;
   const refs = rb
     ? (pendingReadbacks(root).find((p) => p.readback_id === rb)?.items ?? []).map((i) => i.target).filter((t) => !t.startsWith("golden:"))
@@ -514,7 +514,7 @@ function lacking(root: string, a: NextAction): NextAction {
   const lacks = approvalLacks(root, refs);
   if (!lacks.length) return a;
   const why = `${a.why} ${lacksNote(lacks)}`;
-  // A lack no typed edit below gives is fixed as its words say; sl validate lists it meanwhile.
+  // A lack no typed edit below gives is fixed as its words say; semlayer validate lists it meanwhile.
   const edits = lacks.some((l) => l.edit);
   const action = edits ? act("apply", ["--file", "-"], "ask_owner") : act("validate", [], "ask_owner");
   const out = fromAction(action, a.phase, why, a.blocked_on, edits ? lackQuestions(lacks) : undefined);
@@ -573,7 +573,7 @@ function withAccessChanges(d: StatusDetail, action: NextAction, fromStep: boolea
   const asked =
     `The owner asked for ${changes.length} change(s) to who sees what while answering other items: ` +
     `${changes.map((r) => `${r.target} (${r.id}, ${plainText(r.by)}): "${short(plainText(r.text))}"`).join("; ")}. ` +
-    `Make each with an access command (${ACCESS_EDITS}), then read access.yaml back with sl readback --targets access: the owner's yes to it settles them.`;
+    `Make each with an access command (${ACCESS_EDITS}), then read access.yaml back with semlayer readback --targets access: the owner's yes to it settles them.`;
   const access_changes = changes.map((r) => ({ id: r.id, target: r.target, text: r.text, by: r.by }));
   if (reopen)
     return { ...fromAction(act("access", []), "access", `access.yaml is approved, and an edit makes it a draft again until the owner approves it. ${asked}`, action.blocked_on), access_changes };

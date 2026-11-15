@@ -8,7 +8,7 @@ const spec: CommandSpec = {
   summary: "Add a row filter to a role in access.yaml: the rows of a model its holders see.",
   usage:
     "add-row-filter --role <r> --model <source.model> --expr <sql predicate>\n" +
-    "       sl add-row-filter --role <r> --model <source.model> --column <c> --via <source.model> --manager <c> --member <c> --user <attribute> [--exclude-self]\n\n" +
+    "       semlayer add-row-filter --role <r> --model <source.model> --column <c> --via <source.model> --manager <c> --member <c> --user <attribute> [--exclude-self]\n\n" +
     "--expr reads the model's columns and <join>.<column> through its to-one joins; {{ user.<attribute> }} binds the user's value:\n" +
     '  --expr "region = {{ user.region }}"\n' +
     "The second form is a span of control: rows whose --column is the user's own id (--user, unless --exclude-self) or the id of\n" +
@@ -41,10 +41,10 @@ const spec: CommandSpec = {
     });
     const role = text("role")!.trim();
     if (ctx.json) ctx.out(formatJson({ ...o, role }));
-    else if (!o.changed) ctx.out(`Role ${role} already has that row filter on ${o.filter.model}; nothing changed. Next: sl status.`);
+    else if (!o.changed) ctx.out(`Role ${role} already has that row filter on ${o.filter.model}; nothing changed. Next: semlayer status.`);
     else
       ctx.out(
-        [`Added a row filter on ${o.filter.model} to role ${role} in ${o.file}.`, ...accessEditLines(o, `sl access --roles ${role} --user '<json of attributes>' shows the rows it leaves; ${READBACK_NEXT}`)].join("\n"),
+        [`Added a row filter on ${o.filter.model} to role ${role} in ${o.file}.`, ...accessEditLines(o, `semlayer access --roles ${role} --user '<json of attributes>' shows the rows it leaves; ${READBACK_NEXT}`)].join("\n"),
       );
     return 0;
   },

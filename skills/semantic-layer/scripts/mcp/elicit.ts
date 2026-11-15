@@ -1,7 +1,7 @@
-// MCP elicitation (protocol 2025-06-18) for the calls that rest on the owner's yes: sl_approve,
-// sl_goldens confirm and sl_reply with verdict yes. When the client declares the elicitation
+// MCP elicitation (protocol 2025-06-18) for the calls that rest on the owner's yes: semlayer_approve,
+// semlayer_goldens confirm and semlayer_reply with verdict yes. When the client declares the elicitation
 // capability, the server shows the owner the readback in the client (elicitation/create), records
-// their answer with sl reply, and only on their yes runs the approval. No yes is ever read from the
+// their answer with semlayer reply, and only on their yes runs the approval. No yes is ever read from the
 // agent's tool arguments.
 import { LEDGER_FILE, readPending } from "../lib/ledger.ts";
 import { oneLine } from "../lib/edit.ts";
@@ -56,7 +56,7 @@ export class Elicitor {
 
   ask(message: string): Promise<Asked> {
     // Ids the server sends are strings of its own, so they never stand for a request of the client's.
-    const id = `sl-elicit-${this.next++}`;
+    const id = `semlayer-elicit-${this.next++}`;
     return new Promise<Asked>((done) => {
       const timer = setTimeout(() => {
         if (!this.waiting.delete(id)) return;
@@ -105,7 +105,7 @@ export interface ToolResult {
 
 export function toolResult(command: string, r: Run): ToolResult {
   const content = [r.out, r.err].filter((t) => t !== "").map((text) => ({ type: "text" as const, text }));
-  if (!content.length) content.push({ type: "text", text: r.code === 0 ? "{}" : `sl ${command} exited with code ${r.code}.` });
+  if (!content.length) content.push({ type: "text", text: r.code === 0 ? "{}" : `semlayer ${command} exited with code ${r.code}.` });
   return r.code === 0 ? { content } : { content, isError: true };
 }
 
@@ -128,8 +128,8 @@ export function elicitationNote(command: string, elicits: boolean): string {
   if (command !== "approve" && command !== "goldens") return "";
   const what = command === "approve" ? "approves" : "confirms (goldens confirm)";
   return elicits
-    ? `\n\nThis client declared MCP elicitation: before it ${what} anything, the server reads the target back to the owner in the client and records their answer in ${LEDGER_FILE} as sl reply does. No yes is taken from the arguments.`
-    : `\n\nThis client did not declare MCP elicitation, so the owner's yes must already be in ${LEDGER_FILE}: sl_readback, ask the owner in the chat, then sl_reply. A client that declares elicitation gives the owner's answer directly.`;
+    ? `\n\nThis client declared MCP elicitation: before it ${what} anything, the server reads the target back to the owner in the client and records their answer in ${LEDGER_FILE} as semlayer reply does. No yes is taken from the arguments.`
+    : `\n\nThis client did not declare MCP elicitation, so the owner's yes must already be in ${LEDGER_FILE}: semlayer_readback, ask the owner in the chat, then semlayer_reply. A client that declares elicitation gives the owner's answer directly.`;
 }
 
 // The targets a call approves and the readback flags that go with them, or undefined when the call
@@ -138,7 +138,7 @@ function approvalTargets(root: string, command: string, a: Msg): { tool: string;
   if (command === "approve") {
     const target = typeof a.target === "string" ? a.target.trim() : "";
     if (!target || target.startsWith("golden:") || a.revoke === true || a["stamp-hashes"] === true || a["confirm-unchanged"] === true || a.date !== undefined) return undefined;
-    if (a.recursive !== true) return { tool: "sl_approve", refs: [target], flags: [] };
+    if (a.recursive !== true) return { tool: "semlayer_approve", refs: [target], flags: [] };
     let t;
     try {
       t = parseTarget(target);
@@ -153,20 +153,20 @@ function approvalTargets(root: string, command: string, a: Msg): { tool: string;
     } catch (e) {
       if (!(e instanceof UserError)) throw e;
     }
-    // A model and every field of it, as sl approve --recursive approves them.
+    // A model and every field of it, as semlayer approve --recursive approves them.
     const fields = isObj(model) ? (["dimensions", "measures", "joins"] as const).flatMap((k) => (Array.isArray(model![k]) ? model![k]! : []).map((f) => `${target}.${f.name}`)) : [];
-    return { tool: "sl_approve", refs: [target, ...fields], flags: [] };
+    return { tool: "semlayer_approve", refs: [target, ...fields], flags: [] };
   }
   if (command === "goldens") {
     const pos = Array.isArray(a.positionals) ? a.positionals : [];
     if (pos.length !== 1 || pos[0] !== "confirm" || typeof a.name !== "string" || a["emit-sql"] === true) return undefined;
     const flags = (["tolerance", "results", "plan"] as const).flatMap((f) => (typeof a[f] === "string" ? [`--${f}=${a[f]}`] : []));
-    return { tool: "sl_goldens confirm", refs: [`golden:${a.name.trim()}`], flags };
+    return { tool: "semlayer_goldens confirm", refs: [`golden:${a.name.trim()}`], flags };
   }
   return undefined;
 }
 
-// The readback items as one message, as sl readback prints them: one item as it is, several numbered.
+// The readback items as one message, as semlayer readback prints them: one item as it is, several numbered.
 export function readbackMessage(items: PendingReadback["items"]): string {
   if (items.length === 1) return items[0]!.text;
   return items
@@ -224,7 +224,7 @@ async function askAndRecord(
   const answer = readAnswer(asked.content);
   if (typeof answer === "string")
     return summary({ asked: "elicitation", action: "accept", readback_id: readbackId, recorded: [] }, `The owner's answer cannot be recorded: ${answer}; nothing was recorded and ${nothing}. ${again}`, true);
-  // Each item's answer is recorded by sl reply itself, with the owner's name and words.
+  // Each item's answer is recorded by semlayer reply itself, with the owner's name and words.
   const ran: Run[] = [];
   const recorded: string[] = [];
   for (const item of items) {
@@ -246,7 +246,7 @@ export async function ownerGate(command: string, a: Msg, deps: GateDeps): Promis
   const target = approvalTargets(deps.root, command, a);
   if (!target) return undefined;
   const nothing = command === "approve" ? "nothing was approved" : "nothing was confirmed";
-  // The readback the owner answers is stored exactly as sl readback stores it.
+  // The readback the owner answers is stored exactly as semlayer readback stores it.
   const rb = await deps.run(["readback", ...target.refs.map((r) => `--targets=${r}`), ...target.flags, "--json", `--root=${deps.root}`]);
   if (rb.code !== 0) return { content: [...toolResult("readback", rb).content, { type: "text", text: `The target could not be read back to the owner, so ${nothing}.` }], isError: true };
   const pending = JSON.parse(rb.out) as PendingReadback;
@@ -256,11 +256,11 @@ export async function ownerGate(command: string, a: Msg, deps: GateDeps): Promis
   if (got.answer.verdict !== "yes") {
     return summary(
       got.owner,
-      `The owner (${got.answer.by}) answered ${got.answer.verdict}; ${recorded} and ${nothing}. Next: make the ${got.answer.verdict === "no" ? "correction" : "change"} the owner asked for with a typed edit (sl set, sl tag, sl ignore-column or sl question add), then call ${target.tool} again.`,
+      `The owner (${got.answer.by}) answered ${got.answer.verdict}; ${recorded} and ${nothing}. Next: make the ${got.answer.verdict === "no" ? "correction" : "change"} the owner asked for with a typed edit (semlayer set, semlayer tag, semlayer ignore-column or semlayer question add), then call ${target.tool} again.`,
     );
   }
   const r = await deps.run(deps.argv);
-  const verb = command === "approve" ? "sl approve" : "sl goldens confirm";
+  const verb = command === "approve" ? "semlayer approve" : "semlayer goldens confirm";
   const done =
     r.code === 0
       ? summary(got.owner, `The owner (${got.answer.by}) answered yes in the client; ${recorded}, then ran ${verb} (its output is above).`)
@@ -274,11 +274,11 @@ export async function ownerGate(command: string, a: Msg, deps: GateDeps): Promis
   return { ...out, content: [...out.content, ...done.content] };
 }
 
-// sl_reply with verdict yes: the owner answers the stored item in the client; the agent's words, name
+// semlayer_reply with verdict yes: the owner answers the stored item in the client; the agent's words, name
 // and yes are not recorded.
 async function replyGate(a: Msg, deps: GateDeps): Promise<ToolResult | undefined> {
   if (typeof a.verdict !== "string" || a.verdict.trim().toLowerCase() !== "yes") return undefined;
-  const fail = (text: string): ToolResult => ({ content: [{ type: "text", text: `sl reply: ${text}` }], isError: true });
+  const fail = (text: string): ToolResult => ({ content: [{ type: "text", text: `semlayer reply: ${text}` }], isError: true });
   const id = typeof a.readback === "string" ? a.readback.trim() : "";
   let pending: PendingReadback;
   try {
@@ -293,7 +293,7 @@ async function replyGate(a: Msg, deps: GateDeps): Promise<ToolResult | undefined
     const list = pending.items.map((i) => `${i.n} (${i.target})`).join(", ");
     return fail(`Readback ${pending.readback_id} has no item ${JSON.stringify(a.item ?? null)}; its items are ${list}. Nothing was recorded.`);
   }
-  const got = await askAndRecord(deps, "sl_reply", pending.readback_id, [item], "no yes was recorded");
+  const got = await askAndRecord(deps, "semlayer_reply", pending.readback_id, [item], "no yes was recorded");
   if (!("answer" in got)) return got;
   const ran = got.ran[0]!;
   const next = (JSON.parse(ran.out) as { next?: unknown }).next;

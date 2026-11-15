@@ -1,6 +1,6 @@
-// Connection first (docs/PRD.md FR-1.0, decision D2): sl setup --print-role-sql prints a read-only
+// Connection first (docs/PRD.md FR-1.0, decision D2): semlayer setup --print-role-sql prints a read-only
 // role per dialect and never connects; an export source's data-dependent steps wait on a
-// connection in sl status, its goldens are not confirmed and its approved joins warn; on connect,
+// connection in semlayer status, its goldens are not confirmed and its approved joins warn; on connect,
 // the Postgres adapter reports what the role can do, and the queries stay read-only.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -15,7 +15,7 @@ import type { NextAction } from "../skills/semantic-layer/scripts/lib/next.ts";
 import type { ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
 import type { Model, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 const EXPORT_CSV = join(import.meta.dir, "..", "examples", "acme-export", "schema.csv");
 const GOLDEN_DIR = join(import.meta.dir, "fixtures", "role-sql");
@@ -33,9 +33,9 @@ function fresh(): { root: string; dir: string } {
 }
 
 const WAITING = ["profiles", "join_evidence", "goldens", "drift_from_data"];
-const UPGRADE = "sl setup --source warehouse --dialect postgres --env <VAR>";
+const UPGRADE = "semlayer setup --source warehouse --dialect postgres --env <VAR>";
 
-describe("sl setup --print-role-sql", () => {
+describe("semlayer setup --print-role-sql", () => {
   const cases: [string, string[]][] = [
     ["postgres", ["--schemas", "acme,marts", "--database", "warehouse"]],
     ["redshift", ["--schemas", "acme,marts", "--role-name", "semantic_reader"]],
@@ -47,7 +47,7 @@ describe("sl setup --print-role-sql", () => {
   for (const [dialect, args] of cases) {
     test(`${dialect}: prints the golden statements, needs no project and writes nothing`, async () => {
       const { root, dir } = fresh();
-      const r = await sl(root, ["setup", "--print-role-sql", "--dialect", dialect, ...args]);
+      const r = await semlayer(root, ["setup", "--print-role-sql", "--dialect", dialect, ...args]);
       expect(r.code).toBe(0);
       expect(r.err).toBe("");
       expect(`${r.out}\n`).toBe(readFileSync(join(GOLDEN_DIR, `${dialect}.txt`), "utf8"));
@@ -58,21 +58,21 @@ describe("sl setup --print-role-sql", () => {
 
   test("--json gives the statements, the text, the placeholders and the next step", async () => {
     const { root } = fresh();
-    const r = await sl(root, ["setup", "--print-role-sql", "--dialect", "postgres", "--schemas", "acme", "--json"]);
+    const r = await semlayer(root, ["setup", "--print-role-sql", "--dialect", "postgres", "--schemas", "acme", "--json"]);
     expect(r.code).toBe(0);
     const j = r.json<{ dialect: string; role: string; schemas: string[]; language: string; statements: string[]; text: string; placeholders: string[]; next: string }>();
-    expect(j).toMatchObject({ dialect: "postgres", role: "sl_reader", schemas: ["acme"], language: "sql", placeholders: ["<password>"] });
+    expect(j).toMatchObject({ dialect: "postgres", role: "semlayer_reader", schemas: ["acme"], language: "sql", placeholders: ["<password>"] });
     expect(j.statements).toEqual([
-      `CREATE ROLE "sl_reader" LOGIN PASSWORD '<password>';`,
-      `GRANT USAGE ON SCHEMA "acme" TO "sl_reader";`,
-      `GRANT SELECT ON ALL TABLES IN SCHEMA "acme" TO "sl_reader";`,
-      `ALTER DEFAULT PRIVILEGES IN SCHEMA "acme" GRANT SELECT ON TABLES TO "sl_reader";`,
-      `ALTER ROLE "sl_reader" SET default_transaction_read_only = on;`,
+      `CREATE ROLE "semlayer_reader" LOGIN PASSWORD '<password>';`,
+      `GRANT USAGE ON SCHEMA "acme" TO "semlayer_reader";`,
+      `GRANT SELECT ON ALL TABLES IN SCHEMA "acme" TO "semlayer_reader";`,
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA "acme" GRANT SELECT ON TABLES TO "semlayer_reader";`,
+      `ALTER ROLE "semlayer_reader" SET default_transaction_read_only = on;`,
     ]);
     for (const st of j.statements) expect(j.text).toContain(st);
-    expect(j.next).toContain("sl setup --source <source> --dialect postgres --env <VAR> --schemas acme");
-    const bq = await sl(root, ["setup", "--print-role-sql", "--dialect", "bigquery", "--schemas", "analytics", "--project", "acme-prod", "--json"]);
-    expect(bq.json<{ language: string; role: string }>()).toMatchObject({ language: "shell", role: "sl-reader" });
+    expect(j.next).toContain("semlayer setup --source <source> --dialect postgres --env <VAR> --schemas acme");
+    const bq = await semlayer(root, ["setup", "--print-role-sql", "--dialect", "bigquery", "--schemas", "analytics", "--project", "acme-prod", "--json"]);
+    expect(bq.json<{ language: string; role: string }>()).toMatchObject({ language: "shell", role: "semlayer-reader" });
   });
 
   test("refuses a name that is not a plain identifier, without echoing it", async () => {
@@ -83,7 +83,7 @@ describe("sl setup --print-role-sql", () => {
       ["--database", "a b"],
       ["--schemas", "1abc"],
     ] as const) {
-      const r = await sl(root, ["setup", "--print-role-sql", "--dialect", "postgres", "--schemas", "acme", flag, value]);
+      const r = await semlayer(root, ["setup", "--print-role-sql", "--dialect", "postgres", "--schemas", "acme", flag, value]);
       expect(r.code).toBe(1);
       expect(r.err).toContain("is not a plain identifier");
       expect(r.err).not.toContain(value);
@@ -97,12 +97,12 @@ describe("sl setup --print-role-sql", () => {
     };
     for (const [d, args] of Object.entries(extra)) {
       for (const name of ["a.b", "a`b", 'a"b', "a-b", "é"]) {
-        const r = await sl(root, ["setup", "--print-role-sql", "--dialect", d, "--schemas", name, ...args]);
+        const r = await semlayer(root, ["setup", "--print-role-sql", "--dialect", d, "--schemas", name, ...args]);
         expect(r.code).toBe(1);
         expect(r.out).toBe("");
       }
     }
-    const bad = await sl(root, ["setup", "--print-role-sql", "--dialect", "bigquery", "--schemas", "ds", "--project", "Bad_Project"]);
+    const bad = await semlayer(root, ["setup", "--print-role-sql", "--dialect", "bigquery", "--schemas", "ds", "--project", "Bad_Project"]);
     expect(bad.err).toContain("--project is not a Google Cloud project id");
     expect(bad.err).not.toContain("Bad_Project");
   });
@@ -120,11 +120,11 @@ describe("sl setup --print-role-sql", () => {
       [["--dialect", "postgres", "--schemas", "a", "--source", "s", "--env", "WAREHOUSE_URL"], "it takes no --source, --env"],
     ];
     for (const [args, message] of cases) {
-      const r = await sl(root, ["setup", "--print-role-sql", ...args]);
+      const r = await semlayer(root, ["setup", "--print-role-sql", ...args]);
       expect(r.code).toBe(1);
       expect(r.err).toContain(message);
     }
-    const stray = await sl(root, ["setup", "--source", "s", "--dialect", "postgres", "--env", "X", "--role-name", "r"]);
+    const stray = await semlayer(root, ["setup", "--source", "s", "--dialect", "postgres", "--env", "X", "--role-name", "r"]);
     expect(stray.err).toContain("--role-name goes with --print-role-sql");
     expect(existsSync(root)).toBe(false);
   });
@@ -133,7 +133,7 @@ describe("sl setup --print-role-sql", () => {
 // The Acme export set up as an export source, with models drafted from it.
 async function acmeExport(): Promise<string> {
   const { root } = fresh();
-  const r = await sl(root, [
+  const r = await semlayer(root, [
     "setup", "--source", "warehouse", "--dialect", "postgres", "--export", EXPORT_CSV,
     "--reason", "The warehouse accepts no outside connections.", "--schemas", "acme", "--include", "fct_orders,dim_customers,dim_regions",
   ]);
@@ -141,7 +141,7 @@ async function acmeExport(): Promise<string> {
   return root;
 }
 
-const status = async (root: string) => (await sl(root, ["status", "--json"])).json<ProjectStatus>();
+const status = async (root: string) => (await semlayer(root, ["status", "--json"])).json<ProjectStatus>();
 
 // Marks every model, field and join approved, as a layer whose definitions the owner signed off.
 function approveAll(root: string): void {
@@ -155,7 +155,7 @@ function approveAll(root: string): void {
 }
 
 describe("an export source waits on a connection (the Acme export)", () => {
-  test("sl status lists each data-dependent step as waiting on a connection and offers the upgrade", async () => {
+  test("semlayer status lists each data-dependent step as waiting on a connection and offers the upgrade", async () => {
     const root = await acmeExport();
     const st = await status(root);
     const s = st.sources[0]!;
@@ -165,7 +165,7 @@ describe("an export source waits on a connection (the Acme export)", () => {
     expect(st.next_step.phase).toBe("draft");
     expect(st.next_step.connection_upgrade).toBe(UPGRADE);
 
-    const text = (await sl(root, ["status"])).out;
+    const text = (await semlayer(root, ["status"])).out;
     expect(text).toContain("warehouse (postgres, from a schema export)");
     expect(text).toContain("waiting on a connection: profiles, join evidence, goldens, drift from data");
     expect(text).toContain(`With a connection, the waiting steps run: ${UPGRADE}`);
@@ -173,12 +173,12 @@ describe("an export source waits on a connection (the Acme export)", () => {
 
   test("joins skip check-join, approved ones warn, and status reaches connect, never done", async () => {
     const root = await acmeExport();
-    expect((await sl(root, ["draft", "--source", "warehouse"])).code).toBe(0);
+    expect((await semlayer(root, ["draft", "--source", "warehouse"])).code).toBe(0);
     let st = await status(root);
     expect(st.sources[0]!.joins_without_evidence).toBeGreaterThan(0);
     expect(st.next_step.phase).toBe("interview");
     // The interview goes straight to the owner's sign-off readback, never through check-join.
-    expect(st.next_step.command).toStartWith("sl readback --targets warehouse.");
+    expect(st.next_step.command).toStartWith("semlayer readback --targets warehouse.");
 
     approveAll(root);
     writeYaml(join(root, "access.yaml"), { version: 1, status: "approved", approved_by: "Test Owner", approved_at: "2026-01-15", mode: "open" });
@@ -193,21 +193,21 @@ describe("an export source waits on a connection (the Acme export)", () => {
     expect(st.next_step.phase).toBe("connect");
     expect(st.next_step.command).toBe(UPGRADE);
     expect(st.next_step.message).toContain("Waiting on a connection: profiles, join evidence, goldens and drift from data");
-    expect(st.next_step.message).toContain("sl setup --print-role-sql");
-    expect((await sl(root, ["status"])).out).toContain("warning: approved joins without evidence (their evidence waits on a connection)");
-    // sl next routes to the upgrade, never to done.
-    const next = (await sl(root, ["next", "--json"])).json<NextAction>();
+    expect(st.next_step.message).toContain("semlayer setup --print-role-sql");
+    expect((await semlayer(root, ["status"])).out).toContain("warning: approved joins without evidence (their evidence waits on a connection)");
+    // semlayer next routes to the upgrade, never to done.
+    const next = (await semlayer(root, ["next", "--json"])).json<NextAction>();
     expect(next).toMatchObject({ kind: "ask_owner", phase: "connect", action: { command: "setup", kind: "ask_owner" } });
-    expect((await sl(root, ["next"])).out).toContain(`Ask the owner, then: ${UPGRADE}`);
-    expect((await sl(root, ["next"])).out).toContain(UPGRADE);
+    expect((await semlayer(root, ["next"])).out).toContain(`Ask the owner, then: ${UPGRADE}`);
+    expect((await semlayer(root, ["next"])).out).toContain(UPGRADE);
 
-    const v = (await sl(root, ["validate", "--json"])).json<{ issues: { level: string; path: string; message: string }[] }>();
+    const v = (await semlayer(root, ["validate", "--json"])).json<{ issues: { level: string; path: string; message: string }[] }>();
     const warned = v.issues.filter((i) => i.message.includes("source warehouse is a schema export, so its evidence waits on a connection"));
     expect(warned.length).toBe(joins.length);
     expect(warned.every((i) => i.level === "warning")).toBe(true);
   });
 
-  test("sl goldens confirm refuses on an export source, writing nothing", async () => {
+  test("semlayer goldens confirm refuses on an export source, writing nothing", async () => {
     const root = await acmeExport();
     const file = join(root, "goldens", "orders_total.yaml");
     writeYaml(file, {
@@ -220,24 +220,24 @@ describe("an export source waits on a connection (the Acme export)", () => {
     const before = readFileSync(file, "utf8");
     writeYaml(join(root, "res.json"), { results: {} });
     for (const extra of [[], ["--emit-sql"], ["--results", join(root, "res.json")]]) {
-      const r = await sl(root, ["goldens", "confirm", "--name", "orders_total", ...extra]);
+      const r = await semlayer(root, ["goldens", "confirm", "--name", "orders_total", ...extra]);
       expect(r.code).toBe(1);
       expect(r.err).toContain('source "warehouse" was set up from a schema export, and a golden\'s rows come from the data, so it cannot be confirmed without a connection');
       expect(r.err).toContain(UPGRADE);
     }
-    // sl goldens run has no connection to run on either; --emit-sql still prints the plan.
-    const run = await sl(root, ["goldens", "run", "--name", "orders_total"]);
+    // semlayer goldens run has no connection to run on either; --emit-sql still prints the plan.
+    const run = await semlayer(root, ["goldens", "run", "--name", "orders_total"]);
     expect(run.code).toBe(1);
     expect(run.err).toContain("Cannot run orders_total: source \"warehouse\" was set up from a schema export");
     expect(run.err).toContain(UPGRADE);
-    expect((await sl(root, ["goldens", "run", "--name", "orders_total", "--emit-sql"])).code).toBe(0);
+    expect((await semlayer(root, ["goldens", "run", "--name", "orders_total", "--emit-sql"])).code).toBe(0);
     expect(readFileSync(file, "utf8")).toBe(before);
-    expect(existsSync(join(root, ".sl", "ledger.jsonl"))).toBe(false);
+    expect(existsSync(join(root, ".semlayer", "ledger.jsonl"))).toBe(false);
   });
 
-  test("a yes to an export source's golden: sl next routes to the upgrade, never to a confirm that refuses", async () => {
+  test("a yes to an export source's golden: semlayer next routes to the upgrade, never to a confirm that refuses", async () => {
     const root = await acmeExport();
-    expect((await sl(root, ["draft", "--source", "warehouse"])).code).toBe(0);
+    expect((await semlayer(root, ["draft", "--source", "warehouse"])).code).toBe(0);
     approveAll(root);
     writeYaml(join(root, "access.yaml"), { version: 1, status: "approved", approved_by: "Test Owner", approved_at: "2026-01-15", mode: "open" });
     const measure = readYaml<Model>(join(root, "models", "warehouse", "fct_orders.yaml")).measures![0]!.name;
@@ -251,29 +251,29 @@ describe("an export source waits on a connection (the Acme export)", () => {
       request: { source: "warehouse", measures: [`fct_orders.${measure}`] },
       status: "draft",
     });
-    const plan = (await sl(root, ["goldens", "run", "--name", "orders_total", "--emit-sql", "--json"])).json<{ plan_id: string; queries: { id: string }[] }>();
+    const plan = (await semlayer(root, ["goldens", "run", "--name", "orders_total", "--emit-sql", "--json"])).json<{ plan_id: string; queries: { id: string }[] }>();
     const rows = join(root, "rows.json");
     writeFileSync(rows, JSON.stringify([{ [measure]: 5 }]));
     expect(plan.queries.length).toBe(1);
-    expect((await sl(root, ["results", "add", "--plan", plan.plan_id, "--query", plan.queries[0]!.id, "--file", rows])).code).toBe(0);
+    expect((await semlayer(root, ["results", "add", "--plan", plan.plan_id, "--query", plan.queries[0]!.id, "--file", rows])).code).toBe(0);
     // Rows from a plan show, but the hint names the upgrade, not a confirm that would refuse.
-    const run = await sl(root, ["goldens", "run", "--name", "orders_total", "--plan", plan.plan_id]);
+    const run = await semlayer(root, ["goldens", "run", "--name", "orders_total", "--plan", plan.plan_id]);
     expect(run.code).toBe(0);
-    expect(run.out).toContain(`Once a connection exists: ${UPGRADE}, then sl goldens run --name orders_total.`);
-    expect(run.out).not.toContain("sl goldens confirm");
-    const rb = await sl(root, ["readback", "--targets", "golden:orders_total", "--plan", plan.plan_id, "--json"]);
+    expect(run.out).toContain(`Once a connection exists: ${UPGRADE}, then semlayer goldens run --name orders_total.`);
+    expect(run.out).not.toContain("semlayer goldens confirm");
+    const rb = await semlayer(root, ["readback", "--targets", "golden:orders_total", "--plan", plan.plan_id, "--json"]);
     expect(rb.code).toBe(0);
     const id = rb.json<{ readback_id: string }>().readback_id;
-    expect((await sl(root, ["reply", "--readback", id, "--item", "1", "--text", "Yes, 5 orders.", "--verdict", "yes", "--by", "Test Owner"])).code).toBe(0);
-    // The yes stays in the ledger for after the upgrade; sl next names the upgrade.
-    const next = (await sl(root, ["next", "--json"])).json<NextAction>();
+    expect((await semlayer(root, ["reply", "--readback", id, "--item", "1", "--text", "Yes, 5 orders.", "--verdict", "yes", "--by", "Test Owner"])).code).toBe(0);
+    // The yes stays in the ledger for after the upgrade; semlayer next names the upgrade.
+    const next = (await semlayer(root, ["next", "--json"])).json<NextAction>();
     expect(next).toMatchObject({ kind: "ask_owner", phase: "connect", action: { command: "setup", kind: "ask_owner" } });
-    expect((await sl(root, ["next"])).out).toContain(`Ask the owner, then: ${UPGRADE}`);
+    expect((await semlayer(root, ["next"])).out).toContain(`Ask the owner, then: ${UPGRADE}`);
     // The refusal and the run hint now name the upgrade, then the confirm the yes waits for.
-    const confirm = await sl(root, ["goldens", "confirm", "--name", "orders_total", "--plan", plan.plan_id]);
+    const confirm = await semlayer(root, ["goldens", "confirm", "--name", "orders_total", "--plan", plan.plan_id]);
     expect(confirm.code).toBe(1);
-    expect(confirm.err).toContain(`Once a connection exists: ${UPGRADE}, then sl goldens confirm --name orders_total.`);
-    expect((await sl(root, ["goldens", "run", "--name", "orders_total", "--plan", plan.plan_id])).out).toContain(`Once a connection exists: ${UPGRADE}, then sl goldens confirm --name orders_total.`);
+    expect(confirm.err).toContain(`Once a connection exists: ${UPGRADE}, then semlayer goldens confirm --name orders_total.`);
+    expect((await semlayer(root, ["goldens", "run", "--name", "orders_total", "--plan", plan.plan_id])).out).toContain(`Once a connection exists: ${UPGRADE}, then semlayer goldens confirm --name orders_total.`);
   });
 
   test("a connection source next to an export source: only the export source waits", async () => {
@@ -284,7 +284,7 @@ describe("an export source waits on a connection (the Acme export)", () => {
     expect(st.sources.find((s) => s.source === "warehouse")!.waiting_on_connection.map((w): string => w.step)).toEqual(WAITING);
     expect(st.next_step.connection_upgrade).toBe(UPGRADE);
     expect(st.next_step.phase).not.toBe("done");
-    expect((await sl(root, ["status", "--source", "lake", "--json"])).json<ProjectStatus>().next_step.connection_upgrade).toBeUndefined();
+    expect((await semlayer(root, ["status", "--source", "lake", "--json"])).json<ProjectStatus>().next_step.connection_upgrade).toBeUndefined();
   });
 
   test("a duckdb export source: the upgrade it names takes --database, and running it connects the source", async () => {
@@ -294,19 +294,19 @@ describe("an export source waits on a connection (the Acme export)", () => {
     const c = await db.connect();
     await c.run("create table orders (id integer primary key, amount_cents bigint)");
     await c.run("insert into orders values (1, 100), (2, 250)");
-    const query = (await sl(dir, ["export-sql", "--dialect", "duckdb", "--schemas", "main", "--json"])).json<{ sql: string }>().sql.trim().replace(/;\s*$/, "");
+    const query = (await semlayer(dir, ["export-sql", "--dialect", "duckdb", "--schemas", "main", "--json"])).json<{ sql: string }>().sql.trim().replace(/;\s*$/, "");
     const csv = join(dir, "lake-export.csv");
     await c.run(`copy (${query}) to '${csv}' (header)`);
     c.closeSync();
     db.closeSync();
-    const setup = await sl(root, ["setup", "--source", "lake", "--dialect", "duckdb", "--export", csv, "--reason", "No access yet.", "--schemas", "main"]);
+    const setup = await semlayer(root, ["setup", "--source", "lake", "--dialect", "duckdb", "--export", csv, "--reason", "No access yet.", "--schemas", "main"]);
     expect(setup.code).toBe(0);
     const upgrade = (await status(root)).next_step.connection_upgrade!;
-    expect(upgrade).toBe("sl setup --source lake --dialect duckdb --database <path>");
+    expect(upgrade).toBe("semlayer setup --source lake --dialect duckdb --database <path>");
 
     // The named command, with the owner's file in place of <path>, is the upgrade.
-    const args = upgrade.replace(/^sl /, "").replace("<path>", file).split(" ");
-    const r = await sl(root, [...args, "--json"]);
+    const args = upgrade.replace(/^semlayer /, "").replace("<path>", file).split(" ");
+    const r = await semlayer(root, [...args, "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<{ upgraded: boolean; intake: { mode: string } }>()).toMatchObject({ upgraded: true, intake: { mode: "connection" } });
     const after = await status(root);
@@ -357,14 +357,14 @@ describe("buildRoleReport", () => {
     expect(r).toMatchObject({ schemas_measured: false, least_privilege: false, write_privileges: [], readable_schemas: [], beyond_intake: null });
     expect(r.warnings).toEqual([
       'Warning: source "s": the CLI could not measure what its role can do on each schema (canceling statement due to statement timeout). ' +
-        "Queries run read-only; to be sure the role only reads, connect with the role sl setup --print-role-sql --dialect postgres --schemas acme prints.",
+        "Queries run read-only; to be sure the role only reads, connect with the role semlayer setup --print-role-sql --dialect postgres --schemas acme prints.",
     ]);
   });
 });
 
 describe("roleNote", () => {
   const src = { source: "warehouse", intake: { schemas: ["acme"] } };
-  const tail = "Tell the owner; their database administrator can create a read-only role from the statements sl setup --print-role-sql --dialect postgres --schemas acme prints.";
+  const tail = "Tell the owner; their database administrator can create a read-only role from the statements semlayer setup --print-role-sql --dialect postgres --schemas acme prints.";
   test("names the role plainly for a superuser, a wide role and an unmeasured one", () => {
     expect(roleNote(src, { warnings: [], superuser: true })).toBe(`The role that source "warehouse" connects as is a superuser (see the warning above). ${tail}`);
     expect(roleNote(src, { warnings: [], superuser: false })).toBe(
@@ -412,7 +412,7 @@ describe("the role report on connect, live Postgres", () => {
     await admin.unsafe(`create schema ${other}`);
     await admin.unsafe(`create table ${other}.secrets (id int)`);
     // The SELECT-only role, created from exactly the statements --print-role-sql prints.
-    const printed = await sl(fresh().root, ["setup", "--print-role-sql", "--dialect", "postgres", "--schemas", schema, "--role-name", reader, "--json"]);
+    const printed = await semlayer(fresh().root, ["setup", "--print-role-sql", "--dialect", "postgres", "--schemas", schema, "--role-name", reader, "--json"]);
     for (const st of printed.json<{ statements: string[] }>().statements) await admin.unsafe(st.replace("<password>", TEST_PASSWORD));
     // A role that can do more than read: write a table, create in a schema, read server files, read another schema.
     await admin.unsafe(`create role ${wide} login password '${TEST_PASSWORD}'`);
@@ -459,7 +459,7 @@ describe("the role report on connect, live Postgres", () => {
     }
   }
 
-  test.skipIf(!live)("a superuser: reported, warned once with today's text, and sl setup --json carries it", async () => {
+  test.skipIf(!live)("a superuser: reported, warned once with today's text, and semlayer setup --json carries it", async () => {
     const { report: r, warnings } = await report(PG_URL!);
     expect(r).toMatchObject({ dialect: "postgres", superuser: true, least_privilege: false });
     expect(r.readable_schemas).toContain(schema);
@@ -467,13 +467,13 @@ describe("the role report on connect, live Postgres", () => {
     expect(warnings).toEqual(['Warning: source "pg" connects as a superuser. Queries run read-only, but connect with a SELECT-only role.']);
 
     const { root } = fresh();
-    const s = await sl(root, ["setup", "--source", "pg", "--dialect", "postgres", "--env", "PG", "--schemas", schema, "--json"], { PG: PG_URL });
+    const s = await semlayer(root, ["setup", "--source", "pg", "--dialect", "postgres", "--env", "PG", "--schemas", schema, "--json"], { PG: PG_URL });
     expect(s.code).toBe(0);
     const j = s.json<{ role_report: RoleReport; warnings: string[] }>();
     expect(j.role_report.superuser).toBe(true);
     expect(j.warnings).toContain('source "pg" connects as a superuser. Queries run read-only, but connect with a SELECT-only role.');
-    expect(j.warnings.join("\n")).toContain(`sl setup --print-role-sql --dialect postgres --schemas ${schema}`);
-    const i = await sl(root, ["introspect", "--source", "pg", "--json"], { PG: PG_URL });
+    expect(j.warnings.join("\n")).toContain(`semlayer setup --print-role-sql --dialect postgres --schemas ${schema}`);
+    const i = await semlayer(root, ["introspect", "--source", "pg", "--json"], { PG: PG_URL });
     expect(i.json<{ role_report: RoleReport }>().role_report.superuser).toBe(true);
   });
 
@@ -483,16 +483,16 @@ describe("the role report on connect, live Postgres", () => {
     const csv = join(dir, "schema.csv");
     writeFileSync(csv, [header, `${schema},orders,BASE TABLE,,2,id,1,integer,NO,,true,1,,,,,`, `${schema},orders,BASE TABLE,,2,amount_cents,2,bigint,YES,,false,,,,,,`, ""].join("\n"));
     const setup = ["setup", "--source", "warehouse", "--dialect", "postgres", "--export", csv, "--reason", "No access yet.", "--schemas", schema, "--include", "orders"];
-    expect((await sl(root, setup)).code).toBe(0);
-    const upgrade = (await sl(root, ["status", "--json"])).json<ProjectStatus>().next_step.connection_upgrade!;
+    expect((await semlayer(root, setup)).code).toBe(0);
+    const upgrade = (await semlayer(root, ["status", "--json"])).json<ProjectStatus>().next_step.connection_upgrade!;
     expect(upgrade).toBe(UPGRADE);
-    const r = await sl(root, [...upgrade.replace(/^sl /, "").replace("<VAR>", "PG").split(" "), "--json"], { PG: as(reader) });
+    const r = await semlayer(root, [...upgrade.replace(/^semlayer /, "").replace("<VAR>", "PG").split(" "), "--json"], { PG: as(reader) });
     expect(r.code).toBe(0);
     const j = r.json<{ upgraded: boolean; role_report: RoleReport; warnings: string[] }>();
     expect(j.upgraded).toBe(true);
     expect(j.role_report).toMatchObject({ role: reader, least_privilege: true });
     expect(j.warnings).toEqual([]);
-    expect((await sl(root, ["status", "--json"])).json<ProjectStatus>().next_step.connection_upgrade).toBeUndefined();
+    expect((await semlayer(root, ["status", "--json"])).json<ProjectStatus>().next_step.connection_upgrade).toBeUndefined();
   });
 
   test.skipIf(!live)("the SELECT-only role --print-role-sql prints: least privilege, no warning", async () => {
@@ -518,13 +518,13 @@ describe("the role report on connect, live Postgres", () => {
     }
 
     const { root } = fresh();
-    const s = await sl(root, ["setup", "--source", "pg", "--dialect", "postgres", "--env", "PG", "--schemas", schema, "--json"], { PG: as(reader) });
+    const s = await semlayer(root, ["setup", "--source", "pg", "--dialect", "postgres", "--env", "PG", "--schemas", schema, "--json"], { PG: as(reader) });
     expect(s.code).toBe(0);
     const j = s.json<{ role_report: RoleReport; warnings: string[]; snapshot: { tables: number } }>();
     expect(j.role_report.least_privilege).toBe(true);
     expect(j.snapshot.tables).toBe(2);
     expect(j.warnings.join("\n")).not.toContain("SELECT-only role");
-    expect((await sl(root, ["introspect", "--source", "pg"], { PG: as(reader) })).out).not.toContain("--print-role-sql");
+    expect((await semlayer(root, ["introspect", "--source", "pg"], { PG: as(reader) })).out).not.toContain("--print-role-sql");
   });
 
   test.skipIf(!live)("a role that can write, read server files and other schemas: each reported, still read-only", async () => {
@@ -539,7 +539,7 @@ describe("the role report on connect, live Postgres", () => {
     expect(warnings[0]).toBe(
       `Warning: source "pg" connects as a role that can write (INSERT, CREATE on ${schema}), is a member of pg_read_server_files, ` +
         `reads schemas outside intake.schemas (${other}). Queries run read-only, but connect with a SELECT-only role limited to the ` +
-        `schemas the layer reads: sl setup --print-role-sql --dialect postgres --schemas ${schema} prints the statements.`,
+        `schemas the layer reads: semlayer setup --print-role-sql --dialect postgres --schemas ${schema} prints the statements.`,
     );
     expect(r.warnings).toEqual(warnings);
 

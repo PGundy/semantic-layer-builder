@@ -25,7 +25,7 @@ const spec: CommandSpec = {
     "--keys pairs a column of the model's table with a column of the target's: --keys ship_region=region_code.\n" +
     "--relationship is rows of this model per row of the target (default many_to_one); --type defaults to left;\n" +
     "--origin is owner (the owner stated it, the default) or inferred (guessed from names or values).\n" +
-    "The join is written as a draft: sl check-join measures it, then it is read back and approved on the owner's yes.",
+    "The join is written as a draft: semlayer check-join measures it, then it is read back and approved on the owner's yes.",
   options: {
     source: { type: "string" },
     model: { type: "string" },
@@ -42,7 +42,7 @@ const spec: CommandSpec = {
     loadProject(ctx.root);
     const [source, modelName, name, to, keysArg] = ["source", "model", "name", "to", "keys"].map((k) => str(values, k)?.trim());
     if (!source || !modelName || !name || !to || !keysArg) {
-      throw new UserError(`Usage: sl ${USAGE}, for example sl add-join --source warehouse --model orders --name region --to regions --keys ship_region=region_code.`);
+      throw new UserError(`Usage: semlayer ${USAGE}, for example semlayer add-join --source warehouse --model orders --name region --to regions --keys ship_region=region_code.`);
     }
     for (const [flag, v] of [["name", name], ["to", to]] as const)
       if (!NAME_PATTERN.test(v)) throw new UserError(`--${flag} "${v}" is not a name: a name is lowercase and matches ^[a-z][a-z0-9_]*$, such as ship_region.`);
@@ -72,7 +72,7 @@ const spec: CommandSpec = {
     if (!target) {
       throw new UserError(
         `No model "${to}" in source ${source}, so there is nothing to join to. Nothing was written. ` +
-          `sl status lists the models; a table without one is drafted with sl draft --source ${source} --tables <table>.`,
+          `semlayer status lists the models; a table without one is drafted with semlayer draft --source ${source} --tables <table>.`,
       );
     }
 
@@ -82,12 +82,12 @@ const spec: CommandSpec = {
     const spell = (m: Model, side: "from" | "to") => {
       const table = Array.isArray(snapshot?.tables) ? findTable(snapshot.tables, String(m.table)) : undefined;
       if (!table) {
-        warnings.push(`The snapshot has no table ${m.table}, so the key columns on it were not checked; run sl introspect --source ${source}, then sl validate.`);
+        warnings.push(`The snapshot has no table ${m.table}, so the key columns on it were not checked; run semlayer introspect --source ${source}, then semlayer validate.`);
         return;
       }
       for (const k of keys) {
         const col = table.columns.find((c) => c.name === k[side]) ?? table.columns.find((c) => c.name.toLowerCase() === k[side].toLowerCase());
-        if (!col) throw new UserError(`${k[side]} is not a column of ${m.table} (model ${m.model}) in the snapshot. Nothing was written. Run sl tables --source ${source} to see its tables, or sl introspect --source ${source} if it is new.`);
+        if (!col) throw new UserError(`${k[side]} is not a column of ${m.table} (model ${m.model}) in the snapshot. Nothing was written. Run semlayer tables --source ${source} to see its tables, or semlayer introspect --source ${source} if it is new.`);
         k[side] = col.name;
       }
     };
@@ -126,14 +126,14 @@ const spec: CommandSpec = {
         placeKey(doc, root, "joins", created, ["measures", "dimensions"]);
       }
     });
-    const next = `sl check-join --source ${source} --model ${modelName} --join ${name}`;
+    const next = `semlayer check-join --source ${source} --model ${modelName} --join ${name}`;
     if (ctx.json) {
       ctx.out(formatJson({ ...outcome, ref, join, warnings, next }));
       return 0;
     }
     const lines = [`Added draft join ${name} from ${modelRef} to ${to} on ${keys.map((k) => `${k.from} = ${k.to}`).join(" and ")} in ${outcome.file}.`];
     lines.push(...warnings, ...reapproveLines(outcome.reapprove));
-    lines.push(`Next: ${next} measures it; then read it back to the owner (sl readback --targets ${ref}) and approve it only on their yes.`);
+    lines.push(`Next: ${next} measures it; then read it back to the owner (semlayer readback --targets ${ref}) and approve it only on their yes.`);
     ctx.out(lines.join("\n"));
     return 0;
   },

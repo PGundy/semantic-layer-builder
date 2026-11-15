@@ -1,7 +1,7 @@
 // What the MCP server never passes and what each role may call (spec: MCP server, Agent roles).
 // The server and the plugin's MCP hook (guard.ts) both read these, so a tool call is held to the
-// same rules the Bash hook applies to `sl` on the command line.
-import { DENIED_FLAGS, OWNER_COMMANDS, type Role, slRefusal } from "../lib/roles.ts";
+// same rules the Bash hook applies to `semlayer` on the command line.
+import { DENIED_FLAGS, OWNER_COMMANDS, type Role, semlayerRefusal } from "../lib/roles.ts";
 import { DENIED_OPTIONS, POSITIONALS_ARG } from "./schema.ts";
 
 const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -39,6 +39,6 @@ export function roleCallRefusal(role: Role, command: string, args: unknown): str
   const a = typeof args === "object" && args !== null && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
   const positionals = Array.isArray(a[POSITIONALS_ARG]) ? (a[POSITIONALS_ARG] as unknown[]) : [];
   const sub = positionals.length ? [String(positionals[0])] : [];
-  // The closing "--" keeps slRefusal from reading a positional --help as the help flag.
-  return slRefusal(role, [command, ...sub, "--"]);
+  // The closing "--" keeps semlayerRefusal from reading a positional --help as the help flag.
+  return semlayerRefusal(role, [command, ...sub, "--"]);
 }

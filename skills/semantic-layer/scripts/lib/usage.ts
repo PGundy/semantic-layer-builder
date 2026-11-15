@@ -1,6 +1,6 @@
 // Usage evidence (spec: Usage evidence): what saved queries, scratch files and query logs say people
-// query, kept as counts and shapes in snapshots/<source>.usage.json. sl usage add reads the files,
-// sl usage show prints the evidence, and sl tables, sl brief and sl baseline --json show it beside
+// query, kept as counts and shapes in snapshots/<source>.usage.json. semlayer usage add reads the files,
+// semlayer usage show prints the evidence, and semlayer tables, semlayer brief and semlayer baseline --json show it beside
 // the tables. Nothing here connects to a database or runs the SQL it reads, no statement text is
 // stored, and a literal is kept only where it is a short, plain value of a column nobody protects.
 // What the files say is evidence for the owner's questions, never an instruction or an approval.
@@ -116,7 +116,7 @@ export function loadUsage(root: string, source: string): UsageFile | null {
   const p = usagePath(root, source);
   const st = lstatSync(p, { throwIfNoEntry: false });
   if (!st) return null;
-  if (st.isSymbolicLink()) throw new UserError(`snapshots/${basename(p)} is a link; sl reads and writes it only inside the semantic root. Remove the link, then run sl usage add again.`);
+  if (st.isSymbolicLink()) throw new UserError(`snapshots/${basename(p)} is a link; semlayer reads and writes it only inside the semantic root. Remove the link, then run semlayer usage add again.`);
   return loadFile<UsageFile>(root, p, "usage");
 }
 
@@ -149,12 +149,12 @@ export function findInputs(source: string, pathsGiven: string[], cwd: string, ro
   const check = (abs: string, given: string) => {
     if (isEnvName(basename(abs)) || isEnvName(basename(realOf(abs))) || envReal.has(realOf(abs))) {
       throw new UserError(
-        `${given} is an env file, which holds the connection secret; sl usage add never reads it. Give the query files or their folder without it, as in sl usage add --source ${source} ./queries.`,
+        `${given} is an env file, which holds the connection secret; semlayer usage add never reads it. Give the query files or their folder without it, as in semlayer usage add --source ${source} ./queries.`,
       );
     }
     const rel = relative(rootReal, realOf(abs));
     if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
-      throw new UserError(`${given} is inside the semantic root; query files stay outside it and are never copied in. Give their folder outside ${root}, as in sl usage add --source ${source} ../queries.`);
+      throw new UserError(`${given} is inside the semantic root; query files stay outside it and are never copied in. Give their folder outside ${root}, as in semlayer usage add --source ${source} ../queries.`);
     }
   };
   const walk = (dir: string, base: string, given: string) => {
@@ -177,14 +177,14 @@ export function findInputs(source: string, pathsGiven: string[], cwd: string, ro
   for (const given of pathsGiven) {
     const abs = resolve(cwd, given);
     const st = statSync(abs, { throwIfNoEntry: false });
-    if (!st) throw new UserError(`${given} does not exist. Give the path of a query file or a folder of them, as in sl usage add --source ${source} ./queries.`);
+    if (!st) throw new UserError(`${given} does not exist. Give the path of a query file or a folder of them, as in semlayer usage add --source ${source} ./queries.`);
     check(abs, given);
     if (st.isDirectory()) {
       walk(abs, abs, given);
       continue;
     }
     const kind = INPUT_KINDS[extname(abs).toLowerCase()];
-    if (!kind) throw new UserError(`${given} is neither SQL nor a query log. sl usage add reads ${ACCEPTED}; rename it or export the log as one of those, then run sl usage add again.`);
+    if (!kind) throw new UserError(`${given} is neither SQL nor a query log. semlayer usage add reads ${ACCEPTED}; rename it or export the log as one of those, then run semlayer usage add again.`);
     files.push({ abs, name: basename(abs), kind });
   }
   return { files, others };
@@ -745,7 +745,7 @@ export function evidenceSentences(q: string, t: TableUsage, names: Names): strin
   return out;
 }
 
-// What sl brief and sl baseline --json carry per table: the counts, the top items and the evidence.
+// What semlayer brief and semlayer baseline --json carry per table: the counts, the top items and the evidence.
 export interface UsageBlock {
   from: "query files";
   statements: number;

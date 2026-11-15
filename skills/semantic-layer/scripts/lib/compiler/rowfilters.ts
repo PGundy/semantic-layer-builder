@@ -29,12 +29,12 @@ export interface RowFilterContext {
   add: (code: "invalid_request" | "invalid_layer", message: string, ref?: string, next?: string) => void;
 }
 
-const FIX_ACCESS = "Fix the row filter in access.yaml, run sl validate, and run sl sql again.";
+const FIX_ACCESS = "Fix the row filter in access.yaml, run semlayer validate, and run semlayer sql again.";
 
 // Why a row filter's text cannot be applied, or undefined (lib/sql-text.ts): it closes every string,
 // name, comment and parenthesis it opens, so it stays inside the compiler's (...) and ANDs with the
 // rest of the query, and holds no parameter marker, semicolon or placeholder written against a name
-// or a digit. sl validate reports the same problems.
+// or a digit. semlayer validate reports the same problems.
 export const rowFilterTextProblem = (text: string): string | undefined => sqlTextProblem(text, "row filter");
 
 const scalar = (v: unknown) => typeof v === "string" || typeof v === "number" || typeof v === "boolean";
@@ -104,7 +104,7 @@ function hierarchy(f: HierarchyFilterResult, inst: Instance, cx: RowFilterContex
   const id = f.user_value;
   if (!((typeof id === "number" && Number.isFinite(id)) || (typeof id === "string" && id.trim()))) {
     const shown = typeof id === "string" ? "empty text" : JSON.stringify(id);
-    cx.add("invalid_request", `user.${f.user} is ${shown}; ${what} binds one id, a number or a text`, undefined, `Pass the user's id as a number or a text in --user, and run sl sql again.`);
+    cx.add("invalid_request", `user.${f.user} is ${shown}; ${what} binds one id, a number or a text`, undefined, `Pass the user's id as a number or a text in --user, and run semlayer sql again.`);
     return undefined;
   }
   const q = (s: string) => quoteIdent(cx.dialect, s);

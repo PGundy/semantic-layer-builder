@@ -11,17 +11,17 @@ import { actionText, type ProjectStatus, statusDetail, type StepAction } from ".
 import type { Snapshot } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { loadScenario, loadScript, REPO_ROOT, SCENARIOS_DIR, scriptWritePath } from "../evals/runner/files.ts";
-import { runScenario, slIn, steppingClock } from "../evals/runner/runner.ts";
+import { runScenario, semlayerIn, steppingClock } from "../evals/runner/runner.ts";
 import type { Driver } from "../evals/runner/types.ts";
-import { duckdbSource, initProject, sl, tempDir } from "./helpers.ts";
+import { duckdbSource, initProject, semlayer, tempDir } from "./helpers.ts";
 
-// HR-12: sl next never names a step that cannot run. Each bullet of HR-12 is a test below, and a
+// HR-12: semlayer next never names a step that cannot run. Each bullet of HR-12 is a test below, and a
 // walk drives the Acme states and checks the command named at each. All data is synthetic.
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 const ORDERS = "warehouse.orders";
 const URL_LINE = "WAREHOUSE_URL=postgres://reader:synthetic@localhost:5432/acme\n";
-const SL = join(REPO_ROOT, "skills", "semantic-layer", "scripts", "sl.ts");
+const SEMLAYER = join(REPO_ROOT, "skills", "semantic-layer", "scripts", "semlayer.ts");
 
 // A copy of the Acme example layer; with `env`, the .env beside it sets its connection variable.
 function acme(env = true): string {
@@ -33,32 +33,32 @@ function acme(env = true): string {
 }
 
 async function ok(root: string, args: string[]): Promise<string> {
-  const r = await sl(root, args);
-  if (r.code !== 0) throw new Error(`sl ${args.join(" ")}: ${r.err}`);
+  const r = await semlayer(root, args);
+  if (r.code !== 0) throw new Error(`semlayer ${args.join(" ")}: ${r.err}`);
   return r.out;
 }
 
 async function next(root: string): Promise<NextAction & { human: string }> {
-  const a = await sl(root, ["next", "--json"]);
+  const a = await semlayer(root, ["next", "--json"]);
   expect(a.err).toBe("");
   expect(a.code).toBe(0);
   const action = a.json<NextAction>();
-  const human = (await sl(root, ["next"])).out;
+  const human = (await semlayer(root, ["next"])).out;
   await expectRunnable(root, action, human);
   return { ...action, human };
 }
 
-const status = async (root: string) => (await sl(root, ["status", "--json"])).json<ProjectStatus>();
+const status = async (root: string) => (await semlayer(root, ["status", "--json"])).json<ProjectStatus>();
 
 // The flag's value in an action's arguments.
 const flag = (a: StepAction, f: string) => (a.args.includes(f) ? a.args[a.args.indexOf(f) + 1] : undefined);
 
-// The command sl next names parses with the CLI's own parser, names targets that exist, holds no
+// The command semlayer next names parses with the CLI's own parser, names targets that exist, holds no
 // <placeholder> unless the owner is asked first, and is what both outputs print.
 async function expectRunnable(root: string, a: NextAction, human: string): Promise<void> {
   const act = a.action as StepAction;
   const load = COMMANDS[act.command];
-  expect(load, `sl ${act.command} is a command`).toBeDefined();
+  expect(load, `semlayer ${act.command} is a command`).toBeDefined();
   const spec = (await load!()).default;
   expect(() => parseArgs({ args: act.args, options: { ...GLOBAL_OPTIONS, ...spec.options }, allowPositionals: spec.positionals ?? false, strict: true })).not.toThrow();
   const text = actionText(act);
@@ -71,7 +71,7 @@ async function expectRunnable(root: string, a: NextAction, human: string): Promi
   if (source) expect(existsSync(join(root, "sources", `${source}.yaml`)), text).toBe(true);
   const exists = (ref: string) => (ref.startsWith("golden:") ? existsSync(join(root, "goldens", `${ref.slice(7)}.yaml`)) : d.targets.has(ref));
   for (const ref of [flag(act, "--target"), ...(flag(act, "--targets")?.split(",") ?? [])].filter((r): r is string => !!r)) expect(exists(ref), `${text}: ${ref}`).toBe(true);
-  // A readback it names is not one sl readback refuses for what its items lack (HR-15).
+  // A readback it names is not one semlayer readback refuses for what its items lack (HR-15).
   if (act.command === "readback") expect(approvalLacks(root, flag(act, "--targets")!.split(",")), text).toEqual([]);
   if (act.command === "goldens" && flag(act, "--name") && act.args[0] !== "new") expect(existsSync(join(root, "goldens", `${flag(act, "--name")}.yaml`)), text).toBe(true);
   const model = flag(act, "--model");
@@ -81,11 +81,11 @@ async function expectRunnable(root: string, a: NextAction, human: string): Promi
     const joins = (readYaml<{ joins?: { name: string }[] }>(file).joins ?? []).map((j) => j.name);
     expect(joins, text).toContain(flag(act, "--join")!);
   }
-  if (flag(act, "--readback")) expect(existsSync(join(root, ".sl", "pending", `${flag(act, "--readback")}.json`)), text).toBe(true);
-  if (flag(act, "--plan")) expect(existsSync(join(root, ".sl", "plans", `${flag(act, "--plan")}.json`)), text).toBe(true);
+  if (flag(act, "--readback")) expect(existsSync(join(root, ".semlayer", "pending", `${flag(act, "--readback")}.json`)), text).toBe(true);
+  if (flag(act, "--plan")) expect(existsSync(join(root, ".semlayer", "plans", `${flag(act, "--plan")}.json`)), text).toBe(true);
 }
 
-describe("HR-12: sl next never names a step that cannot run", () => {
+describe("HR-12: semlayer next never names a step that cannot run", () => {
   test("Step carries a structured action; next prints it and parses no command text", async () => {
     const root = acme();
     await ok(root, ["approve", "--target", ORDERS, "--revoke", "--recursive"]);
@@ -94,7 +94,7 @@ describe("HR-12: sl next never names a step that cannot run", () => {
     expect(st.next_step.command).toBe(actionText(st.next_step.action));
     const a = await next(root);
     expect(a.action).toEqual(st.next_step.action);
-    // next.ts reads the action, never the text: no pattern over a printed sl command remains.
+    // next.ts reads the action, never the text: no pattern over a printed semlayer command remains.
     const source = readFileSync(join(REPO_ROOT, "skills", "semantic-layer", "scripts", "lib", "next.ts"), "utf8");
     expect(source).not.toMatch(/\.exec\((step|st\.next_step)\.command\)|step\.command\.(endsWith|startsWith|slice)/);
   });
@@ -104,38 +104,38 @@ describe("HR-12: sl next never names a step that cannot run", () => {
     await ok(root, ["approve", "--target", ORDERS, "--revoke"]);
     const rb = JSON.parse(await ok(root, ["readback", "--targets", ORDERS, "--json"])) as { readback_id: string };
     await ok(root, ["reply", "--readback", rb.readback_id, "--item", "1", "--text", "Yes.", "--verdict", "yes", "--by", "Dana"]);
-    expect((await next(root)).run!.command).toBe(`sl approve --target ${ORDERS}`);
+    expect((await next(root)).run!.command).toBe(`semlayer approve --target ${ORDERS}`);
     // A later line approve refuses the whole ledger over: none of its yeses count in status or next.
-    appendFileSync(join(root, ".sl", "ledger.jsonl"), '{"kind":"reply","target":"warehouse.orders"}\n');
-    expect((await sl(root, ["approve", "--target", ORDERS])).code).toBe(1);
+    appendFileSync(join(root, ".semlayer", "ledger.jsonl"), '{"kind":"reply","target":"warehouse.orders"}\n');
+    expect((await semlayer(root, ["approve", "--target", ORDERS])).code).toBe(1);
     const st = await status(root);
-    expect(st.next_step.command).toBe(`sl readback --targets ${ORDERS}`);
+    expect(st.next_step.command).toBe(`semlayer readback --targets ${ORDERS}`);
     expect(st.approved_without_yes).toContain(`${ORDERS}.revenue`);
     const a = await next(root);
-    expect(a).toMatchObject({ kind: "run", run: { command: "sl validate" } });
+    expect(a).toMatchObject({ kind: "run", run: { command: "semlayer validate" } });
     expect(a.why).toContain("cannot be read");
   });
 
-  test("a ledger behind a link: sl next names sl validate, and sl validate reports the link", async () => {
+  test("a ledger behind a link: semlayer next names semlayer validate, and semlayer validate reports the link", async () => {
     const root = acme();
     await ok(root, ["approve", "--target", ORDERS, "--revoke"]);
     const rb = JSON.parse(await ok(root, ["readback", "--targets", ORDERS, "--json"])) as { readback_id: string };
     await ok(root, ["reply", "--readback", rb.readback_id, "--item", "1", "--text", "Yes.", "--verdict", "yes", "--by", "Dana"]);
-    const ledger = join(root, ".sl", "ledger.jsonl");
+    const ledger = join(root, ".semlayer", "ledger.jsonl");
     const outside = join(tempDir(), "ledger.jsonl");
     writeFileSync(outside, readFileSync(ledger, "utf8"));
     const { rmSync, symlinkSync } = await import("node:fs");
     rmSync(ledger);
     symlinkSync(outside, ledger);
     const a = await next(root);
-    expect(a).toMatchObject({ kind: "run", run: { command: "sl validate" } });
+    expect(a).toMatchObject({ kind: "run", run: { command: "semlayer validate" } });
     expect(a.why).toContain("not a plain file inside the semantic root");
-    const v = await sl(root, ["validate", "--json"]);
+    const v = await semlayer(root, ["validate", "--json"]);
     expect(v.code).toBe(1);
-    expect(v.json<{ issues: { level: string; file: string; message: string }[] }>().issues).toContainEqual(expect.objectContaining({ level: "error", file: ".sl/ledger.jsonl", message: expect.stringContaining("not a plain file inside the semantic root") }));
+    expect(v.json<{ issues: { level: string; file: string; message: string }[] }>().issues).toContainEqual(expect.objectContaining({ level: "error", file: ".semlayer/ledger.jsonl", message: expect.stringContaining("not a plain file inside the semantic root") }));
   });
 
-  test("a connection block sl cannot resolve names sl validate, not a failing command", async () => {
+  test("a connection block semlayer cannot resolve names semlayer validate, not a failing command", async () => {
     const root = acme();
     const src = join(root, "sources", "warehouse.yaml");
     writeFileSync(src, readFileSync(src, "utf8").replace("  env: WAREHOUSE_URL\n", "  env: WAREHOUSE_URL\n  env_prefix: ACME_PG\n"));
@@ -144,17 +144,17 @@ describe("HR-12: sl next never names a step that cannot run", () => {
     delete snap.tables.find((t) => t.name === "fct_orders")!.profiled_at;
     writeFileSync(file, `${JSON.stringify(snap, null, 2)}\n`);
     const a = await next(root);
-    expect(a).toMatchObject({ kind: "run", phase: "profile", run: { command: "sl validate" } });
+    expect(a).toMatchObject({ kind: "run", phase: "profile", run: { command: "semlayer validate" } });
     expect(a.why).toContain('source "warehouse"');
   });
 
-  test("an unset connection variable gives ask_owner, blocked_on naming the variable and the env file, never sl profile", async () => {
+  test("an unset connection variable gives ask_owner, blocked_on naming the variable and the env file, never semlayer profile", async () => {
     const root = acme(false);
     const file = join(root, "snapshots", "warehouse.json");
     const snap = JSON.parse(readFileSync(file, "utf8")) as Snapshot;
     for (const t of snap.tables) delete t.profiled_at;
     writeFileSync(file, `${JSON.stringify(snap, null, 2)}\n`);
-    expect((await status(root)).next_step.command).toBe("sl profile --source warehouse");
+    expect((await status(root)).next_step.command).toBe("semlayer profile --source warehouse");
     const envFile = join(dirname(root), ".env");
     const a = await next(root);
     expect(a).toMatchObject({
@@ -164,13 +164,13 @@ describe("HR-12: sl next never names a step that cannot run", () => {
       action: { command: "setup", args: ["--source", "warehouse", "--dialect", "postgres", "--env", "WAREHOUSE_URL"], kind: "ask_owner" },
       connection: { source: "warehouse", variables: ["WAREHOUSE_URL"], add_to: envFile, line_to_add: "WAREHOUSE_URL=postgres://<user>:<password>@<host>:5432/<database>?sslmode=require" },
     });
-    expect(a.human).not.toContain("\n  sl profile");
+    expect(a.human).not.toContain("\n  semlayer profile");
     expect(a.ask_owner!.text).toContain("WAREHOUSE_URL=postgres://<user>:<password>@<host>:5432/<database>?sslmode=require");
     // One next step only: the resolver's "run the same command again" is not quoted beside it.
     expect(a.why).not.toContain("run the same command again");
     // With the line added, the step runs (Acme's models hold open questions, so blocked_on names them).
     writeFileSync(envFile, URL_LINE);
-    expect(await next(root)).toMatchObject({ kind: "run", blocked_on: "open_questions", run: { command: "sl profile --source warehouse" } });
+    expect(await next(root)).toMatchObject({ kind: "run", blocked_on: "open_questions", run: { command: "semlayer profile --source warehouse" } });
   });
 
   test("a connection in parts names only the missing parts and never prints a value it found (invariant: no secrets)", async () => {
@@ -182,8 +182,8 @@ describe("HR-12: sl next never names a step that cannot run", () => {
     delete snap.tables.find((t) => t.name === "fct_orders")!.profiled_at;
     writeFileSync(file, `${JSON.stringify(snap, null, 2)}\n`);
     writeFileSync(join(dirname(root), ".env"), "ACME_PGPASSWORD=synthetic-pw-4417\nACME_PGUSER=reader\n");
-    const raw = await sl(root, ["next", "--json"]);
-    const human = await sl(root, ["next"]);
+    const raw = await semlayer(root, ["next", "--json"]);
+    const human = await semlayer(root, ["next"]);
     for (const out of [raw.out, raw.err, human.out, human.err]) expect(out).not.toContain("synthetic-pw-4417");
     const a = raw.json<NextAction>();
     expect(a.kind).toBe("ask_owner");
@@ -213,7 +213,7 @@ describe("HR-12: sl next never names a step that cannot run", () => {
         }
       }
     });
-    expect((await next(root)).run!.command).toBe("sl profile --source warehouse");
+    expect((await next(root)).run!.command).toBe("semlayer profile --source warehouse");
     // Only the denied one left: the owner is asked for a grant or an exclusion with a reason.
     edit((s) => {
       for (const t of s.tables) if (name(t) === name(a1!)) t.profiled_at = "2026-01-15T12:00:00.000Z";
@@ -221,28 +221,28 @@ describe("HR-12: sl next never names a step that cannot run", () => {
     let a = await next(root);
     expect(a).toMatchObject({ kind: "ask_owner", phase: "profile", action: { command: "scope", args: ["--source", "warehouse", "--exclude", name(a2!), "--reason", "<owner's reason>", "--write"] } });
     expect(a.why).toContain("no SELECT permission");
-    expect(a.why).toContain("sl setup --print-role-sql");
+    expect(a.why).toContain("semlayer setup --print-role-sql");
     // A timeout beside it: just the timed-out table is retried, with what to change named.
     edit((s) => {
       for (const t of s.tables)
         if (name(t) === name(a3!)) {
           delete t.profiled_at;
-          t.profile_skipped = { at: "2026-01-15T12:00:00.000Z", reason: "timed out after 30 s (raise SL_STATEMENT_TIMEOUT_MS)" };
+          t.profile_skipped = { at: "2026-01-15T12:00:00.000Z", reason: "timed out after 30 s (raise SEMLAYER_STATEMENT_TIMEOUT_MS)" };
         }
     });
     a = await next(root);
-    expect(a).toMatchObject({ kind: "run", run: { command: `sl profile --source warehouse --tables ${name(a3!)}` } });
-    expect(a.why).toContain("raise SL_STATEMENT_TIMEOUT_MS");
+    expect(a).toMatchObject({ kind: "run", run: { command: `semlayer profile --source warehouse --tables ${name(a3!)}` } });
+    expect(a.why).toContain("raise SEMLAYER_STATEMENT_TIMEOUT_MS");
     expect((await status(root)).sources[0]!.profile_skipped.map((g) => g.table).sort()).toEqual([name(a2!), name(a3!)].sort());
   });
 
-  test("no goldens yet gives sl goldens new; the metrics phase gives the action for its kind", async () => {
+  test("no goldens yet gives semlayer goldens new; the metrics phase gives the action for its kind", async () => {
     const root = acme();
     await ok(root, ["approve", "--target", "access", "--revoke"]);
     for (const f of ["metrics.yaml"]) writeFileSync(join(root, f), "metrics: []\n");
     let a = await next(root);
     expect(a).toMatchObject({ kind: "ask_owner", phase: "metrics", action: { command: "add-metric", kind: "ask_owner" } });
-    expect(a.human).toContain("Ask the owner, then: sl add-metric --name <metric> --type ratio|derived");
+    expect(a.human).toContain("Ask the owner, then: semlayer add-metric --name <metric> --type ratio|derived");
 
     const root2 = join(tempDir(), "semantic");
     cpSync(ACME, root2, { recursive: true });
@@ -252,7 +252,7 @@ describe("HR-12: sl next never names a step that cannot run", () => {
     a = await next(root2);
     expect(a).toMatchObject({ kind: "ask_owner", phase: "verify", action: { command: "goldens", kind: "ask_owner" } });
     expect(a.action.args.slice(0, 3)).toEqual(["new", "--name", "<golden>"]);
-    expect(a.human).not.toContain("sl goldens run --name <golden>");
+    expect(a.human).not.toContain("semlayer goldens run --name <golden>");
   });
 
   test("open questions in any file, a model's included, set blocked_on", async () => {
@@ -290,7 +290,7 @@ describe("HR-12: sl next never names a step that cannot run", () => {
     expect(a.why).toContain(`item 1 (${ORDERS}.revenue, ans_0001, Dana said change): "Revenue should leave out refunds."`);
   });
 
-  test("a golden on a source sl cannot run goes plan, readback from the plan, confirm with the plan, never a placeholder", async () => {
+  test("a golden on a source semlayer cannot run goes plan, readback from the plan, confirm with the plan, never a placeholder", async () => {
     const root = acme();
     const src = join(root, "sources", "warehouse.yaml");
     writeFileSync(src, readFileSync(src, "utf8").replace("connection:\n  env: WAREHOUSE_URL\n", ""));
@@ -318,7 +318,7 @@ describe("HR-12: sl next never names a step that cannot run", () => {
     expect((await status(root)).goldens.approved).toBe(5);
   });
 
-  test("golden counts agree between sl next and sl status", async () => {
+  test("golden counts agree between semlayer next and semlayer status", async () => {
     const root = acme();
     const { rmSync, readdirSync } = await import("node:fs");
     const keep = ["revenue_2025.yaml", "net_revenue_2025.yaml", "discount_2025.yaml"];
@@ -328,34 +328,34 @@ describe("HR-12: sl next never names a step that cannot run", () => {
     const a = await next(root);
     expect(a.phase).toBe("verify");
     expect(a.why).toContain("3 of 3 golden(s) approved; the verify phase needs 5 approved");
-    expect((await sl(root, ["status"])).out).toContain("goldens 3/3 approved (the verify phase needs 5)");
+    expect((await semlayer(root, ["status"])).out).toContain("goldens 3/3 approved (the verify phase needs 5)");
   });
 
-  test("sl readback --discard removes a pending readback; sl next names it where it said to delete the file", async () => {
+  test("semlayer readback --discard removes a pending readback; semlayer next names it where it said to delete the file", async () => {
     const root = acme();
     await ok(root, ["approve", "--target", ORDERS, "--revoke"]);
     const rb = JSON.parse(await ok(root, ["readback", "--targets", ORDERS, "--json"])) as { readback_id: string };
     const a = await next(root);
-    expect(a.why).toContain(`set aside with sl readback --discard ${rb.readback_id}`);
-    expect(a.why).not.toContain("deleting .sl/pending");
-    const out = await sl(root, ["readback", "--discard", rb.readback_id, "--json"]);
+    expect(a.why).toContain(`set aside with semlayer readback --discard ${rb.readback_id}`);
+    expect(a.why).not.toContain("deleting .semlayer/pending");
+    const out = await semlayer(root, ["readback", "--discard", rb.readback_id, "--json"]);
     expect(out.code).toBe(0);
-    expect(out.json()).toEqual({ discarded: rb.readback_id, path: `.sl/pending/${rb.readback_id}.json`, next: "sl next" });
-    expect(existsSync(join(root, ".sl", "pending", `${rb.readback_id}.json`))).toBe(false);
-    expect((await next(root)).run!.command).toBe(`sl readback --targets ${ORDERS}`);
+    expect(out.json()).toEqual({ discarded: rb.readback_id, path: `.semlayer/pending/${rb.readback_id}.json`, next: "semlayer next" });
+    expect(existsSync(join(root, ".semlayer", "pending", `${rb.readback_id}.json`))).toBe(false);
+    expect((await next(root)).run!.command).toBe(`semlayer readback --targets ${ORDERS}`);
     // A discarded id is not handed out again while the ledger names it.
-    const again = await sl(root, ["readback", "--discard", rb.readback_id]);
+    const again = await semlayer(root, ["readback", "--discard", rb.readback_id]);
     expect(again.code).toBe(1);
     expect(again.err).toContain("There is no pending readback");
-    expect((await sl(root, ["readback", "--discard", "rb_0001", "--targets", ORDERS])).err).toContain("--discard takes no --targets");
+    expect((await semlayer(root, ["readback", "--discard", "rb_0001", "--targets", ORDERS])).err).toContain("--discard takes no --targets");
   });
 
-  test("the hook lets the interviewer run sl readback --discard, and the integrity check keeps the removal", async () => {
+  test("the hook lets the interviewer run semlayer readback --discard, and the integrity check keeps the removal", async () => {
     const root = acme();
     await ok(root, ["approve", "--target", ORDERS, "--revoke"]);
     const rb = JSON.parse(await ok(root, ["readback", "--targets", ORDERS, "--json"])) as { readback_id: string };
-    const command = `bun ${SL} readback --discard ${rb.readback_id} --root ${root}`;
-    const call = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd: dirname(root), agent_type: "semantic-layer-builder:sl-interviewer", agent_id: "a1" };
+    const command = `bun ${SEMLAYER} readback --discard ${rb.readback_id} --root ${root}`;
+    const call = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd: dirname(root), agent_type: "semantic-layer-builder:semlayer-interviewer", agent_id: "a1" };
     expect(checkToolUse(JSON.stringify(call))).toEqual({ allow: true });
     const { runAfter, runBefore } = await import("../skills/semantic-layer/scripts/hooks/integrity.ts");
     const state = join(tempDir("h12-state"), "ledger-guard");
@@ -363,28 +363,28 @@ describe("HR-12: sl next never names a step that cannot run", () => {
     expect(runBefore(JSON.stringify({ hook_event_name: "PreToolUse", ...payload }), true, { stateDir: state, env: {} })).toEqual({ block: false });
     await ok(root, ["readback", "--discard", rb.readback_id]);
     expect(runAfter(JSON.stringify({ hook_event_name: "PostToolUse", ...payload }), { stateDir: state, env: {} })).toEqual({ block: false });
-    expect(existsSync(join(root, ".sl", "pending", `${rb.readback_id}.json`))).toBe(false);
+    expect(existsSync(join(root, ".semlayer", "pending", `${rb.readback_id}.json`))).toBe(false);
   });
 
-  test("sl scope --exclude takes --reason, recorded with the entry and shown by sl scope --explain", async () => {
+  test("semlayer scope --exclude takes --reason, recorded with the entry and shown by semlayer scope --explain", async () => {
     const root = acme();
-    expect((await sl(root, ["scope", "--source", "warehouse", "--reason", "Old copy."])).err).toContain("--reason records why --exclude leaves tables out");
+    expect((await semlayer(root, ["scope", "--source", "warehouse", "--reason", "Old copy."])).err).toContain("--reason records why --exclude leaves tables out");
     await ok(root, ["scope", "--source", "warehouse", "--exclude", "acme.fct_refunds", "--reason", "Refunds are reported by finance, not here.", "--write"]);
     const src = readYaml<{ scope: { exclude: string[]; exclude_reasons: Record<string, string> } }>(join(root, "sources", "warehouse.yaml"));
     expect(src.scope.exclude).toContain("acme.fct_refunds");
     expect(src.scope.exclude_reasons).toEqual({ "acme.fct_refunds": "Refunds are reported by finance, not here." });
     // The earlier comment-free file keeps its other entries; validate accepts the new key.
-    expect((await sl(root, ["validate", "--json"])).json<{ issues: { level: string; path: string }[] }>().issues.filter((i) => i.path.startsWith("scope"))).toEqual([]);
-    const explain = await sl(root, ["scope", "--source", "warehouse", "--explain", "fct_refunds"]);
+    expect((await semlayer(root, ["validate", "--json"])).json<{ issues: { level: string; path: string }[] }>().issues.filter((i) => i.path.startsWith("scope"))).toEqual([]);
+    const explain = await semlayer(root, ["scope", "--source", "warehouse", "--explain", "fct_refunds"]);
     expect(explain.out).toContain("Reason recorded: Refunds are reported by finance, not here.");
-    const json = (await sl(root, ["scope", "--source", "warehouse", "--explain", "fct_refunds", "--json"])).json<{ reason: string | null; in_scope: boolean }>();
+    const json = (await semlayer(root, ["scope", "--source", "warehouse", "--explain", "fct_refunds", "--json"])).json<{ reason: string | null; in_scope: boolean }>();
     expect(json).toMatchObject({ in_scope: false, reason: "Refunds are reported by finance, not here." });
     // Removing the pattern removes its reason.
     await ok(root, ["scope", "--source", "warehouse", "--remove", "acme.fct_refunds", "--write"]);
     expect(readYaml<{ scope: Record<string, unknown> }>(join(root, "sources", "warehouse.yaml")).scope.exclude_reasons).toBeUndefined();
   });
 
-  test("after a plain change reply, sl next asks the owner with their note and both ways out; a change only to who sees it reads the item back", async () => {
+  test("after a plain change reply, semlayer next asks the owner with their note and both ways out; a change only to who sees it reads the item back", async () => {
     const root = acme();
     await ok(root, ["approve", "--target", ORDERS, "--revoke"]);
     const rb = JSON.parse(await ok(root, ["readback", "--targets", ORDERS, "--json"])) as { readback_id: string };
@@ -392,18 +392,18 @@ describe("HR-12: sl next never names a step that cannot run", () => {
     let a = await next(root);
     expect(a).toMatchObject({ kind: "ask_owner", phase: "interview", action: { command: "set", args: [ORDERS, "<key>", "<value>"], kind: "ask_owner" } });
     expect(a.why).toContain(`${ORDERS} (ans_0001, Dana said change): "Sales reps should not see this table."`);
-    expect(a.why).toContain("a typed edit (sl set");
-    expect(a.why).toContain(`sl reply --readback ${rb.readback_id} --item 1 --text "<owner's words>" --verdict change --about access`);
+    expect(a.why).toContain("a typed edit (semlayer set");
+    expect(a.why).toContain(`semlayer reply --readback ${rb.readback_id} --item 1 --text "<owner's words>" --verdict change --about access`);
     expect(a.ask_owner!.text).toContain('"Sales reps should not see this table."');
     // Recorded as a change to who sees it, the item is read back again for the rest of it.
     await ok(root, ["reply", "--readback", rb.readback_id, "--item", "1", "--text", "Sales reps should not see this table.", "--verdict", "change", "--about", "access", "--by", "Dana"]);
     a = await next(root);
-    expect(a).toMatchObject({ kind: "run", run: { command: `sl readback --targets ${ORDERS}` } });
+    expect(a).toMatchObject({ kind: "run", run: { command: `semlayer readback --targets ${ORDERS}` } });
   });
 });
 
-describe("HR-12 walk: the command sl next names at each state runs", () => {
-  test("an empty directory names sl init as a step the owner names, a root with no source asks the owner for one", async () => {
+describe("HR-12 walk: the command semlayer next names at each state runs", () => {
+  test("an empty directory names semlayer init as a step the owner names, a root with no source asks the owner for one", async () => {
     const dir = tempDir();
     const root = join(dir, "semantic");
     // HR-15: the first command of a fresh agent is a step, not an error, and writes nothing.
@@ -413,14 +413,14 @@ describe("HR-12 walk: the command sl next names at each state runs", () => {
     expect(first.why).toContain("if one exists elsewhere, pass --root <dir>");
     expect(first.ask_owner!.text).toStartWith("Which database should the layer read, through a read-only connection?");
     expect(first.ask_owner!.text).toContain("I suggest calling the layer <name>");
-    expect(first.human).toEndWith("\n  Ask the owner, then: sl init --name <name>");
+    expect(first.human).toEndWith("\n  Ask the owner, then: semlayer init --name <name>");
     expect(existsSync(dir) ? readdirSync(dir) : []).toEqual([]);
     // The owner's answer in place of <name> runs.
     await ok(root, ["init", ...first.action.args.map((a) => (a === "<name>" ? "acme" : a))]);
     expect(await next(root)).toMatchObject({ kind: "ask_owner", phase: "add-source" });
   });
 
-  test("a model drafted from a catalog with no comments: sl next names the one sl apply that gives what the readback needs, then the readback runs", async () => {
+  test("a model drafted from a catalog with no comments: semlayer next names the one semlayer apply that gives what the readback needs, then the readback runs", async () => {
     const dir = tempDir();
     const root = join(dir, "semantic");
     await initProject(root, "shop");
@@ -429,7 +429,7 @@ describe("HR-12 walk: the command sl next names at each state runs", () => {
       "CREATE TABLE shop.orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, amount DECIMAL(12,2), created_at TIMESTAMP)",
       "INSERT INTO shop.orders SELECT i, i % 7, (i * 13 % 500) / 10.0, TIMESTAMP '2026-01-01' + to_days(i % 90) FROM range(1, 60) t(i)",
     ]);
-    // Follow sl next through intake, profile and draft until it reaches the interview.
+    // Follow semlayer next through intake, profile and draft until it reaches the interview.
     let a = await next(root);
     for (let i = 0; i < 12 && a.phase !== "interview"; i++) {
       expect(a.kind, `${a.phase}: ${a.why}`).toBe("run");
@@ -437,7 +437,7 @@ describe("HR-12 walk: the command sl next names at each state runs", () => {
       a = await next(root);
     }
     expect(a).toMatchObject({ kind: "ask_owner", phase: "interview", action: { command: "apply", args: ["--file", "-"], kind: "ask_owner" } });
-    expect(a.why).toContain("sl readback would refuse these items first");
+    expect(a.why).toContain("semlayer readback would refuse these items first");
     expect(a.why).toContain("wh.orders: wh.orders has no grain");
     // The owner's words in place of each <placeholder> make the edits run.
     const edits = JSON.parse(/standard input: (\{.*?\})\. Then read/.exec(a.why)![1]!) as { edits: string[][] };
@@ -463,11 +463,11 @@ describe("HR-12 walk: the command sl next names at each state runs", () => {
     const seen: string[] = [];
     const driver: Driver = {
       async skillTurn(input) {
-        // The state before this turn: what sl next names runs.
-        const r = await slIn(input.root, ["next", "--json"], clock);
+        // The state before this turn: what semlayer next names runs.
+        const r = await semlayerIn(input.root, ["next", "--json"], clock);
         expect(r.code).toBe(0);
         const action = JSON.parse(r.out) as NextAction;
-        const human = (await slIn(input.root, ["next"], clock)).out;
+        const human = (await semlayerIn(input.root, ["next"], clock)).out;
         await expectRunnable(input.root, action, human);
         seen.push(`${action.kind}:${action.phase}:${actionText(action.action as StepAction)}`);
         const turn = script.skill[at++]!;
@@ -476,7 +476,7 @@ describe("HR-12 walk: the command sl next names at each state runs", () => {
           mkdirSync(dirname(path), { recursive: true });
           writeFileSync(path, text);
         }
-        for (const args of turn.sl ?? []) await slIn(input.root, args.map((x) => x.replaceAll("{fixture}", relative(input.root, join(REPO_ROOT, "fixtures", scenario.fixture)).split(sep).join("/"))), clock);
+        for (const args of turn.semlayer ?? []) await semlayerIn(input.root, args.map((x) => x.replaceAll("{fixture}", relative(input.root, join(REPO_ROOT, "fixtures", scenario.fixture)).split(sep).join("/"))), clock);
         while (script.skill[at]?.agent) at++;
         return { text: turn.text, tokens: turn.tokens ?? 1, done: turn.done === true };
       },

@@ -1,6 +1,6 @@
 # Acme usage fixture
 
-Synthetic saved queries and query logs for `sl usage add` (spec: Usage evidence), written the way Acme's analysts would query the warehouse in `../owner-brief.md`: revenue over completed and shipped orders without test accounts, refunds, by region and month. No query, user or value in them describes a real person, company or system.
+Synthetic saved queries and query logs for `semlayer usage add` (spec: Usage evidence), written the way Acme's analysts would query the warehouse in `../owner-brief.md`: revenue over completed and shipped orders without test accounts, refunds, by region and month. No query, user or value in them describes a real person, company or system.
 
 | Path | What it is |
 |---|---|
