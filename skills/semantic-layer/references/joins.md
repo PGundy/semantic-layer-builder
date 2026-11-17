@@ -56,7 +56,7 @@ Rows on the left that find no match are orphans. They matter for `type`:
 - `type: left` keeps orphans, so totals stay the same and their customer fields are empty. This is the safe default.
 - `type: inner` drops orphans, so totals shrink. Use it only when the owner says unmatched rows should never be counted, and say how many rows that removes.
 
-When orphans are more than about 1% of rows, ask about them and write the answer in the join's `description` or as an open question.
+When orphans are more than about 1% of rows, ask about them and write the answer in the join's `description` (`semlayer set <source.model.join> description "<text>"`) or as an open question (`semlayer question add`).
 
 The join's `type` also decides what a join reference through it sees. A measure filter or dimension on the left model that reads `customer.<column>`, or `order.customer.<column>` two hops away, makes the compiler add each join on the path with its own `type`: on a `left` join an orphan's `customer.<column>` is empty (null), so a filter meant to keep orphans handles null, as in `coalesce(customer.is_test_account, false) = false`; on an `inner` join orphans are gone from every measure that uses the reference. Choose the type with the owner and read the consequence back (`interview-guide.md`, join references).
 
@@ -70,7 +70,7 @@ The join's `type` also decides what a join reference through it sees. A measure 
   2. A pre-aggregated model, for example a view with one row per order and the promotion count, which the owner's engineers create on every dialect: on DuckDB a view in the `.duckdb` database file or a Parquet file they write, read as one table expression (`connection.views` takes no aggregate).
   3. Leave it out and record an open question.
 
-When `relationship` in the YAML differs from `suggested_relationship`, change the YAML to match the evidence, or ask the owner why the data disagrees with what they expect. Never approve a join whose YAML relationship the evidence contradicts. `semlayer validate` reports an error on an approved `many_to_one` or `one_to_one` join whose evidence shows repeats (`right_key_unique: false`, or `max_fanout` above 1), because every measure reading through it would count some rows more than once. When the owner explains why the measured repeats do not matter (a duplicate row being removed upstream, a key unique for every row the layer counts), and you have read that back, record the reason in their words on the join, and recheck after the data changes:
+When `relationship` in the YAML differs from `suggested_relationship`, set it to match the evidence (`semlayer set warehouse.orders.customer relationship <relationship>`), or ask the owner why the data disagrees with what they expect. Never approve a join whose YAML relationship the evidence contradicts. `semlayer validate` reports an error on an approved `many_to_one` or `one_to_one` join whose evidence shows repeats (`right_key_unique: false`, or `max_fanout` above 1), because every measure reading through it would count some rows more than once. When the owner explains why the measured repeats do not matter (a duplicate row being removed upstream, a key unique for every row the layer counts), and you have read that back, record the reason in their words on the join with `semlayer set <source.model.join> fanout_override "<their words>"`, and recheck after the data changes. It writes:
 
 ```yaml
     fanout_override: "Duplicate rows for 3 discontinued products; finance excludes them upstream. Dana Ruiz, 2026-10-26."
@@ -96,10 +96,12 @@ Read back what the join does, how well it matched, and any risk, then ask for a 
 
 A row filter on the joined model in `access.yaml` behaves the same way when a request reaches that model's fields through the join: on a left join it blanks the joined columns and keeps the left row; on an inner join it drops the row. A join that a measure filter, a dimension `expr` or a row filter in `access.yaml` reads through is part of that field's definition: the compiler joins it without the target's row filters and whatever the role may see, so a row filter never blanks a rule such as the test-account exclusion, and no helper model is needed for that (`access.md`, Definition joins).
 
-For a `one_to_many` join, add the multiplication warning in the readback itself. After an explicit yes:
+For a `one_to_many` join, add the multiplication warning in the readback itself. `semlayer readback --targets warehouse.orders.customer` renders it; record the owner's answer in their words and approve on a yes in one command:
 
 ```
-semlayer approve --target warehouse.orders.customer --by "Dana Ruiz"
+semlayer reply --readback <readback_id> --answers - --approve <<'ANSWERS'
+{"by": "Dana Ruiz", "answers": [{"item": 1, "verdict": "yes", "text": "<the owner's words>"}]}
+ANSWERS
 semlayer validate
 ```
 
