@@ -80,6 +80,8 @@ Batch the scoping questions into one message: numbered items, one topic each, ea
 4. "Are there tables you know are important that I haven't mentioned?" (search with `*<word>*` patterns)
 5. "Are any of these off limits for this project?" (exclude them now; access rules come later)
 
+When `semlayer tables` shows a `used` column (saved queries read with `semlayer usage add`), propose the tables people query first, quoting the counts, and ask about each in-scope table no saved query reads. The counts are evidence; the scope is the owner's choice.
+
 Keep the confirmation of the final table list as its own yes/no, after the preview.
 
 ### Patterns or exact names
@@ -88,7 +90,7 @@ Match the owner's own rule. When they state a rule that is a pattern ("all the f
 
 If the scope is still above `focus_threshold` after these, say so and suggest splitting it ("let's do orders and customers first, then marketing next session"). The threshold is a prompt to ask, not a hard limit: if the owner wants 30 tables, write 30. Batching in the interview keeps it manageable.
 
-When the owner confirms they want more tables than `focus_threshold`, set `settings.focus_threshold` in `semantic.yaml` to the agreed count, editing the file in place and keeping its comments (add a `settings:` block with `focus_threshold: <n>` if the file has none), then run `semlayer validate`. Otherwise `semlayer status` keeps asking for focus and `semlayer draft` refuses. You can also draft one batch at a time instead, with `semlayer draft --source warehouse --tables a,b,c`.
+When the owner confirms they want more tables than `focus_threshold`, set `settings.focus_threshold` in `semantic.yaml` to the agreed count. No typed command writes it: outside the `semlayer-interviewer` role it is a hand write that keeps the file's comments (add a `settings:` block with `focus_threshold: <n>` if the file has none), followed by `semlayer validate`; as `semlayer-interviewer`, follow `SKILL.md` (Hand edits) and name it in the handoff. Otherwise `semlayer status` keeps asking for focus and `semlayer draft` refuses. You can also draft one batch at a time instead, with `semlayer draft --source warehouse --tables a,b,c`.
 
 ## Preview, confirm, write
 
@@ -105,11 +107,13 @@ semlayer scope --source warehouse --include 'fct_*' --include 'dim_*' --exclude 
 semlayer validate
 ```
 
+To keep why tables were left out, add `--reason "<the owner's words>"` to the command with the `--exclude` patterns before `--write`; `semlayer scope --source warehouse --explain <table>` shows why a table is in or out, with that reason.
+
 `--write` saves the patterns, not a table list, so new tables that match a pattern later are picked up automatically; exact names match only those tables. Tell the owner which applies: "any new `fct_` table will be included too", or "a new table will need adding".
 
 ### A list of tables from the owner
 
-When the owner hands over a list (a spreadsheet column, a file of names, hundreds of tables), save it as a table-list file instead of a long command: one name or pattern per line, `!<pattern>` to leave one out, `#` for comments. Preview it with `semlayer scope --source warehouse --from-file tables.txt`, read back the count and anything unmatched (each warning names the file's line), and on the owner's yes rerun it with `--write`: it copies the file to `scope/warehouse.txt` and sets `scope.tables_file`, keeping the source file's comments. To change the list later, edit that file and run `semlayer validate`. `semlayer scope --source warehouse --to-file scope/agreed.txt` writes the current selection as exact names, for the owner to review or edit.
+When the owner hands over a list (a spreadsheet column, a file of names, hundreds of tables), save it as a table-list file instead of a long command: one name or pattern per line, `!<pattern>` to leave one out, `#` for comments. Preview it with `semlayer scope --source warehouse --from-file tables.txt`, read back the count and anything unmatched (each warning names the file's line), and on the owner's yes rerun it with `--write`: it copies the file to `scope/warehouse.txt` and sets `scope.tables_file`, keeping the source file's comments. To change the list later, edit a copy outside the semantic root and rerun `semlayer scope --source warehouse --from-file <copy> --write --force`, which replaces `scope/warehouse.txt`. `semlayer scope --source warehouse --to-file scope/agreed.txt` writes the current selection as exact names, for the owner to review or edit.
 
 ## Expanding scope later
 
