@@ -28,7 +28,7 @@ The CLI's promises, as the README's Trust model states them:
 - **Source files.** A DuckDB `connection.setup` statement or `connection.views` relation that passes the source checks (`semlayer validate` and the adapter) but runs something other than what they allow.
 - **Protected values.** A value of a protected column (tagged `pii` or `sensitive`, in `ignored_columns`, or flagged by the sensitivity rules) that `semlayer run` or `semlayer goldens run` prints without `--show-protected`, in a result column of that column's own name or one the statement renamed or computed from it (`select email as e`, `lower(email)`), or that `semlayer profile` writes into a snapshot as a top value.
 - **Credentials.** A connection URL, password or key that any command prints, writes to a file or includes in an error message.
-- **Paths.** A command that writes outside the semantic root, other than the env-file lines `semlayer init` and `semlayer setup` add to the `.gitignore` of the directory that holds it.
+- **Paths.** A command that writes outside the semantic root, other than the env-file lines `semlayer init` and `semlayer setup` add to the `.gitignore` of the directory that holds it, the `.env.example` with placeholder lines that `semlayer setup` writes there when a connection variable is set nowhere, and the new folder `semlayer demo` makes.
 - **The test cluster.** `scripts/pg-local.sh` letting another local user connect to the cluster it starts.
 
 ## Out of scope

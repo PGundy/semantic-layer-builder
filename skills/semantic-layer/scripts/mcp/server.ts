@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// The semantic-layer CLI as an MCP server: JSON-RPC 2.0 over stdio, one JSON message per line.
+// The semlayer CLI as an MCP server: JSON-RPC 2.0 over stdio, one JSON message per line.
 // Each CLI command is one tool; a call runs the command in-process with --json in the server's
 // semantic root. stdout carries protocol messages only; logs go to stderr. When the client declares
 // elicitation, approve, goldens confirm and reply with verdict yes ask the owner in the client (elicit.ts).

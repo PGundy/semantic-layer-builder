@@ -122,7 +122,7 @@ export function intakeIssues(source: SourceConfig, root: string): IntakeIssue[] 
       level: "warning",
       path: "intake.reason",
       message:
-        "is empty while intake.mode is export. The skill asks for a connection first and takes an export only when one is not possible; " +
+        "is empty while intake.mode is export. The interview asks for a connection first and takes an export only when one is not possible; " +
         `write why in intake.reason, or set intake.mode to connection if the owner can connect, ${AFTER}`,
     });
   }

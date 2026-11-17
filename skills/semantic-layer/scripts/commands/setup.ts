@@ -265,7 +265,7 @@ const spec: CommandSpec = {
     const next = parseYamlText(newText, rel) as SourceConfig;
     if (mode === "export" && !next.intake?.reason) {
       warnings.push(
-        'intake.reason is recorded as empty. The skill asks the owner for a connection first and uses an export only when one is not possible; record why with semlayer setup ... --reason "<why>".',
+        'intake.reason is recorded as empty. The interview asks the owner for a connection first and uses an export only when one is not possible; record why with semlayer setup ... --reason "<why>".',
       );
     }
     const tablesCopy = tablesFrom === undefined ? undefined : plannedCopy(ctx.root, tablesFrom, state.scope!.tables_file!, "The table-list copy");

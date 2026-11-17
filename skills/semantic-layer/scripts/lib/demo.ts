@@ -75,7 +75,9 @@ export function demoData(plugin: string): DemoData {
   if (!csv.length || !parquet.length || !existsSync(figuresFile)) {
     throw new UserError(
       `This copy of semlayer has no sample data: semlayer demo copies it from ${data}, which is not there. ` +
-        `A copy of the skill directory alone does not include it. Clone ${REPOSITORY} (or install the plugin) and run semlayer demo from there.`,
+        `A copy of the skill directory alone does not include it. Install the plugin (claude plugin marketplace add ${REPOSITORY.replace("https://github.com/", "")}, ` +
+        `then claude plugin install semantic-layer-builder@semantic-layer-builder) and run semlayer demo, ` +
+        `or clone ${REPOSITORY}, run bun install in the clone and run bun skills/semantic-layer/scripts/semlayer.ts demo there.`,
       `git clone ${REPOSITORY}`,
     );
   }

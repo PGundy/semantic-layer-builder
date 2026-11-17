@@ -1,6 +1,6 @@
 # PRD: first-layer hardening
 
-Status: approved for build. Owner: PGundy. Built on `release/v1`, after every milestone of `docs/PRD.md`. This plan adds to that one and changes none of its requirements, invariants or decisions; the build loop, the PR rules and the definition of done are its section 10.
+Status: built; every PR of section 3 is merged on `release/v1`. Owner: PGundy. Built on `release/v1`, after every milestone of `docs/PRD.md`. This plan adds to that one and changes none of its requirements, invariants or decisions; the build loop, the PR rules and the definition of done are its section 10.
 
 ## 1. Purpose
 
@@ -185,3 +185,14 @@ Run the section 2 walkthrough with a fresh agent. Each failure of an exit condit
 - Dialects other than Postgres and DuckDB for the compiler.
 - Rewriting `lib/status.ts`'s step selection beyond giving each step a structured action.
 - The chat product (`semantic-layer-chat`), which builds on the layer this plan makes dependable.
+
+## 6. After this plan
+
+These landed on `release/v1` after this plan was built and are not part of it; `README.md` and `docs/plugin.md` describe the product as it is now.
+
+- Usage evidence from saved queries and query logs (`semlayer usage`).
+- The rename of the tool from `sl` to `semlayer` (and of `.sl/` and `SL_*` to `.semlayer/` and `SEMLAYER_*`).
+- The automatic install of the packages by Claude Code, the `semlayer` command on the agent's `PATH` (`bin/semlayer`) and `semlayer doctor`.
+- `semlayer demo`, a sample project with synthetic data and no warehouse.
+- The `/semlayer` entry point and a README written for the terminal.
+- A documentation pass that brought every document in line with the terminal-first product.

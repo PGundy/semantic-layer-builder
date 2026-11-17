@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "The semantic-layer-builder Claude Code plugin: the semantic-layer skill, its semlayer CLI, agents and hooks.",
+  "description": "The semantic-layer-builder Claude Code plugin: the semlayer command, the /semlayer skill, five agents, hooks and an MCP server.",
   "scripts": {
     "semlayer": "bun skills/semantic-layer/scripts/semlayer.ts",
     "mcp": "bun skills/semantic-layer/scripts/mcp/server.ts",

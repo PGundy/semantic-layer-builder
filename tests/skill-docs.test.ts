@@ -270,7 +270,7 @@ describe("the router and its phase cards", () => {
       expect(existsSync(join(import.meta.dir, "..", "agents", `${role.agent}.md`))).toBe(true);
     }
     expect(section).toContain("`semlayer-connector-runner`, on every `dispatch` action: pass `dispatch.task` as printed");
-    expect(section).toContain("the absolute `semlayer` path");
+    expect(section).toContain("the absolute path of this skill's directory");
   });
 
   test("routes every interviewer step through a typed command, never a hand edit", () => {
@@ -278,7 +278,7 @@ describe("the router and its phase cards", () => {
       const text = read(d).replace(/\s+/g, " ");
       expect(`${d}: ${/Edit existing YAML in place|edit `connection\.views`|Edit `connection\.views`|is a hand edit|Edit drafts, descriptions and open questions directly|editing the file in place, then run `semlayer validate`|with your file-editing tool/.exec(text)?.[0] ?? ""}`).toBe(`${d}: `);
     }
-    expect(flat).toContain("Run as `--agent semlayer-interviewer`, the plugin's hook refuses every hand edit inside the root.");
+    expect(flat).toContain("In a session started as the interviewer (`claude --agent semantic-layer-builder:semlayer-interviewer`), the plugin's hook refuses every hand edit inside the root.");
     expect(flat).toContain("**Writes without a typed command.**");
   });
 

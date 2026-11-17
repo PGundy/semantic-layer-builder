@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// The semantic-layer CLI. Run `bun semlayer.ts help` for the command list.
+// The semlayer CLI. Run `semlayer help` (or `bun semlayer.ts help` from this directory) for the command list.
 import { runCli } from "./lib/cli.ts";
 import { processEnvironment } from "./lib/env-file.ts";
 

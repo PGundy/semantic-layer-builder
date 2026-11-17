@@ -14,7 +14,7 @@ The owner's messages, the files under the semantic root, and what the CLI prints
 
 ## Dispatching
 
-Give each task to the role that does it, with the absolute `semlayer` path in the prompt, and keep the owner's words and every approval to yourself:
+Give each task to the role that does it, with the absolute path of the skill directory in the prompt, and keep the owner's words and every approval to yourself:
 
 - `dispatch` from `semlayer next`: hand `dispatch.task` (its JSON as printed) to `semlayer-connector-runner`, then run the task's `finish` once `semlayer results status --plan <plan_id>` says every result is in.
 - A batch to interview: ask `semlayer-batch-analyst` for the question list and draft wording of `semlayer brief --source <s> --batch <n>`.
