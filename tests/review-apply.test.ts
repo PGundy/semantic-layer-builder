@@ -593,7 +593,7 @@ describe("a yes to an export source's golden names the upgrade, not a confirm th
     expect(o.run_before).toContain(`Once a connection exists: ${UPGRADE}, then semlayer goldens run --name orders_total.`);
     expect(o.confirm_before).toContain(`Once a connection exists: ${UPGRADE}, then semlayer goldens run --name orders_total.`);
     // The readback names the upgrade, then the confirm, never a confirm from the plan that would refuse.
-    expect(o.readback).toContain(`Only after the owner says yes to an item, approve it: ${STEP}. A no or a change`);
+    expect(o.readback).toContain(`Only after the owner says yes to an item, approve it: ${STEP}. For a no or a change`);
     expect(o.readback).not.toContain(`semlayer goldens confirm --name orders_total --plan`);
     const rb = JSON.parse(o.readback_json!.slice(2)) as { next: string; next_steps: string[] };
     expect(rb.next_steps).toEqual([STEP]);
@@ -622,13 +622,13 @@ describe("a yes to an export source's golden names the upgrade, not a confirm th
       `semlayer approve --target warehouse.fct_orders --by "<owner>"`,
     ];
     expect(r.next_steps).toEqual(steps);
-    expect((await semlayer(root, ["readback", "--targets", targets, "--results", join(root, "res.json")])).out).toContain(`approve it: ${steps.join("; ")}. A no or a change`);
+    expect((await semlayer(root, ["readback", "--targets", targets, "--results", join(root, "res.json")])).out).toContain(`approve it: ${steps.join("; ")}. For a no or a change`);
     // A connection source's golden keeps its confirm, with the rows from where the readback took them.
     const { root: other, plan } = await planned();
     connect(other);
     const text = await semlayer(other, ["readback", "--targets", "golden:orders_total", "--plan", plan]);
     expect(text.code).toBe(0);
-    expect(text.out).toContain(`Only after the owner says yes to an item, approve it: semlayer goldens confirm --name orders_total --plan ${plan}. A no or a change`);
+    expect(text.out).toContain(`Only after the owner says yes to an item, approve it: semlayer goldens confirm --name orders_total --plan ${plan}. For a no or a change`);
     expect(text.out).not.toContain("semlayer setup");
     const json = (await semlayer(other, ["readback", "--targets", "golden:orders_total", "--plan", plan, "--json"])).json<{ next_steps: string[] }>();
     expect(json.next_steps).toEqual([`semlayer goldens confirm --name orders_total --plan ${plan}`]);

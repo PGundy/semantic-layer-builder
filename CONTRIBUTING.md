@@ -69,7 +69,7 @@ All test and fixture data is synthetic. Never add real data, real names or real 
 bash scripts/verify.sh
 ```
 
-It installs from the lockfile, typechecks, runs every test and validates the example layer. When `PG_URL` is unset and Postgres binaries exist, it starts a cluster of its own with `scripts/pg-local.sh` in a fresh `semlayer-pg-verify.*` directory, and stops the cluster and removes the directory when it exits, also when a step fails. A cluster that does not start stops the run with `pg-local.sh`'s message. A cluster that `PG_URL` names is left running. It fails, and lists them, when the run leaves an `semlayer-test-*` or `semlayer-pg-*` entry in `${TMPDIR:-/tmp}` that was not there when it started; two runs at once in the same temp directory see each other's. CI runs the same script on every pull request and on pushes to `main` and `release/**`.
+It installs from the lockfile, typechecks, runs every test and validates the example layer. When `PG_URL` is unset and Postgres binaries exist, it starts a cluster of its own with `scripts/pg-local.sh` in a fresh `semlayer-pg-verify.*` directory, and stops the cluster and removes the directory when it exits, also when a step fails. A cluster that does not start stops the run with `pg-local.sh`'s message. A cluster that `PG_URL` names is left running. It fails, and lists them, when the run leaves a `semlayer-test-*` or `semlayer-pg-*` entry in `${TMPDIR:-/tmp}` that was not there when it started; two runs at once in the same temp directory see each other's. CI runs the same script on every pull request and on pushes to `main` and `release/**`.
 
 A change should:
 

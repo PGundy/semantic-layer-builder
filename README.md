@@ -108,10 +108,10 @@ An intake by hand, without the agent:
 # A variable already set in your shell wins; another file is read with --env-file <path>.
 semlayer setup --source warehouse --dialect postgres --env WAREHOUSE_URL --schemas acme --name acme
 
-# or, with no connection: print the catalog export, run it yourself, import the file
+# or, with no connection: print the catalog export, run it yourself, set the source up from the file
 semlayer export-sql --dialect postgres > export.sql
 psql -X "<your connection>" --csv -f export.sql > schema.csv   # psql does not read .env
-semlayer import --source warehouse --file schema.csv
+semlayer setup --source warehouse --dialect postgres --export schema.csv --reason "<why a connection is not possible>" --name acme
 
 semlayer baseline --source warehouse          # a first-pass brief of the tables, read-only
 semlayer usage add --source warehouse ./queries   # optional: saved queries or a query log as evidence; runs none of it

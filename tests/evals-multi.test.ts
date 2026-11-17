@@ -104,10 +104,10 @@ describe("acme-multi", () => {
     ]);
     expect(grader(grades, "authority").details).toContain("transcript.jsonl: each of the 5 role-agent turn(s) ran only the semlayer commands its role may run.");
     const effort = grader(grades, "effort");
-    expect(effort.metrics).toMatchObject({ interviewer_tokens: 8156, interviewer_token_share: 0.475, reference_interviewer_tokens: 10339, interviewer_tokens_vs_reference: 0.7889 });
+    expect(effort.metrics).toMatchObject({ interviewer_tokens: 8156, interviewer_token_share: 0.475, reference_interviewer_tokens: 10374, interviewer_tokens_vs_reference: 0.7862 });
     expect(effort.details.slice(-2)).toEqual([
-      "acme-structured-20260101T000000000Z/summary.json: the interviewer used 8156 tokens, 78.9% of the 10339 the single-agent run acme-structured-20260101T000000000Z used.",
-      "The interviewer holds 78.9% of acme-structured's interviewer tokens, within the scenario's max_interviewer_share of 80%.",
+      "acme-structured-20260101T000000000Z/summary.json: the interviewer used 8156 tokens, 78.6% of the 10374 the single-agent run acme-structured-20260101T000000000Z used.",
+      "The interviewer holds 78.6% of acme-structured's interviewer tokens, within the scenario's max_interviewer_share of 80%.",
     ]);
   }, 60_000);
 
@@ -121,9 +121,9 @@ describe("acme-multi", () => {
     const r = await replay("acme-multi", out, heavy);
     const effort = grader(r.grades, "effort");
     expect(effort).toMatchObject({ passed: false, score: null });
-    expect(effort.metrics!.interviewer_tokens_vs_reference).toBe(1.0892);
+    expect(effort.metrics!.interviewer_tokens_vs_reference).toBe(1.0855);
     expect(effort.details.at(-1)).toBe(
-      "The interviewer holds 108.9% of acme-structured's interviewer tokens, above the scenario's max_interviewer_share of 80%; dispatch more of the reading to the role agents (agents/semlayer-*.md).",
+      "The interviewer holds 108.6% of acme-structured's interviewer tokens, above the scenario's max_interviewer_share of 80%; dispatch more of the reading to the role agents (agents/semlayer-*.md).",
     );
     expect(r.grades.passed).toBe(false);
 

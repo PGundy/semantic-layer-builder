@@ -964,7 +964,7 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["joins.md", "renaming keeps evidence", "Renaming a join keeps its evidence"],
   ["joins.md", "stale evidence warns", "differ from the join's current `keys` or `to`"],
   // Status, verification and handoff.
-  ["SKILL.md", "next_step.after_owner_yes", "`next_step.after_owner_yes` is true whenever the command is an `semlayer approve` or `semlayer goldens confirm`"],
+  ["SKILL.md", "next_step.after_owner_yes", "`next_step.after_owner_yes` is true whenever the command is a `semlayer approve` or `semlayer goldens confirm`"],
   ["SKILL.md", "the plain-output wait line", "Only after the owner says yes to its readback: <command>"],
   ["phases/handoff.md", "handoff names roles without goldens", "naming each role in `roles_without_goldens`"],
   ["phases/verify.md", "coverage checklist at handoff", "Coverage is a checklist checked at handoff"],
@@ -1786,9 +1786,12 @@ describe("the README", () => {
   test("says how to run the CLI, with a quickstart and what --root points at", () => {
     expect(readme).toContain("## Running semlayer yourself");
     expect(readme).toContain("bun skills/semantic-layer/scripts/semlayer.ts --help");
-    for (const cmd of ["setup", "export-sql", "import", "baseline", "status"]) {
+    for (const cmd of ["setup", "export-sql", "baseline", "status"]) {
       expect(shown.some((i) => i.text.startsWith(`semlayer ${cmd} `) || i.text === `semlayer ${cmd}`)).toBe(true);
     }
+    // The no-connection path creates the project and reads the export in one command; a bare
+    // semlayer import fails in a folder with no layer yet.
+    expect(shown.some((i) => i.text.startsWith("semlayer setup ") && i.text.includes("--export schema.csv"))).toBe(true);
     expect(flat).toContain("`--root` points at the semantic directory itself, the one that holds `semantic.yaml`, not its parent");
   });
 

@@ -27,13 +27,13 @@ Or in a Claude Code session: `/plugin marketplace add PGundy/semantic-layer-buil
 
 That is all. The plugin root holds one `package.json` with registry dependencies only and its `bun.lock`, so Claude Code installs the CLI's packages when it installs or updates the plugin, and puts the plugin's `bin/` on the `PATH` of the agent's shell: the agent runs `semlayer <command>` as a plain command. When `semlayer` is not found, the full form `bun "<plugin root>/skills/semantic-layer/scripts/semlayer.ts" <command>` runs the same CLI.
 
-When that install did not run (Bun was missing at the time, there was no network, or the marketplace was added from a local directory, which Claude Code reads in place), the next session starts with a message that names the command with the plugin root filled in:
+When that install did not run (Bun was missing at the time, there was no network, or the plugin is loaded from a folder with `claude --plugin-dir`, which Claude Code uses in place), the next session starts with a message that names the command with the plugin root filled in:
 
 ```sh
 cd "<plugin root>" && bun install --frozen-lockfile --production
 ```
 
-For a marketplace on GitHub the plugin root is usually the `installPath` that `claude plugin list --json` prints; for a local one it is that directory.
+For a marketplace, on GitHub or added from a local directory, the plugin root is the `installPath` that `claude plugin list --json` prints; for `--plugin-dir` it is that folder.
 
 ## Check the install
 

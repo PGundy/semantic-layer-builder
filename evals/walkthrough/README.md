@@ -63,7 +63,7 @@ recording command piped that way counts when the pipe exits 0; `prompt.md` tells
 pipe them.
 
 `tests/walkthrough.test.ts` checks `count.ts` over a hand-written log, and that `w.sh` refuses a read
-of the project's `.env` after an `semlayer` command and logs the refusal.
+of the project's `.env` after a `semlayer` command and logs the refusal.
 
 The wrapper is a simulation. It runs the same hook programs with the same input the plugin registers,
 but it is not Claude Code: a hook's `additionalContext`, the MCP tools and the session start hook are

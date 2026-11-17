@@ -151,8 +151,8 @@ const spec: CommandSpec = {
       batched
         ? `Record the owner's answers in one ${batched.reply_approve}, each item with its own verdict and their words: it ${batchedDoes(batched)}` +
             (batched.confirm_each.length ? `; then confirm each golden they said yes to: ${batched.confirm_each.join("; ")}` : "") +
-            ". A no or a change goes into the YAML, then run semlayer readback again."
-        : `Only after the owner says yes to an item, approve it: ${nextSteps.join("; ")}. A no or a change goes into the YAML, then run semlayer readback again.`,
+            ". For a no or a change, make the edit with a typed command (semlayer set, or several in one semlayer apply), then run semlayer readback again."
+        : `Only after the owner says yes to an item, approve it: ${nextSteps.join("; ")}. For a no or a change, make the edit with a typed command (semlayer set, or several in one semlayer apply), then run semlayer readback again.`,
     );
     if (guarded) lines.push(UNPROTECT);
     ctx.out(lines.join("\n"));
