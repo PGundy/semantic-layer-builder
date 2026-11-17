@@ -333,7 +333,7 @@ describe("export path", () => {
     const { root } = fresh();
     const r = await semlayer(root, ["setup", "--source", "warehouse", "--dialect", "postgres", "--export", EXPORT_CSV, "--json"]);
     expect(r.code).toBe(0);
-    expect(r.json<SetupJson>().warnings.join("\n")).toContain("intake.reason is recorded as empty. The skill asks the owner for a connection first");
+    expect(r.json<SetupJson>().warnings.join("\n")).toContain("intake.reason is recorded as empty. The interview asks the owner for a connection first");
     expect(readYaml<SourceConfig>(join(root, "sources", "warehouse.yaml")).intake?.reason).toBe("");
     const pasted = await semlayer(root, ["setup", "--source", "warehouse", "--dialect", "postgres", "--export", EXPORT_CSV, "--reason", "VPN only; password=hunter2xyz", "--json"]);
     expect(pasted.json<SetupJson>().source.changes.reason).toBe(true);

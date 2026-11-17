@@ -1,12 +1,12 @@
 {
   "name": "semantic-layer-builder",
-  "description": "The semantic-layer-builder plugin: a skill, five agents and two hooks that build a governed semantic layer with a data owner.",
+  "description": "The semantic-layer-builder plugin for Claude Code in the terminal: the semlayer command and /semlayer, with five agents, hooks and an MCP server, to build a governed semantic layer with a data owner.",
   "owner": { "name": "semantic-layer-builder contributors", "url": "https://github.com/PGundy/semantic-layer-builder" },
   "plugins": [
     {
       "name": "semantic-layer-builder",
       "source": "./",
-      "description": "Interview a data owner and build a governed semantic layer across many data sources.",
+      "description": "Interview a data owner at the terminal and build a governed semantic layer across many data sources, with the semlayer command and /semlayer.",
       "category": "data"
     }
   ]

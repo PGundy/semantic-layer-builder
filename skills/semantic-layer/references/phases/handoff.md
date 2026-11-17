@@ -22,4 +22,4 @@ Load this card when `semlayer next` names phase `done`. It holds the last readba
 - **Open questions**: every `open_questions` entry in the models and in `access.yaml`, and every cross-source question, with who could answer it. Resolve questions the owner has since answered (`semlayer question resolve`).
 - **Waiting on a command**: each change the owner agreed that a typed command does not cover yet and the `semlayer-interviewer` role recorded as an open question (`SKILL.md`, Hand edits).
 - **Cross-source metrics and engineering asks**: every cross-source metric's formula in words, with any figure the owner gave; each measure that waits on engineering (a missing column or view), tied to the metrics that need it.
-- **How to continue**: "Ask me to continue the semantic layer"; the next batch from `semlayer status`; how to widen scope.
+- **How to continue**: start `claude` in this folder and type `/semlayer` (`/semlayer status` shows where the layer stands and changes nothing); the next batch from `semlayer status`; how to widen scope.

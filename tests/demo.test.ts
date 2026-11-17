@@ -284,7 +284,7 @@ describe("semlayer demo refuses, changing nothing", () => {
 
   test("when the plugin's data files are not there, naming the repository to clone", () => {
     const plugin = tempDir("demo-plugin");
-    expect(() => demoData(plugin)).toThrow(`A copy of the skill directory alone does not include it. Clone ${REPOSITORY}`);
+    expect(() => demoData(plugin)).toThrow(`A copy of the skill directory alone does not include it. Install the plugin (claude plugin marketplace add PGundy/semantic-layer-builder, then claude plugin install semantic-layer-builder@semantic-layer-builder) and run semlayer demo, or clone ${REPOSITORY}`);
     mkdirSync(join(plugin, "fixtures", "acme", "data", "warehouse"), { recursive: true });
     writeFileSync(join(plugin, "fixtures", "acme", "data", "warehouse", "t.csv"), "a\n1\n");
     expect(() => demoData(plugin)).toThrow("has no sample data");
@@ -300,7 +300,7 @@ describe("semlayer demo refuses, changing nothing", () => {
     const r = spawn([join(skill, "scripts", "semlayer.ts"), "demo"], cwd);
     expect(r.code).toBe(1);
     expect(r.err).toContain("This copy of semlayer has no sample data");
-    expect(r.err).toContain(`Clone ${REPOSITORY}`);
+    expect(r.err).toContain(`clone ${REPOSITORY}`);
     expect(readdirSync(cwd)).toEqual([]);
   });
 });
@@ -335,7 +335,7 @@ describe("the README's Try it on sample data section", () => {
       "(cd semantic-layer-builder && bun install)",
       "bun semantic-layer-builder/skills/semantic-layer/scripts/semlayer.ts demo",
       "cd semlayer-demo",
-      "claude",
+      "claude --plugin-dir ../semantic-layer-builder",
     ]);
     // The clone and its install stand as this checkout; the rest runs as written.
     const cwd = tempDir("demo-readme");

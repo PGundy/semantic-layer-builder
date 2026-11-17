@@ -1,6 +1,6 @@
 # PRD: agent-driven semantic layer setup
 
-Status: approved for build. Owner: PGundy. Version: the v1 plan, written against the code at the head of `claude/initial-release`. v1 includes every milestone, M0 to M6, and is built on the `release/v1` branch.
+Status: v1 is built; this plan is kept as written, and `README.md` says how the product is used now. Owner: PGundy. Version: the v1 plan, written against the code at the head of `claude/initial-release`. v1 includes every milestone, M0 to M6, and is built on the `release/v1` branch.
 
 ## 1. Summary
 

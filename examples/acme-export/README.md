@@ -2,10 +2,12 @@
 
 This example starts where many owners do: with a schema export rather than a database connection. Nothing in it reads table data.
 
+The commands below are the ones the agent runs in a `/semlayer` session; `semlayer` is the plugin's command. From a clone of this repository, after `bun install` at its root, write `bun <clone>/skills/semantic-layer/scripts/semlayer.ts` for `semlayer` (from this folder, `bun ../../skills/semantic-layer/scripts/semlayer.ts`).
+
 1. Get the export query for your database and run it. For Postgres:
 
    ```sh
-   bun skills/semantic-layer/scripts/semlayer.ts export-sql --dialect postgres --schemas acme > export.sql
+   semlayer export-sql --dialect postgres --schemas acme > export.sql
    psql -X "$DATABASE_URL" --csv -f export.sql > schema.csv
    ```
 
@@ -15,13 +17,12 @@ This example starts where many owners do: with a schema export rather than a dat
 
    ```sh
    cd examples/acme-export
-   S="bun ../../skills/semantic-layer/scripts/semlayer.ts"
-   $S init --name acme_export --root semantic
-   $S add-source --name warehouse --dialect postgres --env WAREHOUSE_URL --root semantic
-   $S import --source warehouse --file schema.csv --root semantic
-   $S baseline --source warehouse --root semantic --out baseline.md
+   semlayer init --name acme_export --root semantic
+   semlayer add-source --name warehouse --dialect postgres --env WAREHOUSE_URL --root semantic
+   semlayer import --source warehouse --file schema.csv --root semantic
+   semlayer baseline --source warehouse --root semantic --out baseline.md
    ```
 
-3. Read [`semantic/baseline.md`](semantic/baseline.md). It sketches the star schema, says what each table probably is and what one row probably means, lists relationships with fan-out warnings, candidate measures (with units such as cents), candidate splits including attributes reached through joins, columns that should not be splits, and the questions to ask the owner first. Every line is a guess for the owner to confirm. The skill opens the conversation with a short version of it, and then scopes, profiles and drafts from there.
+3. Read [`semantic/baseline.md`](semantic/baseline.md). It sketches the star schema, says what each table probably is and what one row probably means, lists relationships with fan-out warnings, candidate measures (with units such as cents), candidate splits including attributes reached through joins, columns that should not be splits, and the questions to ask the owner first. Every line is a guess for the owner to confirm. In a `/semlayer` session the agent opens the conversation with a short version of it, and then scopes, profiles and drafts from there.
 
 The warehouse has 22 tables, more than the focus threshold, so the brief covers the top 12 and its next step is to agree a scope before profiling or drafting.

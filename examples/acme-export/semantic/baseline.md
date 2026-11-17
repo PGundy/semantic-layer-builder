@@ -1,12 +1,14 @@
 # Baseline brief: warehouse
 
-A first reading of the warehouse schema (postgres, from an information schema import captured 2026-11-05): 12 tables of 22 in scope. Everything below is a guess from names and keys, for the owner to confirm or correct; nothing here is settled.
+A first reading of the warehouse schema (postgres, from an information schema import captured 2026-11-05): it covers 12 of the 22 in-scope tables. Everything below is a guess from names and keys, for the owner to confirm or correct; nothing here is settled.
 
-> 22 tables are in scope, more than the focus threshold of 12: this brief covers the top 12 by size, references and naming and leaves out 10 tables. Narrow the scope with `semlayer scope --source warehouse --include <pattern> --write` (`semlayer tables --source warehouse --groups` suggests patterns), or name tables with --tables.
+> 22 tables are in scope, more than the focus threshold of 12: this brief covers 12 of the 22 in-scope tables, the top by size, references and naming, and leaves out 10 tables (8 tables that look like noise and 2 more by rank). Narrow the scope with `semlayer scope --source warehouse --include <pattern> --write` (`semlayer tables --source warehouse --groups` suggests patterns), or name tables with --tables.
 
 > Suggested names drop the prefixes fct_, dim_, as `semlayer draft --strip-prefix fct_,dim_` would.
 
 > No table in this brief has a profile, so key uniqueness, value counts and which columns are near-unique are guesses from names.
+
+> This snapshot came from an information schema import, so nothing has read the data yet: `semlayer profile` reads it through the connection in sources/warehouse.yaml; run it where the database is reachable.
 
 ## Star-schema sketch (a guess)
 
@@ -16,8 +18,8 @@ A first reading of the warehouse schema (postgres, from an information schema im
 - **acme.audit_log** (event, one row per audit log) joins no dimension
 - Dimensions: acme.dim_sales_reps, acme.dim_regions, acme.dim_products, acme.dim_customers, acme.dim_currency
 - Dimensions no fact here joins to: acme.dim_currency
+- Bridge: acme.sales_team_closure
 - Staging: acme.raw_shopify_orders, acme.raw_stripe_charges
-- Noise: acme.etl_job_runs
 
 Does this match how the business thinks about the data? Which of these facts matter most?
 
@@ -59,7 +61,7 @@ Does this match how the business thinks about the data? Which of these facts mat
   1. What is one row of acme.fct_orders? Our guess: one row per order, from the table comment and the declared primary key order_id.
   2. Which values of status count as a real order in reports, and which should be left out (cancelled, refunded, pending, test)?
   3. Is created_at the date to report orders by, and in which time zone should days be counted?
-  4. amount_cents, shipping_cents and discount_cents look like money stored in cents, so the brief divides them by 100: is that right? Which currency are they in? The table has currency: do rows mix currencies, and should amounts be converted?
+  4. amount_cents, shipping_cents and discount_cents look like money stored in cents, so the brief divides them by 100: is that right? Which currency are amount_cents, shipping_cents and discount_cents in? The table has currency: do rows mix currencies, and should amounts be converted?
   5. gift_message looks sensitive (the name gift_message looks like a credential or free text). Who may see it? The brief keeps it out of splits.
 
 ### acme.fct_order_items: probably a fact (things that happened, with numbers to add up)
@@ -90,7 +92,7 @@ Does this match how the business thinks about the data? Which of these facts mat
 - Not splits: order_item_id (the table's key: one value per row); order_id (a key to acme.fct_orders; split by its attributes instead (order.status or order.ship_region)); product_id (a key to acme.dim_products; split by its attributes instead (product.category or product.is_active)); quantity (a number to add up, not a split); unit_price_cents (a number to average, not a split)
 - Questions for the owner:
   1. What is one row of acme.fct_order_items? Our guess: one row per order item (several per order), from the declared primary key order_item_id.
-  2. unit_price_cents looks like money stored in cents, so the brief divides it by 100: is that right? Which currency is it in?
+  2. unit_price_cents looks like money stored in cents, so the brief divides it by 100: is that right? Which currency is unit_price_cents in?
 
 ### acme.fct_refunds: probably a fact (things that happened, with numbers to add up)
 
@@ -118,7 +120,7 @@ Does this match how the business thinks about the data? Which of these facts mat
 - Questions for the owner:
   1. What is one row of acme.fct_refunds? Our guess: one row per refund (several per order), from the declared primary key refund_id.
   2. Is refunded_at the date to report refunds by, and in which time zone should days be counted?
-  3. refunded_cents looks like money stored in cents, so the brief divides it by 100: is that right? Which currency is it in?
+  3. refunded_cents looks like money stored in cents, so the brief divides it by 100: is that right? Which currency is refunded_cents in?
 
 ### acme.audit_log: probably an event log
 
@@ -136,6 +138,19 @@ Does this match how the business thinks about the data? Which of these facts mat
 - Questions for the owner:
   1. What is one row of acme.audit_log? Our guess: one row per audit log, from the column name audit_id (a guess until a profile checks it is unique). The key audit_id is a guess from its name.
   2. Is logged_at the date to report audits by, and in which time zone should days be counted?
+
+### acme.sales_team_closure: probably a bridge (it links other tables)
+
+- a view; not profiled
+- Comment: Every manager paired with everyone below them in sales, at any depth.
+- Why bridge: only 2 id columns: a link between tables
+- Grain (guess): one row per pair of manager and member, from the key manager_id, member_id (every column)
+- Key: manager_id, member_id (every column of a table that holds only ids)
+- Candidate measures:
+  - `sales_team_closure_count` = count(*): the number of rows: how many sales team closures, probably
+- Not splits: manager_id (probably the table's key: one value per row); member_id (probably the table's key: one value per row)
+- Questions for the owner:
+  1. What is one row of acme.sales_team_closure? Our guess: one row per pair of manager and member, from the key manager_id, member_id (every column).
 
 ### acme.dim_sales_reps: probably a dimension (it describes things)
 
@@ -198,7 +213,7 @@ Does this match how the business thinks about the data? Which of these facts mat
 - Unclear until profiled: sku, product_name
 - Questions for the owner:
   1. What is one row of acme.dim_products? Our guess: one row per product, from the declared primary key product_id.
-  2. list_price_cents looks like money stored in cents, so the brief divides it by 100: is that right? Which currency is it in?
+  2. list_price_cents looks like money stored in cents, so the brief divides it by 100: is that right? Which currency is list_price_cents in?
 
 ### acme.dim_customers: probably a dimension (it describes things)
 
@@ -249,12 +264,12 @@ Does this match how the business thinks about the data? Which of these facts mat
   - `raw_shopify_order_count` = count(*): the number of rows: how many shopify orders, probably
 - Candidate splits:
   - `financial_status` (category; by its name; a profile would count its values)
-- Not splits: id (probably the table's key: one value per row); email (the name email looks like personal data (pii))
-- Unclear until profiled: name, created_at, total_price
+- Not splits: id (probably the table's key: one value per row); name (the name name looks like personal data (pii)); email (the name email looks like personal data (pii))
+- Unclear until profiled: created_at, total_price
 - Questions for the owner:
   1. What is one row of acme.raw_shopify_orders? Our guess: one row per shopify order, from the column name id (a guess until a profile checks it is unique). The key id is a guess from its name. It looks like raw or staging data: should reports read a cleaned table instead?
   2. Which values of financial_status count as a real shopify order in reports, and which should be left out (cancelled, refunded, pending, test)?
-  3. email looks like personal data. Who may see it? The brief keeps it out of splits.
+  3. name and email look like personal data. Who may see them? The brief keeps them out of splits.
 
 ### acme.raw_stripe_charges: probably raw or staging data
 
@@ -277,29 +292,22 @@ Does this match how the business thinks about the data? Which of these facts mat
   2. Which values of status count as a real charge in reports, and which should be left out (cancelled, refunded, pending, test)?
   3. Is amount in whole currency units or in cents? Which currency is it in? The table has currency: do rows mix currencies, and should amounts be converted?
 
-### acme.etl_job_runs: probably noise (a copy, backup, test or bookkeeping table)
-
-- 120 rows (the catalog's estimate); not profiled
-- Why noise: name contains "etl": pipeline bookkeeping
-- Grain (guess): one row per etl job run, from the column name run_id (a guess until a profile checks it is unique)
-- Key: run_id (the column name only; a profile would check it is unique)
-- Left out of measures and splits as likely noise.
-- Questions for the owner:
-  1. acme.etl_job_runs looks like noise (name contains "etl": pipeline bookkeeping). Can it be left out of the semantic layer?
-
 ## What a profile would measure
 
-`semlayer profile --source warehouse --tables acme.fct_orders,acme.fct_order_items,acme.fct_refunds,acme.audit_log,acme.dim_sales_reps,acme.dim_regions,acme.dim_products,acme.dim_customers,acme.dim_currency,acme.raw_shopify_orders,acme.raw_stripe_charges` reads the data (counts, distinct values, top values; protected columns are hashed) and would replace these guesses with measurements:
+`semlayer profile --source warehouse --tables acme.fct_orders,acme.fct_order_items,acme.fct_refunds,acme.audit_log,acme.sales_team_closure,acme.dim_sales_reps,acme.dim_regions,acme.dim_products,acme.dim_customers,acme.dim_currency,acme.raw_shopify_orders,acme.raw_stripe_charges` reads the data (counts, distinct values, top values; protected columns keep counts only) and would replace these guesses with measurements. It reads the data through the source's connection, so run it where the database is reachable; this snapshot came from an information schema import:
 - acme.fct_orders: how many distinct values status, ship_region and currency hold, to confirm which are splits and which are near-unique; the values of status and how often each occurs; the range and null share of created_at
 - acme.fct_refunds: how many distinct values reason hold, to confirm which are splits and which are near-unique; the range and null share of refunded_at
 - acme.audit_log: whether audit_id is unique and never null, as a key must be; how many distinct values actor, action and entity hold, to confirm which are splits and which are near-unique; the range and null share of logged_at
+- acme.sales_team_closure: the row count
 - acme.dim_regions: how many distinct values region_name, country_code and timezone hold, to confirm which are splits and which are near-unique
 - acme.dim_products: how many distinct values category, sku and product_name hold, to confirm which are splits and which are near-unique; the range and null share of launched_on
 - acme.dim_customers: how many distinct values acquisition_channel hold, to confirm which are splits and which are near-unique; the range and null share of signup_at
 - acme.dim_currency: how many distinct values currency_name hold, to confirm which are splits and which are near-unique
-- acme.raw_shopify_orders: whether id is unique and never null, as a key must be; how many distinct values financial_status, name, created_at and total_price hold, to confirm which are splits and which are near-unique; the values of financial_status and how often each occurs
+- acme.raw_shopify_orders: whether id is unique and never null, as a key must be; how many distinct values financial_status, created_at and total_price hold, to confirm which are splits and which are near-unique; the values of financial_status and how often each occurs
 - acme.raw_stripe_charges: whether charge_id is unique and never null, as a key must be; how many distinct values currency, status and order_ref hold, to confirm which are splits and which are near-unique; the values of status and how often each occurs
 
 ## Left out (10)
 
-acme.stg_orders, acme.stg_customers, acme.fct_orders_v2_test, acme.sales_team_closure, acme.dim_customers_archive, acme.orders_backup_2024, acme.customers_tmp, acme.schema_migrations, acme.tmp_import_errors, acme.report_daily_sales_20250101
+Below the top by rank: acme.stg_orders, acme.stg_customers
+
+Look like noise: acme.fct_orders_v2_test, acme.dim_customers_archive, acme.orders_backup_2024, acme.etl_job_runs, acme.customers_tmp, acme.schema_migrations, acme.tmp_import_errors, acme.report_daily_sales_20250101

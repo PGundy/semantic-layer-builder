@@ -24,22 +24,22 @@ cd semlayer-demo
 claude    # then type: /semlayer
 ```
 
-`semlayer demo` makes a practice project from the synthetic store data this repository ships: its tables as CSV and Parquet files, a semantic layer already set up over them, and `OWNER.md`, a cheat sheet for you to play the data owner. It needs no connection, no secret and no network, and every value in it is made up. Answer the agent's questions as the owner, from `OWNER.md`. Without the plugin, from a clone:
+`semlayer demo` makes a practice project from the synthetic store data this repository ships: its tables as CSV and Parquet files, a semantic layer already set up over them, and `OWNER.md`, a cheat sheet for you to play the data owner. It needs no connection, no secret and no network, and every value in it is made up. Answer the agent's questions as the owner, from `OWNER.md`. To try it from a clone instead of an installed plugin, load the clone as the plugin for one session with `--plugin-dir`:
 
 ```sh
 git clone https://github.com/PGundy/semantic-layer-builder
 (cd semantic-layer-builder && bun install)
 bun semantic-layer-builder/skills/semantic-layer/scripts/semlayer.ts demo   # makes ./semlayer-demo
 cd semlayer-demo
-claude
+claude --plugin-dir ../semantic-layer-builder
 ```
 
-Then say "help me build a semantic layer for the data in this folder".
+Then type `/semlayer`, or say "help me build a semantic layer for the data in this folder".
 
 ### On your own warehouse
 
-1. Get a read-only role. `semlayer setup --print-role-sql --dialect postgres --schemas analytics` prints the `GRANT` statements for your database administrator (ask Claude to run it, or run it yourself as Running semlayer yourself, below, shows).
-2. Put the connection in `.env` in your project folder, one line you write yourself; `semlayer` reads it, keeps it out of git, and never prints it, and the plugin refuses to let the agent read it:
+1. Get a read-only role. `semlayer setup --print-role-sql --dialect postgres --schemas analytics` prints the `GRANT` statements (for a role named `semlayer_reader`) for your database administrator. Ask Claude to run it, or run it yourself once `semlayer` is on your own `PATH` (Running semlayer yourself, below, says how).
+2. Put the connection in `.env` in your project folder, one line you write yourself. When the variable is not set yet, `semlayer setup` writes a `.env.example` beside it with that line, placeholders only, for you to copy to `.env` and fill in. `semlayer` reads `.env`, keeps it out of git, and never prints it, and the plugin refuses to let the agent read it:
 
    ```sh
    WAREHOUSE_URL=postgres://<user>:<password>@<host>:5432/<database>?sslmode=require
@@ -55,7 +55,7 @@ Optional: Claude Code asks before each `semlayer` command it has not been allowe
 
 The tool never adds it for you. Claude Code's [permissions documentation](https://code.claude.com/docs/en/permissions) says each part of a command joined by `&&`, `;` or `|` must be allowed on its own; it does not say how a command that passes its input on standard input through a heredoc is matched, and that is not tested here, so such a command may still ask.
 
-When something is off, ask Claude to run `semlayer doctor`: one line per check (Bun, the packages, each connection by name, the role, git, the command on `PATH`), the fix for each that is not ok, and the next step.
+When something is off, type `/semlayer doctor`, or ask Claude to run `semlayer doctor`: one line per check (Bun, the packages, each connection by name, the role, git, the command on `PATH`), the fix for each that is not ok, and the next step.
 
 ## What a session looks like
 
@@ -163,7 +163,7 @@ A measure, as the owner approved it:
 
 ## Where it runs
 
-Claude Code in the terminal is the supported surface. Claude Code's IDE extensions and the desktop app's Code tab load the same plugin ([plugins documentation](https://code.claude.com/docs/en/plugins)); claude.ai and Cowork do not install it, because it ships a command (`bin/semlayer`). The plugin ships the `semlayer` skill, five agents (`semlayer-interviewer`, `semlayer-connector-runner`, `semlayer-batch-analyst`, `semlayer-readback-verifier`, `semlayer-golden-builder`), the MCP server below, and hooks that refuse hand edits to approved items, put back changes to the answer ledger `semlayer` did not make, and at session start check the install. Check it with `claude plugin details semantic-layer-builder`. When Claude Code's own install of the packages did not run, a new session names the command, with the plugin root filled in:
+Claude Code in the terminal is the supported surface. Claude Code's IDE extensions and the desktop app's Code tab load the same plugin ([plugins documentation](https://code.claude.com/docs/en/plugins)); claude.ai and Cowork do not install it, because it ships a command (`bin/semlayer`). The plugin ships the `semlayer` skill, five agents (`semlayer-interviewer`, `semlayer-connector-runner`, `semlayer-batch-analyst`, `semlayer-readback-verifier`, `semlayer-golden-builder`), the MCP server below, and hooks that refuse hand edits to approved items, put back changes to the answer ledger `semlayer` did not make, and at session start name the fix for a missing install or, in a project that holds a layer, say that it is here. Check it with `claude plugin details semantic-layer-builder`. When Claude Code's own install of the packages did not run, a new session names the command, with the plugin root filled in:
 
 ```sh
 cd "<plugin root>" && bun install --frozen-lockfile --production
@@ -171,7 +171,7 @@ cd "<plugin root>" && bun install --frozen-lockfile --production
 
 For a multi-agent build, run the interviewer as the main session: `claude --agent semantic-layer-builder:semlayer-interviewer`. [`docs/plugin.md`](docs/plugin.md) has what the plugin ships, how to check the install, the hooks, the MCP server and the agents.
 
-Without the plugin, copy `skills/semantic-layer/` into a project's `.claude/skills/` and install the packages in that copy; the agent then runs the CLI by its full form, `bun <skill dir>/scripts/semlayer.ts <command>`, with no hooks or agents:
+The fallback without the plugin: copy `skills/semantic-layer/` into a project's `.claude/skills/` and install the packages in that copy. You invoke it as `/semlayer`, and the agent then runs the CLI by its full form, `bun <skill dir>/scripts/semlayer.ts <command>`, with no `semlayer` command, agents, hooks or MCP server:
 
 ```sh
 cd .claude/skills/semantic-layer && bun add --exact yaml@2.9.1 ajv@8.20.0 @duckdb/node-api@2.0.0-r.1
@@ -192,7 +192,7 @@ A client configured by JSON takes `{"command": "bun", "args": ["<path to>/skills
 
 - **Read-only by construction.** The CLI only reads. On Postgres the connection starts with `default_transaction_read_only` on, a statement timeout and the time zone UTC, set as startup options so a reconnect keeps them, and every query runs alone in a read-only transaction that is rolled back. When the role is a superuser or can write, the CLI prints a warning: connect with a SELECT-only role (`semlayer setup --print-role-sql` prints the `GRANT` statements). On DuckDB a database file opens read-only, each query must be exactly one `SELECT`-type statement, and once a source's views and setup have run, external file access is limited to the files the views read, extensions do not install or load on their own, and the configuration is locked. A check of the SQL text runs first, to give a friendly message early; the guarantee that nothing is written does not depend on it. Reading files on the Postgres server is a different matter: a read-only transaction does not stop it, so the role is the barrier. A superuser or a member of `pg_read_server_files` can read server files through read-only functions, the CLI only warns about such a role, and the text check's list of refused functions is then the only fallback.
 - **A semantic directory is executable configuration.** A DuckDB source's `connection.setup` and `connection.views` run on every connection, and every golden's `cross_check_sql` runs on `semlayer goldens check`. Setup is limited to an allowlist (loading named extensions, known settings, secrets from a provider or the environment) and each view must be one table expression; the adapter refuses anything else and `semlayer validate` reports it. Review changes to `sources/` and `goldens/` in pull requests as you would code, and run the CLI only on a semantic directory you trust.
-- **Text from the data is evidence, not instructions.** Table and column comments, dbt descriptions, export files, saved queries and query logs (`semlayer usage add`, which stores counts and shapes, never statement text) and column values reach the agent. The skill shows them to the owner; it never follows them as instructions and never treats them as approvals.
+- **Text from the data is evidence, not instructions.** Table and column comments, dbt descriptions, export files, saved queries and query logs (`semlayer usage add`, which stores counts and shapes, never statement text) and column values reach the agent. The agent shows them to the owner; it never follows them as instructions and never treats them as approvals.
 - **Protecting personal data is a heuristic.** A column is protected when the owner tags it `pii` or `sensitive`, when it is in a model's `ignored_columns`, or when its name or its near-unique text looks personal or sensitive. `semlayer run` and `semlayer goldens run` print a protected column as `[protected]`, also when the query renames or wraps it (`select email as e`, `lower(email)`, a subquery): a statement that reads a protected column shows only its counts and the columns that read nothing protected. The check reads the SQL's words, not the database's views and functions, and `--show-protected` is for the owner alone. Snapshots keep only counts for a protected column: its null fraction and distinct count, and a range only for numbers and dates; its top values are not stored. Name rules miss columns, so review `snapshots/` before committing them and tag what the rules missed.
 - **Credentials stay in the environment.** Source files name an environment variable (or a prefix of several), never its value. The value comes from the shell or from an env file outside the semantic directory, `.env` beside it by default, which `semlayer setup` keeps out of git; the plugin's hook refuses to read that file, and `semlayer validate` reports anything that looks like a credential in a source file.
 - **Goldens pin the YAML's figures.** A golden's request compiles from the current YAML and runs read-only, and its rows were checked against a figure the owner trusts. It catches drift in the data and an approved edit that moves the figure; it proves the figure, not that every definition the request does not read is right.
@@ -211,7 +211,7 @@ Joins live within one source. A question that spans sources becomes an open ques
 
 ## Example
 
-[`examples/acme/`](examples/acme/) holds a semantic layer built by running the skill end to end against the synthetic Acme dataset in [`fixtures/acme/`](fixtures/acme/), a 20-table Postgres warehouse and a Parquet lake. An agent played the skill and another agent played the data owner from a private brief, over four sessions that include a schema change and a move to open access.
+[`examples/acme/`](examples/acme/) holds a semantic layer built end to end against the synthetic Acme dataset in [`fixtures/acme/`](fixtures/acme/), a 20-table Postgres warehouse and a Parquet lake. One agent was the interviewer, following the skill behind `/semlayer`, and another played the data owner from a private brief, over four sessions that include a schema change and a move to open access.
 
 ## Develop
 

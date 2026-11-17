@@ -28,6 +28,9 @@ what it found hard; the counts come from the log.
    bun skills/semantic-layer/scripts/semlayer.ts setup --print-role-sql --dialect postgres --schemas acme
    ```
 
+   Both run from this checkout after `bun install` at its root; the role the statements create is
+   `semlayer_reader`.
+
    Give the printed statements, with a password of your own, to the administrator connection.
 2. A walkthrough directory holding `work/.env` with one line, `WAREHOUSE_URL=<the read-only role's URL>`,
    and nothing else in `work/`.
@@ -35,7 +38,8 @@ what it found hard; the counts come from the log.
    this checkout in the wrapper it calls. The agent plays the owner from `fixtures/acme/owner-brief.md`
    and keeps the two roles apart; that file is the one thing it reads outside the wrapper.
 4. `bun evals/walkthrough/count.ts <WALK>/log <the password> <the agent's transcript>`, then
-   `semlayer validate` and `semlayer status --json` in `<WALK>/work`.
+   `semlayer validate` and `semlayer status --json` in `<WALK>/work` (through `w.sh run`, which puts
+   the plugin's `bin/` on `PATH`).
 
 ## Reading the counts
 

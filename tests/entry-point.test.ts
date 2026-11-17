@@ -49,7 +49,7 @@ describe("/semlayer", () => {
     expect(read("README.md")).toContain("the `semlayer` skill");
     const plugin = flat(read("docs/plugin.md"));
     expect(plugin).toContain("| This plugin | `/semantic-layer-builder:semlayer`, and the bare `/semlayer` unless another command already uses that name |");
-    expect(plugin).toContain("`/semlayer`; the directory name, `/semantic-layer`, also invokes it");
+    expect(plugin).toContain("| A copy of `skills/semantic-layer/` in a project's or your own `.claude/skills/` | `/semlayer` |");
   });
 });
 

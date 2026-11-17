@@ -1046,5 +1046,33 @@
       "primary_key": [],
       "foreign_keys": []
     }
-  ]
+  ],
+  "scope_state": {
+    "in_scope": [
+      "acme.audit_log",
+      "acme.customers_tmp",
+      "acme.dim_currency",
+      "acme.dim_customers",
+      "acme.dim_customers_archive",
+      "acme.dim_products",
+      "acme.dim_regions",
+      "acme.dim_sales_reps",
+      "acme.etl_job_runs",
+      "acme.fct_order_items",
+      "acme.fct_orders",
+      "acme.fct_orders_v2_test",
+      "acme.fct_refunds",
+      "acme.orders_backup_2024",
+      "acme.raw_shopify_orders",
+      "acme.raw_stripe_charges",
+      "acme.report_daily_sales_20250101",
+      "acme.sales_team_closure",
+      "acme.schema_migrations",
+      "acme.stg_customers",
+      "acme.stg_orders",
+      "acme.tmp_import_errors"
+    ],
+    "new_in_scope": [],
+    "left_scope": []
+  }
 }

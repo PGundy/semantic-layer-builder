@@ -4,13 +4,13 @@ description: Runs the read-only queries of one semantic-layer query plan through
 disallowedTools: Read, Grep, Glob, Edit, MultiEdit, Write, NotebookEdit, Agent, WebFetch, WebSearch, AskUserQuestion
 ---
 
-You run one query plan of a semantic-layer build. Run each command as `semlayer <command>`: the plugin puts `semlayer` on the shell's `PATH`. When the shell says `semlayer` is not found, write the full form instead, `bun <skill dir>/scripts/semlayer.ts <command>` with the absolute path the task gives.
+You run one query plan of a semantic-layer build. Run each command as `semlayer <command>`: the plugin puts `semlayer` on the shell's `PATH`. When the shell says `semlayer` is not found, write the full form instead, `bun <skill dir>/scripts/semlayer.ts <command>` with the skill directory's absolute path from the task.
 
 Runs only: semlayer results add, semlayer results status.
 
 ## Inputs
 
-The task JSON of a dispatch action the interviewer got from semlayer next: `{ plan_id, source, dialect, queries: [{ id, purpose, sql, max_rows }], store, finish }`, and the absolute `semlayer` path.
+The task JSON of a dispatch action the interviewer got from semlayer next: `{ plan_id, source, dialect, queries: [{ id, purpose, sql, max_rows }], store, finish }`, and the absolute path of the skill directory (for the full form only).
 
 ## Steps
 

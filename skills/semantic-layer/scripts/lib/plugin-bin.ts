@@ -12,7 +12,7 @@ export const PLUGIN_ROOT = resolve(import.meta.dir, "..", "..", "..", "..");
 export const PLUGIN_BIN_DIR = join(PLUGIN_ROOT, "bin");
 export const PLUGIN_BIN = join(PLUGIN_BIN_DIR, "semlayer");
 // The SHA-256 of the bin/semlayer this plugin version ships; tests/bare-semlayer.test.ts keeps it current.
-export const PLUGIN_BIN_SHA256 = "b9df39889e7cd440268bbe32d3ad2d9b5a8a8f4164261866ae04f5a92616812b";
+export const PLUGIN_BIN_SHA256 = "2abea24b1fc3ada4c3dd9ff86a45ee0de8f200467c2ac03db35a273eb36d2f7a";
 
 const real = (p: string): string | undefined => {
   try {

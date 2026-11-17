@@ -1,6 +1,6 @@
 #!/bin/sh
 # The plugin's SessionStart hook. First, a safety net for Claude Code's own install of the plugin's
-# packages: it checks that Bun 1.4 or later is on PATH and that the skill's dependencies are installed
+# packages: it checks that Bun 1.4 or later is on PATH and that the plugin's dependencies are installed
 # under the plugin root, and when either is missing it tells the user, and the agent, the exact command
 # to run and semlayer doctor to check the result; that message is the only one it prints. Second, when
 # the install is sound and the project holds a semantic layer, it tells the agent where the layer is
@@ -33,10 +33,10 @@ emit() {
 say() { emit "$1" "$1"; }
 
 guard="the plugin's hook that refuses hand edits to approved items"
-nobun="Until then the semantic-layer CLI does not run, and neither does $guard."
-oldbun="Until then the semantic-layer CLI and $guard may fail."
+nobun="Until then the semlayer command does not run, and neither does $guard."
+oldbun="Until then the semlayer command and $guard may fail."
 check="then check it with: semlayer doctor (or bun $(quote "$skill/scripts/semlayer.ts") doctor)"
-nodeps="Claude Code installs them when it installs or updates the plugin; this one was not. Until then the semantic-layer CLI and $guard depend on Bun fetching packages when they run, which needs the network and does not follow bun.lock; without the network the hook does not run, so it refuses nothing."
+nodeps="Until then the semlayer command and $guard depend on Bun fetching packages when they run, which needs the network and does not follow bun.lock; without the network the hook does not run, so it refuses nothing."
 
 if ! command -v bun >/dev/null 2>&1; then
   say "semantic-layer-builder needs Bun 1.4 or later, and bun is not on PATH. Install it from https://bun.sh, then run: $install, $check. $nobun"
@@ -56,7 +56,7 @@ fi
 
 for dep in yaml ajv @duckdb/node-api; do
   if [ ! -f "$skill/node_modules/$dep/package.json" ] && [ ! -f "$root/node_modules/$dep/package.json" ]; then
-    say "semantic-layer-builder's dependencies are not installed. Run: $install, $check. $nodeps"
+    say "semantic-layer-builder's dependencies are not installed. Claude Code installs them when it installs or updates the plugin; a clone or a plugin loaded from a folder needs this once. Run: $install, $check. $nodeps"
   fi
 done
 
