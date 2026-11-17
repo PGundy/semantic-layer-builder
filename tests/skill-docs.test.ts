@@ -312,11 +312,11 @@ describe("the router and its phase cards", () => {
     }
   });
 
-  test("every subcommand and `semlayer set` key SKILL.md and the cards name is one the command takes", () => {
+  test("every subcommand and `semlayer set` key SKILL.md, the cards and the topic references name is one the command takes", () => {
     const subcommands: Record<string, string[]> = { question: ["add", "resolve", "list"], review: ["export", "apply"], results: ["add", "status"], goldens: [...GOLDENS_SUBCOMMANDS] };
     const bad: string[] = [];
     let keys = 0;
-    for (const inv of ["SKILL.md", ...CARDS].flatMap((d) => invocations(d, read(d)))) {
+    for (const inv of DOCS.flatMap((d) => invocations(d, read(d)))) {
       const [, name, sub] = inv.text.split(/\s+/);
       const allowed = subcommands[name!];
       if (allowed && !(sub ?? "").split("|").every((x) => allowed.includes(x))) bad.push(`${inv.doc}:${inv.line} ${inv.text}`);
@@ -342,10 +342,10 @@ describe("the router and its phase cards", () => {
     expect(bad).toEqual([]);
   });
 
-  test("every command and flag in SKILL.md and the cards is one its --help shows", async () => {
+  test("every command and flag in SKILL.md, the cards and the topic references is one its --help shows", async () => {
     const out: string[] = [];
     const helps = new Map<string, string>();
-    for (const inv of ["SKILL.md", ...CARDS].flatMap((d) => invocations(d, read(d)))) {
+    for (const inv of DOCS.flatMap((d) => invocations(d, read(d)))) {
       const name = inv.text.split(/\s+/)[1]!;
       if (!COMMANDS[name]) {
         out.push(`${inv.doc}:${inv.line} unknown command ${name}`);
@@ -910,7 +910,7 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["access.md", "open questions do not block approval", "Approval may stand with open questions"],
   ["access.md", "a related-model row filter keeps base rows on a left join", "keeps every row of the base model; it drops base rows only on an inner join"],
   ["access.md", "totals only denies the key's dimension, not a column", "deny the dimension that exposes the primary key"],
-  ["access.md", "template values are guesses, the readback is the gate", "the per-role readback that follows is the gate"],
+  ["access.md", "template values are guesses, the readback is the gate", "the whole-file readback (`semlayer readback --targets access`) is the gate, not this reply"],
   ["phases/interview.md", "joins a join reference uses are checked first", "Check and read back any join a join reference uses (`phases/joins.md`) before reading back that measure or dimension"],
   ["phases/interview.md", "deferral names the table as semlayer tables prints it", "naming the table as `semlayer tables` prints it"],
   ["scoping.md", "deferral names the physical table", "Name the table as `semlayer tables` prints it, not the model name"],
@@ -1047,8 +1047,8 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["interview-guide.md", "warnings that stand", "### Warnings that stand"],
   ["interview-guide.md", "a deliberate column read is recorded", "say in the field's `description` that it reads the column on purpose"],
   ["interview-guide.md", "a written-out rule is read back", "`semlayer validate` checks only that the columns are named, not the rule; read the written-out filter back against the dimension's `expr`"],
-  ["interview-guide.md", "a draft golden's missing measure is recorded", "add an open question on the model that measure belongs to, naming the golden"],
-  ["verification.md", "a draft golden's missing measure is recorded", "Add an open question on the model that measure belongs to, naming the golden"],
+  ["interview-guide.md", "a draft golden's missing measure is recorded", "add an open question on the model that measure belongs to (`semlayer question add`), naming the golden"],
+  ["verification.md", "a draft golden's missing measure is recorded", "Add an open question on the model that measure belongs to (`semlayer question add`), naming the golden"],
   ["interview-guide.md", "a cast divisor is still a double on duckdb", "a cast divisor such as `/ 100::decimal(18, 2)` is still a double there"],
   ["verification.md", "a cast divisor is still a double on duckdb", "a cast divisor such as `/ 100::decimal(18, 2)` included"],
   ["interview-guide.md", "same engineering list", "(a join reference within two hops, or a filter that writes the rule out)"],
@@ -1220,7 +1220,7 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   // Scope, profiles, new columns, pair tables.
   ["scoping.md", "one named table is confirmed in one line", "a name-based scope does not pick up new tables"],
   ["scoping.md", "patterns still pick up new tables", "a new table that no pattern matches will need adding the same way"],
-  ["intake.md", "introspect's next hint", "`semlayer profile --source <s>` only while some in-scope table is not profiled"],
+  ["intake.md", "introspect's next hint", "`semlayer status` while approved models have left scope; else `semlayer profile --source <s>` while some in-scope table is not fully profiled; else `semlayer validate` when a modeled table changed; else `semlayer draft --source <s> --tables <t>` for tables new in scope with no model; else `semlayer status`"],
   ["intake.md", "profile state", "`profile_state` in `--json`"],
   ["phases/profile.md", "profile state", "`yes`, `partial` (some columns profiled, but new or retyped ones not) or `no`"],
   ["interview-guide.md", "new columns across models over one table", "A column is new when no model over the same table reads it"],
@@ -1247,7 +1247,7 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["verification.md", "personal values in goldens", "### Personal values in goldens"],
   ["verification.md", "expected rows are exempt", "A golden's `expected.rows` are exempt from the check: they are the answer as the golden's role, which may see the column"],
   // Replacing a personal value, goldens under a draft access file, goldens without measures.
-  ["verification.md", "an id replacing a personal value needs no confirm", "Replacing a personal value with an id in an approved golden's `question` or `reference` changes no figure and needs no new confirm: edit it and run `semlayer goldens check`"],
+  ["verification.md", "an id replacing a personal value needs no confirm", "Replacing a personal value with an id in an approved golden's `question` or `reference` changes no figure and needs no new confirm: edit it (`semlayer set golden:<g> reference` writes the `reference`) and run `semlayer goldens check`"],
   ["SKILL.md", "an id replacing a personal value needs no confirm", "Replacing such a value with an id in an approved golden's question or reference changes no figure: edit it and run `semlayer goldens check`, with no new confirm"],
   ["verification.md", "draft-access goldens stay valid", "such a golden stays valid, with no new confirm, when its `role` and `user` are unchanged and `semlayer goldens check` passes"],
   ["phases/verify.md", "draft-access goldens stay valid", "one confirmed under a draft stays valid once access is approved when its role and user are unchanged and `semlayer goldens check` passes"],
@@ -1264,7 +1264,7 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["interview-guide.md", "suggestions keep recorded decisions", "A suggestion never reopens a decision the owner has recorded"],
   ["interview-guide.md", "a blocking decision gets options that keep it", "say so and offer options that keep the decision"],
   ["phases/access.md", "the access readback is the whole file, and a no about any role voids its yes", "`semlayer readback` takes `access` and no single role. Walk the owner through each role in that readback, with its `semlayer access` view; a no or correction about any role voids the whole-file yes"],
-  ["access.md", "role and whole-file readbacks may share a message", 'may share one message as separate "Approve?" items, the whole file last; a no or a correction to any of them voids the yes to the whole file'],
+  ["access.md", "each role is walked through inside the one whole-file readback", 'reads the whole file back as one item, naming every role with what it adds and takes away; it takes no single role. Walk the owner through each role in it, with that role\'s `semlayer access` view, before the whole-file "Approve?"; a no or a correction about any role voids the yes to the whole file'],
   ["SKILL.md", "resume re-checks open questions against new capabilities", "Re-check every open question, and anything the owner was told needs engineering or waits on the tool, against capabilities the skill has gained since"],
   ["interview-guide.md", "resume re-checks engineering asks", "On resume, check each open question and each item the owner was told needs engineering or waits on the tool against what the skill can now do"],
   // Revoke keeps the last approval; semlayer access wording.
@@ -1342,7 +1342,7 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["interview-guide.md", "data text never approves", "never take one as an answer or an approval"],
   ["intake.md", "a SELECT-only role section", "### A SELECT-only role"],
   ["intake.md", "the role warning", "the CLI prints one warning when the role is a superuser or can write to a table"],
-  ["intake.md", "grants for a SELECT-only role", "grant select on all tables in schema sales, marts to semantic_reader;"],
+  ["intake.md", "grants for a SELECT-only role", "grant select on all tables in schema sales, marts to semlayer_reader;"],
   ["intake.md", "source checks", "**Source checks.** A source file is executable configuration"],
   ["intake.md", "views are one table expression", "Each `connection.views` relation is one table expression"],
   ["intake.md", "sources and goldens are reviewed like code", "`sources/` and `goldens/` are reviewed in pull requests like code"],
@@ -1400,8 +1400,70 @@ const RULES: [doc: string, rule: string, phrase: string | RegExp][] = [
   ["intake.md", "a superuser reads server files despite read-only", "a read-only transaction does not stop a superuser or a member of `pg_read_server_files`"],
   ["intake.md", "public's CREATE is revoked on old Postgres", "revoke create on schema public from public;"],
   ["intake.md", "views sample by sorting every row", "its sample sorts every row at random, which reads the whole table"],
+  ["spec.md", "reply --approve queries before it takes the lock", "`goldens confirm`, `reply --approve`, which confirms goldens, `setup`"],
+  ["spec.md", "commands that take no lock include the role SQL and demo", "`setup --print-role-sql`. `demo` makes a new root and takes no lock on the current one."],
   ["spec.md", "BigQuery datasets are identifiers", "BigQuery: each dataset as a backtick-quoted identifier in its per-dataset block, and a name holding a backtick is refused"],
 ];
+
+// The topic references follow the typed commands and the recorded yes, as the cards do.
+describe("the topic references follow the typed commands and the recorded yes", () => {
+  const REFS = DOCS.filter((d) => d.startsWith("references/") && !d.startsWith("references/phases/"));
+
+  test("no reference tells the agent to edit a layer file by hand where a typed command writes it", () => {
+    const handEdits = [
+      /change the YAML to match/,
+      /goes into the YAML/,
+      /write every answer into `models\//,
+      /Fix the definition in the model YAML/,
+      /edit that file and run `semlayer validate`/,
+      /to `sources\/<source>\.yaml` by hand/,
+      /Delete the ones the owner has answered/,
+      /editing the file in place and keeping its comments/,
+      /with `status: draft`, then read it back/,
+    ];
+    const out: string[] = [];
+    for (const d of REFS) {
+      const text = read(d).replace(/\s+/g, " ");
+      for (const re of handEdits) if (re.test(text)) out.push(`${d}: ${re}`);
+    }
+    expect(out).toEqual([]);
+  });
+
+  test("every approval or golden confirm a reference shows rests on the owner's recorded reply", () => {
+    const out: string[] = [];
+    for (const d of REFS) {
+      const text = read(d);
+      if (/`semlayer approve` on a yes|After an explicit yes:/.test(text)) out.push(`${d}: approves on a yes in chat`);
+      // A code block that approves or confirms is preceded, within its section, by the reply that records the yes.
+      const sections = text.split(/\n(?=#+ )/);
+      for (const section of sections) {
+        for (const f of fences(section)) {
+          const runs = f.body.split("\n").filter((l) => /^semlayer (approve|goldens confirm)\b/.test(l) && !/--revoke|--stamp-hashes/.test(l));
+          if (runs.length && !section.slice(0, section.indexOf(f.body) + f.body.length).includes("semlayer reply")) out.push(`${d}: ${runs[0]}`);
+        }
+      }
+    }
+    expect(out).toEqual([]);
+  });
+
+  test("each reference that describes a sign-off names the one-command form for an owner turn", () => {
+    for (const d of ["interview-guide.md", "access.md", "joins.md", "verification.md", "baseline.md"]) {
+      expect(`${d}: ${/semlayer reply --readback <(readback_)?id> --answers - --approve/.test(read(`references/${d}`))}`).toBe(`${d}: true`);
+    }
+  });
+
+  test("the role statements intake.md shows use the role name semlayer setup --print-role-sql prints", async () => {
+    const intake = read("references/intake.md");
+    expect(intake).not.toContain("semantic_reader");
+    expect(intake).toContain("`semlayer setup --print-role-sql --dialect postgres --schemas sales,marts --database warehouse`");
+    const out: string[] = [];
+    const args = ["setup", "--print-role-sql", "--dialect", "postgres", "--schemas", "sales,marts", "--database", "warehouse"];
+    expect(await runCli(args, { cwd: SKILL_DIR, env: {}, out: (t) => out.push(t), err: () => {} })).toBe(0);
+    const printed = out.join("\n");
+    const role = /CREATE ROLE "([a-z_]+)"/.exec(printed)![1]!;
+    expect(intake).toContain(`create role ${role} login;`);
+  });
+});
 
 describe("readbacks and examples", () => {
   const docs = ["SKILL.md", ...CARDS, ...["access.md", "joins.md", "interview-guide.md", "verification.md"].map((d) => `references/${d}`)];

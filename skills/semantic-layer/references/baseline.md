@@ -107,7 +107,7 @@ The brief orders them by importance: what a row is, which status values count, w
 
 ### Without profiles
 
-The brief says which facts `semlayer profile` would measure (key uniqueness, the values of category columns, empty rates, near-unique strings), and lists the columns it cannot place by name as unclear until profiled. Tell the owner which guesses would firm up. After an import, `semlayer profile` needs a connection the snapshot did not come with (a live source, or `--emit-sql` and `--results` through your own tool); the brief says so, and so should you. On the shared-context path, where nothing can be profiled yet, ask for example values where a question needs them, and note in each model's open questions what stays unmeasured.
+The brief says which facts `semlayer profile` would measure (key uniqueness, the values of category columns, empty rates, near-unique strings), and lists the columns it cannot place by name as unclear until profiled. Tell the owner which guesses would firm up. After an import, `semlayer profile` needs a connection the snapshot did not come with (a live source, or `--emit-sql` and `--results` through your own tool); the brief says so, and so should you. On the shared-context path, where nothing can be profiled yet, ask for example values where a question needs them, and note what stays unmeasured in each model's open questions (`semlayer question add <s>.<m> --text "<question>"`).
 
 ## From the baseline to the layer
 
@@ -117,14 +117,14 @@ The brief says which facts `semlayer profile` would measure (key uniqueness, the
 4. **Metric definitions**: candidate measures become the menu of measures to define; suggested ratios and shares become metrics in `phases/metrics.md`.
 5. **Splits**: candidate splits become dimensions, named in the business's words; the columns that should not be splits stay out.
 
-Answers given before a table has a model go into its model as soon as `semlayer draft` writes it, in the same turn: scope the tables the owner answered about, profile them where the source allows it, draft them, then write each answer (`description`, `grain`, `primary_key`, `filter`, `open_questions`). A scoping answer goes straight into `semlayer scope ... --write` after its preview.
+Answers given before a table has a model go into its model as soon as `semlayer draft` writes it, in the same turn: scope the tables the owner answered about, profile them where the source allows it, draft them, then write each answer with a typed edit in the turn's `semlayer apply`: `semlayer set <s>.<m> description|grain|primary_key <value>`, a rule for every figure as each measure's `filter` (`semlayer set <s>.<m>.<measure> filter "<rule>"`), and `semlayer question add` for what stays open. A scoping answer goes straight into `semlayer scope ... --write` after its preview.
 
 ## What must be confirmed
 
 Nothing in the brief stands until the owner confirms it:
 
-- each table's role, grain and key: the table readback, then `semlayer approve` on a yes;
-- each relationship: `semlayer check-join`, then the join's readback;
+- each table's role, grain and key: the table readback (`semlayer readback`), then the owner's answer recorded with `semlayer reply --readback <id> --answers - --approve`, which approves the table on a yes;
+- each relationship: `semlayer check-join`, then the join's readback and the owner's recorded yes;
 - each measure's rule, unit and currency: its readback ending in "Approve?";
 - each split: which date and time zone, which values, which labels;
 - each sensitive column: its tag and who may see it (`access.md`);
