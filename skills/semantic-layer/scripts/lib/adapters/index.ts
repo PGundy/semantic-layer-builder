@@ -3,7 +3,7 @@ import type { SourceConfig } from "../types.ts";
 import { RUNNABLE_DIALECTS } from "../types.ts";
 import type { Adapter, AdapterOptions } from "./types.ts";
 
-export type { Adapter, AdapterOptions, QueryResult } from "./types.ts";
+export type { Adapter, AdapterOptions, QueryResult, RoleReport } from "./types.ts";
 
 export function canRun(source: SourceConfig): boolean {
   return RUNNABLE_DIALECTS.includes(source.dialect);

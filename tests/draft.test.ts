@@ -17,7 +17,7 @@ import { unreferencedColumns } from "../skills/semantic-layer/scripts/lib/snapsh
 import type { ColumnProfile, Model, Snapshot, SnapshotColumn, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { parseYamlText, updateYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { SQL } from "bun";
-import { assertLocalPg, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -26,7 +26,7 @@ afterEach(() => {
 });
 
 // A live test creates and drops only a schema of its own, and only on a local server unless
-// SL_TEST_ALLOW_REMOTE=1 allows another (assertLocalPg).
+// SEMLAYER_TEST_ALLOW_REMOTE=1 allows another (assertLocalPg).
 function liveSchema(prefix: string): string {
   assertLocalPg(PG_URL);
   return uniqueSchema(prefix);
@@ -171,6 +171,8 @@ interface DraftJson {
   source: string;
   drafted: { model: string; table: string; path: string; dimensions: number; measures: number; joins: number; open_questions: number }[];
   skipped: { table: string; reason: string }[];
+  // Columns whose snapshot profile the draft cut to counts only, as table.column.
+  redacted: string[];
 }
 
 const ORDERS_YAML = `model: orders
@@ -237,21 +239,25 @@ measures:
   - name: order_count
     agg: count
     format: integer
+    description: Number of rows of analytics.fct_orders
     status: draft
   - name: customer_count
     expr: customer_id
     agg: count_distinct
     format: integer
+    description: Number of different customer_id values
     status: draft
   - name: product_count
     expr: product_id
     agg: count_distinct
     format: integer
+    description: Number of different product_id values
     status: draft
   - name: store_count
     expr: store_id
     agg: count_distinct
     format: integer
+    description: Number of different store_id values
     status: draft
   - name: amount
     expr: amount_cents * 0.01
@@ -298,7 +304,7 @@ joins:
 describe("draft command", () => {
   test("writes the exact model for a rich table, with strip prefixes", async () => {
     const root = await setup();
-    const r = await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--json"]);
+    const r = await semlayer(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<DraftJson>();
     expect(out.source).toBe("wh");
@@ -315,13 +321,13 @@ describe("draft command", () => {
       open_questions: 8,
     });
     expect(readModel(root, "orders")).toBe(ORDERS_YAML);
-    const v = await sl(root, ["validate", "--json"]);
+    const v = await semlayer(root, ["validate", "--json"]);
     expect(v.json<{ errors: number }>().errors).toBe(0);
   });
 
   test("without strip prefixes, names follow the table names and joins follow them", async () => {
     const root = await setup();
-    const r = await sl(root, ["draft", "--source", "wh", "--json"]);
+    const r = await semlayer(root, ["draft", "--source", "wh", "--json"]);
     expect(r.json<DraftJson>().drafted.map((d) => d.model).sort()).toEqual([
       "dim_customers",
       "dim_products",
@@ -337,7 +343,7 @@ describe("draft command", () => {
 
   test("keys: unique key, inferred by naming, inferred joins, cents and out-of-scope declared target", async () => {
     const root = await setup();
-    await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_"]);
+    await semlayer(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_"]);
     const payments = readModel(root, "payments");
     expect(payments).toContain("primary_key:\n  - payment_ref\n");
     expect(payments).toContain("primary_key [payment_ref] is the table's only unique key");
@@ -365,7 +371,7 @@ describe("draft command", () => {
 
   test("pii columns are tagged and near-unique strings are left out", async () => {
     const root = await setup();
-    await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_"]);
+    await semlayer(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_"]);
     const customers = readModel(root, "customers");
     expect(customers).toContain("  - name: first_name\n    expr: first_name\n    type: string\n    tags:\n      - pii\n");
     expect(customers).toContain("  - name: zip_code\n    expr: zip_code\n    type: string\n    tags:\n      - pii\n");
@@ -390,7 +396,7 @@ describe("draft command", () => {
       dimensions: [],
       measures: [],
     });
-    const r = await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--json"]);
+    const r = await semlayer(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--json"]);
     const out = r.json<DraftJson>();
     const names = out.drafted.map((d) => `${d.model}=${d.table}`).sort();
     expect(names).toEqual([
@@ -410,7 +416,7 @@ describe("draft command", () => {
 
   test("joins name targets that are not drafted in this run but are in scope", async () => {
     const root = await setup();
-    const r = await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "analytics.fct_orders", "--json"]);
+    const r = await semlayer(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "analytics.fct_orders", "--json"]);
     expect(r.json<DraftJson>().drafted.map((d) => d.model)).toEqual(["orders"]);
     expect(readModel(root, "orders")).toBe(ORDERS_YAML);
     expect(existsSync(modelPath(root, "customers"))).toBe(false);
@@ -418,30 +424,31 @@ describe("draft command", () => {
 
   test("--strip-prefix is saved in the source and reused by later drafts", async () => {
     const root = await setup();
-    await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "analytics.fct_orders"]);
+    await semlayer(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "analytics.fct_orders"]);
     expect(readFileSync(join(root, "sources", "wh.yaml"), "utf8")).toContain("draft:\n  strip_prefixes:\n    - fct_\n    - dim_\n");
-    const later = await sl(root, ["draft", "--source", "wh", "--tables", "analytics.dim_customers", "--json"]);
+    const later = await semlayer(root, ["draft", "--source", "wh", "--tables", "analytics.dim_customers", "--json"]);
     expect(later.json<DraftJson>().drafted.map((d) => d.model)).toEqual(["customers"]);
   });
 
   test("never overwrites a model and leaves the owner's edits alone", async () => {
     const root = await setup();
-    await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "fct_orders"]);
+    await semlayer(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "fct_orders"]);
     const edited = `# Owner notes stay.\n${readModel(root, "orders")}`;
     writeFileSync(modelPath(root, "orders"), edited);
-    const again = await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "fct_orders", "--json"]);
+    const again = await semlayer(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "fct_orders", "--json"]);
     expect(again.code).toBe(0);
     expect(again.json<DraftJson>()).toEqual({
       source: "wh",
       drafted: [],
       skipped: [{ table: "analytics.fct_orders", reason: "already modeled as orders" }],
+      redacted: [],
     });
     expect(readModel(root, "orders")).toBe(edited);
 
     // A file whose name a draft would take, holding a model for another table, is never replaced.
     mkdirSync(join(root, "models", "wh"), { recursive: true });
     writeFileSync(modelPath(root, "products"), "model: legacy_products\nsource: wh\ntable: analytics.nowhere\nstatus: draft\ndimensions: []\nmeasures: []\n");
-    const third = await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "dim_products", "--json"]);
+    const third = await semlayer(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "dim_products", "--json"]);
     const out = third.json<DraftJson>();
     expect(out.drafted).toEqual([]);
     expect(out.skipped).toEqual([{ table: "analytics.dim_products", reason: `model file ${modelPath(root, "products")} already exists` }]);
@@ -450,14 +457,14 @@ describe("draft command", () => {
 
   test("--tables takes globs, rejects unknown names and skips out-of-scope tables", async () => {
     const root = await setup();
-    const r = await sl(root, ["draft", "--source", "wh", "--tables", "fct_*,ops.stores", "--json"]);
+    const r = await semlayer(root, ["draft", "--source", "wh", "--tables", "fct_*,ops.stores", "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<DraftJson>();
     expect(out.drafted.map((d) => d.table).sort()).toEqual(["analytics.fct_orders", "analytics.fct_payments"]);
     expect(out.skipped).toHaveLength(1);
     expect(out.skipped[0]!.table).toBe("ops.stores");
     expect(out.skipped[0]!.reason).toContain("out of scope");
-    const bad = await sl(root, ["draft", "--source", "wh", "--tables", "nope"]);
+    const bad = await semlayer(root, ["draft", "--source", "wh", "--tables", "nope"]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain('No table matches "nope"');
   });
@@ -471,18 +478,18 @@ describe("draft command", () => {
       columns: [col("id", "integer", p(100 + i)), col("kind", "varchar", p(3))],
     }));
     const root = await setup(many, {});
-    const refused = await sl(root, ["draft", "--source", "wh"]);
+    const refused = await semlayer(root, ["draft", "--source", "wh"]);
     expect(refused.code).toBe(1);
     expect(refused.err).toContain("15 in-scope tables");
     expect(refused.err).toContain("focus threshold of 12");
-    expect(refused.err).toContain("sl tables --source wh --groups");
-    expect(refused.err).toContain("sl scope --source wh");
+    expect(refused.err).toContain("semlayer tables --source wh --groups");
+    expect(refused.err).toContain("semlayer scope --source wh");
     expect(existsSync(join(root, "models", "wh"))).toBe(false);
 
-    const picked = await sl(root, ["draft", "--source", "wh", "--tables", "events_a,events_b", "--json"]);
+    const picked = await semlayer(root, ["draft", "--source", "wh", "--tables", "events_a,events_b", "--json"]);
     expect(picked.json<DraftJson>().drafted.map((d) => d.model)).toEqual(["events_b", "events_a"]);
 
-    const forced = await sl(root, ["draft", "--source", "wh", "--force", "--json"]);
+    const forced = await semlayer(root, ["draft", "--source", "wh", "--force", "--json"]);
     expect(forced.code).toBe(0);
     const out = forced.json<DraftJson>();
     expect(out.drafted).toHaveLength(13);
@@ -491,17 +498,17 @@ describe("draft command", () => {
 
   test("a later batch without the strip prefixes takes the name an existing join expects", async () => {
     const root = await setup();
-    const first = await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "analytics.fct_orders"]);
+    const first = await semlayer(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "analytics.fct_orders"]);
     expect(first.out).toContain(
       "analytics.fct_orders: join customer assumes analytics.dim_customers will be drafted as customers; draft it with the same --strip-prefix fct_,dim_.",
     );
-    const second = await sl(root, ["draft", "--source", "wh", "--tables", "analytics.dim_customers,analytics.dim_products"]);
+    const second = await semlayer(root, ["draft", "--source", "wh", "--tables", "analytics.dim_customers,analytics.dim_products"]);
     expect(second.code).toBe(0);
     expect(second.out).toContain("analytics.dim_customers is named customers, the model orders.customer already joins to.");
     expect(existsSync(modelPath(root, "customers"))).toBe(true);
     expect(existsSync(modelPath(root, "products"))).toBe(true);
     expect(existsSync(modelPath(root, "dim_customers"))).toBe(false);
-    const v = await sl(root, ["validate", "--json"]);
+    const v = await semlayer(root, ["validate", "--json"]);
     expect(v.json<{ errors: number }>().errors).toBe(0);
   });
 
@@ -509,14 +516,14 @@ describe("draft command", () => {
     const root = await setup(TABLES, { include: ["analytics.*", "sales.*"] });
     const both: SnapshotTable = { ...SALES_ORDERS, schema: "analytics" };
     writeJson(join(root, "snapshots", "wh.json"), snapshotOf([...TABLES, both]));
-    const r = await sl(root, ["draft", "--source", "wh", "--tables", "orders"]);
+    const r = await semlayer(root, ["draft", "--source", "wh", "--tables", "orders"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain('"orders" is in several schemas (analytics.orders, sales.orders); pass the qualified name.');
   });
 
   test("when every named table is skipped, the output says nothing was drafted and why", async () => {
     const root = await setup();
-    const r = await sl(root, ["draft", "--source", "wh", "--tables", "sales.orders"]);
+    const r = await semlayer(root, ["draft", "--source", "wh", "--tables", "sales.orders"]);
     expect(r.code).toBe(0);
     expect(r.out).toStartWith("Nothing drafted in wh.\n");
     expect(r.out).toContain("sales.orders: out of scope");
@@ -525,7 +532,7 @@ describe("draft command", () => {
 
   test("human output lists each drafted model with its counts", async () => {
     const root = await setup();
-    const r = await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "fct_orders"]);
+    const r = await semlayer(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "fct_orders"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Drafted 1 model in wh:");
     expect(r.out).toMatch(/orders\s+analytics\.fct_orders\s+6\s+8\s+2\s+8/);
@@ -925,8 +932,8 @@ describe("draft heuristics on Acme-like tables", () => {
   test("cents are divided by 100 and a single-valued currency column sets currency", () => {
     const orders = draftAcme().model("orders");
     expect(orders.measures).toEqual([
-      { name: "order_count", agg: "count", format: "integer", status: "draft" },
-      { name: "customer_count", expr: "customer_id", agg: "count_distinct", format: "integer", status: "draft" },
+      { name: "order_count", agg: "count", format: "integer", description: "Number of rows of acme.fct_orders", status: "draft" },
+      { name: "customer_count", expr: "customer_id", agg: "count_distinct", format: "integer", description: "Number of different customer_id values", status: "draft" },
       { name: "amount", expr: "amount_cents / 100.0", agg: "sum", format: "currency", currency: "USD", status: "draft" },
       { name: "shipping", expr: "shipping_cents / 100.0", agg: "sum", format: "currency", currency: "USD", status: "draft" },
     ]);
@@ -982,9 +989,9 @@ describe("draft heuristics on Acme-like tables", () => {
   test("a per-unit price is averaged and a quantity column adds a line total", () => {
     const items = draftAcme().model("order_items");
     expect(items.measures).toEqual([
-      { name: "order_item_count", agg: "count", format: "integer", status: "draft" },
-      { name: "order_count", expr: "order_id", agg: "count_distinct", format: "integer", status: "draft" },
-      { name: "product_count", expr: "product_id", agg: "count_distinct", format: "integer", status: "draft" },
+      { name: "order_item_count", agg: "count", format: "integer", description: "Number of rows of acme.fct_order_items", status: "draft" },
+      { name: "order_count", expr: "order_id", agg: "count_distinct", format: "integer", description: "Number of different order_id values", status: "draft" },
+      { name: "product_count", expr: "product_id", agg: "count_distinct", format: "integer", description: "Number of different product_id values", status: "draft" },
       { name: "quantity", expr: "quantity", agg: "sum", format: "integer", status: "draft" },
       { name: "avg_unit_price", expr: "unit_price_cents / 100.0", agg: "avg", format: "currency", status: "draft" },
       { name: "line_total", expr: "quantity * (unit_price_cents / 100.0)", agg: "sum", format: "currency", status: "draft" },
@@ -996,7 +1003,7 @@ describe("draft heuristics on Acme-like tables", () => {
 
     const products = draftAcme().model("products");
     expect(products.measures).toEqual([
-      { name: "product_count", agg: "count", format: "integer", status: "draft" },
+      { name: "product_count", agg: "count", format: "integer", description: "Number of rows of acme.dim_products", status: "draft" },
       { name: "avg_list_price", expr: "list_price_cents / 100.0", agg: "avg", format: "currency", status: "draft" },
     ]);
     expect(products.open_questions).toContain(
@@ -1140,14 +1147,14 @@ describe("draft heuristics on Acme-like tables", () => {
 
   test("the drafted Acme models validate and their expressions run on DuckDB", async () => {
     const root = await setup(ACME, { include: ["acme.*"] });
-    const r = await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--json"]);
+    const r = await semlayer(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<DraftJson>().drafted.map((d) => d.model).sort()).toEqual(["customers", "order_items", "orders", "products", "regions"]);
     expect(readModel(root, "orders")).toContain(
       "description: Orders from the storefront, one row per order. Amounts in integer cents.\ngrain: One row per order.\nprimary_key:\n",
     );
     expect(readModel(root, "orders")).toContain("    format: currency\n    currency: USD\n    status: draft\n");
-    const v = await sl(root, ["validate", "--json"]);
+    const v = await semlayer(root, ["validate", "--json"]);
     expect(v.json<{ errors: number }>().errors).toBe(0);
 
     const { DuckDBInstance } = await import("@duckdb/node-api");
@@ -1240,7 +1247,7 @@ describe("draft heuristics on Acme-like tables", () => {
 describe("ignored_columns and sensitivity tags", () => {
   test("every column a drafted model leaves out is listed in ignored_columns", async () => {
     const root = await setup();
-    await sl(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_"]);
+    await semlayer(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_"]);
     const customers = parseYamlText(readModel(root, "customers")) as Model;
     expect(customers.ignored_columns).toEqual(["email"]);
     const products = parseYamlText(readModel(root, "products")) as Model;
@@ -1259,8 +1266,8 @@ describe("ignored_columns and sensitivity tags", () => {
       const model = parseYamlText(readModel(root, name)) as Model;
       expect(unreferencedColumns(model, table, snap.dialect).map((c) => c.name)).toEqual([]);
     }
-    const again = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
-    expect(again.json()).toEqual({ source: "wh", updated: [] });
+    const again = await semlayer(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+    expect(again.json()).toEqual({ source: "wh", updated: [], redacted: [] });
   });
 
   test("ignored_columns lists id columns that are not keys, unsupported types and composite keys with no join", () => {
@@ -1410,6 +1417,7 @@ measures:
 
   interface NewColumnsJson {
     source: string;
+    redacted: string[];
     updated: { model: string; added: string[]; joins: string[]; skipped: { column: string; reason: string }[] }[];
   }
 
@@ -1421,7 +1429,7 @@ measures:
       col("extra", "json"),
       col("Legacy_Score", "double", p(5)),
     ]);
-    const r = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+    const r = await semlayer(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<NewColumnsJson>()).toEqual({
       source: "wh",
@@ -1436,6 +1444,8 @@ measures:
           ],
         },
       ],
+      // The model's protected columns keep counts only: the ignored legacy_score and coupon_code, and notes, tagged sensitive.
+      redacted: ["analytics.orders.legacy_score", "analytics.orders.notes", "analytics.orders.coupon_code"],
     });
     const after = readModel(root, "orders");
     expect(after).toBe(`# Orders, as the finance team reads them.
@@ -1508,17 +1518,17 @@ measures:
     expect(readModel(root, "customers")).toBe(before.customers);
 
     // Nothing changed since: nothing is reported and the file stays as it is.
-    const again = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
-    expect(again.json<NewColumnsJson>()).toEqual({ source: "wh", updated: [] });
+    const again = await semlayer(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+    expect(again.json<NewColumnsJson>()).toEqual({ source: "wh", updated: [], redacted: [] });
     expect(readModel(root, "orders")).toBe(after);
-    const human = await sl(root, ["draft", "--source", "wh", "--new-columns"]);
+    const human = await semlayer(root, ["draft", "--source", "wh", "--new-columns"]);
     expect(human.out).toBe("No new columns in wh: every column of a modeled in-scope table is read by a field or listed in ignored_columns.");
   });
 
   test("names avoid the model's own fields, a key column drafts a join, and a model without the lists gains them", async () => {
     const { root } = await evolved([col("status_code", "varchar", p(3)), col("customer_id", "integer", p(150))], [col("Revenue", "decimal(10,2)", p(150)), col("region_notes", "text", p(10))]);
     // The customers model gains a revenue measure; the orders model already has one named revenue.
-    const r = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+    const r = await semlayer(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
     const out = r.json<NewColumnsJson>();
     expect(out.updated.map((u) => [u.model, u.added])).toEqual([
       ["customers", ["region_notes", "revenue"]],
@@ -1530,10 +1540,11 @@ measures:
       expr: "customer_id",
       agg: "count_distinct",
       format: "integer",
+      description: "Number of different customer_id values",
       status: "draft",
     });
     expect(orders.open_questions).toContain(
-      "New column customer_id (integer) appeared in analytics.orders; the draft adds the measure customer_count and the join customer to customers (inferred from the column name). What does it hold, and should it stay? Run `sl check-join --source wh --model orders --join customer` before the join is approved.",
+      "New column customer_id (integer) appeared in analytics.orders; the draft adds the measure customer_count and the join customer to customers (inferred from the column name). What does it hold, and should it stay? Run `semlayer check-join --source wh --model orders --join customer` before the join is approved.",
     );
     // A draft join is added, and the model's own status stays approved.
     expect(out.updated.find((u) => u.model === "orders")!.joins).toEqual(["customer"]);
@@ -1556,20 +1567,20 @@ measures:
   test("--tables limits the models, the focus threshold does not apply and out-of-scope models are skipped", async () => {
     const { root, before } = await evolved([col("channel", "varchar", p(4))], [col("tier", "varchar", p(3))]);
     updateYaml(join(root, "semantic.yaml"), (doc) => doc.setIn(["settings", "focus_threshold"], 1));
-    const one = await sl(root, ["draft", "--source", "wh", "--new-columns", "--tables", "analytics.customers", "--json"]);
+    const one = await semlayer(root, ["draft", "--source", "wh", "--new-columns", "--tables", "analytics.customers", "--json"]);
     expect(one.json<NewColumnsJson>().updated.map((u) => u.model)).toEqual(["customers"]);
     expect(readModel(root, "orders")).toBe(before.orders);
-    const bad = await sl(root, ["draft", "--source", "wh", "--new-columns", "--tables", "nope"]);
+    const bad = await semlayer(root, ["draft", "--source", "wh", "--new-columns", "--tables", "nope"]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain('No table matches "nope"');
 
     updateYaml(join(root, "sources", "wh.yaml"), (doc) => doc.set("scope", doc.createNode({ include: ["analytics.customers"] })));
-    const scoped = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+    const scoped = await semlayer(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
     expect(scoped.json<NewColumnsJson>().updated).toEqual([]);
     expect(readModel(root, "orders")).toBe(before.orders);
 
     updateYaml(join(root, "sources", "wh.yaml"), (doc) => doc.delete("scope"));
-    const all = await sl(root, ["draft", "--source", "wh", "--new-columns"]);
+    const all = await semlayer(root, ["draft", "--source", "wh", "--new-columns"]);
     expect(all.code).toBe(0);
     expect(all.out).toContain("Drafted new columns into 1 model in wh:");
     expect(all.out).toContain(`  orders (analytics.orders, ${join("models", "wh", "orders.yaml")}): added channel`);
@@ -1593,11 +1604,11 @@ measures:
 `,
     );
     for (const flag of [["--force"], ["--strip-prefix", "dim_"]]) {
-      const r = await sl(root, ["draft", "--source", "wh", "--new-columns", ...flag]);
+      const r = await semlayer(root, ["draft", "--source", "wh", "--new-columns", ...flag]);
       expect(r.code).toBe(1);
       expect(r.err).toContain(`${flag[0]} applies only when drafting new models`);
     }
-    const r = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+    const r = await semlayer(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
     expect(r.json<NewColumnsJson>().updated.map((u) => [u.model, u.added])).toEqual([["customers", ["region", "tier"]]]);
     expect(readModel(root, "customers")).toBe(`model: customers
 source: wh
@@ -1629,7 +1640,7 @@ measures:
       const dims = doc.get("dimensions", true) as { items: unknown[] };
       dims.items.push(doc.createNode({ name: "order_year", expr: "cast(extract(year from now()) as integer)", type: "number", status: "draft" }));
     });
-    const r = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+    const r = await semlayer(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
     const orders = r.json<NewColumnsJson>().updated.find((u) => u.model === "orders")!;
     expect([...orders.added, ...orders.skipped.map((x) => x.column)].sort()).toEqual(["channel", "year"].sort());
     const model = parseYamlText(readModel(root, "orders")) as Model;
@@ -1741,8 +1752,8 @@ measures:
       // A key to a small target is joined, not skipped into ignored_columns.
       expect(r.skipped).toEqual([]);
       expect(r.open_questions.slice(0, 2)).toEqual([
-        "New column sales_rep_id (integer) appeared in acme.fct_orders; the draft adds the join sales_rep to sales_reps (from the declared foreign key). What does it hold, and should it stay? Run `sl check-join --source warehouse --model orders --join sales_rep` before the join is approved.",
-        "New column region_code (varchar) appeared in acme.fct_orders; the draft adds the join region to regions (from the declared foreign key; acme.dim_regions has no model yet, so draft it as regions). What does it hold, and should it stay? Run `sl check-join --source warehouse --model orders --join region` before the join is approved.",
+        "New column sales_rep_id (integer) appeared in acme.fct_orders; the draft adds the join sales_rep to sales_reps (from the declared foreign key). What does it hold, and should it stay? Run `semlayer check-join --source warehouse --model orders --join sales_rep` before the join is approved.",
+        "New column region_code (varchar) appeared in acme.fct_orders; the draft adds the join region to regions (from the declared foreign key; acme.dim_regions has no model yet, so draft it as regions). What does it hold, and should it stay? Run `semlayer check-join --source warehouse --model orders --join region` before the join is approved.",
       ]);
     });
 
@@ -1831,7 +1842,7 @@ measures:
       });
       updateYaml(join(root, "sources", "wh.yaml"), (doc) => doc.setIn(["draft", "strip_prefixes"], ["fct_", "dim_"]));
       const before = readModel(root, "orders");
-      const r = await sl(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
+      const r = await semlayer(root, ["draft", "--source", "wh", "--new-columns", "--json"]);
       expect(r.code).toBe(0);
       expect(r.json<NewColumnsJson>().updated).toEqual([{ model: "orders", added: [], joins: ["sales_rep"], skipped: [] }]);
       const after = readModel(root, "orders");
@@ -1844,7 +1855,7 @@ measures:
         at++;
       }
       expect((parseYamlText(after) as Model).open_questions).toEqual([
-        "New column sales_rep_id (integer) appeared in acme.fct_orders; the draft adds the join sales_rep to sales_reps (from the declared foreign key). What does it hold, and should it stay? Run `sl check-join --source wh --model orders --join sales_rep` before the join is approved.",
+        "New column sales_rep_id (integer) appeared in acme.fct_orders; the draft adds the join sales_rep to sales_reps (from the declared foreign key). What does it hold, and should it stay? Run `semlayer check-join --source wh --model orders --join sales_rep` before the join is approved.",
       ]);
       expect(after.endsWith(`joins:
   - name: sales_rep
@@ -1858,7 +1869,7 @@ measures:
     status: draft
 `)).toBe(true);
       expect(readModel(root, "big_orders")).not.toContain("sales_rep");
-      const human = await sl(root, ["draft", "--source", "wh", "--new-columns"]);
+      const human = await semlayer(root, ["draft", "--source", "wh", "--new-columns"]);
       expect(human.out).toContain("No new columns in wh");
     });
 
@@ -1912,13 +1923,13 @@ measures:
         { join: "sales_rep", to: "sales_reps", table: "acme.dim_sales_reps" },
         { join: "region", to: "regions", table: "acme.dim_regions" },
       ]);
-      const r = await sl(root, ["draft", "--source", "wh", "--new-columns"]);
+      const r = await semlayer(root, ["draft", "--source", "wh", "--new-columns"]);
       expect(r.code).toBe(0);
       expect(r.out).toContain(
-        "Next: read each new item back to the owner, draft acme.dim_sales_reps first (`sl draft --source wh --tables acme.dim_sales_reps`), run `sl check-join` on each new join, then run `sl validate`.",
+        "Next: read each new item back to the owner, draft acme.dim_sales_reps first (`semlayer draft --source wh --tables acme.dim_sales_reps`), run `semlayer check-join` on each new join, then run `semlayer validate`.",
       );
       // The table drafts under the name the new join expects.
-      const drafted = await sl(root, ["draft", "--source", "wh", "--tables", "acme.dim_sales_reps", "--json"]);
+      const drafted = await semlayer(root, ["draft", "--source", "wh", "--tables", "acme.dim_sales_reps", "--json"]);
       expect(drafted.code).toBe(0);
       expect(drafted.json<{ drafted: { model: string }[] }>().drafted.map((d) => d.model)).toEqual(["sales_reps"]);
     });
@@ -1949,7 +1960,7 @@ measures:
           { name: "manager_id", expr: "manager_id", type: "number", status: "draft" },
           { name: "member_id", expr: "member_id", type: "number", status: "draft" },
         ],
-        measures: [{ name: "sales_team_closure_count", agg: "count", format: "integer", status: "draft" }],
+        measures: [{ name: "sales_team_closure_count", agg: "count", format: "integer", description: "Number of rows of acme.sales_team_closure", status: "draft" }],
       });
     });
 
@@ -2039,8 +2050,8 @@ describe("composite keys, text keys, currencies and time zones", () => {
     expect(m.primary_key).toEqual(["store_id", "month"]);
     expect(m.dimensions).toEqual([{ name: "month", expr: "month", type: "time", time_grains: ["day", "week", "month", "quarter", "year"], status: "draft" }]);
     expect(m.measures).toEqual([
-      { name: "sales_target_count", agg: "count", format: "integer", status: "draft" },
-      { name: "store_count", expr: "store_id", agg: "count_distinct", format: "integer", status: "draft" },
+      { name: "sales_target_count", agg: "count", format: "integer", description: "Number of rows of ops.sales_targets", status: "draft" },
+      { name: "store_count", expr: "store_id", agg: "count_distinct", format: "integer", description: "Number of different store_id values", status: "draft" },
       { name: "target_eur", expr: "target_eur", agg: "sum", format: "currency", currency: "EUR", status: "draft" },
     ]);
     expect(m.ignored_columns).toBeUndefined();

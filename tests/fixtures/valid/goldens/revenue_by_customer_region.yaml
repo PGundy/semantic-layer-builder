@@ -4,7 +4,7 @@ request:
   source: warehouse
   measures: [orders.revenue]
   dimensions: [customers.region]
-sql: |
+cross_check_sql: |
   select c.region,
          sum(o.amount_cents / 100.0) filter (where o.status <> 'cancelled' and coalesce(c.is_test_account, false) = false) as revenue
   from public.fct_orders o

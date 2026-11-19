@@ -1,0 +1,29 @@
+{
+  "name": "acme-export-upgrade",
+  "description": "The Acme lake from a schema export, then upgraded to a connection in the same session: profiles, join evidence and the contradicted draft routed back to the owner. Structured owner persona.",
+  "fixture": "acme",
+  "intake": {
+    "path": "export_upgrade",
+    "source": "lake",
+    "dialect": "duckdb",
+    "views": {
+      "web_events": "read_parquet('{fixture}/data/lake/web_events/*.parquet')",
+      "sessions": "read_parquet('{fixture}/data/lake/sessions.parquet')",
+      "marketing_spend": "read_parquet('{fixture}/data/lake/marketing_spend.parquet')",
+      "web_events_2024_archive": "read_parquet('{fixture}/data/lake/web_events_2024_archive.parquet')",
+      "tmp_session_dedupe": "read_parquet('{fixture}/data/lake/tmp_session_dedupe.parquet')"
+    }
+  },
+  "brief_note": "At first IT does not allow any connection to the lake files, so when the agent asks for one, say a connection is not possible and why. You can run one read-only catalog query and share its result: you saved it as shared/lake-schema.csv in the semantic directory. Once the definitions are approved, IT approves read-only access: the next time the agent asks about a connection, say the lake files can now be read in place.",
+  "persona": "structured",
+  "budgets": { "max_turns": 40, "max_tokens": 400000 },
+  "opening": "Hi, I am Dana Ruiz, head of analytics at Acme. I would like a semantic layer for our event lake, the source lake. Can you build it with me?",
+  "script": "acme-export-upgrade.script.json",
+  "grading": {
+    "selection": {
+      "lake": ["web_events", "sessions", "marketing_spend"],
+      "warehouse": ["fct_orders", "fct_order_items", "fct_refunds", "dim_customers", "dim_products", "dim_regions"]
+    },
+    "protected_columns": ["dim_customers.email", "dim_customers.phone", "dim_customers.first_name", "dim_customers.last_name"]
+  }
+}

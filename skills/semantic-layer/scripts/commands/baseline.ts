@@ -1,12 +1,16 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { buildBaseline, renderBaseline } from "../lib/baseline.ts";
+import { buildBaseline, formatScopedJson, renderBaseline, scopeBaseline, VIEW_GIVES } from "../lib/baseline.ts";
 import type { CommandSpec } from "../lib/command.ts";
 import { list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
+import { writeFileAtomic } from "../lib/lock.ts";
 import { formatJson } from "../lib/output.ts";
 import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot } from "../lib/project.ts";
+import { computeStatus } from "../lib/status.ts";
+import { effectiveScope } from "../lib/table-list.ts";
 import type { SourceConfig } from "../lib/types.ts";
+import { loadUsage, namesFor, usageBlock } from "../lib/usage.ts";
 import { sourceFlag } from "./tables.ts";
 
 function inside(root: string, path: string): boolean {
@@ -39,7 +43,7 @@ function outPath(root: string, out: string): string {
   const own = projectEntries(base);
   if (own.files.includes(rel)) throw new UserError(`--out ${out} is one of the project's own files; give another path, such as baseline.md.`);
   const dir0 = own.dirs.find((d) => rel === d || rel.startsWith(`${d}/`));
-  if (dir0) throw new UserError(`--out ${out} is inside the project's ${dir0}/ directory, which sl manages; give another path, such as baseline.md.`);
+  if (dir0) throw new UserError(`--out ${out} is inside the project's ${dir0}/ directory, which semlayer manages; give another path, such as baseline.md.`);
   for (let parent = dirname(target); parent !== base && inside(base, parent); parent = dirname(parent)) {
     let pstat: ReturnType<typeof statSync> | undefined;
     try {
@@ -72,16 +76,29 @@ function outPath(root: string, out: string): string {
   return target;
 }
 
+// The phase semlayer next names, or null when the project's status cannot be read (the brief needs only the snapshot).
+function currentPhase(root: string): string | null {
+  try {
+    return computeStatus(root).next_step.phase;
+  } catch {
+    return null;
+  }
+}
+
 const spec: CommandSpec = {
   summary:
     "Write a read-only baseline brief from the snapshot: per table its likely role, grain, keys, relationships, candidate measures and splits, " +
-    "and the questions to ask the owner, plus a star-schema sketch. Reads no database.",
-  usage: "baseline --source <source> [--tables t,...] [--out <file>]",
+    "and the questions to ask the owner, plus a star-schema sketch. Reads no database. " +
+    "--json is scoped to the phase semlayer next names: in the metrics phase " + VIEW_GIVES.metrics + "; in every other phase " + VIEW_GIVES.tables + ". " +
+    "--full --json gives every table's whole reading; the plain brief is always whole, so --full applies only with --json.",
+  usage: "baseline --source <source> [--tables t,...] [--out <file>] [--full]",
   options: {
     source: { type: "string" },
     tables: { type: "string", multiple: true },
     out: { type: "string" },
+    full: { type: "boolean" },
   },
+  writes: ({ values }) => (values.out !== undefined ? "whole" : false),
   async run({ values }, ctx) {
     const project = loadProject(ctx.root);
     const sourceName = sourceFlag(values, project);
@@ -94,7 +111,7 @@ const spec: CommandSpec = {
     const target = out !== undefined ? outPath(ctx.root, out) : undefined;
     const report = buildBaseline(snapshot, {
       source: sourceName,
-      ...(source?.scope ? { scope: source.scope } : {}),
+      ...(source ? { scope: effectiveScope(ctx.root, source) } : {}),
       focusThreshold: focus_threshold,
       tables: list(values, "tables"),
       stripPrefixes: source?.draft?.strip_prefixes ?? [],
@@ -104,10 +121,20 @@ const spec: CommandSpec = {
     const markdown = renderBaseline(report);
     if (target) {
       mkdirSync(dirname(target), { recursive: true });
-      writeFileSync(target, markdown);
+      writeFileAtomic(target, markdown);
     }
     if (ctx.json) {
-      ctx.out(formatJson({ ...report, ...(target ? { written_to: target } : {}) }));
+      const written = target ? { written_to: target } : {};
+      if (values.full === true) {
+        ctx.out(formatJson({ ...report, ...written }));
+        return 0;
+      }
+      const tablesFlag = list(values, "tables");
+      const full = `semlayer baseline --source ${sourceName}${tablesFlag.length ? ` --tables ${tablesFlag.join(",")}` : ""} --full --json`;
+      const usage = loadUsage(ctx.root, sourceName);
+      const names = usage ? namesFor(ctx.root, sourceName, snapshot) : undefined;
+      const block = usage && names ? (table: string) => usageBlock(table, usage, names) : undefined;
+      ctx.out(formatScopedJson({ ...scopeBaseline(report, currentPhase(ctx.root), full, block), ...written }));
       return 0;
     }
     if (target) {

@@ -8,6 +8,8 @@ import { inScope } from "../lib/patterns.ts";
 import { listModels, loadProject, loadSource, projectSettings, requireSnapshot } from "../lib/project.ts";
 import { rankTables } from "../lib/rank.ts";
 import { profileState, type ProfileState } from "../lib/status.ts";
+import { effectiveScope } from "../lib/table-list.ts";
+import { loadUsage } from "../lib/usage.ts";
 import { NAME_PATTERN, type Project, type SnapshotTable, type Status } from "../lib/types.ts";
 
 export interface TableRow {
@@ -22,6 +24,8 @@ export interface TableRow {
   profile_state: ProfileState;
   score: number;
   reasons: string[];
+  // Statements of the saved queries that read the table (semlayer usage add); only when there are any.
+  usage?: number;
 }
 
 // The --source flag, or the project's default source. The name must be a spec
@@ -33,7 +37,7 @@ export function sourceFlag(values: Record<string, unknown>, project: Project): s
   return s;
 }
 
-// Whether a table's profile is complete, by the rule sl status applies: profiled_at is set.
+// Whether a table's profile is complete, by the rule semlayer status applies: profiled_at is set.
 export function isProfiled(t: SnapshotTable): boolean {
   return profileState(t) === "yes";
 }
@@ -71,7 +75,7 @@ function shellQuote(s: string): string {
 
 export function scopeCommand(source: string, scope: SuggestedScope): string {
   return [
-    `sl scope --source ${source}`,
+    `semlayer scope --source ${source}`,
     ...scope.include.map((p) => `--include ${shellQuote(p)}`),
     ...scope.exclude.map((p) => `--exclude ${shellQuote(p)}`),
   ].join(" ");
@@ -93,20 +97,23 @@ const spec: CommandSpec = {
   summary: "List a source's tables with size, scope and modeling state; --groups suggests scope patterns.",
   usage: "tables --source <source> [--groups] [--all]",
   options: { source: { type: "string" }, groups: { type: "boolean" }, all: { type: "boolean" } },
+  writes: false,
   async run({ values }, ctx) {
     const project = loadProject(ctx.root);
     const sourceName = sourceFlag(values, project);
     const source = loadSource(ctx.root, sourceName);
+    const scope = effectiveScope(ctx.root, source);
     const snapshot = requireSnapshot(ctx.root, sourceName);
     const { focus_threshold } = projectSettings(project);
     const all = bool(values, "all");
     const models = modelsByTable(ctx, sourceName, snapshot.tables);
+    const usage = loadUsage(ctx.root, sourceName);
 
     const ranked = rankTables(snapshot.tables);
     const rows: TableRow[] = [];
     let inScopeCount = 0;
     for (const r of ranked) {
-      const scoped = inScope(source.scope, r.table);
+      const scoped = inScope(scope, r.table);
       if (scoped) inScopeCount++;
       if (!scoped && !all) continue;
       const m = models.get(r.qualified);
@@ -121,10 +128,11 @@ const spec: CommandSpec = {
         profile_state: profileState(r.table),
         score: r.score,
         reasons: r.reasons,
+        ...(usage ? { usage: usage.tables[r.qualified]?.statements ?? 0 } : {}),
       });
     }
     const needsFocus = inScopeCount > focus_threshold;
-    const groups = bool(values, "groups") ? groupTables(snapshot.tables, source.scope) : undefined;
+    const groups = bool(values, "groups") ? groupTables(snapshot.tables, scope) : undefined;
     const suggested = groups ? suggestScope(snapshot.tables, groups) : undefined;
 
     if (ctx.json) {
@@ -136,6 +144,7 @@ const spec: CommandSpec = {
           focus_threshold,
           needs_focus: needsFocus,
           tables: rows,
+          ...(usage ? { unused: rows.filter((r) => r.in_scope && !r.usage).map((r) => r.table) } : {}),
           ...(groups ? { groups, suggested_scope: suggested } : {}),
         }),
       );
@@ -152,22 +161,32 @@ const spec: CommandSpec = {
           in_scope: r.in_scope ? "yes" : "no",
           model: r.model ? `${r.model} (${r.model_status})` : "",
           profiled: r.profile_state,
+          ...(usage ? { used: r.usage ?? 0 } : {}),
         })),
-        ["table", "rows", "columns", "in_scope", "model", "profiled"],
+        ["table", "rows", "columns", "in_scope", "model", "profiled", ...(usage ? ["used"] : [])],
       ),
     );
     lines.push("");
     lines.push(`${snapshot.tables.length} tables in ${sourceName}, ${inScopeCount} in scope.${all || inScopeCount === snapshot.tables.length ? "" : " Pass --all to list every table."}`);
+    if (usage) {
+      const unused = rows.filter((r) => r.in_scope && !r.usage).map((r) => r.table);
+      lines.push(
+        `used: statements of the saved queries that read each table (semlayer usage show --source ${sourceName} for what they do). ` +
+          (unused.length
+            ? `${unused.length} in-scope table${unused.length === 1 ? " appears" : "s appear"} in no saved query: ${unused.slice(0, 12).join(", ")}${unused.length > 12 ? ", …" : ""}. Ask the owner whether to leave ${unused.length === 1 ? "it" : "them"} out.`
+            : "Every in-scope table appears in a saved query."),
+      );
+    }
     if (needsFocus) {
       lines.push(
         `${inScopeCount} in-scope tables is more than the focus threshold of ${focus_threshold}. ` +
-          `Ask the owner which tables to focus on first; run \`sl tables --source ${sourceName} --groups\` to see patterns to choose from, ` +
-          `then preview with \`sl scope --source ${sourceName} --include <pattern>\`.`,
+          `Ask the owner which tables to focus on first; run \`semlayer tables --source ${sourceName} --groups\` to see patterns to choose from, ` +
+          `then preview with \`semlayer scope --source ${sourceName} --include <pattern>\`.`,
       );
     }
     if (groups) {
       lines.push("");
-      lines.push("Groups (use a pattern with `sl scope --include` or `--exclude`):");
+      lines.push("Groups (use a pattern with `semlayer scope --include` or `--exclude`):");
       lines.push(groups.length ? formatTable(groupRows(groups)) : "(no groups of 2 or more tables)");
       if (groups.some((g) => g.pattern.length > PATTERN_WIDTH)) {
         lines.push(`Patterns longer than ${PATTERN_WIDTH} characters end in …; pass --json for the full text.`);

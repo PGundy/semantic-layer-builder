@@ -1,17 +1,24 @@
+import { type AccessLayer, andList, CHANGED_SINCE_APPROVAL, loadAccessLayer } from "./access.ts";
+import { type CompileResult, compileLayer, compileRequest, type Refused } from "./compiler/index.ts";
 import { UserError } from "./errors.ts";
 import { PROTECTED_VALUE } from "./output.ts";
+import { loadSnapshot, loadSource } from "./project.ts";
 import { findField, parseRequestField } from "./refs.ts";
-import { assertReadOnly } from "./sql-guard.ts";
-import type { Golden, Metric, Model, QueryPlan, ResultRows, SourceConfig } from "./types.ts";
+import { assertReadOnly, tokenize } from "./sql-guard.ts";
+import type { Dialect, Golden, Metric, Model, QueryPlan, ResultRows, SourceConfig } from "./types.ts";
 import { NAME_PATTERN } from "./types.ts";
 
 export const MAX_DIFFS = 10;
+export { DEFAULT_TOLERANCE } from "./approval-hash.ts";
 
 export interface CompareOptions {
   ordered: boolean;
   tolerance: number;
   // Columns (lowercase) whose values the differences show as [protected].
   protectedColumns?: string[];
+  // The request's grouping columns (see groupingColumns), matched ignoring case. Their values
+  // compare exactly whatever the tolerance, and an unordered comparison pairs rows by them.
+  groupingColumns?: string[];
 }
 
 export interface CompareResult {
@@ -85,13 +92,19 @@ function show(v: unknown): string {
   return String(v);
 }
 
+// Whether both values are whole numbers: an integer number, a bigint or a string that spells an
+// integer (two strings only when both are written canonically, as databases print them).
+function bothWhole(a: unknown, b: unknown): boolean {
+  if (typeof a === "string" && typeof b === "string" && !(INTEGER_STRING.test(a) && INTEGER_STRING.test(b))) return false;
+  return asBigInt(a) !== null && asBigInt(b) !== null;
+}
+
+// Two whole numbers are equal only when they are the same integer, whatever the tolerance: a count
+// of 1000 is never 1001, and a year is never the next one. The tolerance applies when at least one
+// side is not a whole number.
 function numbersEqual(a: unknown, b: unknown, tolerance: number): boolean {
-  if (tolerance <= 0) {
-    if (typeof a === "string" && typeof b === "string") return normalizeDecimal(a) === normalizeDecimal(b);
-    const ia = asBigInt(a);
-    const ib = asBigInt(b);
-    if (ia !== null && ib !== null) return ia === ib;
-  }
+  if (bothWhole(a, b)) return asBigInt(a) === asBigInt(b);
+  if (tolerance <= 0 && typeof a === "string" && typeof b === "string") return normalizeDecimal(a) === normalizeDecimal(b);
   const na = asNumber(a);
   const nb = asNumber(b);
   if (na === null || nb === null) return false;
@@ -99,9 +112,9 @@ function numbersEqual(a: unknown, b: unknown, tolerance: number): boolean {
   return Math.abs(na - nb) <= tolerance * Math.max(Math.abs(na), Math.abs(nb));
 }
 
-// Whether two cell values agree: numbers within the relative tolerance, a numeric
-// string against a number by value, two canonical decimal strings by value, other
-// strings exactly, null only with null, objects by their key-sorted JSON.
+// Whether two cell values agree: two whole numbers exactly, other numbers within the relative
+// tolerance, a numeric string against a number by value, two canonical decimal strings by
+// value, other strings exactly, null only with null, objects by their key-sorted JSON.
 export function valuesEqual(a: unknown, b: unknown, tolerance: number): boolean {
   if (isNull(a) || isNull(b)) return isNull(a) && isNull(b);
   if (typeof a === "string" && typeof b === "string") {
@@ -168,15 +181,10 @@ function sortedIndexes(rows: Row[], order: string[]): number[] {
     });
 }
 
-function rowEquals(a: Row, b: Row, columns: string[], tolerance: number): boolean {
-  return columns.every((c) => valuesEqual(a[c], b[c], tolerance));
-}
-
 // How a difference shows a cell: a protected column's non-null value as [protected].
 type Shower = (column: string, v: unknown) => string;
 
-function shower(protectedCols: string[] | undefined): Shower {
-  const hidden = new Set((protectedCols ?? []).map((c) => c.toLowerCase()));
+function shower(hidden: Set<string>): Shower {
   return (column, v) => (hidden.has(column.toLowerCase()) && !isNull(v) ? PROTECTED_VALUE : show(v));
 }
 
@@ -186,12 +194,43 @@ function describeRow(row: Row, see: Shower): string {
     .join(", ")}}`;
 }
 
-function cellDiffs(label: string, expected: Row, actual: Row, columns: string[], tolerance: number, see: Shower): string[] {
+const GROUPING_EXACT = "grouping columns compare exactly";
+const WHOLE_EXACT = "whole numbers compare exactly";
+
+// How the cells of one comparison compare and show.
+interface Cells {
+  // The columns both sides have, and those of them that are grouping columns.
+  columns: string[];
+  grouping: string[];
+  tolerance: number;
+  // The protected columns, in lowercase, and how a difference shows a cell.
+  hidden: Set<string>;
+  see: Shower;
+}
+
+function cellEquals(k: Cells, column: string, a: unknown, b: unknown): boolean {
+  return valuesEqual(a, b, k.grouping.includes(column) ? 0 : k.tolerance);
+}
+
+function rowEquals(k: Cells, a: Row, b: Row): boolean {
+  return k.columns.every((c) => cellEquals(k, c, a[c], b[c]));
+}
+
+// Why a difference stands though the golden has a tolerance, in parentheses: the reason given, or
+// the rule that compared this cell exactly. Empty at tolerance 0, where every cell compares exactly.
+function exactNote(k: Cells, reason: string | undefined): string {
+  return k.tolerance > 0 && reason ? ` (${reason})` : "";
+}
+
+function cellDiffs(label: string, expected: Row, actual: Row, k: Cells): string[] {
   const out: string[] = [];
-  for (const c of columns) {
-    if (!valuesEqual(expected[c], actual[c], tolerance)) {
-      out.push(`${label}, column ${c}: expected ${see(c, expected[c])}, got ${see(c, actual[c])}.`);
-    }
+  for (const c of k.columns) {
+    const e = expected[c];
+    const a = actual[c];
+    if (cellEquals(k, c, e, a)) continue;
+    // A protected column's difference does not say its values are whole numbers.
+    const why = k.grouping.includes(c) ? GROUPING_EXACT : bothWhole(e, a) && !k.hidden.has(c.toLowerCase()) ? WHOLE_EXACT : undefined;
+    out.push(`${label}, column ${c}: expected ${k.see(c, e)}, got ${k.see(c, a)}${exactNote(k, why)}.`);
   }
   return out;
 }
@@ -200,13 +239,14 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-function compareOrdered(expected: Row[], actual: Row[], columns: string[], tolerance: number, see: Shower): string[] {
+function compareOrdered(expected: Row[], actual: Row[], k: Cells): string[] {
+  const { see } = k;
   const diffs: string[] = [];
   const n = Math.max(expected.length, actual.length);
   for (let i = 0; i < n; i++) {
     const e = expected[i];
     const a = actual[i];
-    if (e && a) diffs.push(...cellDiffs(`Row ${i + 1}`, e, a, columns, tolerance, see));
+    if (e && a) diffs.push(...cellDiffs(`Row ${i + 1}`, e, a, k));
     else if (e) diffs.push(`Row ${i + 1}: expected ${describeRow(e, see)}, but the results end before it.`);
     else if (a) diffs.push(`Row ${i + 1}: got ${describeRow(a, see)}, which is not expected.`);
   }
@@ -214,22 +254,24 @@ function compareOrdered(expected: Row[], actual: Row[], columns: string[], toler
 }
 
 // Walks expected rows in canonical order, pairs each with a result row that agrees in
-// full, then pairs the rest so a changed figure reads as one cell diff: by the label
-// columns when there are any, otherwise with the result row that shares the most cells
-// (at least half of them). Row numbers are positions in expected.rows and in the results.
-function compareUnordered(expected: Row[], actual: Row[], columns: string[], tolerance: number, see: Shower): string[] {
+// full, then pairs the rest so a changed figure reads as one cell diff against its own row:
+// by the grouping columns when the request has any, else by the label columns when there
+// are any, otherwise with the result row that shares the most cells (at least half of
+// them). Row numbers are positions in expected.rows and in the results.
+function compareUnordered(expected: Row[], actual: Row[], k: Cells): string[] {
+  const { columns, grouping, see } = k;
   const { labels, order } = keyOrder(columns, [...expected, ...actual]);
   const expOrder = sortedIndexes(expected, order);
   const actOrder = sortedIndexes(actual, order);
   const used = new Set<number>();
   const freeActual = (pred: (a: Row) => boolean): number => {
-    const j = actOrder.find((k) => !used.has(k) && pred(actual[k]!));
+    const j = actOrder.find((n) => !used.has(n) && pred(actual[n]!));
     return j ?? -1;
   };
 
   const leftover: number[] = [];
   for (const i of expOrder) {
-    const j = freeActual((a) => rowEquals(expected[i]!, a, columns, tolerance));
+    const j = freeActual((a) => rowEquals(k, expected[i]!, a));
     if (j >= 0) used.add(j);
     else leftover.push(i);
   }
@@ -239,17 +281,17 @@ function compareUnordered(expected: Row[], actual: Row[], columns: string[], tol
   for (const i of leftover) {
     const e = expected[i]!;
     let j = -1;
-    let key: string[] = labels;
-    if (labels.length) {
-      j = freeActual((a) => labels.every((c) => valuesEqual(e[c], a[c], 0)));
+    let key: string[] = grouping.length ? grouping : labels;
+    if (key.length) {
+      j = freeActual((a) => key.every((c) => valuesEqual(e[c], a[c], 0)));
     } else if (columns.length > 1) {
       let best = 0;
-      for (const k of actOrder) {
-        if (used.has(k)) continue;
-        const shared = columns.filter((c) => valuesEqual(e[c], actual[k]![c], tolerance));
+      for (const n of actOrder) {
+        if (used.has(n)) continue;
+        const shared = columns.filter((c) => cellEquals(k, c, e[c], actual[n]![c]));
         if (shared.length > best && shared.length * 2 >= columns.length) {
           best = shared.length;
-          j = k;
+          j = n;
           key = shared;
         }
       }
@@ -257,21 +299,27 @@ function compareUnordered(expected: Row[], actual: Row[], columns: string[], tol
     if (j >= 0) {
       used.add(j);
       const label = key.map((c) => `${c}=${see(c, e[c])}`).join(", ");
-      diffs.push(...cellDiffs(`Row ${i + 1} (${label})`, e, actual[j]!, columns, tolerance, see));
+      diffs.push(...cellDiffs(`Row ${i + 1} (${label})`, e, actual[j]!, k));
     } else unmatched.push(i);
   }
-  for (const i of unmatched) diffs.push(`Row ${i + 1}: expected ${describeRow(expected[i]!, see)}, but no result row matches it.`);
-  for (const k of actOrder) {
-    if (!used.has(k)) diffs.push(`Result row ${k + 1}: got ${describeRow(actual[k]!, see)}, which is not expected.`);
+  // With grouping columns, a row is unmatched when no result row has its grouping values.
+  const why = exactNote(k, grouping.length ? GROUPING_EXACT : undefined);
+  for (const i of unmatched) diffs.push(`Row ${i + 1}: expected ${describeRow(expected[i]!, see)}, but no result row matches it${why}.`);
+  for (const n of actOrder) {
+    if (!used.has(n)) diffs.push(`Result row ${n + 1}: got ${describeRow(actual[n]!, see)}, which is not expected.`);
   }
   return diffs;
 }
 
-// Compares a golden's expected rows with the rows a query returned. The differences show the
-// values of opts.protectedColumns as [protected].
+// Compares a golden's expected rows with the rows a query returned. The values of
+// opts.groupingColumns and any two whole numbers compare exactly; opts.tolerance applies to the
+// other figures. A difference in a cell that compared exactly though the tolerance is above zero
+// says which rule made it exact. The differences show the values of opts.protectedColumns as
+// [protected], and say nothing of whether they are whole numbers.
 export function compareRows(expected: Row[], actual: Row[], opts: CompareOptions): CompareResult {
   const tolerance = Math.max(0, opts.tolerance);
-  const see = shower(opts.protectedColumns);
+  const hidden = new Set((opts.protectedColumns ?? []).map((c) => c.toLowerCase()));
+  const see = shower(hidden);
   const expectedColumns = columnsOf(expected);
   const actualColumns = columnsOf(actual);
   const diffs: string[] = [];
@@ -283,11 +331,9 @@ export function compareRows(expected: Row[], actual: Row[], opts: CompareOptions
     diffs.push(`Expected ${plural(expected.length, "row")}, got ${plural(actual.length, "row")}.`);
   }
   const common = expectedColumns.filter((c) => actualColumns.includes(c));
-  diffs.push(
-    ...(opts.ordered
-      ? compareOrdered(expected, actual, common, tolerance, see)
-      : compareUnordered(expected, actual, common, tolerance, see)),
-  );
+  const wanted = new Set((opts.groupingColumns ?? []).map((c) => c.toLowerCase()));
+  const cells: Cells = { columns: common, grouping: common.filter((c) => wanted.has(c.toLowerCase())), tolerance, hidden, see };
+  diffs.push(...(opts.ordered ? compareOrdered(expected, actual, cells) : compareUnordered(expected, actual, cells)));
   if (diffs.length <= MAX_DIFFS) return { ok: diffs.length === 0, diffs };
   const shown = diffs.slice(0, MAX_DIFFS - 1);
   shown.push(`${diffs.length - shown.length} more differences not shown.`);
@@ -298,25 +344,194 @@ export function goldenQueryId(name: string): string {
   return `golden:${name}`;
 }
 
-// The one-query plan that runs a golden's SQL against its request's source.
-export function goldenPlan(golden: Golden, source: SourceConfig): QueryPlan {
-  if (typeof golden.sql !== "string" || !golden.sql.trim()) throw new UserError(`Golden "${golden.name}" has no sql.`);
-  try {
-    assertReadOnly(golden.sql);
-  } catch (e) {
-    throw new UserError(`Golden "${golden.name}": ${(e as Error).message}`);
-  }
+// The query id of a golden's cross_check_sql, next to its compiled query golden:<name>.
+export function crossCheckQueryId(name: string): string {
+  return `golden:${name}:cross_check`;
+}
+
+// The hand-written query a golden's compiled request is checked against: cross_check_sql, else
+// the older key sql, read as it. Undefined when the golden has neither.
+export function crossCheckSql(golden: Golden): string | undefined {
+  const raw = typeof golden.cross_check_sql === "string" ? golden.cross_check_sql : typeof golden.sql === "string" ? golden.sql : undefined;
+  return raw?.trim() ? raw.trim() : undefined;
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+// The layer with every model, field, join, metric and access.yaml read as approved, and no
+// approval hash compared: what a draft golden's request compiles against before its fields are.
+function approvedLayer(layer: AccessLayer): AccessLayer {
+  const approve = <T>(xs: T[] | undefined): T[] | undefined => (Array.isArray(xs) ? xs.map((x) => (isObj(x) ? { ...x, status: "approved" } : x)) : xs);
   return {
-    command: "goldens",
-    source: source.source,
-    dialect: source.dialect,
-    queries: [{ id: goldenQueryId(golden.name), purpose: golden.question || `Golden ${golden.name}`, sql: golden.sql.trim() }],
+    ...layer,
+    compare_hashes: false,
+    models: layer.models.map((m) => ({ ...m, status: "approved", dimensions: approve(m.dimensions)!, measures: approve(m.measures)!, joins: approve(m.joins) })),
+    metrics: approve(layer.metrics) ?? [],
+    access: isObj(layer.access) ? { ...layer.access, status: "approved" } : layer.access,
   };
 }
 
-// The measure references a metric combines, in the exact model.measure form sl approve
+// Compiles a golden's request from the current YAML as the role and user it runs as, the way
+// semlayer sql does. An approved golden compiles strictly: a draft field, or an approved one changed
+// since its approval, is refused. Any other golden previews its request with every item read as
+// approved, so its rows can be read back to the owner before its fields are approved.
+// A layer too malformed for the compiler to read is a refusal that names semlayer validate.
+export function compileGolden(root: string, golden: Golden): CompileResult {
+  const role = typeof golden.role === "string" ? golden.role : undefined;
+  const attributes = isObj(golden.user) ? golden.user : {};
+  const source = loadSource(root, golden.request.source);
+  try {
+    if (golden.status === "approved") return compileRequest(root, golden.request, { ...(role ? { role } : {}), user: attributes });
+    return compileLayer({
+      layer: approvedLayer(loadAccessLayer(root)),
+      source,
+      snapshot: loadSnapshot(root, source.source),
+      request: golden.request,
+      user: { attributes, roles: role ? [role] : [] },
+      root,
+    });
+  } catch (e) {
+    if (e instanceof UserError || !(e instanceof TypeError)) throw e;
+    const message = `the compiler could not read the layer (${e.message.split("\n")[0]}); run semlayer validate`;
+    return { ok: false, source: source.source, reason: message, refusals: [{ code: "invalid_layer", message }] };
+  }
+}
+
+// The grouping columns of a golden: the result columns of its compiled request's dimensions and
+// time grains (order_date:year is the column order_date_year). A golden whose request does not
+// compile, checked by its cross_check_sql alone, has none the comparison can name.
+export function groupingColumns(compiled: CompileResult | undefined): string[] {
+  return compiled?.ok ? compiled.columns.filter((c) => c.kind === "dimension").map((c) => c.name) : [];
+}
+
+// Whether a refusal is only that the compiler does not support the source's dialect.
+export function onlyUnsupportedDialect(r: CompileResult): boolean {
+  return !r.ok && r.refusals.every((x) => x.code === "unsupported_dialect");
+}
+
+// The approve targets a refusal waits on: those the first hidden reference awaits (an item changed
+// since its approval or a draft, its model, or a measure that hides a metric), a draft access.yaml,
+// or, when an access rule hides the reference too, the draft or changed item its message names.
+function awaitedTargets(r: Refused): string[] {
+  for (const x of r.refusals) {
+    if (x.code !== "not_visible") continue;
+    if (x.awaits?.length) return x.awaits;
+    if (x.ref === "access.yaml") return ["access"];
+    const changed = x.message.includes(CHANGED_SINCE_APPROVAL) ? /semlayer approve --target (\S+)/.exec(x.message)?.[1] : undefined;
+    if (changed) return [changed];
+    const hidden = /measure_hidden:([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)/.exec(x.message)?.[1];
+    if (hidden) return [`${r.source}.${hidden}`];
+    if (/\((draft|draft, [^)]*)\)/.test(x.message) && x.ref) return [x.ref.includes(".") ? `${r.source}.${x.ref.split(":")[0]}` : `metric:${x.ref}`];
+  }
+  return [];
+}
+
+// The step that resolves a golden's refusal: the refusal's own, approving the item it waits on
+// (a draft access.yaml included) after the owner's yes, semlayer validate for a layer error, else semlayer sql
+// for the details. The recheck is goldens check for a golden with expected rows, else goldens run.
+export function refusalNext(golden: Golden, r: Refused): string {
+  const own = r.refusals.find((x) => x.next)?.next;
+  if (own) return own;
+  const targets = awaitedTargets(r);
+  const confirmed = (golden.expected?.rows?.length ?? 0) > 0;
+  const recheck = confirmed ? `semlayer goldens check --name ${golden.name}` : `semlayer goldens run --name ${golden.name}`;
+  if (targets.length) {
+    const after = confirmed ? `; if its rows changed, confirm again only on the owner's yes` : "";
+    const it = targets.length > 1 ? "them" : "it";
+    return `Read ${andList(targets)} back to the owner with semlayer readback --targets ${targets.join(",")} and approve ${it} on their yes, then run ${recheck}${after}.`;
+  }
+  if (r.refusals.some((x) => x.code === "invalid_layer")) return `Run semlayer validate and fix what it reports, then run ${recheck}.`;
+  if (onlyUnsupportedDialect(r)) {
+    return (
+      `semlayer sql compiles postgres and duckdb sources only: write the golden's query by hand from the model YAML as cross_check_sql, ` +
+      `then run semlayer goldens run --name ${golden.name} --emit-sql to plan it.`
+    );
+  }
+  return `Run semlayer sql --request goldens/${golden.name}.yaml to see why, fix the request or the layer, then run ${recheck}.`;
+}
+
+// A request value or user attribute as a SQL literal: text quoted, with '' for a quote (and on
+// postgres as E'...' with backslashes doubled when it holds one), finite numbers as written (in
+// parentheses when negative; on postgres quoted, so that like an unbound parameter the literal
+// takes the type of the column it is compared with), booleans as true and false. Anything else
+// is refused.
+function sqlLiteral(v: unknown, dialect: Dialect, n: number): string {
+  if (typeof v === "string") {
+    const quoted = v.replaceAll("'", "''");
+    return dialect === "postgres" && v.includes("\\") ? `E'${quoted.replaceAll("\\", "\\\\")}'` : `'${quoted}'`;
+  }
+  if ((typeof v === "number" && Number.isFinite(v)) || typeof v === "bigint") {
+    if (dialect === "postgres") return `'${v}'`;
+    return v < 0 ? `(${v})` : String(v);
+  }
+  if (typeof v === "boolean") return v ? "true" : "false";
+  throw new UserError(`Parameter $${n} of the compiled query is ${JSON.stringify(v) ?? String(v)}; a golden's filter values and user attributes are text, numbers or true and false.`);
+}
+
+// The compiled SQL with each bound parameter ($1, $2, ...) written as a literal, read with the
+// tokenizer the read-only check uses, so a marker inside a string or a comment is left alone. The
+// query then runs through the read-only adapters, and a plan's SQL runs in any tool as it stands.
+export function inlineParams(sql: string, params: readonly unknown[], dialect: Dialect): string {
+  let out = "";
+  let at = 0;
+  for (const t of tokenize(sql)) {
+    if (t.kind !== "param") continue;
+    const n = Number(t.text.slice(1));
+    if (!(n >= 1 && n <= params.length)) throw new UserError(`The compiled query reads parameter ${t.text}, which it does not bind; run semlayer validate.`);
+    out += sql.slice(at, t.pos) + sqlLiteral(params[n - 1], dialect, n);
+    at = t.end;
+  }
+  return out + sql.slice(at);
+}
+
+// The plan that runs a golden against its request's source: its request compiled from the YAML
+// (query golden:<name>) when it compiles, and its cross_check_sql (golden:<name>:cross_check) when
+// it has one. A golden with neither is refused with the compiler's reason.
+export function goldenPlan(golden: Golden, source: SourceConfig, compiled?: CompileResult): QueryPlan {
+  const purpose = golden.question || `Golden ${golden.name}`;
+  const queries: QueryPlan["queries"] = [];
+  if (compiled?.ok) queries.push({ id: goldenQueryId(golden.name), purpose, sql: inlineParams(compiled.sql, compiled.params, source.dialect) });
+  const cross = crossCheckSql(golden);
+  if (cross !== undefined) {
+    try {
+      assertReadOnly(cross);
+    } catch (e) {
+      throw new UserError(`Golden "${golden.name}": ${(e as Error).message}`);
+    }
+    queries.push({ id: crossCheckQueryId(golden.name), purpose: `${purpose} (cross_check_sql)`, sql: cross });
+  }
+  if (queries.length) return { command: "goldens", source: source.source, dialect: source.dialect, queries };
+  if (compiled && !compiled.ok) throw new UserError(`Golden "${golden.name}" does not compile from the current YAML: ${compiled.reason}. ${refusalNext(golden, compiled)}`);
+  throw new UserError(`Golden "${golden.name}" has no cross_check_sql, and its request was not compiled.`);
+}
+
+export interface GoldenJudgement extends CompareResult {
+  // How the compiled rows and the cross_check_sql rows compare with the expected rows, each when it ran.
+  compiled?: "pass" | "fail";
+  cross_check?: "pass" | "fail";
+}
+
+// Compares a golden's expected rows with its compiled rows and its cross_check_sql rows, each when
+// it ran. With both, every difference names the query it is in, and the first says which differs.
+export function judgeGolden(expected: Row[], compiled: Row[] | undefined, cross: Row[] | undefined, opts: CompareOptions): GoldenJudgement {
+  const c = compiled && compareRows(expected, compiled, opts);
+  const x = cross && compareRows(expected, cross, opts);
+  const verdict = (key: "compiled" | "cross_check", r: CompareResult | undefined) => (r ? { [key]: r.ok ? "pass" : "fail" } : {});
+  if (!c || !x) {
+    const only = c ?? x;
+    return { ok: only?.ok ?? false, diffs: only?.diffs ?? [], ...verdict("compiled", c), ...verdict("cross_check", x) };
+  }
+  const diffs: string[] = [];
+  if (!c.ok && x.ok) diffs.push("The rows compiled from the YAML differ from expected.rows, and cross_check_sql still gives them: the layer no longer computes the confirmed figure.");
+  if (c.ok && !x.ok) diffs.push("cross_check_sql differs from expected.rows, and the rows compiled from the YAML match them: fix cross_check_sql or remove it.");
+  if (!c.ok && !x.ok) diffs.push("Both the rows compiled from the YAML and cross_check_sql differ from expected.rows.");
+  diffs.push(...c.diffs.map((d) => `Compiled: ${d}`), ...x.diffs.map((d) => `cross_check_sql: ${d}`));
+  return { ok: c.ok && x.ok, diffs, ...verdict("compiled", c), ...verdict("cross_check", x) };
+}
+
+// The measure references a metric combines, in the exact model.measure form semlayer approve
 // accepts: a ratio's numerator and denominator, or an expr's {model.measure} placeholders
-// with no spaces. Anything else is left to sl validate and sl approve.
+// with no spaces. Anything else is left to semlayer validate and semlayer approve.
 const MEASURE_REF = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/;
 function metricMeasures(metric: Metric): string[] {
   if (metric.type === "ratio") {
@@ -339,7 +554,7 @@ function readableModel(m: unknown): m is Model {
 // targets (source.model.field, metric:<name>), in the order the request names them.
 // A metric used by the request also contributes the draft measures it combines.
 // References that resolve to nothing, and models or metrics too malformed to read, are
-// left to sl validate.
+// left to semlayer validate.
 export function goldenDraftFields(golden: Golden, models: Model[], metrics: Metric[]): string[] {
   const request = golden.request;
   if (!request || typeof request !== "object") return [];

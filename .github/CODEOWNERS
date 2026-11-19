@@ -1,0 +1,10 @@
+# Files that enforce the PRD's invariants (docs/PRD.md, section 7) need the owner's review.
+/skills/semantic-layer/scripts/lib/sql-guard.ts @PGundy
+/skills/semantic-layer/scripts/lib/adapters/ @PGundy
+/skills/semantic-layer/scripts/lib/source-safety.ts @PGundy
+/skills/semantic-layer/scripts/lib/credentials.ts @PGundy
+/skills/semantic-layer/scripts/lib/sensitivity.ts @PGundy
+/skills/semantic-layer/scripts/lib/approval-hash.ts @PGundy
+/skills/semantic-layer/scripts/lib/access.ts @PGundy
+/skills/semantic-layer/scripts/lib/importers/ddl.ts @PGundy
+/tests/security.test.ts @PGundy

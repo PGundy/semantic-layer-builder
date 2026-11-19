@@ -19,7 +19,7 @@
   "$defs": {
     "metric": {
       "type": "object",
-      "description": "A ratio or derived metric. Its measures may come from several models of its source; it then groups by dimensions that exist, with the same name, in every model it uses.",
+      "description": "A ratio or derived metric. Its measures may come from several models of its source; it then groups by dimensions that every model it uses reaches through one path of to-one joins, or that exist with the same name in each.",
       "additionalProperties": false,
       "required": [
         "name",
@@ -58,7 +58,7 @@
         "expr": {
           "type": "string",
           "minLength": 1,
-          "description": "Derived only: arithmetic over {model.measure} placeholders."
+          "description": "Derived only: arithmetic over {model.measure} placeholders, with balanced parentheses (spec.md, Expression text)."
         },
         "format": {
           "enum": [
@@ -100,7 +100,7 @@
             "draft",
             "approved"
           ],
-          "description": "Whether the owner has signed off this metric. Tools only write draft; sl approve sets approved."
+          "description": "Whether the owner has signed off this metric. Tools only write draft; semlayer approve sets approved."
         },
         "approved_by": {
           "type": "string",
@@ -116,7 +116,7 @@
         "approved_hash": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$",
-          "description": "sha256: and 64 hex characters, written by sl approve: the hash of the item's semantic content when it was approved. sl validate errors when the item no longer matches it, and warns when an approved item has none (sl approve --stamp-hashes records it)."
+          "description": "sha256: and 64 hex characters, written by semlayer approve: the hash of the item's semantic content when it was approved. semlayer validate errors when the item no longer matches it, and warns when an approved item has none (semlayer approve --stamp-hashes records it)."
         }
       },
       "allOf": [

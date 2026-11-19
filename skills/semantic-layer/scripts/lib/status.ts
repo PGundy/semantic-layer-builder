@@ -14,7 +14,9 @@ import {
   metricMeasureRefs,
 } from "./access.ts";
 import { canRun } from "./adapters/index.ts";
-import { accessEntry, type ApprovalEntry, holdsHashes, integrity, metricEntries, modelEntries } from "./approval-hash.ts";
+import { type ApprovalEntry, holdsHashes, type Integrity, integrity, itemApprovals, listApprovals } from "./approval-hash.ts";
+import { currentYes, ledgerState } from "./ledger.ts";
+import { accessRowFilters, layerReads } from "./layer-reads.ts";
 import { findTable, qualifiedName } from "./naming.ts";
 import { inScope } from "./patterns.ts";
 import { parseRequestField } from "./refs.ts";
@@ -33,13 +35,32 @@ import {
   type LoadedGolden,
   type LoadedModel,
 } from "./project.ts";
+import { NO_SELECT_REASON } from "./plan.ts";
+import type { ProfileGap } from "./profile.ts";
 import { rankTables } from "./rank.ts";
-import { incomingKeyColumns, missingColumns, referencedColumns, unreferencedColumns } from "./snapshot-diff.ts";
+import {
+  approvedModelsOn,
+  incomingKeyColumns,
+  missingColumns,
+  type ModelOnTable,
+  readScopeState,
+  referencedColumns,
+  selectionMatcher,
+  tablesFlag,
+  unreferencedColumns,
+} from "./snapshot-diff.ts";
+import { intakeMode, upgradeCommand } from "./intake.ts";
+import { effectiveScope } from "./table-list.ts";
 import { DIALECTS, TO_ONE_RELATIONSHIPS } from "./types.ts";
-import type { AccessMode, Approval, Dialect, Golden, Metric, Model, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
+import type { AccessMode, Approval, Dialect, Golden, IntakeMode, LedgerReply, Metric, Model, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
 
 // Golden count below which the verify phase stays open.
 export const MIN_APPROVED_GOLDENS = 5;
+
+// The golden counts in the words semlayer status and semlayer next both print.
+export function goldenCounts(c: ApprovalCount): string {
+  return `${c.approved} of ${c.approved + c.draft} golden(s) approved; the verify phase needs ${MIN_APPROVED_GOLDENS} approved`;
+}
 
 export interface ApprovalCount {
   approved: number;
@@ -65,7 +86,7 @@ export interface SnapshotSummary {
 
 // How far a table is profiled: yes when profiled_at is set; partial when some columns carry a
 // profile but profiled_at is missing (a reintrospect added or retyped columns); otherwise no.
-// Only yes counts as profiled; sl profile profiles partial and unprofiled tables alike.
+// Only yes counts as profiled; semlayer profile profiles partial and unprofiled tables alike.
 export type ProfileState = "yes" | "partial" | "no";
 
 export function profileState(t: Pick<SnapshotTable, "profiled_at" | "columns">): ProfileState {
@@ -73,11 +94,25 @@ export function profileState(t: Pick<SnapshotTable, "profiled_at" | "columns">):
   return Array.isArray(t.columns) && t.columns.some((c) => c?.profile !== undefined && c?.profile !== null) ? "partial" : "no";
 }
 
+// A step that needs the data, which an export source cannot take until it has a connection.
+export type WaitingStepName = "profiles" | "join_evidence" | "goldens" | "drift_from_data";
+
+export interface WaitingStep {
+  step: WaitingStepName;
+  message: string;
+}
+
 export interface SourceStatus {
   source: string;
   dialect: Dialect;
-  // The CLI can open a live connection: duckdb, or postgres with connection.env set.
+  // intake.mode: connection, or export for a source read from a schema export.
+  intake_mode: IntakeMode;
+  // The CLI can open a live connection: duckdb, or postgres with connection.env or connection.env_prefix set, and not an export source.
   runnable: boolean;
+  // Export sources: every data-dependent step, waiting on a connection; empty for a connection source.
+  waiting_on_connection: WaitingStep[];
+  // Approved joins of in-scope models without evidence, as model.join; semlayer validate warns on each.
+  approved_joins_without_evidence: string[];
   snapshot: SnapshotSummary | null;
   needs_focus: boolean;
   models: { total: number; approved: number; draft: number };
@@ -93,6 +128,8 @@ export interface SourceStatus {
   unprofiled_tables: string[];
   // The unprofiled_tables whose profile is partial: some columns carry a profile, but new or retyped columns do not.
   partially_profiled_tables: string[];
+  // The unprofiled_tables the last semlayer profile run skipped, with its reason (profile_skipped in the snapshot).
+  profile_skipped: ProfileGap[];
   // Draft models on in-scope tables; only these hold the interview phase open.
   draft_models: string[];
   // Approved models on in-scope tables that still hold draft dimensions, measures or joins.
@@ -103,15 +140,22 @@ export interface SourceStatus {
   // Models whose table is out of scope or missing from the snapshot; the interview and check-join phases skip them.
   out_of_scope_models: string[];
   // Columns of the tables under in-scope models that no model over the same table reads (fields,
-  // join keys, primary key) or lists in ignored_columns; sl draft --new-columns drafts them. Each
+  // join keys, primary key) or lists in ignored_columns; semlayer draft --new-columns drafts them. Each
   // column is listed once, under the in-scope model over its table that reads the most columns.
   new_columns: NewColumn[];
   // Columns that fields read (an expr that is one bare or quoted column) and that the snapshot no
   // longer has, for every model whose table is in the snapshot, in scope or not. A table with no
-  // known columns and SQL keywords such as current_date are not checked, as sl validate checks them.
+  // known columns and SQL keywords such as current_date are not checked, as semlayer validate checks them.
   missing_columns: MissingColumn[];
   // Models whose table is not in the snapshot.
   missing_tables: MissingTable[];
+  // Tables a rerun of semlayer introspect or semlayer import found newly in the selection (scope and
+  // intake.schemas) that are still selected and have no model; the draft step names them first.
+  new_in_scope: string[];
+  // Approved models on tables that a rerun found had left the selection (gone from the snapshot or
+  // no longer matching) and that are still out of it. The models are kept; the scope step asks the
+  // owner to restore the table or revoke or remove the model.
+  left_scope_with_models: ModelOnTable[];
   next_batch: BatchEntry[];
 }
 
@@ -145,19 +189,59 @@ export type Phase =
   | "metrics"
   | "access"
   | "verify"
+  | "connect"
   | "done";
+
+// What a step does, as data: the semlayer command (a key of commands/index.ts), its arguments as semlayer would
+// be given them, and how it is taken: run it; ask the owner first (its arguments may then hold a
+// <placeholder> for what the owner says); or nothing is left (done). `command` of a step and of semlayer
+// next's run is this action printed (actionText); nothing reads a command back from its text.
+export type ActionKind = "run" | "ask_owner" | "done";
+
+export interface StepAction {
+  command: string;
+  args: string[];
+  kind: ActionKind;
+}
+
+export function act(command: string, args: string[], kind: ActionKind = "run"): StepAction {
+  return { command, args, kind };
+}
+
+// An argument as a shell reads it: names, refs, flags and <placeholders> as written, anything else
+// in double quotes.
+function shellArg(a: string): string {
+  return /^[\w@%+=:,./<>|-]+$/.test(a) ? a : `"${a.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
+// The action as the command line it runs: "semlayer <command> <args>".
+export function actionText(a: StepAction): string {
+  return ["semlayer", a.command, ...a.args.map(shellArg)].join(" ");
+}
+
+// The value an action passes for a flag, or undefined.
+export function flagValue(a: StepAction, flag: string): string | undefined {
+  const i = a.args.indexOf(flag);
+  return i >= 0 ? a.args[i + 1] : undefined;
+}
 
 export interface NextStep {
   phase: Phase;
   message: string;
+  // The action printed; see action.
   command: string;
+  action: StepAction;
   source?: string;
-  // True when the command records the owner's approval (sl approve, sl goldens confirm):
-  // it runs only after the owner says yes to its readback.
+  // True when the command records the owner's approval (semlayer approve, semlayer goldens confirm):
+  // it runs only after the owner says yes to its readback. A step that signs items off names
+  // semlayer readback for them until the ledger holds the owner's yes to one as it stands, then semlayer approve.
   after_owner_yes: boolean;
-  // Set when the step waits on the owner rather than on a command: open_questions while access.yaml
-  // holds open questions. command then only explains the current file.
+  // Set when the step waits on the owner: open_questions while access.yaml or a model holds open
+  // questions, whatever the step (on the access step, command then only explains the current file).
   blocked_on?: "open_questions";
+  // Present while a reported source is an export source: the semlayer setup that gives it a connection,
+  // after which the steps waiting on a connection run.
+  connection_upgrade?: string;
 }
 
 // Visible counts for the default audience, and the approved models, fields and metrics hidden from it
@@ -169,12 +253,17 @@ export interface DefaultAudience {
   hidden_by_protected_tags: number;
 }
 
-// A next step before after_owner_yes is derived from its command.
-type Step = Omit<NextStep, "after_owner_yes">;
+// A next step before its command and after_owner_yes are derived from its action.
+type Step = Omit<NextStep, "after_owner_yes" | "command">;
 
-// Whether a command records the owner's approval, so it waits for their yes.
+// Whether a command line records the owner's approval, so it waits for their yes.
 export function needsOwnerYes(command: string): boolean {
-  return /^sl (approve|goldens confirm)(\s|$)/.test(command);
+  return /^semlayer (approve|goldens confirm)(\s|$)/.test(command);
+}
+
+// The same for an action.
+export function actionNeedsYes(a: StepAction): boolean {
+  return a.command === "approve" || (a.command === "goldens" && a.args[0] === "confirm");
 }
 
 export interface ProjectStatus {
@@ -194,18 +283,22 @@ export interface ProjectStatus {
     open_questions: number;
     mode: AccessMode;
     default_audience: DefaultAudience;
-    // Present while access.yaml is a draft that records the approval sl approve --revoke set aside:
+    // Present while access.yaml is a draft that records the approval semlayer approve --revoke set aside:
     // that approved version keeps applying where it is deployed.
     last_approved?: LastApproval;
   };
   // Open questions across the reported sources' models and access.yaml.
   open_questions: number;
-  // Approved items whose content no longer matches the approved_hash sl approve recorded, as approve
+  // Approved items whose content no longer matches the approved_hash semlayer approve recorded, as approve
   // targets (source.model, source.model.field, metric:<name>, access).
   changed_since_approval: string[];
   // Approved items without an approved_hash while other items record one: the hash may have been
   // removed, so each is read back and approved again. Empty while no item records a hash.
   hash_missing: string[];
+  // Approved items and goldens whose owner's latest reply in the ledger is not a yes to them as they
+  // stand (approved before semlayer approve required one), as approve targets and golden:<name>. They stay
+  // approved and never hold a phase open; semlayer next reads them back once every phase is done.
+  approved_without_yes: string[];
   goldens: ApprovalCount;
   // Names of the goldens that are not approved; a golden without a string name goes by its file name.
   draft_goldens: string[];
@@ -294,16 +387,23 @@ function draftGoldenNames(goldens: LoadedGolden[]): string[] {
   });
 }
 
+// The draft metrics that can be read back as metric:<name>; a name semlayer approve cannot target is left
+// to semlayer validate.
+function draftMetricTargets(names: string[]): string[] {
+  return names.filter((n) => /^[a-z][a-z0-9_]*$/.test(n)).map((n) => `metric:${n}`);
+}
+
 function draftFields(m: LoadedModel["model"]): string[] {
   return [...(m.dimensions ?? []), ...(m.measures ?? []), ...(m.joins ?? [])]
     .filter((f) => f.status !== "approved")
     .map((f) => `${m.model}.${f.name}`);
 }
 
-// Whether the CLI can open a live connection for the source, not only emit query plans.
-function liveRunnable(config: SourceConfig): boolean {
-  if (!canRun(config)) return false;
-  return config.dialect === "duckdb" || !!config.connection?.env;
+// Whether the CLI can open a live connection for the source, not only emit query plans. An export
+// source has none, whatever its connection block holds.
+export function liveRunnable(config: SourceConfig): boolean {
+  if (!canRun(config) || intakeMode(config) === "export") return false;
+  return config.dialect === "duckdb" || !!config.connection?.env || config.connection?.env_prefix !== undefined;
 }
 
 // Whether the dimension or measure `field` of a model is approved.
@@ -332,21 +432,21 @@ function refsIn(entries: ApprovalEntry[], state: "changed" | "missing", projectH
 }
 
 // The approval entries of a source's models, fields and joins. A model that cannot be read as a
-// mapping is skipped; sl validate reports it.
+// mapping is skipped; semlayer validate reports it.
 function modelApprovals(source: string, config: SourceConfig, models: LoadedModel["model"][]): ApprovalEntry[] {
   const byName = new Map(models.filter((m) => isRecord(m) && typeof m.model === "string").map((m) => [m.model, m]));
   const dialect = typeof config.dialect === "string" && (DIALECTS as readonly string[]).includes(config.dialect) ? config.dialect : undefined;
-  return [...byName.values()].flatMap((m) => modelEntries(source, m, (name) => byName.get(name), dialect));
+  return itemApprovals(listApprovals({ models: [...byName.values()].map((m) => ({ source, model: m, lookup: (name: string) => byName.get(name), dialect })) }));
 }
 
-// The rule sl validate applies to an expr that is one column: a bare identifier that is not a SQL
+// The rule semlayer validate applies to an expr that is one column: a bare identifier that is not a SQL
 // keyword such as current_date, or a column quoted the way the dialect quotes.
 const BARE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DOUBLE_QUOTED_IDENT = /^"((?:[^"]|"")+)"$/;
 const BACKTICK_IDENT = /^`((?:[^`]|``)+)`$/;
 const SQL_LITERALS = new Set(["true", "false", "null", "current_date", "current_timestamp", "current_time", "now"]);
 
-// Whether `expr` names `column` the way sl validate checks a column reference.
+// Whether `expr` names `column` the way semlayer validate checks a column reference.
 function checkedColumnRef(expr: unknown, column: string, dialect: Dialect): boolean {
   if (typeof expr !== "string") return false;
   const t = expr.trim();
@@ -356,7 +456,7 @@ function checkedColumnRef(expr: unknown, column: string, dialect: Dialect): bool
   return t === column && BARE_IDENT.test(t) && !SQL_LITERALS.has(t.toLowerCase());
 }
 
-// The columns a model's fields read that `table` does not have, limited to what sl validate reports,
+// The columns a model's fields read that `table` does not have, limited to what semlayer validate reports,
 // so that drift clears once validate is clean. A table with no known columns is not checked.
 function fieldMissingColumns(m: LoadedModel["model"], table: SnapshotTable, dialect: Dialect): { field: string; column: string }[] {
   if (!Array.isArray(table.columns) || !table.columns.length) return [];
@@ -405,6 +505,7 @@ function tableNewColumns(
 
 function sourceStatus(root: string, name: string, settings: ProjectStatus["settings"]): SourceReport {
   const config = loadSource(root, name);
+  const scope = effectiveScope(root, config);
   const snapshot = loadSnapshot(root, name);
   const models = listModels(root, name).map((l) => l.model);
   const dims = models.flatMap((m) => m.dimensions ?? []);
@@ -426,11 +527,15 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
       }
       byTable.set(qualifiedName(t).toLowerCase(), m);
       resolved.set(m, t);
-      if (inScope(config.scope, t)) scopedModels.set(m, t);
+      if (inScope(scope, t)) scopedModels.set(m, t);
     }
   }
   const active = models.filter((m) => scopedModels.has(m));
-  const newColumns = tableNewColumns(active, resolved, scopedModels, models, config.dialect);
+  // A column another model reads through a join, or a row filter reads, is in use, not new.
+  const inUse = layerReads(models, accessRowFilters(root, name));
+  const newColumns = tableNewColumns(active, resolved, scopedModels, models, config.dialect).filter(
+    (c) => !inUse.some((r) => r.model === c.model && r.column.toLowerCase() === c.column.toLowerCase()),
+  );
   // A model out of scope is still served, so a column it reads is checked wherever its table is.
   const missing: MissingColumn[] = [];
   const drift: Drift = { columns: [], tables: [] };
@@ -444,8 +549,8 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
   drift.tables = missingTables.filter((x) => approvedModels.has(x.model));
 
   const tables = snapshot?.tables ?? [];
-  const scoped = tables.filter((t) => inScope(config.scope, t));
-  const ranked = rankTables(tables).filter((r) => inScope(config.scope, r.table));
+  const scoped = tables.filter((t) => inScope(scope, t));
+  const ranked = rankTables(tables).filter((r) => inScope(scope, r.table));
   const nextBatch: BatchEntry[] = [];
   for (const r of ranked) {
     if (nextBatch.length >= settings.batch_size) break;
@@ -455,15 +560,32 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
   }
 
   const unmodeled = scoped.filter((t) => !byTable.has(qualifiedName(t).toLowerCase())).map(qualifiedName);
+  // What the last semlayer introspect or semlayer import recorded, as things stand now.
+  const selected = selectionMatcher(config, scope);
+  const byName = new Map(tables.map((t) => [qualifiedName(t), t]));
+  const state = readScopeState(snapshot);
+  const newInScope = (state?.new_in_scope ?? []).filter((n) => {
+    const t = byName.get(n);
+    return !!t && selected(t) && !byTable.has(n.toLowerCase());
+  });
+  const stillOut = (state?.left_scope ?? []).filter((n) => {
+    const t = byName.get(n);
+    return !t || !selected(t);
+  });
   const unprofiled = scoped.filter((t) => profileState(t) !== "yes").map(qualifiedName);
   const partial = scoped.filter((t) => profileState(t) === "partial").map(qualifiedName);
   const unchecked = active.flatMap((m) => (m.joins ?? []).filter((j) => !j.evidence).map((j) => `${m.model}.${j.name}`));
+  const approvedUnchecked = active.flatMap((m) => (m.joins ?? []).filter((j) => !j.evidence && j.status === "approved").map((j) => `${m.model}.${j.name}`));
   const modelCount = count(models);
+  const mode = intakeMode(config);
 
   const status: SourceStatus = {
     source: name,
     dialect: config.dialect,
+    intake_mode: mode,
     runnable: liveRunnable(config),
+    waiting_on_connection: mode === "export" ? waitingSteps(unprofiled.length, unchecked.length, approvedUnchecked.length) : [],
+    approved_joins_without_evidence: approvedUnchecked,
     snapshot: snapshot
       ? {
           method: snapshot.method,
@@ -485,6 +607,7 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
     unmodeled_tables: unmodeled,
     unprofiled_tables: unprofiled,
     partially_profiled_tables: partial,
+    profile_skipped: scoped.flatMap((t) => (t.profile_skipped && profileState(t) !== "yes" ? [{ table: qualifiedName(t), reason: t.profile_skipped.reason }] : [])),
     draft_models: active.filter((m) => m.status !== "approved").map((m) => m.model),
     models_with_draft_fields: active.filter((m) => m.status === "approved" && draftFields(m).length > 0).map((m) => m.model),
     draft_fields: active.flatMap(draftFields),
@@ -492,9 +615,46 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
     new_columns: newColumns,
     missing_columns: missing,
     missing_tables: missingTables,
+    new_in_scope: [...new Set(newInScope)],
+    left_scope_with_models: approvedModelsOn(stillOut, tables, models),
     next_batch: nextBatch,
   };
   return { status, drift, approvals: modelApprovals(name, config, models) };
+}
+
+// The data-dependent steps of an export source, each waiting on a connection.
+function waitingSteps(unprofiled: number, unchecked: number, approvedUnchecked: number): WaitingStep[] {
+  const approved = approvedUnchecked ? `, ${approvedUnchecked} of them approved, which semlayer validate warns on` : "";
+  return [
+    { step: "profiles", message: `profiles: ${unprofiled} in-scope table(s) have no profile, so their values, nulls and key uniqueness are unmeasured` },
+    {
+      step: "join_evidence",
+      message: unchecked
+        ? `join evidence: ${unchecked} join(s) have no evidence of match rate or fan-out${approved}`
+        : "join evidence: no join has evidence of match rate or fan-out; each join drafted waits for it",
+    },
+    { step: "goldens", message: "goldens: a golden's rows come from the data, so none can be run or confirmed (semlayer goldens run and semlayer goldens confirm refuse)" },
+    { step: "drift_from_data", message: "drift from data: semlayer goldens check and refreshed profiles need the data; a new export shows catalog changes only" },
+  ];
+}
+
+// The step that waits on a connection once everything an export source's definitions allow is done.
+function connectStep(s: SourceStatus): Step {
+  return {
+    phase: "connect",
+    source: s.source,
+    message:
+      `Every step the definitions allow is done for "${s.source}", which was set up from a schema export. Waiting on a connection: ` +
+      "profiles, join evidence, goldens and drift from data, so the layer is not done. Ask the owner whether a read-only connection " +
+      "is possible now (semlayer setup --print-role-sql prints a role for their database administrator); with one, upgrade the source with " +
+      "the command below and the waiting steps run.",
+    action: act("setup", ["--source", s.source, "--dialect", s.dialect, ...(s.dialect === "duckdb" ? ["--database", "<path>"] : ["--env", "<VAR>"])], "ask_owner"),
+  };
+}
+
+// --tables with the names when tablesFlag would name them, else nothing.
+function tablesArgs(names: string[]): string[] {
+  return tablesFlag(names) ? ["--tables", names.join(",")] : [];
 }
 
 // The profile step's message: the in-scope tables with no profile, and apart from them those whose
@@ -512,7 +672,34 @@ function profileMessage(s: SourceStatus): string {
   return parts.join(" ");
 }
 
-// Longest open question quoted in a next step; sl access and access.yaml hold the full text.
+// The profile step's message and action. Tables never tried are profiled; once only tables the last
+// run skipped are left, the same run would fail on them again, so a missing permission becomes the
+// question for the owner (a grant, or leaving them out of scope with the reason) and any other
+// reason a retry of just those tables, with what to change named.
+function profileStep(s: SourceStatus): { message: string; action: StepAction } {
+  const skipped = new Map(s.profile_skipped.map((g) => [g.table, g.reason]));
+  const gaps = s.unprofiled_tables.filter((t) => skipped.has(t));
+  if (gaps.length < s.unprofiled_tables.length) return { message: profileMessage(s), action: act("profile", ["--source", s.source]) };
+  const denied = gaps.filter((t) => skipped.get(t) === NO_SELECT_REASON);
+  const other = gaps.filter((t) => skipped.get(t) !== NO_SELECT_REASON);
+  if (other.length) {
+    const why = other.map((t) => `${t} (${skipped.get(t)})`);
+    return {
+      message: `The last semlayer profile run on "${s.source}" skipped ${other.length} in-scope table(s): ${preview(why)}. Make the change each reason names, then profile just those tables again.`,
+      action: act("profile", ["--source", s.source, "--tables", other.join(",")]),
+    };
+  }
+  return {
+    message:
+      `The last semlayer profile run on "${s.source}" could not read ${denied.length} in-scope table(s) (${NO_SELECT_REASON}): ${preview(denied)}. ` +
+      "Running it again fails the same way. Ask the owner whether their database administrator can grant SELECT on them " +
+      `(semlayer setup --print-role-sql --dialect ${s.dialect} --schemas <schemas> prints the grants), then run semlayer profile --source ${s.source} again; ` +
+      "or whether to leave them out of scope, recording the owner's reason with the command below.",
+    action: act("scope", ["--source", s.source, ...denied.flatMap((t) => ["--exclude", t]), "--reason", "<owner's reason>", "--write"], "ask_owner"),
+  };
+}
+
+// Longest open question quoted in a next step; semlayer access and access.yaml hold the full text.
 const QUESTION_WIDTH = 200;
 
 // A question cut at a word boundary to QUESTION_WIDTH characters, ending in … when cut.
@@ -535,7 +722,7 @@ export function preview(names: string[], max = 5): string {
 }
 
 // What nextStep reads beyond the reported status: the drift per source, whether access.yaml parsed
-// to a mapping that sl approve can mark, and why the access evaluator could not read access.yaml as
+// to a mapping that semlayer approve can mark, and why the access evaluator could not read access.yaml as
 // written (null when it could).
 interface StepContext {
   drift: Map<string, Drift>;
@@ -543,6 +730,14 @@ interface StepContext {
   accessProblem: string | null;
   // access.yaml's open questions, top level first, then per role.
   accessQuestions: string[];
+  // The command that signs off the targets: semlayer approve of the first one the owner's latest reply in
+  // the ledger is a yes to as it stands, else semlayer readback of them all.
+  signOff: (refs: string[]) => StepAction;
+  // For each golden of the reported goldens by name, the source its request names.
+  goldenSources: Map<string, string | undefined>;
+  // The typed edits (the words after "semlayer") that declare the roles and user attributes the goldens
+  // name, which access.yaml must define once it exists.
+  goldenAccessEdits: string[][];
 }
 
 const OPEN_BASELINE = "everyone sees every approved model, field and metric except those tagged pii or sensitive";
@@ -554,27 +749,36 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     return {
       phase: "add-source",
       message: "No data sources yet. Ask the owner which database, warehouse or lake to start with.",
-      command: "sl add-source --name <source> --dialect <dialect>",
+      action: act("add-source", ["--name", "<source>", "--dialect", "<dialect>"], "ask_owner"),
     };
   }
 
   const noSnap = sources.find((s) => !s.snapshot);
+  if (noSnap?.intake_mode === "export") {
+    const s = noSnap.source;
+    return {
+      phase: "introspect",
+      source: s,
+      message: `Source "${s}" is an export source with no snapshot. Import its schema export (intake.export.file).`,
+      action: act("import", ["--source", s]),
+    };
+  }
   if (noSnap) {
     const s = noSnap.source;
     return noSnap.runnable
       ? {
           phase: "introspect",
           source: s,
-          message: `Source "${s}" has no snapshot. Introspect it, or import shared schema context with sl import.`,
-          command: `sl introspect --source ${s}`,
+          message: `Source "${s}" has no snapshot. Introspect it, or import shared schema context with semlayer import.`,
+          action: act("introspect", ["--source", s]),
         }
       : {
           phase: "introspect",
           source: s,
           message:
             `Source "${s}" (${noSnap.dialect}) has no snapshot. Emit the introspection plan and run it with your own tool, ` +
-            `or import an information_schema export, dbt manifest or DDL with sl import --source ${s}.`,
-          command: `sl introspect --source ${s} --emit-sql`,
+            `or import an information_schema export, dbt manifest or DDL with semlayer import --source ${s}.`,
+          action: act("introspect", ["--source", s, "--emit-sql"]),
         };
   }
 
@@ -586,8 +790,8 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       source: s,
       message:
         `The snapshot of "${s}" holds no tables. Check that the connection or the imported file covers the schemas the owner means, ` +
-        `then introspect again or import with sl import --source ${s}.`,
-      command: empty.runnable ? `sl introspect --source ${s}` : `sl introspect --source ${s} --emit-sql`,
+        `then introspect again or import with semlayer import --source ${s}.`,
+      action: act("introspect", ["--source", s, ...(empty.runnable ? [] : ["--emit-sql"])]),
     };
   }
 
@@ -614,9 +818,9 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       source: s,
       message:
         `The table changed: ${parts.join(" ")} ` +
-        "Read the affected items back to the owner: revoke each with sl approve --revoke, point it at the column or table that " +
+        "Read the affected items back to the owner: revoke each with semlayer approve --revoke, point it at the column or table that " +
         "replaced it or remove it, and approve it again only after the owner confirms the readback.",
-      command: "sl validate",
+      action: act("validate", []),
     };
   }
 
@@ -635,8 +839,29 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       phase: "reapprove",
       message:
         `${parts.join(" ")} Read each back to the owner as it now stands and approve it again only after they confirm, or restore ` +
-        "the approved definition; sl validate names each one.",
-      command: `sl approve --target ${changed[0] ?? missing[0]} --by "<owner>"`,
+        "the approved definition; semlayer validate names each one. Until then tools treat each one as a draft (semlayer access lists them).",
+      action: ctx.signOff([...changed, ...missing]),
+    };
+  }
+
+  // An approved model whose table left the selection is still served, so the owner decides first
+  // whether it belongs. A table gone from the snapshot opened drift above.
+  const leftScope = sources.find((s) => s.left_scope_with_models.length > 0);
+  if (leftScope) {
+    const s = leftScope.source;
+    const items = leftScope.left_scope_with_models.map((x) => `${x.model} (${x.table})`);
+    const tables = [...new Set(leftScope.left_scope_with_models.map((x) => x.table))];
+    const flag = tablesFlag(tables);
+    return {
+      phase: "scope",
+      source: s,
+      message:
+        `Left scope with approved models: ${preview(items)}. Their tables are no longer selected in "${s}" (by its scope, or by the schemas ` +
+        "intake.schemas lists), but the models are kept and still served. Ask the owner whether each still belongs: to keep it, bring its " +
+        `table back into scope (${flag ? "preview with the command below" : `preview with semlayer scope --source ${s} --tables <table>`}, then add ` +
+        "--write; remove an exclude that matches it with --remove), or restore the pattern or the intake.schemas entry that selected it; " +
+        `otherwise revoke it with semlayer approve --target ${s}.<model> --revoke, or remove its model file.`,
+      action: act("scope", ["--source", s, ...tablesArgs(tables)]),
     };
   }
 
@@ -648,8 +873,8 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       source: s,
       message:
         `The scope of "${s}" selects none of its ${unscoped.snapshot!.tables} tables. Preview the groups and ask the owner again ` +
-        `which schemas, prefixes (fct_*), suffixes (*_daily) or names to focus on, then save it with sl scope --source ${s} --include <pattern> --write.`,
-      command: `sl tables --source ${s} --groups`,
+        `which schemas, prefixes (fct_*), suffixes (*_daily) or names to focus on, then save it with semlayer scope --source ${s} --include <pattern> --write.`,
+      action: act("tables", ["--source", s, "--groups"]),
     };
   }
 
@@ -662,8 +887,8 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       message:
         `Source "${s}" has ${wide.snapshot!.in_scope} tables in scope, more than the focus threshold of ${status.settings.focus_threshold}. ` +
         "Ask the owner which tables to focus on: by schema, prefix (fct_*), suffix (*_daily) or name. Preview the groups, then save " +
-        `the choice with sl scope --source ${s} --include <pattern> --write. To keep them all, raise settings.focus_threshold in semantic.yaml.`,
-      command: `sl tables --source ${s} --groups`,
+        `the choice with semlayer scope --source ${s} --include <pattern> --write. To keep them all, raise settings.focus_threshold in semantic.yaml.`,
+      action: act("tables", ["--source", s, "--groups"]),
     };
   }
 
@@ -673,19 +898,30 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     return {
       phase: "profile",
       source: s,
-      message: profileMessage(unprofiled),
-      command: `sl profile --source ${s}`,
+      ...profileStep(unprofiled),
     };
   }
 
   const unmodeled = sources.find((s) => s.tables_without_model > 0);
   if (unmodeled) {
     const s = unmodeled.source;
+    const fresh = unmodeled.new_in_scope;
+    if (fresh.length) {
+      const others = unmodeled.tables_without_model - fresh.length;
+      return {
+        phase: "draft",
+        source: s,
+        message:
+          `${fresh.length} table(s) in "${s}" are new in scope and have no model: ${preview(fresh)}. Draft them, then interview the owner about them.` +
+          (others > 0 ? ` ${others} other in-scope table(s) have no model either; semlayer status names them next.` : ""),
+        action: act("draft", ["--source", s, ...tablesArgs(fresh)]),
+      };
+    }
     return {
       phase: "draft",
       source: s,
       message: `${unmodeled.tables_without_model} in-scope table(s) in "${s}" have no model: ${preview(unmodeled.unmodeled_tables)}.`,
-      command: `sl draft --source ${s}`,
+      action: act("draft", ["--source", s]),
     };
   }
 
@@ -699,7 +935,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       message:
         `${cols.length} column(s) of modeled tables in "${s}" have no field and are not in ignored_columns: ${preview(cols)}. ` +
         "Draft them as new fields; approved items stay as they are. A column the owner left out on purpose goes in the model's ignored_columns instead.",
-      command: `sl draft --source ${s} --new-columns`,
+      action: act("draft", ["--source", s, "--new-columns"]),
     };
   }
 
@@ -716,8 +952,9 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     const what = batchModels.length
       ? `the next batch in "${s}": ${batchModels.join(", ")}`
       : `the draft models in "${s}": ${preview(drafty.draft_models)}`;
-    // A join is measured before it is read back, so an unchecked join in the batch comes first.
-    const join = drafty.unchecked_joins.find((j) => models.includes(j.split(".")[0]!));
+    // A join is measured before it is read back, so an unchecked join in the batch comes first; an
+    // export source's joins wait on a connection.
+    const join = drafty.intake_mode === "export" ? undefined : drafty.unchecked_joins.find((j) => models.includes(j.split(".")[0]!));
     return {
       phase: "interview",
       source: s,
@@ -725,13 +962,13 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         `Interview the owner about ${what}. Read each dimension, measure and join back in plain English and approve it ` +
         "on its own only after the owner confirms that readback; then settle the model's open questions, grain and key, " +
         "read the model back and approve it once they confirm. Fields the owner leaves for later stay draft and go in the handoff.",
-      command: join
-        ? `sl check-join --source ${s} --model ${join.split(".")[0]} --join ${join.split(".")[1]}`
-        : `sl approve --target ${s}.${target} --by "<owner>"`,
+      action: join
+        ? act("check-join", ["--source", s, "--model", join.split(".")[0]!, "--join", join.split(".")[1]!])
+        : ctx.signOff([...drafty.draft_fields.filter((f) => f.startsWith(`${target}.`)).map((f) => `${s}.${f}`), `${s}.${target}`]),
     };
   }
 
-  const unchecked = sources.find((s) => s.joins_without_evidence > 0);
+  const unchecked = sources.find((s) => s.joins_without_evidence > 0 && s.intake_mode !== "export");
   if (unchecked) {
     const s = unchecked.source;
     const [model, join] = unchecked.unchecked_joins[0]!.split(".");
@@ -739,7 +976,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       phase: "check-join",
       source: s,
       message: `${unchecked.joins_without_evidence} join(s) in "${s}" have no evidence: ${preview(unchecked.unchecked_joins)}.`,
-      command: `sl check-join --source ${s} --model ${model} --join ${join}`,
+      action: act("check-join", ["--source", s, "--model", model!, "--join", join!]),
     };
   }
 
@@ -750,8 +987,13 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       message:
         status.metrics.draft > 0
           ? `${status.metrics.draft} metric(s) in metrics.yaml are drafts. Read them back to the owner and approve what they confirm.`
-          : "No metrics yet. Ask the owner which ratios and derived figures they report, and write them to metrics.yaml as drafts.",
-      command: status.metrics.draft > 0 ? `sl approve --target metric:<name> --by "<owner>"` : "sl validate",
+          : "No metrics yet. Ask the owner which ratios and derived figures they report, and add each as a draft with semlayer add-metric (semlayer add-metric --help lists its flags).",
+      action:
+        status.metrics.draft === 0
+          ? act("add-metric", ["--name", "<metric>", "--type", "ratio|derived"], "ask_owner")
+          : draftMetricTargets(status.draft_metrics).length
+            ? ctx.signOff(draftMetricTargets(status.draft_metrics))
+            : act("validate", []),
     };
   }
 
@@ -762,6 +1004,20 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
   if (access.state !== "approved" || ctx.accessProblem !== null || closedEmpty) {
     const questions = access.open_questions;
     const approved = access.state === "approved" ? "access.yaml is approved, but " : "access.yaml is a draft, and ";
+    if (access.state === "missing" && ctx.goldenAccessEdits.length) {
+      // semlayer set access mode alone is refused while goldens name roles or user attributes it lacks: one
+      // semlayer apply creates the file with them.
+      const edits = [["set", "access", "mode", "<open|closed>"], ...ctx.goldenAccessEdits];
+      return {
+        phase: "access",
+        message:
+          `No access.yaml, so access is open: ${OPEN_BASELINE}. Ask the owner the exceptions question: ${EXCEPTIONS_QUESTION} ` +
+          "The goldens name roles or user attributes, which access.yaml must define, so semlayer set access mode alone is refused. " +
+          `Create it with them in one command: run the command below with this on its standard input, <open|closed> as the owner says: ${JSON.stringify({ edits })}. ` +
+          "Then add the restrictions and tags they name, read it back and approve it once they confirm.",
+        action: act("apply", ["--file", "-"], "ask_owner"),
+      };
+    }
     if (access.state === "missing") {
       return {
         phase: "access",
@@ -769,7 +1025,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
           `No access.yaml, so access is open: ${OPEN_BASELINE}. Ask the owner the exceptions question: ${EXCEPTIONS_QUESTION} ` +
           "Write access.yaml as a draft with mode open (or closed for an allowlist) and the roles, restrictions and tags they name, " +
           "even when there are none, then read it back and approve it once they confirm.",
-        command: "sl validate",
+        action: act("set", ["access", "mode", "open|closed"], "ask_owner"),
       };
     }
     if (!ctx.accessReadable) {
@@ -780,7 +1036,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
           `nobody sees anything, and it has no roles yet. Ask the owner the exceptions question: ${EXCEPTIONS_QUESTION} ` +
           "Write mode open (or closed for an allowlist) and the roles, restrictions and tags they name as a draft, " +
           "then read it back and approve it once they confirm.",
-        command: "sl validate",
+        action: act("validate", []),
       };
     }
     // Open questions wait on the owner's answers: nothing is approved until they are answered.
@@ -789,7 +1045,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       const first = ctx.accessQuestions[0];
       const extra =
         ctx.accessProblem !== null
-          ? ` Also, ${ctx.accessProblem} sl validate names what to fix.`
+          ? ` Also, ${ctx.accessProblem} semlayer validate names what to fix.`
           : closedEmpty
             ? " It is closed and has no roles yet, so nobody sees anything."
             : "";
@@ -801,17 +1057,17 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
           (first ? `; the first: "${shortQuestion(first)}"` : "") +
           `.${extra} Raise the questions with the owner and record their answers; do not push the approval. ` +
           "The owner may approve with remaining questions (notes for tool builders, or ones waiting on someone) named in the whole-file readback. " +
-          "sl access explains what the draft file gives each role meanwhile.",
-        command: "sl access",
+          "semlayer access explains what the draft file gives each role meanwhile.",
+        action: act("access", []),
       };
     }
     if (ctx.accessProblem !== null) {
       return {
         phase: "access",
         message:
-          `${approved}${ctx.accessProblem} Ask the owner what they meant, fix access.yaml until sl validate reports no access issue, ` +
+          `${approved}${ctx.accessProblem} Ask the owner what they meant, fix access.yaml until semlayer validate reports no access issue, ` +
           "then read the mode, every role and every restriction back to them and approve it once they confirm.",
-        command: "sl validate",
+        action: act("validate", []),
       };
     }
     if (closedEmpty) {
@@ -819,8 +1075,8 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         phase: "access",
         message:
           `${access.state === "approved" ? "access.yaml is approved, but it" : "access.yaml"} is closed and has no roles yet, so nobody sees anything. Ask the owner who may see what: roles with allow.models, ` +
-          "row filters and denied fields or tags. Write them as a draft.",
-        command: "sl validate",
+          "row filters and denied fields or tags. Write them as a draft with semlayer add-role.",
+        action: act("add-role", ["--name", "<role>", "--allow-models", "<pattern>"], "ask_owner"),
       };
     }
     if (access.roles === 0 && access.restrictions === 0) {
@@ -829,7 +1085,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         message:
           `access.yaml is open and has no roles yet: ${OPEN_BASELINE}. Ask the owner the exceptions question: ${EXCEPTIONS_QUESTION} ` +
           "Write the roles, restrictions and tags they name as a draft; when there are none, read the open baseline back and approve access.yaml once they confirm.",
-        command: `sl approve --target access --by "<owner>"`,
+        action: ctx.signOff(["access"]),
       };
     }
     return {
@@ -837,20 +1093,39 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       message:
         `access.yaml is a draft in ${access.mode} mode with ${access.roles} role(s) and ${access.restrictions} restriction(s). ` +
         "Read the mode, every role and every restriction back to the owner and approve it once they confirm.",
-      command: `sl approve --target access --by "<owner>"`,
+      action: ctx.signOff(["access"]),
     };
   }
+
+  // Goldens need data: with only export sources, the connection comes first.
+  const exported = sources.find((s) => s.intake_mode === "export");
+  if (exported && sources.every((s) => s.intake_mode === "export")) return connectStep(exported);
 
   const uncovered = status.roles_without_goldens;
   const roleNote = uncovered.length ? ` Roles without an approved golden: ${uncovered.join(", ")}.` : "";
   if (status.goldens.approved < MIN_APPROVED_GOLDENS) {
+    const counts = goldenCounts(status.goldens);
+    const draft = status.draft_goldens.find((n) => /^[a-z][a-z0-9_]*$/.test(n));
+    if (draft) {
+      // A golden on a source semlayer cannot run is read back from a plan of its rows.
+      const src = ctx.goldenSources.get(draft);
+      const planned = !!src && sources.some((s) => s.source === src && !s.runnable);
+      return {
+        phase: "verify",
+        message:
+          `${counts}. Draft golden ${draft} is next: read its rows back to the owner and confirm it once they say yes.` +
+          (planned ? ` semlayer cannot run its source "${src}": write its plan first, store the rows with semlayer results add, then read it back with that plan.` : "") +
+          roleNote,
+        action: planned ? act("goldens", ["run", "--name", draft, "--emit-sql"]) : act("readback", ["--targets", `golden:${draft}`]),
+      };
+    }
     return {
       phase: "verify",
       message:
-        `${status.goldens.approved} of ${MIN_APPROVED_GOLDENS} approved goldens. Ask the owner for questions with known answers, ` +
-        "run each golden and record it once they confirm the rows." +
+        `${counts}. Ask the owner for a question they know the answer to (a figure from a report they trust), write it as a draft golden ` +
+        "with the command below, then read its rows back to them and confirm it once they say yes." +
         roleNote,
-      command: `sl goldens run --name <golden>`,
+      action: act("goldens", ["new", "--name", "<golden>", "--question", "<question>", "--request", "<request>"], "ask_owner"),
     };
   }
 
@@ -864,9 +1139,11 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         `Role ${role} has no approved golden: write and confirm a golden that runs as role ${role} (role: ${role}), ` +
         "reading its rows back to the owner before confirming." +
         (others.length ? ` Then do the same for ${others.map((r) => `role ${r}`).join(", ")}.` : ""),
-      command: `sl goldens run --name <golden>`,
+      action: act("goldens", ["new", "--name", "<golden>", "--role", role, "--question", "<question>", "--request", "<request>"], "ask_owner"),
     };
   }
+
+  if (exported) return connectStep(exported);
 
   // Draft metrics, goldens and fields may stay deliberately: the owner can defer them, and
   // the handoff names each one.
@@ -882,10 +1159,10 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
   return {
     phase: "done",
     message:
-      "Every phase the CLI can measure is complete. Rerun sl validate after any change." +
+      "Every phase the CLI can measure is complete. Rerun semlayer validate after any change." +
       (left.length ? ` Name in the handoff the ${left.join("; ")}.` : "") +
-      " Before the handoff, tick the coverage checklist in references/verification.md; every figure the owner gave needs a golden, draft or approved.",
-    command: "sl validate",
+      " Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.",
+    action: act("validate", [], "done"),
   };
 }
 
@@ -893,7 +1170,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
 // invalid (nothing in it applies and access is closed), or a mode that is not open or closed.
 function accessProblem(v: AccessVisibility): string | null {
   if (v.access_file === "invalid") {
-    return "it cannot be read as written (sl validate names the entry), so nothing in it applies and access is treated as closed: nobody sees anything.";
+    return "it cannot be read as written (semlayer validate names the entry), so nothing in it applies and access is treated as closed: nobody sees anything.";
   }
   const mode = v.skipped.find((s) => s.path === "mode");
   if (mode) return `its mode is unreadable (${mode.message}), so a user sees only what a role's allow.models matches.`;
@@ -919,7 +1196,29 @@ function defaultAudience(v: AccessVisibility, sourceNames: Set<string>): Default
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
-// The layer with every model, field, metric and access.yaml taken as approved, as sl validate
+// The add-attribute and add-role edits for the user attributes and roles the goldens name, each
+// attribute typed from the values the goldens give it (a string or a number, or a list of either).
+function goldenAccessEdits(goldens: { golden: Golden }[]): string[][] {
+  const roles = new Set<string>();
+  const attributes = new Map<string, string>();
+  for (const { golden } of goldens) {
+    if (!isRecord(golden)) continue;
+    if (typeof golden.role === "string" && golden.role) roles.add(golden.role);
+    if (!isRecord(golden.user)) continue;
+    for (const [name, value] of Object.entries(golden.user)) {
+      const list = Array.isArray(value);
+      const first: unknown = list ? value[0] : value;
+      const type = `${typeof first === "number" ? "number" : "string"}${list ? "_list" : ""}`;
+      if (!attributes.has(name)) attributes.set(name, type);
+    }
+  }
+  return [
+    ...[...attributes].sort().map(([name, type]) => ["add-attribute", "--name", name, "--type", type]),
+    ...[...roles].sort().map((name) => ["add-role", "--name", name]),
+  ];
+}
+
+// The layer with every model, field, metric and access.yaml taken as approved, as semlayer validate
 // checks goldens: draft items have their own steps, and this asks only what a role may see.
 function approvedLayer(layer: AccessLayer): AccessLayer {
   const approve = <T>(items: unknown): T[] => (Array.isArray(items) ? items.map((x) => (isRecord(x) ? ({ ...x, status: "approved" } as T) : (x as T))) : []);
@@ -928,6 +1227,7 @@ function approvedLayer(layer: AccessLayer): AccessLayer {
     models: layer.models.map((m) => ({ ...m, status: "approved", dimensions: approve(m.dimensions), measures: approve(m.measures) })),
     metrics: approve<Metric>(layer.metrics),
     access: isRecord(layer.access) ? { ...layer.access, status: "approved" } : layer.access,
+    compare_hashes: false,
   };
 }
 
@@ -979,7 +1279,7 @@ function goldenModels(g: Golden, metrics: Metric[]): string[] {
   return [...out];
 }
 
-// The roles an approved golden runs as, the way sl validate evaluates it: its role (matched without
+// The roles an approved golden runs as, the way semlayer validate evaluates it: its role (matched without
 // letter case) and its user's attributes, so a role whose assign_when the user meets is held, and
 // default_role only when no other role is.
 function goldenRunsAs(layer: AccessLayer, g: Golden): string[] {
@@ -1040,8 +1340,29 @@ function rowFilterJoinsWithoutGoldens(
   return out;
 }
 
+// An approve target's content hash as it now stands and where its approval stands; a golden appears
+// only once approved, hashed over its recorded rows and tolerance.
+export interface TargetState {
+  hash: string;
+  state: Integrity;
+}
+
+// The status with what semlayer next reads beside it: every approve target of the project by ref, and the
+// kind: reply lines of the ledger as semlayer approve reads them (lib/ledger.ts ledgerState): none, with
+// ledger_problem saying why, when semlayer approve would refuse the ledger.
+export interface StatusDetail {
+  status: ProjectStatus;
+  targets: Map<string, TargetState>;
+  replies: LedgerReply[];
+  ledger_problem: string | null;
+}
+
 // Reads the project and every source (or only `only`) and works out where the layer stands.
 export function computeStatus(root: string, only?: string): ProjectStatus {
+  return statusDetail(root, only).status;
+}
+
+export function statusDetail(root: string, only?: string): StatusDetail {
   const project = loadProject(root);
   const settings = projectSettings(project);
   // The default source comes first, so its tables are interviewed first.
@@ -1056,8 +1377,9 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
   const metrics: Metric[] = Array.isArray(metricsFile?.metrics) ? metricsFile.metrics : [];
   const access = loadAccess(root);
   // The approvals of the reported sources' models, fields and joins, their metrics and access.yaml.
-  const allMetricEntries = metricEntries(metrics);
-  const accessEntries = [accessEntry(access)].filter((e): e is ApprovalEntry => !!e);
+  const listed = listApprovals({ metrics, access });
+  const allMetricEntries = itemApprovals(listed).filter((e) => e.kind === "metric");
+  const accessEntries = itemApprovals(listed).filter((e) => e.kind === "access");
   const approvals = [
     ...reports.flatMap((r) => r.approvals),
     ...allMetricEntries.filter((e) => typeof e.item.source === "string" && reported.has(e.item.source)),
@@ -1083,6 +1405,18 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
   const goldenLayer = approvedLayer(loadAccessLayer(root));
   const approvedGoldens = goldens.filter((g): g is Golden => isRecord(g) && g.status === "approved");
   const goldenRoles = new Set(approvedGoldens.flatMap((g) => goldenRunsAs(goldenLayer, g)));
+  const ledger = ledgerState(root);
+  const replies = ledger.replies;
+  const targets = new Map<string, TargetState>();
+  for (const e of [...reports.flatMap((r) => r.approvals), ...allMetricEntries, ...accessEntries]) {
+    if (!targets.has(e.ref)) targets.set(e.ref, { hash: e.hash, state: integrity(e, projectHashed) });
+  }
+  for (const g of listApprovals({ goldens: loadedGoldens })) if (g.kind === "golden" && g.complete && g.status === "approved") targets.set(g.ref, { hash: g.hash, state: "current" });
+  const withoutYes = (refs: string[]) =>
+    refs.filter((ref) => {
+      const t = targets.get(ref);
+      return !!t && (t.state === "current" || t.state === "unhashed") && !currentYes(replies, ref, t.hash);
+    });
 
   const base = {
     project: project.name,
@@ -1102,6 +1436,7 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
     open_questions: sources.reduce((n, s) => n + s.open_questions, accessQuestions),
     changed_since_approval: refsIn(approvals, "changed", projectHashed),
     hash_missing: refsIn(approvals, "missing", projectHashed),
+    approved_without_yes: withoutYes([...approvals.map((e) => e.ref), ...approvedGoldens.map((g) => `golden:${g.name}`)]),
     goldens: count(goldens),
     draft_goldens: draftGoldenNames(loadedGoldens),
     roles_without_goldens: roleNames(access).filter((r) => !goldenRoles.has(r)),
@@ -1112,14 +1447,35 @@ export function computeStatus(root: string, only?: string): ProjectStatus {
     accessReadable: accessState === "missing" || (!!access && typeof access === "object" && !Array.isArray(access)),
     accessProblem: accessProblem(audience),
     accessQuestions: accessQuestionTexts,
+    signOff: (refs) => {
+      const ready = refs.find((ref) => {
+        const t = targets.get(ref);
+        return !!t && !!currentYes(replies, ref, t.hash);
+      });
+      return ready ? act("approve", ["--target", ready]) : act("readback", ["--targets", refs.join(",")]);
+    },
+    goldenAccessEdits: goldenAccessEdits(loadedGoldens),
+    goldenSources: new Map(
+      loadedGoldens.flatMap(({ path, golden }) => {
+        const g: Record<string, unknown> = isRecord(golden) ? golden : {};
+        const name = typeof g.name === "string" && g.name !== "" ? g.name : stem(basename(path));
+        const src = isRecord(g.request) && typeof g.request.source === "string" ? g.request.source : undefined;
+        return [[name, src] as const];
+      }),
+    ),
   });
+  // Open questions in any file, access.yaml or a model, wait on the owner whatever the step: the step
+  // can be taken meanwhile.
+  if (!found.blocked_on && base.open_questions > 0) found.blocked_on = "open_questions";
   // A draft that records the approval a revoke set aside says which version keeps applying.
   if (found.phase === "access" && lastApproved) found.message += ` ${lastApprovedNote(lastApproved)}`;
-  const step: NextStep = { ...found, after_owner_yes: needsOwnerYes(found.command) };
+  const exportSource = sources.find((s) => s.intake_mode === "export");
+  const step: NextStep = { ...found, command: actionText(found.action), after_owner_yes: actionNeedsYes(found.action), ...(exportSource ? { connection_upgrade: upgradeCommand(exportSource.source, exportSource.dialect) } : {}) };
   const batchSource = sources.find((s) => s.source === step.source && s.next_batch.length) ?? sources.find((s) => s.next_batch.length);
-  return {
+  const status: ProjectStatus = {
     ...base,
     next_batch: batchSource ? { source: batchSource.source, tables: batchSource.next_batch } : null,
     next_step: step,
   };
+  return { status, targets, replies, ledger_problem: ledger.problem };
 }

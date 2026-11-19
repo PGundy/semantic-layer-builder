@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "snapshots/<source>.json",
-  "description": "Schema snapshot of one source, written by sl introspect, sl import and sl profile.",
+  "description": "Schema snapshot of one source, written by semlayer introspect, semlayer import and semlayer profile.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -52,6 +52,39 @@
       "description": "Tables sorted by qualified name.",
       "items": {
         "$ref": "#/$defs/table"
+      }
+    },
+    "scope_state": {
+      "type": "object",
+      "description": "The selection semlayer introspect or semlayer import recorded when it wrote the snapshot, as qualified table names (see Scope changes).",
+      "additionalProperties": false,
+      "required": [
+        "in_scope",
+        "new_in_scope",
+        "left_scope"
+      ],
+      "properties": {
+        "in_scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tables in the selection (scope and intake.schemas)."
+        },
+        "new_in_scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tables that entered the selection and have no model yet."
+        },
+        "left_scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tables that left the selection and have an approved model."
+        }
       }
     }
   },
@@ -134,6 +167,26 @@
             "null"
           ],
           "description": "ISO timestamp of the last profile, or null."
+        },
+        "profile_skipped": {
+          "type": "object",
+          "description": "Set when the last semlayer profile run skipped the table; removed when a run profiles it. An earlier profile, if any, is kept.",
+          "additionalProperties": false,
+          "required": [
+            "at",
+            "reason"
+          ],
+          "properties": {
+            "at": {
+              "type": "string",
+              "description": "ISO timestamp of the run that skipped the table."
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Why, in plain words: no SELECT permission, a timeout, an empty sample, or the first line of the database's message."
+            }
+          }
         },
         "columns": {
           "type": "array",
@@ -231,7 +284,7 @@
         },
         "profile": {
           "type": "object",
-          "description": "Statistics written by sl profile.",
+          "description": "Statistics written by semlayer profile.",
           "additionalProperties": false,
           "properties": {
             "null_fraction": {

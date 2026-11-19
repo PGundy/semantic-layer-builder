@@ -1,23 +1,27 @@
-import { relative, resolve } from "node:path";
+import { relative } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 import { bool, list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
+import { droppedText, dropOtherSchemas, intakeSchemas, schemaFilter, schemaListText } from "../lib/intake.ts";
 import { buildSnapshot, snapshotCounts } from "../lib/introspect.ts";
 import { qualifiedName } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
 import { filterInScope } from "../lib/patterns.ts";
-import { executePlan } from "../lib/plan.ts";
-import { listModels, loadProject, loadSnapshot, loadSource, paths, projectSettings, saveSnapshot } from "../lib/project.ts";
-import { changeLines, diffSnapshots, modeledTables, type SnapshotDiff } from "../lib/snapshot-diff.ts";
+import { emitPlan, executePlan, resultsInput } from "../lib/plan.ts";
+import { listModels, loadProject, loadSnapshot, loadSource, paths, projectSettings, saveSnapshot, sortTables } from "../lib/project.ts";
+import { changeLines, diffSnapshots, modeledTables, recordScope, scopeLines, selectionMatcher, type SnapshotDiff, tablesFlag } from "../lib/snapshot-diff.ts";
 import { profileState } from "../lib/status.ts";
 import { introspectionPlan, schemaMatcher } from "../lib/sql/introspection.ts";
+import { effectiveScope } from "../lib/table-list.ts";
 import type { Scope, Snapshot, SnapshotTable, SourceConfig, TableKind } from "../lib/types.ts";
+import type { RoleReport } from "../lib/adapters/index.ts";
+import { roleNote } from "../lib/role-sql.ts";
 
-// Datasets named by scope.include patterns such as "analytics.*", for a BigQuery
-// source introspected without --schemas.
-function scopeSchemas(source: SourceConfig): string[] {
+// Datasets named by include patterns such as "analytics.*", those of the table-list file
+// included, for a BigQuery source introspected without --schemas.
+function scopeSchemas(scope: Scope): string[] {
   const out = new Set<string>();
-  for (const p of source.scope?.include ?? []) {
+  for (const p of scope.include ?? []) {
     if (p.startsWith("re:")) continue;
     const dot = p.lastIndexOf(".");
     if (dot <= 0) continue;
@@ -25,6 +29,40 @@ function scopeSchemas(source: SourceConfig): string[] {
     if (!/[*?]/.test(schema)) out.add(schema);
   }
   return [...out];
+}
+
+export type SchemasFrom = "flag" | "intake" | "scope" | "all";
+
+// The schemas a run reads: --schemas when given, else intake.schemas when it lists any, else (for
+// BigQuery) the datasets the effective scope's includes name (scope.include and the table-list
+// file's entries), else every schema. A --schemas list that differs from intake.schemas gets a
+// note saying so and how to save it.
+export function schemasToRead(
+  source: SourceConfig,
+  given: string[],
+  file: string,
+  scope: Scope,
+): { schemas: string[]; from: SchemasFrom; note?: string } {
+  const saved = intakeSchemas(source);
+  if (given.length) {
+    // The same schemas, as the dialect compares names (Snowflake folds case), are no override.
+    const covers = (a: string[], b: string[]) => b.every(schemaFilter(source, a));
+    if (!saved.length || (covers(given, saved) && covers(saved, given))) return { schemas: given, from: "flag" };
+    return {
+      schemas: given,
+      from: "flag",
+      note:
+        `--schemas (${given.join(", ")}) differs from intake.schemas in ${file} (${saved.join(", ")}); this run reads ${given.join(", ")}. ` +
+        `To read them every time, set intake.schemas in ${file} to [${given.join(", ")}] and run semlayer validate; ` +
+        `to read the saved schemas, run semlayer introspect --source ${source.source} without --schemas.`,
+    };
+  }
+  if (saved.length) return { schemas: saved, from: "intake" };
+  if (source.dialect === "bigquery") {
+    const fromScope = scopeSchemas(scope);
+    if (fromScope.length) return { schemas: fromScope, from: "scope" };
+  }
+  return { schemas: [], from: "all" };
 }
 
 const KIND_WORDS: Record<TableKind, [string, string]> = {
@@ -49,15 +87,11 @@ function countByKind(tables: SnapshotTable[]): Map<TableKind, number> {
   return byKind;
 }
 
-// Names short and plain enough to pass to --tables unquoted.
-const PLAIN_NAME = /^[A-Za-z0-9_.]+$/;
-const MAX_NAMED = 8;
-
 // Counts the in-scope tables that have no row count, by kind, and says how they get one,
-// e.g. "3 views have no row count yet; sl profile measures them." A table profiled before
-// (a view whose row count a re-introspect cleared) is skipped by plain sl profile, so those
-// are named apart with the sl profile --refresh command that measures them. Out-of-scope
-// tables are left out, since sl profile reads in-scope tables only. Null when every
+// e.g. "3 views have no row count yet; semlayer profile measures them." A table profiled before
+// (a view whose row count a re-introspect cleared) is skipped by plain semlayer profile, so those
+// are named apart with the semlayer profile --refresh command that measures them. Out-of-scope
+// tables are left out, since semlayer profile reads in-scope tables only. Null when every
 // in-scope table has a row count.
 export function rowCountNote(snapshot: Snapshot, scope?: Scope): { count: number; note: string } | null {
   const missing = filterInScope(scope, snapshot.tables).filter((t) => typeof t.row_count !== "number");
@@ -67,15 +101,13 @@ export function rowCountNote(snapshot: Snapshot, scope?: Scope): { count: number
   const sentences: string[] = [];
   if (fresh.length) {
     const one = fresh.length === 1;
-    sentences.push(`${kindPhrase(countByKind(fresh))} ${one ? "has" : "have"} no row count yet; sl profile measures ${one ? "it" : "them"}.`);
+    sentences.push(`${kindPhrase(countByKind(fresh))} ${one ? "has" : "have"} no row count yet; semlayer profile measures ${one ? "it" : "them"}.`);
   }
   if (profiled.length) {
     const one = profiled.length === 1;
-    const names = profiled.map(qualifiedName);
-    const tablesFlag = names.length <= MAX_NAMED && names.every((n) => PLAIN_NAME.test(n)) ? ` --tables ${names.join(",")}` : "";
     sentences.push(
       `${kindPhrase(countByKind(profiled))} profiled earlier ${one ? "has" : "have"} no row count; ` +
-        `sl profile --refresh${tablesFlag} measures ${one ? "it" : "them"}.`,
+        `semlayer profile --refresh${tablesFlag(profiled.map(qualifiedName))} measures ${one ? "it" : "them"}.`,
     );
   }
   return { count: missing.length, note: sentences.join(" ") };
@@ -83,7 +115,7 @@ export function rowCountNote(snapshot: Snapshot, scope?: Scope): { count: number
 
 // Whether a diff touches a table one of `models` is built on: a modeled table that gained, lost or
 // retyped columns, or one the new snapshot no longer has. Model files that do not parse count as
-// touched, so the hint sends the agent to sl validate, which names them.
+// touched, so the hint sends the agent to semlayer validate, which names them.
 function touchesModeledTables(diff: SnapshotDiff | null, previous: Snapshot | null | undefined, next: Snapshot, models: () => unknown[]): boolean {
   if (!diff || (!diff.columns.length && !diff.tables_removed.length)) return false;
   let list: unknown[];
@@ -98,75 +130,92 @@ function touchesModeledTables(diff: SnapshotDiff | null, previous: Snapshot | nu
   return diff.columns.some((c) => modeled.has(c.table)) || diff.tables_removed.some((t) => modeled.has(t));
 }
 
-// The hint introspect ends with once the snapshot holds tables and the scope is focused: sl profile
-// while an in-scope table's profile is not complete (profiled_at unset, partial ones included), else
-// sl validate when a modeled table changed, else sl status.
+// The hint introspect ends with once the snapshot holds tables and the scope is focused: semlayer status
+// while the snapshot records approved models that left scope (status's scope step comes before
+// profiling and names what to do), else semlayer profile while an in-scope table's profile is not
+// complete (profiled_at unset, partial ones included), else semlayer validate when a modeled table
+// changed, else semlayer draft for the tables new in scope with no model yet (this run's and earlier
+// ones'), else semlayer status.
 function nextHint(snapshot: Snapshot, scope: Scope | undefined, modeledChanged: boolean): string {
+  if (snapshot.scope_state?.left_scope.length) return "Next: semlayer status";
   const unprofiled = filterInScope(scope, snapshot.tables).filter((t) => profileState(t) !== "yes");
-  if (unprofiled.length) return `Next: sl profile --source ${snapshot.source}`;
-  return modeledChanged ? "Next: sl validate" : "Next: sl status";
+  if (unprofiled.length) return `Next: semlayer profile --source ${snapshot.source}`;
+  if (modeledChanged) return "Next: semlayer validate";
+  const fresh = snapshot.scope_state?.new_in_scope ?? [];
+  return fresh.length ? `Next: semlayer draft --source ${snapshot.source}${tablesFlag(fresh)}` : "Next: semlayer status";
 }
 
 const spec: CommandSpec = {
   summary: "Capture tables, columns, keys and row estimates into the source's snapshot.",
-  usage: "introspect --source <source> [--schemas a,b] [--emit-sql] [--results <file>]",
+  usage:
+    "introspect --source <source> [--schemas a,b] [--emit-sql] [--results <file>] [--plan <plan_id>]\n\n" +
+    "  Reads the schemas in the source file's intake.schemas when it lists any; --schemas reads the given ones instead.",
   options: {
     source: { type: "string" },
     schemas: { type: "string", multiple: true },
     "emit-sql": { type: "boolean" },
     results: { type: "string" },
+    plan: { type: "string" },
   },
+  writes: ({ values }) => (values["emit-sql"] ? "whole" : "late"),
   async run({ values }, ctx) {
     const sourceName = str(values, "source");
     if (!sourceName) throw new UserError("--source is required.");
     const project = loadProject(ctx.root);
     const source = loadSource(ctx.root, sourceName);
-    let schemas = list(values, "schemas");
-    if (!schemas.length && source.dialect === "bigquery") schemas = scopeSchemas(source);
+    const scope = effectiveScope(ctx.root, source);
+    const sourceFile = relative(ctx.cwd, paths(ctx.root).source(source.source));
+    const { schemas, from, note } = schemasToRead(source, list(values, "schemas"), sourceFile, scope);
     const plan = introspectionPlan(source, { schemas });
 
+    const input = resultsInput(ctx, values);
     if (bool(values, "emit-sql")) {
-      ctx.out(formatJson(plan));
+      if (note) ctx.err(note);
+      ctx.out(formatJson(emitPlan(ctx, plan, { name: "introspect", values })));
       return 0;
     }
-    const resultsFile = str(values, "results");
-    const results = await executePlan(plan, {
-      root: ctx.root,
-      source,
-      env: ctx.env,
-      resultsFile: resultsFile ? resolve(ctx.cwd, resultsFile) : undefined,
-    });
+    let roleReport: RoleReport | undefined;
+    const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input, onRoleReport: (r) => (roleReport = r) });
 
+    // The queries ran without the lock: the snapshot is read and written under it.
+    const unlock = await ctx.lock();
     const previous = loadSnapshot(ctx.root, source.source);
     const snapshot = buildSnapshot(source, results, ctx.now().toISOString(), previous);
-    if (schemas.length && previous) {
-      // A run restricted to some schemas leaves the others' tables as they were.
+    // A results file can hold more schemas than this run reads; only theirs are kept.
+    const left = dropOtherSchemas(source, snapshot, schemas);
+    const leftNote = left.tables
+      ? `Left out ${droppedText(left)} that this run does not read: ${schemaListText(left.schemas)}. ` +
+        `To read them, add them to intake.schemas in ${sourceFile} and run semlayer validate, or pass them in --schemas.`
+      : undefined;
+    if ((from === "flag" || from === "scope") && previous) {
+      // A run restricted by --schemas (or a BigQuery scope) leaves other schemas' tables as they
+      // were; one that reads intake.schemas keeps only those schemas' tables.
       const wanted = schemaMatcher(source.dialect, schemas);
       const fresh = new Set(snapshot.tables.map((t) => `${t.schema ?? ""}\u0000${t.name}`));
       for (const t of previous.tables) {
         const k = `${t.schema ?? ""}\u0000${t.name}`;
         if (!wanted(t.schema) && !fresh.has(k)) snapshot.tables.push(t);
       }
-      snapshot.tables.sort((a, b) => `${a.schema ?? ""}.${a.name}`.localeCompare(`${b.schema ?? ""}.${b.name}`));
+      snapshot.tables = sortTables(snapshot.tables);
     }
+    const loadModels = () => listModels(ctx.root, source.source).map((l) => l.model);
+    const scopeChanges = recordScope(previous, snapshot, selectionMatcher(source, scope), loadModels);
     saveSnapshot(ctx.root, snapshot);
-    const changes = previous ? diffSnapshots(previous, snapshot) : null;
+    unlock();
+    const diff = previous ? diffSnapshots(previous, snapshot) : null;
+    const changes = diff && scopeChanges ? { ...diff, ...scopeChanges } : null;
 
     const counts = snapshotCounts(snapshot);
-    const inScope = filterInScope(source.scope, snapshot.tables).length;
+    const inScope = filterInScope(scope, snapshot.tables).length;
     const { focus_threshold } = projectSettings(project);
     const snapshotPath = paths(ctx.root).snapshot(source.source);
-    const unknownRows = rowCountNote(snapshot, source.scope);
+    const unknownRows = rowCountNote(snapshot, scope);
     const next =
       counts.tables === 0
-        ? `No tables found. Check that the connection can read the catalog${schemas.length ? ` and that ${schemas.join(", ")} exist` : ""}.`
+        ? `No tables found. Check that the connection can read the catalog${schemas.length ? ` and that ${schemas.join(", ")} exist` : ""}${from === "intake" ? " (intake.schemas in the source file)" : ""}, then rerun semlayer introspect --source ${source.source}.`
         : inScope > focus_threshold
-          ? `${inScope} tables are in scope, more than the focus threshold of ${focus_threshold}. Run \`sl tables --source ${source.source} --groups\` to pick a focus.`
-          : nextHint(
-              snapshot,
-              source.scope,
-              touchesModeledTables(changes, previous, snapshot, () => listModels(ctx.root, source.source).map((l) => l.model)),
-            );
+          ? `${inScope} tables are in scope, more than the focus threshold of ${focus_threshold}. Run \`semlayer tables --source ${source.source} --groups\` to pick a focus.`
+          : nextHint(snapshot, scope, touchesModeledTables(diff, previous, snapshot, loadModels));
 
     if (ctx.json) {
       ctx.out(
@@ -177,7 +226,12 @@ const spec: CommandSpec = {
           no_row_count: unknownRows?.count ?? 0,
           ...(unknownRows ? { row_count_note: unknownRows.note } : {}),
           snapshot: snapshotPath,
+          schemas,
+          schemas_from: from,
+          ...(note ? { schemas_note: note } : {}),
+          dropped: { tables: left.tables, schemas: left.schemas },
           changes,
+          ...(roleReport ? { role_report: roleReport } : {}),
           next,
         }),
       );
@@ -187,9 +241,12 @@ const spec: CommandSpec = {
           `${counts.primary_keys} primary keys, ${counts.foreign_keys} foreign keys.`,
       );
       ctx.out(`Wrote ${relative(ctx.cwd, snapshotPath) || snapshotPath}.`);
-      const modeled = changes ? modeledTables(snapshot, () => listModels(ctx.root, source.source).map((l) => l.model), source.scope) : undefined;
-      for (const line of changeLines(changes, source.source, modeled)) ctx.out(line);
+      if (note) ctx.out(note);
+      if (leftNote) ctx.out(leftNote);
+      const modeled = diff ? modeledTables(snapshot, loadModels, scope) : undefined;
+      for (const line of [...changeLines(diff, source.source, modeled), ...scopeLines(scopeChanges, source.source, diff?.tables_removed)]) ctx.out(line);
       if (unknownRows) ctx.out(unknownRows.note);
+      if (roleReport && !roleReport.least_privilege) ctx.out(roleNote(source, roleReport));
       ctx.out(next);
     }
     return 0;

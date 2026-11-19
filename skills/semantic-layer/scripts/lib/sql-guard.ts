@@ -65,8 +65,9 @@ export function tokenize(sql: string): Token[] {
       continue;
     }
     if (ch === "-" && sql[i + 1] === "-") {
-      const end = sql.indexOf("\n", i);
-      i = end < 0 ? n : end + 1;
+      // Postgres and DuckDB end a -- comment at a line feed or a carriage return.
+      const end = sql.slice(i).search(/[\n\r]/);
+      i = end < 0 ? n : i + end + 1;
       continue;
     }
     if (ch === "/" && sql[i + 1] === "*") {

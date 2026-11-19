@@ -1,7 +1,8 @@
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
+import { DEMO_NOTE, isDemo } from "../lib/demo.ts";
 import { formatJson } from "../lib/output.ts";
-import { computeStatus, preview, rowFilterJoinItems, type ApprovalCount, type ProjectStatus, type SourceStatus } from "../lib/status.ts";
+import { computeStatus, MIN_APPROVED_GOLDENS, preview, rowFilterJoinItems, type ApprovalCount, type ProjectStatus, type SourceStatus } from "../lib/status.ts";
 
 function ratio(c: ApprovalCount): string {
   return `${c.approved}/${c.approved + c.draft} approved`;
@@ -22,7 +23,8 @@ function audienceLine(st: ProjectStatus): string {
 }
 
 function sourceLines(s: SourceStatus): string[] {
-  const lines = [`${s.source} (${s.dialect}${s.runnable ? "" : ", via query plans"})`];
+  const how = s.intake_mode === "export" ? ", from a schema export" : s.runnable ? "" : ", via query plans";
+  const lines = [`${s.source} (${s.dialect}${how})`];
   if (!s.snapshot) {
     lines.push("  snapshot: none");
     return lines;
@@ -44,6 +46,14 @@ function sourceLines(s: SourceStatus): string[] {
   // Draft fields inside approved models do not block later phases; they are listed for the handoff.
   const approvedDrafts = s.draft_fields.filter((f) => s.models_with_draft_fields.includes(f.split(".")[0]!));
   if (approvedDrafts.length) lines.push(`  draft fields in approved models: ${approvedDrafts.join(", ")}`);
+  if (s.waiting_on_connection.length) {
+    lines.push(`  waiting on a connection: ${s.waiting_on_connection.map((w) => w.step.replace(/_/g, " ")).join(", ")}`);
+    for (const w of s.waiting_on_connection) lines.push(`    ${w.message}`);
+  }
+  if (s.approved_joins_without_evidence.length) {
+    const why = s.intake_mode === "export" ? "their evidence waits on a connection" : "run semlayer check-join";
+    lines.push(`  warning: approved joins without evidence (${why}): ${preview(s.approved_joins_without_evidence, 8)}`);
+  }
   if (s.missing_columns.length) {
     const items = s.missing_columns.map((m) => `${m.model}.${m.field} reads ${m.column}`);
     lines.push(`  missing columns: ${preview(items, 8)}`);
@@ -51,6 +61,10 @@ function sourceLines(s: SourceStatus): string[] {
   if (s.new_columns.length) {
     const items = s.new_columns.map((c) => `${c.model}.${c.column} (${c.type})`);
     lines.push(`  columns without a field: ${preview(items, 8)}`);
+  }
+  if (s.new_in_scope.length) lines.push(`  new in scope, with no model yet: ${preview(s.new_in_scope, 8)}`);
+  if (s.left_scope_with_models.length) {
+    lines.push(`  left scope with approved models: ${preview(s.left_scope_with_models.map((m) => `${m.model} (${m.table})`), 8)}`);
   }
   if (s.missing_tables.length) {
     const items = s.missing_tables.map((m) => `${m.model} (${m.table})`);
@@ -67,11 +81,12 @@ function render(st: ProjectStatus): string {
   const last = st.access.last_approved;
   const lastApproved = last ? `, the version approved by ${last.by} on ${last.at} keeps applying where it is deployed` : "";
   lines.push(
-    `metrics ${ratio(st.metrics)}; access ${st.access.state}${st.access.state === "missing" ? "" : ` (${st.access.roles} role(s)${accessQuestions}${lastApproved})`}; goldens ${ratio(st.goldens)}`,
+    `metrics ${ratio(st.metrics)}; access ${st.access.state}${st.access.state === "missing" ? "" : ` (${st.access.roles} role(s)${accessQuestions}${lastApproved})`}; goldens ${ratio(st.goldens)} (the verify phase needs ${MIN_APPROVED_GOLDENS})`,
   );
   lines.push(audienceLine(st));
   if (st.changed_since_approval.length) lines.push(`changed since approval: ${preview(st.changed_since_approval, 8)}`);
   if (st.hash_missing.length) lines.push(`approved without approved_hash while others carry one: ${preview(st.hash_missing, 8)}`);
+  if (st.approved_without_yes.length) lines.push(`approved without a recorded owner yes (they stay approved): ${preview(st.approved_without_yes, 8)}`);
   if (st.draft_metrics.length) lines.push(`draft metrics: ${st.draft_metrics.join(", ")}`);
   if (st.draft_goldens.length) lines.push(`draft goldens: ${st.draft_goldens.join(", ")}`);
   if (st.roles_without_goldens.length) lines.push(`roles without an approved golden: ${st.roles_without_goldens.join(", ")}`);
@@ -87,11 +102,14 @@ function render(st: ProjectStatus): string {
   lines.push(`Next step (${st.next_step.phase}): ${st.next_step.message}`);
   lines.push(
     st.next_step.blocked_on === "open_questions"
-      ? `  Waiting on the owner's answers to the open questions; meanwhile: ${st.next_step.command}`
+      ? `  Waiting on the owner's answers to the open questions; meanwhile${st.next_step.after_owner_yes ? ", only after the owner says yes to its readback" : ""}: ${st.next_step.command}`
       : st.next_step.after_owner_yes
         ? `  Only after the owner says yes to its readback: ${st.next_step.command}`
         : `  ${st.next_step.command}`,
   );
+  if (st.next_step.connection_upgrade && st.next_step.command !== st.next_step.connection_upgrade) {
+    lines.push(`With a connection, the waiting steps run: ${st.next_step.connection_upgrade}`);
+  }
   return lines.join("\n");
 }
 
@@ -99,8 +117,11 @@ const spec: CommandSpec = {
   summary: "Show progress per source and the next batch of tables to interview.",
   usage: "status [--source <source>]",
   options: { source: { type: "string" } },
+  writes: false,
   async run({ values }, ctx) {
     const st = computeStatus(ctx.root, str(values, "source"));
+    // In the folder semlayer demo made, the next step says so: OWNER.md is the person's, not evidence.
+    if (isDemo(ctx.root)) st.next_step.message = `${st.next_step.message} ${DEMO_NOTE}`;
     ctx.out(ctx.json ? formatJson(st) : render(st));
     return 0;
   },

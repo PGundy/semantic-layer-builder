@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "evals/runs/<run_id>/summary.json",
+  "description": "How an eval run went and why it stopped.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "scenario", "fixture", "intake", "persona", "driver", "budgets", "turns", "skill_turns", "owner_turns", "tokens", "tokens_by_speaker", "stop_reason", "started_at", "finished_at"],
+  "properties": {
+    "run_id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*-\\d{8}T\\d{9}Z$" },
+    "scenario": { "type": "string" },
+    "fixture": { "type": "string" },
+    "intake": { "type": "string" },
+    "persona": { "type": "string" },
+    "driver": { "type": "string" },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_turns", "max_tokens"],
+      "properties": { "max_turns": { "type": "integer" }, "max_tokens": { "type": "integer" } }
+    },
+    "turns": { "type": "integer", "minimum": 0 },
+    "skill_turns": { "type": "integer", "minimum": 0 },
+    "owner_turns": { "type": "integer", "minimum": 0 },
+    "tokens": { "type": "integer", "minimum": 0 },
+    "tokens_by_speaker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["skill", "owner"],
+      "properties": { "skill": { "type": "integer" }, "owner": { "type": "integer" } }
+    },
+    "agents": { "const": "multi", "description": "Present on a multi-agent run, with role_turns, tokens_by_role and interviewer_token_share." },
+    "role_turns": { "type": "integer", "minimum": 0 },
+    "tokens_by_role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interviewer", "connector_runner", "batch_analyst", "readback_verifier", "golden_builder"],
+      "properties": {
+        "interviewer": { "type": "integer" },
+        "connector_runner": { "type": "integer" },
+        "batch_analyst": { "type": "integer" },
+        "readback_verifier": { "type": "integer" },
+        "golden_builder": { "type": "integer" }
+      }
+    },
+    "interviewer_token_share": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "The interviewer's tokens over all agents' tokens, the owner's left out." },
+    "stop_reason": { "enum": ["done", "turn_budget", "token_budget", "error"] },
+    "error": { "type": "string", "description": "Present when stop_reason is error." },
+    "started_at": { "type": "string" },
+    "finished_at": { "type": "string" }
+  }
+}

@@ -5,7 +5,7 @@ import { UserError } from "../skills/semantic-layer/scripts/lib/errors.ts";
 import { errorMessage, executePlan } from "../skills/semantic-layer/scripts/lib/plan.ts";
 import { assertReadOnly } from "../skills/semantic-layer/scripts/lib/sql-guard.ts";
 import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { duckdbSource, initProject, PG_URL, sl, tempRoot } from "./helpers.ts";
+import { duckdbSource, initProject, PG_URL, semlayer, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -89,28 +89,29 @@ describe("database errors are user errors", () => {
     return t;
   }
 
-  test("sl run on duckdb: a SQL error exits 1 with Query failed and no stack", async () => {
+  test("semlayer run on duckdb: a SQL error exits 1 with Query failed and no stack", async () => {
     const t = await project();
-    const r = await sl(t.root, ["run", "--source", "wh", "--sql", "select nope from orders"]);
+    const r = await semlayer(t.root, ["run", "--source", "wh", "--sql", "select nope from orders"]);
     expect(r.code).toBe(1);
-    expect(r.err).toStartWith("sl run: Query failed: ");
+    expect(r.err).toStartWith("semlayer run: Query failed: ");
     expect(r.err).toContain("nope");
     expect(r.err).not.toContain("unexpected error");
     expect(r.err).not.toMatch(/\n\s+at /);
-    const ok = await sl(t.root, ["run", "--source", "wh", "--sql", "select count(*) as n from orders", "--json"]);
+    const ok = await semlayer(t.root, ["run", "--source", "wh", "--sql", "select count(*) as n from orders", "--json"]);
     expect(ok.code).toBe(0);
     expect(ok.json<{ rows: unknown[] }>().rows).toEqual([{ n: 1 }]);
   });
 
-  test.skipIf(!PG_URL)("sl run on postgres: a syntax error exits 1 with Query failed and no stack", async () => {
+  test.skipIf(!PG_URL)("semlayer run on postgres: a syntax error exits 1 with Query failed and no stack", async () => {
     const t = await project();
     writeYaml(join(t.root, "sources", "pg.yaml"), { source: "pg", dialect: "postgres", connection: { env: "PG_URL" } });
-    const r = await sl(t.root, ["run", "--source", "pg", "--sql", "select to_char(now(), 'YYYY') month from"], { PG_URL });
+    const r = await semlayer(t.root, ["run", "--source", "pg", "--sql", "select to_char(now(), 'YYYY') month from"], { PG_URL });
     expect(r.code).toBe(1);
-    // The test server's role is a superuser, so the connection warning comes first.
-    const [warning, error] = r.err.split("\n");
+    // Where the connection came from comes first; the test server's role is a superuser, so its warning is next.
+    const [from, warning, error] = r.err.split("\n");
+    expect(from).toBe('Connection for source "pg": PG_URL from the environment');
     expect(warning).toBe('Warning: source "pg" connects as a superuser. Queries run read-only, but connect with a SELECT-only role.');
-    expect(error).toStartWith("sl run: Query failed: ");
+    expect(error).toStartWith("semlayer run: Query failed: ");
     expect(r.err).toContain("syntax error");
     expect(r.err).not.toContain("unexpected error");
     expect(r.err).not.toContain(PG_URL!);
@@ -178,13 +179,13 @@ describe("timestamptz values render in UTC whatever the process time zone", () =
   const SQL = "select current_setting('TimeZone') as tz, date_trunc('day', created_at) as d, created_at from orders";
   const UTC_ROW = { tz: "UTC", d: "2025-01-01 00:00:00+00", created_at: "2025-01-01 00:30:00+00" };
 
-  test("sl run and executePlan reset the DuckDB client's local offset", async () => {
+  test("semlayer run and executePlan reset the DuckDB client's local offset", async () => {
     const t = await project();
     const { DuckDBTimestampTZValue } = await import("@duckdb/node-api");
     const before = DuckDBTimestampTZValue.timezoneOffsetInMinutes;
     try {
       DuckDBTimestampTZValue.timezoneOffsetInMinutes = -240;
-      const r = await sl(t.root, ["run", "--source", "wh", "--sql", SQL, "--json"]);
+      const r = await semlayer(t.root, ["run", "--source", "wh", "--sql", SQL, "--json"]);
       expect(r.code).toBe(0);
       expect(r.json<{ rows: unknown[] }>().rows).toEqual([UTC_ROW]);
 
@@ -199,7 +200,7 @@ describe("timestamptz values render in UTC whatever the process time zone", () =
 
   test("the CLI under TZ=America/New_York prints +00 values", async () => {
     const t = await project();
-    const cli = join(import.meta.dir, "..", "skills", "semantic-layer", "scripts", "sl.ts");
+    const cli = join(import.meta.dir, "..", "skills", "semantic-layer", "scripts", "semlayer.ts");
     const proc = Bun.spawnSync([process.execPath, cli, "run", "--source", "wh", "--sql", SQL, "--json", "--root", t.root], {
       env: { ...process.env, TZ: "America/New_York" },
       cwd: t.root,

@@ -1,19 +1,15 @@
 // Structural (JSON Schema) and semantic (cross-reference) validation of a semantic root.
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
-import Ajv2020 from "ajv/dist/2020.js";
-import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
-import { parseDocument } from "yaml";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { basename, dirname, join, relative } from "node:path";
 import { type AccessLayer, type AccessVisibility, checkRequest, evaluateLayer, metricMeasureRefs } from "./access.ts";
 import {
   type ApprovalEntry,
-  accessEntry,
   changedMessage,
   holdsHashes,
   integrity,
-  metricEntries,
+  itemApprovals,
+  listApprovals,
   missingMessage,
-  modelEntries,
   pathText,
   UNHASHED_MESSAGE,
 } from "./approval-hash.ts";
@@ -21,14 +17,23 @@ import { classifyType, isNumeric, isTemporal } from "./column-types.ts";
 import { type Condition, conditionAttributes, type Literal, parseCondition } from "./conditions.ts";
 import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
 import { quoteIdent } from "./dialect.ts";
+import { type Env, envFilesInRoot, rootEnvFile, trackedEnvFiles } from "./env-file.ts";
+import { UserError } from "./errors.ts";
+import { intakeIssues, intakeMode, upgradeCommand } from "./intake.ts";
+import { countedReplies, currentYes } from "./ledger.ts";
+import { layerReads, sourceRowFilters } from "./layer-reads.ts";
 import { findTable } from "./naming.ts";
+import { parseYaml } from "./yaml.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
 import { isHashedValue, protectedColumns } from "./profile.ts";
 import { parseRequestField } from "./refs.ts";
+import { type Issue, parserLine, type SchemaKind, schemaIssues } from "./schema.ts";
 import { type Sensitivity, sensitivityOf } from "./sensitivity.ts";
 import { incomingKeyColumns, referencedColumns } from "./snapshot-diff.ts";
 import { sourceSafetyIssues } from "./source-safety.ts";
+import { readSourceTableList, type SourceTableList } from "./table-list.ts";
 import { bareNames, callsRound, dividesByLiteral, type SqlNames, sqlNames, tokenizeSql } from "./sql-names.ts";
+import { readsText, sqlTextProblem, type TextRole, USER_PLACEHOLDER } from "./sql-text.ts";
 import type {
   AccessFile,
   AccessMode,
@@ -42,6 +47,7 @@ import type {
   Join,
   JoinEvidence,
   JoinKey,
+  LedgerReply,
   Measure,
   Metric,
   MetricsFile,
@@ -57,118 +63,9 @@ import type {
 } from "./types.ts";
 import { DIALECTS, PROTECTED_TAGS, PUBLIC_TAG, TIME_GRAINS, TO_ONE_RELATIONSHIPS } from "./types.ts";
 
-export interface Issue {
-  level: "error" | "warning";
-  file: string;
-  path: string;
-  message: string;
-}
-
-export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden"] as const;
-export type SchemaKind = (typeof SCHEMA_KINDS)[number];
-
-export const SCHEMAS_DIR = join(import.meta.dir, "..", "..", "schemas");
-
-let validators: Map<SchemaKind, ValidateFunction> | undefined;
-
-function getValidator(kind: SchemaKind): ValidateFunction {
-  if (!validators) {
-    const ajv = new Ajv2020({ allErrors: true, strictTypes: false, strictTuples: false, verbose: true });
-    ajv.addFormat("date", { type: "string", validate: isCalendarDate });
-    validators = new Map();
-    for (const k of SCHEMA_KINDS) {
-      const schema = JSON.parse(readFileSync(join(SCHEMAS_DIR, `${k}.schema.json`), "utf8")) as object;
-      validators.set(k, ajv.compile(schema));
-    }
-  }
-  return validators.get(kind)!;
-}
-
-// True unless the string has the YYYY-MM-DD shape and names no real day; the shape itself is the schema pattern's job.
-function isCalendarDate(value: string): boolean {
-  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return true;
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  const date = new Date(Date.UTC(y, mo - 1, d));
-  return date.getUTCFullYear() === y && date.getUTCMonth() === mo - 1 && date.getUTCDate() === d;
-}
-
-// Turns a JSON pointer such as /measures/2/agg into measures[2].agg.
-export function dottedPath(pointer: string, child?: string): string {
-  const parts = pointer
-    .split("/")
-    .slice(1)
-    .map((p) => p.replace(/~1/g, "/").replace(/~0/g, "~"));
-  if (child !== undefined) parts.push(child);
-  let out = "";
-  for (const p of parts) out += /^\d+$/.test(p) ? `[${p}]` : out ? `.${p}` : p;
-  return out;
-}
-
-function schemaMessage(e: ErrorObject): { path: string; message: string } | null {
-  const params = e.params as Record<string, unknown>;
-  // A oneOf branch only requires a key; the oneOf error itself says which keys are alternatives.
-  if (/\/oneOf\/\d+\//.test(e.schemaPath)) return null;
-  switch (e.keyword) {
-    case "if":
-      return null;
-    case "oneOf": {
-      const keys = (Array.isArray(e.schema) ? e.schema : []).flatMap((b: { required?: string[] }) => b.required ?? []);
-      if (!keys.length) return { path: dottedPath(e.instancePath), message: e.message ?? e.keyword };
-      const message = params.passingSchemas === null ? `needs one of ${keys.join(", ")}` : `has more than one of ${keys.join(", ")}; give exactly one`;
-      return { path: dottedPath(e.instancePath), message };
-    }
-    case "required":
-      return { path: dottedPath(e.instancePath, String(params.missingProperty)), message: "is required" };
-    case "additionalProperties":
-      return { path: dottedPath(e.instancePath, String(params.additionalProperty)), message: "is not a known property" };
-    case "enum":
-      return { path: dottedPath(e.instancePath), message: `must be one of: ${(params.allowedValues as unknown[]).map(String).join(", ")}` };
-    case "const":
-      return { path: dottedPath(e.instancePath), message: `must be ${JSON.stringify(params.allowedValue)}` };
-    case "false schema":
-      return { path: dottedPath(e.instancePath), message: "is not allowed here" };
-    case "pattern":
-      return { path: dottedPath(e.instancePath), message: `must match ${String(params.pattern)}` };
-    case "format":
-      return { path: dottedPath(e.instancePath), message: "must be a real calendar date (YYYY-MM-DD)" };
-    case "not":
-      return { path: dottedPath(e.instancePath), message: "must be a single value, not a list or object" };
-    default:
-      return { path: dottedPath(e.instancePath), message: e.message ?? e.keyword };
-  }
-}
-
-// Hints added to a schema message, by file kind and property path.
-const SCHEMA_HINTS: Partial<Record<SchemaKind, Record<string, string>>> = {
-  model: {
-    dimensions: "write dimensions: [] when the model has none",
-    measures: "write measures: [] when the model has none",
-  },
-  golden: {
-    "request.metrics":
-      "there is no metrics key: request.measures lists measures as model.measure and metrics by bare name, as in measures: [orders.revenue, average_order_value]",
-  },
-};
-
-// Checks one parsed document against the schema for its kind.
-export function schemaIssues(kind: SchemaKind, data: unknown, file: string): Issue[] {
-  const validate = getValidator(kind);
-  if (validate(data)) return [];
-  const seen = new Set<string>();
-  const out: Issue[] = [];
-  for (const e of validate.errors ?? []) {
-    const m = schemaMessage(e);
-    if (!m) continue;
-    const hint = SCHEMA_HINTS[kind]?.[m.path];
-    if (hint) m.message = `${m.message}; ${hint}`;
-    const key = `${m.path}\0${m.message}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({ level: "error", file, ...m });
-  }
-  return out;
-}
+// The schema check lives in lib/schema.ts, which the loaders share; these names stay importable from here.
+export { dottedPath, EVAL_SCHEMA_KINDS, evalSchemaIssues, SCHEMA_KINDS, SCHEMAS_DIR, schemaIssues } from "./schema.ts";
+export type { EvalSchemaKind, Issue, SchemaKind } from "./schema.ts";
 
 export { callsRound, dividesByLiteral, sqlNames } from "./sql-names.ts";
 
@@ -215,7 +112,6 @@ const BARE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DOUBLE_QUOTED_IDENT = /^"((?:[^"]|"")+)"$/;
 const BACKTICK_IDENT = /^`((?:[^`]|``)+)`$/;
 const SQL_LITERALS = new Set(["true", "false", "null", "current_date", "current_timestamp", "current_time", "now"]);
-const USER_PLACEHOLDER = /\{\{\s*user\.([A-Za-z0-9_]+)\s*\}\}/g;
 const ANY_PLACEHOLDER = /\{\{[^{}]*\}\}/g;
 const METRIC_PLACEHOLDER = /\{([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)\}/g;
 // A join reference written alone, as a hierarchy filter's column: <join>.<column> or <join>.<join>.<column>.
@@ -250,6 +146,16 @@ function usableTable(t: unknown): SnapshotTable | undefined {
   return { ...(t as unknown as SnapshotTable), columns: named<SnapshotTable["columns"][number]>(t.columns) };
 }
 
+// A zoned column's value as wall-clock time in `zone`, in the dialect's SQL: the expr that counts days there.
+function zonedExpr(expr: string, zone: string, dialect: Dialect | undefined): string {
+  const z = `'${zone.replace(/'/g, "''")}'`;
+  const col = expr.trim();
+  if (dialect === "bigquery") return `datetime(${col}, ${z})`;
+  if (dialect === "snowflake") return `convert_timezone(${z}, ${col})`;
+  if (dialect === "databricks") return `from_utc_timestamp(${col}, ${z})`;
+  return `${col} at time zone ${z}`;
+}
+
 // How a source's SQL resolves an identifier against the column names in its snapshot. Folding is
 // enforced only when the snapshot was read from the live catalog, whose names carry the true case.
 interface IdentRules {
@@ -279,7 +185,13 @@ class Validator {
   // The join references of each dimension expr, by source.model.dimension, as checkModels resolved them.
   dimensionRefs = new Map<string, JoinRef[]>();
 
-  constructor(readonly root: string) {}
+  // overrides maps an absolute file path to text read in place of the file's, and removed lists
+  // files read as if they were gone, so an edit can be validated before it is written.
+  constructor(
+    readonly root: string,
+    readonly overrides?: ReadonlyMap<string, string>,
+    readonly removed?: ReadonlySet<string>,
+  ) {}
 
   error(file: string, path: string, message: string): void {
     this.issues.push({ level: "error", file, path, message });
@@ -295,9 +207,10 @@ class Validator {
 
   // The YAML files of a directory paired with their stems. A stem defined by both a .yaml and a
   // .yml file is an error and only the .yaml file is read; a lone .yml file gets a warning because
-  // other sl commands open <stem>.yaml.
+  // other semlayer commands open <stem>.yaml. A file only in overrides is read as if it were written.
   yamlEntries(dir: string): { file: string; stem: string }[] {
-    const files = yamlFiles(dir);
+    const added = [...(this.overrides?.keys() ?? [])].filter((p) => dirname(p) === dir && /\.ya?ml$/.test(p)).map((p) => basename(p));
+    const files = [...new Set([...yamlFiles(dir), ...added])].filter((f) => !this.removed?.has(join(dir, f))).sort();
     const out: { file: string; stem: string }[] = [];
     for (const f of files) {
       const stem = f.replace(/\.ya?ml$/, "");
@@ -306,7 +219,7 @@ class Validator {
           this.error(this.rel(join(dir, f)), "", `${stem} is defined twice (${stem}.yaml and ${f}); delete one`);
           continue;
         }
-        this.warn(this.rel(join(dir, f)), "", `other sl commands read ${stem}.yaml; rename this file`);
+        this.warn(this.rel(join(dir, f)), "", `other semlayer commands read ${stem}.yaml; rename this file`);
       }
       out.push({ file: f, stem });
     }
@@ -316,22 +229,28 @@ class Validator {
   // Reads and schema-checks one file; returns undefined when it cannot be parsed into an object.
   load<T>(abs: string, kind: SchemaKind, stem: string): Loaded<T> | undefined {
     const file = this.rel(abs);
-    const text = readFileSync(abs, "utf8");
+    let text = this.overrides?.get(abs);
+    try {
+      text ??= readFileSync(abs, "utf8");
+    } catch (e) {
+      this.error(file, "", (e as { code?: string }).code === "EISDIR" ? "is a directory, not a file" : `cannot be read (${(e as { code?: string }).code ?? "unknown error"})`);
+      return undefined;
+    }
     let data: unknown;
     if (abs.endsWith(".json")) {
       try {
         data = JSON.parse(text);
       } catch (e) {
-        this.error(file, "", `invalid JSON: ${(e as Error).message.split("\n")[0]!.replace(/:$/, "")}`);
+        this.error(file, "", `invalid JSON: ${parserLine(e)}`);
         return undefined;
       }
     } else {
-      const doc = parseDocument(text);
-      if (doc.errors.length) {
-        this.error(file, "", `invalid YAML: ${doc.errors[0]!.message.split("\n")[0]!.replace(/:$/, "")}`);
+      try {
+        data = parseYaml(text);
+      } catch (e) {
+        this.error(file, "", `invalid YAML: ${parserLine(e)}`);
         return undefined;
       }
-      data = doc.toJS();
     }
     const structural = schemaIssues(kind, data, file);
     this.issues.push(...structural);
@@ -341,7 +260,7 @@ class Validator {
 
   loadAll(): void {
     const projectPath = join(this.root, "semantic.yaml");
-    if (!existsSync(projectPath)) this.error("semantic.yaml", "", "missing: run `sl init --name <name>` to create it");
+    if (!existsSync(projectPath)) this.error("semantic.yaml", "", "missing: run `semlayer init --name <name>` to create it");
     else this.project = this.load<Project>(projectPath, "project", "semantic");
 
     const sourcesDir = join(this.root, "sources");
@@ -353,6 +272,13 @@ class Validator {
     const snapshotsDir = join(this.root, "snapshots");
     if (existsSync(snapshotsDir)) {
       for (const f of readdirSync(snapshotsDir).filter((x) => x.endsWith(".json")).sort()) {
+        // snapshots/<source>.usage.json is the usage evidence semlayer usage add writes (spec: Usage evidence).
+        if (f.endsWith(".usage.json")) {
+          const stem = f.replace(/\.usage\.json$/, "");
+          const l = this.load<{ source?: unknown }>(join(snapshotsDir, f), "usage", stem);
+          if (l && l.data.source !== stem) this.error(l.file, "source", `is "${String(l.data.source)}" but the file is ${f}; run semlayer usage clear --source ${stem} and add the files again`);
+          continue;
+        }
         const stem = f.replace(/\.json$/, "");
         const l = this.load<Snapshot>(join(snapshotsDir, f), "snapshot", stem);
         if (l) this.snapshots.set(stem, l);
@@ -379,9 +305,11 @@ class Validator {
     }
 
     const metricsPath = join(this.root, "metrics.yaml");
-    if (existsSync(metricsPath)) this.metrics = this.load<MetricsFile>(metricsPath, "metrics", "metrics");
+    // A metrics.yaml only in overrides is read as if it were written (semlayer add-metric creates one).
+    if (existsSync(metricsPath) || this.overrides?.has(metricsPath)) this.metrics = this.load<MetricsFile>(metricsPath, "metrics", "metrics");
     const accessPath = join(this.root, "access.yaml");
-    this.accessPresent = existsSync(accessPath);
+    // An access.yaml only in overrides is read as if it were written (semlayer set access mode creates one).
+    this.accessPresent = existsSync(accessPath) || !!this.overrides?.has(accessPath);
     if (this.accessPresent) this.access = this.load<AccessFile>(accessPath, "access", "access");
 
     const goldensDir = join(this.root, "goldens");
@@ -389,6 +317,62 @@ class Validator {
       const l = this.load<Golden>(join(goldensDir, f), "golden", stem);
       if (l) this.goldens.push(l);
     }
+
+    // Readbacks semlayer readback stored, waiting for the owner: their structure, and an id equal to the file name.
+    const pendingDir = join(this.root, ".semlayer", "pending");
+    if (existsSync(pendingDir)) {
+      for (const f of readdirSync(pendingDir).filter((x) => x.endsWith(".json")).sort()) {
+        const l = this.load<{ readback_id?: unknown }>(join(pendingDir, f), "pending", f.replace(/\.json$/, ""));
+        if (l?.valid && l.data.readback_id !== l.stem)
+          this.error(l.file, "readback_id", `is "${String(l.data.readback_id)}" but the file is ${f}; the id equals the file name, so run semlayer readback again instead of renaming`);
+      }
+    }
+
+    // JSON review forms semlayer review export wrote: their structure.
+    const reviewsDir = join(this.root, ".semlayer", "reviews");
+    if (existsSync(reviewsDir)) {
+      for (const f of readdirSync(reviewsDir).filter((x) => x.endsWith(".json")).sort()) this.load(join(reviewsDir, f), "review", f.replace(/\.json$/, ""));
+    }
+    this.checkLedger();
+  }
+
+  // The answer ledger, .semlayer/ledger.jsonl: every line a JSON object matching schemas/ledger.schema.json,
+  // the last one ending in a line break, and ids that only go up. Append-only cannot be checked, but
+  // a reused or out-of-order id shows a line that was edited, moved or copied.
+  checkLedger(): void {
+    const abs = join(this.root, ".semlayer", "ledger.jsonl");
+    if (!existsSync(abs)) return;
+    const file = this.rel(abs);
+    const fix = "the ledger is append-only: restore it from version control (git checkout -- .semlayer/ledger.jsonl)";
+    // semlayer approve reads only a plain file inside the root, so a link is refused there (lib/ledger.ts readReplies).
+    if (!lstatSync(dirname(abs)).isDirectory() || !lstatSync(abs).isFile()) {
+      return this.error(file, "", `is not a plain file inside the semantic root (it or its .semlayer directory is a link), so semlayer approve refuses it; replace the link with the file it points to, or ${fix}`);
+    }
+    const text = this.overrides?.get(abs) ?? readFileSync(abs, "utf8");
+    if (text && !text.endsWith("\n")) this.error(file, "", `the last line has no line break, as when an append is cut off; ${fix}`);
+    const seen = new Map<string, number>();
+    let last: { id: string; n: number } | undefined;
+    const lines = text.split("\n");
+    lines.forEach((line, i) => {
+      const at = `line ${i + 1}`;
+      if (!line && i === lines.length - 1) return;
+      let data: unknown;
+      try {
+        data = JSON.parse(line);
+      } catch (e) {
+        return this.error(file, at, `is not valid JSON (${parserLine(e)}); ${fix}`);
+      }
+      const issues = schemaIssues("ledger", data, file);
+      for (const issue of issues) this.issues.push({ ...issue, path: issue.path ? `${at} ${issue.path}` : at });
+      const id = isObject(data) && typeof data.id === "string" ? data.id : undefined;
+      const m = id ? /^ans_(\d{4,})$/.exec(id) : null;
+      if (!id || !m) return;
+      const first = seen.get(id);
+      if (first !== undefined) this.error(file, at, `id ${id} is used again (first on line ${first}); ${fix}`);
+      else if (last && Number(m[1]) <= last.n) this.error(file, at, `id ${id} comes after ${last.id}; ids go up line by line, so ${fix}`);
+      seen.set(id, seen.get(id) ?? i + 1);
+      if (!last || Number(m[1]) > last.n) last = { id, n: Number(m[1]) };
+    });
   }
 
   // Lookups ------------------------------------------------------------------
@@ -409,6 +393,23 @@ class Validator {
       this.tablesCache.set(source, tables);
     }
     return tables;
+  }
+
+  namesCache = new Map<string, Set<string>>();
+
+  // The names SQL could use for a table of the source: its snapshot's table and schema names,
+  // lower case, and its models' names. Built once per source.
+  tableNames(source: string): Set<string> {
+    let names = this.namesCache.get(source);
+    if (names) return names;
+    names = new Set<string>();
+    for (const t of this.snapshotTables(source) ?? []) {
+      names.add(t.name.toLowerCase());
+      if (t.schema) names.add(t.schema.toLowerCase());
+    }
+    for (const name of this.models.get(source)?.keys() ?? []) names.add(name);
+    this.namesCache.set(source, names);
+    return names;
   }
 
   snapshotTable(source: string, table: string): { snapshot: boolean; table?: SnapshotTable } {
@@ -441,7 +442,7 @@ class Validator {
   }
 
   // source.model for every model file, from its path (models/<source>/<model>.yaml), which is how
-  // every lookup and every other sl command finds a model.
+  // every lookup and every other semlayer command finds a model.
   allModelRefs(): string[] {
     const refs: string[] = [];
     for (const [source, byName] of this.models) for (const name of byName.keys()) refs.push(`${source}.${name}`);
@@ -477,6 +478,28 @@ class Validator {
         if (typeof relation === "string" && hasCredential("view", relation)) flag(`connection.views.${name}`, "view");
   }
 
+  // Errors when a source's table-list file is outside the root or missing, and on each of its
+  // entries that is not a usable pattern, at its line and character.
+  checkTablesFile(file: string, source: string, rel: string): void {
+    let list: SourceTableList;
+    try {
+      list = readSourceTableList(this.root, rel);
+    } catch (e) {
+      if (!(e instanceof UserError)) throw e;
+      this.error(file, "scope.tables_file", e.message);
+      return;
+    }
+    if (!list.exists) {
+      this.error(
+        file,
+        "scope.tables_file",
+        `names ${rel}, which does not exist; import a table-list file with \`semlayer scope --source ${source} --from-file <path> --write\`, or remove scope.tables_file`,
+      );
+      return;
+    }
+    for (const p of list.problems) this.error(this.rel(list.path), `line ${p.line}, character ${p.column}`, p.message);
+  }
+
   checkSources(): void {
     for (const [stem, l] of this.sources) {
       this.checkSourceCredentials(l);
@@ -492,6 +515,13 @@ class Validator {
           if (problem) this.error(l.file, `scope.${key}[${i}]`, problem);
         });
       }
+      // A tables_file that is not a string is already a schema error.
+      if (typeof s.scope?.tables_file === "string") this.checkTablesFile(l.file, s.source, s.scope.tables_file);
+      for (const x of intakeIssues(s, this.root)) this.issues.push({ level: x.level, file: l.file, path: x.path, message: x.message });
+      if (s.connection?.env !== undefined && s.connection.env_prefix !== undefined) {
+        this.error(l.file, "connection", `has both env and env_prefix; a source names one variable that holds the URL or a prefix for the parts, not both: keep one (semlayer setup --source ${s.source} --dialect ${s.dialect} --env <VAR> or --env-prefix <PREFIX> writes it)`);
+      }
+      if (s.connection?.env_prefix !== undefined && s.dialect !== "postgres") this.warn(l.file, "connection.env_prefix", `is used only by postgres sources, not ${s.dialect}`);
       if (s.dialect !== "duckdb") {
         for (const key of ["database", "setup", "views"] as const)
           if (s.connection?.[key] !== undefined) this.warn(l.file, `connection.${key}`, `is used only by duckdb sources, not ${s.dialect}`);
@@ -542,13 +572,24 @@ class Validator {
   }
 
   // Errors when a physical column name (a join key or primary key entry) is not a column of the
-  // table: an exact match first, then a case-insensitive one, as sl check-join resolves keys.
+  // table: an exact match first, then a case-insensitive one, as semlayer check-join resolves keys.
   checkColumnName(file: string, path: string, name: string | undefined, table: SnapshotTable | undefined): void {
     if (!table || !table.columns.length || typeof name !== "string") return;
     if (table.columns.some((c) => c.name === name)) return;
     if (table.columns.some((c) => c.name.toLowerCase() === name.toLowerCase())) return;
     const hint = /^(".*"|`.*`)$/.test(name.trim()) ? "; write the column name without quotes" : "";
     this.error(file, path, `"${name}" is not a column of ${qualified(table)}${hint}`);
+  }
+
+  // Errors when a dimension or measure expr or a measure filter is not one expression the compiler can
+  // place in a query: an unclosed string or comment, unbalanced parentheses, a parameter marker, a
+  // semicolon or a {{ }} placeholder (lib/sql-text.ts). Checked on the dialects sql-guard's
+  // tokenizer reads (postgres, duckdb, or a source of unknown dialect). Returns whether it reported one.
+  checkText(file: string, path: string, text: unknown, role: TextRole, rules: IdentRules): boolean {
+    if (typeof text !== "string" || !readsText(rules.dialect)) return false;
+    const problem = sqlTextProblem(text, role);
+    if (problem) this.error(file, path, problem);
+    return problem !== undefined;
   }
 
   // Checks the tables and join references an expr, filter or row filter names, and returns the join
@@ -569,12 +610,7 @@ class Validator {
     const own = table?.columns.length ? table.columns : undefined;
     const isOwn = (name: string) => !!own?.some((c) => c.name.toLowerCase() === name.toLowerCase());
     const joins = named<Join>(model.joins);
-    const otherTables = new Set<string>();
-    for (const t of this.snapshotTables(model.source) ?? []) {
-      otherTables.add(t.name.toLowerCase());
-      if (t.schema) otherTables.add(t.schema.toLowerCase());
-    }
-    for (const name of this.models.get(model.source)?.keys() ?? []) otherTables.add(name);
+    const otherTables = this.tableNames(model.source);
     const seen = new Set<string>();
     const report = (level: Issue["level"], message: string) => {
       if (seen.has(message)) return;
@@ -752,7 +788,7 @@ class Validator {
         const p = `dimensions[${i}]`;
         claim(d.name, p);
         this.checkColumnRef(f, `${p}.expr`, d.expr, table, rules);
-        const refs = this.checkSqlRefs(f, `${p}.expr`, d.expr, m, "dimension expr");
+        const refs = this.checkText(f, `${p}.expr`, d.expr, "dimension expr", rules) ? [] : this.checkSqlRefs(f, `${p}.expr`, d.expr, m, "dimension expr");
         if (refs.length) this.dimensionRefs.set(`${m.source}.${m.model}.${d.name}`, refs);
         if (d.time_grains && d.type !== "time") this.error(f, `${p}.time_grains`, `is only allowed on time dimensions, not ${d.type}`);
         if (d.time_zone !== undefined) this.checkTimeZone(f, `${p}.time_zone`, d, table, rules);
@@ -762,10 +798,10 @@ class Validator {
         const p = `measures[${i}]`;
         claim(x.name, p);
         this.checkColumnRef(f, `${p}.expr`, x.expr, table, rules);
-        this.checkSqlRefs(f, `${p}.expr`, x.expr, m, "measure expr");
+        if (!this.checkText(f, `${p}.expr`, x.expr, "measure expr", rules)) this.checkSqlRefs(f, `${p}.expr`, x.expr, m, "measure expr");
         if (rules.dialect === "duckdb" && typeof x.expr === "string" && dividesByLiteral(x.expr, rules.dialect))
           this.warn(f, `${p}.expr`, 'divides by a numeric literal; on duckdb "/ 100.0" gives a DOUBLE, so write <col> * 0.01 for an exact amount; this warning never stands');
-        this.checkSqlRefs(f, `${p}.filter`, x.filter, m, "measure filter");
+        if (!this.checkText(f, `${p}.filter`, x.filter, "measure filter", rules)) this.checkSqlRefs(f, `${p}.filter`, x.filter, m, "measure filter");
         if (x.status === "approved" && !x.description) this.error(f, `${p}.description`, "is required on an approved measure");
         this.checkCurrency(f, p, x.format, x.currency, x.status);
       });
@@ -790,18 +826,24 @@ class Validator {
         } else if (ev && ev.suggested_relationship !== j.relationship) {
           this.warn(f, `${p}.relationship`, `is ${j.relationship} but the evidence suggests ${ev.suggested_relationship}`);
         }
-        if (j.status === "approved" && !ev) this.warn(f, p, "is approved without evidence; run `sl check-join`");
+        if (j.status === "approved" && !ev) {
+          const src = this.sources.get(m.source)?.data;
+          // Decision D2: an export source may approve a join, which carries this warning until a connection measures it.
+          if (src && intakeMode(src) === "export") {
+            this.warn(f, p, `is approved without evidence, and source ${m.source} is a schema export, so its evidence waits on a connection: ${upgradeCommand(m.source, src.dialect)}, then \`semlayer check-join\``);
+          } else this.warn(f, p, "is approved without evidence; run `semlayer check-join`");
+        }
         // Evidence measured for another target or other keys no longer describes the join; evidence
         // without them predates their recording and is taken as current.
         const staleTo = ev?.to !== undefined && ev.to !== j.to;
         const staleKeys = Array.isArray(ev?.keys) && keySignature(ev.keys) !== keySignature(j.keys);
         if (staleTo)
-          this.warn(f, `${p}.evidence.to`, `the evidence was measured for a join to ${ev!.to}, but the join now goes to ${j.to}; run \`sl check-join\` again`);
+          this.warn(f, `${p}.evidence.to`, `the evidence was measured for a join to ${ev!.to}, but the join now goes to ${j.to}; run \`semlayer check-join\` again`);
         if (staleKeys)
           this.warn(
             f,
             `${p}.evidence.keys`,
-            `the evidence was measured on keys ${describeKeys(ev!.keys!)}, but the join's keys are now ${describeKeys(j.keys)}; run \`sl check-join\` again`,
+            `the evidence was measured on keys ${describeKeys(ev!.keys!)}, but the join's keys are now ${describeKeys(j.keys)}; run \`semlayer check-join\` again`,
           );
         // An approved to-one join whose current evidence shows fan-out multiplies every measure a
         // request reaches through it, unless the owner recorded why the data may be trusted.
@@ -824,17 +866,17 @@ class Validator {
             f,
             `${p}.evidence`,
             `is approved as ${j.relationship}, but its evidence contradicts that: ${why.join(", and ")}, so the join fans out and multiplies ` +
-              `the measures of ${m.model}; fix the keys or the relationship and run sl check-join again, or record why the owner accepts the data ` +
+              `the measures of ${m.model}; fix the keys or the relationship and run semlayer check-join again, or record why the owner accepts the data ` +
               'in fanout_override: "<reason>"',
           );
         }
       });
       const source = m.source;
-      this.checkApprovals(f, modelEntries(source, m, (name) => this.model(source, name), this.sourceDialect(source)));
+      this.checkApprovals(f, itemApprovals(listApprovals({ models: [{ source, model: m, lookup: (name) => this.model(source, name), dialect: this.sourceDialect(source) }] })));
     }
   }
 
-  // The dialect a source file names, as sl approve reads it when it records an approval's hash.
+  // The dialect a source file names, as semlayer approve reads it when it records an approval's hash.
   sourceDialect(source: string): Dialect | undefined {
     const d = this.sources.get(source)?.data.dialect;
     return isDialect(d) ? d : undefined;
@@ -844,30 +886,41 @@ class Validator {
   projectHashedCache?: boolean;
   projectHashed(): boolean {
     if (this.projectHashedCache !== undefined) return this.projectHashedCache;
-    const entries: ApprovalEntry[] = [];
-    for (const l of this.modelList) if (isObject(l.data)) entries.push(...modelEntries(String(l.data.source), l.data, () => undefined));
-    if (isObject(this.metrics?.data)) entries.push(...metricEntries(this.metrics.data.metrics));
-    const access = accessEntry(this.access?.data);
-    if (access) entries.push(access);
-    this.projectHashedCache = holdsHashes(entries);
+    const models = this.modelList.filter((l) => isObject(l.data)).map((l) => ({ source: String(l.data.source), model: l.data, lookup: () => undefined }));
+    const metrics = isObject(this.metrics?.data) ? this.metrics.data.metrics : undefined;
+    this.projectHashedCache = holdsHashes(itemApprovals(listApprovals({ models, metrics, access: this.access?.data })));
     return this.projectHashedCache;
+  }
+
+  // The kind: reply lines of .semlayer/ledger.jsonl; checkLedger reports the lines it cannot read.
+  repliesCache?: LedgerReply[];
+  replies(): LedgerReply[] {
+    if (this.repliesCache) return this.repliesCache;
+    const abs = join(this.root, ".semlayer", "ledger.jsonl");
+    const text = this.overrides?.get(abs) ?? (existsSync(abs) && statSync(abs).isFile() ? readFileSync(abs, "utf8") : "");
+    this.repliesCache = countedReplies(text).replies;
+    return this.repliesCache;
   }
 
   // Errors on an approved item whose content no longer matches its approved_hash. Warns once per file
   // when approved items carry no hash and no item of the project records one (approved before
   // content hashes), and on each approved item without a hash once other items record one, since
-  // its hash may have been removed.
+  // its hash may have been removed. Warns once per file, too, on approved items whose owner's latest
+  // reply in the ledger is not a yes to them as they stand (approved before semlayer approve required one).
   checkApprovals(file: string, entries: ApprovalEntry[]): void {
     let unhashed = 0;
+    const unanswered: string[] = [];
     const hashed = this.projectHashed();
     for (const e of entries) {
       const state = integrity(e, hashed);
       if (state === "changed") this.error(file, pathText(e.path), changedMessage(e));
       else if (state === "missing") this.warn(file, pathText(e.path), missingMessage(e));
       else if (state === "unhashed") unhashed++;
+      if (state !== "draft" && state !== "changed" && !currentYes(this.replies(), e.ref, e.hash)) unanswered.push(e.ref);
     }
     if (unhashed)
       this.warn(file, "", `${unhashed} approved item${unhashed === 1 ? " was" : "s were"} ${UNHASHED_MESSAGE}`);
+    if (unanswered.length) this.warn(file, "", unansweredMessage(unanswered));
   }
 
   // A time dimension's time_zone: an IANA zone, and only for values stored without a zone. When the
@@ -888,12 +941,14 @@ class Validator {
         f,
         path,
         `names the zone timestamps without a time zone are stored in, but column ${col.name} is ${col.type}, which carries its own; ` +
-          "remove time_zone, and convert in expr to bucket days in another zone",
+          `remove time_zone, and to count days in ${zone} write the expr as ${zonedExpr(d.expr as string, zone, rules.dialect)} ` +
+          "(without it, days are counted in UTC when semlayer runs the query)",
       );
   }
 
   // Warns when ignored_columns names a column the table lacks (when the snapshot has the table), or
-  // a column a field, a join key, the primary key or another model's join to this one reads.
+  // a column a field, a join key, the primary key or another model's join to this one reads, or
+  // another model's field through a join, or a row filter of access.yaml (lib/layer-reads.ts).
   checkIgnoredColumns(f: string, m: Model, table: SnapshotTable | undefined, rules: IdentRules): void {
     const ignored = strings(m.ignored_columns);
     if (!ignored.length) return;
@@ -903,15 +958,21 @@ class Validator {
           this.warn(f, `ignored_columns[${i}]`, `"${c}" is not a column of ${qualified(table)}; remove it from ignored_columns`);
       });
     const listed: SnapshotTable = { schema: null, name: m.model, kind: "table", columns: ignored.map((name) => ({ name, type: "" })) };
-    const incoming = incomingKeyColumns(m, [...(this.models.get(m.source)?.values() ?? [])].map((x) => x.data));
+    const models = [...(this.models.get(m.source)?.values() ?? [])].map((x) => x.data);
+    const incoming = incomingKeyColumns(m, models);
     const used = new Set(referencedColumns(m, listed, rules.dialect, incoming));
+    const elsewhere = layerReads(models, sourceRowFilters(this.access?.data, m.source)).filter((r) => r.model === m.model);
     ignored.forEach((c, i) => {
+      const back = `take it back in with semlayer ignore-column --source ${m.source} --model ${m.model} --column ${c} --remove`;
+      const other = elsewhere.find((r) => r.column.toLowerCase() === c.toLowerCase());
       if (used.has(c))
         this.warn(
           f,
           `ignored_columns[${i}]`,
-          `"${c}" is read by a field, a join key, the primary key of model ${m.model} or a join from another model, so it is not left out; remove it from ignored_columns`,
+          `"${c}" is read by a field, a join key, the primary key of model ${m.model} or a join from another model, so it is not left out; ${back}`,
         );
+      else if (other)
+        this.warn(f, `ignored_columns[${i}]`, `"${c}" is read by ${other.by}${other.by.startsWith("a row filter") ? "" : " through a join"}, so it is not left out; ${back}`);
     });
   }
 
@@ -948,7 +1009,9 @@ class Validator {
         for (const match of m.expr.matchAll(METRIC_PLACEHOLDER)) refs.push({ path: `${p}.expr`, model: match[1]!, measure: match[2]! });
         if (!refs.length) this.error(f, `${p}.expr`, "has no {model.measure} placeholder");
         const rest = m.expr.replace(METRIC_PLACEHOLDER, "");
-        if (!/^[\s\d.+\-*/()]*$/.test(rest)) this.error(f, `${p}.expr`, "may combine {model.measure} placeholders with numbers and + - * / ( ) only");
+        const textProblem = sqlTextProblem(m.expr, "metric expr");
+        if (textProblem) this.error(f, `${p}.expr`, textProblem);
+        else if (!/^[\s\d.+\-*/()]*$/.test(rest)) this.error(f, `${p}.expr`, "may combine {model.measure} placeholders with numbers and + - * / ( ) only");
       }
       for (const r of refs) {
         const measure = this.measure(m.source, r.model, r.measure);
@@ -960,7 +1023,7 @@ class Validator {
         }
       }
     });
-    this.checkApprovals(f, metricEntries(l.data.metrics));
+    this.checkApprovals(f, itemApprovals(listApprovals({ metrics: l.data.metrics })));
   }
 
   // Resolves source.model.field to a dimension or measure.
@@ -1049,6 +1112,8 @@ class Validator {
           const [source, name] = rf.model.split(".") as [string, string];
           this.checkSqlRefs(f, `${rp}.expr`, expr, this.model(source, name)!, "row filter");
         }
+        const textProblem = sqlTextProblem(expr, "row filter");
+        if (textProblem) this.error(f, `${rp}.expr`, textProblem);
         for (const match of expr.matchAll(USER_PLACEHOLDER))
           if (!attrs.has(match[1]!)) this.error(f, `${rp}.expr`, `{{ user.${match[1]} }} names an undeclared user attribute`);
         const rest = expr.replace(USER_PLACEHOLDER, "");
@@ -1061,8 +1126,8 @@ class Validator {
       this.checkChildTables(r, p, mode);
     });
     this.checkRestrictions(f, arr<Restriction>(a.restrictions), roleNames, attrs);
-    const entry = accessEntry(a);
-    if (entry) this.checkApprovals(f, [entry]);
+    const entries = itemApprovals(listApprovals({ access: a }));
+    if (entries.length) this.checkApprovals(f, entries);
   }
 
   // Errors when a condition does not parse or reads an undeclared attribute; warns on a test whose
@@ -1354,6 +1419,9 @@ class Validator {
       metrics: named<Metric>(this.metrics?.data.metrics),
       access: this.accessPresent ? this.access?.data : null,
       access_present: this.accessPresent,
+      // Approval hashes are checked on their own (checkApprovals); these checks read what the
+      // layer exposes once each changed item is approved again.
+      compare_hashes: false,
     };
     return { layer, loaded };
   }
@@ -1637,13 +1705,24 @@ class Validator {
           if (!attrs.has(key)) this.error(f, `user.${key}`, `"${key}" is not a declared user attribute`);
       }
       if (g.status === "approved" && !g.expected?.rows.length) this.error(f, "expected.rows", "an approved golden needs at least one expected row");
-      if (typeof g.sql === "string" && callsRound(g.sql, this.identRules(g.request.source).dialect))
+      else if (g.status === "approved" && !currentYes(this.replies(), `golden:${g.name}`, listApprovals({ goldens: [{ golden: g }] })[0]!.hash))
+        this.warn(f, "", unconfirmedGoldenMessage(g.name));
+      const crossKey = crossCheckKey(g);
+      if (typeof g.sql === "string" && typeof g.cross_check_sql === "string")
+        this.error(f, "sql", "is the older name of cross_check_sql, and the golden has both; keep cross_check_sql and remove sql");
+      else if (typeof g.sql === "string")
         this.warn(
           f,
           "sql",
+          `is now cross_check_sql: rename the key; until then it is read as cross_check_sql, a hand-written query that semlayer goldens check runs next to the request compiled from the YAML, and both must give expected.rows`,
+        );
+      if (crossKey && callsRound(g[crossKey]!, this.identRules(g.request.source).dialect))
+        this.warn(
+          f,
+          crossKey,
           "calls round(); a golden's SQL applies the measure exactly as written; round() hides float noise, so remove it. " +
             "This warning never stands, whatever the golden's reference says; once round() is removed, " +
-            `sl goldens check --name ${g.name} fails on rows recorded rounded until the owner says yes to the unrounded figure and it is confirmed again`,
+            `semlayer goldens check --name ${g.name} fails on rows recorded rounded until the owner says yes to the unrounded figure and it is confirmed again`,
         );
 
       const req = g.request;
@@ -1662,7 +1741,7 @@ class Validator {
         if (problem) {
           // A draft golden may record the owner's figure before its field exists.
           if (problem.unknown && g.status !== "approved")
-            this.warn(f, path, `${problem.message}; a draft golden may name a field before it exists; add the field before confirming the golden, because sl validate errors on it once the golden is approved`);
+            this.warn(f, path, `${problem.message}; a draft golden may name a field before it exists; add the field before confirming the golden, because semlayer validate errors on it once the golden is approved`);
           else this.error(f, path, problem.message);
           return;
         }
@@ -1676,13 +1755,14 @@ class Validator {
         if (pathIssue) this.error(f, path, pathIssue);
         if (kind !== "dimension") return;
         for (const { metric, models } of spanning) {
-          const missing = models.filter((m) => !this.dimension(req.source, m, parsed.field));
+          // A model reaches the dimension through one shortest to-one path, or has its own of the same name.
+          const missing = models.filter((m) => !this.dimension(req.source, m, parsed.field) && this.pathProblem(req.source, m, "", parsed.model));
           if (missing.length)
             this.error(
               f,
               path,
-              `metric ${metric.name} combines measures of ${models.join(", ")}, so it groups by dimensions that exist with the same name in each; ` +
-                `${missing.join(", ")} ${missing.length === 1 ? "has" : "have"} no dimension "${parsed.field}"`,
+              `metric ${metric.name} combines measures of ${models.join(", ")}, so it groups by dimensions that exist with the same name in each, or that each reaches through one path of to-one joins; ` +
+                `${missing.join(", ")} ${missing.length === 1 ? "has" : "have"} no dimension "${parsed.field}" and no such path to ${parsed.model}`,
             );
         }
       };
@@ -1698,7 +1778,7 @@ class Validator {
           this.warn(
             f,
             path,
-            `an approved golden uses draft ${label}; approve it after its readback, then run sl goldens check --name ${g.name}; ` +
+            `an approved golden uses draft ${label}; approve it after its readback, then run semlayer goldens check --name ${g.name}; ` +
               "if it passes the recorded rows stand, and only changed rows need a new confirm",
           );
       this.checkGoldenAccess(l, roles);
@@ -1743,16 +1823,17 @@ class Validator {
     return parsed && this.measure(source, parsed.model, parsed.field) ? [parsed.model] : [];
   }
 
-  // Warns when a golden's SQL never names a column that a requested measure's expr or filter reads
-  // (for a metric, each of its measures'): goldens pin hand-written SQL, and nothing yet compiles the
-  // request, so SQL that leaves out a measure's rule records a figure the layer would not give.
+  // Warns when a golden's cross_check_sql never names a column that a requested measure's expr or
+  // filter reads (for a metric, each of its measures'): such SQL leaves out the measure's rule, and
+  // semlayer goldens check fails when it disagrees with the request compiled from the YAML.
   checkGoldenSqlRules(l: Loaded<Golden>): void {
     const g = l.data;
     const req = g.request;
-    if (typeof g.sql !== "string") return;
+    const crossKey = crossCheckKey(g);
+    if (!crossKey) return;
     const dialect = this.identRules(req.source).dialect;
     const named = new Set<string>();
-    for (const tok of tokenizeSql(g.sql, dialect)) if (tok.t === "id") named.add(tok.v.toLowerCase());
+    for (const tok of tokenizeSql(g[crossKey]!, dialect)) if (tok.t === "id") named.add(tok.v.toLowerCase());
     const measures: [string, string][] = [];
     for (const ref of strings(req.measures)) {
       if (/^[a-z][a-z0-9_]*$/.test(ref)) {
@@ -1776,10 +1857,10 @@ class Validator {
       if (!missing.length) continue;
       this.warn(
         l.file,
-        "sql",
-        `goldens pin hand-written SQL; this SQL may not apply ${key}'s rule: it never names ${missing.join(", ")}, which the measure's ` +
+        crossKey,
+        `this hand-written SQL may not apply ${key}'s rule: it never names ${missing.join(", ")}, which the measure's ` +
           `${measure.filter ? "expr or filter" : "expr"} reads. Write the measure's expr and filter into the SQL as the model defines them, ` +
-          `then run sl goldens check --name ${g.name} and read any change back to the owner`,
+          `then run semlayer goldens check --name ${g.name} and read any change back to the owner`,
       );
     }
   }
@@ -1874,13 +1955,13 @@ class Validator {
       l.file,
       "confirmed_as",
       `the golden was confirmed as ${describeRunAs(g.confirmed_as)} but now runs as ${describeRunAs({ role: g.role, user: g.user })}; ` +
-        `run sl goldens check --name ${g.name}, read the change back and confirm again on the owner's yes`,
+        `run semlayer goldens check --name ${g.name}, read the change back and confirm again on the owner's yes`,
     );
   }
 
   // Warns when a snapshot holds sample values of a protected column (see protectedColumns in
   // lib/profile.ts): raw top values or a min or max of a column that is not a number or a date, or
-  // top values hashed by an earlier sl profile, which a list of likely values reverses.
+  // top values hashed by an earlier semlayer profile, which a list of likely values reverses.
   checkProtectedProfiles(): void {
     for (const [source, l] of this.snapshots) {
       const raw = arr<unknown>(l.data.tables);
@@ -1901,9 +1982,9 @@ class Validator {
             l.file,
             `tables[${i}].columns[${j}].profile`,
             held === "raw"
-              ? `${qualified(t)}.${c.name} is protected but the snapshot holds raw sample values; run sl profile --source ${source} --redact`
+              ? `${qualified(t)}.${c.name} is protected but the snapshot holds raw sample values; run semlayer profile --source ${source} --redact`
               : `${qualified(t)}.${c.name} is protected but the snapshot holds hashed top values, which a list of likely values reverses; ` +
-                  `run sl profile --source ${source} --redact to remove them`,
+                  `run semlayer profile --source ${source} --redact to remove them`,
           );
         });
       });
@@ -2008,8 +2089,16 @@ class Validator {
     }
   }
 
+  // Errors on each env file under the root: a secret is never kept inside it.
+  checkEnvFiles(): void {
+    for (const file of envFilesInRoot(this.root)) {
+      this.error(file, "", `an env file inside the semantic root, where no secret is kept: move it to ${rootEnvFile(this.root)} (semlayer reads it there and keeps it out of version control), then run semlayer validate again`);
+    }
+  }
+
   run(): Issue[] {
     this.loadAll();
+    this.checkEnvFiles();
     this.checkProject();
     this.checkSources();
     this.checkModels();
@@ -2095,10 +2184,10 @@ function isBareColumn(expr: string, column: string): boolean {
 }
 
 // What sample values a protected column's profile still holds: raw (a top value that is not hashed,
-// or a min or max of a column that is not a number or a date), hashed (only values an earlier sl
+// or a min or max of a column that is not a number or a date), hashed (only values an earlier semlayer
 // profile stored hashed), or nothing (null). A profile keeps counts only, with min and max for
 // numbers and dates.
-function heldValues(profile: unknown, type: string): "raw" | "hashed" | null {
+export function heldValues(profile: unknown, type: string): "raw" | "hashed" | null {
   if (!isObject(profile)) return null;
   const held = (v: unknown) => v !== null && v !== undefined;
   const c = classifyType(type);
@@ -2167,9 +2256,50 @@ function qualified(t: SnapshotTable): string {
   return t.schema ? `${t.schema}.${t.name}` : t.name;
 }
 
+// The once-per-file warning on approved items without a matching owner yes in the ledger, naming
+// the first few and the readback that records a yes for them.
+export function unansweredMessage(refs: string[]): string {
+  const n = refs.length;
+  const shown = refs.slice(0, 3);
+  const more = n > shown.length ? ` and ${n - shown.length} more` : "";
+  return (
+    `${n} approved item${n === 1 ? " has" : "s have"} no recorded owner yes in .semlayer/ledger.jsonl that matches ${n === 1 ? "it" : "them"} as ${n === 1 ? "it stands" : "they stand"} ` +
+    `(approved before semlayer approve required one): ${shown.join(", ")}${more}; ${n === 1 ? "it stays" : "they stay"} approved. To record a yes, ` +
+    `read ${n === 1 ? "it" : "them"} back with semlayer readback --targets ${shown.join(",")}, then record the owner's answer with semlayer reply`
+  );
+}
+
+// The warning on a confirmed golden whose owner's latest reply in the ledger is not a yes to it as it
+// stands: its question, request, sql, role, user, tolerance and recorded rows.
+export function unconfirmedGoldenMessage(name: string): string {
+  return (
+    `golden:${name} is confirmed, but no recorded owner yes in .semlayer/ledger.jsonl matches it as it stands (its question, request, cross_check_sql, ` +
+    "role, user, tolerance and expected rows; confirmed before semlayer goldens confirm required one, or edited since); it stays confirmed. " +
+    `To record a yes, read it back with semlayer readback --targets golden:${name}, record the owner's answer with semlayer reply, then run semlayer goldens confirm --name ${name}`
+  );
+}
+
 // Validates every file under a semantic root: structure against the JSON Schemas, then references.
 // A file with structural errors gets no semantic checks of its own, but other files still resolve
-// references into the parts of it that have the expected shape.
-export function validateProject(root: string): Issue[] {
-  return new Validator(root).run();
+// references into the parts of it that have the expected shape. `overrides` holds the text of files
+// as an edit would write them, by absolute path (a model, golden, metrics or access file may be new),
+// and `removed` the files the edit removes.
+export function validateProject(root: string, overrides?: ReadonlyMap<string, string>, removed?: ReadonlySet<string>): Issue[] {
+  return new Validator(root, overrides, removed).run();
+}
+
+// An error for each env file the connection lookup reads (lib/env-file.ts) that git tracks. semlayer
+// validate adds these; they depend on the environment and the working directory, not on the root alone.
+export function trackedEnvFileIssues(root: string, env: Env): Issue[] {
+  return trackedEnvFiles(root, env).map((path) => ({
+    level: "error" as const,
+    file: relative(root, path).split("\\").join("/"),
+    path: "",
+    message: `git tracks this env file, so the secrets in it are in the repository: run git -C ${dirname(path)} rm --cached ${basename(path)} and commit, have the owner rotate the credentials it held, then run semlayer validate again (semlayer setup keeps .env out of version control)`,
+  }));
+}
+
+// The key holding a golden's hand-written cross-check query: cross_check_sql, else its older name sql.
+function crossCheckKey(g: Golden): "cross_check_sql" | "sql" | undefined {
+  return typeof g.cross_check_sql === "string" ? "cross_check_sql" : typeof g.sql === "string" ? "sql" : undefined;
 }

@@ -1,31 +1,31 @@
 # Baseline: a first read of a source, for the owner to correct
 
-`sl baseline` reads a source's snapshot and writes a brief: what each table probably is, what one row probably means, its keys and relationships, the numbers it could give, the ways it could be split, the columns that should not be splits, and the questions to ask the owner. It needs only the snapshot, so it works straight after a schema export is imported (`intake.md`, Schema export), and it sharpens when profiles and models exist. It reads no table data, writes nothing unless `--out` is given, and approves nothing.
+`semlayer baseline` reads a source's snapshot and writes a brief: what each table probably is, what one row probably means, its keys and relationships, the numbers it could give, the ways it could be split, the columns that should not be splits, and the questions to ask the owner. It needs only the snapshot, so it works straight after a schema export is imported (`intake.md`, Schema export), and it sharpens when profiles and models exist. It reads no table data, writes nothing unless `--out` is given, and approves nothing.
 
 Every line of the brief is a guess from names, declared keys and, when present, profiles. It opens the conversation; the owner's answers decide. Never write a guess from the brief into a model as fact, and never read a brief line back as something to approve.
 
 ```
-sl baseline --source warehouse
-sl baseline --source warehouse --tables fct_orders,dim_customers --json
-sl baseline --source warehouse --out notes/baseline-warehouse.md
+semlayer baseline --source warehouse
+semlayer baseline --source warehouse --tables fct_orders,dim_customers --full --json
+semlayer baseline --source warehouse --out notes/baseline-warehouse.md
 ```
 
-- Plain output is markdown suited to paste to the owner; `--json` carries the same structure for you to read.
+- Plain output is markdown suited to paste to the owner. `--json` gives what the current phase reads (`view` names it: each table's role, grain guess, key and first question); `--full --json` carries the whole structure of the markdown for you to read, and `--full` changes nothing without `--json`.
 - `--out` writes the markdown to a path resolved from the semantic root, never outside it. Keep it as a working note: nothing in the layer reads it, and a rerun replaces it.
-- With no `--tables` it covers the in-scope tables (every table while no scope is set). When more than `focus_threshold` are in scope, it covers the top `focus_threshold` by the ranking `sl status` and `sl tables` use, skipping the tables it classifies as noise, and says so in words such as "covers 12 of the 22 in-scope tables", pointing at `sl scope`: that note is the scoping question (Phase 2). Its noise and staging judgement is the same one `sl tables --groups` uses for `suggested_scope`, so the two agree on which tables look like noise.
+- With no `--tables` it covers the in-scope tables (every table while no scope is set). When more than `focus_threshold` are in scope, it covers the top `focus_threshold` by the ranking `semlayer status` and `semlayer tables` use, skipping the tables it classifies as noise, and says so in words such as "covers 12 of the 22 in-scope tables", pointing at `semlayer scope`: that note is the scoping question (`phases/scope.md`). Its noise and staging judgement is the same one `semlayer tables --groups` uses for `suggested_scope`, so the two agree on which tables look like noise.
 - The brief names sensitive columns but never quotes their values (`SKILL.md`, Principle 8).
 
 ## When to run it
 
-- Right after the first intake of a source, by any path (live, the agent's own SQL tool, an import): its short version is the "what you found" of the first message (`SKILL.md`, Phase 0).
-- Before profiling, when the brief has a left-out note or more tables are in scope than `focus_threshold`: agree the focus first (`sl tables --source <s> --groups`, then `sl scope ... --write`, Phase 2), as `sl status` asks. Ignore the brief's closing `sl profile` and `sl draft` hint until then: it lists every unprofiled table the brief covered, staging tables included, and `sl draft` refuses while the source needs focus. Profile only the tables the owner scoped.
-- After `sl profile`: keys, low-cardinality columns and near-unique strings are then measured rather than guessed from names. Rerun it before the first interview batch.
-- After a rerun of `sl introspect` or `sl import` that added tables, for the new tables (`--tables`).
+- Right after the first intake of a source, by any path (live, the agent's own SQL tool, an import): its short version is the "what you found" of the first message (`phases/intake.md`, First turn).
+- Before profiling, when the brief has a left-out note or more tables are in scope than `focus_threshold`: agree the focus first (`semlayer tables --source <s> --groups`, then `semlayer scope ... --write`, `phases/scope.md`), as `semlayer status` asks. Ignore the brief's closing `semlayer profile` and `semlayer draft` hint until then: it lists every unprofiled table the brief covered, staging tables included, and `semlayer draft` refuses while the source needs focus. Profile only the tables the owner scoped.
+- After `semlayer profile`: keys, low-cardinality columns and near-unique strings are then measured rather than guessed from names. Rerun it before the first interview batch.
+- After a rerun of `semlayer introspect` or `semlayer import` that added tables, for the new tables (`--tables`).
 - When the owner widens scope, for the tables added.
 
 ## The opening message
 
-Send a short plain-English version, not the whole brief: "Here is what I think your tables are; correct me." Keep to Principle 6: at most three lines of status, then numbered items, one topic each, up to about 8, each guess labelled as a guess with its reason, and the stop-or-continue line at the end. In the first message of a project the baseline items share that budget with the items Phase 0 adds: that the project name can be changed, the approver's name, and the scoping question, so keep the baseline to about five items there.
+Send a short plain-English version, not the whole brief: "Here is what I think your tables are; correct me." Keep to Principle 6: at most three lines of status, then numbered items, one topic each, up to about 8, each guess labelled as a guess with its reason, and the stop-or-continue line at the end. In the first message of a project the baseline items share that budget with the items the first turn adds: that the project name can be changed, the approver's name, and the scoping question, so keep the baseline to about five items there.
 
 > Here is what I think your tables are, from the table and column names and the keys the database declares; correct me.
 >
@@ -68,7 +68,7 @@ A declared key comes from the catalog; a likely key comes from names (`order_id`
 
 ### Relationships
 
-Declared relationships come from foreign keys; inferred ones from matching names (`customer_id` on orders and on customers). Each carries a probable relationship (many orders to one customer) and, when a table is the many side of another fact (order lines under orders, refunds under orders), a fan-out warning. The warning is a guess like the rest: say "probably several lines per order, to be checked with `sl check-join`". Every relationship the owner keeps becomes a join in the draft model, and `sl check-join` measures it before its readback (Phase 6); the brief's relationship is never the evidence.
+Declared relationships come from foreign keys; inferred ones from matching names (`customer_id` on orders and on customers). Each carries a probable relationship (many orders to one customer) and, when a table is the many side of another fact (order lines under orders, refunds under orders), a fan-out warning. The warning is a guess like the rest: say "probably several lines per order, to be checked with `semlayer check-join`". Every relationship the owner keeps becomes a join in the draft model, and `semlayer check-join` measures it before its readback (`phases/joins.md`); the brief's relationship is never the evidence.
 
 ### The star-schema sketch
 
@@ -83,9 +83,9 @@ The source-level section lists the likely facts and the dimensions each joins. U
 | Sum of a quantity (`quantity`) | a `sum` measure with `format: integer` |
 | Distinct count of a foreign key (`customer_id`) | a `count_distinct` measure, named after its join (`customer_count`); say what it counts ("customers who ordered") |
 | Share of a boolean flag (`is_gift`) | a `ratio` metric in `metrics.yaml`: a `count` measure filtered on the flag over the row count |
-| Suggested ratio (a money sum over a row count: average order value) | a `ratio` metric, written once both measures are approved (Phase 7) |
+| Suggested ratio (a money sum over a row count: average order value) | a `ratio` metric, written once both measures are approved (`phases/metrics.md`) |
 
-`sl draft` writes most of the measures itself (sums, counts, distinct counts per join). Compare the brief with the draft: add what the draft left out, such as a filtered count for a share, as a draft measure by hand, and leave the metrics for Phase 7. The list is a menu for "which of these does the business report?", never a list to approve: each measure still needs its rule (which rows, which date, which unit) before its readback.
+`semlayer draft` writes most of the measures itself (sums, counts, distinct counts per join). Compare the brief with the draft: add what the draft left out, such as a filtered count for a share, as a draft measure with `semlayer add-field`, and leave the metrics for `phases/metrics.md`. The list is a menu for "which of these does the business report?", never a list to approve: each measure still needs its rule (which rows, which date, which unit) before its readback.
 
 ### Candidate splits
 
@@ -93,13 +93,13 @@ The source-level section lists the likely facts and the dimensions each joins. U
 |---|---|
 | A time column with grains (`created_at`: day, week, month, quarter, year), including one inside a composite primary key (`snapshot_date` in `(account_id, snapshot_date)`) | a `time` dimension renamed to the date's business name (`order_date`); ask which date is "the" date and which time zone a day is in, and, for a timestamp without a time zone, which zone its values are recorded in (`time_zone`) |
 | A low-cardinality categorical column (`status`, `channel`, `region`) | a `string` dimension; ask whether the values need friendlier labels, and whether a value is a split or a rule (`status` is often both: a filter on revenue and a split for order counts) |
-| An attribute of a to-one joined dimension, with its path (`customer.acquisition_channel`) | a dimension of the joined model, which a request reaches through the join; on the fact itself only as a join-reference dimension (`expr: customer.acquisition_channel`) when a metric across models needs the same name in each |
+| An attribute of a to-one joined dimension, with its path (`customer.acquisition_channel`) | a dimension of the joined model, which a request reaches through the join; on the fact itself only as a join-reference dimension (`expr: customer.acquisition_channel`) when a metric across models needs the same name on a model with no single to-one path to the joined model |
 
-With profiles, categorical columns come with their distinct counts and top values, so the question can quote them ("`channel` is `web` in 70% of orders, then `app`, `phone`"). Without profiles they are guessed from names (status, type, category, channel, region, country, segment, tier, plan, source, device), and the brief says so; `sl profile` measures them. Any values a question names before then are examples, not values found in the data: say "for example", and that the profile will list the real ones. Ask which splits people actually use for each candidate measure ("do people break revenue down by channel, region or customer segment?"), and read back only those as dimensions to approve; leave the rest as draft or remove them.
+With profiles, categorical columns come with their distinct counts and top values, so the question can quote them ("`channel` is `web` in 70% of orders, then `app`, `phone`"). Without profiles they are guessed from names (status, type, category, channel, region, country, segment, tier, plan, source, device), and the brief says so; `semlayer profile` measures them. Any values a question names before then are examples, not values found in the data: say "for example", and that the profile will list the real ones. Ask which splits people actually use for each candidate measure ("do people break revenue down by channel, region or customer segment?"), and read back only those as dimensions to approve; leave the rest as draft or remove them.
 
 ### Columns that should not be splits
 
-Ids, free text, near-unique strings and sensitive columns. Keep ids as keys and join keys. A near-unique string is left out by `sl draft` and listed in `ignored_columns`. A sensitive column goes to the sensitive-column question (`interview-guide.md`) and its tag; the brief never shows its values. When the owner wants one as a split anyway (a coarse free-text field that holds a handful of values), check its profile first.
+Ids, free text, near-unique strings and sensitive columns. Keep ids as keys and join keys. A near-unique string is left out by `semlayer draft` and listed in `ignored_columns`. A sensitive column goes to the sensitive-column question (`interview-guide.md`) and its tag; the brief never shows its values. When the owner wants one as a split anyway (a coarse free-text field that holds a handful of values), check its profile first.
 
 ### Questions for the owner
 
@@ -107,24 +107,24 @@ The brief orders them by importance: what a row is, which status values count, w
 
 ### Without profiles
 
-The brief says which facts `sl profile` would measure (key uniqueness, the values of category columns, empty rates, near-unique strings), and lists the columns it cannot place by name as unclear until profiled. Tell the owner which guesses would firm up. After an import, `sl profile` needs a connection the snapshot did not come with (a live source, or `--emit-sql` and `--results` through your own tool); the brief says so, and so should you. On the shared-context path, where nothing can be profiled yet, ask for example values where a question needs them, and note in each model's open questions what stays unmeasured.
+The brief says which facts `semlayer profile` would measure (key uniqueness, the values of category columns, empty rates, near-unique strings), and lists the columns it cannot place by name as unclear until profiled. Tell the owner which guesses would firm up. After an import, `semlayer profile` needs a connection the snapshot did not come with (a live source, or `--emit-sql` and `--results` through your own tool); the brief says so, and so should you. On the shared-context path, where nothing can be profiled yet, ask for example values where a question needs them, and note what stays unmeasured in each model's open questions (`semlayer question add <s>.<m> --text "<question>"`).
 
 ## From the baseline to the layer
 
 1. **The opening message**: roles, grains, the sketch and the top questions, as above.
-2. **Scoping** (Phase 2): `noise` and `staging` tables are the exclusions to propose; the left-out note is the focus question. Preview with `sl scope`, then write on the owner's yes.
-3. **Table structure** (Phase 5, step 1): the grain, key and relationship guesses become the first question for each table; the fan-out warnings become the join readbacks.
-4. **Metric definitions**: candidate measures become the menu of measures to define; suggested ratios and shares become metrics in Phase 7.
+2. **Scoping** (`phases/scope.md`): `noise` and `staging` tables are the exclusions to propose; the left-out note is the focus question. Preview with `semlayer scope`, then write on the owner's yes.
+3. **Table structure** (`phases/interview.md`, step 1): the grain, key and relationship guesses become the first question for each table; the fan-out warnings become the join readbacks.
+4. **Metric definitions**: candidate measures become the menu of measures to define; suggested ratios and shares become metrics in `phases/metrics.md`.
 5. **Splits**: candidate splits become dimensions, named in the business's words; the columns that should not be splits stay out.
 
-Answers given before a table has a model go into its model as soon as `sl draft` writes it, in the same turn: scope the tables the owner answered about, profile them where the source allows it, draft them, then write each answer (`description`, `grain`, `primary_key`, `filter`, `open_questions`). A scoping answer goes straight into `sl scope ... --write` after its preview.
+Answers given before a table has a model go into its model as soon as `semlayer draft` writes it, in the same turn: scope the tables the owner answered about, profile them where the source allows it, draft them, then write each answer with a typed edit in the turn's `semlayer apply`: `semlayer set <s>.<m> description|grain|primary_key <value>`, a rule for every figure as each measure's `filter` (`semlayer set <s>.<m>.<measure> filter "<rule>"`), and `semlayer question add` for what stays open. A scoping answer goes straight into `semlayer scope ... --write` after its preview.
 
 ## What must be confirmed
 
 Nothing in the brief stands until the owner confirms it:
 
-- each table's role, grain and key: the table readback, then `sl approve` on a yes;
-- each relationship: `sl check-join`, then the join's readback;
+- each table's role, grain and key: the table readback (`semlayer readback`), then the owner's answer recorded with `semlayer reply --readback <id> --answers - --approve`, which approves the table on a yes;
+- each relationship: `semlayer check-join`, then the join's readback and the owner's recorded yes;
 - each measure's rule, unit and currency: its readback ending in "Approve?";
 - each split: which date and time zone, which values, which labels;
 - each sensitive column: its tag and who may see it (`access.md`);

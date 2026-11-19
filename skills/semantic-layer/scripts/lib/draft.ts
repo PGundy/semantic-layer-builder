@@ -938,7 +938,8 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
         const x = norm.replace(/_id$/, "");
         columnMeasures.push({
           names: () => [...(join ? [`${joinNames.get(join)!}_count`] : []), `${x}_count`, `distinct_${norm}_count`],
-          build: (name) => ({ name, expr, agg: "count_distinct", format: "integer", ...extras(col, tags), status: "draft" }),
+          // A plain count states what it counts; a column's own comment, when it has one, says it better.
+          build: (name) => ({ name, expr, agg: "count_distinct", format: "integer", description: `Number of different ${col.name} values`, ...extras(col, tags), status: "draft" }),
         });
       } else if (!pkSet.has(lower)) {
         notes.push(`${q}: left out ${col.name}, an id column that is not the primary key.`);
@@ -1058,7 +1059,7 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
 
   // The row count leads; column measures keep column order.
   const measures: Measure[] = [
-    { name: ns.claim(`${singular(modelName)}_count`, "row_count"), agg: "count", format: "integer", status: "draft" },
+    { name: ns.claim(`${singular(modelName)}_count`, "row_count"), agg: "count", format: "integer", description: `Number of rows of ${qualifiedName(table)}`, status: "draft" },
     ...columnMeasures.map((m) => m.build(ns.claim(...m.names()))),
   ];
 
@@ -1196,7 +1197,7 @@ function buildContext(snapshot: Snapshot, tables: SnapshotTable[], existing: Mod
 // Drafts one model per table. Names avoid existing models and each other; joins
 // reach only known tables, and anything the rules cannot settle is an open question.
 // Every column of the table that no drafted field, join key or primary key reads is listed in
-// the model's ignored_columns, so a later sl draft --new-columns finds only columns added since.
+// the model's ignored_columns, so a later semlayer draft --new-columns finds only columns added since.
 export function draftModels(snapshot: Snapshot, tables: SnapshotTable[], existing: Model[], opts: DraftOptions): DraftResult {
   const notes: string[] = [];
   const { ctx, byKey, existingNames } = buildContext(snapshot, tables, existing, opts, notes);
@@ -1347,7 +1348,7 @@ export function draftNewColumns(
     if (!take(cols, `the join ${j.name} to ${j.to} (${how}${unmodeled})`)) continue;
     result.joins.push(j);
     if (unmodeled && target) result.unmodeled.push({ join: j.name, to: j.to, table: target });
-    for (const c of cols) if (isFresh.has(c)) checkJoin.set(c, `sl check-join --source ${opts.source} --model ${model.model} --join ${j.name}`);
+    for (const c of cols) if (isFresh.has(c)) checkJoin.set(c, `semlayer check-join --source ${opts.source} --model ${model.model} --join ${j.name}`);
   }
 
   for (const c of fresh) {

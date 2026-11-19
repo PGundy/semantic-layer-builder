@@ -36,7 +36,12 @@
         "env": {
           "type": "string",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-          "description": "Name of the environment variable holding the connection URL; never the URL itself."
+          "description": "Name of the variable holding the connection URL; never the URL itself. Read from the environment, else from an env file outside the semantic root."
+        },
+        "env_prefix": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "Postgres only: the start of the variables holding the connection's parts, joined as written: PG reads PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE and PGSSLMODE; LAKE_ reads LAKE_HOST and so on. A source has env or env_prefix, not both."
         },
         "database": {
           "type": "string",
@@ -49,7 +54,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "DuckDB only: statements run on every connection, in order. Each is one of an allowlist that sl validate checks and the DuckDB adapter enforces: LOAD or INSTALL of a named core extension, SET of a known safe setting, or CREATE SECRET from a provider chain or the environment, never literal keys."
+          "description": "DuckDB only: statements run on every connection, in order. Each is one of an allowlist that semlayer validate checks and the DuckDB adapter enforces: LOAD or INSTALL of a named core extension, SET of a known safe setting, or CREATE SECRET from a provider chain or the environment, never literal keys."
         },
         "views": {
           "type": "object",
@@ -65,6 +70,50 @@
         }
       }
     },
+    "intake": {
+      "type": "object",
+      "description": "How the catalog reaches the layer and which schemas are read. Absent means mode connection with no schema limit.",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "connection",
+            "export"
+          ],
+          "description": "connection (the default when absent): the tools read the catalog through connection. export: the owner shared a catalog export because a connection was not possible."
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Export mode: why a connection was not possible, in the owner's words. semlayer validate warns when it is empty in export mode."
+        },
+        "schemas": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "The only schemas read. A plain identifier; for BigQuery a dataset or project.dataset, for DuckDB an attached database's database.schema. semlayer validate errors on a duplicate and on a name that is not one, and warns on an empty list."
+        },
+        "export": {
+          "type": "object",
+          "description": "Export mode only: the catalog export the source was imported from.",
+          "additionalProperties": false,
+          "required": [
+            "file"
+          ],
+          "properties": {
+            "file": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path of the export file, relative to the semantic root and inside it."
+            }
+          }
+        }
+      }
+    },
     "scope": {
       "type": "object",
       "description": "Which tables are in scope. Exclude wins over include.",
@@ -76,7 +125,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Patterns a table must match one of; empty or absent includes every table. Globs with * and ?, or re:<regex>; a dot matches schema.table."
+          "description": "Patterns a table must match one of; empty or absent includes every table. Exact names and globs with * and ? (a dot matches schema.table, a \"quoted\" part matches exactly), or re:<regex> (at most 512 characters, checked for slow matching); see spec.md Scope patterns."
         },
         "exclude": {
           "type": "array",
@@ -85,6 +134,16 @@
             "minLength": 1
           },
           "description": "Patterns that remove a table from scope."
+        },
+        "exclude_reasons": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "minLength": 1 },
+          "description": "Why an exclude pattern leaves tables out, by pattern, in the owner's words; semlayer scope --exclude <p> --reason <text> --write records it and semlayer scope --explain shows it."
+        },
+        "tables_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A table-list file, relative to the semantic root (usually scope/<source>.txt): one pattern per line, !<pattern> to exclude, # comments. Its entries join include and exclude; see spec.md Table-list files."
         }
       }
     },
@@ -107,7 +166,7 @@
     },
     "draft": {
       "type": "object",
-      "description": "Settings sl draft remembers for this source.",
+      "description": "Settings semlayer draft remembers for this source.",
       "additionalProperties": false,
       "properties": {
         "strip_prefixes": {

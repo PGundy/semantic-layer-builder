@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "evals/scenarios/<fixture>.figures.json",
+  "description": "Which approved golden gives which reference figure of the fixture. The first entry whose conditions all hold maps a golden.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["figures"],
+  "properties": {
+    "figures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["figure"],
+        "properties": {
+          "figure": { "type": "string", "description": "A figure name in the fixture's reference-figures.json." },
+          "golden": { "type": "string", "minLength": 1, "description": "The golden's name: an exact name, a glob or re:<regex>, as scope patterns." },
+          "request": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source": { "type": "string" },
+              "table": { "type": "string", "minLength": 1, "description": "The table of the model of the request's first measure, or first dimension, as a scope pattern." },
+              "grouped": { "type": "boolean", "description": "true when the request has dimensions, false when it returns one row." }
+            }
+          },
+          "key": { "type": "string", "description": "For a figure with rows: its key column, compared with the request's first dimension." },
+          "value": { "type": "string", "description": "For a figure with rows: its value column, compared with the request's first measure." },
+          "tolerance": { "type": "number", "minimum": 0, "description": "Relative; 0 when left out." }
+        }
+      }
+    }
+  }
+}

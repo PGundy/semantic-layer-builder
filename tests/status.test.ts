@@ -5,7 +5,7 @@ import { needsOwnerYes, type ProjectStatus } from "../skills/semantic-layer/scri
 import { validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import type { Model, Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readJson, readYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { FIXED_NOW, sl, tempRoot } from "./helpers.ts";
+import { approveWithYes, FIXED_NOW, semlayer, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
@@ -109,6 +109,8 @@ interface Build {
   goldens?: number;
   // Whether the approved goldens run as access.yaml's roles (g0 as viewer, the rest as analyst); default true.
   goldenRoles?: boolean;
+  // Whether the orders model holds its two open questions; default true.
+  questions?: boolean;
 }
 
 // Builds a project that has completed every phase the options allow.
@@ -129,7 +131,7 @@ function build(root: string, b: Build): void {
   const names = mode === "some" ? ["fct_orders"] : Object.keys(MODEL_NAMES);
   for (const n of names) {
     const approved = mode === "approved";
-    const m = model(n, approved, { evidence: b.evidence ?? true, questions: n === "fct_orders" ? ["Does total include tax?", "Is it net?"] : [] });
+    const m = model(n, approved, { evidence: b.evidence ?? true, questions: n === "fct_orders" && b.questions !== false ? ["Does total include tax?", "Is it net?"] : [] });
     writeYaml(join(root, "models", "wh", `${m.model}.yaml`), m);
   }
 
@@ -171,7 +173,7 @@ async function status(b: Build, args: string[] = []): Promise<ProjectStatus> {
   const t = tempRoot();
   cleanup = t.cleanup;
   build(t.root, b);
-  const r = await sl(t.root, ["status", "--json", ...args]);
+  const r = await semlayer(t.root, ["status", "--json", ...args]);
   if (r.code !== 0) throw new Error(r.err);
   return r.json<ProjectStatus>();
 }
@@ -180,19 +182,19 @@ describe("status next_step", () => {
   test("no sources -> add-source", async () => {
     const s = await status({ sources: false });
     expect(s.next_step.phase).toBe("add-source");
-    expect(s.next_step.command).toContain("sl add-source");
+    expect(s.next_step.command).toContain("semlayer add-source");
     expect(s.sources).toEqual([]);
     expect(s.next_batch).toBeNull();
   });
 
   test("a source without a snapshot -> introspect, or emit-sql for a plan-only dialect", async () => {
     const live = await status({ snapshot: false });
-    expect(live.next_step).toMatchObject({ phase: "introspect", source: "wh", command: "sl introspect --source wh" });
+    expect(live.next_step).toMatchObject({ phase: "introspect", source: "wh", command: "semlayer introspect --source wh" });
     expect(live.sources[0]!.snapshot).toBeNull();
     const plan = await status({ snapshot: false, dialect: "snowflake" });
     expect(plan.next_step.phase).toBe("introspect");
-    expect(plan.next_step.command).toBe("sl introspect --source wh --emit-sql");
-    expect(plan.next_step.message).toContain("sl import");
+    expect(plan.next_step.command).toBe("semlayer introspect --source wh --emit-sql");
+    expect(plan.next_step.message).toContain("semlayer import");
   });
 
   test("too many in-scope tables -> scope, and a scope that narrows them clears it", async () => {
@@ -201,7 +203,7 @@ describe("status next_step", () => {
     expect(wide.sources[0]!.snapshot!.in_scope).toBe(15);
     expect(wide.next_step.phase).toBe("scope");
     expect(wide.next_step.message).toContain("which tables to focus on");
-    expect(wide.next_step.command).toBe("sl tables --source wh --groups");
+    expect(wide.next_step.command).toBe("semlayer tables --source wh --groups");
 
     const narrowed = await status({ wide: true, models: "none", scope: { exclude: ["extra_*"] } });
     expect(narrowed.sources[0]!.needs_focus).toBe(false);
@@ -214,15 +216,15 @@ describe("status next_step", () => {
     cleanup = t.cleanup;
     build(t.root, { models: "none" });
     writeJson(join(t.root, "snapshots", "wh.json"), { snapshot_version: 1, source: "wh", dialect: "duckdb", captured_at: FIXED_NOW, method: "live", tables: [] });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.next_step).toMatchObject({ phase: "introspect", source: "wh", command: "sl introspect --source wh" });
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.next_step).toMatchObject({ phase: "introspect", source: "wh", command: "semlayer introspect --source wh" });
     expect(s.next_step.message).toContain("holds no tables");
   });
 
   test("a scope that selects no tables -> scope, asking the owner again", async () => {
     const s = await status({ models: "none", scope: { include: ["fact_*"] } });
     expect(s.sources[0]!.snapshot).toMatchObject({ tables: 5, in_scope: 0 });
-    expect(s.next_step).toMatchObject({ phase: "scope", source: "wh", command: "sl tables --source wh --groups" });
+    expect(s.next_step).toMatchObject({ phase: "scope", source: "wh", command: "semlayer tables --source wh --groups" });
     expect(s.next_step.message).toContain("selects none of its 5 tables");
     expect(s.next_step.message).toContain("ask the owner again");
   });
@@ -232,13 +234,13 @@ describe("status next_step", () => {
     cleanup = t.cleanup;
     build(t.root, { profiled: false, models: "none", dialect: "postgres" });
     writeYaml(join(t.root, "sources", "wh.yaml"), { source: "wh", dialect: "postgres" });
-    const noEnv = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const noEnv = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(noEnv.sources[0]!.runnable).toBe(false);
     expect(noEnv.next_step.phase).toBe("draft");
     writeYaml(join(t.root, "sources", "wh.yaml"), { source: "wh", dialect: "postgres", connection: { env: "WH_URL" } });
-    const withEnv = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const withEnv = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(withEnv.sources[0]!.runnable).toBe(true);
-    expect(withEnv.next_step).toMatchObject({ phase: "profile", command: "sl profile --source wh" });
+    expect(withEnv.next_step).toMatchObject({ phase: "profile", command: "semlayer profile --source wh" });
   });
 
   test("a postgres source without connection.env and no snapshot -> introspect plan", async () => {
@@ -246,13 +248,13 @@ describe("status next_step", () => {
     cleanup = t.cleanup;
     build(t.root, { sources: false });
     writeYaml(join(t.root, "sources", "wh.yaml"), { source: "wh", dialect: "postgres" });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.next_step.command).toBe("sl introspect --source wh --emit-sql");
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.next_step.command).toBe("semlayer introspect --source wh --emit-sql");
   });
 
   test("unprofiled in-scope tables on a runnable source -> profile; a plan-only source skips it", async () => {
     const s = await status({ profiled: false, models: "none" });
-    expect(s.next_step).toMatchObject({ phase: "profile", command: "sl profile --source wh" });
+    expect(s.next_step).toMatchObject({ phase: "profile", command: "semlayer profile --source wh" });
     expect(s.sources[0]!.snapshot!.profiled).toBe(0);
     const plan = await status({ profiled: false, models: "none", dialect: "bigquery" });
     expect(plan.next_step.phase).toBe("draft");
@@ -260,23 +262,23 @@ describe("status next_step", () => {
 
   test("in-scope tables without models -> draft", async () => {
     const s = await status({ models: "some" });
-    expect(s.next_step).toMatchObject({ phase: "draft", command: "sl draft --source wh" });
+    expect(s.next_step).toMatchObject({ phase: "draft", command: "semlayer draft --source wh" });
     expect(s.sources[0]!.tables_without_model).toBe(4);
     expect(s.sources[0]!.unmodeled_tables).toEqual(["main.dim_customers", "main.orders_tmp", "main.stg_events", "main.web_events"]);
   });
 
-  test("draft models -> interview the next batch; the command never approves a field", async () => {
+  test("draft models -> interview the next batch; the command reads the model's draft fields and the model back", async () => {
     const s = await status({ models: "draft" });
     expect(s.next_step.phase).toBe("interview");
-    expect(s.next_step.command).toBe('sl approve --target wh.customers --by "<owner>"');
-    expect(s.next_step.command).not.toContain("--recursive");
+    expect(s.next_step.command).toBe("semlayer readback --targets wh.customers.id_dim,wh.customers.total,wh.customers");
+    expect(s.next_step.after_owner_yes).toBe(false);
     expect(s.next_step.message).toContain("customers, orders, web_events");
     expect(s.next_step.message).toContain("on its own only after the owner confirms that readback");
   });
 
   test("a draft model in the batch with an unchecked join -> check-join first", async () => {
     const s = await status({ models: "draft", evidence: false });
-    expect(s.next_step).toMatchObject({ phase: "interview", command: "sl check-join --source wh --model orders --join customer" });
+    expect(s.next_step).toMatchObject({ phase: "interview", command: "semlayer check-join --source wh --model orders --join customer" });
   });
 
   test("an unchecked join outside the batch does not replace the interview command", async () => {
@@ -286,17 +288,17 @@ describe("status next_step", () => {
     // Only customers is a draft model; the unchecked join sits on the approved orders model.
     writeYaml(join(t.root, "models", "wh", "customers.yaml"), { ...model("dim_customers", true), status: "draft", approved_by: undefined, approved_at: undefined });
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), model("fct_orders", true, { evidence: false }));
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.next_step).toMatchObject({ phase: "interview", command: 'sl approve --target wh.customers --by "<owner>"' });
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.next_step).toMatchObject({ phase: "interview", command: "semlayer readback --targets wh.customers" });
   });
 
-  test("a draft model whose fields are approved -> approve the model itself", async () => {
+  test("a draft model whose fields are approved -> read the model itself back", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     build(t.root, {});
     writeYaml(join(t.root, "models", "wh", "customers.yaml"), { ...model("dim_customers", true), status: "draft", approved_by: undefined, approved_at: undefined });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.next_step).toMatchObject({ phase: "interview", command: 'sl approve --target wh.customers --by "<owner>"' });
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.next_step).toMatchObject({ phase: "interview", command: "semlayer readback --targets wh.customers", after_owner_yes: false });
   });
 
   test("an approved model with draft fields does not block later phases; the fields are reported", async () => {
@@ -306,7 +308,7 @@ describe("status next_step", () => {
     const m = model("fct_orders", true, { evidence: true });
     m.measures[0] = { ...m.measures[0]!, status: "draft", approved_by: undefined, approved_at: undefined };
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), m);
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     const w = s.sources[0]!;
     expect(w.draft_models).toEqual([]);
     expect(w.models_with_draft_fields).toEqual(["orders"]);
@@ -315,7 +317,7 @@ describe("status next_step", () => {
     expect(s.next_step.phase).toBe("done");
     expect(s.next_step.message).toContain("draft field(s) wh.orders.total.");
 
-    const human = await sl(t.root, ["status"]);
+    const human = await semlayer(t.root, ["status"]);
     expect(human.out).toContain("draft fields in approved models: orders.total");
   });
 
@@ -327,8 +329,8 @@ describe("status next_step", () => {
     m.measures[0] = { ...m.measures[0]!, status: "draft", approved_by: undefined, approved_at: undefined };
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), m);
     writeYaml(join(t.root, "models", "wh", "web_events.yaml"), model("web_events", false));
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.next_step).toMatchObject({ phase: "interview", command: 'sl approve --target wh.web_events --by "<owner>"' });
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.next_step).toMatchObject({ phase: "interview", command: "semlayer readback --targets wh.web_events.id_dim,wh.web_events.total,wh.web_events" });
     expect(s.next_step.message).toContain("web_events");
     expect(s.next_step.message).not.toContain("orders");
     expect(s.sources[0]!.models_with_draft_fields).toEqual(["orders"]);
@@ -341,8 +343,8 @@ describe("status next_step", () => {
     const m = model("fct_orders", true);
     m.joins![0] = { ...m.joins![0]!, status: "draft", approved_by: undefined, approved_at: undefined };
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), m);
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.next_step).toMatchObject({ phase: "check-join", command: "sl check-join --source wh --model orders --join customer" });
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.next_step).toMatchObject({ phase: "check-join", command: "semlayer check-join --source wh --model orders --join customer" });
   });
 
   test("draft models on out-of-scope tables do not hold the interview open", async () => {
@@ -350,7 +352,7 @@ describe("status next_step", () => {
     cleanup = t.cleanup;
     build(t.root, { scope: { include: ["fct_*", "dim_*"] } });
     writeYaml(join(t.root, "models", "wh", "web_events.yaml"), model("web_events", false));
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     const w = s.sources[0]!;
     expect(w.draft_models).toEqual([]);
     expect(w.out_of_scope_models).toEqual(["orders_tmp", "stg_events", "web_events"]);
@@ -359,7 +361,7 @@ describe("status next_step", () => {
 
   test("joins without evidence -> check-join", async () => {
     const s = await status({ evidence: false });
-    expect(s.next_step).toMatchObject({ phase: "check-join", command: "sl check-join --source wh --model orders --join customer" });
+    expect(s.next_step).toMatchObject({ phase: "check-join", command: "semlayer check-join --source wh --model orders --join customer" });
     expect(s.sources[0]!.joins_without_evidence).toBe(1);
     expect(s.sources[0]!.unchecked_joins).toEqual(["orders.customer"]);
   });
@@ -378,7 +380,7 @@ describe("status next_step", () => {
     expect(missing.next_step.phase).toBe("access");
     expect(missing.access).toMatchObject({ state: "missing", roles: 0, open_questions: 0 });
     const draft = await status({ access: "draft" });
-    expect(draft.next_step).toMatchObject({ phase: "access", command: 'sl approve --target access --by "<owner>"' });
+    expect(draft.next_step).toMatchObject({ phase: "access", command: "semlayer readback --targets access" });
     expect(draft.access).toMatchObject({ state: "draft", roles: 2, open_questions: 0 });
   });
 
@@ -395,20 +397,20 @@ describe("status next_step", () => {
         "not a role",
       ],
     });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.access).toMatchObject({ state: "draft", roles: 3, open_questions: 2 });
     expect(s.open_questions).toBe(4);
     // The step waits on the owner's answers: no approval is suggested, and the first question is named.
-    expect(s.next_step).toMatchObject({ phase: "access", blocked_on: "open_questions", command: "sl access", after_owner_yes: false });
+    expect(s.next_step).toMatchObject({ phase: "access", blocked_on: "open_questions", command: "semlayer access", after_owner_yes: false });
     expect(s.next_step.message).toContain("2 open question(s), so this step waits on the owner's answers");
     expect(s.next_step.message).toContain('the first: "Does a joined row filter blank the columns?"');
-    expect(s.next_step.message).not.toContain("sl approve");
+    expect(s.next_step.message).not.toContain("semlayer approve");
     expect(s.next_step.message).toContain("do not push the approval");
     expect(s.next_step.message).toContain("The owner may approve with remaining questions");
     expect(s.next_step.message).not.toContain("nothing to approve");
-    const human = await sl(t.root, ["status"]);
+    const human = await semlayer(t.root, ["status"]);
     expect(human.out).toContain("access draft (3 role(s), 2 open question(s))");
-    expect(human.out).toContain("  Waiting on the owner's answers to the open questions; meanwhile: sl access");
+    expect(human.out).toContain("  Waiting on the owner's answers to the open questions; meanwhile: semlayer access");
     expect(human.out).not.toContain("Only after the owner says yes");
   });
 
@@ -417,9 +419,9 @@ describe("status next_step", () => {
     cleanup = t.cleanup;
     build(t.root, { access: "missing" });
     writeFileSync(join(t.root, "access.yaml"), "# todo: roles\n");
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.access).toMatchObject({ state: "draft", roles: 0, open_questions: 0 });
-    expect(s.next_step).toMatchObject({ phase: "access", command: "sl validate" });
+    expect(s.next_step).toMatchObject({ phase: "access", command: "semlayer validate" });
     expect(s.next_step.message).toContain("no roles yet");
     expect(s.next_step.message).not.toContain("open question");
   });
@@ -429,9 +431,9 @@ describe("status next_step", () => {
     cleanup = t.cleanup;
     build(t.root, { access: "missing" });
     writeYaml(join(t.root, "access.yaml"), { status: "draft", open_questions: ["Is the default role the most limited?"], roles: [] });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.access).toMatchObject({ state: "draft", roles: 0, open_questions: 1 });
-    expect(s.next_step).toMatchObject({ phase: "access", blocked_on: "open_questions", command: "sl access", after_owner_yes: false });
+    expect(s.next_step).toMatchObject({ phase: "access", blocked_on: "open_questions", command: "semlayer access", after_owner_yes: false });
     expect(s.next_step.message).toContain('the first: "Is the default role the most limited?"');
   });
 
@@ -444,8 +446,8 @@ describe("status next_step", () => {
       mode: "closed",
       roles: [{ name: "sales", allow: { models: ["wh.orders"] }, open_questions: ["Own orders only, or the team's?"] }],
     });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.next_step).toMatchObject({ phase: "access", blocked_on: "open_questions", command: "sl access" });
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.next_step).toMatchObject({ phase: "access", blocked_on: "open_questions", command: "semlayer access" });
     expect(s.next_step.message).toContain(`the first: "role sales: Own orders only, or the team's?"`);
   });
 
@@ -454,8 +456,8 @@ describe("status next_step", () => {
     cleanup = t.cleanup;
     build(t.root, { access: "missing" });
     writeYaml(join(t.root, "access.yaml"), { status: "draft", mode: "closed", open_questions: ["Who are the analysts?"] });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
-    expect(s.next_step).toMatchObject({ phase: "access", blocked_on: "open_questions", command: "sl access", after_owner_yes: false });
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
+    expect(s.next_step).toMatchObject({ phase: "access", blocked_on: "open_questions", command: "semlayer access", after_owner_yes: false });
     expect(s.next_step.message).toContain("closed and has no roles yet, so nobody sees anything");
   });
 
@@ -465,7 +467,7 @@ describe("status next_step", () => {
     build(t.root, { access: "missing" });
     const long = `Should sales see order lines? ${"The rule limits only orders and not their lines, ".repeat(8)}End.`;
     writeYaml(join(t.root, "access.yaml"), { status: "draft", open_questions: [long], roles: [{ name: "sales", allow: { models: ["wh.*"] } }] });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     const quoted = s.next_step.message.match(/the first: "([^"]*)"/)![1]!;
     expect(quoted.startsWith("Should sales see order lines? The rule limits")).toBe(true);
     expect(quoted.endsWith("…")).toBe(true);
@@ -473,10 +475,16 @@ describe("status next_step", () => {
     expect(quoted).not.toContain("End.");
   });
 
-  test("an access.yaml without open questions has no blocked_on", async () => {
-    const s = await status({ access: "draft" });
+  test("a layer without open questions has no blocked_on", async () => {
+    const s = await status({ access: "draft", questions: false });
     expect(s.next_step.blocked_on).toBeUndefined();
-    expect(s.next_step.command).toBe('sl approve --target access --by "<owner>"');
+    expect(s.next_step.command).toBe("semlayer readback --targets access");
+  });
+
+  test("a model's open questions set blocked_on too, whatever the step", async () => {
+    const s = await status({ access: "draft" });
+    expect(s.open_questions).toBe(2);
+    expect(s.next_step).toMatchObject({ phase: "access", blocked_on: "open_questions", command: "semlayer readback --targets access" });
   });
 
   test("fewer than 5 approved goldens -> verify, otherwise done", async () => {
@@ -529,7 +537,7 @@ describe("status counts and batches", () => {
     cleanup = t.cleanup;
     build(t.root, { models: "some" });
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), model("fct_orders", true));
-    const r = await sl(t.root, ["status", "--json"]);
+    const r = await semlayer(t.root, ["status", "--json"]);
     const after = r.json<ProjectStatus>().sources[0]!.next_batch.map((b) => b.table);
     expect(after).toEqual(["main.dim_customers", "main.web_events", "main.stg_events"]);
   });
@@ -546,13 +554,13 @@ describe("status counts and batches", () => {
     cleanup = t.cleanup;
     build(t.root, {});
     writeYaml(join(t.root, "sources", "lake.yaml"), { source: "lake", dialect: "duckdb" });
-    const all = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const all = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(all.sources.map((s) => s.source)).toEqual(["lake", "wh"]);
     expect(all.next_step).toMatchObject({ phase: "introspect", source: "lake" });
-    const one = (await sl(t.root, ["status", "--source", "wh", "--json"])).json<ProjectStatus>();
+    const one = (await semlayer(t.root, ["status", "--source", "wh", "--json"])).json<ProjectStatus>();
     expect(one.sources.map((s) => s.source)).toEqual(["wh"]);
     expect(one.next_step.phase).toBe("done");
-    const bad = await sl(t.root, ["status", "--source", "nope"]);
+    const bad = await semlayer(t.root, ["status", "--source", "nope"]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain('Unknown source "nope"');
   });
@@ -561,58 +569,59 @@ describe("status counts and batches", () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     build(t.root, { models: "some" });
-    const r = await sl(t.root, ["status"]);
+    const r = await semlayer(t.root, ["status"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("wh (duckdb)");
     expect(r.out).toContain("5 tables, 5 in scope, 5 profiled");
     expect(r.out).toContain("Next batch (wh):");
     expect(r.out).toContain("Next step (draft)");
-    expect(r.out).toContain("sl draft --source wh");
+    expect(r.out).toContain("semlayer draft --source wh");
   });
 
   test("human output for the scope phase names the focus step", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     build(t.root, { wide: true, models: "none" });
-    const r = await sl(t.root, ["status"]);
+    const r = await semlayer(t.root, ["status"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("15 tables, 15 in scope, 5 profiled (needs focus)");
     expect(r.out).toContain("Next step (scope)");
     expect(r.out).toContain("which tables to focus on");
-    expect(r.out).toContain("sl tables --source wh --groups");
+    expect(r.out).toContain("semlayer tables --source wh --groups");
   });
 
   test("no project fails with a plain message", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
-    const r = await sl(t.root, ["status"]);
+    const r = await semlayer(t.root, ["status"]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain("sl init");
+    expect(r.err).toContain("semlayer init");
   });
 });
 
 describe("status owner gates and golden coverage", () => {
   test("after_owner_yes is true exactly when the command records an approval", () => {
-    expect(needsOwnerYes('sl approve --target wh.customers --by "<owner>"')).toBe(true);
-    expect(needsOwnerYes('sl approve --target access --by "<owner>"')).toBe(true);
-    expect(needsOwnerYes('sl goldens confirm --name g --by "<owner>"')).toBe(true);
-    expect(needsOwnerYes("sl goldens run --name <golden>")).toBe(false);
-    expect(needsOwnerYes("sl check-join --source wh --model orders --join customer")).toBe(false);
-    expect(needsOwnerYes("sl validate")).toBe(false);
-    expect(needsOwnerYes("sl approver")).toBe(false);
+    expect(needsOwnerYes('semlayer approve --target wh.customers --by "<owner>"')).toBe(true);
+    expect(needsOwnerYes('semlayer approve --target access --by "<owner>"')).toBe(true);
+    expect(needsOwnerYes('semlayer goldens confirm --name g --by "<owner>"')).toBe(true);
+    expect(needsOwnerYes("semlayer goldens run --name <golden>")).toBe(false);
+    expect(needsOwnerYes("semlayer check-join --source wh --model orders --join customer")).toBe(false);
+    expect(needsOwnerYes("semlayer validate")).toBe(false);
+    expect(needsOwnerYes("semlayer approver")).toBe(false);
   });
 
-  test("approve steps wait for the owner's yes; other steps do not", async () => {
+  test("sign-off steps name a readback until the owner's yes is recorded; other steps do not wait", async () => {
     const interview = await status({ models: "draft" });
-    expect(interview.next_step).toMatchObject({ phase: "interview", after_owner_yes: true });
+    expect(interview.next_step).toMatchObject({ phase: "interview", after_owner_yes: false });
     const join = await status({ models: "draft", evidence: false });
     expect(join.next_step).toMatchObject({ phase: "interview", after_owner_yes: false });
     const metrics = await status({ metrics: "draft" });
-    expect(metrics.next_step).toMatchObject({ phase: "metrics", after_owner_yes: true });
+    expect(metrics.next_step).toMatchObject({ phase: "metrics", after_owner_yes: false });
+    expect(metrics.next_step.command).toStartWith("semlayer readback --targets metric:");
     const noMetrics = await status({ metrics: "none" });
-    expect(noMetrics.next_step).toMatchObject({ phase: "metrics", command: "sl validate", after_owner_yes: false });
+    expect(noMetrics.next_step).toMatchObject({ phase: "metrics", command: "semlayer add-metric --name <metric> --type ratio|derived", action: { kind: "ask_owner" }, after_owner_yes: false });
     const access = await status({ access: "draft" });
-    expect(access.next_step).toMatchObject({ phase: "access", after_owner_yes: true });
+    expect(access.next_step).toMatchObject({ phase: "access", command: "semlayer readback --targets access", after_owner_yes: false });
     const verify = await status({ goldens: 2 });
     expect(verify.next_step).toMatchObject({ phase: "verify", after_owner_yes: false });
     const done = await status({});
@@ -624,13 +633,14 @@ describe("status owner gates and golden coverage", () => {
   test("human output says an approve command runs only after the owner's yes", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
-    build(t.root, { models: "draft" });
-    const r = await sl(t.root, ["status"]);
+    build(t.root, { models: "draft", questions: false });
+    const r = await semlayer(t.root, ["status"]);
     expect(r.code).toBe(0);
-    expect(r.out).toContain('  Only after the owner says yes to its readback: sl approve --target wh.customers --by "<owner>"');
-    build(t.root, { models: "draft", evidence: false });
-    const join = await sl(t.root, ["status"]);
-    expect(join.out).toContain("\n  sl check-join --source wh --model orders --join customer");
+    expect(r.out).toContain("\n  semlayer readback --targets wh.customers.id_dim,wh.customers.total,wh.customers");
+    expect(r.out).not.toContain("Only after the owner says yes");
+    build(t.root, { models: "draft", evidence: false, questions: false });
+    const join = await semlayer(t.root, ["status"]);
+    expect(join.out).toContain("\n  semlayer check-join --source wh --model orders --join customer");
     expect(join.out).not.toContain("Only after the owner says yes");
   });
 
@@ -638,7 +648,7 @@ describe("status owner gates and golden coverage", () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     build(t.root, { goldenRoles: false });
-    const before = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const before = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(before.roles_without_goldens).toEqual(["analyst", "viewer"]);
     const golden = (name: string, role: string, approved: boolean) =>
       writeYaml(join(t.root, "goldens", `${name}.yaml`), {
@@ -651,14 +661,14 @@ describe("status owner gates and golden coverage", () => {
       });
     golden("analyst_total", "analyst", true);
     golden("viewer_total", "viewer", false);
-    const after = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const after = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(after.roles_without_goldens).toEqual(["viewer"]);
-    const human = await sl(t.root, ["status"]);
+    const human = await semlayer(t.root, ["status"]);
     expect(human.out).toContain("roles without an approved golden: viewer");
     golden("viewer_total", "viewer", true);
-    const covered = await sl(t.root, ["status"]);
+    const covered = await semlayer(t.root, ["status"]);
     expect(covered.out).not.toContain("roles without an approved golden");
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual([]);
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual([]);
   });
 
   test("an approved golden without a role covers access.yaml's default_role", async () => {
@@ -679,24 +689,25 @@ describe("status owner gates and golden coverage", () => {
       });
     writeYaml(join(t.root, "access.yaml"), { status: "draft", default_role: "analyst", roles });
     golden("draft");
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual(["analyst", "viewer"]);
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual(["analyst", "viewer"]);
     golden("approved");
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual(["viewer"]);
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual(["viewer"]);
     writeYaml(join(t.root, "access.yaml"), { status: "draft", roles });
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual(["analyst", "viewer"]);
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual(["analyst", "viewer"]);
   });
 
   test("a role without an approved golden -> verify, even with enough goldens", async () => {
     const s = await status({ goldenRoles: false });
     expect(s.goldens.approved).toBe(5);
     expect(s.roles_without_goldens).toEqual(["analyst", "viewer"]);
-    expect(s.next_step).toMatchObject({ phase: "verify", command: "sl goldens run --name <golden>", after_owner_yes: false });
+    expect(s.next_step).toMatchObject({ phase: "verify", command: "semlayer goldens new --name <golden> --role analyst --question <question> --request <request>", action: { kind: "ask_owner" }, after_owner_yes: false });
     expect(s.next_step.message).toContain("write and confirm a golden that runs as role analyst");
     expect(s.next_step.message).toContain("Then do the same for role viewer.");
 
     const few = await status({ goldens: 2, goldenRoles: false });
     expect(few.next_step.phase).toBe("verify");
-    expect(few.next_step.message).toContain("2 of 5 approved goldens");
+    expect(few.next_step.message).toContain("2 of 3 golden(s) approved; the verify phase needs 5 approved. Draft golden g2 is next");
+    expect(few.next_step.command).toBe("semlayer readback --targets golden:g2");
     expect(few.next_step.message).toContain("Roles without an approved golden: analyst, viewer.");
 
     const t = tempRoot();
@@ -710,10 +721,10 @@ describe("status owner gates and golden coverage", () => {
       sql: "select 1",
       status: "draft",
     });
-    const one = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const one = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(one.roles_without_goldens).toEqual(["viewer"]);
     expect(one.next_step.message).toBe(
-      "4 of 5 approved goldens. Ask the owner for questions with known answers, run each golden and record it once they confirm the rows. " +
+      "4 of 6 golden(s) approved; the verify phase needs 5 approved. Draft golden g0 is next: read its rows back to the owner and confirm it once they say yes. " +
         "Roles without an approved golden: viewer.",
     );
   });
@@ -727,16 +738,16 @@ describe("status owner gates and golden coverage", () => {
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), m);
     // A golden whose name is missing goes by its file name.
     writeYaml(join(t.root, "goldens", "unnamed.yaml"), { question: "How many?", status: "draft" });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.draft_metrics).toEqual(["draft_one"]);
     expect(s.draft_goldens).toEqual(["g5", "unnamed"]);
     expect(s.next_step.phase).toBe("done");
     expect(s.next_step.message).toBe(
-      "Every phase the CLI can measure is complete. Rerun sl validate after any change. " +
+      "Every phase the CLI can measure is complete. Rerun semlayer validate after any change. " +
         "Name in the handoff the draft metric(s) draft_one; draft golden(s) g5, unnamed; draft field(s) wh.orders.total. " +
-        "Before the handoff, tick the coverage checklist in references/verification.md; every figure the owner gave needs a golden, draft or approved.",
+        "Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.",
     );
-    const human = await sl(t.root, ["status"]);
+    const human = await semlayer(t.root, ["status"]);
     expect(human.out).toContain("draft metrics: draft_one");
     expect(human.out).toContain("draft goldens: g5, unnamed");
   });
@@ -754,7 +765,7 @@ describe("status owner gates and golden coverage", () => {
     });
     // An empty golden file parses to null: neither counted nor listed.
     writeFileSync(join(t.root, "goldens", "empty.yaml"), "# nothing yet\n");
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.metrics).toEqual({ approved: 1, draft: 1 });
     expect(s.draft_metrics).toEqual(["metrics[1]"]);
     expect(s.goldens.draft).toBe(s.draft_goldens.length);
@@ -772,12 +783,12 @@ describe("status owner gates and golden coverage", () => {
       ],
     });
     rmSync(join(t.root, "goldens", "g5.yaml"));
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.draft_metrics).toEqual([]);
     expect(s.draft_goldens).toEqual([]);
     expect(s.next_step.message).toBe(
-      "Every phase the CLI can measure is complete. Rerun sl validate after any change. " +
-        "Before the handoff, tick the coverage checklist in references/verification.md; every figure the owner gave needs a golden, draft or approved.",
+      "Every phase the CLI can measure is complete. Rerun semlayer validate after any change. " +
+        "Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.",
     );
   });
 
@@ -788,7 +799,7 @@ describe("status owner gates and golden coverage", () => {
     cleanup = t.cleanup;
     build(t.root, { access: "missing" });
     writeYaml(join(t.root, "access.yaml"), { status: "draft", roles: [{ name: "support", allow: { models: [] } }, "not a role", { allow: {} }] });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.roles_without_goldens).toEqual(["support"]);
   });
 });
@@ -817,7 +828,7 @@ async function built(b: Build, after: (root: string) => void = () => {}): Promis
   cleanup = t.cleanup;
   build(t.root, b);
   after(t.root);
-  const r = await sl(t.root, ["status", "--json"]);
+  const r = await semlayer(t.root, ["status", "--json"]);
   if (r.code !== 0) throw new Error(r.err);
   return { root: t.root, st: r.json<ProjectStatus>() };
 }
@@ -909,15 +920,15 @@ describe("status access mode and default audience", () => {
       tables: [table("events", 100, { profiled_at: FIXED_NOW })],
     });
     writeYaml(join(t.root, "models", "lake", "events.yaml"), { ...model("web_events", true), model: "events", source: "lake", table: "main.events" });
-    const all = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const all = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(all.access.default_audience.models).toBe(6);
-    const wh = (await sl(t.root, ["status", "--json", "--source", "wh"])).json<ProjectStatus>();
+    const wh = (await semlayer(t.root, ["status", "--json", "--source", "wh"])).json<ProjectStatus>();
     expect(wh.access.default_audience).toEqual({ models: 5, fields: 10, metrics: 1, hidden_by_protected_tags: 0 });
   });
 
   test("no access.yaml -> access asks the exceptions question", async () => {
     const { st } = await built({ access: "missing" });
-    expect(st.next_step).toMatchObject({ phase: "access", command: "sl validate", after_owner_yes: false });
+    expect(st.next_step).toMatchObject({ phase: "access", command: "semlayer set access mode open|closed", action: { kind: "ask_owner" }, after_owner_yes: false });
     expect(st.next_step.message).toContain("access is open");
     expect(st.next_step.message).toContain("is there anything some people should not see?");
     expect(st.next_step.message).toContain("pii or sensitive");
@@ -926,7 +937,7 @@ describe("status access mode and default audience", () => {
   test("a draft open access.yaml with no roles -> the exceptions question, then approve the open baseline", async () => {
     const { st } = await built({ access: "missing" }, (root) => writeYaml(join(root, "access.yaml"), { status: "draft", mode: "open" }));
     expect(st.access).toMatchObject({ state: "draft", roles: 0, mode: "open" });
-    expect(st.next_step).toMatchObject({ phase: "access", command: 'sl approve --target access --by "<owner>"', after_owner_yes: true });
+    expect(st.next_step).toMatchObject({ phase: "access", command: "semlayer readback --targets access", after_owner_yes: false });
     expect(st.next_step.message).toContain("is there anything some people should not see?");
     expect(st.next_step.message).toContain("no roles yet");
   });
@@ -949,7 +960,7 @@ describe("status access mode and default audience", () => {
   test("a draft closed access.yaml with no roles asks who may see what", async () => {
     const { st } = await built({ access: "missing" }, (root) => writeYaml(join(root, "access.yaml"), { status: "draft", mode: "closed" }));
     expect(st.access).toMatchObject({ state: "draft", roles: 0, mode: "closed" });
-    expect(st.next_step).toMatchObject({ phase: "access", command: "sl validate" });
+    expect(st.next_step).toMatchObject({ phase: "access", command: "semlayer add-role --name <role> --allow-models <pattern>", action: { kind: "ask_owner" } });
     expect(st.next_step.message).toContain("closed and has no roles yet, so nobody sees anything");
   });
 
@@ -969,7 +980,7 @@ describe("status access mode and default audience", () => {
       }),
     );
     expect(st.access).toMatchObject({ state: "draft", roles: 0, restrictions: 1, mode: "open" });
-    expect(st.next_step).toMatchObject({ phase: "access", command: 'sl approve --target access --by "<owner>"', after_owner_yes: true });
+    expect(st.next_step).toMatchObject({ phase: "access", command: "semlayer readback --targets access", after_owner_yes: false });
     expect(st.next_step.message).toContain("0 role(s) and 1 restriction(s)");
     expect(st.next_step.message).toContain("every restriction");
     expect(st.next_step.message).not.toContain("open baseline");
@@ -980,7 +991,7 @@ describe("status access mode and default audience", () => {
       writeYaml(join(root, "access.yaml"), { status: "draft", mode: "opne", roles: [{ name: "analyst", allow: { models: ["wh.*"] } }] }),
     );
     expect(st.access.mode).toBe("closed");
-    expect(st.next_step).toMatchObject({ phase: "access", command: "sl validate", after_owner_yes: false });
+    expect(st.next_step).toMatchObject({ phase: "access", command: "semlayer validate", after_owner_yes: false });
     expect(st.next_step.message).toContain("its mode is unreadable");
     expect(st.next_step.message).toContain('"opne" is not open or closed');
     expect(st.next_step.message).not.toContain("closed and has no roles yet");
@@ -998,7 +1009,7 @@ describe("status access mode and default audience", () => {
       writeYaml(path, { ...readYaml<object>(path), mode: "opne" });
     });
     expect(st.access.state).toBe("approved");
-    expect(st.next_step).toMatchObject({ phase: "access", command: "sl validate" });
+    expect(st.next_step).toMatchObject({ phase: "access", command: "semlayer validate" });
     expect(st.next_step.message).toContain("access.yaml is approved, but its mode is unreadable");
   });
 
@@ -1008,7 +1019,7 @@ describe("status access mode and default audience", () => {
       writeYaml(path, { ...readYaml<object>(path), restrictions: "everything" });
     });
     expect(st.access.mode).toBe("closed");
-    expect(st.next_step).toMatchObject({ phase: "access", command: "sl validate" });
+    expect(st.next_step).toMatchObject({ phase: "access", command: "semlayer validate" });
     expect(st.next_step.message).toContain("cannot be read as written");
     expect(st.next_step.message).toContain("nobody sees anything");
   });
@@ -1019,7 +1030,7 @@ describe("status access mode and default audience", () => {
     );
     expect(st.access).toMatchObject({ state: "approved", roles: 0, mode: "closed" });
     expect(st.access.default_audience).toEqual({ models: 0, fields: 0, metrics: 0, hidden_by_protected_tags: 0 });
-    expect(st.next_step).toMatchObject({ phase: "access", command: "sl validate" });
+    expect(st.next_step).toMatchObject({ phase: "access", command: "semlayer add-role --name <role> --allow-models <pattern>", action: { kind: "ask_owner" } });
     expect(st.next_step.message).toContain("access.yaml is approved, but it is closed and has no roles yet, so nobody sees anything");
   });
 
@@ -1027,13 +1038,13 @@ describe("status access mode and default audience", () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     build(t.root, {});
-    const open = await sl(t.root, ["status"]);
+    const open = await semlayer(t.root, ["status"]);
     expect(open.out).toContain("access mode open; the default audience sees 5 models, 10 fields, 1 metric\n");
     editModel(t.root, "customers", (m) => {
       m.dimensions[0]!.tags = ["pii"];
     });
     rmSync(join(t.root, "access.yaml"));
-    const tagged = await sl(t.root, ["status"]);
+    const tagged = await semlayer(t.root, ["status"]);
     expect(tagged.out).toContain("access mode open (no access.yaml); the default audience sees 5 models, 9 fields, 1 metric; 1 hidden by protected tags");
   });
 });
@@ -1056,7 +1067,7 @@ describe("status schema evolution", () => {
       { model: "orders", column: "discount", type: "DECIMAL(10,2)" },
       { model: "web_events", column: "referrer", type: "VARCHAR" },
     ]);
-    expect(st.next_step).toMatchObject({ phase: "draft", source: "wh", command: "sl draft --source wh --new-columns", after_owner_yes: false });
+    expect(st.next_step).toMatchObject({ phase: "draft", source: "wh", command: "semlayer draft --source wh --new-columns", after_owner_yes: false });
     expect(st.next_step.message).toContain("orders.discount (DECIMAL(10,2)), web_events.referrer (VARCHAR)");
   });
 
@@ -1068,7 +1079,7 @@ describe("status schema evolution", () => {
     );
     expect(st.sources[0]!.new_columns).toEqual([{ model: "orders", column: "discount", type: "integer" }]);
     // The draft phase precedes the interview, so the new column is drafted first.
-    expect(st.next_step.command).toBe("sl draft --source wh --new-columns");
+    expect(st.next_step.command).toBe("semlayer draft --source wh --new-columns");
   });
 
   test("tables without a model are drafted before new columns", async () => {
@@ -1078,7 +1089,7 @@ describe("status schema evolution", () => {
       }),
     );
     expect(st.sources[0]!.new_columns).toEqual([{ model: "orders", column: "discount", type: "integer" }]);
-    expect(st.next_step.command).toBe("sl draft --source wh");
+    expect(st.next_step.command).toBe("semlayer draft --source wh");
   });
 
   test("ignored columns, join keys, incoming keys and referenced columns are not new", async () => {
@@ -1108,7 +1119,7 @@ describe("status schema evolution", () => {
     expect(st.sources[0]!.new_columns).toEqual([]);
     // The model is still served, so the column its approved measure reads opens drift.
     expect(st.sources[0]!.missing_columns).toEqual([{ model: "orders_tmp", field: "total", column: "amount" }]);
-    expect(st.next_step).toMatchObject({ phase: "drift", source: "wh", command: "sl validate" });
+    expect(st.next_step).toMatchObject({ phase: "drift", source: "wh", command: "semlayer validate" });
     expect(st.next_step.message).toContain("orders_tmp.total (reads amount)");
   });
 
@@ -1166,7 +1177,7 @@ describe("status schema evolution", () => {
       });
     });
     expect(st.sources[0]!.new_columns).toEqual([{ model: "customers", column: "segment", type: "varchar" }]);
-    expect(st.next_step.command).toBe("sl draft --source wh --new-columns");
+    expect(st.next_step.command).toBe("semlayer draft --source wh --new-columns");
   });
 
   test("a partly profiled table is not profiled: status names it as needing a profile for new or retyped columns", async () => {
@@ -1182,12 +1193,12 @@ describe("status schema evolution", () => {
     expect(w.snapshot!.profiled).toBe(3);
     expect(w.unprofiled_tables).toEqual(["main.fct_orders", "main.web_events"]);
     expect(w.partially_profiled_tables).toEqual(["main.fct_orders"]);
-    expect(st.next_step).toMatchObject({ phase: "profile", command: "sl profile --source wh" });
+    expect(st.next_step).toMatchObject({ phase: "profile", command: "semlayer profile --source wh" });
     expect(st.next_step.message).toBe(
       '1 in-scope table(s) in "wh" have no profile: main.web_events. ' +
         '1 in-scope table(s) in "wh" need a profile for new or retyped columns: main.fct_orders.',
     );
-    const human = await sl(root, ["status"]);
+    const human = await semlayer(root, ["status"]);
     expect(human.out).toContain("5 tables, 5 in scope, 3 profiled, 1 partly profiled");
   });
 
@@ -1201,7 +1212,7 @@ describe("status schema evolution", () => {
     const w = st.sources[0]!;
     expect(w.needs_focus).toBe(true);
     expect(w.missing_columns).toEqual([{ model: "orders", field: "total", column: "amount" }]);
-    expect(st.next_step).toMatchObject({ phase: "drift", source: "wh", command: "sl validate", after_owner_yes: false });
+    expect(st.next_step).toMatchObject({ phase: "drift", source: "wh", command: "semlayer validate", after_owner_yes: false });
     expect(st.next_step.message).toContain("The table changed");
     expect(st.next_step.message).toContain("orders.total (reads amount)");
     expect(st.next_step.message).toContain("Read the affected items back to the owner");
@@ -1215,9 +1226,9 @@ describe("status schema evolution", () => {
       tableOf(snap, "fct_orders").columns = tableOf(snap, "fct_orders").columns.filter((c) => c.name !== "amount");
     });
     writeYaml(join(t.root, "sources", "lake.yaml"), { source: "lake", dialect: "duckdb" });
-    const st = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const st = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(st.next_step).toMatchObject({ phase: "introspect", source: "lake" });
-    const wh = (await sl(t.root, ["status", "--json", "--source", "wh"])).json<ProjectStatus>();
+    const wh = (await semlayer(t.root, ["status", "--json", "--source", "wh"])).json<ProjectStatus>();
     expect(wh.next_step.phase).toBe("drift");
   });
 
@@ -1293,7 +1304,7 @@ describe("status schema evolution", () => {
     const w = st.sources[0]!;
     expect(w.missing_tables).toEqual([{ model: "web_events", table: "main.web_events" }]);
     expect(w.out_of_scope_models).toEqual(["web_events"]);
-    expect(st.next_step).toMatchObject({ phase: "drift", source: "wh", command: "sl validate" });
+    expect(st.next_step).toMatchObject({ phase: "drift", source: "wh", command: "semlayer validate" });
     expect(st.next_step.message).toContain("1 approved model(s) in \"wh\" are built on a table the snapshot no longer has: web_events (main.web_events)");
   });
 
@@ -1331,7 +1342,7 @@ describe("status schema evolution", () => {
       orders.columns = orders.columns.filter((c) => c.name !== "amount");
       orders.columns.push({ name: "discount", type: "integer" });
     });
-    const r = await sl(t.root, ["status"]);
+    const r = await semlayer(t.root, ["status"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("  missing columns: orders.total reads amount");
     expect(r.out).toContain("  columns without a field: orders.discount (integer)");
@@ -1339,7 +1350,7 @@ describe("status schema evolution", () => {
     editSnapshot(t.root, (snap) => {
       snap.tables = snap.tables.filter((x) => x.name !== "web_events");
     });
-    const gone = await sl(t.root, ["status"]);
+    const gone = await semlayer(t.root, ["status"]);
     expect(gone.out).toContain("  models on tables the snapshot no longer has: web_events (main.web_events)");
   });
 });
@@ -1349,19 +1360,19 @@ describe("status after access.yaml is revoked", () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     build(t.root, { access: "draft" });
-    const plain = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const plain = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(plain.access.last_approved).toBeUndefined();
     expect(plain.next_step.message).not.toContain("keeps applying");
     const access = readYaml<Record<string, unknown>>(join(t.root, "access.yaml"));
     writeYaml(join(t.root, "access.yaml"), { ...access, last_approved: { by: "Dana", at: "2026-01-15" } });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.access.state).toBe("draft");
     expect(s.access.last_approved).toEqual({ by: "Dana", at: "2026-01-15" });
     expect(s.next_step.phase).toBe("access");
     expect(s.next_step.message).toContain(
       "The version approved by Dana on 2026-01-15 keeps applying where it is deployed; tools that load this draft serve nothing.",
     );
-    const human = await sl(t.root, ["status"]);
+    const human = await semlayer(t.root, ["status"]);
     expect(human.out).toContain("access draft (2 role(s), the version approved by Dana on 2026-01-15 keeps applying where it is deployed)");
   });
 
@@ -1371,7 +1382,7 @@ describe("status after access.yaml is revoked", () => {
     build(t.root, {});
     const access = readYaml<Record<string, unknown>>(join(t.root, "access.yaml"));
     writeYaml(join(t.root, "access.yaml"), { ...access, last_approved: { by: "Dana", at: "2026-01-15" } });
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().access.last_approved).toBeUndefined();
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().access.last_approved).toBeUndefined();
   });
 });
 
@@ -1414,12 +1425,12 @@ describe("status row_filter_joins_without_goldens", () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     repProject(t.root);
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.row_filter_joins_without_goldens).toEqual([
       { role: "rep", model: "wh.orders", filtered_model: "wh.customers", join: "customer" },
       { role: "rep", model: "wh.web_events", filtered_model: "wh.customers", join: "order.customer" },
     ]);
-    const human = await sl(t.root, ["status"]);
+    const human = await semlayer(t.root, ["status"]);
     expect(human.out).toContain(
       "row-filtered joins without an approved golden as the role: wh.orders -> wh.customers through customer (role rep), " +
         "wh.web_events -> wh.customers through order.customer (role rep)",
@@ -1432,16 +1443,16 @@ describe("status row_filter_joins_without_goldens", () => {
     repProject(t.root);
     golden(t.root, "rep_orders_draft", { role: "rep", request: { source: "wh", dimensions: ["orders.id_dim"] }, status: "draft" });
     golden(t.root, "analyst_events", { role: "analyst", request: { source: "wh", measures: ["web_events.total"] } });
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens.map((x) => x.model)).toEqual([
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens.map((x) => x.model)).toEqual([
       "wh.orders",
       "wh.web_events",
     ]);
     // A golden with no measures starts from its first dimension and covers that model.
     golden(t.root, "rep_orders", { role: "rep", request: { source: "wh", dimensions: ["orders.id_dim"] } });
     golden(t.root, "rep_events", { role: "rep", request: { source: "wh", measures: ["customers.total"], filters: [{ field: "web_events.id_dim", op: "eq", value: 1 }] } });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.row_filter_joins_without_goldens).toEqual([]);
-    expect((await sl(t.root, ["status"])).out).not.toContain("row-filtered joins without");
+    expect((await semlayer(t.root, ["status"])).out).not.toContain("row-filtered joins without");
   });
 
   test("a metric a golden names covers the models of its measures", async () => {
@@ -1449,7 +1460,7 @@ describe("status row_filter_joins_without_goldens", () => {
     cleanup = t.cleanup;
     repProject(t.root);
     golden(t.root, "rep_avg", { role: "rep", request: { source: "wh", measures: ["avg_total"] } });
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens.map((x) => x.model)).toEqual(["wh.web_events"]);
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens.map((x) => x.model)).toEqual(["wh.web_events"]);
   });
 
   test("a golden with no role covers default_role", async () => {
@@ -1459,7 +1470,7 @@ describe("status row_filter_joins_without_goldens", () => {
     const access = readYaml<Record<string, unknown>>(join(t.root, "access.yaml"));
     writeYaml(join(t.root, "access.yaml"), { ...access, default_role: "rep" });
     golden(t.root, "default_orders", { request: { source: "wh", measures: ["orders.total", "web_events.total"] } });
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens).toEqual([]);
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens).toEqual([]);
   });
 
   test("a golden with no role runs as the roles its user meets, and default_role only when it meets none", async () => {
@@ -1474,25 +1485,25 @@ describe("status row_filter_joins_without_goldens", () => {
     });
     // g0 is the only golden as viewer.
     rmSync(join(t.root, "goldens", "g0.yaml"));
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual(["viewer", "rep"]);
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual(["viewer", "rep"]);
     // Its user meets rep's assign_when, so it runs as rep and covers orders; it does not run as viewer.
     golden(t.root, "sales_orders", { user: { department: "sales", customer_id: 1 }, request: { source: "wh", dimensions: ["orders.id_dim"] } });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.row_filter_joins_without_goldens.map((x) => x.model)).toEqual(["wh.web_events"]);
     expect(s.roles_without_goldens).toEqual(["viewer"]);
     // A role named in another letter case is the same role.
     golden(t.root, "rep_events", { role: "Rep", request: { source: "wh", dimensions: ["web_events.id_dim"] } });
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens).toEqual([]);
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens).toEqual([]);
     // A user who meets no condition runs as default_role.
     golden(t.root, "other_orders", { user: { department: "ops" }, request: { source: "wh", dimensions: ["orders.id_dim"] } });
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual([]);
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().roles_without_goldens).toEqual([]);
   });
 
   test("a model the role does not see is not listed, and a one_to_many join is not followed", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     repProject(t.root, { deny: { models: ["wh.web_events"] } });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.row_filter_joins_without_goldens).toEqual([{ role: "rep", model: "wh.orders", filtered_model: "wh.customers", join: "customer" }]);
     // stg_events reaches nothing through to-one joins: web_events' visits join is one_to_many.
     const t2 = tempRoot();
@@ -1502,7 +1513,7 @@ describe("status row_filter_joins_without_goldens", () => {
       t2.cleanup();
     };
     repProject(t2.root, { row_filters: [{ model: "wh.stg_events", expr: "id = {{ user.customer_id }}" }] });
-    expect((await sl(t2.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens).toEqual([]);
+    expect((await semlayer(t2.root, ["status", "--json"])).json<ProjectStatus>().row_filter_joins_without_goldens).toEqual([]);
   });
 
   test("no access.yaml or no row filters means none", async () => {
@@ -1516,7 +1527,7 @@ describe("status row_filter_joins_without_goldens", () => {
     repProject(t.root);
     golden(t.root, "rep_customers", { role: "rep", request: { source: "wh", measures: ["customers.total"] } });
     golden(t.root, "rep_orders", { role: "rep", request: { source: "wh", measures: ["orders.total"] } });
-    const s = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const s = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(s.next_step.phase).toBe("done");
     expect(s.next_step.message).toContain(
       "models that reach a row-filtered model through joins with no approved golden as the role: wh.web_events -> wh.customers through order.customer (role rep)",
@@ -1535,76 +1546,81 @@ describe("status reapprove phase", () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     build(t.root, { models: "draft" });
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().next_step.phase).toBe("interview");
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().next_step.phase).toBe("interview");
     // Stamped first: once an item records a hash, --stamp-hashes refuses the approved items without one.
-    expect((await sl(t.root, ["approve", "--stamp-hashes"])).code).toBe(0);
-    expect((await sl(t.root, ["approve", "--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
+    expect((await semlayer(t.root, ["approve", "--stamp-hashes"])).code).toBe(0);
+    expect((await approveWithYes(t.root, ["--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
     // The analytics review's experiment: the approved measure now sums a thousand times the amount.
     editModel(t.root, "orders", (m) => (m.measures[0]!.expr = "amount * 1000"));
     const path = join(t.root, "access.yaml");
     writeYaml(path, { ...readYaml<Record<string, unknown>>(path), roles: [{ name: "analyst", allow: { models: ["wh.orders"] } }] });
-    const st = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const st = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(st.changed_since_approval).toEqual(["wh.orders.total", "access"]);
     expect(st.next_step).toEqual({
       phase: "reapprove",
       message:
         "2 approved item(s) changed since they were approved: wh.orders.total, access. Read each back to the owner as it now stands and approve it again " +
-        "only after they confirm, or restore the approved definition; sl validate names each one.",
-      command: 'sl approve --target wh.orders.total --by "<owner>"',
-      after_owner_yes: true,
+        "only after they confirm, or restore the approved definition; semlayer validate names each one. Until then tools treat each one as a draft (semlayer access lists them).",
+      command: "semlayer readback --targets wh.orders.total,access",
+      action: { command: "readback", args: ["--targets", "wh.orders.total,access"], kind: "run" },
+      after_owner_yes: false,
+      blocked_on: "open_questions",
     });
     expect(st.hash_missing).toEqual([]);
-    const human = await sl(t.root, ["status"]);
+    const human = await semlayer(t.root, ["status"]);
     expect(human.out).toContain("changed since approval: wh.orders.total, access");
     expect(human.out).toContain("Next step (reapprove)");
     // Approving the measure again after the readback clears it from the list.
-    expect((await sl(t.root, ["approve", "--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().changed_since_approval).toEqual(["access"]);
+    expect((await approveWithYes(t.root, ["--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().changed_since_approval).toEqual(["access"]);
   });
 
   test("an approved item whose approved_hash was removed opens reapprove, listed apart from the changed ones", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     build(t.root, {});
-    expect((await sl(t.root, ["approve", "--stamp-hashes"])).code).toBe(0);
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().next_step.phase).toBe("done");
+    expect((await semlayer(t.root, ["approve", "--stamp-hashes"])).code).toBe(0);
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().next_step.phase).toBe("done");
     editModel(t.root, "orders", (m) => {
       m.measures[0]!.expr = "amount * 1000";
       delete m.measures[0]!.approved_hash;
     });
-    const st = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const st = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(st.changed_since_approval).toEqual([]);
     expect(st.hash_missing).toEqual(["wh.orders.total"]);
     expect(st.next_step).toEqual({
       phase: "reapprove",
       message:
         "1 approved item(s) have no approved_hash while other approved items carry one, so it may have been removed: wh.orders.total. " +
-        "Read each back to the owner as it now stands and approve it again only after they confirm, or restore the approved definition; sl validate names each one.",
-      command: 'sl approve --target wh.orders.total --by "<owner>"',
-      after_owner_yes: true,
+        "Read each back to the owner as it now stands and approve it again only after they confirm, or restore the approved definition; semlayer validate names each one. " +
+        "Until then tools treat each one as a draft (semlayer access lists them).",
+      command: "semlayer readback --targets wh.orders.total",
+      action: { command: "readback", args: ["--targets", "wh.orders.total"], kind: "run" },
+      after_owner_yes: false,
+      blocked_on: "open_questions",
     });
-    expect((await sl(t.root, ["status"])).out).toContain("approved without approved_hash while others carry one: wh.orders.total");
-    expect((await sl(t.root, ["approve", "--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().hash_missing).toEqual([]);
+    expect((await semlayer(t.root, ["status"])).out).toContain("approved without approved_hash while others carry one: wh.orders.total");
+    expect((await approveWithYes(t.root, ["--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().hash_missing).toEqual([]);
   });
 
   test("a changed approved metric is listed, and drift still comes first", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     build(t.root, {});
-    expect((await sl(t.root, ["approve", "--stamp-hashes"])).code).toBe(0);
+    expect((await semlayer(t.root, ["approve", "--stamp-hashes"])).code).toBe(0);
     const path = join(t.root, "metrics.yaml");
     const file = readYaml<{ metrics: Record<string, unknown>[] }>(path);
     file.metrics[0]!.denominator = "orders.total";
     writeYaml(path, file);
-    const st = (await sl(t.root, ["status", "--json"])).json<ProjectStatus>();
+    const st = (await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>();
     expect(st.changed_since_approval).toEqual(["metric:avg_total"]);
     expect(st.next_step.phase).toBe("reapprove");
     editSnapshot(t.root, (snap) => {
       const orders = tableOf(snap, "fct_orders");
       orders.columns = orders.columns.filter((c) => c.name !== "amount");
     });
-    expect((await sl(t.root, ["status", "--json"])).json<ProjectStatus>().next_step.phase).toBe("drift");
+    expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().next_step.phase).toBe("drift");
   });
 
   test("the new-columns step says a column left out on purpose goes in ignored_columns", async () => {

@@ -1,0 +1,29 @@
+{
+  "name": "acme-export",
+  "description": "The Acme lake when no connection is possible: the owner shares a schema export, the definitions are approved from it, and the data-dependent steps wait on a connection. Structured owner persona.",
+  "fixture": "acme",
+  "intake": {
+    "path": "export",
+    "source": "lake",
+    "dialect": "duckdb",
+    "views": {
+      "web_events": "read_parquet('{fixture}/data/lake/web_events/*.parquet')",
+      "sessions": "read_parquet('{fixture}/data/lake/sessions.parquet')",
+      "marketing_spend": "read_parquet('{fixture}/data/lake/marketing_spend.parquet')",
+      "web_events_2024_archive": "read_parquet('{fixture}/data/lake/web_events_2024_archive.parquet')",
+      "tmp_session_dedupe": "read_parquet('{fixture}/data/lake/tmp_session_dedupe.parquet')"
+    }
+  },
+  "brief_note": "IT does not allow any connection to the lake files in this session, so when the agent asks for one, say a connection is not possible and why. You can run one read-only catalog query and share its result: you saved it as shared/lake-schema.csv in the semantic directory. Confirming a figure against your reports waits until the agent can read the data; say so if it asks.",
+  "persona": "structured",
+  "budgets": { "max_turns": 40, "max_tokens": 400000 },
+  "opening": "Hi, I am Dana Ruiz, head of analytics at Acme. I would like a semantic layer for our event lake, the source lake. Can you build it with me?",
+  "script": "acme-export.script.json",
+  "grading": {
+    "selection": {
+      "lake": ["web_events", "sessions", "marketing_spend"],
+      "warehouse": ["fct_orders", "fct_order_items", "fct_refunds", "dim_customers", "dim_products", "dim_regions"]
+    },
+    "protected_columns": ["dim_customers.email", "dim_customers.phone", "dim_customers.first_name", "dim_customers.last_name"]
+  }
+}

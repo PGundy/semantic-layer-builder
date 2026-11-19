@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { beforeAll, describe, expect, test } from "bun:test";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { SQL } from "bun";
 import { DuckDBInstance } from "@duckdb/node-api";
@@ -8,7 +7,7 @@ import { generate } from "../fixtures/acme/generate.ts";
 import { loadPostgres } from "../fixtures/acme/load-postgres.ts";
 import { computeReferenceFigures, serializeFigures, type ReferenceFigures } from "../fixtures/acme/reference-figures.ts";
 import { WAREHOUSE_TABLES } from "../fixtures/acme/schema.ts";
-import { PG_URL } from "./helpers.ts";
+import { PG_URL, tempDir } from "./helpers.ts";
 
 const ACME = join(import.meta.dir, "..", "fixtures", "acme");
 const DATA = join(ACME, "data");
@@ -45,10 +44,7 @@ async function counts(queries: Record<string, string>): Promise<Record<string, n
 
 let tmp = "";
 beforeAll(() => {
-  tmp = mkdtempSync(join(tmpdir(), "sl-acme-"));
-});
-afterAll(() => {
-  if (tmp) rmSync(tmp, { recursive: true, force: true });
+  tmp = tempDir("acme");
 });
 
 describe("acme fixture", () => {

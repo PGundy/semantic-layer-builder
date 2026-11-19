@@ -1,10 +1,80 @@
 {
   "name": "semantic-layer-builder",
   "version": "0.1.0",
-  "description": "Interview a data owner and build a governed semantic layer (models, approved measures, joins, access rules) across many data sources.",
+  "description": "Interview a data owner at the terminal and build a governed semantic layer (models, approved measures, joins, access rules) across many data sources, with the semlayer command and /semlayer.",
   "author": { "name": "PGundy", "url": "https://github.com/PGundy" },
   "homepage": "https://github.com/PGundy/semantic-layer-builder",
   "repository": "https://github.com/PGundy/semantic-layer-builder",
   "license": "MIT",
-  "keywords": ["semantic-layer", "metrics", "data", "duckdb", "postgres", "text-to-sql"]
+  "keywords": ["semantic-layer", "metrics", "data", "duckdb", "postgres", "text-to-sql"],
+  "mcpServers": {
+    "semantic-layer": {
+      "command": "bun",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/mcp/server.ts", "--role", "interviewer"]
+    }
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash|Read|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/hooks/guard-edits.ts\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*semantic-layer.*__semlayer_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/mcp/guard.ts\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/hooks/integrity.ts\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|mcp__.*semantic-layer.*__semlayer_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/hooks/integrity.ts\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash|mcp__.*semantic-layer.*__semlayer_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/hooks/integrity.ts\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/skills/semantic-layer/scripts/hooks/session-start.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
 }

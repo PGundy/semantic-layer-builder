@@ -1,5 +1,5 @@
-// Name and profile heuristics for columns whose values look personal or sensitive. sl draft tags
-// the fields it drafts from them, and sl validate warns when an approved field everyone may see
+// Name and profile heuristics for columns whose values look personal or sensitive. semlayer draft tags
+// the fields it drafts from them, and semlayer validate warns when an approved field everyone may see
 // matches one without a pii, sensitive or public tag.
 import { classifyType, isTemporal } from "./column-types.ts";
 import { toSpecName } from "./naming.ts";

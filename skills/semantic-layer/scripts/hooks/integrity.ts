@@ -1,0 +1,894 @@
+#!/usr/bin/env bun
+// The plugin's before-and-after comparison of the answer ledger, and its refusal to read or search a
+// connection's env file (spec: Hand edits). guard-edits.ts calls runBefore from its PreToolUse run;
+// plugin.json runs this file after a Bash call or one of the MCP server's semlayer tools (PostToolUse and
+// PostToolUseFailure) and before one of those MCP tools.
+//
+// Before a Bash call that is neither a plain semlayer command nor a git-only command, the hook copies
+// .semlayer/ledger.jsonl and .semlayer/pending/ of every semantic root it can find into its state directory.
+// After the call it compares. A difference no semlayer or git command could have made is put back and
+// reported; one made while semlayer or git ran at the same time is left and reported. A call whose
+// after-check never ran is compared at the next before-call. The state directory is
+// ${CLAUDE_PLUGIN_DATA}/ledger-guard, or a private directory under the system temp directory. It
+// also holds, per project directory, the evidence that the project uses this plugin, which extends
+// the env file refusal to a project with no semantic root yet.
+// An error of the hook's own never refuses a call: it warns on stderr and lets the call through.
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir, userInfo } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { bareSemlayer } from "../lib/plugin-bin.ts";
+import { bareSemlayerReach, nameAt, SHELLS, tokenize } from "./shell-writes.ts";
+
+type Obj = Record<string, unknown>;
+type Env = Record<string, string | undefined>;
+const isObject = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
+const expandHome = (p: string) => (p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
+
+// The path with links resolved, for a file that may not exist yet.
+export function realPath(p: string): string {
+  const rest: string[] = [];
+  let cur = p;
+  while (!existsSync(cur)) {
+    const up = dirname(cur);
+    if (up === cur) return p;
+    rest.unshift(basename(cur));
+    cur = up;
+  }
+  return join(realpathSync.native(cur), ...rest);
+}
+
+// The nearest directory holding semantic.yaml at or above `p`.
+export function semanticRoot(p: string): string | undefined {
+  for (let dir = p; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, "semantic.yaml"))) return dir;
+    if (dirname(dir) === dir) return undefined;
+  }
+}
+
+// --- Shell commands --------------------------------------------------------------------------
+
+type Word = { word: string; dynamic: boolean; pattern?: boolean };
+
+interface Simple {
+  words: Word[];
+  // The files it reads through < and writes through > and its kin.
+  reads: Word[];
+  writes: Word[];
+  // Heredoc bodies and <<< strings on its stdin.
+  stdin: string[];
+}
+
+const SEPARATORS = new Set([";", ";;", "&&", "||", "|", "|&", "&", "(", ")"]);
+
+// The simple commands of a command line, the text of each $(...) and `...` in it, and whether it
+// leaves a command running (&).
+function parseShell(command: string): { commands: Simple[]; subs: string[]; background: boolean } {
+  const subs: string[] = [];
+  const toks = tokenize(command, subs);
+  const commands: Simple[] = [];
+  let cur: Simple = { words: [], reads: [], writes: [], stdin: [] };
+  let background = false;
+  const flush = () => {
+    if (cur.words.length || cur.reads.length || cur.writes.length) commands.push(cur);
+    cur = { words: [], reads: [], writes: [], stdin: [] };
+  };
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i]!;
+    if ("word" in t) {
+      cur.words.push(t);
+      continue;
+    }
+    if (SEPARATORS.has(t.op)) {
+      if (t.op === "&") background = true;
+      flush();
+      continue;
+    }
+    if (t.body !== undefined) cur.stdin.push(t.body);
+    if (t.op === "<<" || t.op === "<<-") continue;
+    const target = toks[i + 1];
+    if (!target || !("word" in target)) continue;
+    i++;
+    if (t.op === "<<<") cur.stdin.push(target.word);
+    else if ((t.op === ">&" || t.op === "<&") && /^(\d+-?|-)$/.test(target.word)) continue;
+    else if (t.op === "<" || t.op === "<&") cur.reads.push(target);
+    else if (t.op === "<>") cur.reads.push(target), cur.writes.push(target);
+    else cur.writes.push(target);
+  }
+  flush();
+  return { commands, subs, background };
+}
+
+// The directories a `cd` or `pushd` may leave the shell in, added to `dirs`; false when it cannot be followed.
+function follow(args: Word[], dirs: string[]): boolean {
+  const to = args.filter((a) => !a.word.startsWith("-"));
+  if (to.length > 1 || args.some((a) => a.dynamic || a.word === "-")) return false;
+  for (const d of [...dirs]) {
+    const next = resolve(d, expandHome(to[0]?.word ?? "~"));
+    if (dirs.length < 8 && !dirs.includes(next)) dirs.push(next);
+  }
+  return true;
+}
+
+// --- The env file ----------------------------------------------------------------------------
+
+const SECRET = "This file holds the connection secret. semlayer reads it itself, and you never need its contents. To check the connection, run semlayer setup --source <s>.";
+const READERS = new Set(["cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "sed", "awk", "gawk", "source", ".", "tac", "nl", "od", "xxd", "strings", "base64", "bat"]);
+const GREPS = new Set(["grep", "egrep", "fgrep", "rg"]);
+const SCAN_HINT = "To search the other files, name a subdirectory or add --exclude='.env*'.";
+const grepHint = (file: string) => `To search the other files, give a subdirectory as path, or a glob that leaves this file out (glob: "!${basename(file)}").`;
+// The directories a Grep's search is followed into.
+const GREP_DIRS = 1000;
+const isEnvName = (name: string) => /^\.env(\..+)?$/.test(name) && name !== ".env.example";
+
+// A directory's first 500 entries by name. The order a filesystem lists them in differs from one
+// machine to the next, so every listing here is sorted.
+function listDirs(dir: string) {
+  return readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)).slice(0, 500);
+}
+
+// Whether a directory is a semantic root or directly holds one.
+function nearRoot(dir: string): boolean {
+  if (existsSync(join(dir, "semantic.yaml")) || existsSync(join(dir, "semantic", "semantic.yaml"))) return true;
+  try {
+    return listDirs(dir).some((e) => !e.isFile() && existsSync(join(dir, e.name, "semantic.yaml")));
+  } catch {
+    return false;
+  }
+}
+
+// Whether a file is an env file a semantic root would load: .env or .env.<name> (not .env.example)
+// in a semantic root or the directory holding one, or the file SEMLAYER_ENV_FILE names; and, in a project
+// that has shown it uses this plugin (inUse), one in the project directory or the working directory,
+// where semlayer looks before a root exists. semlayer's own lookup is lib/env-file.ts; this is the short path
+// rule the hook needs, and it reads no file.
+function isEnvFile(abs: string, cwd: string, env: Env): boolean {
+  if (!existsSync(abs)) return false;
+  const real = realPath(abs);
+  if (env.SEMLAYER_ENV_FILE && realPath(resolve(cwd, expandHome(env.SEMLAYER_ENV_FILE))) === real) return true;
+  return [abs, real].some((p) => isEnvName(basename(p)) && (nearRoot(dirname(p)) || inUse(dirname(p), cwd, env)));
+}
+
+// --- Evidence that a project uses this plugin --------------------------------------------------
+
+// The skill directory this hook ships in (skills/semantic-layer).
+const SKILL_DIR = join(import.meta.dir, "..", "..");
+const projectOf = (cwd: string, env: Env) => realPath(env.CLAUDE_PROJECT_DIR ? resolve(cwd, expandHome(env.CLAUDE_PROJECT_DIR)) : cwd);
+// The file that records the evidence for a project: in the state directory, named by the project's path.
+const evidenceFile = (project: string, env: Env, dir = stateDir(env)) => join(dir, `project-${createHash("sha256").update(project).digest("hex").slice(0, 32)}`);
+
+// Whether `dir` is the project directory or the working directory of a project with evidence that
+// it uses this plugin: a semlayer command ran there, or a file of this skill was read through a hooked tool.
+// A call that is itself evidence counts (SELF_EVIDENCE, set by envFileRefusal), since the hook checks
+// it before runBefore records the evidence.
+function inUse(dir: string, cwd: string, env: Env): boolean {
+  const project = projectOf(cwd, env);
+  const real = realPath(dir);
+  return (real === project || real === realPath(cwd)) && (env[SELF_EVIDENCE] === "1" || existsSync(evidenceFile(project, env)));
+}
+const SELF_EVIDENCE = "__SEMLAYER_HOOK_CALL_IS_EVIDENCE";
+
+// Whether a call is evidence that its project uses this plugin: a semlayer command in either form (this
+// plugin's semlayer.ts, a command named semlayer, or one of the MCP server's semlayer tools), or a Read, Grep or shell
+// command that names a file under this skill's directory.
+function isEvidence(tool: string, args: unknown, cwd: string): boolean {
+  if (/^mcp__.*__semlayer_[a-z0-9_]+$/.test(tool)) return true;
+  if (!isObject(args)) return false;
+  const skill = [SKILL_DIR, realPath(SKILL_DIR)];
+  const under = (p: unknown) => {
+    if (typeof p !== "string" || !p) return false;
+    const real = realPath(resolve(cwd, expandHome(p)));
+    return skill.some((d) => real === d || real.startsWith(d + sep));
+  };
+  if (tool === "Read") return under(args.file_path);
+  if (tool === "Grep") return under(args.path);
+  const command = args.command;
+  if (tool !== "Bash" || typeof command !== "string") return false;
+  return classify(command, cwd).ran.semlayer || skill.some((d) => command.includes(d));
+}
+
+// Records the evidence for the call's project when the call is evidence and a directory semlayer would
+// read an env file from (the project directory, the working directory) holds no semantic root yet:
+// once one does, the root's own rule covers its env files.
+function noteEvidence(input: Obj, dir: string, env: Env): void {
+  const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
+  if (!isEvidence(String(input.tool_name), input.tool_input, cwd)) return;
+  const project = projectOf(cwd, env);
+  if (nearRoot(project) && nearRoot(realPath(cwd))) return;
+  const file = evidenceFile(project, env, dir);
+  if (existsSync(file)) return;
+  openState(dir);
+  writeFileSync(file, `${project}\n`);
+}
+
+// The env files in a directory, for a pattern or a recursive search that names the directory,
+// less those whose name the search leaves out (`skip`).
+function envFilesIn(dir: string, cwd: string, env: Env, pattern?: string, skip?: (name: string) => boolean): string[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir).sort();
+  } catch {
+    return [];
+  }
+  const glob = pattern === undefined ? undefined : new Bun.Glob(pattern);
+  return names.filter((n) => isEnvName(n) && (!glob || glob.match(n)) && !skip?.(n)).map((n) => join(dir, n)).filter((p) => isEnvFile(p, cwd, env));
+}
+
+// The files a grep is given: not its options, the values of -e, -f, -A, -B, -C and -m, or the
+// pattern, which is its first plain argument unless -e or -f gave one.
+function grepFiles(args: Word[]): Word[] {
+  const plain: Word[] = [];
+  let pattern = false;
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i]!.word;
+    if (/^(-[A-Za-z]*[ef]|--regexp(=|$)|--file(=|$))/.test(w)) pattern = true;
+    if (/^(-[A-Za-z]*[efABCm]|--regexp|--file|--exclude|--include)$/.test(w)) i++;
+    else if (!w.startsWith("-") || w === "-") plain.push(args[i]!);
+  }
+  return pattern ? plain : plain.slice(1);
+}
+
+type Skip = (name: string) => boolean;
+
+interface EnvRead {
+  file: string;
+  // Found by a recursive search of its directory, not named by the command.
+  scan: boolean;
+}
+
+// The env files a shell command reads with cat, head, tail, less, more, grep, sed, awk, source, "."
+// and their kin, or through <, also inside $(...), `...`, `sh -c` strings, a shell's heredoc and eval.
+function envFilesRead(command: string, cwd: string, env: Env, depth = 0, bases: string[] = [cwd]): EnvRead[] {
+  const { commands, subs } = parseShell(command);
+  const dirs = [...bases];
+  const out: EnvRead[] = [];
+  const named = (files: string[]) => out.push(...files.map((file) => ({ file, scan: false })));
+  const scanned = (dir: string, skip: Skip) => out.push(...envFilesIn(dir, cwd, env, undefined, skip).map((file) => ({ file, scan: true })));
+  const nested = (text: string) => depth < 3 && out.push(...envFilesRead(text, cwd, env, depth + 1, dirs));
+  // `skip` is set for a recursive grep: the file names its --exclude and --include leave out.
+  const read = (w: Word, skip?: Skip) => {
+    if (w.dynamic) return;
+    const p = expandHome(w.word);
+    for (const abs of isAbsolute(p) ? [p] : dirs.map((d) => resolve(d, p))) {
+      // An unquoted pattern matches a dot file only when its last part starts with a dot.
+      if (w.pattern && /[*?[{]/.test(basename(abs)) && !/[*?[{]/.test(dirname(abs))) {
+        if (basename(abs).startsWith(".")) named(envFilesIn(dirname(abs), cwd, env, basename(abs)));
+      } else if (isEnvFile(abs, cwd, env)) named([abs]);
+      else if (skip && existsSync(abs) && statSync(abs).isDirectory()) scanned(abs, skip);
+    }
+  };
+  for (const c of commands) {
+    for (const w of c.reads) read(w);
+    const k = nameAt(c.words);
+    const cmd = c.words[k];
+    if (!cmd || cmd.dynamic) continue;
+    const name = basename(cmd.word);
+    const args = c.words.slice(k + 1);
+    if (name === "cd" || name === "pushd") follow(args, dirs);
+    else if (SHELLS.has(name)) {
+      const at = args.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a.word));
+      if (at >= 0 && args[at + 1]) nested(args[at + 1]!.word);
+      else c.stdin.forEach(nested);
+    } else if (name === "eval") nested(args.map((a) => a.word).join(" "));
+    else if (READERS.has(name)) {
+      const files = GREPS.has(name) ? grepFiles(args) : args.filter((a) => !a.word.startsWith("-") || a.word === "-");
+      // A recursive grep reads the dot files of the directories it is given; rg skips them.
+      const recursive = GREPS.has(name) && name !== "rg" && args.some((a) => /^-[A-Za-z]*[rR]/.test(a.word) || /^--(dereference-)?recursive$/.test(a.word));
+      const globs = (flag: string) => args.flatMap((a, i) => (a.word === flag ? [args[i + 1]?.word ?? ""] : a.word.startsWith(`${flag}=`) ? [a.word.slice(flag.length + 1)] : []));
+      const [exclude, include] = [globs("--exclude"), globs("--include")];
+      const matches = (n: string, patterns: string[]) => patterns.some((x) => new Bun.Glob(x).match(n));
+      const skip = recursive ? (n: string) => matches(n, exclude) || (include.length > 0 && !matches(n, include)) : undefined;
+      for (const f of files) read(f, skip);
+      if (skip && !files.length) for (const d of dirs) scanned(d, skip);
+    }
+  }
+  subs.forEach(nested);
+  return out;
+}
+
+// The env files the Grep tool reaches from a directory. It searches every file below it, dot files
+// too, and follows no link (ripgrep --hidden): the env files in the directory's first 1,000
+// directories, nearest first, and the file SEMLAYER_ENV_FILE names when it lies below.
+function envFilesUnder(dir: string, cwd: string, env: Env): string[] {
+  const out: string[] = [];
+  const queue = [dir];
+  for (let n = 0; n < queue.length; n++) {
+    let entries: ReturnType<typeof listDirs>;
+    try {
+      entries = listDirs(queue[n]!);
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const p = join(queue[n]!, e.name);
+      if (e.isDirectory()) {
+        if (queue.length < GREP_DIRS && e.name !== ".git" && e.name !== "node_modules") queue.push(p);
+      } else if (isEnvName(e.name) && isEnvFile(p, cwd, env)) out.push(p);
+    }
+  }
+  const named = env.SEMLAYER_ENV_FILE ? realPath(resolve(cwd, expandHome(env.SEMLAYER_ENV_FILE))) : undefined;
+  if (named && existsSync(named) && named.startsWith(realPath(dir) + sep) && !out.some((p) => realPath(p) === named)) out.push(named);
+  return out;
+}
+
+// Whether a Grep's glob or type leaves a file out of its search. The glob is split as the tool
+// splits it (at spaces, and at commas outside braces). A glob without "!" that matches the file's
+// name or path keeps it in, whatever else is given; otherwise such a glob, or a "!" glob that
+// matches its name, leaves it out. A type leaves out only a file named .env, which no ripgrep type
+// matches: .env.<name> may end in an extension one does.
+function grepSkips(file: string, input: Obj, bases: string[]): boolean {
+  const name = basename(file);
+  const globs = typeof input.glob === "string" ? input.glob.split(/\s+/).flatMap((g) => (g.includes("{") && g.includes("}") ? [g] : g.split(","))) : [];
+  const matches = (glob: string, path: string) => new Bun.Glob(glob).match(path);
+  const wanted = globs.filter((g) => g && !g.startsWith("!")).map((g) => g.replace(/^\//, ""));
+  const paths = [name, file, ...bases.map((b) => relative(b, file))];
+  if (wanted.some((g) => paths.some((p) => matches(g, p)) || matches(`**/${g}`, file))) return false;
+  const unwanted = globs.filter((g) => g.startsWith("!")).map((g) => g.slice(1).replace(/^\*\*\//, ""));
+  if (wanted.length || unwanted.some((g) => !g.includes("/") && matches(g, name))) return true;
+  return typeof input.type === "string" && input.type !== "" && name === ".env";
+}
+
+// The env files a Grep call searches: the file its path names, whatever its glob and type say, or
+// those below the directory it names (the working directory when it names none) that they keep in.
+function envFilesSearched(input: Obj, cwd: string, env: Env): EnvRead[] {
+  const abs = resolve(cwd, expandHome(typeof input.path === "string" && input.path ? input.path : "."));
+  if (isEnvFile(abs, cwd, env)) return [{ file: abs, scan: false }];
+  if (!existsSync(abs) || !statSync(abs).isDirectory()) return [];
+  return envFilesUnder(abs, cwd, env).filter((f) => !grepSkips(f, input, [abs, cwd])).map((file) => ({ file, scan: true }));
+}
+
+// The refusal for a Read call, a Grep call or a shell command that reads an env file, or undefined.
+export function envFileRefusal(tool: string, input: Obj, cwd: string, processEnv: Env = process.env): string | undefined {
+  const env = isEvidence(tool, input, cwd) ? { ...processEnv, [SELF_EVIDENCE]: "1" } : processEnv;
+  let reads: EnvRead[] = [];
+  if (tool === "Read" && typeof input.file_path === "string" && input.file_path) {
+    const abs = resolve(cwd, expandHome(input.file_path));
+    if (isEnvFile(abs, cwd, env)) reads = [{ file: abs, scan: false }];
+  } else if (tool === "Grep") reads = envFilesSearched(input, cwd, env);
+  else if (tool === "Bash" && typeof input.command === "string") reads = envFilesRead(input.command, cwd, env);
+  // One line per file; a file the command names is not also reported as found by a search.
+  const files = [...new Set(reads.map((r) => r.file))].slice(0, 5);
+  if (!files.length) return undefined;
+  const hint = (f: string) => (tool === "Grep" ? grepHint(f) : SCAN_HINT);
+  const line = (f: string) => `- it reads ${f}. ${SECRET}${reads.some((r) => r.file === f && !r.scan) ? "" : ` ${hint(f)}`}`;
+  return [`semantic-layer: refused ${tool === "Bash" ? "this shell command" : tool}:`, ...files.map(line)].join("\n");
+}
+
+// --- What a Bash call is -----------------------------------------------------------------------
+
+// The CLI entry this hook ships with.
+const SEMLAYER_ENTRY = join(import.meta.dir, "..", "semlayer.ts");
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const SEMLAYER_VARIABLE = /^(SEMLAYER_[A-Z0-9_]+|SEMANTIC_ROOT)=/;
+// Commands that write no file themselves, so semlayer or git may be joined or piped to them. tee writes
+// the files it names: guard-edits.ts has checked those it can read, and one it cannot is not quiet.
+const QUIET = new Set(["head", "tail", "grep", "wc", "cat", "jq", "cut", "tr", "echo", "printf", "ls", "pwd", "test", "[", "sleep", "true", "false", "exit", "tee"]);
+// git subcommands that bring commits or committed files into the working tree, and those that never change it.
+const GIT_MOVES = new Set(["pull", "merge", "rebase", "checkout", "switch", "restore", "reset", "revert", "cherry-pick", "stash"]);
+const GIT_STAYS = new Set(["fetch", "status", "add", "commit", "log", "diff", "show", "branch", "push", "remote", "tag", "rev-parse"]);
+
+// Why a bare `semlayer` in `command` is not provably this plugin's bin/semlayer, or undefined when it
+// is (spec: Hand edits, Which command is semlayer): the command text cannot reach another program by
+// that name, and the first semlayer on the hook's PATH, with the plugin's bin/ last, is the plugin's
+// own file as this version ships it.
+function bareProblem(command: string, env: Env): string | undefined {
+  const reach = bareSemlayerReach(command);
+  if (reach) return reach;
+  const bare = bareSemlayer(env);
+  return bare.ok ? undefined : bare.reason;
+}
+
+// Whether a simple command runs this plugin's semlayer: `bun [run] <semlayer.ts> ...` with the path written out
+// and naming the entry from every directory the shell may be in, or a bare `semlayer` when `bare` (bareProblem) holds.
+function isSl(first: Word, args: Word[], dirs: string[], bare: () => boolean): boolean {
+  if (first.dynamic) return false;
+  const entry = realPath(SEMLAYER_ENTRY);
+  if (first.word === "semlayer") return bare();
+  if (first.word !== "bun" && !(isAbsolute(first.word) && realPath(first.word) === realPath(process.execPath))) return false;
+  const path = args[args[0]?.word === "run" ? 1 : 0];
+  if (!path || path.dynamic || path.pattern) return false;
+  const p = expandHome(path.word);
+  return (isAbsolute(p) ? [p] : dirs.map((d) => resolve(d, p))).every((x) => realPath(x) === entry);
+}
+
+// The subcommand of a git command, read past -C <dir>; undefined when another option comes first.
+function gitSubcommand(args: Word[]): string | undefined {
+  let i = 0;
+  while (args[i]?.word === "-C" && args[i + 1] && !args[i + 1]!.dynamic) i += 2;
+  const sub = args[i];
+  return sub && !sub.dynamic && !sub.word.startsWith("-") ? sub.word : undefined;
+}
+
+interface Call {
+  // "semlayer": every simple command is this plugin's semlayer, a git command, a cd or a command that writes no
+  // file, with no $(...) or `...`, and at least one is semlayer. "git": the same with no semlayer and at least one
+  // git command that moves commits. "other": anything else.
+  kind: "semlayer" | "git" | "other";
+  // It may leave a program running after the call returns.
+  background: boolean;
+  // The call's working directory and every directory a cd in it names.
+  dirs: string[];
+  // What it ran besides, for the report of a change that was undone.
+  ran: Ran;
+}
+
+interface Ran {
+  // The command text names semlayer: this plugin's, an alias, or semlayer.ts behind a variable.
+  semlayer: boolean;
+  // Why a bare semlayer it ran was not counted as this plugin's (bareProblem).
+  bare?: string;
+  // A git command in it moves commits.
+  git: boolean;
+}
+const NAMES_SEMLAYER = /(^|[\s;&|(`'"=\/])semlayer(\.ts)?(\s|["']|$)/;
+
+function classify(command: string, cwd: string, env: Env = process.env): Call {
+  const { commands, subs, background } = parseShell(command);
+  let problem: string | undefined;
+  let checked = false;
+  const bare = () => {
+    if (!checked) problem = bareProblem(command, env);
+    checked = true;
+    return problem === undefined;
+  };
+  const dirs = [cwd];
+  let trusted = subs.length === 0;
+  let semlayer = false;
+  let moves = false;
+  let detached = background;
+  for (const c of commands) {
+    if (c.writes.some((w) => w.dynamic)) trusted = false;
+    let k = 0;
+    for (; k < c.words.length && ASSIGNMENT.test(c.words[k]!.word); k++) if (!SEMLAYER_VARIABLE.test(c.words[k]!.word) || c.words[k]!.dynamic) trusted = false;
+    const first = c.words[k];
+    if (!first) continue;
+    const args = c.words.slice(k + 1);
+    if (!first.dynamic && first.word === "cd") {
+      if (!follow(args, dirs)) trusted = false;
+    } else if (isSl(first, args, dirs, bare)) semlayer = true;
+    else if (!first.dynamic && first.word === "git") {
+      const sub = gitSubcommand(args);
+      if (sub !== undefined && GIT_MOVES.has(sub)) moves = true;
+      else if (sub === undefined || !GIT_STAYS.has(sub)) trusted = false;
+      // --output sends what git prints to a file of any name, and a variable may hold that option.
+      if (args.some((a) => a.dynamic || a.word.startsWith("--output"))) trusted = false;
+    } else if (
+      first.dynamic ||
+      !QUIET.has(first.word) ||
+      (first.word === "tee" && args.some((a) => a.dynamic)) ||
+      // printf -v sets a variable (PATH, or BASH_CMDS[bun]), which can change what a later name runs.
+      (first.word === "printf" && args.some((a) => a.dynamic || a.word.startsWith("-v")))
+    ) {
+      trusted = false;
+      if (/^(nohup|setsid|disown)$/.test(basename(first.word))) detached = true;
+    }
+  }
+  const ran: Ran = { semlayer: semlayer || NAMES_SEMLAYER.test(command), git: moves, ...(problem ? { bare: problem } : {}) };
+  return { kind: trusted && semlayer ? "semlayer" : trusted && moves ? "git" : "other", background: detached, dirs, ran };
+}
+
+// --- Semantic roots ----------------------------------------------------------------------------
+
+// The semantic roots a call may touch, nearest first: the root at or above the call's working
+// directory, each directory a cd names and the project directory; SEMANTIC_ROOT; the root at or
+// above every path the command text names; and the roots directly inside those directories.
+function findRoots(cwd: string, dirs: string[], command: string, env: Env): string[] {
+  const out = new Set<string>();
+  const above = new Map<string, string | undefined>();
+  const add = (p: string) => {
+    const walked: string[] = [];
+    let root: string | undefined;
+    for (let dir = p; ; dir = dirname(dir)) {
+      if (above.has(dir)) root = above.get(dir);
+      else if (existsSync(join(dir, "semantic.yaml"))) root = dir;
+      else if (dirname(dir) !== dir) {
+        walked.push(dir);
+        continue;
+      }
+      break;
+    }
+    for (const d of walked) above.set(d, root);
+    if (root) out.add(realPath(root));
+  };
+  const from = [...new Set([...dirs, ...(env.CLAUDE_PROJECT_DIR ? [env.CLAUDE_PROJECT_DIR] : [])])];
+  from.forEach(add);
+  if (env.SEMANTIC_ROOT) add(resolve(cwd, env.SEMANTIC_ROOT));
+  for (const m of [...new Set(command.match(/[A-Za-z0-9_.~@+\/-]+/g) ?? [])].slice(0, 64)) for (const d of dirs) add(resolve(d, expandHome(m)));
+  for (const d of from) {
+    add(join(d, "semantic"));
+    try {
+      for (const e of listDirs(d)) if (!e.isFile() && e.name !== "node_modules" && e.name !== ".git") add(join(d, e.name));
+    } catch {
+      continue;
+    }
+  }
+  return [...out].slice(0, 16);
+}
+
+// --- State -------------------------------------------------------------------------------------
+
+const DAY_MS = 24 * 60 * 60_000;
+// The longest a call is taken to be still running when its after-check has not come.
+const IN_FLIGHT_MS = 10 * 60_000;
+const STALE_MS = 60_000;
+
+export interface Options {
+  // The clock, in milliseconds (default Date.now()).
+  now?: number;
+  stateDir?: string;
+  env?: Env;
+}
+
+export interface Outcome {
+  // true: the hook exits 2, which shows the message to the agent (and, before a call, refuses it).
+  block: boolean;
+  message?: string;
+}
+
+// Where the hook keeps its copies: the plugin's data directory, or a directory of this user's in the temp directory.
+export function stateDir(env: Env = process.env): string {
+  if (env.CLAUDE_PLUGIN_DATA) return join(env.CLAUDE_PLUGIN_DATA, "ledger-guard");
+  let who = "user";
+  try {
+    who = String(userInfo().uid);
+  } catch {
+    who = "user";
+  }
+  return join(tmpdir(), `semantic-layer-guard-${who}`);
+}
+
+// Creates the state directory, readable by this user only; throws when another user could write it.
+function openState(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const st = lstatSync(dir);
+  const uid = process.getuid?.();
+  if (!st.isDirectory() || (uid !== undefined && (st.uid !== uid || (st.mode & 0o022) !== 0))) throw new Error(`${dir} is not a directory only this user can write`);
+}
+
+// One entry of the state directory, named by its file name alone:
+//   <started>-<stream>-<key>.snap   a directory: the copies of one call, and meta.json
+//   <started>-<stream>-<key>.semlayer     semlayer or git is running (a marker, empty)
+//   <started>-<ended>-<key>.done    semlayer or git ran from started to ended
+// `stream` names the agent that made the call: one agent's calls that write run one after another.
+interface Entry {
+  name: string;
+  kind: "snap" | "semlayer" | "done";
+  started: number;
+  ended?: number;
+  stream?: string;
+  key: string;
+}
+
+function entries(dir: string, now: number): Entry[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir).sort();
+  } catch {
+    return [];
+  }
+  const out: Entry[] = [];
+  for (const name of names) {
+    const live = /^(\d+)-([0-9a-f]{12})-([0-9a-f]{32})\.(snap|semlayer)$/.exec(name);
+    const done = /^(\d+)-(\d+)-([0-9a-f]{32})\.done$/.exec(name);
+    // A copy being made or settled by a hook call that died is removed.
+    const part = /^\.(?:new|claim)-(\d+)-/.exec(name);
+    if (live) out.push({ name, kind: live[4] as "snap" | "semlayer", started: Number(live[1]), stream: live[2]!, key: live[3]! });
+    else if (done) out.push({ name, kind: "done", started: Number(done[1]), ended: Number(done[2]), key: done[3]! });
+    else if (part && now - Number(part[1]) > STALE_MS) rmSync(join(dir, name), { recursive: true, force: true });
+  }
+  return out.sort((a, b) => a.started - b.started || (a.name < b.name ? -1 : 1));
+}
+
+const hash = (text: string, length: number) => createHash("sha256").update(text).digest("hex").slice(0, length);
+
+// A call's key, the same before and after it: its tool_use_id, or its session, tool and input.
+function keyOf(input: Obj): string {
+  const id = typeof input.tool_use_id === "string" && input.tool_use_id ? `id\0${input.tool_use_id}` : `call\0${String(input.session_id ?? "")}\0${String(input.tool_name)}\0${JSON.stringify(input.tool_input)}`;
+  return hash(id, 32);
+}
+
+const streamOf = (input: Obj) => hash(`${String(input.session_id ?? "")}\0${String(input.agent_id ?? "")}`, 12);
+
+// --- Copy, compare, put back ---------------------------------------------------------------------
+
+type Kind = "file" | "other" | "none";
+
+interface RootCopy {
+  root: string;
+  ledger: Kind;
+  // The files of .semlayer/pending/ (null: no such directory) and its entries that are not files.
+  pending: string[] | null;
+  other: string[];
+}
+
+interface Meta {
+  // Compared once more at the next before-call, since the command may still be writing.
+  keep: boolean;
+  ran: Ran;
+  roots: RootCopy[];
+}
+
+interface Diff {
+  at: number;
+  root: string;
+  // .semlayer/ledger.jsonl or .semlayer/pending/<file>
+  rel: string;
+  // "linked": the same bytes under a second name (a hard link), through which a later command
+  // could write the file without naming it.
+  what: "changed" | "deleted" | "added" | "linked";
+}
+
+function kindOf(p: string): Kind {
+  try {
+    return lstatSync(p).isFile() ? "file" : "other";
+  } catch {
+    return "none";
+  }
+}
+
+function pendingNames(root: string): string[] | null {
+  try {
+    return readdirSync(join(root, ".semlayer", "pending")).sort();
+  } catch {
+    return null;
+  }
+}
+
+function copyRoot(root: string, into: string): RootCopy {
+  mkdirSync(join(into, "pending"), { recursive: true });
+  const ledger = kindOf(join(root, ".semlayer", "ledger.jsonl"));
+  if (ledger === "file") copyFileSync(join(root, ".semlayer", "ledger.jsonl"), join(into, "ledger.jsonl"));
+  const names = pendingNames(root);
+  const pending: string[] = [];
+  const other: string[] = [];
+  for (const n of names ?? []) {
+    if (kindOf(join(root, ".semlayer", "pending", n)) !== "file") other.push(n);
+    else {
+      copyFileSync(join(root, ".semlayer", "pending", n), join(into, "pending", n));
+      pending.push(n);
+    }
+  }
+  return { root, ledger, pending: names === null ? null : pending, other };
+}
+
+function sameBytes(a: string, b: string): boolean {
+  return statSync(a).size === statSync(b).size && readFileSync(a).equals(readFileSync(b));
+}
+
+// What differs now from the copies in `from`.
+function differences(meta: Meta, from: string): Diff[] {
+  const out: Diff[] = [];
+  meta.roots.forEach((r, at) => {
+    const copy = join(from, String(at));
+    const diff = (rel: string, was: Kind) => {
+      const file = join(r.root, rel);
+      const now = kindOf(file);
+      const same = () => (sameBytes(file, join(copy, rel.slice(".semlayer/".length))) ? (statSync(file).nlink > 1 ? "linked" : undefined) : "changed");
+      const what = was === "none" ? (now === "none" ? undefined : "added") : now === "none" ? "deleted" : now === "other" ? "changed" : same();
+      if (what) out.push({ at, root: r.root, rel, what });
+    };
+    if (r.ledger !== "other") diff(".semlayer/ledger.jsonl", r.ledger);
+    for (const n of r.pending ?? []) diff(`.semlayer/pending/${n}`, "file");
+    for (const n of pendingNames(r.root) ?? []) if (!r.pending?.includes(n) && !r.other.includes(n)) diff(`.semlayer/pending/${n}`, "none");
+  });
+  return out;
+}
+
+// Puts one file back as it was copied, or removes one that was added. The file put back is a new
+// one, so a second name the old one was given no longer leads to it. It writes only under the
+// root's .semlayer directory, and not through a link that leads out of the root.
+function putBack(d: Diff, from: string): void {
+  const target = join(d.root, d.rel);
+  const root = realPath(d.root);
+  const parent = realPath(dirname(target));
+  if (parent !== root && !parent.startsWith(root + sep)) throw new Error(`${dirname(d.rel)} leads outside the semantic root`);
+  if (d.what === "added") return rmSync(target, { recursive: true, force: true });
+  mkdirSync(dirname(target), { recursive: true });
+  const part = `${target}.restore-${process.pid}`;
+  copyFileSync(join(from, String(d.at), d.rel.slice(".semlayer/".length)), part);
+  if (kindOf(target) === "other") rmSync(target, { recursive: true, force: true });
+  renameSync(part, target);
+}
+
+const UNDONE = "semantic-layer: A command changed the answer ledger outside semlayer, and the change was undone. An owner's answer is recorded only with semlayer reply, after the owner answers.";
+const LEFT =
+  "semantic-layer: The answer ledger changed while semlayer or git ran at the same time as another command, so the change could not be attributed and was left as it is. " +
+  "Run semlayer validate, and record an owner's answer only with semlayer reply, after the owner answers.";
+const ON_ITS_OWN =
+  "on its own and joined to no other program, as semlayer <command> (the plugin's own command on PATH) or with its path written out (bun <skill dir>/scripts/semlayer.ts <command>)";
+// Why a bare semlayer in the call was taken for another program.
+const NOT_PLUGIN_BARE = (why: string) =>
+  `- The semlayer this call ran by its bare name was not counted as the plugin's own command (${why}), so it was treated as another program. ` +
+  "Run it as semlayer <command> with no PATH change, alias, function or variable in front, or as bun <skill dir>/scripts/semlayer.ts <command>.";
+// What follows the list of files, by what the call ran besides the program that may have forged the change.
+const RAN_SEMLAYER =
+  "- This call also ran semlayer, whose writes cannot be told from the other program's: what semlayer wrote to the ledger was removed with the rest, and a layer file it edited was not put back. " +
+  `Run the semlayer command again ${ON_ITS_OWN}, then semlayer validate. semlayer reply, semlayer question resolve and semlayer review apply record an owner's answer; ` +
+  "if an open question was resolved, it is now gone from its file without its answer, so add it again first with semlayer question add.";
+const RAN_GIT =
+  "- This call also ran git. If its pull or merge brought ledger lines in, they were removed with the rest: get them back with git checkout -- <file> for each file listed above, " +
+  "run in the semantic root on its own. Run it only after such a pull or merge, since it replaces the file with the committed one.";
+const ALONE = `- semlayer reply, semlayer question resolve and semlayer review apply record an owner's answer. If one of them made that change (run through a script or a variable), run it again ${ON_ITS_OWN}.`;
+const EARLIER = "This was found before the current call";
+
+function listed(diffs: Diff[], word: (d: Diff) => string): string[] {
+  const roots = [...new Set(diffs.map((d) => d.root))];
+  return roots.map((root) => `- in ${root}: ${diffs.filter((d) => d.root === root).slice(0, 8).map((d) => `${d.rel} (${word(d)})`).join(", ")}`);
+}
+
+// Whether semlayer or git ran at any time since the call of `snap` started. A marker with no end from the
+// same agent, started earlier, is a call that ended without its after-check; from another agent it
+// may still be running.
+function overlapped(all: Entry[], snap: Entry, now: number): boolean {
+  return all.some((m) => (m.kind === "done" ? m.ended! > snap.started : m.kind === "semlayer" && (m.started >= snap.started || (m.stream !== snap.stream && now - m.started < IN_FLIGHT_MS))));
+}
+
+// Settles a copy that differs from the files: puts them back, or leaves them when semlayer or git ran
+// meanwhile. Returns what to tell the agent, or undefined when another hook call took the copy.
+function settle(dir: string, snap: Entry, diffs: Diff[], all: Entry[], now: number, ran: Ran | undefined): string | undefined {
+  const claimed = join(dir, `.claim-${now}-${process.pid}-${snap.name}`);
+  try {
+    renameSync(join(dir, snap.name), claimed);
+  } catch {
+    return undefined;
+  }
+  try {
+    if (overlapped(all, snap, now)) return [LEFT, ...listed(diffs, (d) => d.what)].join("\n");
+    const failed: string[] = [];
+    for (const d of diffs) {
+      try {
+        putBack(d, claimed);
+      } catch (e) {
+        failed.push(`- could not put back ${d.rel} in ${d.root} (${(e as Error).message}). Restore it from version control (git checkout -- ${d.rel}), then run semlayer validate.`);
+      }
+    }
+    const done = (d: Diff) => (d.what === "added" ? "added, now removed" : d.what === "linked" ? "given a second name, now a file of its own again" : `${d.what}, now restored`);
+    const advice = [...(ran?.bare ? [NOT_PLUGIN_BARE(ran.bare)] : []), ...(ran?.semlayer ? [RAN_SEMLAYER] : []), ...(ran?.git ? [RAN_GIT] : [])];
+    return [UNDONE, ...listed(diffs, done), ...failed, ...(advice.length ? advice : [ALONE])].join("\n");
+  } finally {
+    rmSync(claimed, { recursive: true, force: true });
+  }
+}
+
+function readMeta(dir: string, snap: Entry): Meta {
+  return JSON.parse(readFileSync(join(dir, snap.name, "meta.json"), "utf8")) as Meta;
+}
+
+// Removes the markers no copy can still need, and the state directory once it is empty.
+function tidy(dir: string, now: number): void {
+  const all = entries(dir, now);
+  const first = Math.min(...all.filter((e) => e.kind === "snap").map((e) => e.started));
+  for (const e of all) if (e.kind === "done" && e.ended! <= first) rmSync(join(dir, e.name), { force: true });
+  try {
+    rmdirSync(dir);
+  } catch {
+    return;
+  }
+}
+
+// Compares every earlier copy with the files, at the start of a before-call from the agent `stream`.
+// A copy that differs is settled. One that does not is dropped when its call is over: it came from
+// the same agent, or it is older than a call runs. Returns what to tell the agent.
+function sweep(dir: string, now: number, stream: string): string[] {
+  const all = entries(dir, now);
+  const reports: string[] = [];
+  for (const e of all) {
+    const path = join(dir, e.name);
+    try {
+      if (now - e.started > DAY_MS) rmSync(path, { recursive: true, force: true });
+      else if (e.kind === "snap") {
+        const meta = readMeta(dir, e);
+        const diffs = differences(meta, path);
+        if (diffs.length) {
+          const report = settle(dir, e, diffs, all, now, meta.ran);
+          if (report) reports.push(report);
+        } else if (e.stream === stream || now - e.started > IN_FLIGHT_MS) rmSync(path, { recursive: true, force: true });
+      } else if (e.kind === "semlayer") {
+        // The same agent's earlier semlayer call is over; when it ended is not known, so it counts up to now.
+        if (e.stream === stream) renameSync(path, join(dir, `${e.started}-${now}-${e.key}.done`));
+        else if (now - e.started > IN_FLIGHT_MS) rmSync(path, { force: true });
+      }
+    } catch {
+      // A copy that cannot be read or compared is dropped, so it does not fail every later call.
+      rmSync(path, { recursive: true, force: true });
+    }
+  }
+  return reports;
+}
+
+// Records the call that is about to run: a marker for semlayer and git, copies for any other Bash call.
+function record(input: Obj, dir: string, now: number, stream: string, env: Env): void {
+  const tool = String(input.tool_name);
+  const args = input.tool_input;
+  const key = keyOf(input);
+  const mark = () => {
+    openState(dir);
+    writeFileSync(join(dir, `${now}-${stream}-${key}.semlayer`), "");
+  };
+  // One of the MCP server's tools runs semlayer.
+  if (/^mcp__.*__semlayer_[a-z0-9_]+$/.test(tool)) return mark();
+  if (tool !== "Bash" || !isObject(args) || typeof args.command !== "string") return;
+  const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
+  const call = classify(args.command, cwd, env);
+  if (call.kind !== "other") return mark();
+  const roots = findRoots(cwd, call.dirs, args.command, env);
+  if (!roots.length) return;
+  openState(dir);
+  const part = join(dir, `.new-${now}-${process.pid}-${key}`);
+  mkdirSync(part);
+  const meta: Meta = { keep: call.background || args.run_in_background === true, ran: call.ran, roots: roots.map((root, at) => copyRoot(root, join(part, String(at)))) };
+  writeFileSync(join(part, "meta.json"), JSON.stringify(meta));
+  renameSync(part, join(dir, `${now}-${stream}-${key}.snap`));
+}
+
+function parseInput(stdin: string): Obj | undefined {
+  try {
+    const input: unknown = JSON.parse(stdin);
+    return isObject(input) && typeof input.tool_name === "string" ? input : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const warning = (e: unknown): Outcome => ({ block: false, message: `semantic-layer hook: could not compare the answer ledger (${(e as Error).message}); not checked.` });
+
+// The before half, for a PreToolUse call given as the hook's stdin: earlier copies are compared
+// first, and a difference found there stops this call with the report. With `note`, the call is then
+// recorded; guard-edits.ts passes false for a call it refuses.
+export function runBefore(stdin: string, note = true, opts: Options = {}): Outcome {
+  try {
+    const input = parseInput(stdin);
+    if (!input) return { block: false };
+    const now = opts.now ?? Date.now();
+    const env = opts.env ?? process.env;
+    const dir = opts.stateDir ?? stateDir(env);
+    const stream = streamOf(input);
+    noteEvidence(input, dir, env);
+    const reports = sweep(dir, now, stream);
+    if (!reports.length && note) record(input, dir, now, stream, env);
+    tidy(dir, now);
+    // A call guard-edits.ts refuses carries its own reason and is not to be run again as it is.
+    return reports.length ? { block: true, message: [...reports, note ? `${EARLIER}, which was not run. Run it again.` : `${EARLIER}.`].join("\n") } : { block: false };
+  } catch (e) {
+    return warning(e);
+  }
+}
+
+// The after half, for a PostToolUse or PostToolUseFailure call: a semlayer or git marker gets its end,
+// and a copy is compared with the files.
+export function runAfter(stdin: string, opts: Options = {}): Outcome {
+  try {
+    const input = parseInput(stdin);
+    if (!input) return { block: false };
+    const now = opts.now ?? Date.now();
+    const dir = opts.stateDir ?? stateDir(opts.env ?? process.env);
+    const key = keyOf(input);
+    const all = entries(dir, now);
+    const mine = all.find((e) => e.key === key && e.kind !== "done");
+    let message: string | undefined;
+    if (mine?.kind === "semlayer") renameSync(join(dir, mine.name), join(dir, `${mine.started}-${now}-${key}.done`));
+    else if (mine) {
+      const meta = readMeta(dir, mine);
+      const diffs = differences(meta, join(dir, mine.name));
+      if (diffs.length) message = settle(dir, mine, diffs, all, now, meta.ran);
+      else if (!meta.keep) rmSync(join(dir, mine.name), { recursive: true, force: true });
+    }
+    tidy(dir, now);
+    return message ? { block: true, message } : { block: false };
+  } catch (e) {
+    return warning(e);
+  }
+}
+
+if (import.meta.main) {
+  const stdin = await Bun.stdin.text();
+  const event = parseInput(stdin)?.hook_event_name;
+  const outcome =
+    event === "PreToolUse"
+      ? runBefore(stdin)
+      : event === "PostToolUse" || event === "PostToolUseFailure"
+        ? runAfter(stdin)
+        : { block: false, message: "semantic-layer hook: the hook input names no tool call before or after which to compare the answer ledger; not checked." };
+  if (outcome.message) process.stderr.write(`${outcome.message}\n`);
+  process.exit(outcome.block ? 2 : 0);
+}

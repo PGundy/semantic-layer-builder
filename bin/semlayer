@@ -1,0 +1,26 @@
+#!/bin/sh
+# semlayer: the semantic-layer-builder plugin's CLI as a command. Claude Code puts this plugin's bin/ directory on
+# the PATH of the agent's shell; a person can put it on their own (semlayer doctor prints the line).
+# It finds the plugin from its own real path, following links, and runs the CLI with Bun, passing
+# the arguments and standard input through and exiting with the CLI's code.
+self=$0
+case $self in */*) ;; *) self=$(command -v -- "$self") ;; esac
+while [ -L "$self" ]; do
+  link=$(readlink -- "$self")
+  case $link in /*) self=$link ;; *) self=$(dirname -- "$self")/$link ;; esac
+done
+root=$(CDPATH='' cd -P -- "$(dirname -- "$self")/.." && pwd -P)
+entry=$root/skills/semantic-layer/scripts/semlayer.ts
+# A path as one shell word in single quotes.
+quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+if ! command -v bun >/dev/null 2>&1; then
+  echo "semlayer needs Bun 1.4 or later, and bun is not on PATH. Install it from https://bun.sh, start a new shell, then run: semlayer doctor" >&2
+  exit 127
+fi
+for dep in yaml ajv @duckdb/node-api; do
+  if [ ! -f "$root/node_modules/$dep/package.json" ] && [ ! -f "$root/skills/semantic-layer/node_modules/$dep/package.json" ]; then
+    echo "semlayer's packages are not installed (Claude Code installs them with the plugin; a clone or a plugin loaded from a folder needs this once). Run: cd $(quote "$root") && bun install --frozen-lockfile --production, then: semlayer doctor" >&2
+    exit 1
+  fi
+done
+exec bun "$entry" "$@"

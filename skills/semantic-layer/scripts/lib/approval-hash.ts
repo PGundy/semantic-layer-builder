@@ -1,5 +1,5 @@
-// Content hashes of approved items. sl approve records approved_hash, the SHA-256 of an item's
-// normalized semantic content; sl validate and sl status compare it with the item as it now stands,
+// Content hashes of approved items. semlayer approve records approved_hash, the SHA-256 of an item's
+// normalized semantic content; semlayer validate and semlayer status compare it with the item as it now stands,
 // so an edit made after the owner's sign-off is caught instead of silently changing a figure.
 import { createHash } from "node:crypto";
 import type { Dialect, Model } from "./types.ts";
@@ -186,12 +186,35 @@ export function itemHash(kind: ItemKind, item: Obj, scope: HashScope = {}): stri
   return digest(itemContent(kind, item, scope));
 }
 
+// A golden target's content hash (golden:<name>): what the owner says yes to before semlayer goldens
+// confirm records it. It covers the golden's question, request, cross_check_sql (or the older key
+// sql, read as it, so renaming the key keeps the hash), role and user, the tolerance it would
+// record and the rows it would record: the rows its request compiles to. Rows keep their order
+// when the request orders them; otherwise they are sorted, so a database returning the same rows
+// in another order gives the same hash. Its reference and description are not part of it.
+export function goldenHash(golden: Obj, rows: unknown[], tolerance: number): string {
+  const ordered = isObject(golden.request) && Array.isArray(golden.request.order_by) && golden.request.order_by.length > 0;
+  const each = rows.map(canonical);
+  return digest({
+    kind: "golden",
+    name: text(golden.name),
+    question: text(golden.question),
+    request: golden.request,
+    cross_check_sql: text(typeof golden.cross_check_sql === "string" ? golden.cross_check_sql : golden.sql),
+    role: text(golden.role),
+    // No user and an empty user are the same.
+    user: isObject(golden.user) && Object.keys(golden.user).length ? golden.user : undefined,
+    tolerance,
+    rows: ordered ? each : each.sort(byCodePoint),
+  });
+}
+
 // One item that carries an approval, located in its file.
 export interface ApprovalEntry {
   kind: ItemKind;
   // The approve target: source.model, source.model.field, metric:<name> or access.
   ref: string;
-  // Where the item sits in its file, as sl approve edits it.
+  // Where the item sits in its file, as semlayer approve edits it.
   path: (string | number)[];
   item: Obj;
   // The hash of the item as it now stands.
@@ -230,6 +253,95 @@ export function accessEntry(access: unknown): ApprovalEntry | undefined {
   return isObject(access) ? { kind: "access", ref: "access", path: [], item: access, hash: itemHash("access", access) } : undefined;
 }
 
+// The relative tolerance a golden records when none is agreed (--tolerance) or kept in its file.
+export const DEFAULT_TOLERANCE = 0.005;
+
+// A model of the layer to list: its source, the file it sits in, a lookup of the source's other models
+// (the second hop of a join reference) and the source's dialect.
+export interface LayerModel {
+  source: string;
+  model: Model;
+  file?: string;
+  lookup: (name: string) => Model | undefined;
+  dialect?: Dialect;
+}
+
+// The parts of a layer whose approvals to list, each as its reader loaded it. A part left out is not
+// listed: a caller that reads one file passes only that file.
+export interface ApprovalLayer {
+  models?: LayerModel[];
+  // The list under metrics: in metrics.yaml.
+  metrics?: unknown;
+  metricsFile?: string;
+  // access.yaml as parsed; null or undefined when there is none.
+  access?: unknown;
+  accessFile?: string;
+  goldens?: { golden: unknown; file?: string }[];
+}
+
+// Where an entry sits and what it records: its file, its status and the approved_hash it records
+// (a golden records none: its owner's yes carries the hash of its recorded rows).
+interface Recorded {
+  file?: string;
+  status?: string;
+  recorded_hash?: string;
+}
+
+// A model, field, join, metric or access.yaml entry.
+export type ItemApproval = ApprovalEntry & Recorded;
+
+// A golden: hash is the hash of its recorded rows and tolerance, the one its owner's yes carries.
+// complete is false when it has no name or no recorded rows (its hash then reads them as none).
+export interface GoldenApproval extends Recorded {
+  kind: "golden";
+  ref: string;
+  path: (string | number)[];
+  item: Obj;
+  hash: string;
+  complete: boolean;
+}
+
+export type Approval = ItemApproval | GoldenApproval;
+
+function recorded(item: Obj, file: string | undefined): Recorded {
+  const hash = carriesHash(item) ? String(item.approved_hash).trim() : undefined;
+  return { file, status: typeof item.status === "string" ? item.status : undefined, recorded_hash: hash };
+}
+
+// Every approval entry of a layer, in one list: each model with its dimensions, measures and joins
+// (in the order given), then the metrics, access.yaml and the goldens. semlayer approve, the typed edits,
+// semlayer status, semlayer validate, semlayer access, semlayer readback and the approvals grader list them here; the edit
+// hook lists models, metrics and access.yaml here and compares a golden's expected rows directly.
+export function listApprovals(layer: ApprovalLayer): Approval[] {
+  const out: Approval[] = [];
+  for (const m of layer.models ?? [])
+    for (const e of modelEntries(m.source, m.model, m.lookup, m.dialect)) out.push({ ...e, ...recorded(e.item, m.file) });
+  for (const e of metricEntries(layer.metrics)) out.push({ ...e, ...recorded(e.item, layer.metricsFile) });
+  const access = accessEntry(layer.access);
+  if (access) out.push({ ...access, ...recorded(access.item, layer.accessFile) });
+  for (const { golden: g, file } of layer.goldens ?? []) {
+    if (!isObject(g)) continue;
+    const expected = isObject(g.expected) ? g.expected : {};
+    const rows = Array.isArray(expected.rows) ? expected.rows : undefined;
+    const tolerance = (expected.tolerance ?? DEFAULT_TOLERANCE) as number;
+    out.push({
+      kind: "golden",
+      ref: `golden:${g.name}`,
+      path: [],
+      item: g,
+      hash: goldenHash(g, rows ?? [], tolerance),
+      complete: typeof g.name === "string" && rows !== undefined,
+      ...recorded(g, file),
+    });
+  }
+  return out;
+}
+
+// The model, field, join, metric and access entries of a list, without its goldens.
+export function itemApprovals(list: Approval[]): ItemApproval[] {
+  return list.filter((e): e is ItemApproval => e.kind !== "golden");
+}
+
 // Whether an item records an approved_hash.
 export function carriesHash(item: Obj): boolean {
   return typeof item.approved_hash === "string" && item.approved_hash.trim() !== "";
@@ -253,7 +365,7 @@ export function integrity(e: ApprovalEntry, projectHashed = false): Integrity {
   return String(e.item.approved_hash).trim() === e.hash ? "current" : "changed";
 }
 
-// A path as sl validate writes one: measures[2], metrics[0], or "" for the file itself.
+// A path as semlayer validate writes one: measures[2], metrics[0], or "" for the file itself.
 export function pathText(path: (string | number)[]): string {
   let out = "";
   for (const p of path) out += typeof p === "number" ? `[${p}]` : out ? `.${p}` : p;
@@ -267,18 +379,18 @@ export function changedMessage(e: ApprovalEntry): string {
   const reads = e.kind === "dimension" || e.kind === "measure" ? ", or a join it reads through," : "";
   return (
     `${e.ref} changed since it was approved${by}${at}: its definition${reads} no longer matches approved_hash. ` +
-    `Read it back to the owner as it now stands and approve it again only after they confirm (sl approve --target ${e.ref} --by "<owner>"), ` +
+    `Read it back to the owner as it now stands and approve it again only after they confirm (semlayer approve --target ${e.ref} --by "<owner>"), ` +
     "or restore the approved definition"
   );
 }
 
 export const UNHASHED_MESSAGE =
-  "approved before content hashes; run sl approve --stamp-hashes to record them, after checking in version control that none changed since approved_at";
+  "approved before content hashes; run semlayer approve --stamp-hashes to record them, after checking in version control that none changed since approved_at";
 
 // The message for an approved item without a hash in a project whose other items record one.
 export function missingMessage(e: ApprovalEntry): string {
   return (
     `${e.ref} is approved, but approved_hash is missing while other approved items carry one; it may have been removed. ` +
-    `Read it back to the owner as it now stands and approve it again only after they confirm (sl approve --target ${e.ref} --by "<owner>")`
+    `Read it back to the owner as it now stands and approve it again only after they confirm (semlayer approve --target ${e.ref} --by "<owner>")`
   );
 }

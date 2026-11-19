@@ -3,12 +3,13 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SQL } from "bun";
-import { duckdbSource, FIXED_NOW, initProject, PG_URL, sl, tempRoot } from "./helpers.ts";
+import { duckdbSource, FIXED_NOW, initProject, PG_URL, semlayer, tempRoot } from "./helpers.ts";
 import {
   applyProfile,
   holdsRawValues,
   isHashedValue,
   LOW_CARDINALITY_MAX,
+  profileGaps,
   protectedColumns,
   redactProfile,
   redactSnapshot,
@@ -92,7 +93,7 @@ describe("profile (duckdb)", () => {
     await duckdbSource(t.root, t.dir, "wh", [ORDERS_SQL.replace("1.50", "1.50::decimal(10,2)")]);
     writeSnapshot(t.root, "wh", "duckdb", [table("main", "orders", ORDERS_COLUMNS, 8)]);
 
-    const r = await sl(t.root, ["profile", "--source", "wh", "--json"]);
+    const r = await semlayer(t.root, ["profile", "--source", "wh", "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<ProfileJson>();
     expect(out.source).toBe("wh");
@@ -151,7 +152,7 @@ describe("profile (duckdb)", () => {
     expect(tags.distinct_count).toBeNull();
     expect(tags.top_values).toBeUndefined();
 
-    const human = await sl(t.root, ["profile", "--source", "wh", "--refresh"]);
+    const human = await semlayer(t.root, ["profile", "--source", "wh", "--refresh"]);
     expect(human.code).toBe(0);
     expect(human.out).toContain("main.orders: 8 rows; candidate keys: id, code; low-cardinality:");
   });
@@ -170,7 +171,7 @@ describe("profile (duckdb)", () => {
       table("main", "small", [["id", "BIGINT"]], 50),
     ]);
 
-    const plan = await sl(t.root, ["profile", "--source", "lake", "--emit-sql"]);
+    const plan = await semlayer(t.root, ["profile", "--source", "lake", "--emit-sql"]);
     expect(plan.code).toBe(0);
     const queries = plan.json<QueryPlan>().queries;
     const stats = queries.find((q) => q.id === "stats:main.events")!;
@@ -184,7 +185,7 @@ describe("profile (duckdb)", () => {
     expect(top).toContain('group by grouping sets (("label"))');
     expect(top.match(/using sample/g)).toHaveLength(1);
 
-    const r = await sl(t.root, ["profile", "--source", "lake", "--json"]);
+    const r = await semlayer(t.root, ["profile", "--source", "lake", "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<ProfileJson>();
     const events = out.profiled.find((p) => p.table === "main.events")!;
@@ -230,7 +231,7 @@ describe("profile (duckdb)", () => {
       table("main", "tmp_x", cols),
     ]);
 
-    const first = await sl(t.root, ["profile", "--source", "wh", "--json"]);
+    const first = await semlayer(t.root, ["profile", "--source", "wh", "--json"]);
     expect(first.code).toBe(0);
     expect(first.json<ProfileJson>().profiled.map((p) => [p.table, p.row_count])).toEqual([
       ["main.fct_a", 3],
@@ -238,10 +239,10 @@ describe("profile (duckdb)", () => {
     ]);
     expect(snap(t.root, "wh").tables.find((x) => x.name === "tmp_x")!.profiled_at).toBeUndefined();
 
-    const again = await sl(t.root, ["profile", "--source", "wh"]);
+    const again = await semlayer(t.root, ["profile", "--source", "wh"]);
     expect(again.code).toBe(0);
     expect(again.out).toContain("Nothing to profile");
-    const againJson = await sl(t.root, ["profile", "--source", "wh", "--json"]);
+    const againJson = await semlayer(t.root, ["profile", "--source", "wh", "--json"]);
     expect(againJson.json<ProfileJson>()).toEqual({
       source: "wh",
       profiled: [],
@@ -252,23 +253,23 @@ describe("profile (duckdb)", () => {
       warnings: [],
     } as ProfileJson);
 
-    const refresh = await sl(t.root, ["profile", "--source", "wh", "--refresh", "--json"]);
+    const refresh = await semlayer(t.root, ["profile", "--source", "wh", "--refresh", "--json"]);
     expect(refresh.json<ProfileJson>().profiled).toHaveLength(2);
 
-    const outside = await sl(t.root, ["profile", "--source", "wh", "--tables", "tmp_x,main.fct_a", "--json"]);
+    const outside = await semlayer(t.root, ["profile", "--source", "wh", "--tables", "tmp_x,main.fct_a", "--json"]);
     expect(outside.code).toBe(1);
     expect(outside.err).toContain("main.tmp_x is out of scope");
     expect(snap(t.root, "wh").tables.find((x) => x.name === "tmp_x")!.profiled_at).toBeUndefined();
 
-    const named = await sl(t.root, ["profile", "--source", "wh", "--tables", "main.fct_a", "--json"]);
+    const named = await semlayer(t.root, ["profile", "--source", "wh", "--tables", "main.fct_a", "--json"]);
     expect(named.code).toBe(0);
     const namedOut = named.json<ProfileJson>();
     expect(namedOut.profiled).toEqual([]);
     expect(namedOut.skipped).toEqual([{ table: "main.fct_a", reason: "already profiled" }]);
-    const namedRefresh = await sl(t.root, ["profile", "--source", "wh", "--tables", "fct_b", "--refresh", "--json"]);
+    const namedRefresh = await semlayer(t.root, ["profile", "--source", "wh", "--tables", "fct_b", "--refresh", "--json"]);
     expect(namedRefresh.json<ProfileJson>().profiled.map((p) => p.table)).toEqual(["main.fct_b"]);
 
-    const unknown = await sl(t.root, ["profile", "--source", "wh", "--tables", "fct_a,nope"]);
+    const unknown = await semlayer(t.root, ["profile", "--source", "wh", "--tables", "fct_a,nope"]);
     expect(unknown.code).toBe(1);
     expect(unknown.err).toContain("nope");
   });
@@ -285,7 +286,7 @@ describe("profile (duckdb)", () => {
     writeSnapshot(t.root, "lake", "duckdb", [
       table("main", "wide", [["id", "BIGINT"], ["b", "BOOLEAN"], ["rare", "VARCHAR"], ["k", "VARCHAR"]], 20000),
     ]);
-    const r = await sl(t.root, ["profile", "--source", "lake", "--json"]);
+    const r = await semlayer(t.root, ["profile", "--source", "lake", "--json"]);
     expect(r.code).toBe(0);
     const p = r.json<ProfileJson>().profiled[0]!;
     expect(p.candidate_keys).toEqual(["id"]);
@@ -308,7 +309,7 @@ describe("profile (duckdb)", () => {
       "create table m as select * from (values (1.5::double, [1, 2]::integer[2]), ('nan'::double, [1, 3]::integer[2]), (2.5::double, null)) v(f, fixed)",
     ]);
     writeSnapshot(t.root, "wh", "duckdb", [table("main", "m", [["f", "DOUBLE"], ["fixed", "INTEGER[2]"]], 3)]);
-    const r = await sl(t.root, ["profile", "--source", "wh", "--json"]);
+    const r = await semlayer(t.root, ["profile", "--source", "wh", "--json"]);
     expect(r.code).toBe(0);
     const s = snap(t.root, "wh");
     expect(col(s, "m", "f").profile).toMatchObject({ min: 1.5, max: 2.5, distinct_count: 3 });
@@ -324,18 +325,18 @@ describe("profile (duckdb)", () => {
     const yamlPath = join(t.root, "sources", "wh.yaml");
 
     writeYaml(yamlPath, { ...source, profile: { top_values: "abc" } });
-    const bad = await sl(t.root, ["profile", "--source", "wh"]);
+    const bad = await semlayer(t.root, ["profile", "--source", "wh"]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain("profile.top_values in sources/wh.yaml");
     writeYaml(yamlPath, { ...source, profile: { sample_rows: -5 } });
-    const badSample = await sl(t.root, ["profile", "--source", "wh"]);
+    const badSample = await semlayer(t.root, ["profile", "--source", "wh"]);
     expect(badSample.code).toBe(1);
     expect(badSample.err).toContain("profile.sample_rows in sources/wh.yaml");
 
     writeYaml(yamlPath, { ...source, profile: { top_values: 0 } });
-    const plan = await sl(t.root, ["profile", "--source", "wh", "--emit-sql"]);
+    const plan = await semlayer(t.root, ["profile", "--source", "wh", "--emit-sql"]);
     expect(plan.json<QueryPlan>().queries.map((q) => q.id)).toEqual(["stats:main.a"]);
-    const r = await sl(t.root, ["profile", "--source", "wh"]);
+    const r = await semlayer(t.root, ["profile", "--source", "wh"]);
     expect(r.code).toBe(0);
     expect(col(snap(t.root, "wh"), "a", "s").profile!.top_values).toBeUndefined();
   });
@@ -345,10 +346,10 @@ describe("profile (duckdb)", () => {
     cleanup = t.cleanup;
     await initProject(t.root);
     await duckdbSource(t.root, t.dir, "wh", ["create table a as select 1 as id"]);
-    const noSnap = await sl(t.root, ["profile", "--source", "wh"]);
+    const noSnap = await semlayer(t.root, ["profile", "--source", "wh"]);
     expect(noSnap.code).toBe(1);
     expect(noSnap.err).toContain("No snapshot");
-    const noSource = await sl(t.root, ["profile", "--source", "zz"]);
+    const noSource = await semlayer(t.root, ["profile", "--source", "zz"]);
     expect(noSource.code).toBe(1);
   });
 });
@@ -433,7 +434,7 @@ describe("profile plan", () => {
     };
     const file = join(t.dir, "results.json");
     writeFileSync(file, JSON.stringify(results));
-    const r = await sl(t.root, ["profile", "--source", "pg", "--refresh", "--results", file, "--json"]);
+    const r = await semlayer(t.root, ["profile", "--source", "pg", "--refresh", "--results", file, "--json"]);
     expect(r.code).toBe(0);
     expect(r.err).toContain("The sample of s.a read no rows of its 1,000,000");
     expect(r.err).toContain("--tables s.a --refresh");
@@ -441,7 +442,9 @@ describe("profile plan", () => {
     expect(out.profiled.map((p) => p.table)).toEqual(["s.b"]);
     expect(out.skipped).toEqual([{ table: "s.a", reason: "its sample read no rows" }]);
     const s = snap(t.root, "pg");
-    expect(s.tables[0]).toEqual(a);
+    // The earlier profile is kept, and the skip is recorded beside it for the next run and semlayer next.
+    expect(s.tables[0]).toEqual({ ...a, profile_skipped: { at: FIXED_NOW, reason: "its sample read no rows" } });
+    expect(profileGaps(t.root, "pg")).toEqual([{ table: "s.a", reason: "its sample read no rows" }]);
     expect(col(s, "b", "kind").profile!.top_values).toEqual([{ value: "y", count: 60 }, { value: "z", count: 40 }]);
   });
 
@@ -499,7 +502,7 @@ describe("profile (snowflake via results file)", () => {
       table("RAW", "STAGE", [["X", "VARCHAR"]], 10),
     ]);
 
-    const emitted = await sl(t.root, ["profile", "--source", "sf", "--emit-sql"]);
+    const emitted = await semlayer(t.root, ["profile", "--source", "sf", "--emit-sql"]);
     expect(emitted.code).toBe(0);
     expect(emitted.err).toContain("25,000,000 rows");
     expect(emitted.err).toContain("sample_rows");
@@ -508,7 +511,7 @@ describe("profile (snowflake via results file)", () => {
     expect(plan.queries.map((q) => q.id)).toEqual(["stats:ANALYTICS.FCT_ORDERS", "top:ANALYTICS.FCT_ORDERS"]);
     expect(plan.queries[1]!.sql).toContain('group by grouping sets (("STATUS"), ("IS_TEST"))');
 
-    const live = await sl(t.root, ["profile", "--source", "sf"]);
+    const live = await semlayer(t.root, ["profile", "--source", "sf"]);
     expect(live.code).toBe(1);
     expect(live.err).toContain("--emit-sql");
 
@@ -543,7 +546,7 @@ describe("profile (snowflake via results file)", () => {
     };
     const file = join(t.dir, "results.json");
     writeFileSync(file, JSON.stringify(results));
-    const r = await sl(t.root, ["profile", "--source", "sf", "--results", file, "--json"]);
+    const r = await semlayer(t.root, ["profile", "--source", "sf", "--results", file, "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<ProfileJson>();
     expect(out.profiled).toEqual([
@@ -574,23 +577,23 @@ describe("profile (snowflake via results file)", () => {
 
     const missing = join(t.dir, "partial.json");
     writeFileSync(missing, JSON.stringify({ "stats:ANALYTICS.FCT_ORDERS": results["stats:ANALYTICS.FCT_ORDERS"] }));
-    const bad = await sl(t.root, ["profile", "--source", "sf", "--refresh", "--results", missing]);
+    const bad = await semlayer(t.root, ["profile", "--source", "sf", "--refresh", "--results", missing]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain("top:ANALYTICS.FCT_ORDERS");
 
     // A row naming a column the query does not cover is refused.
     const stray = join(t.dir, "stray.json");
     writeFileSync(stray, JSON.stringify({ ...results, "top:ANALYTICS.FCT_ORDERS": [{ COLUMN_INDEX: 2, VALUE: "9.99", N: 1 }] }));
-    const strayRun = await sl(t.root, ["profile", "--source", "sf", "--refresh", "--results", stray]);
+    const strayRun = await semlayer(t.root, ["profile", "--source", "sf", "--refresh", "--results", stray]);
     expect(strayRun.code).toBe(1);
     expect(strayRun.err).toContain("column_index 2 names no column the query covers");
   });
 });
 
 // Whether PG_URL names a server on this machine (localhost, 127.0.0.1, ::1 or a socket path), or
-// SL_TEST_ALLOW_REMOTE=1 allows another: the live tests drop the schemas they create.
+// SEMLAYER_TEST_ALLOW_REMOTE=1 allows another: the live tests drop the schemas they create.
 function localPgUrl(url: string): boolean {
-  if (process.env.SL_TEST_ALLOW_REMOTE === "1") return true;
+  if (process.env.SEMLAYER_TEST_ALLOW_REMOTE === "1") return true;
   const u = new URL(url);
   const host = u.searchParams.get("host") ?? decodeURIComponent(u.hostname);
   return host === "" || host.startsWith("/") || ["localhost", "127.0.0.1", "::1", "[::1]"].includes(host);
@@ -598,10 +601,10 @@ function localPgUrl(url: string): boolean {
 
 describe("localPgUrl", () => {
   test("allows local hosts and socket paths only", () => {
-    expect(localPgUrl("postgres://postgres@localhost:54329/postgres?host=/tmp/sl-pg")).toBe(true);
+    expect(localPgUrl("postgres://postgres@localhost:54329/postgres?host=/tmp/semlayer-pg")).toBe(true);
     expect(localPgUrl("postgres://u@127.0.0.1/db")).toBe(true);
     expect(localPgUrl("postgres://u@[::1]:5432/db")).toBe(true);
-    if (process.env.SL_TEST_ALLOW_REMOTE !== "1") {
+    if (process.env.SEMLAYER_TEST_ALLOW_REMOTE !== "1") {
       expect(localPgUrl("postgres://u@db.example.com/prod")).toBe(false);
       expect(localPgUrl("postgres://u@localhost/db?host=db.example.com")).toBe(false);
     }
@@ -614,7 +617,7 @@ describe.skipIf(!PG_URL)("profile (postgres live)", () => {
   let db: SQL;
 
   beforeAll(async () => {
-    if (!localPgUrl(PG_URL!)) throw new Error("PG_URL is not on this machine; the live tests drop schemas, so set SL_TEST_ALLOW_REMOTE=1 to run them there.");
+    if (!localPgUrl(PG_URL!)) throw new Error("PG_URL is not on this machine; the live tests drop schemas, so set SEMLAYER_TEST_ALLOW_REMOTE=1 to run them there.");
     db = new SQL(PG_URL!);
     await db.unsafe(`drop schema if exists ${schema} cascade`);
     await db.unsafe(`create schema ${schema}`);
@@ -670,7 +673,7 @@ describe.skipIf(!PG_URL)("profile (postgres live)", () => {
         null,
       ),
     ]);
-    const r = await sl(t.root, ["profile", "--source", "pg", "--json"], { PGTEST_URL: PG_URL });
+    const r = await semlayer(t.root, ["profile", "--source", "pg", "--json"], { PGTEST_URL: PG_URL });
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     const out = r.json<ProfileJson>();
@@ -707,7 +710,7 @@ describe.skipIf(!PG_URL)("profile (postgres live)", () => {
       connection: { env: "PGTEST_URL" },
       profile: { sample_rows: 2 },
     });
-    const sampled = await sl(t.root, ["profile", "--source", "pg", "--refresh", "--json"], { PGTEST_URL: PG_URL });
+    const sampled = await semlayer(t.root, ["profile", "--source", "pg", "--refresh", "--json"], { PGTEST_URL: PG_URL });
     expect(sampled.code).toBe(0);
     expect(sampled.json<ProfileJson>().profiled[0]!.row_count).toBe(4);
     expect(col(snap(t.root, "pg"), "customers", "tier").profile!.sampled).toBe(true);
@@ -726,7 +729,7 @@ describe.skipIf(!PG_URL)("profile (postgres live)", () => {
     const columns: [string, string][] = [["event_id", "integer"], ["kind", "text"], ["flag", "boolean"]];
     writeSnapshot(t.root, "pg", "postgres", [table(schema, "events", columns, 100000), { ...table(schema, "events_v", columns, null), kind: "view" }]);
 
-    const emitted = await sl(t.root, ["profile", "--source", "pg", "--emit-sql"], { PGTEST_URL: PG_URL });
+    const emitted = await semlayer(t.root, ["profile", "--source", "pg", "--emit-sql"], { PGTEST_URL: PG_URL });
     expect(emitted.code).toBe(0);
     const queries = emitted.json<QueryPlan>().queries;
     expect(queries.map((q) => q.id)).toEqual([`stats:${schema}.events`, `top:${schema}.events`, `stats:${schema}.events_v`, `top:${schema}.events_v`]);
@@ -739,7 +742,7 @@ describe.skipIf(!PG_URL)("profile (postgres live)", () => {
     expect(queries[2]!.sql).toContain("order by random() limit 10000");
     expect(emitted.err).toContain(`${schema}.events_v is a view, an external table or has no row estimate`);
 
-    const r = await sl(t.root, ["profile", "--source", "pg", "--json"], { PGTEST_URL: PG_URL });
+    const r = await semlayer(t.root, ["profile", "--source", "pg", "--json"], { PGTEST_URL: PG_URL });
     expect(r.code).toBe(0);
     const s = snap(t.root, "pg");
     const events = s.tables.find((x) => x.name === "events")!;
@@ -767,9 +770,9 @@ describe.skipIf(!PG_URL)("profile (postgres live)", () => {
       profile: { sample_rows: 50, top_values: 10 },
     });
     writeSnapshot(t.root, "pg", "postgres", [table(schema, "events", [["event_id", "integer"], ["kind", "text"]], 100000)]);
-    const emitted = await sl(t.root, ["profile", "--source", "pg", "--emit-sql"], { PGTEST_URL: PG_URL });
+    const emitted = await semlayer(t.root, ["profile", "--source", "pg", "--emit-sql"], { PGTEST_URL: PG_URL });
     expect(emitted.json<QueryPlan>().queries[0]!.sql).toContain("tablesample system (1) repeatable (42) limit 50");
-    const r = await sl(t.root, ["profile", "--source", "pg", "--json"], { PGTEST_URL: PG_URL });
+    const r = await semlayer(t.root, ["profile", "--source", "pg", "--json"], { PGTEST_URL: PG_URL });
     expect(r.code).toBe(0);
     expect(r.json<ProfileJson>().profiled[0]!.row_count).toBe(100000);
     const kind = col(snap(t.root, "pg"), "events", "kind").profile!;
@@ -811,7 +814,7 @@ function peopleModel(root: string, extra: Partial<Model> = {}): void {
 }
 
 const hex16 = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex").slice(0, 16)}`;
-// The hashed form an earlier version of sl profile stored for protected top values.
+// The hashed form an earlier version of semlayer profile stored for protected top values.
 const hashValue = (text: string) => hex16(text.toLowerCase().trim());
 
 interface RedactJson {
@@ -872,17 +875,17 @@ describe("profiles of protected columns", () => {
     expect([...(prot.get("main.shops") ?? [])].sort()).toEqual(["shop_id", "shop_name"]);
   });
 
-  test("sl profile stores counts only for protected columns, and never selects the top values of ones known before it runs (duckdb)", async () => {
+  test("semlayer profile stores counts only for protected columns, and never selects the top values of ones known before it runs (duckdb)", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     await initProject(t.root);
     await duckdbSource(t.root, t.dir, "shop", [PEOPLE_SQL]);
-    expect((await sl(t.root, ["introspect", "--source", "shop"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "shop"])).code).toBe(0);
     peopleModel(t.root);
 
     // email and handle are tagged pii, notes and birth_date are protected by name: the plan's one
     // top-values query covers only status and region.
-    const emitted = await sl(t.root, ["profile", "--source", "shop", "--emit-sql"]);
+    const emitted = await semlayer(t.root, ["profile", "--source", "shop", "--emit-sql"]);
     expect(emitted.code).toBe(0);
     const queries = emitted.json<QueryPlan>().queries;
     expect(queries.map((q) => q.id)).toEqual(["stats:main.people", "top:main.people"]);
@@ -892,7 +895,7 @@ describe("profiles of protected columns", () => {
     // The statistics query reads no text min or max of any column.
     expect(queries[0]!.sql).not.toMatch(/min\("(email|handle|notes)"\)/);
 
-    const r = await sl(t.root, ["profile", "--source", "shop", "--json"]);
+    const r = await semlayer(t.root, ["profile", "--source", "shop", "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<ProfileJson & { redacted: string[] }>();
     expect(out.redacted).toEqual(["main.people.email", "main.people.handle", "main.people.notes", "main.people.birth_date"]);
@@ -911,7 +914,7 @@ describe("profiles of protected columns", () => {
     for (const raw of ["Dana@Example.com", "lee@example.com", "Call after 5", "dana_r", "sha256:"]) expect(text).not.toContain(raw);
     expect(validateProject(t.root).filter((i) => i.message.includes("raw sample values"))).toEqual([]);
 
-    const human = await sl(t.root, ["profile", "--source", "shop", "--refresh"]);
+    const human = await semlayer(t.root, ["profile", "--source", "shop", "--refresh"]);
     expect(human.out).toContain(
       "Protected columns, stored with counts only (no top values, and min and max only for numbers and dates): main.people.email, main.people.handle",
     );
@@ -926,10 +929,10 @@ describe("profiles of protected columns", () => {
     await duckdbSource(t.root, t.dir, "web", [
       "create table visits as select range as visit_id, 'visitor-' || range::varchar as visitor_handle, case when range % 2 = 0 then 'web' else 'app' end as channel from range(60)",
     ]);
-    expect((await sl(t.root, ["introspect", "--source", "web"])).code).toBe(0);
-    const emitted = await sl(t.root, ["profile", "--source", "web", "--emit-sql"]);
+    expect((await semlayer(t.root, ["introspect", "--source", "web"])).code).toBe(0);
+    const emitted = await semlayer(t.root, ["profile", "--source", "web", "--emit-sql"]);
     expect(emitted.json<QueryPlan>().queries[1]!.sql).toContain('"visitor_handle"');
-    const r = await sl(t.root, ["profile", "--source", "web", "--json"]);
+    const r = await semlayer(t.root, ["profile", "--source", "web", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<{ redacted: string[] }>().redacted).toEqual(["main.visits.visitor_handle"]);
     const s = snap(t.root, "web");
@@ -951,8 +954,8 @@ describe("profiles of protected columns", () => {
         "'10.0.0.' || (range % 4)::varchar as ip, 'Mozilla/5.0 (X' || (range % 3)::varchar || ')' as user_agent, " +
         "'SKU-' || range::varchar as sku from range(100)",
     ]);
-    expect((await sl(t.root, ["introspect", "--source", "crm"])).code).toBe(0);
-    const r = await sl(t.root, ["profile", "--source", "crm", "--json"]);
+    expect((await semlayer(t.root, ["introspect", "--source", "crm"])).code).toBe(0);
+    const r = await semlayer(t.root, ["profile", "--source", "crm", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<{ redacted: string[] }>().redacted).toEqual([
       "sales.people.customer_name",
@@ -969,27 +972,27 @@ describe("profiles of protected columns", () => {
     expect(col(s, "people", "sku").profile!.top_values!.length).toBe(10);
   });
 
-  test("sl profile --redact rewrites protected profiles without a database, leaving the rest byte-identical", async () => {
+  test("semlayer profile --redact rewrites protected profiles without a database, leaving the rest byte-identical", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     await initProject(t.root);
     const source = await duckdbSource(t.root, t.dir, "shop", [PEOPLE_SQL, SHOP_SQL]);
-    expect((await sl(t.root, ["introspect", "--source", "shop"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "shop"])).code).toBe(0);
     // Profiled before any model tags handle or ignores region.
-    expect((await sl(t.root, ["profile", "--source", "shop"])).code).toBe(0);
+    expect((await semlayer(t.root, ["profile", "--source", "shop"])).code).toBe(0);
     const path = join(t.root, "snapshots", "shop.json");
     const before = readFileSync(path, "utf8");
     expect(JSON.stringify(col(snap(t.root, "shop"), "people", "handle").profile!.top_values)).toContain("dana_r");
 
     peopleModel(t.root, { ignored_columns: ["region"] });
     expect(validateProject(t.root).filter((i) => i.message.includes("raw sample values")).map((i) => i.message)).toEqual([
-      "main.people.handle is protected but the snapshot holds raw sample values; run sl profile --source shop --redact",
-      "main.people.region is protected but the snapshot holds raw sample values; run sl profile --source shop --redact",
+      "main.people.handle is protected but the snapshot holds raw sample values; run semlayer profile --source shop --redact",
+      "main.people.region is protected but the snapshot holds raw sample values; run semlayer profile --source shop --redact",
     ]);
 
     // --redact reads no database.
     rmSync(source.connection!.database!);
-    const r = await sl(t.root, ["profile", "--source", "shop", "--redact", "--json"]);
+    const r = await semlayer(t.root, ["profile", "--source", "shop", "--redact", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<RedactJson>()).toEqual({ source: "shop", redacted: ["main.people.handle", "main.people.region"] });
 
@@ -1015,14 +1018,14 @@ describe("profiles of protected columns", () => {
     expect(strip(readFileSync(path, "utf8"))).toBe(strip(before));
     expect(validateProject(t.root).filter((i) => i.message.includes("raw sample values"))).toEqual([]);
 
-    const again = await sl(t.root, ["profile", "--source", "shop", "--redact"]);
+    const again = await semlayer(t.root, ["profile", "--source", "shop", "--redact"]);
     expect(again.out).toContain("Nothing to redact");
-    const bad = await sl(t.root, ["profile", "--source", "shop", "--redact", "--refresh"]);
+    const bad = await semlayer(t.root, ["profile", "--source", "shop", "--redact", "--refresh"]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain("--redact reads no database and takes no --refresh");
   });
 
-  test("sl profile --redact removes hashed top values a snapshot already holds", async () => {
+  test("semlayer profile --redact removes hashed top values a snapshot already holds", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     await initProject(t.root);
@@ -1037,7 +1040,7 @@ describe("profiles of protected columns", () => {
     };
     people.columns[2]!.profile = { null_fraction: 0, distinct_count: 2, top_values: [{ value: "active", count: 2 }], sampled: false };
     writeSnapshot(t.root, "shop", "duckdb", [people]);
-    const r = await sl(t.root, ["profile", "--source", "shop", "--redact", "--json"]);
+    const r = await semlayer(t.root, ["profile", "--source", "shop", "--redact", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<RedactJson>()).toEqual({ source: "shop", redacted: ["main.people.email"] });
     const s = snap(t.root, "shop");
@@ -1061,7 +1064,7 @@ describe("profiles of protected columns", () => {
     writeSnapshot(t.root, "shop", "duckdb", [products]);
     // No models: sku is code-like and no longer protected, but its hashes still go.
     expect(protectedColumns(snap(t.root, "shop").tables, [], "duckdb").get("a.products")).toEqual(new Set(["nickname"]));
-    const r = await sl(t.root, ["profile", "--source", "shop", "--redact", "--json"]);
+    const r = await semlayer(t.root, ["profile", "--source", "shop", "--redact", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<RedactJson>()).toEqual({ source: "shop", redacted: ["a.products.sku", "a.products.nickname", "a.products.placed_on"] });
     const s = snap(t.root, "shop");
@@ -1069,7 +1072,7 @@ describe("profiles of protected columns", () => {
     expect(col(s, "products", "placed_on").profile).toEqual({ null_fraction: 0, distinct_count: 9, max: "2024-12-31", sampled: false, redacted: true });
     expect(col(s, "products", "status").profile!.top_values).toEqual([{ value: "active", count: 60 }]);
     expect(readFileSync(join(t.root, "snapshots", "shop.json"), "utf8")).not.toContain("sha256:");
-    const again = await sl(t.root, ["profile", "--source", "shop", "--redact"]);
+    const again = await semlayer(t.root, ["profile", "--source", "shop", "--redact"]);
     expect(again.out).toContain("Nothing to redact");
   });
 
@@ -1083,10 +1086,10 @@ describe("profiles of protected columns", () => {
         "'Mozilla ' || (range % 3)::varchar as useragent, 'dev-' || (range % 9)::varchar as deviceid, " +
         "['web', 'app'][1 + range % 2] as channel from range(200)",
     ]);
-    expect((await sl(t.root, ["introspect", "--source", "crm"])).code).toBe(0);
-    const emitted = await sl(t.root, ["profile", "--source", "crm", "--emit-sql"]);
+    expect((await semlayer(t.root, ["introspect", "--source", "crm"])).code).toBe(0);
+    const emitted = await semlayer(t.root, ["profile", "--source", "crm", "--emit-sql"]);
     expect(emitted.json<QueryPlan>().queries[1]!.sql).toContain('group by grouping sets (("channel"))');
-    const r = await sl(t.root, ["profile", "--source", "crm", "--json"]);
+    const r = await semlayer(t.root, ["profile", "--source", "crm", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<{ redacted: string[] }>().redacted).toEqual([
       "main.events.firstname",
@@ -1121,16 +1124,16 @@ describe("profiles of protected columns", () => {
     expect(prot.get("main.items")).toBeUndefined();
   });
 
-  test("sl profile reads the model files before it queries, so a model that fails to parse stops the run first", async () => {
+  test("semlayer profile reads the model files before it queries, so a model that fails to parse stops the run first", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     await initProject(t.root);
     await duckdbSource(t.root, t.dir, "shop", [PEOPLE_SQL]);
-    expect((await sl(t.root, ["introspect", "--source", "shop"])).code).toBe(0);
+    expect((await semlayer(t.root, ["introspect", "--source", "shop"])).code).toBe(0);
     mkdirSync(join(t.root, "models", "shop"), { recursive: true });
     writeFileSync(join(t.root, "models", "shop", "broken.yaml"), "model: [unclosed\n");
     // A results file that does not exist: reading it would fail, so a model error proves no plan ran.
-    const r = await sl(t.root, ["profile", "--source", "shop", "--results", join(t.dir, "missing.json")]);
+    const r = await semlayer(t.root, ["profile", "--source", "shop", "--results", join(t.dir, "missing.json")]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("broken.yaml");
     expect(r.err).not.toContain("missing.json");

@@ -1,4 +1,4 @@
--- Schema export for Microsoft SQL Server (2012 or later) and Azure SQL, for `sl import`.
+-- Schema export for Microsoft SQL Server (2012 or later) and Azure SQL, for `semlayer import`.
 --
 -- Reads only the catalog views (sys.objects, sys.columns, sys.indexes, sys.foreign_keys,
 -- sys.partitions, sys.extended_properties): no table data is read and nothing is written. Returns
@@ -9,11 +9,14 @@
 -- the query quotes the names, comments and types, so commas inside them survive):
 --   sqlcmd -S <server> -d <database> -i sqlserver.sql -f 65001 -s, -W > schema.csv
 -- Then import it:
---   sl import --source <source> --file schema.csv
--- sl import skips the dashed line under sqlcmd's header and reads NULL as empty.
+--   semlayer import --source <source> --file schema.csv
+-- semlayer import skips the dashed line under sqlcmd's header and reads NULL as empty.
 --
--- Restrict schemas: uncomment the line marked sl:schema-filter below and list the schemas,
--- or print this query with the filter applied: sl export-sql --dialect sqlserver --schemas a,b
+-- Restrict schemas: uncomment the line marked semlayer:schema-filter below and list the schemas,
+-- or print this query with the filter applied: semlayer export-sql --dialect sqlserver --schemas a,b
+--
+-- Restrict tables: semlayer export-sql --include/--exclude prints this query with a table filter at the
+-- line marked semlayer:table-filter (a pattern the dialect cannot express is applied by semlayer import).
 --
 -- row_count sums sys.partitions.rows over the heap or clustered index; it is empty for views.
 -- Comments are cut at 1,900 characters, so a quoted comment stays within nvarchar(4000).
@@ -29,7 +32,8 @@ with rel as (
   join sys.schemas s on s.schema_id = o.schema_id
   where o.type in ('U', 'V') and o.is_ms_shipped = 0
     and s.name not in ('sys', 'INFORMATION_SCHEMA')
-    -- and s.name in (N'dbo')  -- sl:schema-filter: uncomment and list the schemas to export
+    -- and s.name in (N'dbo')  -- semlayer:schema-filter: uncomment and list the schemas to export
+    -- semlayer:table-filter: semlayer export-sql --include/--exclude writes the table filter here
 ),
 pk as (
   select ic.object_id, ic.column_id, ic.key_ordinal as pk_ordinal

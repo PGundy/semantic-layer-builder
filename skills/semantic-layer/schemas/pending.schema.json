@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": ".semlayer/pending/<readback_id>.json",
+  "description": "A readback waiting for the owner's answer, written by semlayer readback: numbered items, each an approve target with its rendered text and the content hash it had when it was read back.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["readback_id", "created_at", "items"],
+  "properties": {
+    "readback_id": {
+      "type": "string",
+      "pattern": "^rb_[0-9]{4,}$",
+      "description": "rb_ and at least four digits, the next free number. Equals the file name."
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "When the readback was rendered, as an ISO timestamp."
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["n", "target", "kind", "text", "content_hash"],
+        "properties": {
+          "n": { "type": "integer", "minimum": 1, "description": "The item's number, 1, 2, ... in order." },
+          "target": {
+            "type": "string",
+            "pattern": "^(access|(metric|golden):[a-z][a-z0-9_]*|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)?)$",
+            "description": "The approve target: source.model, source.model.field, metric:<name> or access, or golden:<name>, a golden semlayer goldens confirm records."
+          },
+          "kind": { "const": "approve", "description": "What the owner is asked: approve the item." },
+          "text": { "type": "string", "minLength": 1, "description": "The readback as rendered for the owner." },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "description": "The target's content hash when it was read back, the value semlayer approve records as approved_hash; for a golden, the hash of the golden with the rows and tolerance read back."
+          },
+          "tolerance": {
+            "type": "number",
+            "minimum": 0,
+            "description": "golden:<name> items only: the tolerance read back, which semlayer goldens confirm records when it is not given --tolerance."
+          },
+          "rows_from": {
+            "type": "string",
+            "minLength": 1,
+            "description": "golden:<name> items read back from stored rows only: the --results <file> or --plan <plan_id> the readback took, which that golden's semlayer goldens confirm --name takes too."
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Measure and metric items only: the figure on today's data and the rows behind it, or why it is not shown. Evidence only: it is outside content_hash and never holds a protected value.",
+            "properties": {
+              "figure": { "type": ["number", "string", "null"], "description": "The total (a large integer as a string; null when no row counts)." },
+              "row_count": { "type": ["number", "string", "null"], "description": "A measure's rows: the rows its filter keeps." },
+              "parts": {
+                "type": "array",
+                "description": "A metric's measures, each with its own total and rows.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["ref", "figure", "row_count"],
+                  "properties": {
+                    "ref": { "type": "string", "description": "model.measure" },
+                    "figure": { "type": ["number", "string", "null"] },
+                    "row_count": { "type": ["number", "string", "null"] }
+                  }
+                }
+              },
+              "not_shown": { "type": "string", "minLength": 1, "description": "Why the figure is not shown, in one line." }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "figures": [
+    { "figure": "sessions_2025", "golden": "*session*2025*", "request": { "source": "lake", "table": "sessions", "grouped": false } },
+    { "figure": "marketing_spend_by_channel_2025", "golden": "*spend*2025*", "request": { "source": "lake", "table": "marketing_spend", "grouped": true }, "key": "channel", "value": "spend" },
+    { "figure": "marketing_spend_2025", "golden": "*spend*2025*", "request": { "source": "lake", "table": "marketing_spend", "grouped": false } },
+    { "figure": "net_revenue_2025", "golden": "*net_revenue*2025*", "request": { "source": "warehouse", "grouped": false } },
+    { "figure": "refunds_on_2025_orders", "golden": "*refund*2025*", "request": { "source": "warehouse", "grouped": false } },
+    { "figure": "average_order_value_2025", "golden": "re:.*(aov|average_order_value).*2025.*", "request": { "source": "warehouse", "grouped": false } },
+    { "figure": "order_count_2025", "golden": "re:.*orders?_count.*2025.*", "request": { "source": "warehouse", "table": "fct_orders", "grouped": false } },
+    { "figure": "new_customers_2025", "golden": "*new_customers*2025*", "request": { "source": "warehouse", "grouped": false } },
+    { "figure": "revenue_by_region_2025", "golden": "*revenue*2025*", "request": { "source": "warehouse", "table": "fct_orders", "grouped": true }, "key": "region_code", "value": "revenue" },
+    { "figure": "revenue_2025", "golden": "*revenue*2025*", "request": { "source": "warehouse", "table": "fct_orders", "grouped": false } }
+  ]
+}

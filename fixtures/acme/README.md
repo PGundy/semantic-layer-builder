@@ -1,6 +1,6 @@
 # Acme synthetic dataset
 
-A small, fully synthetic two-source dataset for an online store, used by the example semantic layer, the end-to-end skill run and the tests. No value in it describes a real person or company.
+A small, fully synthetic two-source dataset for an online store, used by the example semantic layer, the end-to-end interview run and the tests. No value in it describes a real person or company.
 
 - **Warehouse** (`data/warehouse/*.csv`, loaded into Postgres schema `acme`): 20 tables. Six matter: `fct_orders` (5,000 orders, 2024-01-01 to 2025-12-31), `fct_order_items` (12,343 lines), `fct_refunds` (344 refunds), `dim_customers` (500), `dim_products` (60) and `dim_regions` (6). The rest are realistic clutter: raw ingestion, staging, backups, temp tables, an archive, a test copy, a saved report and operational logs.
 - **Lake** (`data/lake/*.parquet`): `web_events` (30,551 events, one file per year under `web_events/`), `sessions` (8,000, about 60% anonymous) and `marketing_spend` (one row per day per paid channel for 2024 and 2025), plus two noise tables.
@@ -14,7 +14,7 @@ Money is in integer cents and timestamps are UTC. The data carries the traps a r
 | `load-postgres.ts` | Drops and recreates a Postgres schema and loads the warehouse CSVs into it. |
 | `reference-figures.ts` | Computes `reference-figures.json` from the files with DuckDB. |
 | `reference-figures.json` | The 2025 figures the owner knows from their reports, each with its definition, and the figures common mistakes produce. |
-| `evolve.sql` | A later schema change: new order columns, a sales team with managers and a closure view. Apply it after loading to test how the skill keeps a layer current. |
+| `evolve.sql` | A later schema change: new order columns, a sales team with managers and a closure view. Apply it after loading to test how `semlayer` keeps a layer current. |
 | `owner-brief.md` | The brief for whoever plays the data owner, Dana Ruiz, in an end-to-end run. |
 
 ## Regenerate

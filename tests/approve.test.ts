@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { AccessFile, MetricsFile, Model } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { initProject, sl, tempRoot } from "./helpers.ts";
+import { approveWithYes, initProject, recordReply, refsUnder, semlayer, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
@@ -113,8 +113,15 @@ interface Result {
   warnings: string[];
 }
 
-async function approve(root: string, args: string[]) {
-  return sl(root, ["approve", ...args]);
+// semlayer approve after the owner's recorded yes to the target (approve-ledger.test.ts covers approving
+// without one); a revoke and --stamp-hashes need none.
+async function approve(root: string, args: string[], opts: { now?: string } = {}) {
+  return args.includes("--stamp-hashes") ? raw(root, args) : approveWithYes(root, args, opts);
+}
+
+// semlayer approve with no reply recorded first.
+async function raw(root: string, args: string[]) {
+  return semlayer(root, ["approve", ...args]);
 }
 
 describe("approve targets", () => {
@@ -135,15 +142,12 @@ describe("approve targets", () => {
     expect(raw).toContain("status: draft # confirm the values");
   });
 
-  test("--date overrides today and a bad date is refused", async () => {
+  test("approved_at is the day of the owner's reply, not today", async () => {
     const root = await project();
-    const r = await approve(root, ["--target", "wh.orders", "--by", "Dana", "--date", "2026-03-01"]);
+    const r = await approve(root, ["--target", "wh.orders", "--by", "Dana"], { now: "2026-03-01T09:00:00.000Z" });
     expect(r.code).toBe(0);
-    expect(r.out).toContain("Approved wh.orders (draft -> approved) by Dana on 2026-03-01.");
+    expect(r.out).toContain("Approved wh.orders (draft -> approved) by Dana on 2026-03-01 (reply ans_0001).");
     expect(orders(root).approved_at).toBe("2026-03-01");
-    const bad = await approve(root, ["--target", "wh.orders", "--by", "Dana", "--date", "2026-02-30"]);
-    expect(bad.code).toBe(1);
-    expect(bad.err).toContain("--date");
   });
 
   test("a dimension, a measure and a join", async () => {
@@ -156,7 +160,7 @@ describe("approve targets", () => {
     expect(j.code).toBe(0);
     const jr = j.json<Result>();
     expect(jr.changed).toEqual([{ target: "wh.orders.customer", from: "draft", to: "approved" }]);
-    expect(jr.warnings[0]).toContain("sl check-join --source wh --model orders --join customer");
+    expect(jr.warnings[0]).toContain("semlayer check-join --source wh --model orders --join customer");
     const o = orders(root);
     expect(o.dimensions[0]).toMatchObject({ status: "approved", approved_by: "Dana", approved_at: "2026-01-15" });
     expect(o.measures[0]).toMatchObject({ status: "approved", approved_by: "Dana" });
@@ -228,9 +232,9 @@ measures:
 
   test("the --target error names every target kind, golden included", async () => {
     const root = await project();
-    const r = await approve(root, ["--by", "Dana"]);
+    const r = await raw(root, ["--by", "Dana"]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain("sl goldens confirm");
+    expect(r.err).toContain("semlayer goldens confirm");
   });
 
   test("already approved is a no-op", async () => {
@@ -247,28 +251,38 @@ measures:
 });
 
 describe("approve refusals", () => {
-  test("empty --by", async () => {
+  test("an empty --by is refused", async () => {
     const root = await project();
-    for (const args of [["--target", "wh.orders"], ["--target", "wh.orders", "--by", "  "]]) {
-      const r = await approve(root, args);
-      expect(r.code).toBe(1);
-      expect(r.err).toContain("--by is required");
-    }
+    await recordReply(root, "wh.orders");
+    const r = await raw(root, ["--target", "wh.orders", "--by", "  "]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("--by is empty");
     expect(orders(root).status).toBe("draft");
   });
 
+  // semlayer readback refuses these items up front (HR-15), so no yes to them can be recorded: semlayer approve,
+  // run without one, still names what they lack.
   test("a model without grain or primary_key", async () => {
     const root = await project();
-    const r = await approve(root, ["--target", "wh.customers", "--by", "Dana"]);
+    const rb = await semlayer(root, ["readback", "--targets", "wh.customers"]);
+    expect(rb.code).toBe(1);
+    expect(rb.err).toContain("  - wh.customers: wh.customers has no grain\n  - wh.customers: wh.customers has no primary_key");
+    const r = await raw(root, ["--target", "wh.customers", "--by", "Dana"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("wh.customers has no grain");
     expect(r.err).toContain("wh.customers has no primary_key");
     expect(text(root, "models/wh/customers.yaml")).toBe(CUSTOMERS);
   });
 
-  test("a measure without description", async () => {
+  test("a measure without description: refused by the readback, and by approve after a yes when the description was removed since", async () => {
     const root = await project();
-    const r = await approve(root, ["--target", "wh.customers.customer_count", "--by", "Dana"]);
+    expect((await semlayer(root, ["readback", "--targets", "wh.customers.customer_count"])).err).toContain("Measure wh.customers.customer_count has no description");
+    // A description is outside the approval hash, so a yes given with one stands after it is removed.
+    const file = join(root, "models", "wh", "customers.yaml");
+    writeFileSync(file, CUSTOMERS.replace("    agg: count\n", "    agg: count\n    description: Customers.\n"));
+    await recordReply(root, "wh.customers.customer_count");
+    writeFileSync(file, CUSTOMERS);
+    const r = await raw(root, ["--target", "wh.customers.customer_count", "--by", "Dana"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("Measure wh.customers.customer_count has no description");
     expect(text(root, "models/wh/customers.yaml")).toBe(CUSTOMERS);
@@ -276,22 +290,25 @@ describe("approve refusals", () => {
 
   test("a metric without description, with draft measures, or with a missing measure", async () => {
     const root = await project();
-    const vague = await approve(root, ["--target", "metric:vague", "--by", "Dana"]);
+    expect((await semlayer(root, ["readback", "--targets", "metric:vague,metric:broken"])).err).toContain(
+      "  - metric:vague: Metric metric:vague has no description\n  - metric:broken: measure wh.orders.nope does not exist",
+    );
+    const vague = await raw(root, ["--target", "metric:vague", "--by", "Dana"]);
     expect(vague.code).toBe(1);
     expect(vague.err).toContain("Metric metric:vague has no description");
     const drafts = await approve(root, ["--target", "metric:net", "--by", "Dana"]);
     expect(drafts.code).toBe(1);
     expect(drafts.err).toContain("draft measures: wh.orders.revenue, wh.customers.customer_count");
-    const broken = await approve(root, ["--target", "metric:broken", "--by", "Dana"]);
+    const broken = await raw(root, ["--target", "metric:broken", "--by", "Dana"]);
     expect(broken.code).toBe(1);
     expect(broken.err).toContain("wh.orders.nope does not exist");
-    const unknown = await approve(root, ["--target", "metric:nope", "--by", "Dana"]);
+    const unknown = await raw(root, ["--target", "metric:nope", "--by", "Dana"]);
     expect(unknown.code).toBe(1);
     expect(unknown.err).toContain("Known metrics: aov, net, vague, broken");
     expect(text(root, "metrics.yaml")).toBe(METRICS);
   });
 
-  test("a metric with placeholders sl validate rejects, or none at all", async () => {
+  test("a metric with placeholders semlayer validate rejects, or none at all", async () => {
     const root = await project();
     await approve(root, ["--target", "wh.orders.revenue", "--by", "Dana"]);
     const odd = `metrics:
@@ -321,16 +338,19 @@ describe("approve refusals", () => {
     status: draft
 `;
     writeFileSync(join(root, "metrics.yaml"), odd);
-    const upper = await approve(root, ["--target", "metric:upper", "--by", "Dana"]);
+    expect((await semlayer(root, ["readback", "--targets", "metric:upper,metric:spaced,metric:constant,metric:mixed"])).err).toContain(
+      "  - metric:upper: its expr placeholder {Orders.Revenue} is not {model.measure} (lowercase names, no spaces)",
+    );
+    const upper = await raw(root, ["--target", "metric:upper", "--by", "Dana"]);
     expect(upper.code).toBe(1);
     expect(upper.err).toContain("placeholder {Orders.Revenue} is not {model.measure}");
-    const spaced = await approve(root, ["--target", "metric:spaced", "--by", "Dana"]);
+    const spaced = await raw(root, ["--target", "metric:spaced", "--by", "Dana"]);
     expect(spaced.code).toBe(1);
     expect(spaced.err).toContain("placeholder { orders.revenue } is not {model.measure}");
-    const constant = await approve(root, ["--target", "metric:constant", "--by", "Dana"]);
+    const constant = await raw(root, ["--target", "metric:constant", "--by", "Dana"]);
     expect(constant.code).toBe(1);
     expect(constant.err).toContain("has no {model.measure} placeholder");
-    const mixed = await approve(root, ["--target", "metric:mixed", "--by", "Dana"]);
+    const mixed = await raw(root, ["--target", "metric:mixed", "--by", "Dana"]);
     expect(mixed.code).toBe(1);
     expect(mixed.err).toContain("{orders.Order_Count}");
     expect(text(root, "metrics.yaml")).toBe(odd);
@@ -349,16 +369,16 @@ describe("approve refusals", () => {
     expect(text(root, "metrics.yaml")).toBe(before);
   });
 
-  test("a golden points to sl goldens confirm", async () => {
+  test("a golden points to semlayer goldens confirm", async () => {
     const root = await project();
-    const r = await approve(root, ["--target", "golden:revenue_2025", "--by", "Dana"]);
+    const r = await raw(root, ["--target", "golden:revenue_2025", "--by", "Dana"]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain("sl goldens confirm --name revenue_2025");
+    expect(r.err).toContain("semlayer goldens confirm --name revenue_2025");
   });
 
   test("the usage lists the targets approve takes and leaves goldens out", async () => {
     const root = await project();
-    const r = await sl(root, ["approve", "--help"]);
+    const r = await semlayer(root, ["approve", "--help"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("approve --target <source.model | source.model.field | metric:<name> | access>");
     expect(r.out).not.toContain("golden");
@@ -366,13 +386,13 @@ describe("approve refusals", () => {
 
   test("unknown targets and fields", async () => {
     const root = await project();
-    const field = await approve(root, ["--target", "wh.orders.nope", "--by", "Dana"]);
+    const field = await raw(root, ["--target", "wh.orders.nope", "--by", "Dana"]);
     expect(field.code).toBe(1);
     expect(field.err).toContain("Known: order_status, revenue, order_count, customer");
-    const model = await approve(root, ["--target", "wh.nope", "--by", "Dana"]);
+    const model = await raw(root, ["--target", "wh.nope", "--by", "Dana"]);
     expect(model.code).toBe(1);
     expect(model.err).toContain('No model "nope"');
-    const shape = await approve(root, ["--target", "a.b.c.d", "--by", "Dana"]);
+    const shape = await raw(root, ["--target", "a.b.c.d", "--by", "Dana"]);
     expect(shape.code).toBe(1);
     expect(shape.err).toContain("Cannot read target");
   });
@@ -381,11 +401,11 @@ describe("approve refusals", () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     await initProject(t.root);
-    const r = await approve(t.root, ["--target", "access", "--by", "Dana"]);
+    const r = await raw(t.root, ["--target", "access", "--by", "Dana"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("No access.yaml");
     writeFileSync(join(t.root, "access.yaml"), "# todo\n");
-    const empty = await approve(t.root, ["--target", "access", "--by", "Dana"]);
+    const empty = await raw(t.root, ["--target", "access", "--by", "Dana"]);
     expect(empty.code).toBe(1);
     expect(empty.err).toContain("access.yaml has no roles yet");
     expect(text(t.root, "access.yaml")).toBe("# todo\n");
@@ -410,7 +430,8 @@ describe("approve --recursive and --revoke", () => {
 
   test("--recursive lists every child that cannot be approved and approves nothing", async () => {
     const root = await project();
-    const r = await approve(root, ["--target", "wh.customers", "--by", "Dana", "--recursive"]);
+    expect((await semlayer(root, ["readback", "--targets", refsUnder(root, "wh.customers").join(",")])).code).toBe(1);
+    const r = await raw(root, ["--target", "wh.customers", "--by", "Dana", "--recursive"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("nothing was approved");
     expect(r.err).toContain("wh.customers has no grain");
@@ -421,7 +442,7 @@ describe("approve --recursive and --revoke", () => {
 
   test("--recursive applies only to a model", async () => {
     const root = await project();
-    const r = await approve(root, ["--target", "metric:aov", "--by", "Dana", "--recursive"]);
+    const r = await raw(root, ["--target", "metric:aov", "--by", "Dana", "--recursive"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("--recursive applies only");
   });
@@ -466,7 +487,7 @@ describe("approve --recursive and --revoke", () => {
 describe("revoking and approving access.yaml again", () => {
   test("--revoke moves approved_by and approved_at into last_approved and says which version keeps applying", async () => {
     const root = await project();
-    await approve(root, ["--target", "access", "--by", "Dana", "--date", "2026-02-01"]);
+    await approve(root, ["--target", "access", "--by", "Dana"], { now: "2026-02-01T12:00:00.000Z" });
     const r = await approve(root, ["--target", "access", "--revoke"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Revoked access (approved -> draft).");
@@ -483,10 +504,10 @@ describe("revoking and approving access.yaml again", () => {
     expect(again.json<Result>().changed).toEqual([]);
     expect(readYaml<Record<string, unknown>>(join(root, "access.yaml")).last_approved).toEqual({ by: "Dana", at: "2026-02-01" });
     // The access schema allows last_approved.
-    const issues = (await sl(root, ["validate", "--json"])).json<{ issues: unknown[] }>().issues;
+    const issues = (await semlayer(root, ["validate", "--json"])).json<{ issues: unknown[] }>().issues;
     expect(issues.filter((i) => JSON.stringify(i).includes("last_approved"))).toEqual([]);
     writeFileSync(join(root, "access.yaml"), ACCESS.replace("status: draft\n", "status: draft\nlast_approved:\n  by: Dana\n  on: 2026-02-01\n"));
-    const bad = (await sl(root, ["validate", "--json"])).json<{ issues: unknown[] }>().issues;
+    const bad = (await semlayer(root, ["validate", "--json"])).json<{ issues: unknown[] }>().issues;
     expect(bad.filter((i) => JSON.stringify(i).includes("last_approved")).length).toBeGreaterThan(0);
   });
 
@@ -499,9 +520,9 @@ describe("revoking and approving access.yaml again", () => {
 
   test("approving again replaces last_approved with approved_by and approved_at", async () => {
     const root = await project();
-    await approve(root, ["--target", "access", "--by", "Dana", "--date", "2026-02-01"]);
+    await approve(root, ["--target", "access", "--by", "Dana"], { now: "2026-02-01T12:00:00.000Z" });
     await approve(root, ["--target", "access", "--revoke"]);
-    const r = await approve(root, ["--target", "access", "--by", "Lee", "--date", "2026-03-01", "--json"]);
+    const r = await approve(root, ["--target", "access", "--by", "Lee", "--json"], { now: "2026-03-01T12:00:00.000Z" });
     expect(r.json<Result>().changed).toEqual([{ target: "access", from: "draft", to: "approved" }]);
     const a = readYaml<Record<string, unknown>>(join(root, "access.yaml"));
     expect(a).toMatchObject({ status: "approved", approved_by: "Lee", approved_at: "2026-03-01" });
@@ -511,7 +532,7 @@ describe("revoking and approving access.yaml again", () => {
 
   test("a revoke of a model, field or metric deletes the approval without last_approved", async () => {
     const root = await project();
-    await approve(root, ["--target", "wh.customers", "--by", "Dana"]);
+    await raw(root, ["--target", "wh.customers", "--by", "Dana"]);
     await approve(root, ["--target", "wh.customers", "--revoke"]);
     const m = readYaml<Record<string, unknown>>(join(root, "models/wh/customers.yaml"));
     expect(m.status).toBe("draft");
@@ -546,12 +567,12 @@ describe("approval hashes", () => {
 
   test("an approved item edited after its approval is approved again, not skipped", async () => {
     const root = await project();
-    await approve(root, ["--target", "wh.orders.revenue", "--by", "Dana", "--date", "2026-01-10"]);
+    await approve(root, ["--target", "wh.orders.revenue", "--by", "Dana"], { now: "2026-01-10T12:00:00.000Z" });
     const before = orders(root).measures[0]!.approved_hash;
     writeFileSync(join(root, "models/wh/orders.yaml"), text(root, "models/wh/orders.yaml").replace("expr: amount\n", "expr: amount * 1000\n"));
     const r = await approve(root, ["--target", "wh.orders.revenue", "--by", "Lee"]);
     expect(r.code).toBe(0);
-    expect(r.out).toBe("Approved wh.orders.revenue again (it changed since its last approval) by Lee on 2026-01-15.");
+    expect(r.out).toBe("Approved wh.orders.revenue again (it changed since its last approval) by Lee on 2026-01-15 (reply ans_0002).");
     const m = orders(root).measures[0]!;
     expect(m).toMatchObject({ approved_by: "Lee", approved_at: "2026-01-15" });
     expect(m.approved_hash).toMatch(HASH);

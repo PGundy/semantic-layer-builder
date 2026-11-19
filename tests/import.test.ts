@@ -11,7 +11,7 @@ import { detectFormat } from "../skills/semantic-layer/scripts/lib/importers/ind
 import type { Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { runCli } from "../skills/semantic-layer/scripts/lib/cli.ts";
 import { writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { FIXED_NOW, initProject, sl, tempRoot } from "./helpers.ts";
+import { FIXED_NOW, initProject, semlayer, tempRoot } from "./helpers.ts";
 
 const FIX = join(import.meta.dir, "fixtures", "imports");
 const fixture = (name: string) => join(FIX, name);
@@ -739,7 +739,7 @@ describe("ddl importer: untrusted input", () => {
       );
       await initProject(t.root);
       source(t.root, "s", "duckdb");
-      const r = await sl(t.root, ["import", "--source", "s", "--format", "ddl", "--file", evil]);
+      const r = await semlayer(t.root, ["import", "--source", "s", "--format", "ddl", "--file", evil]);
       expect(r.code).toBe(0);
       expect(r.out).toContain("Imported 1 table");
       expect(r.out).toContain("Skipped CREATE TABLE main.leak: it reads a file, a URL or an extension, which the importer does not open.");
@@ -821,9 +821,9 @@ describe("ddl importer: untrusted input", () => {
     source(t.root, "s", "duckdb");
     const before = process.cwd();
     process.chdir(work);
-    let r: Awaited<ReturnType<typeof sl>>;
+    let r: Awaited<ReturnType<typeof semlayer>>;
     try {
-      r = await sl(t.root, ["import", "--source", "s", "--format", "ddl", "--file", evil]);
+      r = await semlayer(t.root, ["import", "--source", "s", "--format", "ddl", "--file", evil]);
     } finally {
       process.chdir(before);
     }
@@ -982,17 +982,17 @@ describe("ddl importer: untrusted input", () => {
   });
 });
 
-describe("sl import", () => {
+describe("semlayer import", () => {
   test("imports an information_schema CSV for a non-runnable source and suggests draft", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     await initProject(t.root);
     source(t.root, "wh", "snowflake");
-    const r = await sl(t.root, ["import", "--source", "wh", "--format", "information_schema", "--file", fixture("info_schema_snowflake.json"), "--json"]);
+    const r = await semlayer(t.root, ["import", "--source", "wh", "--format", "information_schema", "--file", fixture("info_schema_snowflake.json"), "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<ImportJson>();
     expect(out).toMatchObject({ source: "wh", method: "information_schema", tables: 4, columns: 6, primary_keys: 0, foreign_keys: 0 });
-    expect(out.next).toBe("sl draft --source wh");
+    expect(out.next).toBe("semlayer draft --source wh");
     const snap = JSON.parse(readFileSync(join(t.root, "snapshots", "wh.json"), "utf8")) as Snapshot;
     expect(snap).toMatchObject({ snapshot_version: 1, source: "wh", dialect: "snowflake", method: "information_schema", captured_at: FIXED_NOW });
     expect(snap.tables.map((x) => `${x.schema}.${x.name}`)).toEqual(["MARTS.DIM_CUSTOMERS", "MARTS.FCT_ORDERS", "MARTS.V_ORDERS_DAILY", "RAW.EVENTS_EXT"]);
@@ -1003,14 +1003,14 @@ describe("sl import", () => {
     cleanup = t.cleanup;
     await initProject(t.root);
     source(t.root, "wh", "postgres", { connection: { env: "WH_URL" } });
-    const r = await sl(t.root, [
+    const r = await semlayer(t.root, [
       "import", "--source", "wh", "--format", "dbt_manifest",
       "--file", fixture("dbt/manifest.json"), "--catalog", fixture("dbt/catalog.json"), "--json",
     ]);
     expect(r.code).toBe(0);
     const out = r.json<ImportJson>();
     expect(out).toMatchObject({ method: "dbt_manifest", tables: 6, primary_keys: 2, foreign_keys: 3 });
-    expect(out.next).toBe("sl profile --source wh");
+    expect(out.next).toBe("semlayer profile --source wh");
   });
 
   test("imports DDL, prints a plain summary and keeps profiles of unchanged columns", async () => {
@@ -1040,12 +1040,12 @@ describe("sl import", () => {
       ],
     };
     writeJson(join(t.root, "snapshots", "shop.json"), previous);
-    const r = await sl(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql")]);
+    const r = await semlayer(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql")]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Imported 4 tables");
     expect(r.out).toContain("Skipped CREATE VIEW shop.legacy_returns");
     expect(r.out).toContain("old_table");
-    expect(r.out).toContain("Next: `sl profile --source shop`");
+    expect(r.out).toContain("Next: `semlayer profile --source shop`");
     const snap = JSON.parse(readFileSync(join(t.root, "snapshots", "shop.json"), "utf8")) as Snapshot;
     expect(snap.method).toBe("ddl");
     const orders = table(snap.tables, "shop.orders");
@@ -1060,9 +1060,9 @@ describe("sl import", () => {
     cleanup = t.cleanup;
     await initProject(t.root);
     source(t.root, "shop", "duckdb");
-    const first = await sl(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql"), "--json"]);
+    const first = await semlayer(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql"), "--json"]);
     expect(first.json<{ changes: unknown }>().changes).toBeNull();
-    expect((await sl(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql")])).out).toContain(
+    expect((await semlayer(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql")])).out).toContain(
       "No tables or columns changed since the previous snapshot.",
     );
 
@@ -1079,12 +1079,16 @@ describe("sl import", () => {
     snap.tables.push({ schema: "shop", name: "old_table", kind: "table", columns: [] });
     writeJson(path, snap);
 
-    const r = await sl(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql"), "--json"]);
+    const r = await semlayer(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql"), "--json"]);
     expect(r.code).toBe(0);
     const notesType = table((JSON.parse(readFileSync(path, "utf8")) as Snapshot).tables, "shop.orders").columns.find((c) => c.name === "notes")!.type;
     expect(r.json<{ changes: unknown }>().changes).toEqual({
       tables_added: ["shop.products"],
       tables_removed: ["shop.old_table"],
+      // The previous import recorded shop.products in scope and never had shop.old_table.
+      new_in_scope: [],
+      left_scope: [],
+      left_scope_with_models: [],
       columns: [
         {
           table: "shop.orders",
@@ -1096,14 +1100,14 @@ describe("sl import", () => {
     });
 
     writeJson(path, snap);
-    const human = await sl(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql")]);
+    const human = await semlayer(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql")]);
     expect(human.out).toContain(
       [
         "Changes since the previous snapshot:",
         "  1 table added: shop.products.",
         "  1 table removed: shop.old_table.",
         `  shop.orders: added notes (${notesType}); removed legacy_code; retyped status from varchar(20) to ${statusType}.`,
-        "Removed or retyped columns and tables: `sl validate` reports the fields that read a removed column; read the affected fields back to the owner.",
+        "Removed or retyped columns and tables: `semlayer validate` reports the fields that read a removed column; read the affected fields back to the owner.",
       ].join("\n"),
     );
     expect(human.out).not.toContain("--new-columns");
@@ -1119,8 +1123,8 @@ describe("sl import", () => {
       measures: [],
     });
     writeJson(path, snap);
-    const modeled = await sl(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql")]);
-    expect(modeled.out).toContain("Modeled tables gained columns (shop.orders): `sl draft --source shop --new-columns` drafts them.");
+    const modeled = await semlayer(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql")]);
+    expect(modeled.out).toContain("Modeled tables gained columns (shop.orders): `semlayer draft --source shop --new-columns` drafts them.");
   });
 
   test("suggests focusing when more tables are in scope than the threshold", async () => {
@@ -1129,10 +1133,10 @@ describe("sl import", () => {
     await initProject(t.root);
     writeYaml(join(t.root, "semantic.yaml"), { version: 1, name: "test", settings: { focus_threshold: 2 } });
     source(t.root, "pg", "postgres", { scope: { exclude: ["audit_*"] } });
-    const r = await sl(t.root, ["import", "--source", "pg", "--format", "ddl", "--file", fixture("ddl_postgres.sql")]);
+    const r = await semlayer(t.root, ["import", "--source", "pg", "--format", "ddl", "--file", fixture("ddl_postgres.sql")]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("4 tables are in scope, more than the focus threshold of 2");
-    expect(r.out).toContain("sl tables --source pg --groups");
+    expect(r.out).toContain("semlayer tables --source pg --groups");
   });
 
   test("resolves a relative --file against the working directory", async () => {
@@ -1145,7 +1149,7 @@ describe("sl import", () => {
     const err: string[] = [];
     const code = await runCli(["import", "--source", "wh", "--format", "information_schema", "--file", "cols.csv", "--json", "--root", t.root], {
       cwd: t.dir,
-      env: { SL_NOW: FIXED_NOW },
+      env: { SEMLAYER_NOW: FIXED_NOW },
       out: (x) => out.push(x),
       err: (x) => err.push(x),
     });
@@ -1159,22 +1163,22 @@ describe("sl import", () => {
     cleanup = t.cleanup;
     await initProject(t.root);
     source(t.root, "pg", "postgres");
-    const csv = await sl(t.root, ["import", "--source", "pg", "--file", fixture("exports/postgres.csv"), "--json"]);
+    const csv = await semlayer(t.root, ["import", "--source", "pg", "--file", fixture("exports/postgres.csv"), "--json"]);
     expect(csv.code).toBe(0);
     expect(csv.json<ImportJson>()).toMatchObject({ method: "information_schema", format: "information_schema", format_detected: true, tables: 7, primary_keys: 5, foreign_keys: 5 });
-    const human = await sl(t.root, ["import", "--source", "pg", "--file", fixture("exports/postgres.csv")]);
+    const human = await semlayer(t.root, ["import", "--source", "pg", "--file", fixture("exports/postgres.csv")]);
     expect(human.out).toContain("from information_schema (read from the file) into snapshots/pg.json");
-    const ddl = await sl(t.root, ["import", "--source", "pg", "--file", fixture("ddl_postgres.sql"), "--json"]);
+    const ddl = await semlayer(t.root, ["import", "--source", "pg", "--file", fixture("ddl_postgres.sql"), "--json"]);
     expect(ddl.json<ImportJson>()).toMatchObject({ method: "ddl", format_detected: true });
-    const dbt = await sl(t.root, ["import", "--source", "pg", "--file", fixture("dbt/manifest.json"), "--catalog", fixture("dbt/catalog.json"), "--json"]);
+    const dbt = await semlayer(t.root, ["import", "--source", "pg", "--file", fixture("dbt/manifest.json"), "--catalog", fixture("dbt/catalog.json"), "--json"]);
     expect(dbt.json<ImportJson>()).toMatchObject({ method: "dbt_manifest", format_detected: true, tables: 6 });
-    const json = await sl(t.root, ["import", "--source", "pg", "--file", fixture("info_schema_snowflake.json"), "--json"]);
+    const json = await semlayer(t.root, ["import", "--source", "pg", "--file", fixture("info_schema_snowflake.json"), "--json"]);
     expect(json.json<ImportJson>()).toMatchObject({ method: "information_schema", tables: 4 });
     writeFileSync(join(t.root, "cols.sql"), "table_schema,table_name,column_name,data_type\ns,t,a,int\n");
-    const forced = await sl(t.root, ["import", "--source", "pg", "--format", "information_schema", "--file", "cols.sql", "--json"]);
+    const forced = await semlayer(t.root, ["import", "--source", "pg", "--format", "information_schema", "--file", "cols.sql", "--json"]);
     expect(forced.code).toBe(0);
     expect(forced.json<ImportJson>()).toMatchObject({ method: "information_schema", format_detected: false, tables: 1 });
-    const mysql = await sl(t.root, ["import", "--source", "pg", "--file", fixture("exports/mysql.tsv"), "--json"]);
+    const mysql = await semlayer(t.root, ["import", "--source", "pg", "--file", fixture("exports/mysql.tsv"), "--json"]);
     expect(mysql.json<ImportJson>()).toMatchObject({ tables: 5, primary_keys: 4, foreign_keys: 3 });
   });
 
@@ -1183,24 +1187,24 @@ describe("sl import", () => {
     cleanup = t.cleanup;
     await initProject(t.root);
     source(t.root, "wh", "postgres");
-    const badFormat = await sl(t.root, ["import", "--source", "wh", "--format", "xlsx", "--file", "x"]);
+    const badFormat = await semlayer(t.root, ["import", "--source", "wh", "--format", "xlsx", "--file", "x"]);
     expect(badFormat.code).toBe(1);
     expect(badFormat.err).toContain("--format must be one of information_schema, dbt_manifest, ddl");
     writeFileSync(join(t.root, "notes.txt"), "hello\n");
-    const undetectable = await sl(t.root, ["import", "--source", "wh", "--file", "notes.txt"]);
+    const undetectable = await semlayer(t.root, ["import", "--source", "wh", "--file", "notes.txt"]);
     expect(undetectable.code).toBe(1);
     expect(undetectable.err).toContain("Cannot tell the format of notes.txt. Pass --format: one of information_schema, dbt_manifest, ddl");
-    const noFile = await sl(t.root, ["import", "--source", "wh"]);
+    const noFile = await semlayer(t.root, ["import", "--source", "wh"]);
     expect(noFile.code).toBe(1);
     expect(noFile.err).toContain("--file is required");
-    const missing = await sl(t.root, ["import", "--source", "wh", "--format", "ddl", "--file", "nope.sql"]);
+    const missing = await semlayer(t.root, ["import", "--source", "wh", "--format", "ddl", "--file", "nope.sql"]);
     expect(missing.code).toBe(1);
     expect(missing.err).toContain("No such file");
-    const catalogOnDdl = await sl(t.root, ["import", "--source", "wh", "--format", "ddl", "--file", fixture("ddl_postgres.sql"), "--catalog", fixture("dbt/catalog.json")]);
+    const catalogOnDdl = await semlayer(t.root, ["import", "--source", "wh", "--format", "ddl", "--file", fixture("ddl_postgres.sql"), "--catalog", fixture("dbt/catalog.json")]);
     expect(catalogOnDdl.code).toBe(1);
     expect(catalogOnDdl.err).toContain("--catalog applies only");
     writeFileSync(join(t.root, "empty.sql"), "SET x = 1;\n");
-    const empty = await sl(t.root, ["import", "--source", "wh", "--format", "ddl", "--file", "empty.sql"]);
+    const empty = await semlayer(t.root, ["import", "--source", "wh", "--format", "ddl", "--file", "empty.sql"]);
     expect(empty.code).toBe(1);
     expect(empty.err).toContain("No tables found");
   });

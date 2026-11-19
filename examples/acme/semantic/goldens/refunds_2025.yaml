@@ -9,7 +9,7 @@ request:
   filters:
     - { field: refunds.order_date, op: gte, value: "2025-01-01" }
     - { field: refunds.order_date, op: lt, value: "2026-01-01" }
-sql: |
+cross_check_sql: |
   select sum(r.refunded_cents / 100.0)
            filter (where o.status in ('completed', 'shipped')
                      and coalesce(test_account.is_test_account, false) = false

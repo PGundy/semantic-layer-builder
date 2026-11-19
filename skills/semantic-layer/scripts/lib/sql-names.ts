@@ -1,5 +1,5 @@
 // Names an SQL expression refers to, read outside string literals, comments and {{ }} placeholders.
-// sl validate, sl approve's content hashes, profiling and the access checks share this reading.
+// semlayer validate, semlayer approve's content hashes, profiling and the access checks share this reading.
 import type { Dialect } from "./types.ts";
 
 export type SqlToken =

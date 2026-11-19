@@ -1,4 +1,4 @@
--- Schema export for DuckDB (1.1 or later), for `sl import`.
+-- Schema export for DuckDB (1.1 or later), for `semlayer import`.
 --
 -- Reads only DuckDB's catalog functions (duckdb_tables(), duckdb_views(), duckdb_columns(),
 -- duckdb_constraints()): no table data is read and nothing is written. Returns one row per
@@ -9,10 +9,13 @@
 -- Run it and save CSV:
 --   duckdb warehouse.duckdb -csv < duckdb.sql > schema.csv
 -- Then import it:
---   sl import --source <source> --file schema.csv
+--   semlayer import --source <source> --file schema.csv
 --
--- Restrict schemas: uncomment the line marked sl:schema-filter below and list the schemas,
--- or print this query with the filter applied: sl export-sql --dialect duckdb --schemas a,b
+-- Restrict schemas: uncomment the line marked semlayer:schema-filter below and list the schemas,
+-- or print this query with the filter applied: semlayer export-sql --dialect duckdb --schemas a,b
+--
+-- Restrict tables: semlayer export-sql --include/--exclude prints this query with a table filter at the
+-- line marked semlayer:table-filter (a pattern the dialect cannot express is applied by semlayer import).
 --
 -- row_count is duckdb_tables().estimated_size; it is empty for views.
 with rel as (
@@ -31,7 +34,7 @@ named as (
   from rel
   where database_name not in ('system', 'temp')
     and schema_name not in ('information_schema', 'pg_catalog')
-    -- and schema_name in ('main')  -- sl:schema-filter: uncomment and list the schemas to export
+    -- and schema_name in ('main')  -- semlayer:schema-filter: uncomment and list the schemas to export
 ),
 pk as (
   select database_name, schema_name, table_name, constraint_column_names[k.i] as column_name, k.i as pk_ordinal
@@ -73,4 +76,5 @@ left join pk
 left join fk
   on fk.database_name = r.database_name and fk.schema_name = r.schema_name and fk.table_name = r.table_name
   and fk.column_name = c.column_name
+-- semlayer:table-filter: semlayer export-sql --include/--exclude writes the table filter here
 order by r.table_schema, r.table_name, c.column_index, fk.fk_name;

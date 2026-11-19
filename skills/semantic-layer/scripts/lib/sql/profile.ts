@@ -1,4 +1,4 @@
-// SQL for `sl profile`: one statistics query per table and one top-values query per table that
+// SQL for `semlayer profile`: one statistics query per table and one top-values query per table that
 // covers its string and boolean columns, grouping one read of the table (or of one sample of it)
 // by each column with GROUPING SETS. Column statistics use index aliases (c0_nulls, c0_distinct,
 // c0_min, c0_max) and top-value rows carry the column's index (column_index), so no column name

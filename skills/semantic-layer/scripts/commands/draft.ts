@@ -7,10 +7,13 @@ import { draftModels, draftNewColumns } from "../lib/draft.ts";
 import { UserError } from "../lib/errors.ts";
 import { findTable, qualifiedName } from "../lib/naming.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
+import { accessRowFilters, layerReads } from "../lib/layer-reads.ts";
 import { inScope, matchesPattern, validatePattern } from "../lib/patterns.ts";
-import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot } from "../lib/project.ts";
+import { protectedColumns, redactSnapshot } from "../lib/profile.ts";
+import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot, saveSnapshot } from "../lib/project.ts";
+import { effectiveScope } from "../lib/table-list.ts";
 import { rankTables } from "../lib/rank.ts";
-import type { Model, Snapshot, SnapshotTable, SourceConfig } from "../lib/types.ts";
+import type { Model, Scope, Snapshot, SnapshotTable, SourceConfig } from "../lib/types.ts";
 import { updateYaml, writeYaml } from "../lib/yaml.ts";
 import { sourceFlag } from "./tables.ts";
 
@@ -71,10 +74,31 @@ function resolveTableRefs(snapshot: Snapshot, refs: string[], sourceName: string
   if (unknown.length) {
     throw new UserError(
       `No table matches ${unknown.map((n) => `"${n}"`).join(", ")} in the ${sourceName} snapshot. ` +
-        `Run \`sl tables --source ${sourceName} --all\` for the names.`,
+        `Run \`semlayer tables --source ${sourceName} --all\` for the names.`,
     );
   }
   return picked;
+}
+
+// Keeps counts only in the snapshot for the columns the models just written protect: a field the
+// draft tags pii or sensitive, and a column it leaves out into ignored_columns, whose sample values
+// a profile taken before the draft still holds. `tables` are the models' tables as written in them.
+// Returns the columns whose profile changed, as table.column, so a draft after a profile needs no
+// semlayer profile --redact.
+function redactDrafted(ctx: CommandContext, source: SourceConfig, snapshot: Snapshot, tables: string[]): string[] {
+  const only = new Set(tables.flatMap((ref) => ((t) => (t ? [qualifiedName(t)] : []))(findTable(snapshot.tables, ref))));
+  if (!only.size) return [];
+  const models = listModels(ctx.root, source.source).map((l) => l.model as unknown);
+  const { snapshot: updated, redacted } = redactSnapshot(snapshot, protectedColumns(snapshot.tables, models, source.dialect), only);
+  if (redacted.length) saveSnapshot(ctx.root, updated);
+  return redacted;
+}
+
+function redactedLine(redacted: string[]): string {
+  return (
+    `The snapshot keeps counts only, and no sample values, for ${plural(redacted.length, "protected column")} ` +
+    `(left out of the draft, or tagged pii or sensitive): ${redacted.join(", ")}.`
+  );
 }
 
 interface UpdatedEntry {
@@ -122,12 +146,13 @@ function appendItems(doc: Document, key: string, items: unknown[], before: strin
   doc.set(key, doc.createNode(items));
 }
 
-// sl draft --new-columns: drafts the columns no existing model on an in-scope table reads, into the
+// semlayer draft --new-columns: drafts the columns no existing model on an in-scope table reads, into the
 // table's model that reads the most of its columns.
 function draftNewColumnsCommand(
   ctx: CommandContext,
   snapshot: Snapshot,
   source: SourceConfig,
+  scope: Scope,
   stripPrefixes: string[],
   refs: string[],
 ): number {
@@ -135,19 +160,24 @@ function draftNewColumnsCommand(
   const picked = refs.length ? resolveTableRefs(snapshot, refs, sourceName) : null;
   const loaded = listModels(ctx.root, sourceName).filter((l) => l.model && typeof l.model === "object");
   const existing = loaded.map((l) => l.model);
+  const reads = layerReads(existing, accessRowFilters(ctx.root, sourceName));
   const modeledKeys = new Set<string>();
   for (const m of existing) {
     const t = typeof m.table === "string" ? findTable(snapshot.tables, m.table) : undefined;
     if (t) modeledKeys.add(qualifiedName(t).toLowerCase());
   }
-  const knownTables = snapshot.tables.filter((t) => inScope(source.scope, t) || modeledKeys.has(qualifiedName(t).toLowerCase()));
+  const knownTables = snapshot.tables.filter((t) => inScope(scope, t) || modeledKeys.has(qualifiedName(t).toLowerCase()));
   const updated: (UpdatedEntry & { table: string; path: string })[] = [];
   for (const { path, model } of loaded) {
     if (typeof model.table !== "string" || typeof model.model !== "string") continue;
     const table = findTable(snapshot.tables, model.table);
-    if (!table || !inScope(source.scope, table)) continue;
+    if (!table || !inScope(scope, table)) continue;
     if (picked && !picked.has(qualifiedName(table).toLowerCase())) continue;
-    const r = draftNewColumns(snapshot, table, model as Model, existing, { source: sourceName, stripPrefixes, knownTables });
+    // A column another model's field reads through a join, or a row filter reads, is in use: it is
+    // not drafted and not left out (its values stay protected by the sensitivity rules).
+    const inUse = reads.filter((x) => x.model === model.model).map((x) => x.column);
+    const seen = inUse.length ? ({ ...model, ignored_columns: [...(Array.isArray(model.ignored_columns) ? model.ignored_columns : []), ...inUse] } as Model) : (model as Model);
+    const r = draftNewColumns(snapshot, table, seen, existing, { source: sourceName, stripPrefixes, knownTables });
     if (!r.columns.length) continue;
     updateYaml(path, (doc) => {
       appendItems(doc, "open_questions", r.open_questions, ["ignored_columns", "dimensions", "measures", "joins"]);
@@ -167,8 +197,9 @@ function draftNewColumnsCommand(
     });
   }
 
+  const redacted = redactDrafted(ctx, source, snapshot, updated.map((u) => u.table));
   if (ctx.json) {
-    ctx.out(formatJson({ source: sourceName, updated: updated.map(({ model, added, joins, skipped }) => ({ model, added, joins, skipped })) }));
+    ctx.out(formatJson({ source: sourceName, updated: updated.map(({ model, added, joins, skipped }) => ({ model, added, joins, skipped })), redacted }));
     return 0;
   }
   if (!updated.length) {
@@ -183,14 +214,15 @@ function draftNewColumnsCommand(
     if (u.skipped.length) parts.push(`left out ${u.skipped.map((x) => `${x.column} (${x.reason})`).join(", ")}, now in ignored_columns`);
     lines.push(`  ${u.model} (${u.table}, ${relative(ctx.cwd, u.path) || u.path}): ${parts.join("; ")}`);
   }
-  // A join to a table with no model fails sl validate and sl check-join until that table is drafted.
+  if (redacted.length) lines.push(redactedLine(redacted));
+  // A join to a table with no model fails semlayer validate and semlayer check-join until that table is drafted.
   const draftFirst = [...new Set(updated.flatMap((u) => u.unmodeled.map((x) => x.table)))];
   lines.push(
     "",
     "Each new field is a draft with an open question, and the model's own status is unchanged. " +
       `Next: read each new item back to the owner, ${
-        draftFirst.length ? `draft ${listPhrase(draftFirst)} first (\`sl draft --source ${sourceName} --tables ${draftFirst.join(",")}\`), ` : ""
-      }${updated.some((u) => u.joins.length) ? "run `sl check-join` on each new join, " : ""}then run \`sl validate\`.`,
+        draftFirst.length ? `draft ${listPhrase(draftFirst)} first (\`semlayer draft --source ${sourceName} --tables ${draftFirst.join(",")}\`), ` : ""
+      }${updated.some((u) => u.joins.length) ? "run `semlayer check-join` on each new join, " : ""}then run \`semlayer validate\`.`,
   );
   ctx.out(lines.join("\n"));
   return 0;
@@ -210,10 +242,12 @@ const spec: CommandSpec = {
     force: { type: "boolean" },
     "new-columns": { type: "boolean" },
   },
+  writes: "whole",
   async run({ values }, ctx) {
     const project = loadProject(ctx.root);
     const sourceName = sourceFlag(values, project);
     const source = loadSource(ctx.root, sourceName);
+    const scope = effectiveScope(ctx.root, source);
     const snapshot = requireSnapshot(ctx.root, sourceName);
     const { focus_threshold } = projectSettings(project);
     // --strip-prefix is saved in the source config the first time, so later drafts name models the same way.
@@ -227,7 +261,7 @@ const spec: CommandSpec = {
           throw new UserError(`--${flag} applies only when drafting new models; --new-columns works without it. Run it again without --${flag}.`);
         }
       }
-      return draftNewColumnsCommand(ctx, snapshot, source, stripPrefixes, list(values, "tables"));
+      return draftNewColumnsCommand(ctx, snapshot, source, scope, stripPrefixes, list(values, "tables"));
     }
 
     const existing = listModels(ctx.root, sourceName).map((l) => l.model).filter((m) => m && typeof m === "object");
@@ -240,7 +274,7 @@ const spec: CommandSpec = {
       if (!modeled.has(key)) modeled.set(key, m.model);
     }
     const keyOf = (t: SnapshotTable) => qualifiedName(t).toLowerCase();
-    const scoped = snapshot.tables.filter((t) => inScope(source.scope, t));
+    const scoped = snapshot.tables.filter((t) => inScope(scope, t));
     const ranked = rankTables(snapshot.tables).map((r) => r.table);
 
     const skipped: SkippedEntry[] = [];
@@ -253,30 +287,30 @@ const spec: CommandSpec = {
         if (!picked.has(keyOf(t))) continue;
         const model = modeled.get(keyOf(t));
         if (model) skipped.push({ table: qualifiedName(t), reason: `already modeled as ${model}` });
-        else if (!inScope(source.scope, t))
+        else if (!inScope(scope, t))
           skipped.push({
             table: qualifiedName(t),
-            reason: `out of scope; add it with \`sl scope --source ${sourceName} --tables ${qualifiedName(t)} --write\``,
+            reason: `out of scope; add it with \`semlayer scope --source ${sourceName} --tables ${qualifiedName(t)} --write\``,
           });
         else selected.push(t);
       }
     } else {
-      selected = ranked.filter((t) => inScope(source.scope, t) && !modeled.has(keyOf(t)));
+      selected = ranked.filter((t) => inScope(scope, t) && !modeled.has(keyOf(t)));
       for (const t of ranked) {
         const model = modeled.get(keyOf(t));
-        if (model && inScope(source.scope, t)) skipped.push({ table: qualifiedName(t), reason: `already modeled as ${model}` });
+        if (model && inScope(scope, t)) skipped.push({ table: qualifiedName(t), reason: `already modeled as ${model}` });
       }
       if (selected.length > focus_threshold && !force) {
         throw new UserError(
           `${selected.length} in-scope tables in "${sourceName}" have no model, more than the focus threshold of ${focus_threshold}. ` +
-            `Focus first: \`sl tables --source ${sourceName} --groups\` shows table groups and suggested patterns, and ` +
-            `\`sl scope --source ${sourceName} --include <pattern> --write\` narrows the scope. ` +
+            `Focus first: \`semlayer tables --source ${sourceName} --groups\` shows table groups and suggested patterns, and ` +
+            `\`semlayer scope --source ${sourceName} --include <pattern> --write\` narrows the scope. ` +
             `Or name tables with --tables (globs such as fct_* work), or pass --force to draft all ${selected.length}.`,
         );
       }
     }
 
-    const knownTables = snapshot.tables.filter((t) => inScope(source.scope, t) || modeled.has(keyOf(t)));
+    const knownTables = snapshot.tables.filter((t) => inScope(scope, t) || modeled.has(keyOf(t)));
     const { models, notes } = draftModels(snapshot, selected, existing, { source: sourceName, stripPrefixes, knownTables });
 
     const drafted: DraftedEntry[] = [];
@@ -302,8 +336,9 @@ const spec: CommandSpec = {
       updateYaml(paths(ctx.root).source(sourceName), (doc) => doc.setIn(["draft", "strip_prefixes"], flagPrefixes));
     }
 
+    const redacted = redactDrafted(ctx, source, snapshot, drafted.map((d) => d.table));
     if (ctx.json) {
-      ctx.out(formatJson({ source: sourceName, drafted, skipped }));
+      ctx.out(formatJson({ source: sourceName, drafted, skipped, redacted }));
       return 0;
     }
 
@@ -337,11 +372,12 @@ const spec: CommandSpec = {
       lines.push("", "Notes:");
       for (const n of notes) lines.push(`  ${n}`);
     }
+    if (redacted.length) lines.push("", redactedLine(redacted));
     if (drafted.length) {
       lines.push(
         "",
         `Every item is a draft. Next: answer each model's open questions with the owner, ` +
-          `run \`sl check-join\` on each join, then \`sl validate\`.`,
+          `run \`semlayer check-join\` on each join, then \`semlayer validate\`.`,
       );
     }
     ctx.out(lines.join("\n"));

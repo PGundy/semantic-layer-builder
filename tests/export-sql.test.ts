@@ -5,7 +5,7 @@ import { SQL } from "bun";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { applySchemas, EXPORT_DIALECTS, EXPORTS_DIR, exportSql } from "../skills/semantic-layer/scripts/commands/export-sql.ts";
 import type { Snapshot, SnapshotTable } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { initProject, PG_URL, sl, tempRoot } from "./helpers.ts";
+import { initProject, PG_URL, semlayer, tempRoot } from "./helpers.ts";
 
 const COLUMNS = [
   "table_schema", "table_name", "table_type", "table_comment", "row_count", "column_name", "ordinal_position", "data_type",
@@ -42,13 +42,13 @@ describe("export queries", () => {
     expect(outputColumns(sql)).toEqual(COLUMNS);
     // The header says how to save CSV and how to import it.
     const header = sql.split("\n").filter((l) => l.startsWith("--")).join("\n");
-    expect(header).toContain("sl import --source <source> --file schema.");
+    expect(header).toContain("semlayer import --source <source> --file schema.");
     expect(header).toMatch(/csv|CSV/);
     // No statement writes.
     const code = sql.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n");
     expect(code).not.toMatch(/\b(insert|update|delete|merge|create|drop|alter|truncate|grant|copy)\s/i);
-    if (dialect === "bigquery") expect(sql).toMatch(/^\s*-- sl:per-dataset$/m);
-    else expect(sql).toMatch(/^\s*-- and .+ in \(.*\)\s+-- sl:schema-filter/m);
+    if (dialect === "bigquery") expect(sql).toMatch(/^\s*-- semlayer:per-dataset$/m);
+    else expect(sql).toMatch(/^\s*-- and .+ in \(.*\)\s+-- semlayer:schema-filter/m);
   });
 
   test("system schemas are left out", () => {
@@ -63,18 +63,18 @@ describe("export queries", () => {
 
   test("applies --schemas as an active filter line, quoting names as literals", () => {
     const pg = applySchemas("postgres", raw("postgres"), ["acme", "o'brien"]);
-    expect(pg).toContain("    and n.nspname in ('acme', 'o''brien')  -- sl:schema-filter\n");
+    expect(pg).toContain("    and n.nspname in ('acme', 'o''brien')  -- semlayer:schema-filter\n");
     expect(pg).not.toContain("-- and n.nspname");
-    expect(applySchemas("sqlserver", raw("sqlserver"), ["dbo"])).toContain("and s.name in (N'dbo')  -- sl:schema-filter");
-    expect(applySchemas("mysql", raw("mysql"), ["shop"])).toContain("and c.table_schema in ('shop')  -- sl:schema-filter");
+    expect(applySchemas("sqlserver", raw("sqlserver"), ["dbo"])).toContain("and s.name in (N'dbo')  -- semlayer:schema-filter");
+    expect(applySchemas("mysql", raw("mysql"), ["shop"])).toContain("and c.table_schema in ('shop')  -- semlayer:schema-filter");
     // A mixed-case name matches its uppercase (unquoted) form as well as itself (quoted).
     expect(applySchemas("snowflake", raw("snowflake"), ["raw", "Marts", "x1"])).toContain(
-      "and (upper(c.table_schema) in ('RAW', 'MARTS', 'X1') or c.table_schema in ('Marts'))  -- sl:schema-filter",
+      "and (upper(c.table_schema) in ('RAW', 'MARTS', 'X1') or c.table_schema in ('Marts'))  -- semlayer:schema-filter",
     );
-    expect(applySchemas("snowflake", raw("snowflake"), ["raw"])).toContain("and upper(c.table_schema) in ('RAW')  -- sl:schema-filter");
-    expect(applySchemas("databricks", raw("databricks"), ["Gold", "it's"])).toContain("and lower(c.table_schema) in ('gold', 'it\\'s')  -- sl:schema-filter");
-    expect(applySchemas("duckdb", raw("duckdb"), ["main"])).toContain("and schema_name in ('main')  -- sl:schema-filter");
-    expect(applySchemas("redshift", raw("redshift"), ["$x"])).toContain("and n.nspname in ('$x')  -- sl:schema-filter");
+    expect(applySchemas("snowflake", raw("snowflake"), ["raw"])).toContain("and upper(c.table_schema) in ('RAW')  -- semlayer:schema-filter");
+    expect(applySchemas("databricks", raw("databricks"), ["Gold", "it's"])).toContain("and lower(c.table_schema) in ('gold', 'it\\'s')  -- semlayer:schema-filter");
+    expect(applySchemas("duckdb", raw("duckdb"), ["main"])).toContain("and schema_name in ('main')  -- semlayer:schema-filter");
+    expect(applySchemas("redshift", raw("redshift"), ["$x"])).toContain("and n.nspname in ('$x')  -- semlayer:schema-filter");
     expect(applySchemas("postgres", raw("postgres"), [])).toBe(raw("postgres"));
     expect(() => applySchemas("mysql", raw("mysql"), ["a\\b"])).toThrow(/backslash or control character/);
     expect(() => applySchemas("postgres", raw("postgres"), ["a\nb"])).toThrow(/backslash or control character/);
@@ -82,7 +82,7 @@ describe("export queries", () => {
 
   test("bigquery repeats each per-dataset block for every dataset, joined by UNION ALL", () => {
     const sql = applySchemas("bigquery", raw("bigquery"), ["analytics", "my-proj.raw"]);
-    expect(sql).not.toMatch(/^\s*-- sl:(end-)?per-dataset$/m);
+    expect(sql).not.toMatch(/^\s*-- semlayer:(end-)?per-dataset$/m);
     expect(sql.slice(sql.indexOf("\nwith\n"))).not.toContain("`my_dataset`");
     expect(sql).toContain(
       [
@@ -101,16 +101,16 @@ describe("export queries", () => {
   });
 });
 
-describe("sl export-sql", () => {
+describe("semlayer export-sql", () => {
   test("prints the query on stdout and how to run and import it on stderr, with no project", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
-    const r = await sl(t.root, ["export-sql", "--dialect", "postgres", "--schemas", "acme"]);
+    const r = await semlayer(t.root, ["export-sql", "--dialect", "postgres", "--schemas", "acme"]);
     expect(r.code).toBe(0);
     expect(r.out).toBe(exportSql("postgres", ["acme"]).sql.trimEnd());
-    expect(r.out).toContain("and n.nspname in ('acme')  -- sl:schema-filter");
+    expect(r.out).toContain("and n.nspname in ('acme')  -- semlayer:schema-filter");
     expect(r.err).toBe(
-      'Save this as export.sql, run psql -X "$DATABASE_URL" --csv -f export.sql > schema.csv, then import it: sl import --source <source> --file schema.csv',
+      'Save this as export.sql, run psql -X "$DATABASE_URL" --csv -f export.sql > schema.csv, then import it: semlayer import --source <source> --file schema.csv',
     );
     expect(r.err.split("\n")).toHaveLength(1);
     expect(existsSync(t.root)).toBe(false);
@@ -120,19 +120,19 @@ describe("sl export-sql", () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     for (const dialect of EXPORT_DIALECTS) {
-      const r = await sl(t.root, ["export-sql", "--dialect", dialect, "--json"]);
+      const r = await semlayer(t.root, ["export-sql", "--dialect", dialect, "--json"]);
       expect(r.code).toBe(0);
       expect(r.err).toBe("");
       const out = r.json<{ dialect: string; sql: string; run_hint: string }>();
       expect(Object.keys(out)).toEqual(["dialect", "sql", "run_hint"]);
       expect(out.dialect).toBe(dialect);
       expect(out.sql).toBe(raw(dialect));
-      expect(out.run_hint).toContain("sl import --source <source> --file schema.");
+      expect(out.run_hint).toContain("semlayer import --source <source> --file schema.");
     }
-    const mysql = (await sl(t.root, ["export-sql", "--dialect", "mysql", "--json"])).json<{ run_hint: string }>();
+    const mysql = (await semlayer(t.root, ["export-sql", "--dialect", "mysql", "--json"])).json<{ run_hint: string }>();
     expect(mysql.run_hint).toContain("mysql --batch --raw");
     expect(mysql.run_hint).toContain("--file schema.tsv");
-    const bq = (await sl(t.root, ["export-sql", "--dialect", "bigquery", "--json"])).json<{ run_hint: string }>();
+    const bq = (await semlayer(t.root, ["export-sql", "--dialect", "bigquery", "--json"])).json<{ run_hint: string }>();
     expect(bq.run_hint).toContain("replace `my_dataset` first, or pass --schemas");
     // bq reads the query from stdin: as an argument, its opening "--" comment parses as a flag.
     expect(bq.run_hint).toContain("bq --quiet query --use_legacy_sql=false --format=csv --max_rows=1000000 < export.sql > schema.csv");
@@ -141,13 +141,13 @@ describe("sl export-sql", () => {
     expect(raw("bigquery")).not.toContain("$(cat");
     // psql skips ~/.psqlrc, whose \pset null would print a marker for every NULL.
     for (const d of ["postgres", "redshift"]) {
-      expect((await sl(t.root, ["export-sql", "--dialect", d, "--json"])).json<{ run_hint: string }>().run_hint).toContain("psql -X ");
+      expect((await semlayer(t.root, ["export-sql", "--dialect", d, "--json"])).json<{ run_hint: string }>().run_hint).toContain("psql -X ");
       expect(raw(d)).toContain(`--   psql -X "`);
     }
-    const mssql = (await sl(t.root, ["export-sql", "--dialect", "sqlserver", "--json"])).json<{ run_hint: string }>();
+    const mssql = (await semlayer(t.root, ["export-sql", "--dialect", "sqlserver", "--json"])).json<{ run_hint: string }>();
     expect(mssql.run_hint).toContain("-f 65001");
     expect(raw("sqlserver")).toContain("-f 65001");
-    const bqSchemas = (await sl(t.root, ["export-sql", "--dialect", "bigquery", "--schemas", "a", "--schemas", "b", "--json"])).json<{ sql: string; run_hint: string }>();
+    const bqSchemas = (await semlayer(t.root, ["export-sql", "--dialect", "bigquery", "--schemas", "a", "--schemas", "b", "--json"])).json<{ sql: string; run_hint: string }>();
     expect(bqSchemas.run_hint).not.toContain("my_dataset");
     expect(bqSchemas.sql).toContain("from `a`.INFORMATION_SCHEMA.TABLES\n  union all\n");
   });
@@ -155,17 +155,17 @@ describe("sl export-sql", () => {
   test("rejects a missing or unknown dialect", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
-    const missing = await sl(t.root, ["export-sql"]);
+    const missing = await semlayer(t.root, ["export-sql"]);
     expect(missing.code).toBe(1);
     expect(missing.err).toContain("--dialect is required: one of postgres, redshift, mysql, sqlserver, snowflake, bigquery, databricks, duckdb");
-    const unknown = await sl(t.root, ["export-sql", "--dialect", "oracle"]);
+    const unknown = await semlayer(t.root, ["export-sql", "--dialect", "oracle"]);
     expect(unknown.code).toBe(1);
     expect(unknown.err).toContain('Unknown dialect "oracle"');
   });
 });
 
 describe("export-sql: duckdb, live", () => {
-  test("the export runs, reads keys, comments and sizes, and imports through sl import", async () => {
+  test("the export runs, reads keys, comments and sizes, and imports through semlayer import", async () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     await initProject(t.root);
@@ -192,7 +192,7 @@ describe("export-sql: duckdb, live", () => {
     const header = readFileSync(csv, "utf8").split("\n", 1)[0];
     expect(header).toBe(COLUMNS.join(","));
     writeFileSync(join(t.root, "sources", "wh.yaml"), "source: wh\ndialect: duckdb\n");
-    const r = await sl(t.root, ["import", "--source", "wh", "--file", csv, "--json"]);
+    const r = await semlayer(t.root, ["import", "--source", "wh", "--file", csv, "--json"]);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     expect(r.json()).toMatchObject({ method: "information_schema", format_detected: true, tables: 4, primary_keys: 3, foreign_keys: 2, warnings: [] });
@@ -260,7 +260,7 @@ describe("export-sql: postgres, live", () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     await initProject(t.root);
-    const exp = await sl(t.root, ["export-sql", "--dialect", "postgres", "--schemas", schema]);
+    const exp = await semlayer(t.root, ["export-sql", "--dialect", "postgres", "--schemas", schema]);
     expect(exp.code).toBe(0);
     const sqlFile = join(t.dir, "export.sql");
     const csv = join(t.dir, "schema.csv");
@@ -274,8 +274,8 @@ describe("export-sql: postgres, live", () => {
     writeFileSync(csv, run.stdout);
     expect(run.stdout.toString().split("\n", 1)[0]).toBe(COLUMNS.join(","));
 
-    expect((await sl(t.root, ["add-source", "--name", "pg", "--dialect", "postgres", "--env", "SL_TEST_PG"])).code).toBe(0);
-    const r = await sl(t.root, ["import", "--source", "pg", "--file", csv, "--json"]);
+    expect((await semlayer(t.root, ["add-source", "--name", "pg", "--dialect", "postgres", "--env", "SEMLAYER_TEST_PG"])).code).toBe(0);
+    const r = await semlayer(t.root, ["import", "--source", "pg", "--file", csv, "--json"]);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     expect(r.json()).toMatchObject({ method: "information_schema", format_detected: true, tables: 8, primary_keys: 5, foreign_keys: 5, warnings: [] });
@@ -319,9 +319,16 @@ describe("export-sql: postgres, live", () => {
       }));
     };
     const imported = shape(s);
-    const live = await sl(t.root, ["introspect", "--source", "pg", "--schemas", schema, "--json"], { SL_TEST_PG: PG_URL });
+    const live = await semlayer(t.root, ["introspect", "--source", "pg", "--schemas", schema, "--json"], { SEMLAYER_TEST_PG: PG_URL });
     expect(live.code).toBe(0);
-    expect(live.json<{ changes: { tables_added: string[]; tables_removed: string[]; columns: unknown[] } }>().changes).toEqual({ tables_added: [], tables_removed: [], columns: [] });
+    expect(live.json<{ changes: unknown }>().changes).toEqual({
+      tables_added: [],
+      tables_removed: [],
+      columns: [],
+      new_in_scope: [],
+      left_scope: [],
+      left_scope_with_models: [],
+    });
     expect(shape(snapshotOf(t.root, "pg"))).toEqual(imported);
   });
 });
@@ -370,7 +377,7 @@ describe("export-sql: redshift query on postgres, live", () => {
     writeFileSync(csv, run.stdout);
     expect(run.stdout.toString().split("\n", 1)[0]).toBe(COLUMNS.join(","));
     writeFileSync(join(t.root, "sources", "rs.yaml"), "source: rs\ndialect: redshift\n");
-    const r = await sl(t.root, ["import", "--source", "rs", "--file", csv, "--json"]);
+    const r = await semlayer(t.root, ["import", "--source", "rs", "--file", csv, "--json"]);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     expect(r.json()).toMatchObject({ tables: 2, primary_keys: 2, foreign_keys: 2, warnings: [] });

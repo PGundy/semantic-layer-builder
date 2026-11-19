@@ -1,8 +1,20 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildBaseline, INCOMING_READ_MAX, QUESTION_TOPICS, renderBaseline, type BaselineReport, type TableBaseline } from "../skills/semantic-layer/scripts/lib/baseline.ts";
+import {
+  baselineView,
+  buildBaseline,
+  formatScopedJson,
+  INCOMING_READ_MAX,
+  OVERVIEW_QUESTIONS,
+  QUESTION_TOPICS,
+  renderBaseline,
+  scopeBaseline,
+  VIEW_GIVES,
+  type BaselineReport,
+  type ScopedBaseline,
+  type TableBaseline,
+} from "../skills/semantic-layer/scripts/lib/baseline.ts";
 import { draftModels } from "../skills/semantic-layer/scripts/lib/draft.ts";
 import { groupTables, suggestScope } from "../skills/semantic-layer/scripts/lib/groups.ts";
 import { classifyTable } from "../skills/semantic-layer/scripts/lib/rank.ts";
@@ -10,7 +22,7 @@ import type { ColumnProfile, Model, Snapshot, SnapshotColumn, SnapshotTable } fr
 import { updateYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { SQL } from "bun";
 import { loadPostgres } from "../fixtures/acme/load-postgres.ts";
-import { assertLocalPg, initProject, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, initProject, PG_URL, semlayer, tempDir, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -336,8 +348,8 @@ describe("baseline without profiles", () => {
     expect(report.star.other).toContainEqual({ table: "shop.stg_orders", role: "staging" });
   });
 
-  test("says what sl profile would measure", () => {
-    expect(report.profile_command).toStartWith("sl profile --source shop --tables ");
+  test("says what semlayer profile would measure", () => {
+    expect(report.profile_command).toStartWith("semlayer profile --source shop --tables ");
     expect(report.profile_command).toContain("shop.orders");
     expect(report.profile_command).not.toContain("orders_backup_2023");
     const orders = table(report, "orders").profile_would_measure.join(" ");
@@ -443,7 +455,7 @@ describe("baseline on a large snapshot", () => {
     expect(r.tables).toHaveLength(12);
     // Above the focus threshold the next step is to agree a scope, not to profile or draft.
     expect(r.next).toContain("agree which tables to focus on first");
-    expect(r.next).not.toContain("sl draft");
+    expect(r.next).not.toContain("semlayer draft");
     for (const t of r.tables) {
       expect(t.relationships.find((x) => x.direction === "outgoing" && x.table === "s.customers")).toMatchObject({ origin: "inferred", relationship: "many_to_one" });
       expect(t.splits.map((s) => s.field)).toContain("customer.segment");
@@ -513,7 +525,7 @@ describe("baseline with profiles", () => {
   });
 });
 
-describe("baseline reuses sl draft's column rules", () => {
+describe("baseline reuses semlayer draft's column rules", () => {
   test("money, count and time columns agree with draftModels", () => {
     for (const tables of [starTables(), profiledTables()]) {
       const snap = snapshot(tables);
@@ -579,7 +591,7 @@ describe("existing models sharpen the brief", () => {
   });
 });
 
-describe("sl baseline", () => {
+describe("semlayer baseline", () => {
   async function project(tables: SnapshotTable[], settings?: Record<string, number>): Promise<{ root: string; dir: string }> {
     const t = tempRoot();
     cleanup = t.cleanup;
@@ -592,17 +604,17 @@ describe("sl baseline", () => {
 
   test("prints markdown on stdout and the next step on stderr, reading no database", async () => {
     const { root } = await project(starTables());
-    const r = await sl(root, ["baseline", "--source", "shop"]);
+    const r = await semlayer(root, ["baseline", "--source", "shop"]);
     expect(r.code).toBe(0);
     expect(r.out).toStartWith("# Baseline brief: shop");
     expect(r.out).toContain("### shop.order_items: probably a fact");
     expect(r.err).toStartWith("Next: ");
-    expect(r.err).toContain("sl profile --source shop --tables");
+    expect(r.err).toContain("semlayer profile --source shop --tables");
   });
 
-  test("--json carries the same structure", async () => {
+  test("--json --full carries the same structure", async () => {
     const { root } = await project(starTables());
-    const r = await sl(root, ["baseline", "--source", "shop", "--json"]);
+    const r = await semlayer(root, ["baseline", "--source", "shop", "--json", "--full"]);
     expect(r.code).toBe(0);
     const j = r.json<BaselineReport>();
     expect(j.source).toBe("shop");
@@ -614,9 +626,86 @@ describe("sl baseline", () => {
     expect(typeof j.next).toBe("string");
   });
 
+  // docs/PRD-hardening.md HR-14: --json is scoped to the phase semlayer next names; --full gives everything.
+  test("--json without --full gives the phase's view: the same tables and source fields, each table trimmed", async () => {
+    const { root } = await project(starTables());
+    const full = (await semlayer(root, ["baseline", "--source", "shop", "--json", "--full"])).json<BaselineReport>();
+    const r = await semlayer(root, ["baseline", "--source", "shop", "--json"]);
+    expect(r.code).toBe(0);
+    const j = r.json<ScopedBaseline>();
+    expect(j.view).toEqual({ name: "tables", phase: expect.any(String), gives: VIEW_GIVES.tables, full: "semlayer baseline --source shop --full --json" });
+    const { tables: _t, ...source } = full;
+    expect(j).toMatchObject(source);
+    expect(j.tables.map((t) => t.table)).toEqual(full.tables.map((t) => t.table));
+    for (const [i, t] of j.tables.entries()) {
+      const whole = full.tables[i]!;
+      expect(Object.keys(t).sort()).toEqual(["grain", "in_scope", "model", "primary_key", "profile_state", "question_count", "questions", "role", "role_reasons", "rows", "table"]);
+      expect(t.grain.guess).toBe(whole.grain.guess);
+      expect(t.primary_key?.columns).toEqual(whole.primary_key?.columns);
+      expect(t.questions).toEqual(whole.questions.slice(0, OVERVIEW_QUESTIONS).map((q) => ({ topic: q.topic, question: q.question })));
+      expect(t.question_count).toBe(whole.questions.length);
+    }
+    expect(r.out.length).toBeLessThan(JSON.stringify(full, null, 2).length / 3);
+    const named = (await semlayer(root, ["baseline", "--source", "shop", "--tables", "orders", "--json"])).json<ScopedBaseline>();
+    expect(named.view.full).toBe("semlayer baseline --source shop --tables orders --full --json");
+  });
+
+  test("the scoped --json is deterministic and keeps written_to with --out; the plain brief is whole with or without --full", async () => {
+    const { root } = await project(starTables());
+    const a = await semlayer(root, ["baseline", "--source", "shop", "--json"]);
+    expect((await semlayer(root, ["baseline", "--source", "shop", "--json"])).out).toBe(a.out);
+    const o = await semlayer(root, ["baseline", "--source", "shop", "--json", "--out", "notes/b.md"]);
+    expect(o.code).toBe(0);
+    const oj = o.json<ScopedBaseline & { written_to?: string }>();
+    expect(oj.written_to).toBeDefined();
+    expect(oj.view.name).toBe("tables");
+    expect(readFileSync(join(root, "notes", "b.md"), "utf8")).toStartWith("# Baseline brief: shop");
+    const plain = await semlayer(root, ["baseline", "--source", "shop"]);
+    expect((await semlayer(root, ["baseline", "--source", "shop", "--full"])).out).toBe(plain.out);
+  });
+
+  test("the metrics view adds each table's candidate ratios and shares, whole", () => {
+    const report = buildBaseline(snapshot(starTables()), OPTS);
+    const scoped = scopeBaseline(report, "metrics", "semlayer baseline --source shop --full --json");
+    expect(scoped.view.name).toBe("metrics");
+    expect(baselineView("interview")).toBe("tables");
+    expect(baselineView(null)).toBe("tables");
+    let ratios = 0;
+    for (const [i, t] of scoped.tables.entries()) {
+      const want = report.tables[i]!.measures.filter((m) => m.kind === "ratio" || m.kind === "share");
+      expect(t.measures).toEqual(want);
+      ratios += want.length;
+    }
+    expect(ratios).toBeGreaterThan(0);
+    expect(JSON.parse(formatScopedJson(scoped))).toEqual(JSON.parse(JSON.stringify(scoped)));
+    expect(scopeBaseline(report, "scope", "x").tables.every((t) => t.measures === undefined)).toBe(true);
+  });
+
+  // The walkthrough's Acme warehouse before scoping (22 tables, the top 12 in the brief), from the
+  // example layer's snapshot with its scope and models left out.
+  test("on Acme before scoping, the default --json is under 10 KB and --full holds the rest", async () => {
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    const example = join(import.meta.dir, "..", "examples", "acme", "semantic");
+    mkdirSync(join(t.root, "sources"), { recursive: true });
+    mkdirSync(join(t.root, "snapshots"), { recursive: true });
+    writeFileSync(join(t.root, "semantic.yaml"), readFileSync(join(example, "semantic.yaml"), "utf8"));
+    writeFileSync(join(t.root, "snapshots", "warehouse.json"), readFileSync(join(example, "snapshots", "warehouse.json"), "utf8"));
+    writeYaml(join(t.root, "sources", "warehouse.yaml"), { source: "warehouse", dialect: "postgres", connection: { env: "WAREHOUSE_URL" } });
+    const r = await semlayer(t.root, ["baseline", "--source", "warehouse", "--json"], { WAREHOUSE_URL: "" });
+    expect(r.code).toBe(0);
+    const j = r.json<ScopedBaseline>();
+    expect(j.selection).toBe("focus");
+    expect(j.tables).toHaveLength(12);
+    expect(j.view.phase).toBe("scope");
+    expect(r.out.length).toBeLessThan(10_000);
+    const full = await semlayer(t.root, ["baseline", "--source", "warehouse", "--json", "--full"], { WAREHOUSE_URL: "" });
+    expect(full.out.length).toBeGreaterThan(50_000);
+  });
+
   test("--tables limits the brief to the named tables, globs included", async () => {
     const { root } = await project(starTables());
-    const r = await sl(root, ["baseline", "--source", "shop", "--tables", "orders,order_*", "--json"]);
+    const r = await semlayer(root, ["baseline", "--source", "shop", "--tables", "orders,order_*", "--json", "--full"]);
     expect(r.code).toBe(0);
     const j = r.json<BaselineReport>();
     expect(j.selection).toBe("tables");
@@ -624,81 +713,81 @@ describe("sl baseline", () => {
     // Joined attributes still read the dimensions outside the brief.
     expect(j.tables.find((t) => t.table === "shop.orders")!.splits.map((s) => s.field)).toContain("customer.acquisition_channel");
     expect(j.star.facts.find((f) => f.table === "shop.orders")!.dimensions[0]).toMatchObject({ table: "shop.customers", in_brief: false });
-    const bad = await sl(root, ["baseline", "--source", "shop", "--tables", "nope"]);
+    const bad = await semlayer(root, ["baseline", "--source", "shop", "--tables", "nope"]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain('No table matches "nope"');
   });
 
-  test("more tables than focus_threshold: the top ones by rank, with a note pointing at sl scope", async () => {
+  test("more tables than focus_threshold: the top ones by rank, with a note pointing at semlayer scope", async () => {
     const { root } = await project(starTables(), { focus_threshold: 3 });
-    const r = await sl(root, ["baseline", "--source", "shop", "--json"]);
+    const r = await semlayer(root, ["baseline", "--source", "shop", "--json"]);
     const j = r.json<BaselineReport>();
     expect(j.selection).toBe("focus");
     expect(j.tables).toHaveLength(3);
     expect(j.left_out).toHaveLength(6);
     const note = j.notes.find((n) => n.includes("focus threshold"))!;
     expect(note).toContain("leaves out 6 tables");
-    expect(note).toContain("sl scope --source shop");
+    expect(note).toContain("semlayer scope --source shop");
     // Noise ranks last, so it is left out first.
     expect(j.left_out).toContain("shop.orders_backup_2023");
-    const md = await sl(root, ["baseline", "--source", "shop"]);
+    const md = await semlayer(root, ["baseline", "--source", "shop"]);
     expect(md.out).toContain("## Left out (6)");
   });
 
   test("a source scope limits the brief to in-scope tables", async () => {
     const { root } = await project(starTables());
     updateYaml(join(root, "sources", "shop.yaml"), (doc) => doc.set("scope", { exclude: ["stg_*", "*_backup_*"] }));
-    const j = (await sl(root, ["baseline", "--source", "shop", "--json"])).json<BaselineReport>();
+    const j = (await semlayer(root, ["baseline", "--source", "shop", "--json"])).json<BaselineReport>();
     expect(j.in_scope).toBe(7);
     expect(j.tables.map((t) => t.table)).not.toContain("shop.stg_orders");
   });
 
   test("--out writes the markdown inside the semantic root and never outside it", async () => {
     const { root, dir } = await project(starTables());
-    const r = await sl(root, ["baseline", "--source", "shop", "--out", "briefs/baseline.md"]);
+    const r = await semlayer(root, ["baseline", "--source", "shop", "--out", "briefs/baseline.md"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Wrote the baseline brief for shop (9 tables)");
     const written = readFileSync(join(root, "briefs", "baseline.md"), "utf8");
     expect(written).toStartWith("# Baseline brief: shop");
 
-    const j = await sl(root, ["baseline", "--source", "shop", "--out", "b.md", "--json"]);
+    const j = await semlayer(root, ["baseline", "--source", "shop", "--out", "b.md", "--json"]);
     expect(j.json<{ written_to: string }>().written_to).toBe(join(root, "b.md"));
 
-    const dirOut = await sl(root, ["baseline", "--source", "shop", "--out", "briefs"]);
+    const dirOut = await semlayer(root, ["baseline", "--source", "shop", "--out", "briefs"]);
     expect(dirOut.code).toBe(1);
     expect(dirOut.err).toContain("is a directory");
-    for (const out of ["../outside.md", join(dir, "outside.md"), "/tmp/sl-baseline-outside.md", "."]) {
-      const bad = await sl(root, ["baseline", "--source", "shop", "--out", out]);
+    for (const out of ["../outside.md", join(dir, "outside.md"), "/tmp/semlayer-baseline-outside.md", "."]) {
+      const bad = await semlayer(root, ["baseline", "--source", "shop", "--out", out]);
       expect(bad.code).toBe(1);
       expect(bad.err).toContain("outside the semantic root");
     }
     expect(existsSync(join(dir, "outside.md"))).toBe(false);
 
     // An existing brief is overwritten; anything else is not.
-    expect((await sl(root, ["baseline", "--source", "shop", "--out", "briefs/baseline.md"])).code).toBe(0);
+    expect((await semlayer(root, ["baseline", "--source", "shop", "--out", "briefs/baseline.md"])).code).toBe(0);
     writeFileSync(join(root, "notes.md"), "my notes\n");
-    const notBrief = await sl(root, ["baseline", "--source", "shop", "--out", "notes.md"]);
+    const notBrief = await semlayer(root, ["baseline", "--source", "shop", "--out", "notes.md"]);
     expect(notBrief.code).toBe(1);
     expect(notBrief.err).toContain("not a baseline brief");
     expect(readFileSync(join(root, "notes.md"), "utf8")).toBe("my notes\n");
 
-    const empty = await sl(root, ["baseline", "--source", "shop", "--out", ""]);
+    const empty = await semlayer(root, ["baseline", "--source", "shop", "--out", ""]);
     expect(empty.code).toBe(1);
     expect(empty.err).toContain("--out needs a file path");
-    const underFile = await sl(root, ["baseline", "--source", "shop", "--out", "notes.md/x.md"]);
+    const underFile = await semlayer(root, ["baseline", "--source", "shop", "--out", "notes.md/x.md"]);
     expect(underFile.code).toBe(1);
     expect(underFile.err).toContain("is a file, not a directory");
 
-    const elsewhere = mkdtempSync(join(tmpdir(), "sl-elsewhere-"));
+    const elsewhere = tempDir("elsewhere");
     try {
       symlinkSync(elsewhere, join(root, "linked"));
-      const viaLink = await sl(root, ["baseline", "--source", "shop", "--out", "linked/brief.md"]);
+      const viaLink = await semlayer(root, ["baseline", "--source", "shop", "--out", "linked/brief.md"]);
       expect(viaLink.code).toBe(1);
       expect(viaLink.err).toContain("through a link");
       expect(existsSync(join(elsewhere, "brief.md"))).toBe(false);
       mkdirSync(join(root, "deep"), { recursive: true });
       symlinkSync(join(elsewhere, "target.md"), join(root, "deep", "file.md"));
-      const fileLink = await sl(root, ["baseline", "--source", "shop", "--out", "deep/file.md"]);
+      const fileLink = await semlayer(root, ["baseline", "--source", "shop", "--out", "deep/file.md"]);
       expect(fileLink.code).toBe(1);
       expect(fileLink.err).toContain("symbolic link");
       expect(existsSync(join(elsewhere, "target.md"))).toBe(false);
@@ -712,27 +801,27 @@ describe("sl baseline", () => {
     const snapPath = join(root, "snapshots", "shop.json");
     const before = readFileSync(snapPath, "utf8");
     const projectBefore = readFileSync(join(root, "semantic.yaml"), "utf8");
-    const bad = await sl(root, ["baseline", "--source", "shop", "--out", "snapshots/shop.json"]);
+    const bad = await semlayer(root, ["baseline", "--source", "shop", "--out", "snapshots/shop.json"]);
     expect(bad.code).toBe(1);
     expect(bad.err).toContain("snapshots/ directory");
     expect(readFileSync(snapPath, "utf8")).toBe(before);
     for (const out of ["semantic.yaml", "access.yaml", "metrics.yaml", "sources/shop.yaml", "sources/brief.md", "models/shop/brief.md", "goldens/brief.md", "snapshots/new.md", "./Semantic.yaml"]) {
-      const r = await sl(root, ["baseline", "--source", "shop", "--out", out]);
+      const r = await semlayer(root, ["baseline", "--source", "shop", "--out", out]);
       expect(r.code).toBe(1);
-      expect(r.err).toMatch(/project's own files|directory, which sl manages/);
+      expect(r.err).toMatch(/project's own files|directory, which semlayer manages/);
     }
-    const underProject = await sl(root, ["baseline", "--source", "shop", "--out", "semantic.yaml/x.md"]);
+    const underProject = await semlayer(root, ["baseline", "--source", "shop", "--out", "semantic.yaml/x.md"]);
     expect(underProject.code).toBe(1);
     expect(underProject.err).not.toContain("unexpected error");
     expect(readFileSync(join(root, "semantic.yaml"), "utf8")).toBe(projectBefore);
     // The project still loads.
-    expect((await sl(root, ["baseline", "--source", "shop", "--json"])).code).toBe(0);
+    expect((await semlayer(root, ["baseline", "--source", "shop", "--json"])).code).toBe(0);
   });
 
   test("works from the snapshot alone, without a source file", async () => {
     const { root } = await project(starTables());
     rmSync(join(root, "sources", "shop.yaml"));
-    const r = await sl(root, ["baseline", "--source", "shop", "--json"]);
+    const r = await semlayer(root, ["baseline", "--source", "shop", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json<BaselineReport>().tables).toHaveLength(9);
   });
@@ -740,7 +829,7 @@ describe("sl baseline", () => {
   test("an empty scope reports no tables", async () => {
     const { root } = await project(starTables());
     updateYaml(join(root, "sources", "shop.yaml"), (doc) => doc.set("scope", { include: ["nothing_*"] }));
-    const r = await sl(root, ["baseline", "--source", "shop", "--json"]);
+    const r = await semlayer(root, ["baseline", "--source", "shop", "--json"]);
     expect(r.code).toBe(0);
     const j = r.json<BaselineReport>();
     expect(j.tables).toEqual([]);
@@ -751,7 +840,7 @@ describe("sl baseline", () => {
     const t = tempRoot();
     cleanup = t.cleanup;
     await initProject(t.root, "shop");
-    const r = await sl(t.root, ["baseline", "--source", "shop"]);
+    const r = await semlayer(t.root, ["baseline", "--source", "shop"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("No snapshot");
   });
@@ -811,7 +900,7 @@ describe("baseline on composite keys, text keys, currencies, time zones and nois
   test("sales.sku joins products by its key's name, so products is attached and sku stays a split", () => {
     const sales = get("shop.sales");
     expect(sales.relationships.find((r) => r.columns[0] === "sku")).toMatchObject({ direction: "outgoing", table: "shop.products", table_columns: ["sku"], relationship: "many_to_one", origin: "inferred", join: "product" });
-    // A column joined by its name alone is no key: like sl draft's dimension, it may split, which a profile settles.
+    // A column joined by its name alone is no key: like semlayer draft's dimension, it may split, which a profile settles.
     expect(sales.not_splits.find((n) => n.column === "sku")).toBeUndefined();
     expect(sales.unclear.map((u) => u.column)).toContain("sku");
     expect(sales.splits.map((x) => x.field)).toContain("product.category");
@@ -842,7 +931,7 @@ describe("baseline on composite keys, text keys, currencies, time zones and nois
     );
   });
 
-  test("noise and staging come from the classifier sl tables --groups uses", () => {
+  test("noise and staging come from the classifier semlayer tables --groups uses", () => {
     expect(get("ops._migrations").role).toBe("noise");
     expect(get("shop.sales_bak").role).toBe("noise");
     expect(get("shop.tmp_load").role).toBe("noise");
@@ -875,11 +964,11 @@ describe("baseline on composite keys, text keys, currencies, time zones and nois
     expect(renderBaseline(named)).toContain("): it covers the 1 table --tables names (8 in scope, 8 in the snapshot).");
   });
 
-  test("an imported snapshot says sl profile needs a connection; a live one does not", () => {
+  test("an imported snapshot says semlayer profile needs a connection; a live one does not", () => {
     expect(report.notes).toContain(
-      "This snapshot came from an information schema import, so `sl profile` needs a connection to the database first: set connection.env, or connection.database for DuckDB, in sources/shop.yaml.",
+      "This snapshot came from an information schema import, so `semlayer profile` needs a connection to the database first: set connection.env, or connection.database for DuckDB, in sources/shop.yaml.",
     );
-    expect(report.next).toContain("once sources/shop.yaml has a connection (this snapshot came from an import, read without one), `sl profile --source shop");
+    expect(report.next).toContain("once sources/shop.yaml has a connection (this snapshot came from an import, read without one), `semlayer profile --source shop");
     expect(renderBaseline(report)).toContain("It needs a connection to the database, since this snapshot came from an information schema import:");
     const live = buildBaseline(shopSnapshot("live"), OPTS);
     expect(live.notes.join(" ")).not.toContain("needs a connection");
@@ -889,10 +978,10 @@ describe("baseline on composite keys, text keys, currencies, time zones and nois
     const exported = buildBaseline(shopSnapshot(), { ...OPTS, connection: { env: "SHOP_PG_URL" } });
     expect(exported.connection_configured).toBe(true);
     expect(exported.notes).toContain(
-      "This snapshot came from an information schema import, so nothing has read the data yet: `sl profile` reads it through the connection in sources/shop.yaml; run it where the database is reachable.",
+      "This snapshot came from an information schema import, so nothing has read the data yet: `semlayer profile` reads it through the connection in sources/shop.yaml; run it where the database is reachable.",
     );
     expect(exported.notes.join(" ")).not.toContain("set connection.env");
-    expect(exported.next).toContain("where the database is reachable (this snapshot came from an import, read without a connection), `sl profile --source shop");
+    expect(exported.next).toContain("where the database is reachable (this snapshot came from an import, read without a connection), `semlayer profile --source shop");
     expect(renderBaseline(exported)).toContain("It reads the data through the source's connection, so run it where the database is reachable");
     expect(renderBaseline(exported)).not.toContain("needs a connection");
     expect(report.connection_configured).toBe(false);
@@ -980,7 +1069,7 @@ describe("baseline on composite keys, text keys, currencies, time zones and nois
 });
 
 // A live test creates and drops only a schema of its own, and only on a local server unless
-// SL_TEST_ALLOW_REMOTE=1 allows another (assertLocalPg).
+// SEMLAYER_TEST_ALLOW_REMOTE=1 allows another (assertLocalPg).
 function liveSchema(prefix: string): string {
   assertLocalPg(PG_URL);
   return uniqueSchema(prefix);
@@ -990,7 +1079,7 @@ const ACME_DIR = join(import.meta.dir, "..", "fixtures", "acme");
 
 // The synthetic Acme warehouse with its later schema change (evolve.sql), loaded into a schema of
 // the PG_URL database that this test creates and drops, then introspected live.
-describe("sl baseline on the live Acme warehouse", () => {
+describe("semlayer baseline on the live Acme warehouse", () => {
   test.skipIf(!PG_URL)(
     "reads sensibly from an introspected snapshot",
     async () => {
@@ -1005,10 +1094,10 @@ describe("sl baseline on the live Acme warehouse", () => {
         await sql.unsafe(readFileSync(join(ACME_DIR, "evolve.sql"), "utf8").replace(/(?<!@)\bacme\./g, `${schema}.`));
         await initProject(t.root, "acme");
         const env = { BASELINE_PG_URL: PG_URL };
-        expect((await sl(t.root, ["add-source", "--name", "wh", "--dialect", "postgres", "--env", "BASELINE_PG_URL"], env)).code).toBe(0);
-        const intro = await sl(t.root, ["introspect", "--source", "wh", "--schemas", schema], env);
+        expect((await semlayer(t.root, ["add-source", "--name", "wh", "--dialect", "postgres", "--env", "BASELINE_PG_URL"], env)).code).toBe(0);
+        const intro = await semlayer(t.root, ["introspect", "--source", "wh", "--schemas", schema], env);
         expect(intro.code).toBe(0);
-        const r = await sl(t.root, ["baseline", "--source", "wh", "--tables", "fct_*,dim_*,audit_log,sales_team_closure", "--json"], env);
+        const r = await semlayer(t.root, ["baseline", "--source", "wh", "--tables", "fct_*,dim_*,audit_log,sales_team_closure", "--json", "--full"], env);
         expect(r.code).toBe(0);
         const j = r.json<BaselineReport>();
         const get = (name: string) => j.tables.find((x) => x.table === `${schema}.${name}`)!;
@@ -1025,11 +1114,11 @@ describe("sl baseline on the live Acme warehouse", () => {
         expect(get("fct_orders").measures.find((m) => m.kind === "ratio")!.description).toContain("average order value");
         expect(get("fct_orders").not_splits.find((n) => n.column === "gift_message")!.reason).toBe("sensitive");
         expect(get("dim_customers").questions.map((q) => q.topic)).toContain("exclusions");
-        const md = await sl(t.root, ["baseline", "--source", "wh", "--tables", "fct_*,dim_*"], env);
+        const md = await semlayer(t.root, ["baseline", "--source", "wh", "--tables", "fct_*,dim_*"], env);
         expect(md.out).toContain(`- **${schema}.fct_orders** (fact, one row per order) joins`);
 
         // Without --tables, the top 12 skip the noise tables and leave room for the closure view.
-        const top = (await sl(t.root, ["baseline", "--source", "wh", "--json"], env)).json<BaselineReport>();
+        const top = (await semlayer(t.root, ["baseline", "--source", "wh", "--json"], env)).json<BaselineReport>();
         expect(top.selection).toBe("focus");
         expect(top.tables).toHaveLength(12);
         const names = top.tables.map((x) => x.table.slice(schema.length + 1));
@@ -1038,7 +1127,7 @@ describe("sl baseline on the live Acme warehouse", () => {
           expect(names).not.toContain(noise);
           expect(top.left_out_noise).toContain(`${schema}.${noise}`);
         }
-        const brief = await sl(t.root, ["baseline", "--source", "wh"], env);
+        const brief = await semlayer(t.root, ["baseline", "--source", "wh"], env);
         expect(brief.out).toContain(`it covers 12 of the ${top.in_scope} in-scope tables`);
       } finally {
         await sql.unsafe(`drop schema if exists ${schema} cascade`);

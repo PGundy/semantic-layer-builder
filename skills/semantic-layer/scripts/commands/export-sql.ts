@@ -1,10 +1,12 @@
 // Prints a dialect's canonical schema export query (references/exports/<dialect>.sql), with
-// the schema filter applied when --schemas is given. Reads no database and needs no project.
+// the schema filter applied when --schemas is given and the table filter when --include or
+// --exclude is (lib/export-filters.ts). Reads no database and needs no project.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 import { list, str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
+import { applyTableFilter, type DeferredFilter, importFlags, patternFlags, type PushedFilter } from "../lib/export-filters.ts";
 import { formatJson } from "../lib/output.ts";
 
 export const EXPORT_DIALECTS = ["postgres", "redshift", "mysql", "sqlserver", "snowflake", "bigquery", "databricks", "duckdb"] as const;
@@ -27,8 +29,8 @@ const RUN: Record<ExportDialect, { command: string; output: string }> = {
   duckdb: { command: "duckdb <database>.duckdb -csv < export.sql > schema.csv", output: "schema.csv" },
 };
 
-const FILTER_LINE = /^(\s*)--\s*and\s+(.+?)\s+in\s*\(.*\)\s*--\s*sl:schema-filter.*$/m;
-const DATASET_BLOCK = /^[ \t]*-- sl:per-dataset\n([\s\S]*?)^[ \t]*-- sl:end-per-dataset$/gm;
+const FILTER_LINE = /^(\s*)--\s*and\s+(.+?)\s+in\s*\(.*\)\s*--\s*semlayer:schema-filter.*$/m;
+const DATASET_BLOCK = /^[ \t]*-- semlayer:per-dataset\n([\s\S]*?)^[ \t]*-- semlayer:end-per-dataset$/gm;
 const DATASET_TOKEN = "`my_dataset`";
 
 // Rejects a schema name a string literal or quoted identifier could not hold safely in every
@@ -86,33 +88,58 @@ export function applySchemas(dialect: ExportDialect, sql: string, schemas: strin
     });
   }
   const m = FILTER_LINE.exec(sql);
-  if (!m) throw new UserError(`The ${dialect} export has no sl:schema-filter line.`);
+  if (!m) throw new UserError(`The ${dialect} export has no semlayer:schema-filter line.`);
   const [line, indent, column] = m;
-  return sql.replace(line, () => `${indent}and ${predicate(dialect, column!, schemas)}  -- sl:schema-filter`);
+  return sql.replace(line, () => `${indent}and ${predicate(dialect, column!, schemas)}  -- semlayer:schema-filter`);
 }
 
-export function exportSql(dialect: ExportDialect, schemas: string[] = []): { sql: string; run_hint: string } {
-  const sql = applySchemas(dialect, readFileSync(join(EXPORTS_DIR, `${dialect}.sql`), "utf8"), schemas);
+export interface ExportFilters {
+  pushed: PushedFilter[];
+  deferred: DeferredFilter[];
+  // The semlayer import line that applies the deferred patterns, or null when none are deferred.
+  import_command: string | null;
+}
+
+export function exportSql(
+  dialect: ExportDialect,
+  schemas: string[] = [],
+  tables: { include?: string[]; exclude?: string[] } = {},
+): { sql: string; run_hint: string; filters?: ExportFilters } {
+  let sql = applySchemas(dialect, readFileSync(join(EXPORTS_DIR, `${dialect}.sql`), "utf8"), schemas);
   const run = RUN[dialect];
+  const importBase = `semlayer import --source <source> --file ${run.output}`;
+  let filters: ExportFilters | undefined;
+  if (tables.include?.length || tables.exclude?.length) {
+    const applied = applyTableFilter(dialect, sql, tables.include ?? [], tables.exclude ?? [], importBase);
+    sql = applied.sql;
+    const import_command = applied.deferred.length ? `${importBase} ${importFlags(applied.deferred)}` : null;
+    filters = { pushed: applied.pushed, deferred: applied.deferred, import_command };
+  }
   const datasets = dialect === "bigquery" && !schemas.length ? " (replace `my_dataset` first, or pass --schemas)" : "";
-  const run_hint = `Save this as export.sql${datasets}, run ${run.command}, then import it: sl import --source <source> --file ${run.output}`;
-  return { sql, run_hint };
+  const run_hint = `Save this as export.sql${datasets}, run ${run.command}, then import it: ${filters?.import_command ?? importBase}`;
+  return filters ? { sql, run_hint, filters } : { sql, run_hint };
 }
 
 const spec: CommandSpec = {
-  summary: "Print a read-only catalog query that exports a database's schema for sl import.",
+  summary: "Print a read-only catalog query that exports a database's schema for semlayer import.",
   usage:
-    `export-sql --dialect ${EXPORT_DIALECTS.join("|")} [--schemas a,b]\n\n` +
+    `export-sql --dialect ${EXPORT_DIALECTS.join("|")} [--schemas a,b] [--include <pattern>]... [--exclude <pattern>]...\n\n` +
     "  Prints the query on stdout and, on stderr, how to run it and import the result. The query reads only the\n" +
     "  catalog and returns one row per column: table_schema, table_name, table_type, table_comment, row_count,\n" +
     "  column_name, ordinal_position, data_type, is_nullable, column_comment, is_primary_key, pk_ordinal, fk_name,\n" +
     "  fk_ordinal, references_schema, references_table, references_column.\n" +
     "  --schemas  restrict the export to these schemas (BigQuery: the datasets to read, dataset or project.dataset).\n" +
-    "  --json     print { dialect, sql, run_hint }.",
+    "  --include, --exclude  keep the tables matching an include and no exclude (the scope pattern grammar), in the\n" +
+    "             query where the dialect can express the pattern; any other is listed in the query's header and on\n" +
+    "             stderr with the semlayer import --include/--exclude that applies it.\n" +
+    "  --json     print { dialect, sql, run_hint }, plus filters: { pushed, deferred, import_command } with patterns.",
   options: {
     dialect: { type: "string" },
     schemas: { type: "string", multiple: true },
+    include: { type: "string", multiple: true },
+    exclude: { type: "string", multiple: true },
   },
+  writes: false,
   async run({ values }, ctx) {
     const dialect = str(values, "dialect");
     if (!dialect) throw new UserError(`--dialect is required: one of ${EXPORT_DIALECTS.join(", ")}.`);
@@ -120,13 +147,22 @@ const spec: CommandSpec = {
       throw new UserError(`Unknown dialect "${dialect}": use one of ${EXPORT_DIALECTS.join(", ")}.`);
     }
     const schemas = [...new Set(list(values, "schemas"))];
-    const { sql, run_hint } = exportSql(dialect as ExportDialect, schemas);
+    const include = patternFlags(values, "include");
+    const exclude = patternFlags(values, "exclude");
+    const { sql, run_hint, filters } = exportSql(dialect as ExportDialect, schemas, { include, exclude });
     if (ctx.json) {
-      ctx.out(formatJson({ dialect, sql, run_hint }));
+      ctx.out(formatJson(filters ? { dialect, sql, run_hint, filters } : { dialect, sql, run_hint }));
       return 0;
     }
     ctx.out(sql.trimEnd());
     ctx.err(run_hint);
+    if (filters?.deferred.length) {
+      const n = filters.deferred.length;
+      ctx.err(
+        `${n} pattern${n === 1 ? "" : "s"} cannot be written in ${dialect} SQL, so the export reads those table definitions too (never table data); ` +
+          `the query's header says why. Apply ${n === 1 ? "it" : "them"} when you import: ${filters.import_command}`,
+      );
+    }
     return 0;
   },
 };

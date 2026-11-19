@@ -1,0 +1,30 @@
+{
+  "name": "acme-contradicting",
+  "description": "The Acme lake over a DuckDB connection, with the contradicting persona: it first says anonymous sessions do not count, then corrects that after approving.",
+  "fixture": "acme",
+  "intake": {
+    "path": "connection",
+    "source": "lake",
+    "dialect": "duckdb",
+    "views": {
+      "web_events": "read_parquet('{fixture}/data/lake/web_events/*.parquet')",
+      "sessions": "read_parquet('{fixture}/data/lake/sessions.parquet')",
+      "marketing_spend": "read_parquet('{fixture}/data/lake/marketing_spend.parquet')",
+      "web_events_2024_archive": "read_parquet('{fixture}/data/lake/web_events_2024_archive.parquet')",
+      "tmp_session_dedupe": "read_parquet('{fixture}/data/lake/tmp_session_dedupe.parquet')"
+    }
+  },
+  "brief_note": "At first you misremember one rule and say only signed-in sessions count. After the definitions are approved, you remember that anonymous sessions count, as the brief says, and you correct your earlier answer.",
+  "persona": "contradicting",
+  "budgets": { "max_turns": 40, "max_tokens": 400000 },
+  "opening": "Hi, I am Dana Ruiz, head of analytics at Acme. Our event lake is set up as the source lake in this semantic layer. Can you build the layer with me?",
+  "script": "acme-contradicting.script.json",
+  "grading": {
+    "figures": "acme.figures.json",
+    "selection": {
+      "lake": ["web_events", "sessions", "marketing_spend"],
+      "warehouse": ["fct_orders", "fct_order_items", "fct_refunds", "dim_customers", "dim_products", "dim_regions"]
+    },
+    "protected_columns": ["dim_customers.email", "dim_customers.phone", "dim_customers.first_name", "dim_customers.last_name"]
+  }
+}

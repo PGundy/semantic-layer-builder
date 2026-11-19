@@ -2,14 +2,16 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import type { LastApproval } from "../lib/access.ts";
-import { accessEntry, type ApprovalEntry, carriesHash, holdsHashes, integrity, itemHash, metricEntries, modelEntries } from "../lib/approval-hash.ts";
+import { type ApprovalEntry, carriesHash, holdsHashes, integrity, itemApprovals, itemHash, type LayerModel, listApprovals } from "../lib/approval-hash.ts";
 import type { CommandSpec } from "../lib/command.ts";
-import { bool, str, today } from "../lib/command.ts";
+import { approvedIssues, describedProblem, metricProblems, modelProblems } from "../lib/approve-checks.ts";
+import { bool, list, str, type CommandContext, type OptionValues } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
+import { LEDGER_FILE, latestReply, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadAccess, loadMetrics, loadModel, loadProject, paths } from "../lib/project.ts";
 import { findField, parseTarget, type Target } from "../lib/refs.ts";
-import { DIALECTS, NAME_PATTERN, TO_ONE_RELATIONSHIPS, type Approval, type Dialect, type Join, type JoinKey, type Metric, type Model, type SourceConfig, type Status } from "../lib/types.ts";
+import { DIALECTS, NAME_PATTERN, TO_ONE_RELATIONSHIPS, type Approval, type Dialect, type Join, type JoinKey, type LedgerReply, type Metric, type Model, type SourceConfig, type Status } from "../lib/types.ts";
 import { readYaml, readYamlIfExists, updateYaml } from "../lib/yaml.ts";
 
 interface Change {
@@ -21,7 +23,8 @@ interface Change {
 // One item to flip, located by its path inside one YAML file. keepLast marks access.yaml, whose
 // revoke keeps the approval it sets aside in last_approved. hash is the item's content hash, which
 // an approval records. changed marks an approved item whose content no longer matches its hash,
-// and missing one with no hash while other items of the project record one.
+// and missing one with no hash while other items of the project record one. by, at and ledger come
+// from the owner's recorded yes an approval rests on.
 interface Edit {
   target: string;
   path: (string | number)[];
@@ -30,9 +33,19 @@ interface Edit {
   keepLast?: boolean;
   changed?: boolean;
   missing?: boolean;
+  by?: string;
+  at?: string;
+  ledger?: string;
 }
 
-type Mode = { revoke: false; by: string; at: string } | { revoke: true };
+type Mode = { revoke: false } | { revoke: true };
+
+// An item approve would change but does not, and why; byMismatch when only --by stood in the way.
+interface Refusal {
+  target: string;
+  reason: string;
+  byMismatch?: true;
+}
 
 function statusOf(item: Approval): Status {
   return item.status === "approved" ? "approved" : "draft";
@@ -41,7 +54,7 @@ function statusOf(item: Approval): Status {
 // Whether the item already holds the state this run would give it. An approved item whose content
 // no longer matches its recorded hash is approved again, and so is one without a hash while other
 // items of the project record one (its hash may have been removed); one approved before any hash
-// was recorded stands (sl approve --stamp-hashes records its hash).
+// was recorded stands (semlayer approve --stamp-hashes records its hash).
 function settled(item: Approval, mode: Mode, hash: string, projectHashed: boolean): boolean {
   if (mode.revoke)
     return item.status !== "approved" && item.approved_by === undefined && item.approved_at === undefined && item.approved_hash === undefined;
@@ -148,27 +161,16 @@ function applyEdit(doc: Document, edit: Edit, mode: Mode): LastApproval | undefi
     return last;
   }
   setScalar(doc, node, "status", "approved", STATUS_ANCHORS);
-  setScalar(doc, node, "approved_by", mode.by, ["status"]);
-  setScalar(doc, node, "approved_at", mode.at, ["approved_by", "status"]);
+  setScalar(doc, node, "approved_by", edit.by!, ["status"]);
+  setScalar(doc, node, "approved_at", edit.at!, ["approved_by", "status"]);
   setScalar(doc, node, "approved_hash", edit.hash, ["approved_at", "approved_by", "status"]);
   // A new approval replaces the one a revoke set aside.
   if (edit.keepLast) node.delete("last_approved");
   return undefined;
 }
 
-function modelProblems(ref: string, m: Model): string[] {
-  const out: string[] = [];
-  if (!m.grain || !String(m.grain).trim()) out.push(`${ref} has no grain`);
-  if (!m.primary_key || !m.primary_key.length) out.push(`${ref} has no primary_key`);
-  return out;
-}
-
-function describedProblem(ref: string, kind: string, item: { description?: string }): string | null {
-  return item.description && item.description.trim() ? null : `${kind} ${ref} has no description`;
-}
-
 function joinWarning(source: string, model: string, join: string): string {
-  return `Join ${source}.${model}.${join} has no evidence. Run sl check-join --source ${source} --model ${model} --join ${join} before relying on it.`;
+  return `Join ${source}.${model}.${join} has no evidence. Run semlayer check-join --source ${source} --model ${model} --join ${join} before relying on it.`;
 }
 
 function keySignature(keys: JoinKey[]): string {
@@ -178,7 +180,7 @@ function keySignature(keys: JoinKey[]): string {
     .join(",");
 }
 
-// A warning for a join whose current evidence sl validate errors on once it is approved: evidence
+// A warning for a join whose current evidence semlayer validate errors on once it is approved: evidence
 // of many_to_many, which needs a bridge table, or fan-out under a to-one relationship that records
 // no fanout_override. Evidence measured for another target or other keys is stale and says nothing.
 function fanoutWarning(ref: string, j: Join): string | null {
@@ -187,7 +189,7 @@ function fanoutWarning(ref: string, j: Join): string | null {
   if ((ev.to !== undefined && ev.to !== j.to) || (Array.isArray(ev.keys) && Array.isArray(j.keys) && keySignature(ev.keys) !== keySignature(j.keys))) return null;
   if (ev.suggested_relationship === "many_to_many") {
     return (
-      `Join ${ref}'s evidence shows many_to_many: neither key is unique, so sl validate errors on it once approved, whatever ` +
+      `Join ${ref}'s evidence shows many_to_many: neither key is unique, so semlayer validate errors on it once approved, whatever ` +
       "fanout_override says; the join needs a bridge table or a pre-aggregated model."
     );
   }
@@ -198,44 +200,41 @@ function fanoutWarning(ref: string, j: Join): string | null {
   ].filter(Boolean);
   if (!why.length) return null;
   return (
-    `Join ${ref} is ${j.relationship}, but its evidence shows fan-out (${why.join(", and ")}); sl validate errors on it ` +
+    `Join ${ref} is ${j.relationship}, but its evidence shows fan-out (${why.join(", and ")}); semlayer validate errors on it ` +
     'until the keys or the relationship are fixed, or fanout_override: "<reason>" records why the owner accepts it.'
   );
 }
 
-// Whether a reference is exactly model.measure, the form sl validate accepts.
-function isMeasureRef(r: string): boolean {
-  const parts = r.split(".");
-  return parts.length === 2 && parts.every((p) => NAME_PATTERN.test(p));
+// Names compared the way an owner's name is: trimmed, ignoring case.
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+// Checks an item against the owner's latest recorded reply to it: the approval it may record (the
+// reply's by and the date of its at), or why it may not.
+function ledgerGate(replies: LedgerReply[], target: string, hash: string, by: string | undefined): { by: string; at: string; ledger: string } | Refusal {
+  const r = latestReply(replies, target);
+  if (!r) return { target, reason: "no owner reply to its readback is recorded" };
+  const ref = `${r.id}, to item ${r.item} of ${r.readback_id}`;
+  if (r.verdict !== "yes") return { target, reason: `the owner's latest reply (${ref}) is ${r.verdict === null ? "recorded without a verdict" : `"${r.verdict}", not yes`}` };
+  if (r.content_hash !== hash) return { target, reason: `it changed since the owner said yes (${ref}), so that yes is to a version it no longer has` };
+  if (by !== undefined && !sameName(by, r.by)) return { target, reason: `--by ${shellQuote(by)} is not the owner who said yes (${ref}), ${shellQuote(r.by)}`, byMismatch: true };
+  const at = r.at.slice(0, 10);
+  if (!validDate(at)) return { target, reason: `the owner's yes (${ref}) has no ISO date in its at, ${JSON.stringify(r.at)}; run semlayer validate` };
+  return { by: r.by, at, ledger: r.id };
 }
 
-// The model.measure references of a metric, and problems with references that are not in that form.
-function metricMeasureRefs(m: Metric): { refs: string[]; problems: string[] } {
-  const refs: string[] = [];
-  const problems: string[] = [];
-  if (m.type === "ratio") {
-    for (const side of ["numerator", "denominator"] as const) {
-      const r: unknown = m[side];
-      if (typeof r === "string" && isMeasureRef(r)) refs.push(r);
-      else problems.push(`its ${side} ${JSON.stringify(r ?? null)} is not a model.measure reference`);
-    }
-    return { refs, problems };
-  }
-  const expr = String(m.expr ?? "");
-  const groups = [...expr.matchAll(/\{([^}]*)\}/g)].map((x) => x[1]!);
-  if (!groups.length) problems.push("its expr has no {model.measure} placeholder");
-  for (const g of groups) {
-    if (isMeasureRef(g)) refs.push(g);
-    else problems.push(`its expr placeholder {${g}} is not {model.measure} (lowercase names, no spaces)`);
-  }
-  return { refs, problems };
+// What to run for items refused for want of a matching yes.
+function readbackSteps(targets: string[], again: string): string {
+  return (
+    `semlayer readback --targets ${targets.join(",")}, read it to the owner, record each answer with ` +
+    `semlayer reply --readback <readback_id> --item <n> --text "<owner's words>" --verdict yes --by "<owner>", then ${again}`
+  );
 }
 
 function refuse(what: string, problems: string[]): never {
   throw new UserError(`Cannot ${what}:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
 }
 
-function validDate(s: string): boolean {
+export function validDate(s: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
   const d = new Date(`${s}T00:00:00.000Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
@@ -294,18 +293,21 @@ function underTarget(e: ApprovalEntry, target: Target | undefined): boolean {
 
 // The approval entries of every model file, metrics.yaml and access.yaml, by file.
 function projectEntries(root: string): { file: string; entries: ApprovalEntry[] }[] {
-  const files: { file: string; entries: ApprovalEntry[] }[] = [];
+  const models: LayerModel[] = [];
   for (const [source, name] of modelFiles(root)) {
     const file = paths(root).model(source, name);
     const model = readYaml<Model>(file);
     if (!model || typeof model !== "object") continue;
-    files.push({ file, entries: modelEntries(source, { ...model, model: name }, modelLookup(root, source), sourceDialect(root, source)) });
+    models.push({ source, model: { ...model, model: name }, file, lookup: modelLookup(root, source), dialect: sourceDialect(root, source) });
   }
   const metricsFile = paths(root).metrics;
-  if (existsSync(metricsFile)) files.push({ file: metricsFile, entries: metricEntries(loadMetrics(root)?.metrics) });
-  const access = accessEntry(loadAccess(root));
-  if (access) files.push({ file: paths(root).access, entries: [access] });
-  return files;
+  const metrics = existsSync(metricsFile) ? loadMetrics(root)?.metrics : undefined;
+  const files = new Map<string, ApprovalEntry[]>();
+  for (const e of itemApprovals(listApprovals({ models, metrics, metricsFile, access: loadAccess(root), accessFile: paths(root).access }))) {
+    const list = files.get(e.file!) ?? files.set(e.file!, []).get(e.file!)!;
+    list.push(e);
+  }
+  return [...files].map(([file, entries]) => ({ file, entries }));
 }
 
 // Whether any approved model, field, join, metric or access.yaml of the project records approved_hash.
@@ -328,8 +330,8 @@ function stampHashes(root: string, target: Target | undefined, confirmUnchanged:
   if (suspect.length && !confirmUnchanged) {
     throw new UserError(
       `Cannot stamp hashes: other approved items already carry approved_hash, so these may have had theirs removed after an edit: ` +
-        `${suspect.map((e) => e.ref).join(", ")}. Read each back to the owner and approve it again (sl approve --target <ref> --by "<owner>"). ` +
-        "Only when version control shows each unchanged since its approved_at, run sl approve --stamp-hashes --confirm-unchanged.",
+        `${suspect.map((e) => e.ref).join(", ")}. Read each back to the owner and approve it again (semlayer approve --target <ref> --by "<owner>"). ` +
+        "Only when version control shows each unchanged since its approved_at, run semlayer approve --stamp-hashes --confirm-unchanged.",
     );
   }
   const out: { file: string; refs: string[] }[] = [];
@@ -347,14 +349,152 @@ function stampHashes(root: string, target: Target | undefined, confirmUnchanged:
   return out;
 }
 
+// One item of a batched approve, as it ended.
+interface ItemResult {
+  target: string;
+  item?: number;
+  approved: boolean;
+  // Already approved and unchanged, so nothing was written for it.
+  already?: boolean;
+  by?: string;
+  at?: string;
+  ledger?: string;
+  from?: Status;
+  reason?: string;
+  // The owner's latest reply was a yes, so this item counts against the exit code when not approved.
+  said_yes?: boolean;
+  next?: string;
+  warnings?: string[];
+}
+
+// The order a batch approves in: models and fields, then metrics (whose measures may be approved in
+// the same batch), then access.yaml.
+const rank = (t: string) => (t === "access" ? 2 : t.startsWith("metric:") ? 1 : 0);
+
+// semlayer approve --readback <id>, or --target given more than once: each item on its own, as --target
+// approves it, only on the owner's latest reply being a yes to it as it stands. `only`, when given,
+// keeps the readback's items with those targets (semlayer reply --answers --approve: the items it answered).
+export async function approveMany(ctx: CommandContext, values: OptionValues, refs: string[], rb: string | undefined, only?: ReadonlySet<string>): Promise<number> {
+  for (const flag of ["revoke", "recursive"] as const)
+    if (bool(values, flag)) throw new UserError(`--${flag} takes one --target and no --readback; run semlayer approve --target <ref> --${flag} for each.`);
+  if (str(values, "date") !== undefined) throw new UserError(`--date is no longer taken: an approval's date comes from the owner's recorded reply in ${LEDGER_FILE}. Run the same command without --date.`);
+  const by = str(values, "by")?.trim();
+  if (by === "") throw new UserError(`--by is empty. Leave it out to record the owner whose yes is in ${LEDGER_FILE}, or give that owner's name.`);
+  const pending = rb === undefined ? undefined : readPending(ctx.root, rb.trim());
+  const golden = refs.find((r) => r.startsWith("golden:"));
+  if (golden) throw new UserError(`${golden} is a golden: goldens are confirmed against their rows with semlayer goldens confirm, not approved here; nothing was approved.`);
+  for (const r of refs) parseTarget(r);
+  const items: { target: string; item?: number }[] = [];
+  const seen = new Set<string>();
+  const take = (target: string, item?: number) => {
+    if (seen.has(target)) return;
+    seen.add(target);
+    items.push({ target, ...(item ? { item } : {}) });
+  };
+  for (const i of pending?.items ?? []) if (!only || only.has(i.target)) take(i.target, i.n);
+  for (const r of refs) take(r);
+  const replies = readReplies(ctx.root);
+  const owner = by ? shellQuote(by) : '"<owner>"';
+  const results = new Map<string, ItemResult>();
+  for (const it of [...items].sort((a, b) => rank(a.target) - rank(b.target))) {
+    const t = it.target;
+    const base: ItemResult = { target: t, ...(it.item ? { item: it.item } : {}), approved: false };
+    const answer = it.item && pending ? `semlayer reply --readback ${pending.readback_id} --item ${it.item} --text "<owner's words>" --verdict yes|no|change --by ${owner}` : `semlayer readback --targets ${t}, read it to the owner and record their answer with semlayer reply`;
+    if (t.startsWith("golden:")) {
+      results.set(t, { ...base, reason: "it is a golden, confirmed against its rows", next: `semlayer goldens confirm --readback ${pending!.readback_id}` });
+      continue;
+    }
+    const r = latestReply(replies, t);
+    const ref = r ? `${r.id}, to item ${r.item} of ${r.readback_id}` : "";
+    if (!r) {
+      results.set(t, { ...base, reason: "no owner reply to it is recorded", next: answer });
+      continue;
+    }
+    if (r.verdict !== "yes") {
+      results.set(t, {
+        ...base,
+        reason: r.verdict === null ? `the owner's latest reply (${ref}) has no verdict` : `the owner's latest reply (${ref}) is "${r.verdict}", not yes`,
+        next: r.verdict === null ? `ask the owner whether that is a yes, a no or a change: ${answer}` : `make the ${r.verdict === "no" ? "correction" : "change"} with a typed edit (one semlayer apply for the turn's edits), then semlayer readback --targets ${t}`,
+      });
+      continue;
+    }
+    const out: string[] = [];
+    try {
+      await spec.run({ values: { target: [t], ...(by ? { by } : {}) }, positionals: [] }, { ...ctx, json: true, out: (x) => out.push(x) });
+      const res = JSON.parse(out.join("\n")) as { changed: Change[]; warnings: string[] };
+      const c = res.changed.find((x) => x.target === t);
+      results.set(t, { ...base, approved: true, said_yes: true, ...(c ? { from: c.from } : { already: true }), by: r.by, at: r.at.slice(0, 10), ledger: r.id, ...(res.warnings.length ? { warnings: res.warnings } : {}) });
+    } catch (e) {
+      if (!(e instanceof UserError)) throw e;
+      // The refusal --target gives, without its "Cannot approve <ref>" head; its own Next: names the step.
+      const text = e.message.startsWith(`Cannot approve ${t}`) ? e.message.slice(`Cannot approve ${t}`.length).replace(/^:\s*/, "") : e.message;
+      const at = text.lastIndexOf("Next: ");
+      results.set(t, {
+        ...base,
+        said_yes: true,
+        reason: (at >= 0 ? text.slice(0, at) : text).replace(/; nothing was approved\..*$/s, "").trim().replace(/[.;:]$/, ""),
+        next: at >= 0 ? text.slice(at + 6).replace(/\.$/, "").trim() : `semlayer readback --targets ${t}, read it to the owner, record their answer with semlayer reply, then semlayer approve --target ${t}`,
+      });
+    }
+  }
+  const all = items.map((i) => results.get(i.target)!);
+  const approved = all.filter((r) => r.approved);
+  const not = all.filter((r) => !r.approved);
+  const failed = not.filter((r) => r.said_yes);
+  const code = failed.length ? 1 : 0;
+  if (ctx.json) {
+    ctx.out(
+      formatJson({
+        ...(pending ? { readback_id: pending.readback_id } : {}),
+        changed: approved.filter((r) => !r.already).map((r) => ({ target: r.target, from: r.from, to: "approved" })),
+        approved: approved.map(({ said_yes: _, ...r }) => r),
+        not_approved: not.map(({ approved: _a, said_yes, ...r }) => ({ ...r, said_yes: !!said_yes })),
+        warnings: approved.flatMap((r) => r.warnings ?? []),
+        all_yes_approved: !failed.length,
+      }),
+    );
+    return code;
+  }
+  const what = pending ? `the ${all.length} items of ${pending.readback_id}${only ? " answered now" : ""}` : `the ${all.length} targets`;
+  const lines = [`Approved ${approved.length} of ${what}, each on the owner's own yes to it as it stands${approved.length ? ":" : "."}`];
+  for (const r of approved) {
+    const no = r.item ? `item ${r.item}, ` : "";
+    lines.push(`  - ${r.target} (${no}${r.already ? "already approved, unchanged" : `${r.from} -> approved`}) by ${r.by} on ${r.at} (reply ${r.ledger})`);
+  }
+  for (const w of approved.flatMap((r) => r.warnings ?? [])) lines.push(`Warning: ${w}`);
+  if (not.length) {
+    lines.push(`Not approved (${not.length}):`);
+    for (const r of not) lines.push(`  - ${r.target}${r.item ? ` (item ${r.item})` : ""}: ${r.reason}. Next: ${r.next}.`);
+  }
+  lines.push(
+    failed.length
+      ? `${failed.length} item(s) the owner said yes to were not approved (listed above with why); fix each as its line says.`
+      : !approved.length
+        ? `The owner has said yes to none of these yet; record their answers first: ${pending ? `semlayer reply --readback ${pending.readback_id} --answers -` : "semlayer reply"}.`
+        : `Everything the owner said yes to as it stands is approved.${not.length ? "" : " Next: semlayer next."}`,
+  );
+  ctx.out(lines.join("\n"));
+  return code;
+}
+
 const spec: CommandSpec = {
-  summary: "Mark a model, field, metric or the access file approved, or revoke an approval.",
+  summary: "Mark a model, field, metric or the access file approved on the owner's recorded yes, or revoke an approval.",
   usage:
-    "approve --target <source.model | source.model.field | metric:<name> | access> " +
-    "--by <name> [--recursive] [--revoke] [--date YYYY-MM-DD]\n" +
-    "       approve --stamp-hashes [--target <ref>] [--confirm-unchanged]",
+    "approve --target <source.model | source.model.field | metric:<name> | access> [--by <name>] [--recursive]\n" +
+    "       approve --readback <readback_id> [--by <name>]\n" +
+    "       approve --target <ref> --target <ref> ... [--by <name>]\n" +
+    "       approve --target <ref> --revoke [--recursive]\n" +
+    "       approve --stamp-hashes [--target <ref>] [--confirm-unchanged]\n\n" +
+    "Approves an item only when the owner's latest reply to it in .semlayer/ledger.jsonl is a yes to it as it\n" +
+    "now stands (semlayer readback, then semlayer reply --verdict yes); approved_by and approved_at come from that\n" +
+    "reply, and --by, when given, must name the same owner. --date is no longer taken.\n" +
+    "--readback (or --target given more than once) takes each item on its own, as --target would: it approves\n" +
+    "each one the owner said yes to as it stands and lists every other with why (a change, a no, no reply,\n" +
+    "changed since the yes). It exits 0 when every item whose latest reply is a yes was approved, and 1 when\n" +
+    "one of them was not; items the owner did not say yes to are listed and do not fail it.",
   options: {
-    target: { type: "string" },
+    target: { type: "string", multiple: true, mcp: "single" },
+    readback: { type: "string", mcp: "omit" },
     by: { type: "string" },
     recursive: { type: "boolean" },
     revoke: { type: "boolean" },
@@ -362,6 +502,7 @@ const spec: CommandSpec = {
     "stamp-hashes": { type: "boolean" },
     "confirm-unchanged": { type: "boolean" },
   },
+  writes: "whole",
   async run({ values }, ctx) {
     loadProject(ctx.root);
     if (bool(values, "stamp-hashes")) {
@@ -369,9 +510,11 @@ const spec: CommandSpec = {
         if (str(values, flag) !== undefined) throw new UserError(`--stamp-hashes keeps each item's approved_by and approved_at, so it takes no --${flag}.`);
       for (const flag of ["revoke", "recursive"] as const)
         if (bool(values, flag)) throw new UserError(`--stamp-hashes takes no --${flag}; it only records hashes of items already approved.`);
-      const targetRef = str(values, "target");
-      const target = targetRef ? parseTarget(targetRef) : undefined;
-      if (target?.kind === "golden") throw new UserError("Goldens are confirmed with sl goldens confirm and carry no approved_hash.");
+      if (str(values, "readback") !== undefined) throw new UserError("--stamp-hashes takes no --readback; it only records hashes of items already approved.");
+      const targetRefs = list(values, "target");
+      if (targetRefs.length > 1) throw new UserError(`--stamp-hashes takes one --target at most, not ${targetRefs.join(", ")}.`);
+      const target = targetRefs[0] ? parseTarget(targetRefs[0]) : undefined;
+      if (target?.kind === "golden") throw new UserError("Goldens are confirmed with semlayer goldens confirm and carry no approved_hash.");
       const stamped = stampHashes(ctx.root, target, bool(values, "confirm-unchanged"));
       const refs = stamped.flatMap((s) => s.refs);
       if (ctx.json) {
@@ -381,32 +524,47 @@ const spec: CommandSpec = {
       ctx.out(
         refs.length
           ? `Recorded approved_hash on ${refs.length} approved item(s), keeping who approved them and when: ${refs.join(", ")}. ` +
-              "From now on sl validate errors when one of them changes."
+              "From now on semlayer validate errors when one of them changes."
           : "Every approved item already has approved_hash; nothing changed.",
       );
       return 0;
     }
-    if (bool(values, "confirm-unchanged")) throw new UserError("--confirm-unchanged applies only to sl approve --stamp-hashes.");
-    const ref = str(values, "target");
+    if (bool(values, "confirm-unchanged")) throw new UserError("--confirm-unchanged applies only to semlayer approve --stamp-hashes.");
+    const refs = list(values, "target");
+    const rb = str(values, "readback");
+    if (rb !== undefined || refs.length > 1) return approveMany(ctx, values, refs, rb);
+    const ref = refs[0];
     if (!ref) {
       throw new UserError(
-        "--target is required: source.model, source.model.field, metric:<name> or access (a golden:<name> is confirmed with sl goldens confirm).",
+        "--target is required: source.model, source.model.field, metric:<name> or access (a golden:<name> is confirmed with semlayer goldens confirm). " +
+          "Or pass --readback <readback_id> to approve each item of a readback the owner said yes to.",
       );
     }
     const revoke = bool(values, "revoke");
     const recursive = bool(values, "recursive");
-    const by = (str(values, "by") ?? "").trim();
-    if (!revoke && !by) throw new UserError("--by is required: the name of the person who confirmed this item.");
-    const date = str(values, "date") ?? today(ctx);
-    if (!validDate(date)) throw new UserError(`--date must be an ISO date (YYYY-MM-DD), got "${date}".`);
-    const mode: Mode = revoke ? { revoke: true } : { revoke: false, by, at: date };
+    if (str(values, "date") !== undefined) {
+      throw new UserError(
+        `--date is no longer taken: an approval's date now comes from the owner's recorded reply in ${LEDGER_FILE} (the day it was recorded). ` +
+          `Run the same command without --date: semlayer approve --target ${ref}${recursive ? " --recursive" : ""}${revoke ? " --revoke" : ""}.`,
+      );
+    }
+    const byRaw = str(values, "by");
+    const by = revoke ? undefined : byRaw?.trim();
+    if (by === "") {
+      throw new UserError(
+        `--by is empty. Leave it out to record the owner whose yes is in ${LEDGER_FILE}, or give that owner's name: semlayer approve --target ${ref} --by "<owner>".`,
+      );
+    }
+    const mode: Mode = revoke ? { revoke: true } : { revoke: false };
 
     const target = parseTarget(ref);
     if (recursive && target.kind !== "model") throw new UserError("--recursive applies only to a source.model target.");
 
     let file = "";
     const edits: Edit[] = [];
-    const warnings: string[] = [];
+    // Problems and warnings by the target they are about, so only items approved now report them.
+    const problems: { target: string; text: string }[] = [];
+    const warnings: { target: string; text: string }[] = [];
     // Items already in the requested state, reported when nothing changes.
     let skipped = 0;
     const hashed = !revoke && projectHashed(ctx.root);
@@ -435,8 +593,8 @@ const spec: CommandSpec = {
     switch (target.kind) {
       case "golden":
         throw new UserError(
-          `Goldens are confirmed against their rows, not approved here. Run sl goldens run --name ${target.name}, read the rows ` +
-            `back to the owner, then sl goldens confirm --name ${target.name} --by "<owner>" --tolerance <t>.`,
+          `Goldens are confirmed against their rows, not approved here. Read it back with semlayer readback --targets golden:${target.name} ` +
+            `--tolerance <t>, record the owner's answer with semlayer reply, then semlayer goldens confirm --name ${target.name}.`,
         );
 
       case "access": {
@@ -465,22 +623,9 @@ const spec: CommandSpec = {
         }
         const metricHash = itemHash("metric", obj(metric));
         if (!revoke && !isSettled(metric, metricHash)) {
-          const problems: string[] = [];
-          const missing = describedProblem(`metric:${metric.name}`, "Metric", metric);
-          if (missing) problems.push(missing);
-          const draft: string[] = [];
-          const { refs, problems: refProblems } = metricMeasureRefs(metric);
-          problems.push(...refProblems);
-          for (const r of refs) {
-            const [modelName, measureName] = r.split(".") as [string, string];
-            const modelPath = paths(ctx.root).model(metric.source, modelName);
-            const model = existsSync(modelPath) ? readYaml<Model>(modelPath) : null;
-            const measure = model?.measures?.find((x) => x.name === measureName);
-            if (!measure) problems.push(`measure ${metric.source}.${r} does not exist`);
-            else if (measure.status !== "approved") draft.push(`${metric.source}.${r}`);
-          }
-          if (draft.length) problems.push(`it references draft measures: ${[...new Set(draft)].join(", ")}. Approve them first.`);
-          if (problems.length) refuse(`approve metric:${metric.name}`, problems);
+          const { problems: own, drafts } = metricProblems(ctx.root, metric);
+          if (drafts.length) own.push(`it references draft measures: ${drafts.join(", ")}. Approve them first.`);
+          problems.push(...own.map((text) => ({ target: `metric:${metric.name}`, text })));
         }
         consider(`metric:${metric.name}`, ["metrics", index], metric, metricHash);
         break;
@@ -494,31 +639,25 @@ const spec: CommandSpec = {
         const dialect = sourceDialect(ctx.root, target.source);
         const scope = { source: target.source, model: obj(model), lookup, dialect };
         const hash = (kind: "dimension" | "measure" | "join", item: unknown) => itemHash(kind, obj(item), scope);
-        const problems: string[] = [];
         const modelHash = itemHash("model", obj(model), { source: target.source });
-        if (!revoke && !isSettled(model, modelHash)) problems.push(...modelProblems(base, model));
+        if (!revoke && !isSettled(model, modelHash)) problems.push(...modelProblems(base, model).map((text) => ({ target: base, text })));
         consider(base, [], model, modelHash);
         if (recursive) {
           for (const [i, d] of (model.dimensions ?? []).entries()) consider(`${base}.${d.name}`, ["dimensions", i], d, hash("dimension", d));
           for (const [i, m] of (model.measures ?? []).entries()) {
             if (consider(`${base}.${m.name}`, ["measures", i], m, hash("measure", m)) && !revoke) {
               const p = describedProblem(`${base}.${m.name}`, "Measure", m);
-              if (p) problems.push(p);
+              if (p) problems.push({ target: `${base}.${m.name}`, text: p });
             }
           }
           for (const [i, j] of (model.joins ?? []).entries()) {
             if (consider(`${base}.${j.name}`, ["joins", i], j, hash("join", j)) && !revoke) {
-              if (!j.evidence) warnings.push(joinWarning(target.source, target.model, j.name));
-              const w = fanoutWarning(`${base}.${j.name}`, j);
-              if (w) warnings.push(w);
+              const t = `${base}.${j.name}`;
+              if (!j.evidence) warnings.push({ target: t, text: joinWarning(target.source, target.model, j.name) });
+              const w = fanoutWarning(t, j);
+              if (w) warnings.push({ target: t, text: w });
             }
           }
-        }
-        if (problems.length) {
-          refuse(
-            `approve ${base}${recursive ? " and its fields; nothing was approved" : ""}`,
-            problems,
-          );
         }
         break;
       }
@@ -545,41 +684,93 @@ const spec: CommandSpec = {
         if (changing && !revoke) {
           if (match.kind === "measure") {
             const p = describedProblem(full, "Measure", match.item);
-            if (p) refuse(`approve ${full}`, [p]);
+            if (p) problems.push({ target: full, text: p });
           }
           if (match.kind === "join") {
-            if (!match.item.evidence) warnings.push(joinWarning(target.source, target.model, target.field));
+            if (!match.item.evidence) warnings.push({ target: full, text: joinWarning(target.source, target.model, target.field) });
             const w = fanoutWarning(full, match.item);
-            if (w) warnings.push(w);
+            if (w) warnings.push({ target: full, text: w });
           }
         }
         break;
       }
     }
 
+    // Only an item whose owner's latest recorded reply is a yes to it as it stands is approved, with
+    // that reply's owner and date. A revoke needs no reply: it never widens what is approved.
+    const refused: Refusal[] = [];
+    let ready = edits;
+    if (!revoke && edits.length) {
+      const replies = readReplies(ctx.root);
+      ready = [];
+      for (const e of edits) {
+        const g = ledgerGate(replies, e.target, e.hash, by);
+        if ("reason" in g) refused.push(g);
+        else ready.push({ ...e, ...g });
+      }
+    }
+    const approving = new Set(ready.map((e) => e.target));
+    // Approving never adds a validate issue: what validate would raise of the items once approved is refused here too.
+    if (!revoke && approving.size) problems.push(...approvedIssues(ctx.root, [...approving]).map((l) => ({ target: l.target, text: l.edit ? `${l.text} (semlayer ${l.edit.map((w) => (/\s/.test(w) ? JSON.stringify(w) : w)).join(" ")}, then read it back)` : l.text })));
+    const blocking = problems.filter((p) => approving.has(p.target)).map((p) => p.text);
+    if (blocking.length) refuse(`approve ${ref}${recursive ? " and its fields; nothing was approved" : ""}`, blocking);
+    const again = `semlayer approve --target ${ref}${recursive ? " --recursive" : ""}`;
+    const unanswered = refused.filter((r) => !r.byMismatch).map((r) => r.target);
+    const fixFirst = problems.filter((p) => unanswered.includes(p.target)).map((p) => p.text);
+    const nextFor = (r: Refusal) =>
+      r.byMismatch ? `semlayer approve --target ${r.target} (it records the owner who said yes), or read it back to the owner you named` : readbackSteps([r.target], `semlayer approve --target ${r.target}`);
+    const steps = [
+      ...(unanswered.length ? [readbackSteps(unanswered, again)] : []),
+      ...(refused.some((r) => r.byMismatch) ? [`leave --by out to record the owner who said yes: ${again}`] : []),
+    ];
+    const refusedText = () =>
+      [
+        ...refused.map((r) => `  - ${r.target}: ${r.reason}`),
+        ...(fixFirst.length ? ["Before reading those back, fix:", ...fixFirst.map((p) => `  - ${p}`)] : []),
+        `semlayer approve needs the owner's yes in ${LEDGER_FILE} to each item as it now stands. Next: ${steps.join("; or ")}.`,
+      ].join("\n");
+    if (!ready.length && refused.length) {
+      if (refused.length === 1 && !recursive) {
+        const r = refused[0]!;
+        throw new UserError(
+          `Cannot approve ${r.target}: ${r.reason}; nothing was approved. semlayer approve needs the owner's yes in ${LEDGER_FILE} to it as it now stands. ` +
+            `Next: ${nextFor(r)}.${fixFirst.length ? ` Before reading it back, fix: ${fixFirst.map((p) => p.replace(/\.$/, "")).join("; ")}.` : ""}`,
+        );
+      }
+      throw new UserError(`Cannot approve ${ref}; nothing was approved:\n${refusedText()}`);
+    }
+
     // The approval a revoke of access.yaml set aside in last_approved.
     let keptApproval: LastApproval | undefined;
-    if (edits.length) {
+    if (ready.length) {
       updateYaml(file, (doc) => {
-        for (const e of edits) keptApproval = applyEdit(doc, e, mode) ?? keptApproval;
+        for (const e of ready) keptApproval = applyEdit(doc, e, mode) ?? keptApproval;
       });
     }
     const to: Status = revoke ? "draft" : "approved";
-    const changed: Change[] = edits.map((e) => ({ target: e.target, from: e.from, to }));
+    const changed: Change[] = ready.map((e) => ({ target: e.target, from: e.from, to }));
+    const warned = warnings.filter((w) => approving.has(w.target)).map((w) => w.text);
+    const code = refused.length ? 1 : 0;
 
     if (ctx.json) {
-      ctx.out(formatJson({ changed, warnings, ...(keptApproval ? { last_approved: keptApproval } : {}) }));
-      return 0;
+      ctx.out(
+        formatJson({
+          changed,
+          warnings: warned,
+          ...(keptApproval ? { last_approved: keptApproval } : {}),
+          ...(refused.length ? { refused: refused.map((r) => ({ target: r.target, reason: r.reason, next: nextFor(r) })) } : {}),
+        }),
+      );
+      return code;
     }
     const lines: string[] = [];
     if (!changed.length) lines.push(`${ref} is already ${revoke ? "a draft" : "approved"}; nothing changed.`);
-    const reapproved = new Set(edits.filter((e) => e.changed).map((e) => e.target));
-    const rehashed = new Set(edits.filter((e) => e.missing).map((e) => e.target));
-    for (const c of changed) {
-      if (revoke) lines.push(`Revoked ${c.target} (${c.from} -> draft).`);
-      else if (reapproved.has(c.target)) lines.push(`Approved ${c.target} again (it changed since its last approval) by ${by} on ${date}.`);
-      else if (rehashed.has(c.target)) lines.push(`Approved ${c.target} again (its approved_hash was missing) by ${by} on ${date}.`);
-      else lines.push(`Approved ${c.target} (${c.from} -> approved) by ${by} on ${date}.`);
+    for (const e of ready) {
+      const how = `by ${e.by} on ${e.at} (reply ${e.ledger})`;
+      if (revoke) lines.push(`Revoked ${e.target} (${e.from} -> draft).`);
+      else if (e.changed) lines.push(`Approved ${e.target} again (it changed since its last approval) ${how}.`);
+      else if (e.missing) lines.push(`Approved ${e.target} again (its approved_hash was missing) ${how}.`);
+      else lines.push(`Approved ${e.target} (${e.from} -> approved) ${how}.`);
     }
     if (changed.length && skipped) lines.push(`${skipped} item(s) were already ${revoke ? "drafts" : "approved"}.`);
     if (keptApproval) {
@@ -588,9 +779,10 @@ const spec: CommandSpec = {
           "keeps applying where it is deployed until the new one is approved; tell the owner so.",
       );
     }
-    for (const w of warnings) lines.push(`Warning: ${w}`);
+    for (const w of warned) lines.push(`Warning: ${w}`);
+    if (refused.length) lines.push(`Not approved:\n${refusedText()}`);
     ctx.out(lines.join("\n"));
-    return 0;
+    return code;
   },
 };
 export default spec;

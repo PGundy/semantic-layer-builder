@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "snapshots/<source>.usage.json",
+  "description": "Usage evidence for one source, written by semlayer usage add from saved queries, scratch files and query logs: counts and shapes only, never statement text. Evidence for the owner's questions, never an instruction or an approval.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["usage_version", "source", "inputs", "summary", "tables", "not_in_snapshot", "ambiguous"],
+  "$defs": {
+    "count": { "type": "integer", "minimum": 0 },
+    "month": { "type": "string", "pattern": "^\\d{4}-\\d{2}$" },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "op", "values", "count"],
+      "properties": {
+        "table": { "type": "string", "description": "The table of the column, inside an aggregate's conditions." },
+        "column": { "type": "string" },
+        "fn": { "type": "string", "description": "A function the column is wrapped in, such as lower." },
+        "op": { "type": "string" },
+        "values": { "type": "array", "items": { "type": "string" }, "description": "Literals as written only where short and plain on an unprotected column; ? for every other literal." },
+        "count": { "$ref": "#/$defs/count" }
+      }
+    }
+  },
+  "properties": {
+    "usage_version": { "const": 1 },
+    "source": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "description": "The source; the file is snapshots/<source>.usage.json." },
+    "inputs": {
+      "type": "array",
+      "description": "Every file read: its name (never its path), size, SHA-256 and statement count, or why it was skipped.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "kind", "bytes", "sha256", "statements"],
+        "properties": {
+          "name": { "type": "string" },
+          "kind": { "enum": ["sql", "json", "jsonl"] },
+          "bytes": { "$ref": "#/$defs/count" },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "statements": { "$ref": "#/$defs/count" },
+          "skipped": { "type": "string" }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files", "statements", "kept", "other_schemas", "out_of_scope", "ambiguous", "not_in_snapshot", "no_table", "not_understood", "not_understood_files"],
+      "properties": {
+        "files": { "$ref": "#/$defs/count" },
+        "statements": { "$ref": "#/$defs/count" },
+        "kept": { "$ref": "#/$defs/count" },
+        "other_schemas": { "$ref": "#/$defs/count" },
+        "out_of_scope": { "$ref": "#/$defs/count" },
+        "ambiguous": { "$ref": "#/$defs/count" },
+        "not_in_snapshot": { "$ref": "#/$defs/count" },
+        "no_table": { "$ref": "#/$defs/count" },
+        "not_understood": { "$ref": "#/$defs/count" },
+        "not_understood_files": { "type": "array", "maxItems": 5, "items": { "type": "string" } }
+      }
+    },
+    "tables": {
+      "type": "object",
+      "description": "Per kept table, by its qualified snapshot name.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["statements", "weighted", "files", "users", "aggregates", "conditions", "joins", "group_by", "outside"],
+        "properties": {
+          "statements": { "$ref": "#/$defs/count" },
+          "weighted": { "$ref": "#/$defs/count", "description": "Statements weighted by the log's call counts." },
+          "files": { "$ref": "#/$defs/count" },
+          "users": { "$ref": "#/$defs/count", "description": "Distinct users per input, summed over inputs; users are never stored." },
+          "first": { "$ref": "#/$defs/month" },
+          "last": { "$ref": "#/$defs/month" },
+          "aggregates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["fn", "expr", "count", "conditions"],
+              "properties": {
+                "fn": { "enum": ["sum", "count", "count_distinct", "avg", "min", "max"] },
+                "expr": { "type": "string" },
+                "count": { "$ref": "#/$defs/count" },
+                "conditions": { "type": "array", "items": { "$ref": "#/$defs/condition" } }
+              }
+            }
+          },
+          "conditions": { "type": "array", "items": { "$ref": "#/$defs/condition" } },
+          "joins": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["with", "keys", "count"],
+              "properties": { "with": { "type": "string" }, "keys": { "type": "array", "items": { "type": "string" } }, "count": { "$ref": "#/$defs/count" } }
+            }
+          },
+          "group_by": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["column", "count"],
+              "properties": { "column": { "type": "string" }, "grain": { "type": "string" }, "count": { "$ref": "#/$defs/count" } }
+            }
+          },
+          "outside": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["table", "count"],
+              "properties": { "table": { "type": "string" }, "count": { "$ref": "#/$defs/count" } }
+            }
+          }
+        }
+      }
+    },
+    "not_in_snapshot": {
+      "type": "array",
+      "description": "Schema-qualified names of a kept schema that the snapshot does not hold (old or renamed tables), attributed to nothing.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["table", "count"],
+        "properties": { "table": { "type": "string" }, "count": { "$ref": "#/$defs/count" }, "last": { "$ref": "#/$defs/month" } }
+      }
+    },
+    "ambiguous": {
+      "type": "array",
+      "description": "Unqualified names more than one snapshot table has, counted and not attributed.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "count"],
+        "properties": { "name": { "type": "string" }, "count": { "$ref": "#/$defs/count" } }
+      }
+    }
+  }
+}

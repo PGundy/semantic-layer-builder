@@ -11,7 +11,7 @@ request:
     - { field: orders.order_date, op: lt, value: "2026-01-01" }
   order_by: [{ field: "orders.order_date:month", direction: asc }]
   limit: 100
-sql: |
+cross_check_sql: |
   select date_trunc('month', o.created_at) as order_date_month,
          sum(o.amount_cents / 100.0) filter (where o.status <> 'cancelled' and coalesce(c.is_test_account, false) = false) as revenue
   from public.fct_orders o

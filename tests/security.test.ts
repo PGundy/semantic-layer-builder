@@ -20,9 +20,9 @@ import {
   viewFiles,
 } from "../skills/semantic-layer/scripts/lib/source-safety.ts";
 import { assertReadOnly, tokenize } from "../skills/semantic-layer/scripts/lib/sql-guard.ts";
-import type { QueryPlan, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, duckdbSource, initProject, isLocalPg, PG_URL, sl, tempRoot, uniqueSchema } from "./helpers.ts";
+import type { Model, QueryPlan, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
+import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
+import { assertLocalPg, confirmWithYes, duckdbSource, initProject, isLocalPg, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -240,16 +240,16 @@ describe("DuckDB refuses writes at the driver, without the guard", () => {
     expect(existsSync(join(t.dir, "a.duckdb"))).toBe(false);
   });
 
-  test("sl run refuses each bypass and writes no file", async () => {
+  test("semlayer run refuses each bypass and writes no file", async () => {
     const t = temp();
     await initProject(t.root);
     writeYaml(join(t.root, "sources", "lake.yaml"), { source: "lake", dialect: "duckdb", connection: { database: ":memory:" } });
     for (const q of Object.values(duckWrites(t.dir))) {
-      const r = await sl(t.root, ["run", "--source", "lake", "--sql", q]);
+      const r = await semlayer(t.root, ["run", "--source", "lake", "--sql", q]);
       expect(r.code).toBe(1);
       expect(r.err).not.toContain("unexpected error");
     }
-    const text = await sl(t.root, ["run", "--source", "lake", "--sql", "select content from read_text('/etc/hostname')"]);
+    const text = await semlayer(t.root, ["run", "--source", "lake", "--sql", "select content from read_text('/etc/hostname')"]);
     expect(text.code).toBe(1);
     expect(text.err).toContain("read_text");
     for (const f of WRITTEN) expect(existsSync(join(t.dir, f))).toBe(false);
@@ -264,7 +264,7 @@ describe("DuckDB refuses writes at the driver, without the guard", () => {
       join(t.root, "goldens", "evil.yaml"),
       `name: evil\nquestion: q\nrequest:\n  source: wh\n  measures: [orders.n]\nsql: ${JSON.stringify(sql)}\nstatus: draft\n`,
     );
-    const r = await sl(t.root, ["goldens", "run", "--name", "evil"]);
+    const r = await semlayer(t.root, ["goldens", "run", "--name", "evil"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("one statement");
     const plan: QueryPlan = { command: "goldens", source: "wh", dialect: "duckdb", queries: [{ id: goldenQueryId("evil"), purpose: "q", sql }] };
@@ -396,21 +396,21 @@ describe("protected values and terminal output", () => {
     return t;
   }
 
-  test("sl run shows protected columns as [protected] unless --show-protected", async () => {
+  test("semlayer run shows protected columns as [protected] unless --show-protected", async () => {
     const t = await project();
     const sql = "select id, email, nickname, city, phone, notes_internal, shown_email from customers";
-    const r = await sl(t.root, ["run", "--source", "wh", "--sql", sql, "--json"]);
+    const r = await semlayer(t.root, ["run", "--source", "wh", "--sql", sql, "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<{ rows: Record<string, unknown>[]; protected_columns: string[] }>();
     expect(out.protected_columns).toEqual(["email", "nickname", "phone", "notes_internal"]);
     expect(out.rows).toEqual([
       { id: 1, email: PROTECTED_VALUE, nickname: PROTECTED_VALUE, city: "Lisbon", phone: PROTECTED_VALUE, notes_internal: PROTECTED_VALUE, shown_email: "pub@example.com" },
     ]);
-    const plain = await sl(t.root, ["run", "--source", "wh", "--sql", sql]);
+    const plain = await semlayer(t.root, ["run", "--source", "wh", "--sql", sql]);
     expect(plain.out).not.toContain("ana@example.com");
     expect(plain.out).not.toContain("555-0100");
     expect(plain.out).toContain("Protected columns shown as [protected]: email, nickname, phone, notes_internal.");
-    const shown = await sl(t.root, ["run", "--source", "wh", "--sql", sql, "--json", "--show-protected"]);
+    const shown = await semlayer(t.root, ["run", "--source", "wh", "--sql", sql, "--json", "--show-protected"]);
     expect(shown.json<{ rows: Record<string, unknown>[]; protected_columns: string[] }>()).toMatchObject({
       protected_columns: [],
       rows: [{ email: "ana@example.com", phone: "555-0100" }],
@@ -419,18 +419,23 @@ describe("protected values and terminal output", () => {
 
   test("goldens run, confirm and check never print protected values by default", async () => {
     const t = await project();
+    // The request compiles to the email column, which looks personal, as its cross_check_sql reads it.
+    const ok = { status: "approved" as const, approved_by: "Dana", approved_at: "2026-01-15" };
+    const model = readYaml<Model>(join(t.root, "models", "wh", "customers.yaml"));
+    model.dimensions = [...model.dimensions.map((d) => (d.name === "city" ? { ...d, ...ok } : d)), { name: "email", expr: "email", type: "string", ...ok }];
+    writeYaml(join(t.root, "models", "wh", "customers.yaml"), { ...model, ...ok, measures: [{ name: "n", agg: "count", description: "Customers.", ...ok }] });
     writeFileSync(
       join(t.root, "goldens", "by_email.yaml"),
-      "name: by_email\nquestion: Orders by email\nrequest:\n  source: wh\n  measures: [customers.n]\n  dimensions: [customers.city]\n" +
+      "name: by_email\nquestion: Orders by email\nrequest:\n  source: wh\n  measures: [customers.n]\n  dimensions: [customers.email, customers.city]\n" +
         "sql: select email, city, count(*) as n from customers group by email, city\nstatus: draft\n",
     );
-    const run = await sl(t.root, ["goldens", "run", "--name", "by_email"]);
+    const run = await semlayer(t.root, ["goldens", "run", "--name", "by_email"]);
     expect(run.code).toBe(0);
     expect(run.out).toContain(PROTECTED_VALUE);
     expect(run.out).not.toContain("ana@example.com");
-    const runJson = await sl(t.root, ["goldens", "run", "--name", "by_email", "--json"]);
+    const runJson = await semlayer(t.root, ["goldens", "run", "--name", "by_email", "--json"]);
     expect(runJson.out).not.toContain("ana@example.com");
-    const confirm = await sl(t.root, ["goldens", "confirm", "--name", "by_email", "--by", "Dana", "--tolerance", "0"]);
+    const confirm = await confirmWithYes(t.root, ["--name", "by_email", "--by", "Dana", "--tolerance", "0"]);
     expect(confirm.code).toBe(0);
     expect(confirm.out).not.toContain("ana@example.com");
     const db = await DuckDBInstance.create(join(t.dir, "wh.duckdb"));
@@ -438,12 +443,12 @@ describe("protected values and terminal output", () => {
     await c.run("update customers set email = 'bo@example.com'");
     c.closeSync();
     db.closeSync();
-    const check = await sl(t.root, ["goldens", "check"]);
+    const check = await semlayer(t.root, ["goldens", "check"]);
     expect(check.code).toBe(1);
     expect(check.out).not.toContain("ana@example.com");
     expect(check.out).not.toContain("bo@example.com");
     expect(check.out).toContain(PROTECTED_VALUE);
-    const shown = await sl(t.root, ["goldens", "check", "--show-protected"]);
+    const shown = await semlayer(t.root, ["goldens", "check", "--show-protected"]);
     expect(shown.out).toContain("bo@example.com");
   });
 
@@ -456,23 +461,23 @@ describe("protected values and terminal output", () => {
 
   test("duplicate output column names are refused with a hint to alias them", async () => {
     const t = await project();
-    const r = await sl(t.root, ["run", "--source", "wh", "--sql", "select 1 as a, 2 as a"]);
+    const r = await semlayer(t.root, ["run", "--source", "wh", "--sql", "select 1 as a, 2 as a"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain('more than one column named "a"; alias them');
     writeFileSync(
       join(t.root, "goldens", "dupes.yaml"),
       "name: dupes\nquestion: q\nrequest:\n  source: wh\n  measures: [customers.n]\nsql: select 1 as n, 2 as N\nstatus: draft\n",
     );
-    const g = await sl(t.root, ["goldens", "run", "--name", "dupes"]);
+    const g = await semlayer(t.root, ["goldens", "run", "--name", "dupes"]);
     expect(g.code).toBe(1);
     expect(g.err).toContain("alias them");
   });
 
   test("printed values have ANSI escapes and control characters stripped", async () => {
     const t = await project();
-    const r = await sl(t.root, ["run", "--source", "wh", "--sql", "select chr(27) || '[31mred' || chr(27) || '[0m' || chr(7) || chr(8) || 'x' as \"col\" || chr(27)"]);
+    const r = await semlayer(t.root, ["run", "--source", "wh", "--sql", "select chr(27) || '[31mred' || chr(27) || '[0m' || chr(7) || chr(8) || 'x' as \"col\" || chr(27)"]);
     expect(r.code).toBe(1);
-    const ok = await sl(t.root, ["run", "--source", "wh", "--sql", "select chr(27) || '[31mred' || chr(27) || '[0m' || chr(7) || chr(8) || chr(10) || 'x' as s"]);
+    const ok = await semlayer(t.root, ["run", "--source", "wh", "--sql", "select chr(27) || '[31mred' || chr(27) || '[0m' || chr(7) || chr(8) || chr(10) || 'x' as s"]);
     expect(ok.code).toBe(0);
     expect(ok.out).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f]/);
     expect(ok.out).toContain("red x");
@@ -482,7 +487,7 @@ describe("protected values and terminal output", () => {
 });
 
 describe("statement timeout setting", () => {
-  test("SL_STATEMENT_TIMEOUT_MS must be whole milliseconds", () => {
+  test("SEMLAYER_STATEMENT_TIMEOUT_MS must be whole milliseconds", () => {
     expect(statementTimeout(undefined)).toBe(120000);
     expect(statementTimeout("5000")).toBe(5000);
     expect(() => statementTimeout("abc")).toThrow("whole number of milliseconds");
@@ -501,7 +506,7 @@ describe("statement timeout setting", () => {
 describe("live tests run only against a local Postgres", () => {
   test("isLocalPg accepts localhost, loopback and sockets only", () => {
     for (const url of [
-      "postgres://postgres@localhost:54329/postgres?host=/tmp/sl-pg",
+      "postgres://postgres@localhost:54329/postgres?host=/tmp/semlayer-pg",
       "postgres://u@localhost/db",
       "postgres://u@127.0.0.1:5432/db",
       "postgres://u@[::1]:5432/db",
@@ -515,9 +520,9 @@ describe("live tests run only against a local Postgres", () => {
     }
   });
 
-  test("assertLocalPg refuses a remote URL unless SL_TEST_ALLOW_REMOTE=1", () => {
-    expect(() => assertLocalPg("postgres://u@db.example.com/prod", {})).toThrow("SL_TEST_ALLOW_REMOTE=1");
-    expect(() => assertLocalPg("postgres://u@db.example.com/prod", { SL_TEST_ALLOW_REMOTE: "1" })).not.toThrow();
+  test("assertLocalPg refuses a remote URL unless SEMLAYER_TEST_ALLOW_REMOTE=1", () => {
+    expect(() => assertLocalPg("postgres://u@db.example.com/prod", {})).toThrow("SEMLAYER_TEST_ALLOW_REMOTE=1");
+    expect(() => assertLocalPg("postgres://u@db.example.com/prod", { SEMLAYER_TEST_ALLOW_REMOTE: "1" })).not.toThrow();
     expect(() => assertLocalPg("postgres://u@localhost/db", {})).not.toThrow();
     expect(() => assertLocalPg(undefined, {})).toThrow("PG_URL is not set");
   });
@@ -577,7 +582,7 @@ describe.skipIf(!PG_URL)("Postgres refuses writes at the driver, without the gua
   });
 
   test("a reconnect keeps read-only, the statement timeout and UTC", async () => {
-    const a = await openAdapter("/tmp", source, { PG_URL, SL_STATEMENT_TIMEOUT_MS: "45000" }, { warn: () => {} });
+    const a = await openAdapter("/tmp", source, { PG_URL, SEMLAYER_STATEMENT_TIMEOUT_MS: "45000" }, { warn: () => {} });
     try {
       const pid = (await a.query("select pg_backend_pid() as pid")).rows[0]!.pid;
       await admin.unsafe(`select pg_terminate_backend(${Number(pid)})`);
@@ -605,7 +610,7 @@ describe.skipIf(!PG_URL)("Postgres refuses writes at the driver, without the gua
     expect(warnings[0]).toContain("connect with a SELECT-only role");
   });
 
-  test("sl run refuses each bypass, set_config and pg_read_file, and deletes nothing", async () => {
+  test("semlayer run refuses each bypass, set_config and pg_read_file, and deletes nothing", async () => {
     const t = temp();
     await initProject(t.root);
     writeYaml(join(t.root, "sources", "pg.yaml"), source);
@@ -615,12 +620,12 @@ describe.skipIf(!PG_URL)("Postgres refuses writes at the driver, without the gua
       "select pg_read_file('/etc/hostname')",
       "select pg_terminate_backend(pg_backend_pid())",
     ]) {
-      const r = await sl(t.root, ["run", "--source", "pg", "--sql", q], { PG_URL });
+      const r = await semlayer(t.root, ["run", "--source", "pg", "--sql", q], { PG_URL });
       expect(r.code).toBe(1);
       expect(r.err).not.toContain("unexpected error");
     }
     expect(await count()).toBe(2);
-    const ok = await sl(t.root, ["run", "--source", "pg", "--sql", "select current_setting('transaction_read_only') as ro"], { PG_URL });
+    const ok = await semlayer(t.root, ["run", "--source", "pg", "--sql", "select current_setting('transaction_read_only') as ro"], { PG_URL });
     expect(ok.code).toBe(0);
     expect(ok.out).toContain("on");
     expect(ok.err).toContain("connect with a SELECT-only role");

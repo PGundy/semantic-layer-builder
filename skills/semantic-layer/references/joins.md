@@ -4,22 +4,22 @@ A join says how two tables in the same source connect, for example each order to
 
 ## Where joins come from
 
-`sl draft` writes joins with an `origin`:
+`semlayer draft` writes joins with an `origin`:
 
 - `declared`: the database has a foreign key between the columns. Usually right, still checked.
-- `inferred`: guessed by a tool or by you, from names (`orders.customer_id` and `customers.customer_id`) or from matching values (every `orders.ship_region` value is a `regions.region_code`). Often right, sometimes not (`created_by_id` is not a customer). `sl draft` also infers a join when a column's name equals another in-scope table's single-column primary key of a compatible type, text keys included (`order_lines.sku` to `products.sku`). A join you find yourself and add to the model's `joins` list gets `origin: inferred` and `status: draft`.
-- `owner`: the owner told you, for example "`shipments.order_ref` is the order number". Write it yourself in the model's `joins` list with `origin: owner` and `status: draft`.
+- `inferred`: guessed by a tool or by you, from names (`orders.customer_id` and `customers.customer_id`) or from matching values (every `orders.ship_region` value is a `regions.region_code`). Often right, sometimes not (`created_by_id` is not a customer). `semlayer draft` also infers a join when a column's name equals another in-scope table's single-column primary key of a compatible type, text keys included (`order_lines.sku` to `products.sku`). A join you find yourself is added with `semlayer add-join ... --origin inferred` (`phases/joins.md`), as a draft.
+- `owner`: the owner told you, for example "`shipments.order_ref` is the order number". Add it with `semlayer add-join --source <s> --model <m> --name <join> --to <model> --keys <left>=<right>`, which writes `origin: owner` and `status: draft`.
 
 Name a join after the role its target plays for this model (`customer`, `ship_to_region`, `home_region`), never after a column or a dimension of the model (`ship_region`, `region`): joins share one namespace with the model's dimensions and measures, and a role name says which region a reader gets.
 
-To test a join you suspect from values before writing it, compare the columns with `sl run` on duckdb and postgres: `select count(*) filter (where r.region_code is null) as unmatched, count(*) as total from public.fct_orders o left join public.dim_regions r on r.region_code = o.ship_region`. Then write the join and measure it with `sl check-join`.
+To test a join you suspect from values before writing it, compare the columns with `semlayer run` on duckdb and postgres: `select count(*) filter (where r.region_code is null) as unmatched, count(*) as total from public.fct_orders o left join public.dim_regions r on r.region_code = o.ship_region`. Then write the join and measure it with `semlayer check-join`.
 
-Every join, whatever its origin, goes through `sl check-join` and a readback.
+Every join, whatever its origin, goes through `semlayer check-join` and a readback.
 
 ## Measuring a join
 
 ```
-sl check-join --source warehouse --model orders --join customer
+semlayer check-join --source warehouse --model orders --join customer
 ```
 
 For warehouse dialects, add `--emit-sql`, run the query, and finish with `--results <file>` (see `intake.md`). The command prints how the relationship written in the YAML compares with the data, for example `(YAML says many_to_one, data says many_to_one)`, and writes `evidence` into the join:
@@ -56,7 +56,7 @@ Rows on the left that find no match are orphans. They matter for `type`:
 - `type: left` keeps orphans, so totals stay the same and their customer fields are empty. This is the safe default.
 - `type: inner` drops orphans, so totals shrink. Use it only when the owner says unmatched rows should never be counted, and say how many rows that removes.
 
-When orphans are more than about 1% of rows, ask about them and write the answer in the join's `description` or as an open question.
+When orphans are more than about 1% of rows, ask about them and write the answer in the join's `description` (`semlayer set <source.model.join> description "<text>"`) or as an open question (`semlayer question add`).
 
 The join's `type` also decides what a join reference through it sees. A measure filter or dimension on the left model that reads `customer.<column>`, or `order.customer.<column>` two hops away, makes the compiler add each join on the path with its own `type`: on a `left` join an orphan's `customer.<column>` is empty (null), so a filter meant to keep orphans handles null, as in `coalesce(customer.is_test_account, false) = false`; on an `inner` join orphans are gone from every measure that uses the reference. Choose the type with the owner and read the consequence back (`interview-guide.md`, join references).
 
@@ -70,7 +70,7 @@ The join's `type` also decides what a join reference through it sees. A measure 
   2. A pre-aggregated model, for example a view with one row per order and the promotion count, which the owner's engineers create on every dialect: on DuckDB a view in the `.duckdb` database file or a Parquet file they write, read as one table expression (`connection.views` takes no aggregate).
   3. Leave it out and record an open question.
 
-When `relationship` in the YAML differs from `suggested_relationship`, change the YAML to match the evidence, or ask the owner why the data disagrees with what they expect. Never approve a join whose YAML relationship the evidence contradicts. `sl validate` reports an error on an approved `many_to_one` or `one_to_one` join whose evidence shows repeats (`right_key_unique: false`, or `max_fanout` above 1), because every measure reading through it would count some rows more than once. When the owner explains why the measured repeats do not matter (a duplicate row being removed upstream, a key unique for every row the layer counts), and you have read that back, record the reason in their words on the join, and recheck after the data changes:
+When `relationship` in the YAML differs from `suggested_relationship`, set it to match the evidence (`semlayer set warehouse.orders.customer relationship <relationship>`), or ask the owner why the data disagrees with what they expect. Never approve a join whose YAML relationship the evidence contradicts. `semlayer validate` reports an error on an approved `many_to_one` or `one_to_one` join whose evidence shows repeats (`right_key_unique: false`, or `max_fanout` above 1), because every measure reading through it would count some rows more than once. When the owner explains why the measured repeats do not matter (a duplicate row being removed upstream, a key unique for every row the layer counts), and you have read that back, record the reason in their words on the join with `semlayer set <source.model.join> fanout_override "<their words>"`, and recheck after the data changes. It writes:
 
 ```yaml
     fanout_override: "Duplicate rows for 3 discontinued products; finance excludes them upstream. Dana Ruiz, 2026-10-26."
@@ -78,11 +78,11 @@ When `relationship` in the YAML differs from `suggested_relationship`, change th
 
 Only `many_to_one` and `one_to_one` joins carry join references (in measure filters, dimensions and row filters) and request fields on other models; a `one_to_many` join never does, because it repeats the left model's rows.
 
-`sl draft --new-columns` drafts a join for a new foreign-key column whose target is in scope or modeled, with `origin: declared` when the database declares the key and `inferred` otherwise; check and read it back like any other.
+`semlayer draft --new-columns` drafts a join for a new foreign-key column whose target is in scope or modeled, with `origin: declared` when the database declares the key and `inferred` otherwise; check and read it back like any other.
 
 ## Closure models for span of control
 
-A span-of-control row filter (`access.md`) reads a closure model, one row per manager and member pair at any depth, through its `hierarchy` rule, not through a join: the filtered model needs no join to it, and the compiler reads it without its own row filters. Model it like any other table, with grain "one row per manager and member pair" and the pair as its `primary_key`, and check with the owner that a director is paired with everyone below them, not only their direct reports. `sl draft` drafts a table of 2 or 3 columns whose names all end in `_id` this way already: every column a dimension, all of them the `primary_key`, no count measures, and an open question asking the owner to confirm that each pair appears once; check it with `sl run` (`select count(*), count(distinct (manager_id, member_id)) from <closure>`) before the readback.
+A span-of-control row filter (`access.md`) reads a closure model, one row per manager and member pair at any depth, through its `hierarchy` rule, not through a join: the filtered model needs no join to it, and the compiler reads it without its own row filters. Model it like any other table, with grain "one row per manager and member pair" and the pair as its `primary_key`, and check with the owner that a director is paired with everyone below them, not only their direct reports. `semlayer draft` drafts a table of 2 or 3 columns whose names all end in `_id` this way already: every column a dimension, all of them the `primary_key`, no count measures, and an open question asking the owner to confirm that each pair appears once; check it with `semlayer run` (`select count(*), count(distinct (manager_id, member_id)) from <closure>`) before the readback.
 
 ## Joins only within a source
 
@@ -96,11 +96,13 @@ Read back what the join does, how well it matched, and any risk, then ask for a 
 
 A row filter on the joined model in `access.yaml` behaves the same way when a request reaches that model's fields through the join: on a left join it blanks the joined columns and keeps the left row; on an inner join it drops the row. A join that a measure filter, a dimension `expr` or a row filter in `access.yaml` reads through is part of that field's definition: the compiler joins it without the target's row filters and whatever the role may see, so a row filter never blanks a rule such as the test-account exclusion, and no helper model is needed for that (`access.md`, Definition joins).
 
-For a `one_to_many` join, add the multiplication warning in the readback itself. After an explicit yes:
+For a `one_to_many` join, add the multiplication warning in the readback itself. `semlayer readback --targets warehouse.orders.customer` renders it; record the owner's answer in their words and approve on a yes in one command:
 
 ```
-sl approve --target warehouse.orders.customer --by "Dana Ruiz"
-sl validate
+semlayer reply --readback <readback_id> --answers - --approve <<'ANSWERS'
+{"by": "Dana Ruiz", "answers": [{"item": 1, "verdict": "yes", "text": "<the owner's words>"}]}
+ANSWERS
+semlayer validate
 ```
 
-`sl validate` warns about an approved join without `evidence`. Evidence also records the keys and the target model (`to`) it measured, and `sl validate` warns when they differ from the join's current `keys` or `to`; evidence that does not record them gives no such warning. Rerun `sl check-join` after the data, the keys or the target change, including when a rerun of `sl introspect` shows a key column removed, renamed or retyped (`interview-guide.md`, Keeping the layer current), then read the join back again. Renaming a join keeps its evidence, since the measurement does not depend on the name; update every join reference that uses the old name (`sl validate` reports them).
+`semlayer validate` warns about an approved join without `evidence`. Evidence also records the keys and the target model (`to`) it measured, and `semlayer validate` warns when they differ from the join's current `keys` or `to`; evidence that does not record them gives no such warning. Rerun `semlayer check-join` after the data, the keys or the target change, including when a rerun of `semlayer introspect` shows a key column removed, renamed or retyped (`interview-guide.md`, Keeping the layer current), then read the join back again. Renaming a join keeps its evidence, since the measurement does not depend on the name; `semlayer rename <source.model.join> <new_name>` updates every join reference that uses the old name, in models and row filters, in the same write.
