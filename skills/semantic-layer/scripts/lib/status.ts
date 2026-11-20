@@ -15,9 +15,11 @@ import {
 } from "./access.ts";
 import { canRun } from "./adapters/index.ts";
 import { type ApprovalEntry, holdsHashes, type Integrity, integrity, itemApprovals, listApprovals, pairEntries } from "./approval-hash.ts";
+import { type ChangeRecord, loadChange, releaseLead } from "./change-record.ts";
 import { currentYes, ledgerState } from "./ledger.ts";
 import { accessRowFilters, layerReads } from "./layer-reads.ts";
 import { findTable, qualifiedName } from "./naming.ts";
+import { plainText } from "./output.ts";
 import { inScope } from "./patterns.ts";
 import { parseRequestField } from "./refs.ts";
 import {
@@ -192,6 +194,7 @@ export type Phase =
   | "access"
   | "verify"
   | "connect"
+  | "change"
   | "done";
 
 // What a step does, as data: the semlayer command (a key of commands/index.ts), its arguments as semlayer would
@@ -312,6 +315,10 @@ export interface ProjectStatus {
   row_filter_joins_without_goldens: RowFilterJoinWithoutGolden[];
   next_batch: { source: string; tables: BatchEntry[] } | null;
   next_step: NextStep;
+  // The version last released (semantic.yaml's layer_version), or null before the first release, and
+  // the open change round (.semlayer/change.json), or null (spec: Iterating a layer, The change round).
+  layer_version: string | null;
+  change: ChangeRecord | null;
 }
 
 // A model a role sees that reaches the role's row-filtered model through to-one joins, with no
@@ -746,12 +753,14 @@ interface StepContext {
   goldenAccessEdits: string[][];
   // The open schema question per source (spec: Schema scope, The schema question).
   schemaQuestions: Map<string, SchemaQuestion>;
+  // The sentence the done step ends with: how a finished layer is released, or changed once released.
+  lead: string;
 }
 
 const OPEN_BASELINE = "everyone sees every approved model, field and metric except those tagged pii or sensitive";
 const EXCEPTIONS_QUESTION = "is there anything some people should not see?";
 
-function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSources: number, ctx: StepContext): Step {
+function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch" | "layer_version" | "change">, allSources: number, ctx: StepContext): Step {
   const { sources } = status;
   if (allSources === 0) {
     return {
@@ -1199,7 +1208,8 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     message:
       "Every phase the CLI can measure is complete. Rerun semlayer validate after any change." +
       (left.length ? ` Name in the handoff the ${left.join("; ")}.` : "") +
-      " Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.",
+      " Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved." +
+      (ctx.lead ? ` ${ctx.lead}` : ""),
     action: act("validate", [], "done"),
   };
 }
@@ -1484,7 +1494,7 @@ export function statusDetail(root: string, only?: string): StatusDetail {
     roles_without_goldens: roleNames(access).filter((r) => !goldenRoles.has(r)),
     row_filter_joins_without_goldens: rowFilterJoinsWithoutGoldens(goldenLayer, access, new Set(sources.map((s) => s.source)), approvedGoldens),
   };
-  const found = nextStep(base, names.length, {
+  let found = nextStep(base, names.length, {
     drift,
     accessReadable: accessState === "missing" || (!!access && typeof access === "object" && !Array.isArray(access)),
     accessProblem: accessProblem(audience),
@@ -1498,6 +1508,7 @@ export function statusDetail(root: string, only?: string): StatusDetail {
     },
     goldenAccessEdits: goldenAccessEdits(loadedGoldens),
     schemaQuestions: new Map(reports.flatMap((r) => (r.schemaQuestion ? [[r.status.source, r.schemaQuestion] as const] : []))),
+    lead: releaseLead(root),
     goldenSources: new Map(
       loadedGoldens.flatMap(({ path, golden }) => {
         const g: Record<string, unknown> = isRecord(golden) ? golden : {};
@@ -1507,6 +1518,19 @@ export function statusDetail(root: string, only?: string): StatusDetail {
       }),
     ),
   });
+  // Phase `change` (spec: Iterating a layer, The change round): while a change round is open, a layer with
+  // every other phase complete is in it; any phase before `done` keeps its own steps, so a round that
+  // added a metric goes through the metrics phase first. lib/next.ts names the step per pending item.
+  const change = loadChange(root).change;
+  if (found.phase === "done" && change)
+    found = {
+      ...found,
+      phase: "change",
+      message:
+        `A change round is open since ${change.started_at.slice(0, 10)}, started by ${plainText(change.started_by)} from release ${change.from_version}: "${plainText(change.note)}". ` +
+        "Make only the edits the owner asked for, read back each item that changed and record the owner's yes, then close the round.",
+      action: act("change", ["status"]),
+    };
   // Open questions in any file, access.yaml or a model, wait on the owner whatever the step: the step
   // can be taken meanwhile.
   if (!found.blocked_on && base.open_questions > 0) found.blocked_on = "open_questions";
@@ -1519,6 +1543,8 @@ export function statusDetail(root: string, only?: string): StatusDetail {
     ...base,
     next_batch: batchSource ? { source: batchSource.source, tables: batchSource.next_batch } : null,
     next_step: step,
+    layer_version: project.layer_version ?? null,
+    change,
   };
   return { status, targets, replies, ledger_problem: ledger.problem };
 }
