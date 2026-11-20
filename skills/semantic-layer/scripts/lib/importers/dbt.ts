@@ -5,19 +5,19 @@ import { UserError } from "../errors.ts";
 import type { ForeignKey, SnapshotColumn, SnapshotTable, TableKind } from "../types.ts";
 import { type ImportResult, kindFromTableType, schemaNamer } from "./information-schema.ts";
 
-type Obj = Record<string, unknown>;
+export type Obj = Record<string, unknown>;
 
 const TABLE_TYPES = new Set(["model", "seed", "snapshot"]);
 
-function obj(v: unknown): Obj {
+export function obj(v: unknown): Obj {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {};
 }
 
-function s(v: unknown): string | null {
+export function s(v: unknown): string | null {
   return typeof v === "string" && v.trim() !== "" ? v : null;
 }
 
-function strings(v: unknown): string[] {
+export function strings(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : typeof v === "string" ? [v] : [];
 }
 
