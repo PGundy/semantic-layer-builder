@@ -555,8 +555,8 @@ describe("goldens new", () => {
       [["--request", "not json"], "--request: no file not json"],
       [["--request", request, "--user", "[1]"], "--user must be a JSON object"],
       [["--request", request, "--source", "lake"], "The request is on source warehouse, not lake"],
-      // semlayer validate would error on it once written: measures of two models.
-      [["--request", '{"source":"warehouse","measures":["orders.revenue","refunds.refund_amount"]}'], "a request's measures must share one model, or be one metric"],
+      // Measures of two models group only by a dimension both reach: orders neither reaches nor has refunds.reason.
+      [["--request", '{"source":"warehouse","measures":["orders.revenue","refunds.refund_amount"],"dimensions":["refunds.reason"]}'], "orders has no dimension \"reason\" and no such path to refunds"],
     ];
     for (const [args, message] of cases) {
       const r = await semlayer(t.root, ["goldens", "new", "--name", "nope", "--question", "Q?", ...args]);

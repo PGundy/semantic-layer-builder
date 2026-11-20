@@ -28,5 +28,5 @@ export const RULES: DocRule[] = [
   ["phases/verify.md", "goldens compile the YAML", "`semlayer goldens check` compiles every approved golden's request from the current YAML"],
   ["phases/verify.md", "an approved edit fails its goldens", "fails every golden that uses it once the edit is approved again, and until then those goldens fail as refused"],
   ["phases/verify.md", "goldens are written with goldens new", "`semlayer goldens new --name <g> --question \"<question>\" --request <json>`"],
-  ["phases/verify.md", "a request's measures share one model", "A request's measures share one model, or are one metric"],
+  ["phases/verify.md", "measures of several models combine on shared dimensions", "A request's measures may come from several models, each aggregated on its own and combined on the dimensions they share"],
 ];

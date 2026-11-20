@@ -336,11 +336,11 @@ describe("metric refusals", () => {
     expect(cli.err).toContain("Add a many_to_one join from visits toward orders");
   });
 
-  test("measures of two models that are not one metric, a metric under dimensions and a filter on another model's measure are refused", async () => {
+  test("a metric beside a measure of another model compiles in parts; a metric under dimensions and a filter on another model's measure are refused", async () => {
     const { root } = await shop();
-    const two = refused(compileRequest(root, req({ measures: ["net_revenue", "orders.revenue"] })));
-    expect(two.refusals.map((x) => x.code)).toEqual(["invalid_request"]);
-    expect(two.reason).toContain("a request's measures must share one model, or be one metric");
+    // net_revenue reads orders and refunds, and visits.visit_count adds a third part (tests/compiler-multifact.test.ts).
+    const three = compiled(compileRequest(root, req({ measures: ["net_revenue", "visits.visit_count"] })));
+    expect(["orders", "refunds", "visits"].map((m) => three.sql.includes(`"${m} measures" as (`))).toEqual([true, true, true]);
     expect(compileRequest(root, req({ measures: ["orders.revenue", "avg_order"] })).ok).toBe(true);
     const dim = refused(compileRequest(root, req({ measures: ["orders.revenue"], dimensions: ["avg_order"] })));
     expect(dim.reason).toContain("dimensions[0] names avg_order, which is a metric; list it under measures");

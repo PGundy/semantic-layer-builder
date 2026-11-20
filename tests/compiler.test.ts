@@ -367,9 +367,9 @@ describe("refusals", () => {
   test("joins, metrics and row filters compile, a metric's parts each with the user's row filters (tests/compiler-joins.test.ts, tests/compiler-metrics.test.ts, tests/compiler-access.test.ts)", async () => {
     const { root } = await shop();
     expect(compileRequest(root, req({ measures: ["orders.real_revenue"], dimensions: ["orders.customer_region", "customers.region"] })).ok).toBe(true);
-    const two = await refusal(root, req({ measures: ["orders.revenue", "customers.customer_count"] }));
-    expect(two.refusals.map((x) => x.code)).toEqual(["invalid_request"]);
-    expect(two.reason).toContain("a request's measures must share one model, or be one metric");
+    // Measures of two models compile in parts, one CTE per model (tests/compiler-multifact.test.ts).
+    const two = compileRequest(root, req({ measures: ["orders.revenue", "customers.customer_count"] }));
+    expect(two.ok && [two.sql.startsWith('with "orders measures" as ('), two.sql.includes('"customers measures" as (')]).toEqual([true, true]);
 
     writeYaml(join(root, "metrics.yaml"), { metrics: [{ name: "avg_order", source: "shop", type: "ratio", numerator: "orders.revenue", denominator: "orders.order_count", ...ok, description: "x" }] });
     expect(compileRequest(root, req({ measures: ["avg_order"] })).ok).toBe(true);

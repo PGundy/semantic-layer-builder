@@ -348,8 +348,6 @@ const CASES: Case[] = [
     expect: [
       ["error", "metrics.yaml", "metrics[0].denominator", "only approved measures"],
       ["error", GOLDEN2, "request.dimensions[0]", 'customers has no dimension "ship_region"'],
-      // The metric now spans orders and customers, so it and orders.order_count no longer share one model.
-      ["error", GOLDEN2, "request.measures[1]", "a request's measures must share one model, or be one metric"],
     ],
   },
   { name: "approved metric without description", file: "metrics.yaml", edit: (d) => delete d.metrics[0].description, expect: ["error", "metrics.yaml", "metrics[0].description", "approved metric"] },
@@ -2603,24 +2601,28 @@ describe("joins whose evidence shows fan-out", () => {
 });
 
 describe("golden requests and their hand-written SQL", () => {
-  const MUST_SHARE = "a request's measures must share one model, or be one metric";
+  const NOT_SHARED = "golden.dimension_not_shared";
 
-  test("measures from two models that are not one metric are an error, in a draft golden too", () => {
-    // The review's t6: refunds and orders measures side by side validated cleanly.
+  test("measures from two models are fine without dimensions, in a draft golden too, and a dimension one of them cannot reach is an error", () => {
+    // Measures of two models compile in parts on the dimensions they share (spec: Bridges and multi-fact requests).
     const root = copyFixture();
     mutate(root, GOLDEN3, (d) => (d.request.measures = ["orders.revenue", "customers.customer_count"]));
-    expectIssue(validateProject(root), "error", GOLDEN3, "request.measures[1]", `customers.customer_count aggregates over customers, and orders.revenue over orders; ${MUST_SHARE}`);
+    mutate(root, GOLDEN3, (d) => delete d.request.dimensions);
+    expect(validateProject(root).filter((i) => i.file === GOLDEN3 && i.level === "error")).toEqual([]);
+    mutate(root, GOLDEN3, (d) => (d.request.dimensions = ["orders.status"]));
+    expectIssue(validateProject(root), "error", GOLDEN3, "request.dimensions[0]", 'the request has measures of orders, customers, so it groups by dimensions that exist with the same name in each, or that each reaches through one path of to-one joins; customers has no dimension "status" and no such path to orders');
   });
 
-  test("one metric over two models, and several measures of one model, are fine", () => {
+  test("one metric over two models, several measures of one model, and a spanning metric next to another measure are fine", () => {
     const root = copyFixture();
     mutate(root, "metrics.yaml", (d) => d.metrics.push({ name: "orders_per_customer", source: "warehouse", type: "ratio", numerator: "orders.order_count", denominator: "customers.customer_count", status: "draft" }));
     mutate(root, GOLDEN3, (d) => (d.request.measures = ["orders_per_customer"]));
     mutate(root, GOLDEN, (d) => (d.request.measures = ["orders.revenue", "orders.order_count"]));
-    expect(validateProject(root).filter((i) => i.message.includes(MUST_SHARE))).toEqual([]);
-    // A spanning metric next to another measure is more than one model again.
+    const errors = () => validateProject(root).filter((i) => (i.file === GOLDEN3 || i.file === GOLDEN) && i.code === NOT_SHARED);
+    expect(errors()).toEqual([]);
+    // A spanning metric next to another measure compiles in parts as well.
     mutate(root, GOLDEN3, (d) => (d.request.measures = ["orders_per_customer", "orders.revenue"]));
-    expectIssue(validateProject(root), "error", GOLDEN3, "request.measures[1]", MUST_SHARE);
+    expect(errors()).toEqual([]);
   });
 
   test("SQL that leaves out a requested measure's filter gets a warning", () => {

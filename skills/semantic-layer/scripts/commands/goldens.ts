@@ -995,7 +995,7 @@ const spec: CommandSpec = {
     '   "filters": [{"field": "orders.order_date", "op": "gte", "value": "2025-01-01"},\n' +
     '               {"field": "orders.status", "op": "in", "value": ["completed", "shipped"]}],\n' +
     '   "order_by": [{"field": "orders.order_date:month", "direction": "asc"}], "limit": 100}\n' +
-    "measures lists model.measure or a metric's bare name (there is no metrics key); they share one model or are one metric.\n" +
+    "measures lists model.measure or a metric's bare name (there is no metrics key); measures of several models combine on the dimensions they share.\n" +
     "A time dimension takes a grain as model.field:grain. Filter ops: eq, neq, in, not_in, gt, gte, lt, lte, between\n" +
     "(value [low, high]), is_null, not_null (no value). A request with no measures starts from its first dimension's model.",
   options: {
