@@ -34,6 +34,7 @@ import { sourceSafetyIssues } from "./source-safety.ts";
 import { readSourceTableList, type SourceTableList } from "./table-list.ts";
 import { bareNames, callsRound, dividesByLiteral, type SqlNames, sqlNames, tokenizeSql } from "./sql-names.ts";
 import { readsText, sqlTextProblem, type TextRole, USER_PLACEHOLDER } from "./sql-text.ts";
+import { type RuleContext, runRules } from "./validate-rules/index.ts";
 import type {
   AccessFile,
   AccessMode,
@@ -69,7 +70,7 @@ export type { EvalSchemaKind, Issue, SchemaKind } from "./schema.ts";
 
 export { callsRound, dividesByLiteral, sqlNames } from "./sql-names.ts";
 
-type SqlRole = "dimension expr" | "measure expr" | "measure filter" | "row filter";
+export type SqlRole = "dimension expr" | "measure expr" | "measure filter" | "row filter";
 
 interface FieldProblem {
   message: string;
@@ -78,7 +79,7 @@ interface FieldProblem {
 
 // A resolved join reference: the join names it goes through, from the model's own join on, the
 // model each of those joins reaches, and the model it reads from.
-interface JoinRef {
+export interface JoinRef {
   text: string;
   joins: string[];
   models: string[];
@@ -158,7 +159,7 @@ function zonedExpr(expr: string, zone: string, dialect: Dialect | undefined): st
 
 // How a source's SQL resolves an identifier against the column names in its snapshot. Folding is
 // enforced only when the snapshot was read from the live catalog, whose names carry the true case.
-interface IdentRules {
+export interface IdentRules {
   dialect: Dialect | undefined;
   fold: "lower" | "upper" | "none";
   quotedExact: boolean;
@@ -2110,7 +2111,30 @@ class Validator {
     this.checkGoldens();
     return this.issues;
   }
+
+  // The view, read-only by type, that the rule modules of lib/validate-rules/ receive.
+  view(): RuleContext {
+    return {
+      root: this.root,
+      project: this.project,
+      sources: this.sources,
+      snapshots: this.snapshots,
+      models: this.models,
+      metrics: this.metrics,
+      access: this.access,
+      goldens: this.goldens,
+      snapshotTable: (source, table) => this.snapshotTable(source, table),
+      identRules: (source) => this.identRules(source),
+      checkSqlRefs: (file, path, sql, model, role) => this.checkSqlRefs(file, path, sql, model, role),
+      joinPaths: (source, from, to, maxHops) => this.joinPaths(source, from, to, maxHops),
+      error: this.error.bind(this),
+      warn: this.warn.bind(this),
+    };
+  }
 }
+
+// The reporting calls of the Validator, as the rule modules of lib/validate-rules/ receive them.
+export type Reporting = Pick<Validator, "error" | "warn">;
 
 // Words an expr or filter may hold that are SQL, not columns, for when the snapshot lacks the table.
 const SQL_WORDS = new Set(
@@ -2283,9 +2307,13 @@ export function unconfirmedGoldenMessage(name: string): string {
 // A file with structural errors gets no semantic checks of its own, but other files still resolve
 // references into the parts of it that have the expected shape. `overrides` holds the text of files
 // as an edit would write them, by absolute path (a model, golden, metrics or access file may be new),
-// and `removed` the files the edit removes.
+// and `removed` the files the edit removes. The rule modules of lib/validate-rules/ run after this
+// file's checks, so their issues follow.
 export function validateProject(root: string, overrides?: ReadonlyMap<string, string>, removed?: ReadonlySet<string>): Issue[] {
-  return new Validator(root, overrides, removed).run();
+  const v = new Validator(root, overrides, removed);
+  v.run();
+  runRules(v.view());
+  return v.issues;
 }
 
 // An error for each env file the connection lookup reads (lib/env-file.ts) that git tracks. semlayer
