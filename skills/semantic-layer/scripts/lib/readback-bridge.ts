@@ -106,6 +106,16 @@ export function unbridgedText(from: string, j: Join, ev: ThroughEvidence): strin
   return `${num(ev.facts_unbridged)} of ${num(ev.fact_rows)} rows of ${fact} have no ${targets} in ${bridge}, so ${unbridgedWords(j, oneTarget, ev.facts_unbridged)}; ask the owner whether that is expected, and say why in the join's description`;
 }
 
+// The warning of join.through_facts_unbridged: the same count in the same words, and what settles it.
+export function unbridgedWarning(from: string, ref: string, j: Join, ev: ThroughEvidence): string {
+  const { fact, bridge, oneTarget, targets } = names(from, j);
+  return (
+    `${num(ev.facts_unbridged)} of ${num(ev.fact_rows)} rows of ${fact} have no ${targets} in ${bridge}, so ${unbridgedWords(j, oneTarget, ev.facts_unbridged)}, and the owner has not approved the join on a readback that states this count. ` +
+    `Read it back (semlayer readback --targets ${ref}), which states the count, and record the owner's answer (semlayer reply, then semlayer approve --target ${ref} --by "<owner>"); their approval settles this warning. ` +
+    `If they say the count is expected, the join's description can say why`
+  );
+}
+
 // check-join's findings on a bridge: rows with no bridge row, and bridge rows that name nothing.
 export function throughFindings(from: string, j: Join, ev: ThroughEvidence): JoinFinding[] {
   const { fact, bridge, target } = names(from, j);

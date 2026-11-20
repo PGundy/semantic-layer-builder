@@ -42,6 +42,9 @@ export interface RuleContext extends Reporting {
   joinPaths(source: string, from: string, to: string, maxHops?: number): string[][];
   // Whether the owner's latest reply in the ledger for a target is a yes to this hash of it.
   hasYes(ref: string, hash: string): boolean;
+  // The text of the readback item the owner's latest yes to this hash of a target answered, as the
+  // readback kept it in .semlayer/pending; undefined when there is no such yes or the file is gone.
+  yesReadbackText(ref: string, hash: string): string | undefined;
 }
 
 export type Rule = (ctx: RuleContext) => void;

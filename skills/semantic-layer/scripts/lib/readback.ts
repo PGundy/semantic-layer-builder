@@ -24,6 +24,7 @@ import type { Dialect, FigureEvidence, Golden, Join, Metric, Model, PendingReadb
 import { DIALECTS, NAME_PATTERN, PROTECTED_TAGS } from "./types.ts";
 import { conditionWords, parseCondition } from "./conditions.ts";
 import { readYamlIfExists } from "./yaml.ts";
+import { keyRepeats } from "./key-uniqueness.ts";
 import { bridgeDefinition, bridgeSql, goldenBridgeWords, throughCurrent, throughLines } from "./readback-bridge.ts";
 
 export const PENDING_DIR = join(".semlayer", "pending");
@@ -235,6 +236,8 @@ interface SourceInfo {
   weekStart?: WeekDay;
   snapshot: Snapshot | null;
   lookup: (name: string) => Model | undefined;
+  // Every model of the source, for the facts a model's key takes from a join through it.
+  models: Model[];
   protected: Map<string, Set<string>>;
 }
 
@@ -268,7 +271,7 @@ function sourceInfo(root: string, source: string): SourceInfo {
   }
   const models = listModels(root, source).map((l) => l.model as unknown);
   const prot = snapshot && Array.isArray(snapshot.tables) ? protectedColumns(snapshot.tables, models, dialect) : new Map<string, Set<string>>();
-  return { dialect, weekStart, snapshot, lookup, protected: prot };
+  return { dialect, weekStart, snapshot, lookup, models: models as Model[], protected: prot };
 }
 
 // Measured facts --------------------------------------------------------------------------------
@@ -472,6 +475,8 @@ function renderModel(source: string, model: Model, info: SourceInfo): Rendered {
   const p = pk.length === 1 ? table.columns.find((c) => c.name === pk[0])?.profile : undefined;
   if (p && !p.sampled && typeof p.distinct_count === "number" && typeof table.row_count === "number")
     out.push(p.distinct_count === table.row_count && !p.null_fraction ? `- Each ${pk[0]} appears once.` : `- ${pk[0]} repeats: ${num(p.distinct_count)} distinct values over ${num(table.row_count)} rows.`);
+  const repeats = keyRepeats(model, table, info.dialect, info.models);
+  if (repeats) out.push(`- Its primary key is not unique: ${repeats}. Confirm the key, or correct it, before approving.`);
   return { lines: out, who };
 }
 

@@ -48,6 +48,7 @@ const codes: CodeFamily = {
   "model.join_evidence_differs": { level: "warning", meaning: "A join's relationship differs from the one its evidence suggests." },
   "model.join_no_evidence": { level: "warning", meaning: "An approved join has no evidence." },
   "model.join_evidence_stale": { level: "warning", meaning: "A join's evidence was measured for another target or other keys." },
+  "model.primary_key_not_unique": { level: "warning", meaning: "A model's primary_key is not unique by the stored data: its one column has fewer distinct values than rows in a whole-table profile, or its two columns repeat a pair in its bridge join's evidence.", next: "semlayer set" },
   "model.join_fans_out": { level: "error", meaning: "An approved to-one join's evidence shows fan-out, with no fanout_override recording why the data is trusted." },
   "field.currency_without_format": { level: "error", meaning: "A measure or metric has currency without format currency." },
   "field.currency_missing": { level: "warning", meaning: "An approved measure or metric with format currency has no currency." },
