@@ -306,7 +306,8 @@ describe("export-sql: postgres, live", () => {
 
     // Live introspection of the same schema reads the same tables, columns and keys. It also
     // lists the copies a foreign key to a partitioned table keeps for each partition; those
-    // reference no snapshot table and are left out of the comparison.
+    // reference no snapshot table and are left out of the comparison. Live introspection also keeps
+    // each key's constraint name, which an export does not carry; the names are checked on their own.
     const shape = (snap: Snapshot) => {
       const names = new Set(snap.tables.map((x) => x.name));
       return snap.tables.map((x) => ({
@@ -314,7 +315,7 @@ describe("export-sql: postgres, live", () => {
         kind: x.kind,
         description: x.description,
         primary_key: x.primary_key,
-        foreign_keys: x.foreign_keys?.filter((k) => names.has(k.references.table)),
+        foreign_keys: x.foreign_keys?.filter((k) => names.has(k.references.table)).map(({ constraint: _, ...k }) => k),
         columns: x.columns.map(({ profile: _, ...c }) => c),
       }));
     };
@@ -330,6 +331,7 @@ describe("export-sql: postgres, live", () => {
       left_scope_with_models: [],
     });
     expect(shape(snapshotOf(t.root, "pg"))).toEqual(imported);
+    expect(table(snapshotOf(t.root, "pg"), `${schema}.event_notes`).foreign_keys!.map((k) => k.constraint)).toEqual(["event_notes_event_id_happened_at_fkey"]);
   });
 });
 

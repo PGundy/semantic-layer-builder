@@ -13,6 +13,7 @@ import { protectedColumns, redactSnapshot } from "../lib/profile.ts";
 import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot, saveSnapshot } from "../lib/project.ts";
 import { effectiveScope } from "../lib/table-list.ts";
 import { rankTables } from "../lib/rank.ts";
+import { crossSchemaFks } from "../lib/schema-scope.ts";
 import type { Model, Scope, Snapshot, SnapshotTable, SourceConfig } from "../lib/types.ts";
 import { updateYaml, writeYaml } from "../lib/yaml.ts";
 import { sourceFlag } from "./tables.ts";
@@ -337,8 +338,19 @@ const spec: CommandSpec = {
     }
 
     const redacted = redactDrafted(ctx, source, snapshot, drafted.map((d) => d.table));
+    // The declared keys of the drafted tables that point into another schema: questions, not joins (spec: Schema scope).
+    const draftedTables = new Set(drafted.map((d) => d.table.toLowerCase()));
+    const crossKeys = crossSchemaFks({ tables: selected })
+      .filter((x) => draftedTables.has(qualifiedName(x.table).toLowerCase()))
+      .map((x) => ({
+        table: qualifiedName(x.table),
+        columns: x.fk.columns,
+        references: qualifiedName({ schema: x.to_schema, name: x.fk.references.table }),
+        constraint: x.fk.constraint ?? null,
+      }));
+
     if (ctx.json) {
-      ctx.out(formatJson({ source: sourceName, drafted, skipped, redacted }));
+      ctx.out(formatJson({ source: sourceName, drafted, skipped, redacted, cross_schema_keys: crossKeys }));
       return 0;
     }
 
@@ -367,6 +379,12 @@ const spec: CommandSpec = {
     if (skipped.length) {
       lines.push("", `Skipped ${plural(skipped.length, "table")}:`);
       for (const s of skipped) lines.push(`  ${s.table}: ${s.reason}`);
+    }
+    if (crossKeys.length) {
+      lines.push("", "Keys across schemas, drafted as open questions and not as joins:");
+      for (const k of crossKeys) {
+        lines.push(`  ${k.table} (${k.columns.join(", ")}) -> ${k.references}, ${k.constraint === null ? "a foreign key whose name the snapshot does not record" : `foreign key ${k.constraint}`}`);
+      }
     }
     if (notes.length) {
       lines.push("", "Notes:");

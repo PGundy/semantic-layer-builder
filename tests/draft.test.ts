@@ -173,6 +173,8 @@ interface DraftJson {
   skipped: { table: string; reason: string }[];
   // Columns whose snapshot profile the draft cut to counts only, as table.column.
   redacted: string[];
+  // Declared keys of the drafted tables that point into another schema (spec: Schema scope).
+  cross_schema_keys: { table: string; columns: string[]; references: string; constraint: string | null }[];
 }
 
 const ORDERS_YAML = `model: orders
@@ -184,7 +186,6 @@ primary_key:
   - order_id
 open_questions:
   - What does one row of analytics.fct_orders represent?
-  - store_id looks like a key to ops.stores, which is out of scope and has no model. Bring it into scope to draft this join?
   - tracking_code has a different value on nearly every row and was left out as a dimension. Should it be one?
   - "Is amount_cents stored in cents? The draft divides it by 100 (expr: amount_cents * 0.01) to report whole currency units; confirm the division."
   - The name weight_kg does not say how it adds up, so the draft averages it (avg_weight_kg). Do people total weight_kg or average it?
@@ -318,7 +319,7 @@ describe("draft command", () => {
       dimensions: 6,
       measures: 8,
       joins: 2,
-      open_questions: 8,
+      open_questions: 7,
     });
     expect(readModel(root, "orders")).toBe(ORDERS_YAML);
     const v = await semlayer(root, ["validate", "--json"]);
@@ -352,7 +353,10 @@ describe("draft command", () => {
       "  - name: order\n    to: orders\n    keys:\n      - from: order_id\n        to: order_id\n    relationship: many_to_one\n    type: left\n    origin: inferred\n",
     );
     expect(payments).toContain("  - name: customer\n    to: customers\n    keys:\n      - from: customer_id\n        to: customer_id\n");
-    expect(payments).toContain("warehouse_id references ops.warehouses, which is out of scope and has no model.");
+    // warehouse_id's declared key points into another schema: a question, never a join (spec: Schema scope).
+    expect(payments).toContain(
+      "warehouse_id references ops.warehouses through a foreign key whose name the snapshot does not record, across schemas: analytics.fct_payments is in analytics and warehouses in ops.",
+    );
     expect(payments).not.toContain("to: warehouses");
     expect(payments).toContain("Is fee_pennies stored in cents? The draft divides it by 100 (expr: fee_pennies * 0.01)");
     expect(payments).toContain("  - name: fee\n    expr: fee_pennies * 0.01\n    agg: sum\n    format: currency\n");
@@ -442,6 +446,7 @@ describe("draft command", () => {
       drafted: [],
       skipped: [{ table: "analytics.fct_orders", reason: "already modeled as orders" }],
       redacted: [],
+      cross_schema_keys: [],
     });
     expect(readModel(root, "orders")).toBe(edited);
 
@@ -535,7 +540,7 @@ describe("draft command", () => {
     const r = await semlayer(root, ["draft", "--source", "wh", "--strip-prefix", "fct_,dim_", "--tables", "fct_orders"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Drafted 1 model in wh:");
-    expect(r.out).toMatch(/orders\s+analytics\.fct_orders\s+6\s+8\s+2\s+8/);
+    expect(r.out).toMatch(/orders\s+analytics\.fct_orders\s+6\s+8\s+2\s+7/);
     expect(r.out).toContain("left out payload (type json)");
   });
 });
@@ -2231,12 +2236,17 @@ describe("composite keys, text keys, currencies and time zones", () => {
 
   test("two tables keyed by the same name: the draft joins one and asks which; noise is never a target", () => {
     const bak: SnapshotTable = { ...PRODUCTS, name: "products_bak" };
-    const catalog: SnapshotTable = { ...PRODUCTS, schema: "catalog", name: "items" };
-    const sales = draftShop([SALES, bak, PRODUCTS, catalog], "postgres", [SALES]).model("sales");
-    expect(sales.joins!.find((j) => j.keys[0]!.from === "sku")!.to).toBe("products");
+    const items: SnapshotTable = { ...PRODUCTS, name: "items" };
+    const sales = draftShop([SALES, bak, PRODUCTS, items], "postgres", [SALES]).model("sales");
+    expect(sales.joins!.find((j) => j.keys[0]!.from === "sku")!.to).toBe("items");
     expect(sales.open_questions).toContain(
-      "sku is joined to shop.products because its name matches that table's key; it could also mean catalog.items. Which is it?",
+      "sku is joined to shop.items because its name matches that table's key; it could also mean shop.products. Which is it?",
     );
+    // A table of another schema keyed the same way is neither a target nor a choice (spec: Schema scope).
+    const catalog: SnapshotTable = { ...PRODUCTS, schema: "catalog", name: "items" };
+    const within = draftShop([SALES, PRODUCTS, catalog], "postgres", [SALES]).model("sales");
+    expect(within.joins!.find((j) => j.keys[0]!.from === "sku")!.to).toBe("products");
+    expect(within.open_questions!.join(" ")).not.toContain("catalog.items");
     // A noise table that is the only match is no target.
     const onlyBak = draftShop([SALES, bak, STORES], "postgres", [SALES]).model("sales");
     expect(onlyBak.joins!.map((j) => j.keys[0]!.from)).toEqual(["store_id"]);

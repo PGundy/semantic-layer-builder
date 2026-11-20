@@ -6,6 +6,7 @@ import { quoteIdent } from "./dialect.ts";
 import { findTable, qualifiedName, toSpecName } from "./naming.ts";
 import { summarizeTable } from "./profile.ts";
 import { classifyTable } from "./rank.ts";
+import { crossesSchema, referencedSchema } from "./schema-scope.ts";
 import { nearUnique, PII_NAME, sensitivityOf } from "./sensitivity.ts";
 import { incomingKeyColumns, referencedColumns, sqlIdentifiers, unreferencedColumns } from "./snapshot-diff.ts";
 import type {
@@ -382,7 +383,8 @@ function joinCandidates(ctx: Context, self: SnapshotTable, x: string): Candidate
   // A column named for the table it sits in is that table's own key, not a reference.
   if (tableNameForms(self.name, ctx.opts.stripPrefixes).some((f) => forms.has(f))) return out;
   for (const t of ctx.snapshot.tables) {
-    if (tableKey(t) === tableKey(self)) continue;
+    // A name never joins across schemas (spec: Schema scope).
+    if (tableKey(t) === tableKey(self) || t.schema !== self.schema) continue;
     const pk = primaryKeyOf(ctx, t);
     if (pk.length !== 1) continue;
     const pkNorm = toSpecName(pk[0]!);
@@ -395,7 +397,6 @@ function joinCandidates(ctx: Context, self: SnapshotTable, x: string): Candidate
     (a, b) =>
       Number(b.known) - Number(a.known) ||
       Number(b.nameMatch) - Number(a.nameMatch) ||
-      Number(b.table.schema === self.schema) - Number(a.table.schema === self.schema) ||
       qualifiedName(a.table).localeCompare(qualifiedName(b.table)),
   );
 }
@@ -442,15 +443,11 @@ function keyNameCandidates(ctx: Context, self: SnapshotTable, col: SnapshotColum
     ctx.keyIndex = index;
   }
   const matched = (ctx.keyIndex.get(toSpecName(col.name)) ?? []).filter(
-    (c) => tableKey(c.table) !== tableKey(self) && compatibleKeyTypes(col.type, c.keyColumn.type) && classifyTable(c.table)?.role !== "noise",
+    (c) => tableKey(c.table) !== tableKey(self) && c.table.schema === self.schema && compatibleKeyTypes(col.type, c.keyColumn.type) && classifyTable(c.table)?.role !== "noise",
   );
   const clean = matched.filter((c) => !classifyTable(c.table));
   return (clean.length ? clean : matched)
-    .sort(
-      (a, b) =>
-        Number(b.table.schema === self.schema) - Number(a.table.schema === self.schema) ||
-        qualifiedName(a.table).localeCompare(qualifiedName(b.table)),
-    )
+    .sort((a, b) => qualifiedName(a.table).localeCompare(qualifiedName(b.table)))
     .map((c) => ({ table: c.table, keyColumn: c.keyColumn.name }));
 }
 
@@ -736,8 +733,18 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
   const fkColumns = new Set<string>();
   for (const fk of table.foreign_keys ?? []) {
     for (const c of fk.columns) fkColumns.add(c.toLowerCase());
-    const target = referencedTable(ctx, table, fk.references);
     const targetName = qualifiedName({ schema: fk.references.schema ?? table.schema, name: fk.references.table });
+    // A key into another schema is a question for the owner, never a drafted join (spec: Schema scope).
+    if (crossesSchema(table, fk)) {
+      const by = fk.constraint ? `the foreign key ${fk.constraint}` : "a foreign key whose name the snapshot does not record";
+      ask(
+        `${fk.columns.join(", ")} references ${targetName} through ${by}, across schemas: ${q} is in ${table.schema ?? "no schema"} and ${fk.references.table} in ${referencedSchema(table, fk) ?? "no schema"}. ` +
+          `A join across schemas is drafted only after you say which schemas the layer joins. Do your questions need ${targetName}?`,
+        fk.columns,
+      );
+      continue;
+    }
+    const target = referencedTable(ctx, table, fk.references);
     if (!target) {
       ask(`${fk.columns.join(", ")} references ${targetName}, which is not in the snapshot. Should it join to another table?`, fk.columns);
       continue;

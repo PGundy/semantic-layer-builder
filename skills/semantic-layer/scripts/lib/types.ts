@@ -61,6 +61,7 @@ export interface SourceIntake {
   mode?: IntakeMode;
   reason?: string | null;
   schemas?: string[];
+  primary?: string;
   export?: { file: string };
 }
 
@@ -114,6 +115,7 @@ export interface SnapshotColumn {
 export interface ForeignKey {
   columns: string[];
   references: { schema?: string | null; table: string; columns: string[] };
+  constraint?: string;
 }
 
 export interface SnapshotTable {
