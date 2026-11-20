@@ -79,6 +79,7 @@ export interface SourceConfig {
   scope?: Scope;
   profile?: SourceProfileSettings;
   draft?: { strip_prefixes?: string[] };
+  cross_schema?: import("./schema-scope.ts").CrossSchemaPair[];
 }
 
 // Snapshot

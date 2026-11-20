@@ -183,6 +183,151 @@
           "description": "Prefixes removed from table names to form model names, such as fct_ and dim_."
         }
       }
+    },
+    "cross_schema": {
+      "type": "array",
+      "description": "Schema pairs a join may cross (spec.md Schema scope, Schema pairs). Each runs from the schema holding the foreign key to the schema it references and lists the keys that connect them; a join between tables of the two schemas, either way, is allowed only on an approved pair's keys. A declined pair records the owner's no. semlayer add-cross-schema writes an entry and semlayer remove-cross-schema removes one.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from",
+          "to",
+          "status"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_$]*$",
+            "description": "The schema holding the foreign key."
+          },
+          "to": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_$]*$",
+            "description": "The schema it references."
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "approved",
+              "declined"
+            ],
+            "description": "draft: recorded, not yet approved; approved: semlayer approve set it on the owner's yes; declined: the owner said the layer does not join these schemas."
+          },
+          "keys": {
+            "type": "array",
+            "minItems": 1,
+            "description": "The key relationships: at least one unless the pair is declined.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "from",
+                "to"
+              ],
+              "properties": {
+                "from": {
+                  "type": "string",
+                  "pattern": "^[^.\\s][^\\s]*\\.[^.\\s]+$",
+                  "description": "<table>.<column> of a table in the from schema."
+                },
+                "to": {
+                  "type": "string",
+                  "pattern": "^[^.\\s][^\\s]*\\.[^.\\s]+$",
+                  "description": "<table>.<column> of a table in the to schema."
+                },
+                "constraint": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The foreign key constraint the key came from, as the snapshot names it."
+                }
+              }
+            }
+          },
+          "reply": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Declined pairs: the owner's words, as recorded."
+          },
+          "declined_at": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "format": "date",
+            "description": "Declined pairs: the date of the owner's no, YYYY-MM-DD."
+          },
+          "approved_by": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Who approved it. Required when status is approved."
+          },
+          "approved_at": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "format": "date",
+            "description": "ISO date of approval, YYYY-MM-DD. Required when status is approved."
+          },
+          "approved_hash": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "description": "Written by semlayer approve: the hash of the pair when it was approved."
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "approved"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "required": [
+                "approved_by",
+                "approved_at",
+                "keys"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "draft"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "required": [
+                "keys"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "declined"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "required": [
+                "reply"
+              ]
+            }
+          }
+        ]
+      }
     }
   }
 }
