@@ -28,7 +28,7 @@ export default function (ctx: RuleContext): void {
   const fold = ctx.identRules(first).fold;
   const table = ctx.snapshotTable("warehouse", "fct_orders").table?.name;
   const paths = ctx.joinPaths("warehouse", "orders", "customers").map((p) => p.join(">")).join(";");
-  ctx.warn("semantic.yaml", "${name}", \`probe ${name}: \${models} models, sources \${sources}, fold \${fold}, helper \${helper}, goldens \${ctx.goldens.length}, table \${table}, paths \${paths}, \${ctx.error.name}, \${ctx.warn.name}\`);
+  ctx.warn("semantic.yaml", "${name}", \`probe ${name}: \${models} models, sources \${sources}, fold \${fold}, helper \${helper}, goldens \${ctx.goldens.length}, table \${table}, paths \${paths}, \${ctx.error.name}, \${ctx.warn.name}\`, "intake.schemas_empty");
 }
 `;
 }
@@ -74,7 +74,7 @@ describe("validate-rules seam", () => {
       file: "semantic.yaml",
       path: name,
       message: `probe ${name}: 3 models, sources lake,warehouse, fold none, helper true, goldens 3, table fct_orders, paths orders.customer, bound error, bound warn`,
-      code: "issue.unclassified",
+      code: "intake.schemas_empty",
     }));
     expect(out.issues).toEqual([...expected.issues, ...probes]);
     expect(out.warnings).toBe(expected.warnings + 2);
@@ -85,13 +85,13 @@ describe("validate-rules seam", () => {
     const { rules, run } = pluginCopy();
     writeFileSync(
       join(rules, "refuse.ts"),
-      `import type { RuleContext } from "./index.ts";\nexport default (ctx: RuleContext) => ctx.error("semantic.yaml", "probe", "probe refuses; fix it, then run semlayer validate");\n`,
+      `import type { RuleContext } from "./index.ts";\nexport default (ctx: RuleContext) => ctx.error("semantic.yaml", "probe", "probe refuses; fix it, then run semlayer validate", "schema.other");\n`,
     );
     const json = run(["validate", "--json"]);
     expect(json.code).toBe(1);
     const out = JSON.parse(json.stdout) as { ok: boolean; issues: unknown[] };
     expect(out.ok).toBe(false);
-    expect(out.issues.at(-1)).toEqual({ level: "error", file: "semantic.yaml", path: "probe", message: "probe refuses; fix it, then run semlayer validate", code: "issue.unclassified" });
+    expect(out.issues.at(-1)).toEqual({ level: "error", file: "semantic.yaml", path: "probe", message: "probe refuses; fix it, then run semlayer validate", code: "schema.other" });
     const plain = run(["validate"]);
     expect(plain.code).toBe(1);
     expect(plain.stdout + plain.stderr).toContain("probe refuses");

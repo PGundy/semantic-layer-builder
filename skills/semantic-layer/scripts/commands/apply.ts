@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { CommandContext, CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
-import { accessDraftLines, batchEntry, issueLine, reapproveLines, runBatch, ValueRefusal } from "../lib/edit.ts";
+import { accessDraftLines, batchEntry, issueLine, reapproveLines, runBatch, ValueRefusal, warningIssues } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
@@ -219,7 +219,7 @@ const spec: CommandSpec = {
         return { entry: i + 1, command: e!.words, result, ...(own.length ? { warnings: own } : {}) };
       });
       const drafted = outcome.access_draft ? { returned_to_draft: true, ...outcome.access_draft } : {};
-      ctx.out(formatJson({ applied, reapprove: outcome.reapprove, warnings, ...drafted }));
+      ctx.out(formatJson({ applied, reapprove: outcome.reapprove, warnings, warning_issues: warningIssues(outcome.warnings), ...drafted }));
       return 0;
     }
     const lines: string[] = [];

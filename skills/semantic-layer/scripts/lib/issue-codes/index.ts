@@ -22,9 +22,6 @@ export interface RegisteredCode extends CodeInfo {
 // A code is a lowercase family and a lowercase name joined by one dot: schema.required.
 export const CODE_PATTERN = /^[a-z_]+\.[a-z0-9_]+$/;
 
-// The code of a layer check that has none of its own yet.
-export const UNCLASSIFIED = "issue.unclassified";
-
 function familyFiles(dir: string): string[] {
   return readdirSync(dir)
     .sort()
