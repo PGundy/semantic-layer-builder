@@ -43,5 +43,31 @@ const codes: CodeFamily = {
     meaning: "The note given to semlayer change start is over 500 characters or the name over 200.",
     next: "semlayer change start --note <what the owner wants changed> --by <owner>",
   },
+  "release.close_missing_version": {
+    level: "error",
+    meaning: "semlayer change close needs --version, the version the owner chose for the release.",
+    next: "semlayer change close --version <version>",
+  },
+  "release.version_invalid": {
+    level: "error",
+    meaning: "The version given to semlayer change close is not major.minor, such as 1.1.",
+    next: "semlayer change close --version <version>",
+  },
+  "release.version_not_above": {
+    level: "error",
+    meaning: "The version given to semlayer change close is not above the last release in changelog.yaml, so one version would be recorded twice.",
+    next: "semlayer change close --version <version>",
+  },
+  "release.close_no_round": {
+    level: "error",
+    meaning: "The layer is released and no change round is open, so semlayer change close has nothing to record.",
+    next: "semlayer change start --note <what the owner wants changed> --by <owner>",
+  },
+  "release.close_blocked": {
+    level: "error",
+    meaning:
+      "semlayer change close refused: an item that was approved (or is in the last release) is changed or not approved again, a confirmed golden reads a draft the release would leave out, semlayer validate has an error, or an affected golden's figures moved from its recorded rows and the owner has not confirmed the new rows. A draft never approved that the last release does not hold never blocks: it is left out. The message lists each blocker with its command.",
+    next: "semlayer change close --version <version>",
+  },
 };
 export default codes;
