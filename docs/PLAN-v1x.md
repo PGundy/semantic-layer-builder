@@ -1,6 +1,6 @@
 # Plan: a first PostgreSQL layer, then fast iteration
 
-Status: draft for the owner's review; nothing in it is built. Owner: PGundy. Built on `release/v1`, after `docs/PRD.md` and `docs/PRD-hardening.md`. This file is temporary: the pull request that lands the plan's last item deletes it and adds one line per workstream to "After this plan" in `docs/PRD-hardening.md`. It changes none of the invariants of `docs/PRD.md` section 7; the build loop, the PR rules and the definition of done are that document's section 10.
+Status: the owner said on 2026-11-20 to proceed, on the defaults of section 8; it is being built. Owner: PGundy. Built on `release/v1`, after `docs/PRD.md` and `docs/PRD-hardening.md`. This file is temporary: the pull request that lands the plan's last item deletes it and adds one line per workstream to "After this plan" in `docs/PRD-hardening.md`. It changes none of the invariants of `docs/PRD.md` section 7; the build loop, the PR rules and the definition of done are that document's section 10.
 
 How to read it: sections 1 to 6 and 8 to 11 are the plan and are what the owner reviews. Section 7 is one block per pull request, written for the agent that builds it. Terms used throughout:
 
@@ -20,6 +20,8 @@ The direction, in the owner's words:
 - "this is meant to be a way to go from 0->1 in a semantic layer, only be for postgresql for now, and is meant to allow iterating so that we can go from 1->1.X or 2.0 in a quick and effective manner."
 - "We are also going to focus on queries that are largely within a single schema. We should support cross schema queries but that is something the user should be asked about and then explicitly define the scope of schema to schema along with some things like fkey relationships."
 - The plans should have "meaningful steps, milestones, and [be] as mutually exclusive as possible so we can have agents fan out".
+- "I want you to ensure that you can do running totals, and period over period comparisons especially something like show me X in the last 30 days being able to show year over year as well as the prior 30 day window versus the current 30 day window."
+- Testing uses "a small local DB ... using some publicly available data", with no model API key.
 
 What that means for every item below:
 
@@ -28,15 +30,16 @@ What that means for every item below:
 3. **One schema by default.** A source has one primary schema. A join that leaves it exists only after the owner is asked and declares the pair of schemas and the key relationships that connect them.
 4. **Iteration is a loop of its own.** A finished layer takes a change (a metric, a table, a definition, a schema change) without the interview being redone, and says what the change moved.
 5. **Workstreams do not share files.** Each owns its files, its code family, its phase card and its section of the spec. Section 5 names the few shared files and the rule for each, and section 6 fixes the order where two workstreams must touch the same place.
+6. **Everything is checked on a local PostgreSQL, with no model API key.** Tests and milestone checks run on the synthetic Acme fixture and on the public Chinook sample database (wave 0, W0.4). Where a check needs an agent, it is a subagent of the orchestrator, not a paid API call. Running totals, comparison with the prior period and a year earlier, and the last n days against the n days before and the same days a year earlier are in wave 2 and are proven on Chinook.
 
 ## 2. What is in it
 
 | | Workstream | From | Waves | Outcome |
 |---|---|---|---|---|
-| W0 | Enabling changes | this plan | 0 | Parallel pull requests stop colliding on token counts, the docs-rules list, the spec's CLI table and `lib/validate.ts`. |
+| W0 | Enabling changes | this plan | 0 | Parallel pull requests stop colliding on token counts, the docs-rules list, the spec's CLI table and `lib/validate.ts`, and a public test database is in place. |
 | A | Eval gate | #3 | 1, 2, 3 | The scripted smoke blocks a merge; a PostgreSQL scenario and a 200-table scenario are scored; a live-model run reports on a schedule. |
 | B | Stable codes and structured errors | #7 | 1 | Every `validate` issue has a stable code and every failing command prints one JSON object under `--json`. |
-| C | Metric semantics | #4 | 2, 3 | Segments, a default time dimension, balances that do not sum across time; then running totals and period-over-period. |
+| C | Metric semantics | #4 | 2 | Segments, a default time dimension, balances that do not sum across time; running totals, period-over-period, and the last n days against the prior n days and a year earlier. |
 | D | Bridges and multi-fact queries | #8 | 2, 3 | Measures of two fact tables in one request; a many-to-many bridge that does not multiply figures. |
 | E | dbt import | #5 | 3 | A dbt project's semantic models and metrics arrive as drafts for the owner to confirm. Export is not in this plan. |
 | F | PostgreSQL proof and dialect scope | #6, re-scoped | 1, 3 | The PostgreSQL path is proven across server versions, a pooler, TLS, catalog edge cases and a restricted role; the product offers PostgreSQL only. |
@@ -45,7 +48,7 @@ What that means for every item below:
 
 ## 3. Milestones
 
-Each milestone is a state a user can see, checked the way `docs/PRD-hardening.md` section 2 was: a fresh agent, acting only through the walkthrough harness (`evals/walkthrough/`), with counts taken from its log.
+Each milestone is a state a user can see, checked the way `docs/PRD-hardening.md` section 2 was: a fresh agent (a subagent of the orchestrator, so that no check needs a model API key), acting only through the walkthrough harness (`evals/walkthrough/`), with counts taken from its log.
 
 **M1, end of wave 1: a first PostgreSQL layer in one schema, honestly gated.**
 
@@ -61,17 +64,17 @@ Each milestone is a state a user can see, checked the way `docs/PRD-hardening.md
 2. After a schema change to the database (`fixtures/acme/evolve-retype.sql`, applied on PostgreSQL by `tests/compat/drift.test.ts`), `semlayer introspect` leaves a saved record of what changed, and a retyped column that an approved field reads is reported without a hand-written question.
 3. Three goldens that today cannot be written are confirmed on PostgreSQL: a balance that is not summed across time, orders and refunds by month in one request, and a figure grouped through a bridge that is not multiplied.
 4. The 200-table single-schema scenario is in the smoke and scores 1 on scope selection; its score with a live model is reported with M3.
+5. Four goldens are confirmed on the Chinook database in PostgreSQL: revenue's running total by month; 2025 by month against the prior month and the same month a year earlier; revenue over the 30 days as of 2025-12-22 against the 30 days before and the same days a year earlier (38.62 against 49.62 and 37.62); and that window by billing country.
 
 **M3, end of wave 3: extensions.**
 
 1. A dbt manifest's semantic models and metrics arrive as draft items, with a list of what was skipped and why.
-2. A running total and a period-over-period metric are confirmed as goldens on PostgreSQL.
-3. The live-model eval runs on a schedule and reports against a committed baseline.
-4. `semlayer doctor --json` output from two managed PostgreSQL providers is committed as fixtures.
+2. The live-model eval runs on a schedule and reports against a committed baseline.
+3. `semlayer doctor --json` output from two managed PostgreSQL providers is committed as fixtures.
 
 ## 4. Wave 0: enabling changes
 
-Three pull requests, landed one after another before anything else starts. They change no behaviour a user sees. They exist because of how the last sixty pull requests collided: `references/spec.md` was edited by 56 of them, `SKILL.md` by 26, `tests/skill-docs.test.ts` by 20 and `lib/validate.ts` by 15, and five commits did nothing but recount eval tokens after a merge.
+Four pull requests: W0.1 to W0.3 land one after another before anything else starts, and W0.4 adds only new files and may run beside them. They change no behaviour a user sees. They exist because of how the last sixty pull requests collided: `references/spec.md` was edited by 56 of them, `SKILL.md` by 26, `tests/skill-docs.test.ts` by 20 and `lib/validate.ts` by 15, and five commits did nothing but recount eval tokens after a merge.
 
 #### W0.1. Token counts are computed, and the smoke blocks a merge (after nothing)
 
@@ -119,6 +122,22 @@ Proves it:
 - `semlayer validate --json` prints the same issues in the same order as before on every fixture and on `examples/acme`.
 - A rule file dropped into the directory in a test is found, called once, and its issue appears.
 
+#### W0.4. A public test database on PostgreSQL (after nothing)
+
+Every check in this plan runs against a local PostgreSQL with no model API key, on data anyone can download: the Acme fixture for what is already tested, and the Chinook sample database for what is new.
+
+Steps:
+1. Add `fixtures/chinook/Chinook_PostgreSql.sql`, the unmodified PostgreSQL script of the Chinook sample database, version 1.4.5 (upstream `lerocha/chinook-database` at commit `7f67772503d7`, SHA-256 `e3fde5c1a5b51a2a91429a702c9ca6e69ba56e6c7f5e112724d70c3d03db695e`), with its MIT licence beside it as `fixtures/chinook/LICENSE.md`.
+2. Add `fixtures/chinook/README.md`: where the file comes from, its version and hash, that every person and company in it is made up, its eleven tables (`artist`, `album`, `track`, `genre`, `media_type`, `playlist`, `playlist_track`, `customer`, `employee`, `invoice`, `invoice_line`), that `invoice` holds 412 invoices from 2021-01-01 to 2025-12-22, and what each later workstream uses it for (five years of dated revenue for windows and year over year; `playlist_track` as a real many-to-many bridge; `employee.reports_to` as a reporting hierarchy; customer names and emails as columns that must stay protected).
+3. Add `fixtures/chinook/load-postgres.ts`, in the shape of `fixtures/acme/load-postgres.ts`: `loadChinook(url, schema)` creates the named schema, runs the script's table and data statements inside it (it skips the script's own `DROP DATABASE`, `CREATE DATABASE` and `\c` lines and never touches another schema), and returns the row count per table. It refuses a schema name that is not a plain identifier.
+4. Add `tests/chinook-fixture.test.ts`: the committed file has the pinned hash; with `PG_URL`, the loader fills a unique schema with the eleven tables and the documented counts and date range, and drops it afterwards; without `PG_URL` the live part is skipped, not failed.
+5. Say in `CONTRIBUTING.md`, beside the Acme fixture, that Chinook is the public test database, that it is vendored unmodified, and that no test needs a model API key.
+
+Proves it:
+- The hash test fails if a byte of the vendored file changes.
+- With `PG_URL`, `loadChinook` yields 412 invoices dated 2021-01-01 to 2025-12-22 and 8,715 `playlist_track` rows, and leaves no schema behind.
+- `semlayer setup --source chinook --dialect postgres --env PG_URL --schemas <schema>` on the loaded schema introspects eleven tables, and `semlayer validate` passes.
+
 ## 5. Rules for parallel work
 
 After wave 0 these hold for every pull request in the plan.
@@ -137,10 +156,10 @@ After wave 0 these hold for every pull request in the plan.
 
 | Wave | Pull requests | Starts in parallel | Ends at |
 |---|---|---|---|
-| 0 | W0.1 (computed token counts), W0.2 (split shared lists), W0.3 (validation seam) | one at a time | the rules of section 5 hold |
+| 0 | W0.1 (computed token counts), W0.2 (split shared lists), W0.3 (validation seam), W0.4 (public test database) | W0.1 to W0.3 one at a time; W0.4 beside them | the rules of section 5 hold |
 | 1 | F4 (PostgreSQL-only text), F1 (version matrix), F2 (catalog and restricted role), F3 (pooler and TLS); B1 (issue codes), B2 (codes on existing checks), B3 (JSON error envelope), B4 (code docs); G1 (primary schema), G2 (declare a schema pair), G2b (approve a schema pair), G2c (enforce schema pairs), G3 (schema question); A2 (validate grader), A3a (PostgreSQL intake), A3b (Acme on PostgreSQL), A3c (walkthrough fixtures) | F4, B1, G1 | milestone M1 |
-| 2 | H5 (drift record), H1 (version and changelog), H2 (item diff), H3 (change entry point), H4 (close a round); C1a (segments), C1b (segment commands), C2 (calendar), C3 (balances); D1a (part builder), D1b (multi-fact requests), D3 (through schema), D4 (through compile), D5 (bridge check and readback); A4 (200-table scenario) | D1a, D3, H5, H1, A4 | milestone M2 |
-| 3 | C4 (running totals), C5 (period-over-period); D2 (conformed dimensions), D6 (drafted bridges); E1 (read dbt), E2a (dbt filters), E2b (dbt drafts); A5 (live baseline and job); F5 (provider kit) | C4, D2, D6, E1, E2a, A5, F5 | milestone M3 |
+| 2 | H5 (drift record), H1 (version and changelog), H2 (item diff), H3 (change entry point), H4 (close a round); C1a (segments), C1b (segment commands), C2 (calendar), C3 (balances), C4 (running and trailing totals), C5 (comparison by grain), C6 (last n days window); D1a (part builder), D1b (multi-fact requests), D3 (through schema), D4 (through compile), D5 (bridge check and readback); A4 (200-table scenario) | D1a, D3, H5, H1, A4 | milestone M2 |
+| 3 | D2 (conformed dimensions), D6 (drafted bridges); E1 (read dbt), E2a (dbt filters), E2b (dbt drafts); A5 (live baseline and job); F5 (provider kit) | D2, D6, E1, E2a, A5, F5 | milestone M3 |
 
 Within a workstream the order is in its section. A wave starts when the one before it has reached its milestone, with one exception: a wave 2 or wave 3 pull request whose "after" list is already merged may start early if it touches no file in the table below for the current wave.
 
@@ -162,7 +181,7 @@ These are the waits that cross workstreams, and the waits inside one workstream 
 | D1a | D1b, C1a | D1a moves the part builder out of `compiler/metrics.ts`; both build on the result. |
 | C1a | D4 | Both edit the `aggregate(...)` call in the measure branch of `sqlOf`. |
 | A3b | A4 | The 200-table scenario uses the PostgreSQL intake. |
-| D2 | C4, only if its spike needs `parts.ts` | Both reach `lib/compiler/parts.ts`; C4 hands such a change to D. |
+| W0.4 | C4 | C4's `tests/compat/chinook-layer.ts` loads the Chinook fixture. |
 
 ### Shared files
 
@@ -178,18 +197,16 @@ Every file that exists today and is edited by more than one workstream, with the
 | `schemas/source.schema.json` | G1: `intake.properties` (new `primary` key)<br>G2: top-level properties (new `cross_schema` array) | C2: `properties.calendar` (new key) |   |
 | `scripts/commands/approve.ts` | G2b: a case beside `"access"` for the schema-pair kind | C2: the hash scope built for a model target (`weekStart`) |   |
 | `scripts/commands/check-join.ts` | G2c: `resolveTable` (refuse an undeclared pair) | D5: a branch for a through join, also under `--all` (`evidence.through`) |   |
-| `scripts/commands/goldens.ts` | G2c: `checkCommand` (print the compiler's warnings) | D1b: the `share one model` line of the request help |   |
+| `scripts/commands/goldens.ts` | G2c: `checkCommand` (print the compiler's warnings) | D1b: the `share one model` line of the request help<br>C4, C5, C6: one line each in the request help after the `Filter ops` sentence (a different line from D1b's)<br>C6: `newCommand` (writes the resolved `as_of` into the request) |   |
 | `scripts/commands/introspect.ts` | F2: live-run branch around the `buildSnapshot` call (print skipped relations) | H5: after the `diffSnapshots` call (`writeDrift`) |   |
-| `scripts/lib/approval-hash.ts` | G2b: `ItemKind` and the `listApprovals` entry listing (schema-pair entry) | C1a: `itemContent` case `"measure"` (segment filters)<br>C2: `itemContent` cases `"model"` and `"measure"` (`default_time_dimension`), `HashScope` and `modelEntries` (`weekStart`), case `"dimension"` (week start)<br>C3: `itemContent` case `"measure"` (`non_additive_dimension`)<br>D3: `joinContent` (`through`) | C4: `itemContent` case `"metric"`<br>D2: `itemContent` case `"dimension"` (`conforms_to`) |
-| `scripts/lib/approve-checks.ts` | B3: the approval refusals (codes) |   | C4: `metricMeasureRefs` (the cumulative metric's measure) |
-| `scripts/lib/compiler/index.ts` | G2c: `RefusalCode` union (one member); `Compiled` (`warnings` field) | C1a: `RefusalCode` union (one member); the request check before `compileMetrics`; `texts` in `compileLayer`; the `aggregate` call in the measure branch of `sqlOf` (`measureFilter`)<br>C2: `sqlOf` dimension branch (`grained` call)<br>C3: `compileLayer` final assembly (`const lines`) and its refusal of mixed measures<br>D1b: `resolve` in `compileLayer` (the measures branch)<br>D4: the `aggregate` call in the measure branch of `sqlOf` (allocation factor), after C1a |   |
+| `scripts/lib/approval-hash.ts` | G2b: `ItemKind` and the `listApprovals` entry listing (schema-pair entry) | C1a: `itemContent` case `"measure"` (segment filters)<br>C2: `itemContent` cases `"model"` and `"measure"` (`default_time_dimension`), `HashScope` and `modelEntries` (`weekStart`), case `"dimension"` (week start)<br>C3: `itemContent` case `"measure"` (`non_additive_dimension`)<br>D3: `joinContent` (`through`) | D2: `itemContent` case `"dimension"` (`conforms_to`) |
+| `scripts/lib/compiler/index.ts` | G2c: `RefusalCode` union (one member); `Compiled` (`warnings` field) | C1a: `RefusalCode` union (one member); the request check before `compileMetrics`; `texts` in `compileLayer`; the `aggregate` call in the measure branch of `sqlOf` (`measureFilter`)<br>C2: `sqlOf` dimension branch (`grained` call)<br>C3: `compileLayer` final assembly (`const lines`) and its refusal of mixed measures<br>D1b: `resolve` in `compileLayer` (the measures branch)<br>D4: the `aggregate` call in the measure branch of `sqlOf` (allocation factor), after C1a<br>C4: `compileLayer`, one call to `compileTimeShapes` on the line before the `compileMetrics` call, after C1a |   |
 | `scripts/lib/compiler/joins.ts` | G2c: `requestPath` and `hop` (undeclared pair) | D3: `requestPath` (refuse a through route)<br>D4: `requestPath` (bridge and target instances) and `PlannedJoin` (`through`) |   |
-| `scripts/lib/compiler/metrics.ts` |   | D1a: `compileMetrics` from `const parts` to the final return (moved to `parts.ts`)<br>D1b: `compileMetrics` entry guard and its `must share one model` refusal | C4: `formula()` branch for unsupported types<br>C5: `formula()` branch for unsupported types |
 | `scripts/lib/draft.ts` | G1: `joinCandidates`, `keyNameCandidates` and the declared-FK loop<br>G2c: the declared-FK loop (draft an approved pair from its keys) |   | D6: one call in `draftModels` |
 | `scripts/lib/edit.ts` | B2: `neverRight` and `withEditWarnings`<br>B3: `ValueRefusal` (its own code)<br>G2b: `ItemKind` and `locate` (schema-pair case), after B2 and B3 |   |   |
 | `scripts/lib/introspect.ts` | G1: `fks.push` (keep the constraint name)<br>F2: the columns loop of `buildSnapshot` (rows of returned tables only), after G1 |   |   |
 | `scripts/lib/next.ts` | G2b: `targetPhase` (schema-pair prefix)<br>G3: new `schema_scope` `ask_owner` branch | H3: `nextAction` (phase `change` and the next step per pending item) | D6: `nextAction` (one case asking for the dedupe rule) |
-| `scripts/lib/readback.ts` | G2b: the neighbour of case `"access"` in the item builder | C1b: `renderField` ("Excludes:" line) and `renderModel` (segment list)<br>C3: `renderField` (balance sentence)<br>D5: `joinWords` (call to `readback-bridge.ts`) | C4: `renderMetric`<br>D2: `renderField` (conformed paragraph) |
+| `scripts/lib/readback.ts` | G2b: the neighbour of case `"access"` in the item builder | C1b: `renderField` ("Excludes:" line) and `renderModel` (segment list)<br>C3: `renderField` (balance sentence)<br>D5: `joinWords` (call to `readback-bridge.ts`)<br>C4: `requestWords`, one call to `timeShapeWords` at its end | D2: `renderField` (conformed paragraph) |
 | `scripts/lib/refs.ts` | B3: its refusals (codes)<br>G2b: `Target` and `parseTarget` (schema-pair kind), after B3 | C2: `parseRequestField` (bare `:grain` shorthand) |   |
 | `scripts/lib/status.ts` | G3: `nextStep` (new `schema_scope` step after the first introspect) | H3: `Phase` union (`change`), the `done` step of `nextStep`, and the `computeStatus` JSON (`layer_version`, open change) |   |
 | `scripts/lib/validate.ts` | B1: `Validator.error`, `Validator.warn`, the `intakeIssues` merge line in `checkSources`, and `trackedEnvFileIssues`<br>B2: every existing `this.error(` and `this.warn(` call and the `report()` closure | D1b: `checkMeasureModels` (body emptied) and its call<br>D3: the join check's one_to_many warning (skipped when `through` is set) |   |
@@ -394,7 +411,7 @@ Proves it:
 
 ### C. Metric semantics (issue #4)
 
-**Outcome.** An owner can name a reusable rule once (a segment), get a balance that is not summed across months, set which day a week starts, and later get running totals and period-over-period figures, each approved on a recorded yes. Today each of these means copying a predicate into every measure or getting a silently wrong number.
+**Outcome.** An owner can name a reusable rule once (a segment), get a balance that is not summed across months, and set which day a week starts. Any approved figure can be asked for as a running or trailing total, against the period before and the same period a year earlier, or over the last n days as of a stated date against the n days before and the same days a year earlier. Segments, the calendar and balances are approved on a recorded yes. The time views add no new definition: a golden records the request, its as-of date included, and the owner's yes to its figures. Today each of these means copying a predicate into every measure, writing the SQL by hand, or getting a silently wrong number.
 
 **Today.**
 - No segment exists. `schemas/model.schema.json` measures allow `name, expr, agg, filter, format, currency, description, synonyms, tags` only (`additionalProperties: false`), so a shared rule is a copy in each `filter`.
@@ -404,15 +421,20 @@ Proves it:
 - `metricMeasureRefs` exists twice: `scripts/lib/access.ts:615` and `scripts/lib/approve-checks.ts:40`. Both read only ratio and `{ }` expr metrics.
 
 **Scope.**
-- In this plan: model-local segments, calendar week start (default Monday, as today), default time dimension, semi-additive measures (first or last), cumulative metrics, period-over-period metrics.
-- Later (wave 3 or 2.0): fiscal year (needs a calendar decision), request segments on metric requests, semi-additive mixed with additive measures in one request, `label` (cosmetic).
-- Not planned: semantic-dimension references in joins (reaches the resolver D and G change; the physical-column warning stays), cross-model segments (G owns cross-schema), non-additive over a non-time dimension.
+- In this plan: model-local segments, calendar week start (default Monday, as today), default time dimension, semi-additive measures (first or last). Also, as request options over approved measures and metrics:
+  - running and trailing totals by grain;
+  - comparison with the prior period and the same period a year earlier by grain;
+  - a trailing window of days as of a stated date, against the window before it and the same days a year earlier;
+  
+  all on PostgreSQL.
+- Later (wave 3 or 2.0): fiscal year (needs a calendar decision); request segments on metric requests; semi-additive mixed with additive measures in one request; `label` (cosmetic); a running total that restarts each year (year to date); running totals of metrics; a comparison some other number of periods back; a year earlier at week grain; windows counted in weeks or months; a window over a balance; these views on DuckDB.
+- Not planned: semantic-dimension references in joins (they reach the resolver D and G change; the physical-column warning stays); cross-model segments (G owns cross-schema); non-additive over a non-time dimension; cumulative and period-over-period metric types in `metrics.yaml`, since a request option over an approved measure covers them with no new item to approve.
 
 **Owns.**
-- New: `skills/semantic-layer/scripts/lib/segments.ts`, `lib/metric-types.ts`, `lib/compiler/{segments,calendar,semi-additive,cumulative,period-compare}.ts`, `lib/validate-rules/metric.ts`, `lib/issue-codes/metric.ts`, `commands/add-segment.ts`, `commands/remove-segment.ts`, `fixtures/semantics/balances.sql`.
-- New tests: `tests/compiler-{segments,calendar,semi-additive,cumulative,period-compare}.test.ts`, `tests/segments-validate.test.ts`, `tests/compat/balances.test.ts`, `tests/docs-rules/metric-semantics.ts`.
-- Exclusive edits: `commands/add-metric.ts` (C4), `references/phases/metrics.md`.
-- Code family `metric.*` (for example `metric.segment_unknown`, `metric.non_additive_dimension_not_time`).
+- New: `skills/semantic-layer/scripts/lib/segments.ts`, `lib/time-request.ts`, `lib/time-request-words.ts`, `lib/compiler/{segments,calendar,semi-additive,time-shapes,cumulative,period-compare,trailing-window}.ts`, `lib/validate-rules/metric.ts`, `lib/issue-codes/metric.ts`, `commands/add-segment.ts`, `commands/remove-segment.ts`, `fixtures/semantics/balances.sql`.
+- New tests: `tests/compiler-{segments,calendar,semi-additive,cumulative,period-compare,trailing-window}.test.ts`, `tests/segments-validate.test.ts`, `tests/compat/{balances,running-total,period-compare,trailing-window}.test.ts`, `tests/compat/chinook-layer.ts`, `tests/docs-rules/metric-semantics.ts`.
+- Exclusive edits: `references/phases/metrics.md`, `schemas/golden.schema.json` (`request.properties`), `commands/sql.ts` (`run`, C6).
+- Code family `metric.*` (for example `metric.segment_unknown`, `metric.non_additive_dimension_not_time`, `metric.window_as_of_missing`).
 - Phase card: `metrics.md`, paragraphs "Segments", "Time and balances", "Running totals and comparisons".
 - Spec heading: `## Metric semantics`.
 
@@ -465,38 +487,178 @@ Proves it:
 - `first` returns the opening value.
 - The balance golden is confirmed on PostgreSQL in the `compat` job.
 
-#### C4. Cumulative metrics (wave 3; after C2, C3)
-A running or trailing total by period.
-Steps:
-1. Run the two-model spike first. If it needs a change to `lib/compiler/parts.ts`, stop and hand that change to D as a pull request after D2; C4 never edits `parts.ts`.
-2. `metrics.schema.json`: type `cumulative` (measure, window, grain); `Metric` union gains `CumulativeMetric` from `lib/metric-types.ts`.
-3. Both `metricMeasureRefs` return its measure.
-4. `compiler/cumulative.ts` `generate_series` spine and `sum() over (rows ...)`, called from the `formula()` branch.
-5. `add-metric --type cumulative --window`; hash, readback and card question.
-Proves it:
-- Empty months carry the total; window 3 equals hand SQL; a request with no time dimension refuses.
-- `tests/compat/running-total.test.ts` confirms a running-total golden over the Acme warehouse on PostgreSQL, in the `compat` job.
+#### C4. Running and trailing totals in a request (wave 2; after C3, W0.4)
 
-#### C5. Period-over-period metrics (wave 3; after C4)
-A measure against itself some periods earlier.
+A request adds to each of its measures a running total, or a total of the last n periods, by a time dimension at a grain, and an empty period carries the total.
+
 Steps:
-1. Type `period_over_period` (measure, offset, difference, ratio or percent_change).
-2. `compiler/period-compare.ts` reuses the spine with `lag()` and `nullif`.
-3. A time-dimension filter is applied on the outer query; readback says so.
+1. `lib/time-request.ts`: `RunningRequest { over: string; periods?: number }`. Add `running?: RunningRequest` to `QueryRequest` in `lib/types.ts` (one line). Add `request.properties.running` to `schemas/golden.schema.json`: `over` as `model.field:grain`, required; `periods` an integer from 2 to 120; no other key.
+2. `lib/compiler/time-shapes.ts` `compileTimeShapes(input, request, prior, compile)` returns undefined for a request with none of `running`, `compare` or `window`. It refuses a source that is not postgres (`unsupported_dialect`, naming PostgreSQL), and a request with more than one of the three keys (`invalid_request`). Otherwise it calls the shape's compiler. In `compileLayer` in `lib/compiler/index.ts`, on the line before the `compileMetrics` call, call it and return its result when there is one. This is C's only edit of `index.ts` for C4, C5 and C6.
+3. `lib/compiler/cumulative.ts` `compileRunning` refuses (`invalid_request`, each naming what to change):
+   - `over` that is not one of the request's dimensions;
+   - a measure whose agg is not `sum` or `count`, or that has `non_additive_dimension`;
+   - a metric;
+   - a filter on the `over` dimension without a grain or at another grain.
+
+   It compiles the inner request (the request without `running`, `order_by`, `limit` and its filters on the `over` dimension) through `compile`. Joins, segments, row filters and D1b's several models therefore apply as they do today.
+4. In the same file, export `spine(...)` for C5 and C6:
+   - `"periods"` holds the inner SQL.
+   - `"series"` is `generate_series(cast(min(<period>) as timestamp), cast(max(<period>) as timestamp), interval '1 <grain>')` (`3 months` for a quarter). It is cast back as `grained()` casts: a date for day and coarser, a timestamp for hour. The session time zone therefore never moves a bucket.
+   - `"groups"` holds the distinct values of the other dimensions.
+   - `"filled"` is series cross groups, left joined to periods on `is not distinct from`. The `sum`, `count` and `count_distinct` columns are `coalesce(<m>, 0)`; any other column stays as it is.
+5. The outer query adds a column per measure:
+   - `<m>_running` is `sum(<m>) over (partition by <other dimensions> order by <period> rows between unbounded preceding and current row)`.
+   - With `periods: n`, `<m>_trailing_<n>` is `case when row_number() over (...) >= n then sum(<m>) over (... rows between n-1 preceding and current row) end`, null until n periods exist.
+
+   A filter on the `over` dimension at its grain applies in the outer `WHERE` on the period, with a `Params` started after the inner parameters. `order_by` and `limit` apply last, by the rules of `compileLayer`.
+6. `lib/time-request-words.ts` `timeShapeWords(request)` is called once at the end of `requestWords` in `lib/readback.ts`. It prints the golden readback line: "Running total of each figure over invoice.invoice_date by month, from the first month of data; a month with no rows adds 0", or "Total of the last 3 months, each month included; blank until 3 months of data".
+7. Docs:
+   - the "Running totals and comparisons" part of `## Metric semantics` in `references/spec.md`;
+   - the "Running totals and comparisons" paragraph of `references/phases/metrics.md`, which asks for the figure, the grain, and running or last n;
+   - one line for `running` in the request help of `commands/goldens.ts`, after the `Filter ops` sentence;
+   - its rows in `tests/docs-rules/metric-semantics.ts`.
+8. `tests/compat/chinook-layer.ts` loads Chinook with `fixtures/chinook/load-postgres.ts` into a unique schema from `PG_URL`. With typed commands and recorded yeses it builds model `invoice`:
+   - dimension `invoice_date`, `type: time`, `time_zone: UTC`;
+   - dimension `invoice_date_ny`, expr `(invoice_date at time zone 'UTC') at time zone 'America/New_York'`;
+   - dimension `billing_country`;
+   - measures `revenue` (`sum(total)`) and `invoice_count` (`count`);
+   - metric `avg_invoice_value`, a ratio of revenue over invoice_count.
+
+   C5 and C6 reuse it. `tests/compat/running-total.test.ts` confirms the running-total golden with `semlayer goldens confirm`. It is required in F1's `compat` job and skipped locally without `PG_URL`.
+
 Proves it:
-- First period is null; zero prior gives null; a last-month filter still shows the prior period.
-- `tests/compat/period-compare.test.ts` confirms a month-over-month golden over the Acme warehouse on PostgreSQL, in the `compat` job.
+- `tests/compiler-cumulative.test.ts`:
+  - the SQL holds `"series"` over `generate_series` with timestamp casts and the window clause, with parameters in reading order;
+  - each of these refuses with `invalid_request`: an `over` not in `dimensions`, an `avg` measure, a measure with `non_additive_dimension`, a metric, and a filter on `invoice.invoice_date` without a grain;
+  - a duckdb source refuses with `unsupported_dialect`;
+  - a request without `running` compiles byte for byte as before.
+- Running total of revenue by `invoice.invoice_date:month` on Chinook: 60 rows. 2021-01 is 35.64, 2021-12 is 449.46 (equal to `sum(total)` before 2022-01-01) and 2025-12 is 2328.60, the whole table.
+- With the filter `invoice.billing_country eq Finland`, the series runs 2021-08 to 2025-12: 53 rows, 7 of them with invoices. The running total is 8.91 from 2021-08 through the 18 empty months to 2023-02, 10.89 in 2023-03, and 41.62 in 2025-12.
+- With `periods: 3`: 2021-01 and 2021-02 are blank, 2021-03 is 110.88, 2025-06 is 108.90 and 2025-12 is 125.86. Each equals a hand `sum(total)` over its three months.
+- With the filter `invoice.invoice_date:month gte 2025-01-01`: 12 rows, and 2025-01's running total is 1915.64. The filter picks the months shown and does not move where the total starts.
+- The same rows under `set time zone 'America/New_York'` as under UTC.
+- The running-total golden is confirmed on PostgreSQL in the `compat` job.
+
+#### C5. Comparison with the prior period and a year earlier, by grain (wave 2; after C4)
+
+A request by a time dimension at a grain adds, for each figure, its value in the previous period and in the same period a year earlier, with the difference and the percent change.
+
+Steps:
+1. `CompareRequest { over?: string; with: ("prior" | "year_ago")[] }` in `lib/time-request.ts`. Add `compare?: CompareRequest` to `QueryRequest` in `lib/types.ts` (one line). Add `request.properties.compare` to `golden.schema.json`: `with` a list of unique values with at least one; `over` as `model.field:grain`.
+2. `lib/compiler/period-compare.ts` `compileCompare` is dispatched from `compileTimeShapes` for a `compare` with `over`. It uses C4's inner request and its rule for filters on the `over` dimension, and builds on `spine` from `cumulative.ts`.
+   - It takes any measure, a C3 balance included; a balance's empty period is null.
+   - It takes any ratio or derived metric. The inner request compiles through `compileMetrics`, so a metric is computed per period before it is compared, and its `WITH` nests inside `"periods"`.
+3. The two comparisons:
+   - `prior` is `lag(<m>) over (partition by <other dimensions> order by <period>)` over `"filled"`. It is the period before, even when that period had no rows.
+   - `year_ago` is a left join of `"filled"` to itself as `"year ago"` on `<period> = cast(<period> - interval '1 year' as date)`, with the other dimensions `is not distinct from`. 29 February reads 28 February.
+   - A period whose compared period falls before the series starts gets null.
+   - `year_ago` at grain `week` or `hour` refuses with `invalid_request`, naming `prior` and the month grain.
+4. Export `compareColumns(name, with)`, which writes three columns per comparison:
+   - `<m>_<c>`;
+   - `<m>_<c>_change` as `<m> - <m>_<c>`;
+   - `<m>_<c>_pct` as `cast(<m> - <m>_<c> as numeric) / nullif(<m>_<c>, 0)`, a fraction (-0.25 for a fall of a quarter), null when the compared value is 0 or null.
+
+   A column the request already selects refuses as today.
+5. `timeShapeWords` adds: "Each figure beside the month before and the same month a year earlier, with the change and the change as a fraction of the earlier figure; blank where the earlier month is before the data. A filter on invoice.invoice_date:month only picks the months shown."
+6. Docs: the comparison part of the spec's "Running totals and comparisons", the card paragraph, one line for `compare` in the request help of `commands/goldens.ts`, and its docs rules.
+7. `tests/compat/period-compare.test.ts` confirms the 2025 month-over-month and year-over-year golden on Chinook, in the `compat` job.
+
+Proves it:
+- `tests/compiler-period-compare.test.ts`:
+  - the SQL holds `lag(` and the `"year ago"` join;
+  - `year_ago` by week refuses, and `compare` with `running` refuses;
+  - a ratio metric's `WITH` nests inside `"periods"`.
+- Revenue by month with `with: [prior, year_ago]` and the filter `invoice.invoice_date:month gte 2025-01-01`, on Chinook: 12 rows.
+  - 2025-01 shows prior 37.62, the December 2024 figure outside the filter.
+  - 2025-02 is 27.72 against 37.62 prior (change -9.90, pct -0.2631578947) and 37.62 a year earlier.
+  - 2025-12 is 38.62 against 49.62 prior (change -11.00, pct -0.2216848045) and 37.62 in 2024-12 (change 1.00, pct 0.0265816055).
+- Unfiltered: 2021-01 has `prior` and `year_ago` null, 2021-12 has `year_ago` null, and 2022-01 is 52.62 against 35.64 a year earlier (change 16.98, pct 0.4764309764).
+- With the filter `invoice.billing_country eq Finland`:
+  - 2025-11 is 1.98 against prior 0 (the empty 2025-10): change 1.98, pct null, `year_ago` 0;
+  - 2025-12 is 13.86 against 1.98: change 11.88, pct 6.
+- `avg_invoice_value` by month equals revenue over invoice_count in each month, compared after the division.
+- The comparison golden is confirmed on PostgreSQL in the `compat` job.
+
+#### C6. Trailing window of days against the prior window and a year earlier (wave 2; after C5)
+
+A request asks for a figure over the last n days as of a stated date, beside the n days before it and the same days a year earlier, with the difference and percent change, for any approved measure or ratio metric.
+
+Steps:
+1. `WindowRequest { dimension: string; days: number; as_of?: string }` in `lib/time-request.ts`. Add `window?: WindowRequest` to `QueryRequest` in `lib/types.ts` (one line). Add `request.properties.window` to `golden.schema.json`: `dimension` as `model.field` with no grain; `days` an integer from 1 to 366; `as_of` `YYYY-MM-DD`. With `window`, `compare` takes `with` and no `over`.
+2. `lib/compiler/trailing-window.ts` `windowBounds(window, with)` is pure date arithmetic on `YYYY-MM-DD` dates in UTC, with no clock:
+   - the current window is `as_of - (days - 1)` to `as_of`, both days included;
+   - the prior window is the `days` days before it;
+   - the year-ago window has each end moved to the same month and day a year earlier, 29 February to 28 February.
+3. `compileWindow` is dispatched from `compileTimeShapes` for `window`. It refuses (`invalid_request`, each with a next step):
+   - a missing `as_of` ("semlayer sql fills it from the clock; a golden states it");
+   - a `dimension` that is not a time dimension or does not allow the `day` grain;
+   - a filter on that dimension at any grain;
+   - a request dimension that is that dimension while `compare` is set;
+   - `compare.over`, or `running`, together with `window`;
+   - a measure with `non_additive_dimension`, naming C5's comparison by grain instead.
+4. One sub-request per window, `"current window"`, `"prior window"` and `"year ago window"`, each compiled through `compile` with parameters chained as `compileMetrics` chains its parts.
+   - Each is the request without `window`, `compare`, `order_by` and `limit`, plus `{field: <dimension>, op: gte, value: <start>}` and `{field: <dimension>, op: lt, value: <end plus one day>}`.
+   - A day is therefore a day of the dimension's expr as `grained()` reads it, and the column's index still serves the filter.
+   - A ratio metric compiles per window, as a nested `WITH`, before it is compared.
+5. `"data start"` and `"window figures"`:
+   - `"data start"` is the request's filters with `dimensions: [<dimension>:day]`, ordered ascending with `limit 1`, compiled the same way.
+   - `"window figures"` reads `"window groups"` (the `union` of the windows' dimension keys), left joins each window on `is not distinct from` (a cross join when there are no dimensions), and adds `left join "data start" on true`.
+   - Each window's value is `case when "data start".<day> <= <window start> then <value> end`, with `coalesce(<m>, 0)` inside for `sum`, `count` and `count_distinct`. A window that starts before the first day of data is null, and a group with no rows in a window inside the data is 0.
+   - The outer select uses `compareColumns` from `period-compare.ts`, then `order_by` (on the current figures) and `limit`.
+6. `commands/sql.ts` `run`, before the `compileRequest` call: a request with a `window` and no `as_of` gets the date of `ctx.now()` in UTC (`SEMLAYER_NOW` in tests). The output says "as of <date>, from the clock", and `--json` adds `as_of`. In `commands/goldens.ts`, `newCommand` writes that date into the golden's request, so a golden always states its as-of date and `goldens check` never reads the clock.
+7. `lib/validate-rules/metric.ts`: a golden whose request has a `window` and no `as_of` is an error, `metric.window_as_of_missing`, registered in `lib/issue-codes/metric.ts`.
+8. `timeShapeWords` prints the dates from `windowBounds`: "Over the 30 days 2025-11-23 to 2025-12-22 (as of 2025-12-22), against 2025-10-24 to 2025-11-22 and against 2024-11-23 to 2024-12-22; days of invoice.invoice_date as its expr gives them; a window that starts before the first day of data is blank."
+9. Docs and tests:
+   - the window part of the spec's "Running totals and comparisons";
+   - the card paragraph, which asks the as-of date the owner trusts a figure for and says a year earlier means the same calendar dates;
+   - one help line in `commands/goldens.ts` and its docs rules;
+   - `tests/compat/trailing-window.test.ts`, which confirms the total and by-country goldens in the `compat` job.
+
+Proves it:
+- `tests/compiler-trailing-window.test.ts`:
+  - For 30 days as of 2025-12-22, `windowBounds` gives 2025-11-23 to 2025-12-22, then 2025-10-24 to 2025-11-22, then 2024-11-23 to 2024-12-22.
+  - As of 2025-03-10 the year-ago window is 2024-02-09 to 2024-03-10, 31 days; as of 2024-02-29 the year-ago window ends on 2023-02-28.
+  - Parameters come in reading order, and every refusal of step 3 fires.
+  - With no `as_of`, `semlayer sql` under `SEMLAYER_NOW=2025-12-22T12:00:00Z` prints the same SQL and parameters as `as_of: 2025-12-22`.
+- Revenue for 30 days as of 2025-12-22 with `[prior, year_ago]`, on Chinook:
+  - current 38.62;
+  - prior 49.62 (change -11.00, pct -0.2216848045);
+  - a year earlier 37.62 (change 1.00, pct 0.0265816055).
+
+  Each figure equals a plain `sum(total)` over its two date bounds.
+- Grouped by `invoice.billing_country`, ordered by revenue descending, limit 5 (current, prior, year ago):
+
+  | Country | Current | Prior | Year ago |
+  |---|---|---|---|
+  | Finland | 13.86 | 1.98 | 0 |
+  | Portugal | 8.91 | 0 | 0 |
+  | USA | 7.92 | 0.99 | 0 |
+  | Canada | 5.94 | 0 | 0.99 |
+  | India | 1.99 | 0 | 0 |
+
+  Portugal's prior pct is null. Without the limit, 14 countries come back, among them Czech Republic with revenue 0 and prior 25.86.
+- `avg_invoice_value` is 5.5171428571 against 7.0885714286 prior and 5.3742857143 a year earlier: each window's revenue over its own 7 invoices.
+- As of 2022-01-15: revenue 47.62 and prior 37.62. The year-ago value, change and pct are null, because that window starts on 2020-12-17, before the data begins on 2021-01-01.
+- As of 2025-03-10: the year-ago window is 37.62 over 31 days. It holds the 0.99 invoice of 2024-02-09, which a 30-day window would leave out (36.63).
+- As of 2025-12-21 on `invoice_date`: 36.63, without the 1.99 invoice of 2025-12-22. On `invoice_date_ny` the same window gives 38.62, because midnight UTC is the evening before in New York.
+- Changing a confirmed golden's `as_of` makes `goldens check` report that the yes is to other figures. A golden with no `as_of` makes `semlayer validate` exit 1 with `metric.window_as_of_missing`.
+- Both goldens are confirmed on PostgreSQL in the `compat` job.
 
 **Milestones.**
-- After C1a, C1b: `semlayer sql --request goldens/revenue.yaml` prints the segment inside `filter (where ...)`; `semlayer validate` fails on a bad segment name with a `metric.*` code.
+- After C1a, C1b: `semlayer sql --request goldens/revenue.yaml` prints the segment inside `filter (where ...)`, and `semlayer validate` fails on a bad segment name with a `metric.*` code.
 - After C2, C3: `semlayer sql` for `balances.closing_balance` by `snapshot_date:month` prints a `DISTINCT ON` subquery, and the balance golden is confirmed on PostgreSQL.
-- After C4, C5: `semlayer goldens check` passes a running total and a month-over-month golden on PostgreSQL.
+- After C4, C5, C6: `semlayer goldens check` passes four Chinook goldens on PostgreSQL:
+  - revenue's running total by month, 2328.60 in 2025-12;
+  - 2025 by month against the prior month and a year earlier;
+  - the 30 days as of 2025-12-22, 38.62 against 49.62 prior and 37.62 a year earlier;
+  - the same window by billing country, top 5.
 
 **Risks.**
-- Approval bypass: a key missing from `approval-hash.ts` skips the owner's yes. Each PR has a mutate-after-approve test.
-- C and D edit different named anchors of `compileLayer`; only C1a and D4 share one, the `aggregate(...)` call in the measure branch of `sqlOf`, and D4 goes second.
-- The period spine must truncate like `grained()` or a DST month is dropped. A fixture near a DST change runs in C4's first commit.
-- Cumulative across models may need a refactor of the one-CTE-per-model shape. C4's first step is a two-model spike, and a change to `parts.ts` goes to D.
+- Approval bypass: a key missing from `approval-hash.ts` skips the owner's yes. Each of C1a to C3 has a mutate-after-approve test. C4 to C6 add no item; the golden hash covers the whole request, `as_of` included, and C6 proves a changed `as_of` needs a new yes.
+- C and D edit different named anchors of `compileLayer`. Only C1a and D4 share one, the `aggregate(...)` call in the measure branch of `sqlOf`, and D4 goes second. C4 adds one call before `compileMetrics`, after C1a's request check.
+- A spine that steps in the session time zone drops or doubles a bucket at a DST change. C4 casts the series to `timestamp` and back as `grained()` casts, and proves the same rows under a New York session.
+- Clock dependence: a window with no `as_of` depends on the day it runs. `semlayer sql` prints the date it used, `goldens new` writes it, and `validate` errors on a golden without one.
+- Cost: C6 reads the base table once per window, plus once for the first day of data. On a large table this is slower than one scan with `filter (where ...)`. That form would edit the `aggregate` anchor and the part builder, so it waits for a measured need.
 
 ### D. Bridges and multi-fact queries (issue #8)
 
@@ -977,14 +1139,14 @@ Proves it:
 
 ## 8. Decisions for the owner
 
-The plan is written on the default in each row. A different answer changes only the pull requests named.
+The owner said on 2026-11-20 to proceed. The plan runs on the default in each row; a row can still be changed before the pull request it names starts. A different answer changes only the pull requests named.
 
 | # | Decision | Default the plan assumes | Other options | Needed before |
 |---|---|---|---|---|
 | 1 | The export files and code for MySQL, SQL Server and Redshift, which were never run on a real server | Keep the code; take it out of the first-turn card, the README and the default agent path | Remove it (smaller surface, harder to revive) | F4 |
 | 2 | Lowest supported PostgreSQL major | The lowest of 13 to 17 that passes the version matrix, stated in the README | 12 (claimed today, past end of life); 14 | F1 |
-| 3 | Does a live-model eval block a merge | No: it runs on a schedule and on a label, and reports | Required on pull requests labelled as changing agent text; required on every pull request | A5 |
-| 4 | A model API key as a repository secret, and its monthly spend cap | A scheduled job with a cap the owner sets; the owner records the first baseline by hand | No key: scripted evals only | A5 |
+| 3 | Does a live-model eval block a merge | No: it runs on a schedule and on a label, and reports; the owner asked for testing without an API key, so the scheduled job is built and stays switched off until a key is set | Required on pull requests labelled as changing agent text; required on every pull request | A5 |
+| 4 | A model API key as a repository secret, and its monthly spend cap | A scheduled job with a cap the owner sets; the owner records the first baseline by hand; the owner asked for testing without an API key, so the scheduled job is built and stays switched off until a key is set | No key: scripted evals only | A5 |
 | 5 | Marking `eval-smoke` a required check | The owner sets it in branch protection after W0.1 merges; a pull request cannot | Leave it blocking only by job status | after W0.1 |
 | 6 | Where the primary schema is recorded | An explicit `intake.primary`, set by `semlayer setup --primary` | The first entry of `intake.schemas` | G1 |
 | 7 | What a cross-schema declaration holds | A directional pair, from one schema to another, with at least one key relationship (a foreign key constraint or a column pair), approved on a recorded yes | An unordered pair; a pair with no keys | G2 |
@@ -994,7 +1156,7 @@ The plan is written on the default in each row. A different answer changes only 
 | 11 | A request naming measures of two fact tables | Allowed whenever the models share a dimension, refused with a code when they do not | Allowed only after the owner confirms the shared dimension in a readback | D1b |
 | 12 | The dedupe rule of a bridge | Mandatory, no default; `distinct_pairs`, `equal_split` or a weight column | A default of `distinct_pairs` | D3 |
 | 13 | Segments, calendar and week start | Segments belong to one model; the calendar is set per source; weeks start on Monday as today; fiscal years are out | Shared segments; a calendar per time dimension; fiscal years in C2 | C1a, C2 |
-| 14 | Running totals and period-over-period | Wave 3 | Wave 2, beside balances | C4 |
+| 14 | Running totals and period-over-period | Wave 2, with the last-n-days comparison (C4, C5, C6), as the owner asked on 2026-11-20 | none | C4 |
 | 15 | What dbt import does | Reads semantic models and metrics as drafts with origin `inferred`; nothing is approved; no export | Also export to MetricFlow, or to Cube | E1 |
 | 16 | Who runs the check on managed PostgreSQL services | The owner runs the kit on Supabase and Neon and commits the redacted output | Rely on the pooler and TLS containers only | F5 |
 | 17 | Warnings under `--json` | Existing string lists stay; objects with codes are added beside them | Replace the strings (breaks current readers) | B2 |
@@ -1003,11 +1165,23 @@ The plan is written on the default in each row. A different answer changes only 
 | 20 | The direction of a schema pair | From the schema holding the foreign key to the schema it references; a join either way between those tables is allowed | The direction of the model a join is declared on | G2 |
 | 21 | Statement timeout and time zone through a pooler | `SET LOCAL` inside each read-only transaction; read-only rests on `BEGIN TRANSACTION READ ONLY` | Startup parameters only, with poolers unsupported | F3 |
 | 22 | Who records 1.0, and when | The agent, with `semlayer change close --version 1.0`, when a first build ends | The owner, by hand | H4 |
+| 23 | Running totals and comparisons as request options or as metric types the owner names in `metrics.yaml` | Request options over any approved measure or metric | Metric types the owner names in `metrics.yaml` | C4 |
+| 24 | Does "the last 30 days as of D" include D | Yes: D-29 to D | It ends the day before D | C6 |
+| 25 | The default as-of date when a request names none | The clock's date in UTC | Yesterday, the last whole day | C6 |
+| 26 | What "a year earlier" means | The same calendar dates, 29 February read as 28 February, so 29 to 31 days | The same number of days 364 days back, which keeps the weekdays | C6 |
+| 27 | What a window that starts before the first day of data shows | Null for the whole window | The partial figure with a flag | C6 |
+| 28 | Whether percent change is a fraction or a percentage | A fraction, -0.2217 | A percentage, -22.17 | C5 |
+| 29 | Where a running total starts | At the first period of data, with a time filter only picking the periods shown | At the filter's first period | C4 |
+| 30 | What "a year earlier" means at week grain | Refused | 52 weeks earlier | C5 |
+| 31 | Whether a trailing total for its first n-1 periods is null or partial | Null | The partial sum | C4 |
+| 32 | The public test database | Chinook 1.4.5, vendored unmodified with its MIT licence under `fixtures/chinook/` | Downloaded at test time and not committed | W0.4 |
 
 ## 9. Not in this plan
 
 - **Export to MetricFlow and to Cube** (the other half of #5). Nothing consumes an export before a layer exists, and the output cannot be checked without running those tools. Workstream E records what would not map.
 - **MySQL and SQL Server as source dialects, and live runs of the Snowflake, BigQuery and Databricks paths** (the other half of #6). The owner's direction is PostgreSQL only for now. The existing code is neither extended nor removed.
+- **Running totals and period-over-period as metric types in `metrics.yaml`.** A request option over an approved measure covers them with no new item to approve.
+- **Running totals, comparisons and windows on DuckDB.** New work is PostgreSQL only; the demo does not show them.
 - **Redshift.** It is not PostgreSQL-compatible at the catalog level and needs its own queries.
 - **Fiscal calendars, and semantic-dimension references inside joins and filters** (parts of #4). Each needs a design decision that a first layer does not depend on.
 - **`label`, and segments on metric requests and goldens** (parts of #4). A first layer needs neither.
@@ -1023,7 +1197,7 @@ The plan is written on the default in each row. A different answer changes only 
 2. **Build, verify, fix.** A builder makes the change in its own worktree on a branch `v1/<id>-<slug>` cut from `release/v1`. A second agent, given only the handoff and the diff, tries to break it. The builder fixes what is real. This is the loop of `docs/PRD.md` section 10.
 3. **Land.** `scripts/verify.sh` passes locally, the draft pull request's checks are green, and it merges into `release/v1`. The owner merges the default branch.
 4. **Cheaper agents where the work is mechanical** (pure moves such as D1a and W0.2, fixtures, version matrices, docs rules), and the session's own model for contracts and for anything that guards a figure or an approval (C3, D1b, D4, G2b, G2c, B1, F3, H4).
-5. **End of each wave.** The orchestrator lands the integration pull request (README, `docs/plugin.md`, cross-references in the spec), runs the milestone's checks with a fresh agent through the walkthrough harness, and reports the counts and every collision between pull requests. A milestone that fails is fixed before the next wave starts.
+5. **End of each wave.** The orchestrator lands the integration pull request (README, `docs/plugin.md`, cross-references in the spec), runs the milestone's checks with a fresh agent, a subagent of the orchestrator, through the walkthrough harness (no milestone check needs a model API key), and reports the counts and every collision between pull requests. A milestone that fails is fixed before the next wave starts.
 6. **When the last item lands**, the same pull request deletes this file and records each workstream in one line under "After this plan" in `docs/PRD-hardening.md`.
 
 ## 11. The issue tracker
@@ -1033,7 +1207,7 @@ The plan is written on the default in each row. A different answer changes only 
 | #1, #2 | Close as completed, naming the pull requests that built them. |
 | #7 | Close as completed; its two unfinished parts are workstream B. |
 | #3 | Keep open; it closes with A5; the dbt-manifest and changed-schema eval scenarios move to a new issue. |
-| #4 | Keep open; it closes with C5, with fiscal calendars, semantic-dimension references, `label` and metric-request segments moved to a new issue. |
+| #4 | Keep open; it closes with C6, with fiscal calendars, semantic-dimension references, `label` and metric-request segments moved to a new issue. |
 | #5 | Keep open and retitle to the dbt import; open a new issue for the two exports. |
 | #6 | Retitle to the PostgreSQL proof, closing with F5; open a new issue for the other dialects. |
 | #8 | Keep open; it closes with D6. |
