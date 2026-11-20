@@ -228,7 +228,7 @@ export async function runOne(name: string, opts: RunOneOptions): Promise<{ repor
   const scenario = loadScenario(file);
   const clock = opts.driver === "scripted" ? steppingClock(SMOKE_START) : () => new Date();
   const driver = opts.driver === "sdk" ? await sdkDriver({ model: opts.model, env: opts.env, agents: scenario.agents }) : scriptedDriver(loadScript(scenario, file), clock, scenario.fixture);
-  const r = await runScenario({ scenario, driver, driverName: opts.driver, clock, outDir: opts.outDir, scenarioFile: file });
+  const r = await runScenario({ scenario, driver, driverName: opts.driver, clock, outDir: opts.outDir, scenarioFile: file, env: opts.env });
   return { report: r.grades, stop_reason: r.summary.stop_reason };
 }
 

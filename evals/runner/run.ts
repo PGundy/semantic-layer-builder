@@ -1,14 +1,15 @@
 #!/usr/bin/env bun
 // bun evals/runner/run.ts --scenario <name> [--driver scripted|sdk] [--script <file>] [--out <dir>]
 //   [--now <iso time>] [--model <id>]
-// Exit codes: 0 when the skill agent finished, 2 when a budget stopped the run, 1 on an error.
+// Exit codes: 0 when the skill agent finished or the scenario is not run (a postgres scenario whose URL
+// variable is unset), 2 when a budget stopped the run, 1 on an error.
 import { relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { scriptedDriver } from "./drivers/scripted.ts";
 import { sdkDriver } from "./drivers/sdk.ts";
 import { loadScenario, loadScript, REPO_ROOT, scenarioPath } from "./files.ts";
 import { runScenario, steppingClock } from "./runner.ts";
-import { EvalError, type Clock, type Driver } from "./types.ts";
+import { EvalError, NotRun, type Clock, type Driver } from "./types.ts";
 
 export const USAGE =
   "Usage: bun evals/runner/run.ts --scenario <name> [--driver scripted|sdk] [--script <file>] [--out <dir>] [--now <iso time>] [--model <id>]";
@@ -51,7 +52,7 @@ export async function main(argv: string[], io: MainIO): Promise<number> {
         ? await sdkDriver({ model: values.model, env: io.env, agents: scenario.agents })
         : scriptedDriver(loadScript(scenario, file, values.script), clock, scenario.fixture);
     const outDir = resolve(values.out ?? resolve(REPO_ROOT, "evals", "runs"));
-    const { runDir, summary, replaced, grades } = await runScenario({ scenario, driver, driverName, clock, outDir, scenarioFile: file });
+    const { runDir, summary, replaced, grades } = await runScenario({ scenario, driver, driverName, clock, outDir, scenarioFile: file, env: io.env });
     const rel = relative(process.cwd(), runDir);
     const shown = rel && !rel.startsWith("..") ? rel : runDir;
     io.out(
@@ -76,6 +77,10 @@ export async function main(argv: string[], io: MainIO): Promise<number> {
     if ((e as { code?: string }).code?.startsWith("ERR_PARSE_ARGS")) {
       io.err(`eval: ${(e as Error).message}. ${USAGE}`);
       return 1;
+    }
+    if (e instanceof NotRun) {
+      io.out(e.message);
+      return 0;
     }
     if (e instanceof EvalError) {
       io.err(`eval: ${(e as Error).message}`);

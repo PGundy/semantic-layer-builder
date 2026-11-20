@@ -32,12 +32,26 @@ jobs:
       - run: bash scripts/verify.sh
 
   # The eval smoke subset (docs/PRD.md FR-6.4, decision D6): one fixture, two personas, with the
-  # scripted driver, compared with evals/baseline.json. It needs no database server, no key and no
-  # secret, so it runs whenever the workflow does. A grader score below its baseline or a run that no
-  # longer finishes fails the job; the token counts it prints only warn.
+  # scripted driver, compared with evals/baseline.json. It needs no key and no secret, so it runs
+  # whenever the workflow does; its PostgreSQL service, the same as the checks job's, is for scenarios
+  # that name a PostgreSQL source. A grader score below its baseline or a run that no longer finishes
+  # fails the job; the token counts it prints only warn.
   eval-smoke:
     name: eval-smoke
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

@@ -4,6 +4,8 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
+import { SQL } from "bun";
+import { loadPostgres } from "../../fixtures/acme/load-postgres.ts";
 import { runCli } from "../../skills/semantic-layer/scripts/lib/cli.ts";
 import { gradeRun, writeGrades } from "../graders/index.ts";
 import type { GradeReport } from "../graders/types.ts";
@@ -11,7 +13,7 @@ import { ownerFilePath, PERSONAS_DIR, readTree, REPO_ROOT, stableJson } from "./
 import { redactSecrets } from "./redact.ts";
 import { ROLE_NAMES, type RoleName } from "../../skills/semantic-layer/scripts/lib/roles.ts";
 import type { Clock, Driver, Scenario, Speaker, StopReason, Summary, TranscriptTurn } from "./types.ts";
-import { AGENT_ROLES, EvalError } from "./types.ts";
+import { AGENT_ROLES, EvalError, NotRun } from "./types.ts";
 
 export interface RunOptions {
   scenario: Scenario;
@@ -22,6 +24,9 @@ export interface RunOptions {
   outDir: string;
   // The scenario's file, which a mapping file in its grading resolves from.
   scenarioFile?: string;
+  // Where a postgres scenario finds its connection URL (the variable its intake names); the process
+  // environment when not given.
+  env?: Record<string, string | undefined>;
 }
 
 export interface RunResult {
@@ -48,12 +53,13 @@ export function runIdFor(scenario: string, at: Date): string {
 }
 
 // Runs semlayer in-process in the working root with the run's clock, capturing its output.
-export async function semlayerIn(root: string, args: string[], clock: Clock): Promise<{ code: number; out: string; err: string }> {
+// `extraEnv` is added to the environment of the command, such as a postgres scenario's URL variable.
+export async function semlayerIn(root: string, args: string[], clock: Clock, extraEnv: Record<string, string> = {}): Promise<{ code: number; out: string; err: string }> {
   const out: string[] = [];
   const err: string[] = [];
   const code = await runCli([...args, "--root", root], {
     cwd: root,
-    env: { SEMLAYER_NOW: clock().toISOString() },
+    env: { ...extraEnv, SEMLAYER_NOW: clock().toISOString() },
     out: (t) => out.push(t),
     err: (t) => err.push(t),
   });
@@ -112,10 +118,12 @@ async function buildDatabase(scenario: Scenario, script: string, root: string): 
 // Writes the starting root for the scenario's intake. A connection intake gets a project and one
 // source, as a setup engineer leaves it; view paths are relative to the root, so the run directory
 // stays readable. An export intake gets the project and the owner's schema export, not yet imported.
-async function prepareRoot(scenario: Scenario, root: string, clock: Clock): Promise<void> {
+async function prepareRoot(scenario: Scenario, root: string, clock: Clock, pg?: PgRun): Promise<void> {
   const fixtureDir = relative(root, join(REPO_ROOT, "fixtures", scenario.fixture)).split("\\").join("/");
   const steps: string[][] = [["init", "--name", scenario.fixture.replace(/[^a-z0-9_]/g, "_")]];
-  if (scenario.intake.path === "connection") {
+  if (scenario.intake.path === "connection" && pg) {
+    steps.push(["add-source", "--name", scenario.intake.source, "--dialect", "postgres", "--env", pg.urlEnv, "--schemas", pg.schema]);
+  } else if (scenario.intake.path === "connection") {
     const database = scenario.intake.database ? ["--database", await buildDatabase(scenario, scenario.intake.database, root)] : [];
     steps.push([
       "add-source",
@@ -128,7 +136,7 @@ async function prepareRoot(scenario: Scenario, root: string, clock: Clock): Prom
     ]);
   }
   for (const args of steps) {
-    const r = await semlayerIn(root, args, clock);
+    const r = await semlayerIn(root, args, clock, pg?.env);
     if (r.code !== 0) throw new EvalError(`Setting up the working root failed at semlayer ${args[0]}: ${r.err || r.out}`);
   }
   if (scenario.intake.path !== "connection") await writeSchemaExport(root, scenario, clock);
@@ -162,10 +170,74 @@ function multiAgentCounts(turns: TranscriptTurn[], spent: Record<Speaker, number
   };
 }
 
+// A postgres scenario's run: the schema it loads the fixture into and the environment its commands use.
+interface PgRun {
+  url: string;
+  urlEnv: string;
+  schema: string;
+  env: Record<string, string>;
+}
+
+// Postgres names are at most 63 bytes.
+const MAX_SCHEMA_LENGTH = 63;
+
+// The schema a run loads its fixture into: semlayer_eval_ and the run id in lower case with every
+// character outside a-z and 0-9 as an underscore. A name that is not a plain identifier is refused,
+// never quoted.
+export function evalSchemaName(runId: string): string {
+  const name = `semlayer_eval_${runId.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+  if (!/^[a-z_][a-z0-9_]*$/.test(name) || name.length > MAX_SCHEMA_LENGTH) {
+    throw new EvalError(`The run id ${runId} gives a schema name that is not a plain identifier of at most ${MAX_SCHEMA_LENGTH} characters; shorten the scenario's name.`);
+  }
+  return name;
+}
+
+// The scenario's PostgreSQL URL from the environment, or NotRun when the variable is unset.
+function postgresUrl(scenario: Scenario, env: Record<string, string | undefined>): PgRun | undefined {
+  const { intake } = scenario;
+  if (intake.path !== "connection" || intake.dialect !== "postgres") return undefined;
+  const urlEnv = intake.url_env ?? "";
+  const url = env[urlEnv];
+  if (!url) throw new NotRun(`Scenario ${scenario.name} is not run: it reads PostgreSQL through ${urlEnv}, which is not set. Set ${urlEnv} to the URL of a database where schemas may be created and dropped, then rerun it.`);
+  return { url, urlEnv, schema: "", env: { [urlEnv]: url } };
+}
+
+// Drops the run's schema. The statement runs on its own connection, so a failed load or a driver that
+// threw leaves nothing behind.
+async function dropSchema(url: string, schema: string): Promise<void> {
+  const sql = new SQL({ url, max: 1 });
+  try {
+    await sql.unsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+  } finally {
+    await sql.close();
+  }
+}
+
 export async function runScenario(opts: RunOptions): Promise<RunResult> {
-  const { scenario, driver, clock } = opts;
+  const { scenario, clock } = opts;
+  const pg = postgresUrl(scenario, opts.env ?? process.env);
   const started = clock();
   const runId = runIdFor(scenario.name, started);
+  if (!pg) return runIn(opts, started, runId);
+  pg.schema = evalSchemaName(runId);
+  let result: RunResult | undefined;
+  let failure: unknown;
+  try {
+    result = await runIn(opts, started, runId, pg);
+  } catch (e) {
+    failure = e;
+  }
+  try {
+    await dropSchema(pg.url, pg.schema);
+  } catch (e) {
+    failure ??= new EvalError(`Dropping the schema ${pg.schema} failed: ${redactSecrets((e as Error).message)}. Drop it by hand: DROP SCHEMA ${pg.schema} CASCADE;`);
+  }
+  if (failure) throw failure;
+  return result!;
+}
+
+async function runIn(opts: RunOptions, started: Date, runId: string, pg?: PgRun): Promise<RunResult> {
+  const { scenario, driver, clock } = opts;
   const runDir = join(opts.outDir, runId);
   const replaced = existsSync(runDir);
   rmSync(runDir, { recursive: true, force: true });
@@ -185,7 +257,12 @@ export async function runScenario(opts: RunOptions): Promise<RunResult> {
   let stop: StopReason | undefined;
   let error: string | undefined;
   try {
-    await prepareRoot(scenario, root, clock);
+    if (pg) {
+      await loadPostgres(pg.url, join(REPO_ROOT, "fixtures", scenario.fixture, "data"), pg.schema).catch((e: Error) => {
+        throw new EvalError(`Loading fixture ${scenario.fixture} into schema ${pg.schema} failed: ${redactSecrets(e.message)}`);
+      });
+    }
+    await prepareRoot(scenario, root, clock, pg);
     const brief = ownerBrief(scenario.fixture, scenario.brief_note);
     const personaPrompt = readFileSync(join(PERSONAS_DIR, `${scenario.persona}.md`), "utf8");
     record("owner", scenario.opening, 0);
@@ -196,7 +273,7 @@ export async function runScenario(opts: RunOptions): Promise<RunResult> {
         break;
       }
       // A fresh context: the files as they stand and the latest owner message, nothing else.
-      const skill = await driver.skillTurn({ root, files: readTree(root), owner_message: ownerMessage });
+      const skill = await driver.skillTurn({ root, files: readTree(root), owner_message: ownerMessage, ...(pg ? { schema: pg.schema, env: pg.env } : {}) });
       record("skill", skill.text, skill.tokens, skill.commands?.length ? { commands: skill.commands } : {});
       // The tasks it dispatched, each as its role's turn, after the interviewer's own.
       for (const d of skill.dispatches ?? []) record(d.agent, d.text, d.tokens, d.commands?.length ? { commands: d.commands } : {});
@@ -262,7 +339,7 @@ export async function runScenario(opts: RunOptions): Promise<RunResult> {
   );
   writeFileSync(join(runDir, "transcript.jsonl"), lines.map((l) => `${l}\n`).join(""));
   writeFileSync(join(runDir, "summary.json"), `${stableJson(summary, 2)}\n`);
-  const grades = await gradeRun(runDir, { scenario, scenarioFile: opts.scenarioFile });
+  const grades = await gradeRun(runDir, { scenario, scenarioFile: opts.scenarioFile, ...(pg ? { env: pg.env } : {}) });
   writeGrades(runDir, grades);
   return { runDir, summary, replaced, grades };
 }

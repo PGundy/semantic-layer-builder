@@ -27,7 +27,9 @@ bun evals/runner/run.ts --scenario acme-terse --now 2026-01-01T00:00:00Z --out /
 | `--now <iso time>` | Fixes the clock: it starts there and moves one second per read, so the run id, timestamps and files come out the same every time for the same `--out` (the source's view paths run from the run's root to `fixtures/`, so they change with `--out`). |
 | `--model <id>` | The model for the sdk driver. |
 
-It exits 0 when the skill agent ended the session, 2 when a budget stopped the run and 1 on an error, and prints the run directory. Each run writes `transcript.jsonl` (one turn per line), `summary.json` (turns, tokens and the stop reason: `done`, `turn_budget`, `token_budget` or `error`), `semantic/`, the semantic root the agent worked in, and `grades.json`, what the graders found.
+A scenario whose intake names a PostgreSQL source (`dialect: "postgres"`, with `url_env`) needs that environment variable, usually `PG_URL`, set to the URL of a database where schemas may be created and dropped. The runner loads the fixture into a schema `semlayer_eval_<run id>`, runs the scenario and the figures grader on it, and drops the schema when the run ends, also when it fails; a script writes `{schema}` for the schema's name. With the variable unset the scenario is "not run": the command says so and exits 0. Only the variable's name is written to a run's files, never the URL. The schema name comes from the run id, so two runs of one scenario with the same `--now` on one database would drop each other's schema: run them one at a time or give them different clocks. The schema is gone when the run ends, so `grade.ts --run` on a postgres run cannot check its figures again; the grades written at run time stand. The sdk driver does not yet get the schema or the URL variable, so only the scripted driver plays a postgres scenario.
+
+It exits 0 when the skill agent ended the session (or a postgres scenario is not run), 2 when a budget stopped the run and 1 on an error, and prints the run directory. Each run writes `transcript.jsonl` (one turn per line), `summary.json` (turns, tokens and the stop reason: `done`, `turn_budget`, `token_budget` or `error`), `semantic/`, the semantic root the agent worked in, and `grades.json`, what the graders found.
 
 ## Grade a run
 
@@ -91,7 +93,7 @@ An sdk baseline goes in its own file, since CI compares scripted runs with `eval
 
 ## The scenarios
 
-Every scenario starts from the Acme lake as a DuckDB source over the Parquet files in `fixtures/acme/data/lake/`, so none needs a database server. The owner answers as Dana Ruiz from `fixtures/acme/owner-brief.md`, with the scenario's `brief_note` added at its end.
+Every shipped scenario starts from the Acme lake as a DuckDB source over the Parquet files in `fixtures/acme/data/lake/`, so none needs a database server. The owner answers as Dana Ruiz from `fixtures/acme/owner-brief.md`, with the scenario's `brief_note` added at its end.
 
 | Scenario | Intake | Persona |
 |---|---|---|
@@ -171,7 +173,7 @@ The skill agent gets a fresh context on every turn: the working semantic root (i
 
 ## The scripted driver
 
-The scripted driver replays a script's skill and owner turns in order. A skill turn first writes the files its `write` lists, by path relative to the working root (a draft golden, which the skill writes by hand), then runs the `semlayer` commands it lists in the working root, in-process, with the run's clock. `{fixture}` in a `semlayer` argument stands for the fixture directory relative to the root, as in a scenario's views, so a script can give a source its connection; the transcript keeps the argument as written. A write must be a plain path inside the root that passes through no link, not under `.semlayer/`, and valid YAML that sets neither `status: approved` nor an approval field such as `approved_by` or `confirmed_by` anywhere in it, however it is spelled: only `semlayer approve` and `semlayer goldens confirm` approve. The runner refuses a script that breaks this before the run starts. An owner turn's `fill` hands back a review form filled in (see The busy owner). It needs no network and no key, so the tests and CI use it. A script that runs out of turns before a skill turn says `"done": true` stops the run with an error naming the fix.
+The scripted driver replays a script's skill and owner turns in order. A skill turn first writes the files its `write` lists, by path relative to the working root (a draft golden, which the skill writes by hand), then runs the `semlayer` commands it lists in the working root, in-process, with the run's clock. `{fixture}` in a `semlayer` argument stands for the fixture directory relative to the root, as in a scenario's views, so a script can give a source its connection, and `{schema}` for a postgres scenario's schema; the transcript keeps the argument as written. A write must be a plain path inside the root that passes through no link, not under `.semlayer/`, and valid YAML that sets neither `status: approved` nor an approval field such as `approved_by` or `confirmed_by` anywhere in it, however it is spelled: only `semlayer approve` and `semlayer goldens confirm` approve. The runner refuses a script that breaks this before the run starts. An owner turn's `fill` hands back a review form filled in (see The busy owner). It needs no network and no key, so the tests and CI use it. A script that runs out of turns before a skill turn says `"done": true` stops the run with an error naming the fix.
 
 ## The sdk driver
 

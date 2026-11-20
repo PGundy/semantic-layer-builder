@@ -1,10 +1,10 @@
 // figures: every approved golden compiles from the run's YAML, and each one mapped to a reference
 // figure produces that figure, and none produces a common mistake's value. A golden's figure comes
 // only from compiling its request with the reference compiler, as semlayer goldens check does, and running
-// it on the run's duckdb source; its recorded expected rows are never read. A golden the compiler
-// refuses, or whose compiled SQL the grader cannot run from files, fails with the reason.
+// it on the run's source, a duckdb file or a postgres schema; its recorded expected rows are never
+// read. A golden the compiler refuses fails with the reason.
 import { existsSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { type Adapter, openAdapter } from "../../skills/semantic-layer/scripts/lib/adapters/index.ts";
 import { compileGolden, inlineParams, refusalNext } from "../../skills/semantic-layer/scripts/lib/goldens.ts";
 import { splitQualified } from "../../skills/semantic-layer/scripts/lib/naming.ts";
@@ -14,6 +14,7 @@ import { parseRequestField } from "../../skills/semantic-layer/scripts/lib/refs.
 import type { Golden, Metric } from "../../skills/semantic-layer/scripts/lib/types.ts";
 import { evalSchemaIssues } from "../../skills/semantic-layer/scripts/lib/validate.ts";
 import { REPO_ROOT } from "../runner/files.ts";
+import { redactSecrets } from "../runner/redact.ts";
 import type { FigureEntry, FigureMapping, GraderResult, RunFiles } from "./types.ts";
 
 type Row = Record<string, unknown>;
@@ -65,23 +66,20 @@ function matches(entry: FigureEntry, golden: Golden, table: string | undefined):
   return r.table === undefined || (table !== undefined && matchesPattern(r.table, splitQualified(table)));
 }
 
-// The golden's rows compiled from the run's YAML and run on its duckdb source, or why the grader
-// cannot produce them: it has no request, the compiler refuses the request, or the source is not
-// duckdb, whose data the grader cannot read from files.
+// An error's first line, with the run directory left out of paths and credentials redacted, so a
+// connection failure is told without its fix-it lines, which can hold a connection URL's shape.
+const firstLine = (message: string, dir: string): string => redactSecrets((message.split("\n")[0] ?? "").replaceAll(`${dir}${sep}`, "").replace(/:\s*$/, ""));
+
+// The golden's rows compiled from the run's YAML and run on its source, or why the grader
+// cannot produce them: it has no request or the compiler refuses the request (it compiles for duckdb
+// and postgres sources, the two the grader opens).
 async function produce(run: RunFiles, golden: Golden, adapters: Map<string, Adapter>): Promise<Produced | { failure: string }> {
   if (!golden.request?.source) return { failure: `it has no request to compile; run semlayer validate and give ${golden.name} a request` };
   const compiled = compileGolden(run.root, golden);
   if (!compiled.ok) return { failure: `semlayer sql refuses its request: ${compiled.reason}. ${refusalNext(golden, compiled)}` };
-  if (compiled.dialect !== "duckdb") {
-    return {
-      failure:
-        `its request compiles, but ${compiled.source} is ${compiled.dialect} and the grader runs compiled SQL only on duckdb sources, whose data it reads from files; ` +
-        `run semlayer goldens check --name ${golden.name} against ${compiled.source} instead`,
-    };
-  }
   let adapter = adapters.get(compiled.source);
   if (!adapter) {
-    adapter = await openAdapter(run.root, loadSource(run.root, compiled.source), {});
+    adapter = await openAdapter(run.root, loadSource(run.root, compiled.source), run.env ?? {});
     adapters.set(compiled.source, adapter);
   }
   const { rows } = await adapter.query(inlineParams(compiled.sql, compiled.params, compiled.dialect));
@@ -157,7 +155,7 @@ export async function gradeFigures(run: RunFiles): Promise<GraderResult> {
       try {
         produced = await produce(run, golden, adapters);
       } catch (e) {
-        produced = { failure: `compiling or running its request failed: ${(e as Error).message}; run semlayer goldens run --name ${golden.name} to see the error` };
+        produced = { failure: `compiling or running its request failed: ${firstLine((e as Error).message, run.dir)}; run semlayer goldens run --name ${golden.name} to see the error` };
       }
       // A golden the grader cannot produce from the YAML fails, mapped or not: an approved figure
       // must compile, and its recorded rows are not a stand-in.

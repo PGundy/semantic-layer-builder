@@ -87,4 +87,6 @@ export interface RunFiles {
   intakeSource?: string;
   // The directory a mapping file in `grading` resolves from.
   scenarioDir: string;
+  // The environment the grader opens the run's sources with: a postgres source's URL variable.
+  env?: Record<string, string | undefined>;
 }
