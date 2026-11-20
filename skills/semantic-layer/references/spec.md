@@ -1332,6 +1332,12 @@ The check reads a 50,000-table, 1,000,000-column snapshot in about 0.1 s, beside
 
 With `--json`, a refusal that carries its next command as data also prints one JSON object on stdout, `{ "error": "<message>", "next": "<command>" }`, beside the line on stderr: a malformed layer file, pending readback or ledger (`next` is `semlayer validate`) and a directory with no semantic layer (`next` is `semlayer init --name <name>`), so `semlayer status --json` and `semlayer next --json` in an empty directory print a JSON error naming `semlayer init`. Any other refusal prints the stderr line and leaves stdout empty.
 
+### Codes and errors
+
+`semlayer validate --json` prints `{ "ok", "errors", "warnings", "issues" }`, and each issue is `{ "level", "file", "path", "message", "code", "next"? }`. `code` is stable across releases, so an agent branches on it rather than on the message, which may be reworded; `next`, where present, is the command that fixes or explains the issue. The human lines of `semlayer validate` do not show codes.
+
+A code is a family and a name, `family.name` in lowercase letters, digits and underscores, such as `schema.required`. Each family is registered in its own file under `scripts/lib/issue-codes/`, which maps each code to its usual level and a one-line meaning; the registry finds the files by name. `schema.*` codes come from the JSON Schema keyword that failed (`schema.required`, `schema.unknown_property`, `schema.enum`, `schema.type`, `schema.pattern`, and `schema.other` for the rest); `source.*`, `intake.*` and `env.*` from a source's connection, its intake block and a tracked env file. A check of a layer's own files that has no code of its own yet reports `issue.unclassified`, at either level; it is a placeholder, not a stable code, and each such check moves to a code of its own. A rule file under `scripts/lib/validate-rules/` passes a registered code as the last argument of every `error` and `warn` call. A code is added or retired, never renamed or reused.
+
 ### semlayer status --json
 
 The skill resumes from this output.

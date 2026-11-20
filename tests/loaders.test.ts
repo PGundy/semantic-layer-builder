@@ -425,7 +425,7 @@ describe("the loaders", () => {
     expect(r.err).toBe(`semlayer status: ${message}`);
     const v = await semlayer(root, ["validate", "--json"]);
     expect(v.code).toBe(1);
-    expect(v.json<{ issues: object[] }>().issues).toContainEqual({ level: "error", file: "models/warehouse/orders.yaml", path: "", message: "is a directory, not a file" });
+    expect(v.json<{ issues: object[] }>().issues).toContainEqual({ level: "error", file: "models/warehouse/orders.yaml", path: "", message: "is a directory, not a file", code: "issue.unclassified" });
   });
 
   test("a metrics.yaml, access.yaml or listed golden with nothing written yet loads as none, as it did, and semlayer validate lists the empty file", async () => {

@@ -237,6 +237,8 @@ export interface SourceSafetyIssue {
   // connection.setup[<i>] or connection.views.<name>.
   path: string;
   message: string;
+  // Registered in lib/issue-codes/source.ts.
+  code: "source.setup_not_allowed" | "source.view_not_one_table";
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -254,13 +256,13 @@ export function sourceSafetyIssues(source: unknown): SourceSafetyIssue[] {
     if (typeof stmt !== "string") return;
     const problem = setupProblem(stmt);
     const path = typeof setup === "string" ? "connection.setup" : `connection.setup[${i}]`;
-    if (problem) out.push({ path, message: `is not an allowed setup statement: ${problem}.` });
+    if (problem) out.push({ path, message: `is not an allowed setup statement: ${problem}.`, code: "source.setup_not_allowed" });
   });
   if (isRecord(views)) {
     for (const [name, relation] of Object.entries(views)) {
       if (typeof relation !== "string") continue;
       const parsed = parseViewRelation(relation);
-      if (typeof parsed === "string") out.push({ path: `connection.views.${name}`, message: `is not one table expression: ${parsed}.` });
+      if (typeof parsed === "string") out.push({ path: `connection.views.${name}`, message: `is not one table expression: ${parsed}.`, code: "source.view_not_one_table" });
     }
   }
   return out;
