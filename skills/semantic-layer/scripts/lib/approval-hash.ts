@@ -2,6 +2,7 @@
 // normalized semantic content; semlayer validate and semlayer status compare it with the item as it now stands,
 // so an edit made after the owner's sign-off is caught instead of silently changing a figure.
 import { createHash } from "node:crypto";
+import type { WeekDay } from "./compiler/calendar.ts";
 import type { Dialect, Model } from "./types.ts";
 import { segmentFilters, segmentNames } from "./segments.ts";
 import { sqlNames } from "./sql-names.ts";
@@ -100,12 +101,20 @@ export type ItemKind = "model" | "dimension" | "measure" | "join" | "metric" | "
 
 // Where an item sits, for the parts of its hash that say which item it is, and for reading the joins
 // its SQL goes through: the source, the model a field or join belongs to, a lookup of the source's
-// other models (the second hop of a join reference) and the source's dialect.
+// other models (the second hop of a join reference), the source's dialect and the day its weeks
+// start (sourceWeekStart in compiler/calendar.ts: undefined for Monday, the default).
 export interface HashScope {
   source?: string;
   model?: Obj;
   lookup?: (name: string) => Model | undefined;
   dialect?: Dialect;
+  weekStart?: WeekDay;
+}
+
+// Whether a dimension can be asked for at week grain: a time dimension whose time_grains, when it
+// lists them, include week.
+function hasWeekGrain(item: Obj): boolean {
+  return item.type === "time" && (!Array.isArray(item.time_grains) || item.time_grains.includes("week"));
 }
 
 // Which item a field or join is: its source, model and name, and the table the model reads. A field
@@ -117,12 +126,13 @@ function fieldIdentity(item: Obj, scope: HashScope): Obj {
 
 // The semantic content each kind of item is hashed over:
 // - a dimension: its identity (source, model, name and the model's table), expr, type, time_grains,
-//   time_zone, synonyms, tags and the joins its expr reads;
+//   time_zone, synonyms, tags, the joins its expr reads and, for one with a week grain on a source
+//   whose weeks do not start on Monday, the week start (left out otherwise, so its hash is as before);
 // - a measure: its identity, expr, filter, agg, format, currency, synonyms, tags, the filter texts of
 //   the segments it names (left out when it names none, so its hash is as before segments) and the
-//   joins its expr, filter and segments read;
+//   joins its expr, filter and segments read, and its default_time_dimension when set;
 // - a join: its identity, to, keys, relationship and type;
-// - a model: its source and name, table, grain, primary_key and tags;
+// - a model: its source and name, table, grain, primary_key, tags and its default_time_dimension when set;
 // - a metric: name, source, type, numerator, denominator, expr, format, currency, synonyms and tags;
 // - access.yaml: the whole file but its approval and open_questions (top level and per role);
 // - a schema pair (an entry of cross_schema in sources/<s>.yaml): its from, to and keys, each key
@@ -142,6 +152,7 @@ function itemContent(kind: ItemKind, item: Obj, scope: HashScope): Obj {
         synonyms: set(item.synonyms),
         tags: set(item.tags),
         joins: model ? readJoins(model, [item.expr], lookup, dialect) : [],
+        ...(scope.weekStart && hasWeekGrain(item) ? { week_start: scope.weekStart } : {}),
       };
     case "measure": {
       // Each named segment's filter as the model declares it now, null for one it does not declare.
@@ -157,6 +168,7 @@ function itemContent(kind: ItemKind, item: Obj, scope: HashScope): Obj {
         synonyms: set(item.synonyms),
         tags: set(item.tags),
         ...(segments ? { segments: set(segments) } : {}),
+        ...(item.default_time_dimension !== undefined ? { default_time_dimension: text(item.default_time_dimension) } : {}),
         joins: model ? readJoins(model, [item.expr, item.filter, ...(segments ?? [])], lookup, dialect) : [],
       };
     }
@@ -171,6 +183,7 @@ function itemContent(kind: ItemKind, item: Obj, scope: HashScope): Obj {
         grain: text(item.grain),
         primary_key: set(item.primary_key),
         tags: set(item.tags),
+        ...(item.default_time_dimension !== undefined ? { default_time_dimension: text(item.default_time_dimension) } : {}),
       };
     case "metric":
       return {
@@ -245,8 +258,8 @@ export interface ApprovalEntry {
 }
 
 // The model and each of its dimensions, measures and joins. `lookup` finds another model of the same
-// source, for the second hop of a join reference.
-export function modelEntries(source: string, model: Model, lookup: (name: string) => Model | undefined, dialect?: Dialect): ApprovalEntry[] {
+// source, for the second hop of a join reference; `weekStart` is the source's (sourceWeekStart).
+export function modelEntries(source: string, model: Model, lookup: (name: string) => Model | undefined, dialect?: Dialect, weekStart?: WeekDay): ApprovalEntry[] {
   const m = model as unknown as Obj;
   const base = `${source}.${String(m.model)}`;
   const out: ApprovalEntry[] = [{ kind: "model", ref: base, path: [], item: m, hash: itemHash("model", m, { source }) }];
@@ -259,7 +272,7 @@ export function modelEntries(source: string, model: Model, lookup: (name: string
     const list = Array.isArray(m[section]) ? (m[section] as unknown[]) : [];
     list.forEach((x, i) => {
       if (!isObject(x) || typeof x.name !== "string") return;
-      out.push({ kind, ref: `${base}.${x.name}`, path: [section, i], item: x, hash: itemHash(kind, x, { source, model: m, lookup, dialect }) });
+      out.push({ kind, ref: `${base}.${x.name}`, path: [section, i], item: x, hash: itemHash(kind, x, { source, model: m, lookup, dialect, weekStart }) });
     });
   }
   return out;
@@ -290,13 +303,14 @@ export function pairEntries(source: string, config: unknown): ApprovalEntry[] {
 export const DEFAULT_TOLERANCE = 0.005;
 
 // A model of the layer to list: its source, the file it sits in, a lookup of the source's other models
-// (the second hop of a join reference) and the source's dialect.
+// (the second hop of a join reference), the source's dialect and its week start (sourceWeekStart).
 export interface LayerModel {
   source: string;
   model: Model;
   file?: string;
   lookup: (name: string) => Model | undefined;
   dialect?: Dialect;
+  weekStart?: WeekDay;
 }
 
 // The parts of a layer whose approvals to list, each as its reader loaded it. A part left out is not
@@ -350,7 +364,7 @@ function recorded(item: Obj, file: string | undefined): Recorded {
 export function listApprovals(layer: ApprovalLayer): Approval[] {
   const out: Approval[] = [];
   for (const m of layer.models ?? [])
-    for (const e of modelEntries(m.source, m.model, m.lookup, m.dialect)) out.push({ ...e, ...recorded(e.item, m.file) });
+    for (const e of modelEntries(m.source, m.model, m.lookup, m.dialect, m.weekStart)) out.push({ ...e, ...recorded(e.item, m.file) });
   for (const s of layer.sources ?? []) for (const e of pairEntries(s.source, s.config)) out.push({ ...e, ...recorded(e.item, s.file) });
   for (const e of metricEntries(layer.metrics)) out.push({ ...e, ...recorded(e.item, layer.metricsFile) });
   const access = accessEntry(layer.access);

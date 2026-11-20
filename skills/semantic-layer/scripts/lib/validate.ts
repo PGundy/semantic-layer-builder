@@ -36,6 +36,7 @@ import { readSourceTableList, type SourceTableList } from "./table-list.ts";
 import { bareNames, callsRound, dividesByLiteral, type SqlNames, sqlNames, tokenizeSql } from "./sql-names.ts";
 import { readsText, sqlTextProblem, type TextRole, USER_PLACEHOLDER } from "./sql-text.ts";
 import { type RuleContext, runRules } from "./validate-rules/index.ts";
+import { sourceWeekStart } from "./compiler/calendar.ts";
 import type {
   AccessFile,
   AccessMode,
@@ -885,7 +886,7 @@ export class Validator {
         }
       });
       const source = m.source;
-      this.checkApprovals(f, itemApprovals(listApprovals({ models: [{ source, model: m, lookup: (name) => this.model(source, name), dialect: this.sourceDialect(source) }] })));
+      this.checkApprovals(f, itemApprovals(listApprovals({ models: [{ source, model: m, lookup: (name) => this.model(source, name), dialect: this.sourceDialect(source), weekStart: sourceWeekStart(this.sources.get(source)?.data) }] })));
     }
   }
 

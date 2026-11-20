@@ -79,6 +79,8 @@ export interface SourceState {
   schemas?: string[];
   // intake.primary (spec: Schema scope); left out, the file's stays.
   primary?: string;
+  // calendar.week_start (spec: Metric semantics); left out, the file's stays.
+  weekStart?: string;
   exportFile?: string;
   scope?: Scope;
 }
@@ -116,6 +118,7 @@ export function applySourceState(doc: Document, state: SourceState): void {
   }
   if (state.schemas !== undefined) setKey(doc, intake, "schemas", state.schemas.length ? state.schemas : undefined, ORDER.intake!);
   if (state.primary !== undefined) setKey(doc, intake, "primary", state.primary, ORDER.intake!);
+  if (state.weekStart !== undefined) setKey(doc, section("calendar"), "week_start", state.weekStart, ["week_start"]);
   if (state.scope !== undefined) {
     const scope = section("scope");
     setKey(doc, scope, "include", state.scope.include?.length ? state.scope.include : undefined, ORDER.scope!);

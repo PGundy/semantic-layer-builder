@@ -14,6 +14,7 @@ import { formatTable, maskRows, PROTECTED_VALUE, plainText } from "./output.ts";
 import { protectedColumns } from "./profile.ts";
 import { listModels, loadAccess, loadFile, loadMetrics, loadSnapshot, paths } from "./project.ts";
 import { parseTarget } from "./refs.ts";
+import { sourceWeekStart, type WeekDay } from "./compiler/calendar.ts";
 import { andPredicates, findSegment, segmentNames } from "./segments.ts";
 import { referencedColumns } from "./snapshot-diff.ts";
 import { sqlNames } from "./sql-names.ts";
@@ -227,6 +228,8 @@ function joinReads(model: Model, sql: unknown[], lookup: (m: string) => Model | 
 
 interface SourceInfo {
   dialect?: Dialect;
+  // The day the source's weeks start when it is not Monday (sourceWeekStart).
+  weekStart?: WeekDay;
   snapshot: Snapshot | null;
   lookup: (name: string) => Model | undefined;
   protected: Map<string, Set<string>>;
@@ -234,9 +237,12 @@ interface SourceInfo {
 
 function sourceInfo(root: string, source: string): SourceInfo {
   let dialect: Dialect | undefined;
+  let weekStart: WeekDay | undefined;
   try {
-    const d = readYamlIfExists<{ dialect?: unknown }>(paths(root).source(source))?.dialect;
+    const config = readYamlIfExists<{ dialect?: unknown }>(paths(root).source(source));
+    const d = config?.dialect;
     dialect = typeof d === "string" && (DIALECTS as readonly string[]).includes(d) ? (d as Dialect) : undefined;
+    weekStart = sourceWeekStart(config);
   } catch {
     dialect = undefined;
   }
@@ -259,7 +265,7 @@ function sourceInfo(root: string, source: string): SourceInfo {
   }
   const models = listModels(root, source).map((l) => l.model as unknown);
   const prot = snapshot && Array.isArray(snapshot.tables) ? protectedColumns(snapshot.tables, models, dialect) : new Map<string, Set<string>>();
-  return { dialect, snapshot, lookup, protected: prot };
+  return { dialect, weekStart, snapshot, lookup, protected: prot };
 }
 
 // Measured facts --------------------------------------------------------------------------------
@@ -439,6 +445,7 @@ function renderModel(source: string, model: Model, info: SourceInfo): Rendered {
     `- Reads ${model.table}.`,
     ...grainLines(model, table),
     `- Primary key: ${listText(pk)}.`,
+    ...(typeof model.default_time_dimension === "string" ? [`- Its measures are measured over ${model.default_time_dimension} by default, unless a measure names its own.`] : []),
     ...common(model),
     WHO,
   ];
@@ -546,6 +553,9 @@ function renderField(ref: string, source: string, model: Model, e: ApprovalEntry
     if (!bare) sql.push(String(f.expr));
     if (strs(f.time_grains).length) out.push(`- Time grains: ${strs(f.time_grains).join(", ")}.`);
     if (typeof f.time_zone === "string") out.push(`- Stored in time zone ${f.time_zone}.`);
+    // A week grain on a source whose weeks do not start on Monday: the owner approves the weeks they get.
+    if (info.weekStart && f.type === "time" && (!Array.isArray(f.time_grains) || f.time_grains.includes("week")))
+      out.push(`- A week starts on ${info.weekStart[0]!.toUpperCase()}${info.weekStart.slice(1)} (calendar.week_start of source ${source}).`);
   } else {
     out.push(`- ${f.agg === "count" && !f.expr ? "A count of rows" : `${AGG_WORDS[String(f.agg)] ?? `The ${String(f.agg)} of`} ${String(f.expr)}`}.`);
     // The measure's own filter and the filter of each segment it names narrow the same rows, so the
@@ -560,6 +570,7 @@ function renderField(ref: string, source: string, model: Model, e: ApprovalEntry
     else out.push("- It counts every row.");
     const fmt = typeof f.format === "string" ? f.format : "not set";
     out.push(`- Format: ${fmt}${typeof f.currency === "string" ? `, in ${f.currency}` : ""}.`);
+    if (typeof f.default_time_dimension === "string") out.push(`- Measured over ${model.model}.${f.default_time_dimension} by default.`);
     const where = andPredicates([f.filter, ...named.map((seg) => seg.filter)].filter((t): t is string => typeof t === "string"));
     sql.push(`${String(f.agg)}(${f.expr === undefined ? "*" : String(f.expr)})${where === undefined ? "" : ` where ${where}`}`);
   }
@@ -896,7 +907,7 @@ export function renderReadbacks(
         const i = info(t.source);
         // The model as its file holds it, hashed the way semlayer approve hashes it; a field is found the way
         // semlayer approve finds it (dimensions, then measures, then joins).
-        const entries = itemApprovals(listApprovals({ models: [{ source: t.source, model, lookup: i.lookup, dialect: i.dialect }] }));
+        const entries = itemApprovals(listApprovals({ models: [{ source: t.source, model, lookup: i.lookup, dialect: i.dialect, weekStart: i.weekStart }] }));
         const field = t.kind === "field" ? t.field : undefined;
         entry = field === undefined ? entries[0] : entries.find((e) => e.kind !== "model" && e.item.name === field);
         if (!entry) throw unknown(ref, `${t.source}.${t.model} has no dimension, measure or join "${field}"`);

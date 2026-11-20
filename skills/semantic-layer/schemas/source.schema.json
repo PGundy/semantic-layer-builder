@@ -184,6 +184,25 @@
         }
       }
     },
+    "calendar": {
+      "type": "object",
+      "description": "How the source's calendar counts time (spec.md, Metric semantics). semlayer setup --week-start writes it.",
+      "additionalProperties": false,
+      "properties": {
+        "week_start": {
+          "enum": [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday"
+          ],
+          "description": "The day a week starts, for every week grain of the source's time dimensions. Unset, a week starts on Monday. Setting or changing it changes the approval hash of each dimension with a week grain."
+        }
+      }
+    },
     "cross_schema": {
       "type": "array",
       "description": "Schema pairs a join may cross (spec.md Schema scope, Schema pairs). Each runs from the schema holding the foreign key to the schema it references and lists the keys that connect them; a join between tables of the two schemas, either way, is allowed only on an approved pair's keys. A declined pair records the owner's no. semlayer add-cross-schema writes an entry and semlayer remove-cross-schema removes one.",

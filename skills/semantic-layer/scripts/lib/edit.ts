@@ -8,6 +8,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import type { LastApproval } from "./access.ts";
 import { type ApprovalEntry, carriesHash, itemApprovals, type LayerModel, listApprovals, UNHASHED_MESSAGE } from "./approval-hash.ts";
+import { sourceWeekStart, type WeekDay } from "./compiler/calendar.ts";
 import { columnRefs } from "./compiler/qualify.ts";
 import { resolveRef } from "./layer-reads.ts";
 import { UserError } from "./errors.ts";
@@ -148,6 +149,15 @@ function sourceDialect(root: string, source: string): Dialect | undefined {
   }
 }
 
+// The day a source's weeks start, as semlayer approve hashes its week-grain dimensions.
+function sourceWeek(root: string, source: string): WeekDay | undefined {
+  try {
+    return sourceWeekStart(readYamlIfExists<unknown>(paths(root).source(source)));
+  } catch {
+    return undefined;
+  }
+}
+
 // Every approval entry of the project, reading each file in `overrides` as its text there (a model
 // file only there counts as written) and leaving out the files in `removed`; files that cannot be
 // read are skipped.
@@ -171,7 +181,8 @@ function projectEntries(root: string, overrides: ReadonlyMap<string, string>, re
       if (m && typeof m === "object") models.set(stem(f), m as Model);
     }
     const dialect = sourceDialect(root, source);
-    for (const [name, m] of models) layer.push({ source, model: { ...m, model: name }, lookup: (n) => models.get(n), dialect });
+    const weekStart = sourceWeek(root, source);
+    for (const [name, m] of models) layer.push({ source, model: { ...m, model: name }, lookup: (n) => models.get(n), dialect, weekStart });
   }
   const metrics = read(paths(root).metrics) as { metrics?: unknown } | null;
   return itemApprovals(listApprovals({ models: layer, metrics: metrics?.metrics, access: read(paths(root).access) }));

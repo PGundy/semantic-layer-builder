@@ -46,3 +46,10 @@ export function parseRequestField(ref: string): { model: string; field: string; 
   const m = ref.match(/^([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)(?::([a-z]+))?$/);
   return m ? { model: m[1]!, field: m[2]!, grain: m[3] } : undefined;
 }
+
+// The grain of a bare ":grain" request field, the shorthand for the request's default time
+// dimension at that grain (spec: Metric semantics, Calendar and default time dimension), or
+// undefined for any other text.
+export function grainShorthand(ref: string): string | undefined {
+  return /^:([a-z]+)$/.exec(ref)?.[1];
+}

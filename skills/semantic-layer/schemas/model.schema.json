@@ -115,6 +115,11 @@
         "$ref": "#/$defs/join"
       }
     },
+    "default_time_dimension": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "The name of a type: time dimension of this model that its measures are measured over by default; a request's bare :grain field reads it (spec.md, Metric semantics). Part of the model's approval hash when set."
+    },
     "segments": {
       "type": "array",
       "description": "Named SQL predicates of this model that a measure names in its segments, or a request in its segments as model.segment (spec.md, Metric semantics).",
@@ -353,6 +358,11 @@
           },
           "uniqueItems": true,
           "description": "Tags that access rules read. pii and sensitive are protected: the field is hidden from everyone but the roles that grant the tag in allow.tags. public records that the owner confirmed everyone may see it although it looks sensitive; it never overrides pii or sensitive."
+        },
+        "default_time_dimension": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "The name of a type: time dimension of this model the measure is measured over by default, in place of the model's. Part of the measure's approval hash when set."
         },
         "segments": {
           "type": "array",
