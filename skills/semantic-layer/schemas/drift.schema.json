@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": ".semlayer/drift.json",
+  "description": "The drift record semlayer introspect keeps: per source, the last change it found against the previous snapshot and the retyped columns an approved field still reads as it was approved. Committed; holds table, column and type names, never a data value, URL or credential.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "sources"],
+  "properties": {
+    "version": { "const": 1, "description": "Record format version." },
+    "sources": {
+      "type": "array",
+      "description": "One entry per source, sorted by source.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "at", "diff", "retyped"],
+        "properties": {
+          "source": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "at": { "type": "string", "minLength": 1, "description": "When the last introspect that found a change ran, from the command's clock." },
+          "diff": {
+            "type": "object",
+            "description": "That change: the shape of changes in semlayer introspect --json.",
+            "additionalProperties": false,
+            "required": ["tables_added", "tables_removed", "columns"],
+            "properties": {
+              "tables_added": { "type": "array", "items": { "type": "string" } },
+              "tables_removed": { "type": "array", "items": { "type": "string" } },
+              "columns": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["table", "added", "removed", "retyped"],
+                  "properties": {
+                    "table": { "type": "string" },
+                    "added": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["name", "type"],
+                        "properties": { "name": { "type": "string" }, "type": { "type": "string" } }
+                      }
+                    },
+                    "removed": { "type": "array", "items": { "type": "string" } },
+                    "retyped": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["name", "from", "to"],
+                        "properties": { "name": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "unreadable": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The tables of diff.tables_removed that the database still holds but the connection's role cannot read."
+          },
+          "retyped": {
+            "type": "array",
+            "description": "Retyped columns still open: some approved field reads one and was neither edited nor approved again since.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["table", "column", "from", "to", "at", "reads"],
+              "properties": {
+                "table": { "type": "string" },
+                "column": { "type": "string" },
+                "from": { "type": "string", "description": "The type the fields were approved against." },
+                "to": { "type": "string" },
+                "at": { "type": "string", "minLength": 1, "description": "When an introspect first found the column retyped from `from`." },
+                "reads": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["ref", "hash", "yes"],
+                    "properties": {
+                      "ref": { "type": "string", "description": "The field's approve target, source.model.field." },
+                      "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "The field's content hash when the change was found." },
+                      "yes": {
+                        "type": ["string", "null"],
+                        "pattern": "^ans_[0-9]{4,}$",
+                        "description": "The id of the owner's latest yes to the field in the ledger then, or null."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

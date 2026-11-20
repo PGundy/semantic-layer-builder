@@ -6,6 +6,6 @@ export const RULES: DocRule[] = [
   ["phases/drift.md", "keeping the layer current", "# Phase card: drift, keeping the layer current"],
   ["phases/drift.md", "rerun introspect on a schedule", "on a schedule the owner picks"],
   ["phases/drift.md", "missing columns first", "**Missing columns first**"],
-  // Conditions, role unions and what draft tags.
-  ["phases/drift.md", "a retype is recorded as an open question", "changed from <from> to <to> on <date>; read back <fields>"],
+  // A retyped column an approved field reads is warned until the field is edited or approved again.
+  ["phases/drift.md", "a retype is warned on the field that reads it", "`semlayer validate` warns `release.column_retyped` on that field"],
 ];
