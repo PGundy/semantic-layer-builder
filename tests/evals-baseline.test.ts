@@ -431,10 +431,14 @@ describe("the CI job", () => {
     expect(runs).toEqual(["bun install --frozen-lockfile", "bun run eval:smoke"]);
   });
 
-  test("eval-smoke uses no secret, no key and no environment", () => {
-    const jobText = text.slice(text.indexOf("  eval-smoke:"));
-    expect(jobText).not.toMatch(/secrets\.|API_KEY|TOKEN|PASSWORD/i);
-    expect(job.env).toBeUndefined();
+  test("eval-smoke uses no secret and no key; its only environment is the throwaway PostgreSQL service's URL, as the checks job has it", () => {
+    const jobText = text.slice(text.indexOf("  eval-smoke:"), text.indexOf("  compat:"));
+    expect(jobText).not.toMatch(/secrets\.|API_KEY|TOKEN/i);
+    // The service's password is the checks job's own literal for a database that lives for the job.
+    expect(jobText.match(/PASSWORD/gi)?.length).toBe(1);
+    expect(job.env).toEqual((ci.jobs.checks as { env: unknown }).env);
+    expect(job.env).toEqual({ PG_URL: "postgres://postgres:postgres@localhost:5432/postgres" });
+    expect((job.services as Record<string, unknown>).postgres).toEqual((ci.jobs.checks!.services as Record<string, unknown>).postgres);
     expect(JSON.stringify(job)).not.toContain("--driver");
   });
 

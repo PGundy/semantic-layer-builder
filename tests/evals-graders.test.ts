@@ -290,16 +290,16 @@ describe("figures", () => {
     ]);
   });
 
-  test("a golden that compiles for a source that is not duckdb fails: the grader cannot run it from files", async () => {
+  test("a golden for a source the compiler does not handle fails with the compiler's reason", async () => {
     const { dir, root } = copyRun();
     await duckdbWarehouse(root, dir, [30105082]);
-    write(join(root, "sources", "warehouse.yaml"), "source: warehouse\ndialect: postgres\nconnection:\n  env: WAREHOUSE_URL\n");
+    write(join(root, "sources", "warehouse.yaml"), "source: warehouse\ndialect: snowflake\n");
     golden(root, "revenue_2025", { source: "warehouse", measures: ["orders.revenue"] }, [{ revenue: 301050.82 }]);
     const g = grader(await gradeRun(dir), "figures");
     expect(g).toMatchObject({ score: 0, passed: false });
     expect(g.details).toEqual([
-      "semantic/goldens/revenue_2025.yaml: revenue_2025 is not checked: its request compiles, but warehouse is postgres and the grader runs compiled SQL only on duckdb sources, whose data it reads from files; " +
-        "run semlayer goldens check --name revenue_2025 against warehouse instead",
+      "semantic/goldens/revenue_2025.yaml: revenue_2025 is not checked: semlayer sql refuses its request: source warehouse is snowflake; semlayer sql compiles for postgres and duckdb sources, and a later version of semlayer sql adds other dialects. " +
+        "semlayer sql compiles postgres and duckdb sources only: write the golden's query by hand from the model YAML as cross_check_sql, then run semlayer goldens run --name revenue_2025 --emit-sql to plan it.",
     ]);
   });
 
