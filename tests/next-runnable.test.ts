@@ -478,11 +478,11 @@ describe("HR-12 walk: the command semlayer next names at each state runs", () =>
         }
         for (const args of turn.semlayer ?? []) await semlayerIn(input.root, args.map((x) => x.replaceAll("{fixture}", relative(input.root, join(REPO_ROOT, "fixtures", scenario.fixture)).split(sep).join("/"))), clock);
         while (script.skill[at]?.agent) at++;
-        return { text: turn.text, tokens: turn.tokens ?? 1, done: turn.done === true };
+        return { text: turn.text, tokens: 1, done: turn.done === true };
       },
       async ownerTurn() {
         const turn = script.owner[ownerAt++]!;
-        return { text: turn.text, tokens: turn.tokens ?? 1 };
+        return { text: turn.text, tokens: 1 };
       },
     };
     const r = await runScenario({ scenario, driver, driverName: "scripted", clock: steppingClock("2026-01-01T00:00:00Z"), outDir: tempDir("h12-walk"), scenarioFile: file });

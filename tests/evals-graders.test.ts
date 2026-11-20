@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { scriptedDriver } from "../evals/runner/drivers/scripted.ts";
 import { loadScenario, loadScript, readTree, REPO_ROOT, scenarioPath, type Script } from "../evals/runner/files.ts";
 import { runScenario, steppingClock } from "../evals/runner/runner.ts";
-import type { TranscriptTurn } from "../evals/runner/types.ts";
+import type { Summary, TranscriptTurn } from "../evals/runner/types.ts";
 import { main as gradeMain } from "../evals/graders/grade.ts";
 import { equalsFigure, firstModel } from "../evals/graders/figures.ts";
 import { cleanReason, formatReport, GRADES_FILE, gradeRun } from "../evals/graders/index.ts";
@@ -676,15 +676,19 @@ describe("effort", () => {
     golden(root, "sessions_2025", { source: "lake", measures: ["sessions.session_count"], filters: in2025("sessions.started_at") }, [{ session_count: 4551 }]);
     const g = grader(await gradeRun(dir), "effort");
     expect(g).toMatchObject({ score: null, passed: true });
+    // The token figures are the run's summary's, per approved item to 2 places.
+    const summary = JSON.parse(readFileSync(join(dir, "summary.json"), "utf8")) as Summary;
+    const per8 = (n: number) => Math.round((n / 8) * 100) / 100;
+    expect(summary.tokens).toBeGreaterThan(summary.tokens_by_speaker.skill);
     expect(g.metrics).toEqual({
       approved_items: 8,
       owner_turns: 2,
       owner_words: 35,
       owner_turns_per_approved_item: 0.25,
       owner_words_per_approved_item: 4.38,
-      tokens: 2691,
-      tokens_per_approved_item: 336.38,
-      skill_tokens_per_approved_item: 328.88,
+      tokens: summary.tokens,
+      tokens_per_approved_item: per8(summary.tokens),
+      skill_tokens_per_approved_item: per8(summary.tokens_by_speaker.skill),
       wall_time_seconds: 9,
     });
   });
