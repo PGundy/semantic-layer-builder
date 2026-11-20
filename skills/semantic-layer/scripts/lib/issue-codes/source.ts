@@ -16,6 +16,8 @@ const codes: CodeFamily = {
   "source.snapshot_without_source": { level: "warning", meaning: "A snapshot has no source file of the same name." },
   "source.snapshot_dialect_differs": { level: "warning", meaning: "A snapshot's dialect differs from its source's." },
   "source.connection_missing": { level: "error", meaning: "Comes from a refusal, not from validate: --env-file or SEMLAYER_ENV_FILE names a path that is not a file, so the connection variables cannot be read." },
+  "source.pooler_startup_parameter": { level: "error", meaning: "Comes from a refusal, not from validate: a connection pooler refuses a startup parameter the Postgres connection sends." },
+  "source.ssl_root_cert_unreadable": { level: "error", meaning: "Comes from a refusal, not from validate: sslrootcert in a connection URL, or <PREFIX>SSLROOTCERT, names a file that cannot be read or holds no PEM certificate." },
   "intake.reason_missing": { level: "warning", meaning: "intake.mode is export and intake.reason does not say why a connection is not possible." },
   "intake.schemas_empty": { level: "warning", meaning: "intake.schemas is an empty list, which reads every schema." },
   "intake.schema_name_invalid": { level: "error", meaning: "An entry of intake.schemas is not a schema name the dialect accepts." },
