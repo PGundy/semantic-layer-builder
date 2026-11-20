@@ -19,6 +19,7 @@ import { entityKeys, nonAdditiveDimension } from "./compiler/semi-additive.ts";
 import { andPredicates, findSegment, segmentNames } from "./segments.ts";
 import { referencedColumns } from "./snapshot-diff.ts";
 import { sqlNames } from "./sql-names.ts";
+import { timeShapeWords } from "./time-request-words.ts";
 import type { Dialect, FigureEvidence, Golden, Join, Metric, Model, PendingReadback, ResultRows, Snapshot, SnapshotTable } from "./types.ts";
 import { DIALECTS, NAME_PATTERN, PROTECTED_TAGS } from "./types.ts";
 import { conditionWords, parseCondition } from "./conditions.ts";
@@ -794,6 +795,7 @@ function requestWords(g: Golden): string[] {
   const order = objs<Obj>(r.order_by).map((o) => `${flat(o.field)} ${o.direction === "desc" ? "descending" : "ascending"}`);
   if (order.length) out.push(`  - Sorted by: ${order.join(", ")}.`);
   if (typeof r.limit === "number") out.push(`  - At most ${num(r.limit)} rows.`);
+  out.push(...timeShapeWords(r).map((s) => `  - ${flat(s)}`));
   return out;
 }
 

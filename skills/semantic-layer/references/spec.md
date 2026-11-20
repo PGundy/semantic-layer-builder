@@ -723,6 +723,29 @@ measures:
 - A request may name several semi-additive measures that share the dimension, the window and the filter (with their segments); they read one subquery. A request that names one with an additive measure, or with one kept along another dimension, window or filter, is refused as `metric.semi_additive_mixed`, with a `next` that asks for it in a request of its own. Inside a metric each model's part compiles as such a request: a ratio of two balances of one model with the same dimension, window and filter compiles (`max` of the kept rows over their `sum` is the largest account's share), and a ratio of a balance over an additive measure of the same model is refused with the same code.
 - `non_additive_dimension` is part of the measure's approval hash when set, with the `expr` of the dimension it names, and left out when unset, so every other measure keeps its hash; setting, changing or removing it after approval marks the measure changed since approved. Its readback says it is not added up across time, which value it keeps in each period along which dimension, for each of which columns, and what it does with those values; the figure the readback shows and its count of rows are computed by the same rule, over the kept rows.
 
+### Running totals and comparisons
+
+A request asks for a running total of its measures with `running`, beside `measures`, `dimensions` and `filters` (`schemas/golden.schema.json`). It adds no item to approve: a golden records the request with its `running`, and its hash covers the whole request, so a yes to its figures is a yes to the option as written.
+
+```yaml
+request:
+  source: chinook
+  measures: [invoice.revenue]
+  dimensions: [invoice.invoice_date:month]
+  running:
+    over: invoice.invoice_date:month   # one of the request's dimensions, in full
+    periods: 3                         # optional: the total of the last 3 months instead
+  filters:
+    - {field: invoice.invoice_date:month, op: gte, value: "2025-01-01"}   # picks the months shown
+```
+
+- `over` names one of the request's dimensions, a time dimension at a grain, written in full as `model.field:grain`; the `:grain` shorthand is refused in `over` (a request's `dimensions` may still use it), and the refusal names the field to write. `periods` is an integer from 2 to 120. A request with `running` compiles for PostgreSQL sources only; any other source is refused as `unsupported_dialect`.
+- Each measure gets one more column: `<m>_running`, the total from the first period of data through each period, or with `periods: n`, `<m>_trailing_<n>`, the total of the last n periods with the current one included, blank (null) until n periods exist. A period with no rows is in the series and adds 0, so the total carries through it. Rows whose `over` dimension is empty have no period and are left out.
+- A running total adds up `sum` and `count` measures only. A measure with another `agg`, a balance (`non_additive_dimension`: a balance is not added up across time), a metric, an `over` that is not one of the request's dimensions, a request with no measure, a filter on the `over` dimension with no grain or at another grain, a filter on a measure or metric (it would leave a period out of the total), and another dimension that is the `over` field at another grain are each refused as `invalid_request`, with the change to make. A request takes one of the time views.
+- The request without `running`, `order_by`, `limit` and its filters on the `over` dimension compiles as any request does, so joins, segments, the user's row filters and visibility, and measures of several models apply as they do without it; a measure the user may not see refuses the whole request. It becomes the CTE `"periods"`. `"series"` is `cast(generate_series(cast(min(<period>) as timestamp), cast(max(<period>) as timestamp), interval '1 <grain>') as date)` (`3 months` for a quarter; kept a timestamp for `hour`), so the session time zone never moves a period and a week steps by the source's own weeks. `"groups"` holds the distinct values of the other dimensions, and `"filled"` is series cross groups, left joined to periods on `is not distinct from`, each `sum`, `count` and `count_distinct` column `coalesce(<m>, 0)`. The window is `sum(<m>) over (partition by <other dimensions> order by <period> rows between unbounded preceding and current row)`, or for `periods: n` `case when row_number() over (...) >= n then sum(<m>) over (... rows between n-1 preceding and current row) end`.
+- A filter on the `over` dimension at its grain applies after the totals, in the outer `WHERE` on the period, with its parameters after the inner request's: it picks the periods shown and never moves where a total starts. `order_by` and `limit` apply last.
+- The golden readback, `semlayer goldens new`, `run` and `confirm` and `semlayer sql` state the option in words: "Running total of each figure (revenue_running) over invoice.invoice_date by month, from the first month of data; a month with no rows adds 0; rows with no invoice.invoice_date are left out.", or "Total of the last 3 months of each figure (revenue_trailing_3) over invoice.invoice_date by month, each month included; blank until 3 months of data; ...", and with a filter on the period, "A filter on invoice.invoice_date:month only picks the months shown; the totals still start at the first month of data."
+
 ## access.yaml
 
 `access.yaml` says who sees what. No `access.yaml` means open mode with no roles: everyone sees every approved item. A draft model, dimension, measure or metric, or an approved one that changed since its approval (see Approval hashes), is never exposed to anyone in either mode; tools that read the layer flag every draft item they use, and `semlayer access` reports one hidden with the reason `draft`.
