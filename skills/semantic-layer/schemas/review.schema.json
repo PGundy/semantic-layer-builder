@@ -24,8 +24,8 @@
           "n": { "type": "integer", "minimum": 1, "description": "The item's number in the readback." },
           "target": {
             "type": "string",
-            "pattern": "^(access|(metric|golden):[a-z][a-z0-9_]*|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)?)$",
-            "description": "The approve target: source.model, source.model.field, metric:<name> or access, or golden:<name>, a golden semlayer goldens confirm records."
+            "pattern": "^(access|(metric|golden):[a-z][a-z0-9_]*|schema-pair:[A-Za-z_][A-Za-z0-9_$]*:[A-Za-z_][A-Za-z0-9_$]*:[A-Za-z_][A-Za-z0-9_$]*|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)?)$",
+            "description": "The approve target: source.model, source.model.field, metric:<name>, access or schema-pair:<source>:<from>:<to>, or golden:<name>, a golden semlayer goldens confirm records."
           },
           "content_hash": {
             "type": "string",

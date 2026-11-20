@@ -147,12 +147,15 @@ const spec: CommandSpec = {
       const [head, ...rest] = item.text.split("\n");
       lines.push(`${item.n}. ${head}`, ...rest.map((l) => `   ${l}`), "");
     }
+    const editWith = targets.some((t) => t.startsWith("schema-pair:"))
+      ? "make the edit with semlayer add-cross-schema or semlayer remove-cross-schema (a schema pair takes no semlayer set), and with a typed command (semlayer set, or several in one semlayer apply) for any other item"
+      : "make the edit with a typed command (semlayer set, or several in one semlayer apply)";
     lines.push(
       batched
         ? `Record the owner's answers in one ${batched.reply_approve}, each item with its own verdict and their words: it ${batchedDoes(batched)}` +
             (batched.confirm_each.length ? `; then confirm each golden they said yes to: ${batched.confirm_each.join("; ")}` : "") +
-            ". For a no or a change, make the edit with a typed command (semlayer set, or several in one semlayer apply), then run semlayer readback again."
-        : `Only after the owner says yes to an item, approve it: ${nextSteps.join("; ")}. For a no or a change, make the edit with a typed command (semlayer set, or several in one semlayer apply), then run semlayer readback again.`,
+            `. For a no or a change, ${editWith}, then run semlayer readback again.`
+        : `Only after the owner says yes to an item, approve it: ${nextSteps.join("; ")}. For a no or a change, ${editWith}, then run semlayer readback again.`,
     );
     if (guarded) lines.push(UNPROTECT);
     ctx.out(lines.join("\n"));

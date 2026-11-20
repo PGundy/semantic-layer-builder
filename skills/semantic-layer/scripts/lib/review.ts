@@ -98,7 +98,7 @@ const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is st
 
 // The open questions of the models and access.yaml the targets belong to, in target order: a model
 // or field target's model, a metric's measures' models, and for access the top-level questions and
-// each role's.
+// each role's. A schema pair holds no open questions.
 export function openQuestions(root: string, targets: string[]): ReviewQuestion[] {
   const holders: string[] = [];
   const add = (ref: string) => holders.includes(ref) || holders.push(ref);
@@ -150,7 +150,8 @@ export function renderReviewJson(form: ReviewForm): string {
 // Each line of text behind "> ", so no line of it can pass for a heading, a marker or a fill-in line.
 const quote = (text: string) => text.split("\n").map((l) => (l ? `> ${l}` : ">"));
 const marker = (kind: string, data: object) => `<!-- semlayer-${kind} ${JSON.stringify(data)} -->`;
-const where = (ref: string) => (ref === "access" || ref.startsWith("access.roles.") ? "access.yaml" : `models/${ref.replace(".", "/")}.yaml`);
+const where = (ref: string) =>
+  ref === "access" || ref.startsWith("access.roles.") ? "access.yaml" : ref.startsWith("schema-pair:") ? `sources/${ref.split(":")[1]}.yaml` : `models/${ref.replace(".", "/")}.yaml`;
 
 function answerBlock(answer: string): string[] {
   const fence = "`".repeat(Math.max(3, ...[...answer.matchAll(/`{3,}/g)].map((m) => m[0].length + 1)));

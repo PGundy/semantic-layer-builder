@@ -117,7 +117,8 @@ const spec: CommandSpec = {
     } else {
       const what = outcome.changed ? `Recorded the draft pair ${from} -> ${to}` : `The pair ${from} -> ${to} already lists these keys`;
       lines.push(`${what} in ${outcome.file}, on ${pair.keys!.map((k) => `${k.from} = ${k.to}`).join(" and ")}.`);
-      lines.push(`Next: read the pair to the owner, and on their yes run ${next}; then semlayer add-join adds a join on these keys.`);
+      if (outcome.changed && prior?.status === "approved") lines.push("The pair was approved; with these keys it is a draft again, and its approval is gone until the owner says yes to it as it now stands.");
+      lines.push(`Next: read the pair to the owner with semlayer readback --targets ${target}, and on their yes run ${next}; then semlayer add-join adds a join on these keys.`);
     }
     ctx.out(lines.join("\n"));
     return 0;

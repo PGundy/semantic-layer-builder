@@ -1,6 +1,7 @@
 // Schema scope (spec: Schema scope): a join leaves its model's schema only on the keys of an approved
-// schema pair, every key of a pair is in the snapshot, the primary schema is one the source reads, and
-// an approved pair is crossed by some join.
+// schema pair, every key of a pair is in the snapshot, the primary schema is one the source reads, an
+// approved pair is crossed by some join, and a pair marked approved still matches its approved_hash.
+import { changedMessage, integrity, pairEntries, pathText } from "../approval-hash.ts";
 import { intakeSchemas } from "../intake.ts";
 import { addPairCommand, type CrossSchemaPair, crossSchemaLevel, crossSchemaPairs, findPair, keyProblem, pairApproved, type SchemaJoin, undeclaredJoinText } from "../schema-scope.ts";
 import type { Join, Model } from "../types.ts";
@@ -70,6 +71,29 @@ export default function scope(ctx: RuleContext): void {
         if (level === "warning") ctx.warn(m.file, `joins[${i}]`, message, "scope.cross_schema_undeclared");
         else ctx.error(m.file, `joins[${i}]`, message, "scope.cross_schema_undeclared");
       });
+    }
+
+    // A pair marked approved whose keys changed since, or that records no hash, counts as a draft.
+    for (const e of pairEntries(name, source)) {
+      const state = integrity(e, true);
+      if (state === "current" && !ctx.hasYes(e.ref, e.hash))
+        ctx.warn(
+          file,
+          pathText(e.path),
+          `${e.ref} is marked approved with a matching hash but the ledger holds no yes from the owner to it as it stands, so the layer joins these schemas on a pair the owner did not approve. ` +
+            `Read it back (semlayer readback --targets ${e.ref}), record the owner's answer with semlayer reply, and approve it with semlayer approve --target ${e.ref} --by "<owner>"`,
+          "approval.no_ledger_yes",
+          `semlayer readback --targets ${e.ref}`,
+        );
+      if (state === "changed") ctx.error(file, pathText(e.path), changedMessage(e), "approval.hash_changed", `semlayer readback --targets ${e.ref}`);
+      else if (state === "missing")
+        ctx.warn(
+          file,
+          pathText(e.path),
+          `${e.ref} is marked approved but records no approved_hash, so it counts as a draft: only semlayer approve approves a pair, on the owner's yes. ` +
+            `Read it back to the owner (semlayer readback --targets ${e.ref}) and approve it on their yes (semlayer approve --target ${e.ref} --by "<owner>")`,
+          "approval.hash_missing",
+        );
     }
 
     pairs.forEach((pair, i) => {

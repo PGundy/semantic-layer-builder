@@ -88,7 +88,7 @@ function readJoins(model: Obj, sql: unknown[], lookup: (name: string) => Model |
   return [...out.keys()].sort(byCodePoint).map((k) => out.get(k)!);
 }
 
-export type ItemKind = "model" | "dimension" | "measure" | "join" | "metric" | "access";
+export type ItemKind = "model" | "dimension" | "measure" | "join" | "metric" | "access" | "schema-pair";
 
 // Where an item sits, for the parts of its hash that say which item it is, and for reading the joins
 // its SQL goes through: the source, the model a field or join belongs to, a lookup of the source's
@@ -115,7 +115,9 @@ function fieldIdentity(item: Obj, scope: HashScope): Obj {
 // - a join: its identity, to, keys, relationship and type;
 // - a model: its source and name, table, grain, primary_key and tags;
 // - a metric: name, source, type, numerator, denominator, expr, format, currency, synonyms and tags;
-// - access.yaml: the whole file but its approval and open_questions (top level and per role).
+// - access.yaml: the whole file but its approval and open_questions (top level and per role);
+// - a schema pair (an entry of cross_schema in sources/<s>.yaml): its from, to and keys, each key
+//   with its from, to and constraint.
 // Descriptions are not part of it: editing one changes no figure.
 function itemContent(kind: ItemKind, item: Obj, scope: HashScope): Obj {
   const { model, lookup = () => undefined, dialect } = scope;
@@ -179,6 +181,13 @@ function itemContent(kind: ItemKind, item: Obj, scope: HashScope): Obj {
       }
       return out;
     }
+    case "schema-pair":
+      return {
+        kind,
+        from: text(item.from),
+        to: text(item.to),
+        keys: set(objects(item.keys).map((k) => ({ from: text(k.from), to: text(k.to), constraint: text(k.constraint) }))),
+      };
   }
 }
 
@@ -212,7 +221,8 @@ export function goldenHash(golden: Obj, rows: unknown[], tolerance: number): str
 // One item that carries an approval, located in its file.
 export interface ApprovalEntry {
   kind: ItemKind;
-  // The approve target: source.model, source.model.field, metric:<name> or access.
+  // The approve target: source.model, source.model.field, metric:<name>, access or
+  // schema-pair:<source>:<from>:<to>.
   ref: string;
   // Where the item sits in its file, as semlayer approve edits it.
   path: (string | number)[];
@@ -253,6 +263,16 @@ export function accessEntry(access: unknown): ApprovalEntry | undefined {
   return isObject(access) ? { kind: "access", ref: "access", path: [], item: access, hash: itemHash("access", access) } : undefined;
 }
 
+// The schema pairs of a source's cross_schema, each as schema-pair:<source>:<from>:<to>.
+export function pairEntries(source: string, config: unknown): ApprovalEntry[] {
+  const list = isObject(config) && Array.isArray(config.cross_schema) ? (config.cross_schema as unknown[]) : [];
+  return list.flatMap((x, i) =>
+    isObject(x) && typeof x.from === "string" && typeof x.to === "string"
+      ? [{ kind: "schema-pair" as const, ref: `schema-pair:${source}:${x.from}:${x.to}`, path: ["cross_schema", i], item: x, hash: itemHash("schema-pair", x) }]
+      : [],
+  );
+}
+
 // The relative tolerance a golden records when none is agreed (--tolerance) or kept in its file.
 export const DEFAULT_TOLERANCE = 0.005;
 
@@ -277,6 +297,8 @@ export interface ApprovalLayer {
   access?: unknown;
   accessFile?: string;
   goldens?: { golden: unknown; file?: string }[];
+  // Sources whose schema pairs to list: the source's name and its file as parsed.
+  sources?: { source: string; config: unknown; file?: string }[];
 }
 
 // Where an entry sits and what it records: its file, its status and the approved_hash it records
@@ -309,13 +331,14 @@ function recorded(item: Obj, file: string | undefined): Recorded {
 }
 
 // Every approval entry of a layer, in one list: each model with its dimensions, measures and joins
-// (in the order given), then the metrics, access.yaml and the goldens. semlayer approve, the typed edits,
+// (in the order given), then the sources' schema pairs, the metrics, access.yaml and the goldens. semlayer approve, the typed edits,
 // semlayer status, semlayer validate, semlayer access, semlayer readback and the approvals grader list them here; the edit
 // hook lists models, metrics and access.yaml here and compares a golden's expected rows directly.
 export function listApprovals(layer: ApprovalLayer): Approval[] {
   const out: Approval[] = [];
   for (const m of layer.models ?? [])
     for (const e of modelEntries(m.source, m.model, m.lookup, m.dialect)) out.push({ ...e, ...recorded(e.item, m.file) });
+  for (const s of layer.sources ?? []) for (const e of pairEntries(s.source, s.config)) out.push({ ...e, ...recorded(e.item, s.file) });
   for (const e of metricEntries(layer.metrics)) out.push({ ...e, ...recorded(e.item, layer.metricsFile) });
   const access = accessEntry(layer.access);
   if (access) out.push({ ...access, ...recorded(access.item, layer.accessFile) });

@@ -13,4 +13,7 @@ export const RULES: DocRule[] = [
   ["spec.md", "the join commands and the compiler decide as validate does", "The join commands and the compiler decide by the same rule as validate"],
   ["spec.md", "add-join refuses a join across an undeclared pair", "`semlayer add-join` refuses a join across schemas no approved pair declares"],
   ["spec.md", "an approved pair drafts its listed keys only", "on those keys only, whether or not a foreign key carries them"],
+  ["spec.md", "a pair is approved on the owner's yes with its target", "`semlayer approve --target schema-pair:<s>:<from>:<to>` writes `status: approved`, `approved_by`, `approved_at` and `approved_hash`"],
+  ["spec.md", "a pair counts as approved only while its hash matches", "A pair counts as approved only when its `approved_hash` matches the hash of its `from`, `to` and `keys` as they now stand"],
+  ["spec.md", "the edit hook guards a pair's approval fields", "or the schema pairs of `sources/<s>.yaml`: only `semlayer approve` and `semlayer goldens confirm` write them"],
 ];
