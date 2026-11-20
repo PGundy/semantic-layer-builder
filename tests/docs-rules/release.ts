@@ -7,4 +7,9 @@ export const RULES: DocRule[] = [
   ["spec.md", "an unreadable table is told apart from a dropped one", "`unreadable` names those of them the database still holds but the role cannot read"],
   ["spec.md", "the record holds no value", "never a data value"],
   ["spec.md", "a failed introspect leaves the record", "A failed introspect leaves the record as it was"],
+  ["spec.md", "the changelog is append-only", "Append-only. `appendEntry`"],
+  ["spec.md", "a version must rise", "refuses a version that is not above the last entry's"],
+  ["spec.md", "golden rows are recorded as the golden stores them", "Golden rows are recorded as the golden file stores them"],
+  ["spec.md", "the hook refuses a hand edit of the changelog", "write `changelog.yaml`: it is append-only"],
+  ["spec.md", "a never-released layer gets no message", "A layer with neither has never been released"],
 ];

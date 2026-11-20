@@ -130,7 +130,7 @@ function checkReplace(path: string, shown: string, text: string, force: boolean,
 function toFilePath(root: string, arg: string): string {
   const target = rootPath(root, arg, "--to-file");
   const rel = relative(resolve(root), target).split(sep).join("/").toLowerCase();
-  const own = ["semantic.yaml", "metrics.yaml", "access.yaml", ".gitignore"];
+  const own = ["semantic.yaml", "metrics.yaml", "access.yaml", "changelog.yaml", ".gitignore"];
   const dirs = ["sources", "snapshots", "models", "goldens", ".semlayer"];
   if (own.includes(rel) || dirs.some((d) => rel === d || rel.startsWith(`${d}/`))) {
     throw new UserError(`--to-file ${arg} is one of the files semlayer manages; give another path, such as scope/<source>.txt.`);

@@ -369,11 +369,16 @@ describe("semlayer scope --to-file", () => {
       ["/tmp/out.txt", "absolute path"],
       ["sources/wh.yaml", "files semlayer manages"],
       ["semantic.yaml", "files semlayer manages"],
+      ["changelog.yaml", "files semlayer manages"],
     ] as const) {
       const r = await semlayer(root, ["scope", "--source", "wh", "--to-file", path]);
       expect(r.code).not.toBe(0);
       expect(r.err).toContain(message);
     }
+    writeFileSync(join(root, "changelog.yaml"), "version: 1\nentries: []\n");
+    const forced = await semlayer(root, ["scope", "--source", "wh", "--to-file", "changelog.yaml", "--force"]);
+    expect(forced.code).not.toBe(0);
+    expect(readFileSync(join(root, "changelog.yaml"), "utf8")).toBe("version: 1\nentries: []\n");
     const empty = await semlayer(root, ["scope", "--source", "wh", "--clear", "--include", "nothing_*", "--to-file", "x.txt"]);
     expect(empty.err).toContain("nothing to write");
     writeFileSync(join(root, "x.txt"), "keep me\n");

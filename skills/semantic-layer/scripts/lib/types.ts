@@ -27,6 +27,7 @@ export interface Project {
   name: string;
   description?: string;
   default_source?: string;
+  layer_version?: string;
   settings?: ProjectSettings;
 }
 
