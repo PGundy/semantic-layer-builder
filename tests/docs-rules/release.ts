@@ -12,4 +12,7 @@ export const RULES: DocRule[] = [
   ["spec.md", "golden rows are recorded as the golden stores them", "Golden rows are recorded as the golden file stores them"],
   ["spec.md", "the hook refuses a hand edit of the changelog", "write `changelog.yaml`: it is append-only"],
   ["spec.md", "a never-released layer gets no message", "A layer with neither has never been released"],
+  ["spec.md", "change status compares with the last release", "`semlayer change status` compares the layer as it stands with the last entry of `changelog.yaml`"],
+  ["spec.md", "change status names the first release when there is none", "naming `semlayer change close --version 1.0`"],
+  ["spec.md", "change status holds no data value", "The output holds refs, hashes and names, never a data value"],
 ];
