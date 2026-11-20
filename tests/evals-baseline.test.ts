@@ -15,7 +15,9 @@ import {
   main,
   recordedEffort,
   shownPath,
+  PG_NOISY_SCENARIO,
   PG_SMOKE_SCENARIO,
+  PG_SMOKE_SCENARIOS,
   SMOKE_SCENARIOS,
   type Baseline,
   type Observed,
@@ -80,7 +82,7 @@ describe("the committed baseline", () => {
   test("matches its schema and covers the smoke subset", () => {
     const b = committed();
     expect(evalSchemaIssues("eval-baseline", b, "evals/baseline.json")).toEqual([]);
-    expect(Object.keys(b.scenarios).sort()).toEqual([...SMOKE_SCENARIOS, PG_SMOKE_SCENARIO].sort());
+    expect(Object.keys(b.scenarios).sort()).toEqual([...SMOKE_SCENARIOS, ...PG_SMOKE_SCENARIOS].sort());
     expect(b.driver).toBe("scripted");
     for (const s of Object.values(b.scenarios)) {
       expect(s.stop_reason).toBe("done");
@@ -244,15 +246,15 @@ describe("regressions", () => {
   });
 });
 
-// The PostgreSQL scenario joins the smoke only where PG_URL is set; the committed baseline holds its entry
-// either way and the smoke passes either way (docs/PLAN-v1x.md, A3b).
-describe("the PostgreSQL scenario in the smoke", () => {
+// The PostgreSQL scenarios join the smoke only where PG_URL is set; the committed baseline holds their entries
+// either way and the smoke passes either way (docs/PLAN-v1x.md, A3b and A4).
+describe("the PostgreSQL scenarios in the smoke", () => {
   // An io whose PostgreSQL scenario is not run, as the runner reports it without the URL.
   function withoutUrl() {
     const f = fakeIO({});
     const inner = f.io.runOne!;
     f.io.runOne = async (name, opts) => {
-      if (name === PG_SMOKE_SCENARIO) throw new NotRun(`Scenario ${name} is not run: it reads PostgreSQL through PG_URL, which is not set.`);
+      if ((PG_SMOKE_SCENARIOS as readonly string[]).includes(name)) throw new NotRun(`Scenario ${name} is not run: it reads PostgreSQL through PG_URL, which is not set.`);
       return inner(name, opts);
     };
     return f;
@@ -263,7 +265,8 @@ describe("the PostgreSQL scenario in the smoke", () => {
     expect(await main([], f.io)).toBe(0);
     expect(f.text()).toContain(`Scenario ${PG_SMOKE_SCENARIO} is not run: it reads PostgreSQL through PG_URL, which is not set.`);
     expect(f.text()).not.toContain("REGRESSION");
-    expect(f.text().split("\n").some((l) => l.startsWith(`${PG_SMOKE_SCENARIO} `))).toBe(false);
+    expect(f.text()).toContain(`Scenario ${PG_NOISY_SCENARIO} is not run: it reads PostgreSQL through PG_URL, which is not set.`);
+    for (const name of PG_SMOKE_SCENARIOS) expect(f.text().split("\n").some((l) => l.startsWith(`${name} `))).toBe(false);
     expect(f.text()).toContain("Next: nothing to do for the evals.");
     expect(f.err).toEqual([]);
   });
@@ -273,7 +276,7 @@ describe("the PostgreSQL scenario in the smoke", () => {
     expect(await main([], r.io)).toBe(0);
     expect(r.text()).toContain(`Scenario ${PG_SMOKE_SCENARIO} is not run:`);
     expect(r.text()).toContain("PG_URL, which is not set");
-    expect(committed().scenarios[PG_SMOKE_SCENARIO]).toBeDefined();
+    for (const name of PG_SMOKE_SCENARIOS) expect(committed().scenarios[name]).toBeDefined();
   }, 30_000);
 
   test("--update-baseline without the URL keeps the entry exactly as it was", async () => {
@@ -283,7 +286,7 @@ describe("the PostgreSQL scenario in the smoke", () => {
     const f = withoutUrl();
     expect(await main(["--update-baseline", "--baseline", file], f.io)).toBe(0);
     const written = JSON.parse(readFileSync(file, "utf8")) as Baseline;
-    expect(written.scenarios[PG_SMOKE_SCENARIO]).toEqual(committed().scenarios[PG_SMOKE_SCENARIO]!);
+    for (const name of PG_SMOKE_SCENARIOS) expect(written.scenarios[name]).toEqual(committed().scenarios[name]!);
     expect(baselineText(written)).toBe(readFileSync(BASELINE_FILE, "utf8"));
     expect(f.text()).toContain(`Scenario ${PG_SMOKE_SCENARIO} is not run:`);
     // With no entry to keep there is none to write.
@@ -305,7 +308,9 @@ describe("the PostgreSQL scenario in the smoke", () => {
     const io: SmokeIO = { out: (t) => out.push(t), err: () => {}, env: { PG_URL } };
     expect(await main([], io)).toBe(0);
     const text = out.join("\n");
-    for (const g of ["figures", "secrets", "selection", "approvals", "connection_first", "authority", "validate"]) expect(tableRow(text, PG_SMOKE_SCENARIO, g)).toMatch(/\s1\s+1\s+0\s+ok$/);
+    for (const name of PG_SMOKE_SCENARIOS) {
+      for (const g of ["figures", "secrets", "selection", "approvals", "connection_first", "authority", "validate"]) expect(tableRow(text, name, g)).toMatch(/\s1\s+1\s+0\s+ok$/);
+    }
     expect(text).not.toContain("is not run:");
     expect(text).not.toContain("REGRESSION");
   }, 60_000);
@@ -465,7 +470,7 @@ describe("errors and where runs go", () => {
   test("runs go to a temporary directory that is removed afterwards, never into the repository", async () => {
     const f = fakeIO({});
     expect(await main([], f.io)).toBe(0);
-    expect(f.outDirs.length).toBe(SMOKE_SCENARIOS.length + 1);
+    expect(f.outDirs.length).toBe(SMOKE_SCENARIOS.length + PG_SMOKE_SCENARIOS.length);
     for (const d of f.outDirs) {
       expect(d.startsWith(REPO_ROOT)).toBe(false);
       expect(existsSync(d)).toBe(false);

@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join, relative } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { SQL } from "bun";
-import { loadPostgres } from "../../fixtures/acme/load-postgres.ts";
+import { type LoadOptions, loadPostgres } from "../../fixtures/acme/load-postgres.ts";
 import { runCli } from "../../skills/semantic-layer/scripts/lib/cli.ts";
 import { gradeRun, writeGrades } from "../graders/index.ts";
 import type { GradeReport } from "../graders/types.ts";
@@ -213,6 +213,20 @@ async function dropSchema(url: string, schema: string): Promise<void> {
   }
 }
 
+// What a postgres scenario loads besides the fixture's whole warehouse: the tables it names, and the
+// SQL file of its decoy tables, by path under fixtures/.
+function loadOptions(scenario: Scenario): LoadOptions {
+  const { intake } = scenario;
+  if (intake.path !== "connection") return {};
+  const options: LoadOptions = intake.tables ? { tables: intake.tables } : {};
+  if (intake.decoys) {
+    const path = join(REPO_ROOT, "fixtures", intake.decoys);
+    if (!existsSync(path)) throw new EvalError(`Scenario ${scenario.name} names the decoy script fixtures/${intake.decoys}, which does not exist; fix intake.decoys.`);
+    options.extraSql = readFileSync(path, "utf8");
+  }
+  return options;
+}
+
 export async function runScenario(opts: RunOptions): Promise<RunResult> {
   const { scenario, clock } = opts;
   const pg = postgresUrl(scenario, opts.env ?? process.env);
@@ -258,7 +272,7 @@ async function runIn(opts: RunOptions, started: Date, runId: string, pg?: PgRun)
   let error: string | undefined;
   try {
     if (pg) {
-      await loadPostgres(pg.url, join(REPO_ROOT, "fixtures", scenario.fixture, "data"), pg.schema).catch((e: Error) => {
+      await loadPostgres(pg.url, join(REPO_ROOT, "fixtures", scenario.fixture, "data"), pg.schema, loadOptions(scenario)).catch((e: Error) => {
         throw new EvalError(`Loading fixture ${scenario.fixture} into schema ${pg.schema} failed: ${redactSecrets(e.message)}`);
       });
     }

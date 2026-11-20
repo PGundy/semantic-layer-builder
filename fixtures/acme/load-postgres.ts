@@ -45,8 +45,18 @@ export interface LoadResult {
   rows: Record<string, number>;
 }
 
-export async function loadPostgres(url: string, dataDir: string, schema = "acme"): Promise<LoadResult> {
+export interface LoadOptions {
+  // Load only these warehouse tables (with their keys and data); the default is every one.
+  tables?: string[];
+  // SQL run in the schema after the tables, such as fixtures/noisy/decoys.sql; its tables are analyzed too.
+  extraSql?: string;
+}
+
+export async function loadPostgres(url: string, dataDir: string, schema = "acme", options: LoadOptions = {}): Promise<LoadResult> {
   if (!SCHEMA_NAME.test(schema)) throw new Error(`invalid schema name ${schema}`);
+  const unknown = (options.tables ?? []).filter((n) => !WAREHOUSE_TABLES.some((t) => t.name === n));
+  if (unknown.length) throw new Error(`unknown warehouse table(s) ${unknown.join(", ")}`);
+  const chosen = options.tables ? WAREHOUSE_TABLES.filter((t) => options.tables!.includes(t.name)) : WAREHOUSE_TABLES;
   const sql = new SQL({ url, max: 1 });
   const counts: Record<string, number> = {};
   try {
@@ -54,7 +64,7 @@ export async function loadPostgres(url: string, dataDir: string, schema = "acme"
       await tx.unsafe("SET LOCAL TIME ZONE 'UTC'");
       await tx.unsafe(`DROP SCHEMA IF EXISTS ${ident(schema)} CASCADE`);
       await tx.unsafe(`CREATE SCHEMA ${ident(schema)}`);
-      for (const t of WAREHOUSE_TABLES) {
+      for (const t of chosen) {
         await tx.unsafe(createTableSql(schema, t));
         const rows = await readCsv(join(dataDir, "warehouse", `${t.name}.csv`), t);
         const columns = t.columns.map((c) => c.name);
@@ -64,21 +74,27 @@ export async function loadPostgres(url: string, dataDir: string, schema = "acme"
         }
         counts[t.name] = rows.length;
       }
-      for (const t of WAREHOUSE_TABLES) {
+      for (const t of chosen) {
         if (t.primaryKey) {
           await tx.unsafe(`ALTER TABLE ${ident(schema)}.${ident(t.name)} ADD PRIMARY KEY (${t.primaryKey.map(ident).join(", ")})`);
         }
       }
-      for (const t of WAREHOUSE_TABLES) {
-        for (const fk of t.foreignKeys ?? []) {
+      for (const t of chosen) {
+        // A key into a table that is not loaded is left out.
+        for (const fk of (t.foreignKeys ?? []).filter((k) => chosen.some((c) => c.name === k.table))) {
           await tx.unsafe(
             `ALTER TABLE ${ident(schema)}.${ident(t.name)} ADD FOREIGN KEY (${fk.columns.map(ident).join(", ")}) REFERENCES ${ident(schema)}.${ident(fk.table)} (${fk.refColumns.map(ident).join(", ")})`,
           );
         }
         if (t.comment) await tx.unsafe(`COMMENT ON TABLE ${ident(schema)}.${ident(t.name)} IS ${literal(t.comment)}`);
       }
+      if (options.extraSql) {
+        await tx.unsafe(`SET LOCAL search_path TO ${ident(schema)}`);
+        await tx.unsafe(options.extraSql);
+      }
     });
-    await sql.unsafe(`ANALYZE ${WAREHOUSE_TABLES.map((t) => `${ident(schema)}.${ident(t.name)}`).join(", ")}`);
+    const found = (await sql.unsafe("select tablename from pg_tables where schemaname = $1 order by 1", [schema])) as { tablename: string }[];
+    await sql.unsafe(`ANALYZE ${found.map((t) => `${ident(schema)}.${ident(t.tablename)}`).join(", ")}`);
   } finally {
     await sql.close();
   }

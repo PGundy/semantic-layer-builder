@@ -25,6 +25,11 @@ export interface ConnectionIntake {
   // create and drop schemas. Only the name is ever written to a run's files. The scenario is "not
   // run" when the variable is unset.
   url_env?: string;
+  // postgres only: load only these warehouse tables of the fixture, with their data.
+  tables?: string[];
+  // postgres only: a SQL script, relative to the repository's fixtures/ directory, run in the run's
+  // schema after the tables; fixtures/noisy/decoys.sql adds empty look-alike tables.
+  decoys?: string;
   // View name -> relation. `{fixture}` is replaced by the fixture directory, relative to the root.
   views?: Record<string, string>;
   // A DuckDB SQL script, relative to the repository's fixtures/ directory, that the runner runs
