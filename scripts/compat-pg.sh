@@ -48,5 +48,7 @@ export PG_URL="postgres://postgres:$PASSWORD@127.0.0.1:$PORT/postgres"
 # Every test file that reads PG_URL: the compat files and the older live tests.
 FILES=$(grep -rl "PG_URL" tests --include='*.test.ts' | sort)
 echo "compat-pg: postgres:$VERSION on 127.0.0.1:$PORT; $(echo "$FILES" | wc -l | tr -d ' ') test files"
+# The server shares this machine's cores with the tests, so a test that starts several processes can
+# take a few times longer than it does alone: allow each test and hook 30 seconds.
 # shellcheck disable=SC2086
-bun test $FILES
+bun test --timeout 30000 $FILES
