@@ -1,7 +1,7 @@
 // Bridge joins (spec: Bridges and multi-fact requests): add-bridge writes a draft join with `through`
 // and refuses what would not validate, validation fires one code per mistake, an approved bridge join
 // needs its dedupe rule, the approval hash covers the rule, each hop obeys the schema-pair rule, and the
-// compiler refuses a bridge route with no_join_path until it compiles one.
+// compiler follows a bridge route (tests/compiler-bridge.test.ts checks its figures).
 //
 // The layer is the one of fixtures/semantics/bridge.sql: orders, tags and the order_tags bridge.
 import { describe, expect, test } from "bun:test";
@@ -434,15 +434,17 @@ describe("schema pairs", () => {
 });
 
 describe("the compiler", () => {
-  test("a request on a field the model reaches only through a bridge join is refused with no_join_path naming the bridge", async () => {
+  test("a request on a field the model reaches only through a bridge join compiles through the deduped bridge", async () => {
     const root = await project([bridgeJoin({ dedupe: "distinct_pairs" })]);
     const request = JSON.stringify({ source: "shop", measures: ["orders.revenue"], dimensions: ["tags.tag_name"] });
     const r = await semlayer(root, ["sql", "--request", request, "--json"]);
-    expect(r.code).not.toBe(0);
-    const out = r.json<{ refusals?: { code: string; message: string }[] }>();
-    const text = JSON.stringify(out);
-    expect(text).toContain("no_join_path");
-    expect(text).toContain("bridge join orders.tag (by way of order_tags)");
+    expect(r.code).toBe(0);
+    const out = r.json<{ sql: string; joins: { alias: string; through?: string }[] }>();
+    expect(out.sql).toContain('group by "orders.tag bridge"."order_id", "orders.tag bridge"."tag_id"');
+    expect(out.joins.map((j) => [j.alias, j.through])).toEqual([
+      ["orders.tag bridge", "bridge"],
+      ["orders.tag", "target"],
+    ]);
     expect(parse(readFileSync(ordersFile(root), "utf8"))).toBeDefined();
   });
 });

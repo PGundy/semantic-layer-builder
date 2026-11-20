@@ -1661,12 +1661,16 @@ export class Validator {
   }
 
   // An error message when a field of another model cannot be reached from the base model; why says
-  // what makes base the base.
+  // what makes base the base. With no to-one path, one bridge join of the base straight to the model
+  // reaches it (spec: Bridges and multi-fact requests).
   pathProblem(source: string, base: string, why: string, model: string): string | null {
     if (model === base) return null;
     const all = this.joinPaths(source, base, model);
+    const bridges = all.length ? [] : named<Join>(this.model(source, base)?.joins).filter((j) => j.through && j.to === model);
+    if (bridges.length === 1) return null;
+    if (bridges.length > 1) return `model ${model} is reachable from ${base} through more than one bridge join (${bridges.map((j) => `${base}.${j.name}`).join("; ")}); a request field needs one`;
     if (!all.length)
-      return `model ${model} is not reachable from ${base}, ${why}, through at most two many_to_one or one_to_one joins`;
+      return `model ${model} is not reachable from ${base}, ${why}, through at most two many_to_one or one_to_one joins or one bridge join`;
     // The shortest path wins, so a direct join beats a route through another model.
     const shortest = Math.min(...all.map((p) => p.length));
     const paths = all.filter((p) => p.length === shortest);
