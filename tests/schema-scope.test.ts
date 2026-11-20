@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SQL } from "bun";
 import { buildSnapshot } from "../skills/semantic-layer/scripts/lib/introspect.ts";
-import { crossSchemaFks, primarySchema } from "../skills/semantic-layer/scripts/lib/schema-scope.ts";
+import { type CrossSchemaPair, crossSchemaFks, pairAllowed, primarySchema, toolVersion, UNDECLARED_GRACE_ENDS, undeclaredApprovedLevel } from "../skills/semantic-layer/scripts/lib/schema-scope.ts";
 import type { Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { assertLocalPg, duckdbSource, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
@@ -216,5 +216,187 @@ describe("introspect keeps constraint names: postgres", () => {
     const d = await semlayer(root, ["draft", "--source", "warehouse", "--json"]);
     expect(d.code).toBe(0);
     expect(d.json()).toMatchObject({ cross_schema_keys: [{ table: `${a}.orders`, columns: ["customer_id"], references: `${b}.customers`, constraint: "orders_customer_fk" }] });
+  });
+});
+
+// Schema pairs (spec: Schema scope, Schema pairs): on the two-schema fixture, sales.orders joins
+// crm.customers through orders_customer_fk.
+describe("schema pairs", () => {
+  const SOURCE = "source: warehouse\ndialect: postgres\nconnection:\n  env: WAREHOUSE_URL\nintake:\n  schemas: [sales, crm]\n";
+  const sourceFile = (root: string) => join(root, "sources", "warehouse.yaml");
+  const pairsOf = (root: string) => readYaml<SourceConfig>(sourceFile(root)).cross_schema;
+
+  async function project(source = SOURCE): Promise<string> {
+    const { root } = tempRoot();
+    await initProject(root, "two");
+    writeFileSync(sourceFile(root), source);
+    mkdirSync(join(root, "snapshots"), { recursive: true });
+    writeFileSync(join(root, "snapshots", "warehouse.json"), readFileSync(FIXTURE, "utf8"));
+    return root;
+  }
+
+  // The project drafted, with a draft join from orders to customers written by hand, as one could be
+  // before pairs existed.
+  async function crossJoin(status: "draft" | "approved" = "draft"): Promise<string> {
+    const root = await project();
+    expect((await semlayer(root, ["draft", "--source", "warehouse"])).code).toBe(0);
+    const file = join(root, "models", "warehouse", "orders.yaml");
+    const approval = status === "approved" ? "    approved_by: Dana\n    approved_at: '2026-01-10'\n" : "";
+    writeFileSync(
+      file,
+      readFileSync(file, "utf8").replace(
+        /^joins:\n/m,
+        `joins:\n  - name: customer\n    to: customers\n    keys:\n      - from: customer_id\n        to: customer_id\n    relationship: many_to_one\n    status: ${status}\n${approval}`,
+      ),
+    );
+    return root;
+  }
+
+  const scopeIssues = async (root: string) => {
+    const r = await semlayer(root, ["validate", "--json"]);
+    return (r.json<{ issues: { level: string; code: string; file: string; path: string; message: string }[] }>().issues ?? []).filter((i) => i.code.startsWith("scope."));
+  };
+
+  // What semlayer approve --target schema-pair:... writes once the owner says yes.
+  const stampApproval = (root: string) =>
+    writeFileSync(sourceFile(root), readFileSync(sourceFile(root), "utf8").replace("status: draft", "status: approved\n    approved_by: Dana\n    approved_at: 2026-01-15"));
+
+  test("add-cross-schema writes a draft pair from a constraint or from columns, and the same keys again change nothing", async () => {
+    const root = await project();
+    const r = await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--constraint", "orders_customer_fk", "--json"]);
+    expect(r.code).toBe(0);
+    const pair: CrossSchemaPair = { from: "sales", to: "crm", status: "draft", keys: [{ from: "orders.customer_id", to: "customers.customer_id", constraint: "orders_customer_fk" }] };
+    expect(r.json()).toMatchObject({ changed: true, file: "sources/warehouse.yaml", ref: "schema-pair:warehouse:sales:crm", pair, next: 'semlayer approve --target schema-pair:warehouse:sales:crm --by "<owner>"' });
+    expect(pairsOf(root)).toEqual([pair]);
+    const again = await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--keys", "Orders.Customer_ID=customers.customer_id", "--json"]);
+    expect(again.json()).toMatchObject({ changed: false });
+    const more = await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--keys", "orders.region_id=regions.region_id"]);
+    expect(more.code).toBe(0);
+    expect(more.out).toContain("Recorded the draft pair sales -> crm in sources/warehouse.yaml, on orders.customer_id = customers.customer_id and orders.region_id = regions.region_id.");
+    expect(pairsOf(root)![0]!.keys).toHaveLength(2);
+    expect(readFileSync(sourceFile(root), "utf8")).toStartWith(SOURCE);
+  });
+
+  test("add-cross-schema refuses a key, a constraint or a schema the snapshot or the source lacks, writing nothing", async () => {
+    const root = await project();
+    const add = (...args: string[]) => semlayer(root, ["add-cross-schema", "--source", "warehouse", ...args]);
+    const missing = await add("--from", "sales", "--to", "crm", "--keys", "orders.customer_id=customers.no_such");
+    expect(missing.code).toBe(1);
+    expect(missing.err).toContain("orders.customer_id=customers.no_such: crm.customers has no column no_such in the snapshot. Nothing was written.");
+    const wrongWay = await add("--from", "sales", "--to", "crm", "--keys", "customers.customer_id=orders.customer_id");
+    expect(wrongWay.err).toContain("the snapshot has no table sales.customers");
+    const constraint = await add("--from", "sales", "--to", "crm", "--constraint", "orders_store_fk");
+    expect(constraint.err).toContain("The snapshot of warehouse has no foreign key orders_store_fk from a table of sales into crm.");
+    const unread = await add("--from", "sales", "--to", "finance", "--keys", "orders.order_id=ledger.order_id");
+    expect(unread.code).toBe(1);
+    expect(unread.err).toContain(
+      "finance is not among the schemas source warehouse reads (sales, crm). Nothing was written. Read it first with semlayer setup --source warehouse --dialect postgres --env WAREHOUSE_URL --schemas sales,crm,finance, which reads the catalog again",
+    );
+    expect((await add("--from", "sales", "--to", "sales", "--keys", "orders.store_id=stores.store_id")).err).toContain("a pair joins two schemas");
+    expect((await add("--from", "sales", "--to", "crm")).err).toContain("give --keys or --constraint, or --decline");
+    expect(readFileSync(sourceFile(root), "utf8")).toBe(SOURCE);
+  });
+
+  test("--decline writes a declined pair with the owner's words, and draft then asks nothing about keys between the two schemas", async () => {
+    const root = await project();
+    const refused = await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--decline"]);
+    expect(refused.err).toContain("--decline needs --reply with the owner's words");
+    const r = await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--decline", "--reply", "No, keep to sales", "--json"]);
+    expect(r.code).toBe(0);
+    const pair: CrossSchemaPair = { from: "sales", to: "crm", status: "declined", reply: "No, keep to sales", declined_at: "2026-01-15" };
+    expect(r.json()).toMatchObject({ changed: true, pair, next: "semlayer next" });
+    expect(pairsOf(root)).toEqual([pair]);
+    const d = await semlayer(root, ["draft", "--source", "warehouse", "--json"]);
+    expect(d.json<{ cross_schema_keys: unknown[] }>().cross_schema_keys).toEqual([]);
+    const orders = readYaml<{ open_questions?: string[] }>(join(root, "models", "warehouse", "orders.yaml"));
+    expect((orders.open_questions ?? []).filter((q) => q.includes("crm.customers"))).toEqual([]);
+    // A no over an approved pair says the approval is gone.
+    writeFileSync(sourceFile(root), readFileSync(sourceFile(root), "utf8").replace("status: declined", "status: approved"));
+    const over = await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--decline", "--reply", "No again"]);
+    expect(over.out).toContain("This replaced the approved pair, whose approval is gone");
+    // A yes later replaces the no with a draft pair.
+    expect((await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--constraint", "orders_customer_fk"])).code).toBe(0);
+    expect(pairsOf(root)).toMatchObject([{ status: "draft", keys: [{ constraint: "orders_customer_fk" }] }]);
+    expect(pairsOf(root)![0]).not.toHaveProperty("reply");
+  });
+
+  test("validate errors on a draft join across an undeclared pair, still errors on a draft pair, and passes once the pair is approved", async () => {
+    const root = await crossJoin();
+    const before = await scopeIssues(root);
+    expect(before).toEqual([
+      {
+        level: "error",
+        code: "scope.cross_schema_undeclared",
+        file: "models/warehouse/orders.yaml",
+        path: "joins[0]",
+        message:
+          "joins sales.orders to crm.customers across schemas, and no approved schema pair declares these keys. Ask the owner whether the layer joins these schemas: " +
+          "record the pair with semlayer add-cross-schema --source warehouse --from sales --to crm --keys orders.customer_id=customers.customer_id, read it back and approve it on their yes, " +
+          "or remove the join with semlayer remove-join --source warehouse --model orders --name customer",
+      },
+    ]);
+    expect((await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--constraint", "orders_customer_fk"])).code).toBe(0);
+    expect(await scopeIssues(root)).toEqual(before);
+    stampApproval(root);
+    expect(await scopeIssues(root)).toEqual([]);
+    const v = await semlayer(root, ["validate", "--json"]);
+    expect(JSON.stringify(v.json())).not.toContain("cross_schema");
+  });
+
+  test("an approved join across an undeclared pair is a warning until the next minor version, then an error", async () => {
+    const root = await crossJoin("approved");
+    expect((await scopeIssues(root)).map((i) => [i.level, i.code])).toEqual([["warning", "scope.cross_schema_undeclared"]]);
+    expect(UNDECLARED_GRACE_ENDS).toBe("0.2.0");
+    const manifest = JSON.parse(readFileSync(join(import.meta.dir, "..", ".claude-plugin", "plugin.json"), "utf8")) as { version: string };
+    expect(toolVersion()).toBe(manifest.version);
+    expect(undeclaredApprovedLevel("0.1.0")).toBe("warning");
+    expect(undeclaredApprovedLevel("0.1.9")).toBe("warning");
+    expect(undeclaredApprovedLevel("0.2.0")).toBe("error");
+    expect(undeclaredApprovedLevel("1.0.0")).toBe("error");
+    expect(undeclaredApprovedLevel(undefined)).toBe("error");
+  });
+
+  test("an approved pair allows a join either way on its keys only", () => {
+    const pair = { from: "sales", to: "crm", status: "approved" as const, approved_by: "Dana", approved_at: "2026-01-15", keys: [{ from: "orders.customer_id", to: "customers.customer_id" }] };
+    const forward = { fromSchema: "sales", fromTable: "orders", toSchema: "crm", toTable: "customers", keys: [{ from: "customer_id", to: "customer_id" }] };
+    const back = { fromSchema: "crm", fromTable: "customers", toSchema: "sales", toTable: "orders", keys: [{ from: "customer_id", to: "customer_id" }] };
+    expect(pairAllowed([pair], forward)).toBe(true);
+    expect(pairAllowed([pair], back)).toBe(true);
+    expect(pairAllowed([pair], { ...forward, keys: [{ from: "region_id", to: "customer_id" }] })).toBe(false);
+    expect(pairAllowed([{ ...pair, status: "draft" }], forward)).toBe(false);
+    expect(pairAllowed([{ ...pair, status: "declined" }], forward)).toBe(false);
+    expect(pairAllowed([], forward)).toBe(false);
+    expect(pairAllowed([], { ...forward, toSchema: "sales" })).toBe(true);
+  });
+
+  test("validate names a pair key missing from the snapshot, a primary outside the schemas read, and an approved pair no join crosses", async () => {
+    const root = await project(SOURCE.replace("  schemas: [sales, crm]\n", "  schemas: [sales, crm]\n  primary: finance\n"));
+    expect((await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--constraint", "orders_customer_fk"])).code).toBe(0);
+    stampApproval(root);
+    const snap = JSON.parse(readFileSync(FIXTURE, "utf8")) as Snapshot;
+    const customers = snap.tables.find((t) => t.name === "customers")!;
+    customers.columns = customers.columns.filter((c) => c.name !== "customer_id");
+    writeFileSync(join(root, "snapshots", "warehouse.json"), JSON.stringify(snap));
+    expect((await scopeIssues(root)).map((i) => [i.level, i.code, i.path])).toEqual([
+      ["error", "scope.primary_not_in_schemas", "intake.primary"],
+      ["error", "scope.key_not_in_snapshot", "cross_schema[0].keys[0]"],
+      ["warning", "scope.pair_unused", "cross_schema[0]"],
+    ]);
+  });
+
+  test("remove-cross-schema removes keys the pair lists, sending it back to draft, then the pair", async () => {
+    const root = await project();
+    const add = ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--keys", "orders.customer_id=customers.customer_id,orders.region_id=regions.region_id"];
+    expect((await semlayer(root, add)).code).toBe(0);
+    stampApproval(root);
+    const rm = (...args: string[]) => semlayer(root, ["remove-cross-schema", "--source", "warehouse", ...args]);
+    expect((await rm("--from", "crm", "--to", "sales")).err).toContain("It declares sales -> crm: run semlayer remove-cross-schema --source warehouse --from sales --to crm.");
+    expect((await rm("--from", "sales", "--to", "crm", "--keys", "orders.sku=products.sku")).err).toContain("The pair sales -> crm lists no key orders.sku=products.sku. Nothing was written.");
+    const one = await rm("--from", "sales", "--to", "crm", "--keys", "orders.region_id=regions.region_id", "--json");
+    expect(one.json()).toMatchObject({ changed: true, removed_pair: false, removed_keys: [{ from: "orders.region_id", to: "regions.region_id" }] });
+    expect(pairsOf(root)).toEqual([{ from: "sales", to: "crm", status: "draft", keys: [{ from: "orders.customer_id", to: "customers.customer_id" }] }]);
+    const all = await rm("--from", "sales", "--to", "crm");
+    expect(all.out).toContain("Removed the pair sales -> crm from sources/warehouse.yaml.");
+    expect(readFileSync(sourceFile(root), "utf8")).toBe(SOURCE);
   });
 });

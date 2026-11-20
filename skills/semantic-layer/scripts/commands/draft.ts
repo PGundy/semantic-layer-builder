@@ -13,7 +13,7 @@ import { protectedColumns, redactSnapshot } from "../lib/profile.ts";
 import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot, saveSnapshot } from "../lib/project.ts";
 import { effectiveScope } from "../lib/table-list.ts";
 import { rankTables } from "../lib/rank.ts";
-import { crossSchemaFks } from "../lib/schema-scope.ts";
+import { crossSchemaFks, crossSchemaPairs, findPair } from "../lib/schema-scope.ts";
 import type { Model, Scope, Snapshot, SnapshotTable, SourceConfig } from "../lib/types.ts";
 import { updateYaml, writeYaml } from "../lib/yaml.ts";
 import { sourceFlag } from "./tables.ts";
@@ -312,7 +312,7 @@ const spec: CommandSpec = {
     }
 
     const knownTables = snapshot.tables.filter((t) => inScope(scope, t) || modeled.has(keyOf(t)));
-    const { models, notes } = draftModels(snapshot, selected, existing, { source: sourceName, stripPrefixes, knownTables });
+    const { models, notes } = draftModels(snapshot, selected, existing, { source: sourceName, stripPrefixes, knownTables, crossSchema: crossSchemaPairs(source) });
 
     const drafted: DraftedEntry[] = [];
     for (const model of models) {
@@ -342,6 +342,7 @@ const spec: CommandSpec = {
     const draftedTables = new Set(drafted.map((d) => d.table.toLowerCase()));
     const crossKeys = crossSchemaFks({ tables: selected })
       .filter((x) => draftedTables.has(qualifiedName(x.table).toLowerCase()))
+      .filter((x) => findPair(crossSchemaPairs(source), x.from_schema ?? "", x.to_schema ?? "")?.status !== "declined")
       .map((x) => ({
         table: qualifiedName(x.table),
         columns: x.fk.columns,

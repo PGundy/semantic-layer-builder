@@ -23,7 +23,9 @@ function draftAll(snap: Snapshot): Map<string, Model> {
 
 const CROSS_QUESTION =
   "customer_id references crm.customers through the foreign key orders_customer_fk, across schemas: sales.orders is in sales and customers in crm. " +
-  "A join across schemas is drafted only after you say which schemas the layer joins. Do your questions need crm.customers?";
+  "A join across schemas is drafted only after you say which schemas the layer joins. Do your questions need crm.customers? " +
+  "If yes, record the pair with semlayer add-cross-schema --source warehouse --from sales --to crm --constraint orders_customer_fk; " +
+  'if no, with semlayer add-cross-schema --source warehouse --from sales --to crm --decline --reply "<the owner\'s words>".';
 
 describe("draft on a two-schema snapshot", () => {
   test("drafts no join across schemas from matching names, and keeps the joins within the schema", () => {
@@ -48,7 +50,12 @@ describe("draft on a two-schema snapshot", () => {
     const orders = snap.tables.find((t) => t.name === "orders")!;
     delete orders.foreign_keys![0]!.constraint;
     const questions = draftAll(snap).get("orders")!.open_questions ?? [];
-    expect(questions.filter((q) => q.includes("crm.customers"))).toEqual([CROSS_QUESTION.replace("the foreign key orders_customer_fk", "a foreign key whose name the snapshot does not record")]);
+    expect(questions.filter((q) => q.includes("crm.customers"))).toEqual([
+      CROSS_QUESTION.replace("the foreign key orders_customer_fk", "a foreign key whose name the snapshot does not record").replace(
+        "--constraint orders_customer_fk",
+        "--keys orders.customer_id=customers.customer_id",
+      ),
+    ]);
   });
 
   test("semlayer draft --source warehouse writes the same-schema joins and the question", async () => {
