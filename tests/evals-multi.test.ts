@@ -108,6 +108,7 @@ describe("acme-multi", () => {
       ["approvals", 1],
       ["connection_first", 1],
       ["authority", 1],
+      ["validate", 1],
       ["effort", null],
     ]);
     expect(grader(grades, "authority").details).toContain("transcript.jsonl: each of the 5 role-agent turn(s) ran only the semlayer commands its role may run.");
