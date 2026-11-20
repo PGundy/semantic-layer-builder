@@ -99,7 +99,9 @@ describe("a run on PostgreSQL", () => {
     expect(snapshot.tables.length).toBe(200);
     const rows = Object.fromEntries(snapshot.tables.filter((t) => (REAL_TABLES as readonly string[]).includes(t.name)).map((t) => [t.name, t.row_count]));
     expect(rows).toEqual({ fct_orders: 5000, dim_customers: 500, dim_regions: 6 });
-    expect(snapshot.tables.filter((t) => t.row_count === 0).length).toBe(DECOY_COUNT);
+    // The decoys are empty: a row count of 0, or none on PostgreSQL 13, which cannot tell an empty
+    // analyzed table from one never analyzed.
+    expect(snapshot.tables.filter((t) => !t.row_count).length).toBe(DECOY_COUNT);
     expect(readdirSync(out).length).toBe(1);
   }, 60_000);
 
