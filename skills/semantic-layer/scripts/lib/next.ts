@@ -468,11 +468,12 @@ function connectionBlock(root: string, env: Env, a: NextAction): NextAction | un
 function noLayerAction(root: string): NextAction {
   const why =
     `No semantic layer at ${root} yet, so the first step creates it (if one exists elsewhere, pass --root <dir>). Follow references/phases/intake.md, ` +
-    "First turn: ask the owner for a read-only connection to their data, and propose a default <name> for the layer from the company or the source " +
+    "First turn: ask the owner for a read-only connection to their Postgres database (DuckDB for sample data and files), and propose a default <name> for the layer from the company or the source " +
     "(a short name such as acme, in lowercase letters, digits and _; it can be changed later in semantic.yaml). Once they name the connection, " +
     "semlayer setup with --name <name> creates the layer and its first source in one command; without a connection, run the command below.";
   const ask =
-    "Which database should the layer read, through a read-only connection? Name the environment variable or env file that holds it, never its value. " +
+    "Which database should the layer read, through a read-only connection? It is built on a Postgres database, or on DuckDB for sample data and files such as Parquet or CSV. " +
+    "Name the environment variable or env file that holds it, never its value. " +
     "I suggest calling the layer <name> (a short name from the company or the source, such as acme); say if you prefer another.";
   return { kind: "ask_owner", phase: "init", why, action: { command: "init", args: ["--name", "<name>"], kind: "ask_owner" }, ask_owner: { text: ask, items: [] }, blocked_on: null };
 }

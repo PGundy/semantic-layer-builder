@@ -13,7 +13,6 @@ export const RULES: DocRule[] = [
   ["phases/intake.md", "baseline without profiles", "Without profiles it says which facts `semlayer profile` would measure"],
   ["phases/intake.md", "scope before following the baseline's profile hint", "scope first (`phases/scope.md`) and ignore its closing `semlayer profile` and `semlayer draft` hint until the scope is written"],
   ["phases/intake.md", "baseline only for sources with a snapshot", "`semlayer baseline` for each source that now has a snapshot"],
-  ["phases/intake.md", "import names the saved file", "`semlayer setup --source <s> --dialect <d> --export <the saved file> --reason \"<why>\"` (`schema.csv`, or `schema.tsv` from MySQL) imports it"],
   // Connection first (docs/PRD.md FR-1.0).
   ["phases/intake.md", "the first message asks for a connection", "your first message asks for a read-only connection to each source, with one plain sentence of why (Connection first, below), before anything about an export"],
   ["phases/intake.md", "a connection first, with its reason", "Ask for a read-only connection to each source before anything else, with one plain sentence of why: profiles, join evidence and goldens need the data"],
@@ -28,5 +27,4 @@ export const RULES: DocRule[] = [
   ["phases/intake.md", "the upgrade is offered at each session start", "`semlayer status` names the upgrade on every session start (`next_step.connection_upgrade`), and `semlayer next` names it (kind `run`) as the `connect` step once every other step is done; at each session start ask the owner once whether a connection is possible now"],
   ["phases/intake.md", "the upgrade's contradictions go back to the owner", "it profiles, checks every join and lists the items the data contradicts, and its next step reads them back (`semlayer readback --targets <refs>`) for the owner to answer"],
   ["phases/intake.md", "export-sql patterns beside --schemas", "`--include` and `--exclude` take the scope patterns of `phases/scope.md` and are written into the query"],
-  ["phases/intake.md", "MySQL and SQL Server stop at the baseline", "for MySQL and SQL Server only the export and the baseline are supported"],
 ];

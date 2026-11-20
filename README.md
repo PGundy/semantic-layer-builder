@@ -118,11 +118,11 @@ semlayer usage add --source warehouse ./queries   # optional: saved queries or a
 semlayer status
 ```
 
-Snowflake, BigQuery and Databricks sources take `--emit-sql` and `--results <file>`: the CLI prints the queries, and you or the agent run them with your own tool. [`spec.md`](skills/semantic-layer/references/spec.md) has the full CLI table.
+[`spec.md`](skills/semantic-layer/references/spec.md) has the full CLI table.
 
 ## What it builds
 
-1. **Intake.** Each source's schema, read live (DuckDB, Postgres), through the agent's own warehouse tool, or from an `information_schema` export, a dbt manifest or DDL. Saved queries and query logs can be added as evidence.
+1. **Intake.** Each source's schema, read live (DuckDB, Postgres), or from an `information_schema` export, a dbt manifest or DDL. Saved queries and query logs can be added as evidence.
 2. **Focus.** Past 12 tables, you choose which matter, with patterns such as `fct_*` or `*_archive`; nobody describes 20 tables at once.
 3. **Profile and draft.** Row counts, null rates, top values and candidate keys, then a draft model per table with its dimensions, measures, joins, PII tags and open questions.
 4. **Interview.** A few tables at a time, most important first; each item read back and approved only on your yes. An approval records a hash, so `semlayer validate` reports an approved item that changed afterwards.
@@ -205,7 +205,8 @@ A client configured by JSON takes `{"command": "bun", "args": ["<path to>/skills
 |---|---|---|---|
 | DuckDB | live | live | Files DuckDB reads, such as Parquet or CSV, as views in the source file, or a `.duckdb` database opened read-only |
 | Postgres | live | live | Read-only transactions; connect with a SELECT-only role; the URL stays in an env var |
-| Snowflake, BigQuery, Databricks | query plan | query plan | `--emit-sql` prints the SQL; the agent runs it with its own connector and passes `--results` |
+
+Postgres is the database a layer is built on; DuckDB is for the demo, sample data and files. The code for Snowflake, BigQuery, Databricks, Redshift, MySQL and SQL Server is kept but not supported for new work, and [`other-dialects.md`](skills/semantic-layer/references/other-dialects.md) describes it.
 
 Joins live within one source. A question that spans sources becomes an open question, because joining across engines needs a federating engine of its own.
 
