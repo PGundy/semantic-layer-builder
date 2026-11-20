@@ -11,7 +11,8 @@ import { loadFile, loadMetrics, paths } from "./project.ts";
 import { type Issue, validateProject } from "./validate.ts";
 import { editYamlText } from "./yaml.ts";
 import { findField, parseTarget } from "./refs.ts";
-import { NAME_PATTERN, type Metric, type Model } from "./types.ts";
+import { throughCurrent } from "./readback-bridge.ts";
+import { type Join, NAME_PATTERN, type Metric, type Model } from "./types.ts";
 
 export function modelProblems(ref: string, m: Model): string[] {
   const out: string[] = [];
@@ -90,6 +91,8 @@ export interface Lack {
   target: string;
   text: string;
   edit?: string[];
+  // The one command that gives it, when no typed edit does.
+  command?: string;
 }
 
 // Issues an approval adds that are not the item's to fix before it: the approval's own bookkeeping
@@ -200,6 +203,29 @@ export function approvedIssues(root: string, refs: string[]): Lack[] {
 }
 
 const DESCRIBE = "<what it means, in the owner's words>";
+// The words of semlayer validate's join.through_dedupe_missing (lib/validate-rules/join.ts).
+const DEDUPE_MISSING = "is approved but has no dedupe rule";
+
+// What a bridge join lacks before the owner may say yes to it: the dedupe rule, which semlayer set
+// writes into its through, and evidence of the bridge, which semlayer check-join measures.
+function bridgeLacks(ref: string, source: string, model: Model, join: Join): Lack[] {
+  const t = join.through!;
+  const out: Lack[] = [];
+  if (!t.dedupe) {
+    const { dedupe: _, weight: __, ...rest } = t;
+    const value = JSON.stringify({ ...rest, dedupe: "<distinct_pairs, equal_split or weight, as the owner chose>" });
+    out.push({
+      target: ref,
+      text: `it is a bridge join with no dedupe rule: the owner has not said how a figure is shared among the ${join.to} values of one ${model.model} row (with weight, also add "weight": "<numeric column of ${String(t.model)}>")`,
+      edit: ["set", ref, "through", value],
+    });
+  }
+  const ev = join.evidence?.through;
+  const command = `semlayer check-join --source ${source} --model ${model.model} --join ${join.name}`;
+  if (!ev) out.push({ target: ref, text: `it is a bridge join with no bridge evidence: ${command} measures ${String(t.model)} first`, command });
+  else if (!throughCurrent(join, ev)) out.push({ target: ref, text: `its bridge evidence measured another bridge or other keys: ${command} measures it again`, command });
+  return out;
+}
 
 // What each target lacks that semlayer approve would refuse it for, besides the owner's yes. Unknown
 // targets are left to the readback, which names them.
@@ -232,11 +258,14 @@ export function approvalLacks(root: string, refs: string[]): Lack[] {
       continue;
     }
     const match = findField(model, t.field);
+    if (match?.kind === "join" && match.item.through) out.push(...bridgeLacks(ref, t.source, model, match.item));
     if (match?.kind !== "measure") continue;
     const text = describedProblem(ref, "Measure", match.item);
     if (text) out.push({ target: ref, text, edit: ["set", ref, "description", DESCRIBE] });
   }
-  return [...out, ...approvedIssues(root, refs)];
+  // A bridge join's missing rule is a lack of its own above (bridgeLacks), with the edit that gives it.
+  const ruled = new Set(out.filter((l) => l.edit?.[2] === "through").map((l) => l.target));
+  return [...out, ...approvedIssues(root, refs).filter((l) => !(ruled.has(l.target) && l.text.includes(DEDUPE_MISSING)))];
 }
 
 // The semlayer apply input that gives every item what it lacks, for the lacks a typed edit gives.
@@ -261,7 +290,12 @@ export function readbackGate(root: string, refs: string[]): void {
   const lacks = approvalLacks(root, refs);
   if (!lacks.length) return;
   const edits = lacks.filter((l) => l.edit);
-  const fix = edits.length
+  // With no typed edit to give, one command that gives every lack is named as the next one.
+  const commands = [...new Set(lacks.map((l) => l.command))];
+  const only = !edits.length && commands.length === 1 ? commands[0] : undefined;
+  const fix = only
+    ? [`Run ${only}, then run the same semlayer readback again.`]
+    : edits.length
     ? [
         `Give ${lacks.length === 1 ? "it" : "them"} in one command, each <placeholder> filled in from what the owner said (ask them for what you do not know)${edits.length < lacks.length ? ", fix the other lines as their words say" : ""}, then run the same semlayer readback again:`,
         `  semlayer apply --file - with this on its standard input: ${lacksFile(lacks)}`,
@@ -273,7 +307,7 @@ export function readbackGate(root: string, refs: string[]): void {
       ...lacks.map((l) => `  - ${l.target}: ${l.text}`),
       ...fix,
     ].join("\n"),
-    "semlayer apply --file -",
+    only ?? "semlayer apply --file -",
     "readback_blocked",
   );
 }

@@ -17,6 +17,11 @@ const codes: CodeFamily = {
     meaning: "An approved bridge join has no dedupe rule: the owner has not said how a figure is shared among the values of one row.",
     next: "semlayer add-bridge",
   },
+  "join.through_facts_unbridged": {
+    level: "warning",
+    meaning: "The bridge evidence of a bridge join shows rows of the model with no bridge row, so a figure grouped by the target shows them under an empty value or leaves them out.",
+    next: "semlayer check-join",
+  },
   "join.through_relationship_invalid": {
     level: "error",
     meaning: "A bridge join says a relationship other than one_to_many, so the compiler would join the target as if it held the join's keys.",
