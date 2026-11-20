@@ -1,6 +1,7 @@
 import { relative } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 import { bool, list, str } from "../lib/command.ts";
+import { writeDrift } from "../lib/drift-record.ts";
 import { UserError } from "../lib/errors.ts";
 import { droppedText, dropOtherSchemas, intakeSchemas, schemaFilter, schemaListText } from "../lib/intake.ts";
 import { buildSnapshot, snapshotCounts } from "../lib/introspect.ts";
@@ -212,9 +213,14 @@ const spec: CommandSpec = {
     }
     const loadModels = () => listModels(ctx.root, source.source).map((l) => l.model);
     const scopeChanges = recordScope(previous, snapshot, selectionMatcher(source, scope), loadModels);
+    const diff = previous ? diffSnapshots(previous, snapshot) : null;
+    // The drift record is written first, so a refusal there leaves the snapshot as it was.
+    if (diff) {
+      const unreadableNames = unreadable.map((r) => `${r.schema}.${r.name}`);
+      writeDrift(ctx.root, { source: source.source, dialect: source.dialect, snapshot, diff, at: ctx.now().toISOString(), unreadable: unreadableNames, models: loadModels });
+    }
     saveSnapshot(ctx.root, snapshot);
     unlock();
-    const diff = previous ? diffSnapshots(previous, snapshot) : null;
     const changes = diff && scopeChanges ? { ...diff, ...scopeChanges } : null;
 
     const counts = snapshotCounts(snapshot);
