@@ -9,6 +9,7 @@ import { findTable, splitQualified } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
 import { emitPlan, executePlanPartial, resultsInput } from "../lib/plan.ts";
 import { listModels, loadModel, loadSnapshot, loadSource, paths } from "../lib/project.ts";
+import { type CrossSchemaPair, crossSchemaLevel, crossSchemaPairs, schemaJoin, undeclaredPairError } from "../lib/schema-scope.ts";
 import { joinCheckPlan, joinQueryId, type JoinCheck, type TableRef } from "../lib/sql/join-check.ts";
 import { NAME_PATTERN, type Join, type JoinEvidence, type JoinKey, type Model, type Snapshot } from "../lib/types.ts";
 import { updateYaml } from "../lib/yaml.ts";
@@ -70,7 +71,7 @@ function resolveTable(snapshot: Snapshot | null, model: Model, keyColumns: strin
   return { ref: { schema: table.schema, name: table.name }, columns };
 }
 
-function buildTarget(ctx: CommandContext, source: string, snapshot: Snapshot | null, path: string, model: Model, join: Join): Target {
+function buildTarget(ctx: CommandContext, source: string, snapshot: Snapshot | null, pairs: readonly CrossSchemaPair[], path: string, model: Model, join: Join): Target {
   const where = `Join "${join.name}" on model "${model.model}"`;
   if (!join.to) throw new UserError(`${where} has no "to" model.`);
   if (typeof join.to !== "string" || !NAME_PATTERN.test(join.to)) {
@@ -89,6 +90,11 @@ function buildTarget(ctx: CommandContext, source: string, snapshot: Snapshot | n
   }
   const left = resolveTable(snapshot, model, keys.map((k) => k.from), "left");
   const rightTable = resolveTable(snapshot, right, keys.map((k) => k.to), "right");
+  // A join across schemas is measured only when an approved pair declares its keys, or while an
+  // approved join's grace lasts (spec: Schema scope).
+  const shape = schemaJoin(snapshot, model.table, right.table, keys);
+  if (shape && crossSchemaLevel(pairs, shape, join.status) === "error")
+    throw undeclaredPairError(where, source, shape, pairs, `run semlayer check-join --source ${source} --model ${model.model} --join ${join.name} again`);
   const resolvedKeys: JoinKey[] = keys.map((_, i) => ({ from: left.columns[i]!, to: rightTable.columns[i]! }));
   return {
     path,
@@ -104,6 +110,7 @@ function selectTargets(
   ctx: CommandContext,
   source: string,
   snapshot: Snapshot | null,
+  pairs: readonly CrossSchemaPair[],
   modelName: string | undefined,
   joinName: string | undefined,
   all: boolean,
@@ -124,11 +131,11 @@ function selectTargets(
         const known = joins.map((j) => j.name);
         throw new UserError(`Model "${model.model}" has no join "${joinName}". Joins: ${known.length ? known.join(", ") : "none"}.`);
       }
-      targets.push(buildTarget(ctx, source, snapshot, path, model, join));
+      targets.push(buildTarget(ctx, source, snapshot, pairs, path, model, join));
     } else {
       for (const join of joins) {
         try {
-          targets.push(buildTarget(ctx, source, snapshot, path, model, join));
+          targets.push(buildTarget(ctx, source, snapshot, pairs, path, model, join));
         } catch (err) {
           if (!(err instanceof UserError)) throw err;
           skipped.push({ model: model.model, join: String(join?.name), reason: err.message });
@@ -198,7 +205,7 @@ const spec: CommandSpec = {
     const joinName = requireName("join", str(values, "join"));
     const source = loadSource(ctx.root, sourceName);
     const snapshot = loadSnapshot(ctx.root, sourceName);
-    const { targets, skipped } = selectTargets(ctx, sourceName, snapshot, modelName, joinName, bool(values, "all"));
+    const { targets, skipped } = selectTargets(ctx, sourceName, snapshot, crossSchemaPairs(source), modelName, joinName, bool(values, "all"));
     const skippedLines = skipped.map((s) => `${s.model}.${s.join}: skipped: ${s.reason}`);
 
     const plan = joinCheckPlan(source, targets.map((t) => t.check));
