@@ -82,13 +82,17 @@ describe("introspect: duckdb", () => {
     expect(orders.columns[2]).toEqual({ name: "amount_cents", type: "BIGINT", nullable: true, description: "Order value in cents." });
     expect(orders.columns[0]!.nullable).toBe(false);
     expect(orders.foreign_keys).toEqual([
-      { columns: ["customer_id"], references: { schema: "sales", table: "customers", columns: ["customer_id"] } },
+      { columns: ["customer_id"], references: { schema: "sales", table: "customers", columns: ["customer_id"] }, constraint: "orders_customer_id_customer_id_fkey" },
     ]);
     const lines = table(s, "sales", "order_lines");
     expect(lines.primary_key).toEqual(["order_id", "line_no"]);
     const ship = table(s, "sales", "shipments");
     expect(ship.foreign_keys).toEqual([
-      { columns: ["order_id", "line_no"], references: { schema: "sales", table: "order_lines", columns: ["order_id", "line_no"] } },
+      {
+        columns: ["order_id", "line_no"],
+        references: { schema: "sales", table: "order_lines", columns: ["order_id", "line_no"] },
+        constraint: "shipments_order_id_line_no_order_id_line_no_fkey",
+      },
     ]);
     const view = table(s, "sales", "big_orders");
     expect(view.kind).toBe("view");
@@ -502,10 +506,10 @@ describe("introspect: postgres", () => {
     expect(lines.row_count).toBeNull();
     expect(lines.columns.find((c) => c.name === "qty")!.type).toBe("numeric(10,2)");
     expect(lines.foreign_keys).toEqual([
-      { columns: ["customer_id"], references: { schema, table: "customers", columns: ["customer_id"] } },
+      { columns: ["customer_id"], references: { schema, table: "customers", columns: ["customer_id"] }, constraint: "order_lines_customer_id_fkey" },
     ]);
     expect(table(s, schema, "returns").foreign_keys).toEqual([
-      { columns: ["order_id", "line_no"], references: { schema, table: "order_lines", columns: ["order_id", "line_no"] } },
+      { columns: ["order_id", "line_no"], references: { schema, table: "order_lines", columns: ["order_id", "line_no"] }, constraint: "returns_order_id_line_no_fkey" },
     ]);
     const view = table(s, schema, "v_lines");
     expect(view.kind).toBe("view");
@@ -650,7 +654,7 @@ describe("introspect: plan-only dialects", () => {
     const returns = table(s, "sales", "returns");
     expect(returns.columns.map((c) => c.name)).toEqual(["order_id", "line_no"]);
     expect(returns.foreign_keys).toEqual([
-      { columns: ["order_id", "line_no"], references: { schema: "sales", table: "lines", columns: ["order_id", "line_no"] } },
+      { columns: ["order_id", "line_no"], references: { schema: "sales", table: "lines", columns: ["order_id", "line_no"] }, constraint: "fk_lines" },
     ]);
   });
 
@@ -723,10 +727,10 @@ describe("introspect: plan-only dialects", () => {
     expect(table(s, "gold", "orders")).toMatchObject({ kind: "external", description: "Orders.", primary_key: ["order_id"] });
     expect(table(s, "gold", "lines").primary_key).toEqual(["order_id", "line_no"]);
     expect(table(s, "gold", "lines").foreign_keys).toEqual([
-      { columns: ["order_id"], references: { schema: "gold", table: "orders", columns: ["order_id"] } },
+      { columns: ["order_id"], references: { schema: "gold", table: "orders", columns: ["order_id"] }, constraint: "fk_lines_orders" },
     ]);
     expect(table(s, "gold", "returns").foreign_keys).toEqual([
-      { columns: ["order_id", "line_no"], references: { schema: "gold", table: "lines", columns: ["order_id", "line_no"] } },
+      { columns: ["order_id", "line_no"], references: { schema: "gold", table: "lines", columns: ["order_id", "line_no"] }, constraint: "fk_ret_lines" },
     ]);
   });
 });

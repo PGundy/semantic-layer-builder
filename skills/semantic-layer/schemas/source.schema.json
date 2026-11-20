@@ -97,6 +97,11 @@
           },
           "description": "The only schemas read. A plain identifier; for BigQuery a dataset or project.dataset, for DuckDB an attached database's database.schema. semlayer validate errors on a duplicate and on a name that is not one, and warns on an empty list."
         },
+        "primary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The primary schema: the one schema a first layer reads and joins within. Absent, the primary is the only entry of schemas, or the only schema of the snapshot when schemas is absent or empty; with more than one, there is none. semlayer setup --primary writes it."
+        },
         "export": {
           "type": "object",
           "description": "Export mode only: the catalog export the source was imported from.",

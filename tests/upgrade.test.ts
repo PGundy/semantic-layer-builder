@@ -46,7 +46,7 @@ function tree(dir: string): Record<string, string> {
 
 interface UpgradeJson {
   upgraded: boolean;
-  intake: { mode: string; schemas: string[] };
+  intake: { mode: string; schemas: string[]; primary: string | null };
   source: { changes: { intake_mode: boolean; reason: boolean; export_file: string | null; connection: string[] } };
   changes: { tables_added: string[]; tables_removed: string[]; columns: { table: string; added: { name: string }[]; removed: string[] }[] } | null;
   profiled: string[];
@@ -180,7 +180,7 @@ describe("the Acme lake, from an export to a connection", () => {
     expect(r.code).toBe(0);
     const j = r.json<UpgradeJson>();
     expect(j.upgraded).toBe(true);
-    expect(j.intake).toEqual({ mode: "connection", schemas: ["main"] });
+    expect(j.intake).toEqual({ mode: "connection", schemas: ["main"], primary: "main" });
     expect(j.source.changes).toMatchObject({ intake_mode: true, reason: true, export_file: "removed", connection: ["database", "views"] });
     const source = readYaml<SourceConfig>(join(root, "sources", "lake.yaml"));
     expect(source.intake).toEqual({ mode: "connection", schemas: ["main"] });
