@@ -75,7 +75,7 @@ A change should:
 
 - add or update tests for what it changes; a fix comes with a test that reproduces the problem;
 - update `references/spec.md` and the JSON Schemas when it changes a file format, and the CLI table in `spec.md` when it adds or changes a command or flag (`tests/skill-docs.test.ts` fails when a doc shows a command or flag the CLI lacks, or the table and `--help` disagree);
-- keep `SKILL.md` under 120 lines and each phase card under 150: a phase's steps go in its card, detail in the topic reference, and a new phase `semlayer next` can name gets a row in `SKILL.md`'s router table and a card (`tests/skill-docs.test.ts` checks the caps, the table and every card's commands against `--help`);
+- keep `SKILL.md` at 110 lines or fewer (under the cap of 120) and each phase card under 150: a phase's steps go in its card, detail in the topic reference, and a new phase `semlayer next` can name gets a row in `SKILL.md`'s router table and a card (`tests/skill-docs.test.ts` checks the caps, the table and every card's commands against `--help`);
 - write docs and comments in the present tense, describing what the code does.
 
 Before a release, run the exit walkthrough by hand (`evals/walkthrough/README.md`): a fresh agent builds a layer from an empty folder and a `.env` through the plugin's hooks, and `evals/walkthrough/count.ts` counts the exit conditions of `docs/PRD-hardening.md` section 2 from its log. It needs an agent and a Postgres, so CI does not run it.
@@ -100,3 +100,15 @@ The plugin ships without an icon, so `validate --strict` prints an `ICON_MISSING
 v1 is built on `release/v1` (docs/PRD.md, decision D8). Branch from it as `v1/<pr-id>-<slug>`, for example `v1/1.4-table-list-files`, and open the pull request against `release/v1`. Each pull request implements one PR of a plan (`docs/PRD.md` section 9, or `docs/PRD-hardening.md` section 3, branched as `v1/h<n>-<slug>`), cites its requirement IDs, and fills in `.github/pull_request_template.md`. Spec, schemas, validation and docs change in the same pull request as the behaviour. A pull request merges when `scripts/verify.sh` passes in CI and its review is done; one that touches a file listed in `.github/CODEOWNERS` also needs the owner's review.
 
 A new command is a file in `skills/semantic-layer/scripts/commands/`: the file name is the command name, and the registry finds it without an edit.
+
+## Parallel work
+
+Several pull requests are often open at once. These rules keep them off each other's lines:
+
+1. **One owner per file.** A file another open pull request also edits is edited only at a named anchor (a function, a section heading, a table row) that the other does not touch; the pull request that merges second merges its base in. Two pull requests never share an anchor.
+2. **New code goes in new files.** A new command is its own file under `commands/` and needs no registry edit. A new type lives beside the code that owns it.
+3. **Reserved names.** Issue and refusal codes take their area's family (`scope.*`, `metric.*`, `join.*`, `release.*`; `schema.*` is kept for JSON-schema keyword issues), and each family is registered in a file of its own, so no pull request edits a shared list of codes.
+4. **Docs by section.** An area owns its phase card and its section of `references/spec.md`. Docs rules live in `tests/docs-rules/`, one file per document, `doc-<document>.ts` (`doc-skill.ts` for `SKILL.md`, `doc-phases-intake.ts` for `references/phases/intake.md`, `doc-interview-guide.ts` for `references/interview-guide.md`), with an area's own rules in a file named after its topic, with no `doc-` prefix; `tests/skill-docs.test.ts` loads every file there in sorted order, so a new file needs no other edit. `SKILL.md` is at most 110 lines, and a pull request adds a line to it only within the budget its plan gives it.
+5. **Computed, never hand-merged.** Eval token counts are computed at replay. The CLI table in `references/spec.md` has one single-line row per command form, sorted by its Command cell, so a conflict there is resolved by keeping both rows.
+6. **One pull request integrates.** `README.md`, `docs/plugin.md` and the cross-references between sections of the spec are reconciled by one pull request at the end of a wave of parallel work; the others leave them alone unless their plan names an edit.
+7. **Small pull requests.** A pull request is about 400 changed lines outside tests and fixtures, or it is split.
