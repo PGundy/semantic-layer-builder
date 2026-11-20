@@ -1019,6 +1019,8 @@ export function referenceSites(root: string, target: RefTarget, newName = target
       if (m && m[1] === field.model && m[2] === field.name) add(file, path, value, `${field.model}.${newName}${m[3] ?? ""}`);
     };
     for (const key of ["measures", "dimensions"]) arr(request[key]).forEach((v, i) => check(["request", key, i], v));
+    check(["request", "running", "over"], obj(request.running).over);
+    check(["request", "compare", "over"], obj(request.compare).over);
     for (const key of ["filters", "order_by"]) arr(request[key]).forEach((v, i) => check(["request", key, i, "field"], obj(v).field));
   }
   // access.yaml, read as semlayer access reads it: a restriction target with the metric: prefix names a

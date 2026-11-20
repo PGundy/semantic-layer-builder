@@ -7,6 +7,7 @@ import { validDate } from "./approve.ts";
 import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.ts";
 import { bool, str } from "../lib/command.ts";
 import { goldenHash } from "../lib/approval-hash.ts";
+import { timeShapeWords } from "../lib/time-request-words.ts";
 import { batchWrite, blamed, deferValidation } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { goldenUpgradeNext } from "../lib/export-goldens.ts";
@@ -463,6 +464,7 @@ async function runCommand(ctx: CommandContext, values: OptionValues): Promise<nu
     );
   } else {
     ctx.out(plainText(`${golden.name}: ${golden.question}`));
+    for (const w of timeShapeWords(golden.request)) ctx.out(plainText(w));
     ctx.out(formatTable(maskRows(shownRows(golden, readLayer(ctx, source), rows, columns), masked), columns));
     ctx.out(`(${rows.length} row${rows.length === 1 ? "" : "s"})`);
     if (masked.length) ctx.out(maskNote(mask));
@@ -582,6 +584,7 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
           : toleranceFrom === "file"
             ? ", kept from the file"
             : ", the default; agree one with the owner and pass --tolerance";
+    for (const w of timeShapeWords(golden.request)) ctx.out(plainText(w));
     ctx.out(formatTable(maskRows(shownRows(golden, layer, rows, columns), masked), columns));
     if (masked.length) ctx.out(maskNote(mask));
     ctx.out(
@@ -886,6 +889,7 @@ async function newCommand(ctx: CommandContext, values: OptionValues): Promise<nu
     return 0;
   }
   ctx.out(`Wrote ${file}, a draft golden.`);
+  for (const w of timeShapeWords(golden.request)) ctx.out(plainText(w));
   if (compiled.ok) {
     ctx.out(`Its request compiles from the current YAML to this SQL, which the golden does not store (semlayer sql --request ${file} prints it again):`);
     ctx.out(plainText(compiled.sql));
@@ -997,7 +1001,11 @@ const spec: CommandSpec = {
     '   "order_by": [{"field": "orders.order_date:month", "direction": "asc"}], "limit": 100}\n' +
     "measures lists model.measure or a metric's bare name (there is no metrics key); measures of several models combine on the dimensions they share.\n" +
     "A time dimension takes a grain as model.field:grain. Filter ops: eq, neq, in, not_in, gt, gte, lt, lte, between\n" +
-    "(value [low, high]), is_null, not_null (no value). A request with no measures starts from its first dimension's model.",
+    "(value [low, high]), is_null, not_null (no value). A request with no measures starts from its first dimension's model.\n" +
+    'running (PostgreSQL only): {"over": "orders.order_date:month"}, one of the dimensions in full, adds <measure>_running to each sum or count\n' +
+    'measure; with "periods": 3 it adds <measure>_trailing_3, the total of the last 3 months.\n' +
+    'compare (PostgreSQL only): {"over": "orders.order_date:month", "with": ["prior", "year_ago"]}, one of the dimensions in full,\n' +
+    "adds <measure>_prior and <measure>_year_ago to each measure or metric, each with its _change and _pct (a fraction).",
   options: {
     name: { type: "string" },
     by: { type: "string" },
