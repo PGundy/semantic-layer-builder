@@ -24,6 +24,7 @@ semantic/
   .semlayer/pending/<readback_id>.discarded  empty marker semlayer readback --discard leaves, so the id is not issued again (committed)
   .semlayer/ledger.jsonl              the owner's answers, appended by semlayer reply, semlayer question resolve and semlayer review apply (committed)
   .semlayer/reviews/<readback_id>.<md|json>  review forms for the owner, written by semlayer review export (committed)
+  .semlayer/drift.json                the last schema change per source and the retyped columns approved fields read, written by semlayer introspect (committed, see Iterating a layer)
 ```
 
 File names equal the name inside the file: `sources/lake.yaml` holds `source: lake`, and `models/lake/web_events.yaml` holds `model: web_events` with `source: lake`.
@@ -945,6 +946,36 @@ The answer ledger: the owner's answers to readback items (`semlayer reply`) and 
 - `text` is the owner's words as given, with line breaks and tabs turned to spaces, control characters and ANSI escapes removed, and anything matching the credential patterns of `scripts/lib/credentials.ts` (the user and password of a URL, a credential-named key such as `password`, `token`, `secret` or `AccountKey` set to a value, a bearer token) replaced by `[redacted]`. The command then says so and asks for the credential to be changed. `by` is folded to one line and redacted the same way.
 - A command refuses to append, writing nothing, when a line of the file is not a JSON object or the last line has no line break, when the file is a symbolic link, or when `.semlayer` is a link that points nowhere or outside the semantic root.
 - `semlayer validate` checks each line against `schemas/ledger.schema.json` and reports a line that is not JSON, a last line without a line break, an id used twice, an id lower than one before it, and a ledger that is not a plain file inside the root (it or its `.semlayer` directory is a link). That earlier lines were never changed cannot be checked: version control shows it.
+
+## Iterating a layer
+
+### The drift record
+
+`semlayer introspect` keeps `.semlayer/drift.json` under the semantic root (`schemas/drift.schema.json`), so a schema change stays on record after the snapshot is replaced. It is committed. It holds table, column and type names, the approve targets of fields, content hashes and ledger ids: never a data value, a URL or a credential.
+
+```json
+{
+  "version": 1,
+  "sources": [
+    {
+      "source": "warehouse",
+      "at": "2026-01-15T12:00:00.000Z",
+      "diff": { "tables_added": [], "tables_removed": [], "columns": [
+        { "table": "acme.fct_orders", "added": [], "removed": ["shipping_cents"], "retyped": [{ "name": "amount_cents", "from": "integer", "to": "numeric(12,2)" }] } ] },
+      "retyped": [
+        { "table": "acme.fct_orders", "column": "amount_cents", "from": "integer", "to": "numeric(12,2)", "at": "2026-01-15T12:00:00.000Z",
+          "reads": [{ "ref": "warehouse.orders.revenue", "hash": "sha256:f1f11e0edc5941e0b100e49cb3a3f8fd9947f70045b51eaf084b1e89edd240d9", "yes": "ans_0003" }] }
+      ]
+    }
+  ]
+}
+```
+
+- One entry per source, sorted by source. `at` and `diff` are those of the last introspect that found a change against the previous snapshot (`diff` has the shape of `changes` in `semlayer introspect --json`; see Scope changes); a run that finds none leaves them. The first introspect of a source has no previous snapshot and records nothing.
+- A table the connection's role can no longer read leaves the snapshot and is listed in `tables_removed` like a dropped one; `unreadable` names those of them the database still holds but the role cannot read (a Postgres source on a live run), so the fix is a grant and another introspect, not an edit of the layer.
+- `retyped` lists the retyped columns still open. When an introspect finds a column retyped, it records each approved dimension or measure whose `expr` or `filter` names the column (the model's table found in the snapshot as `semlayer status` finds it, the names read as the column-usage checks read them) with its content hash and the id of the owner's latest yes to it in the ledger (`null` when there is none). The column stays open for that field until the field is edited (its content hash changes) or approved again (a newer yes from the owner in the ledger); the next introspect drops the fields that closed, and a column no field keeps open. A column retyped again keeps its first `from` and `at`, and closes when it returns to that type; a column the table no longer has closes too (a field reading it is then a missing column).
+- `semlayer validate` warns `release.column_retyped` on each approved field still open, naming the column, its old and new types and when the change was found, with `next` `semlayer readback --targets <ref>`. A record that does not parse or match its schema is skipped by `semlayer validate` and replaced by the next introspect without a message. `semlayer import` of an export does not write the record, so a column retyped in a fresh export gets no warning. A field is matched by the bare column name in its `expr` or `filter`; a table-qualified reference such as `orders.amount_cents` is not matched.
+- The record is written whole (see Locking and whole-file writes) under the root's lock, before the snapshot, and only when it changed, so a second identical introspect leaves its bytes as they were. A failed introspect leaves the record as it was. When `.semlayer` is a link that leads outside the semantic root or nowhere, the introspect refuses and writes neither the record nor the snapshot.
 
 ## Review forms
 
