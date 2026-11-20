@@ -6,6 +6,7 @@ import { type ApprovalEntry, carriesHash, holdsHashes, integrity, itemApprovals,
 import type { CommandSpec } from "../lib/command.ts";
 import { approvedIssues, describedProblem, metricProblems, modelProblems } from "../lib/approve-checks.ts";
 import { bool, list, str, type CommandContext, type OptionValues } from "../lib/command.ts";
+import { locate } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { LEDGER_FILE, latestReply, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
 import { formatJson } from "../lib/output.ts";
@@ -269,6 +270,8 @@ function targetText(t: Target): string {
       return "access";
     case "golden":
       return `golden:${t.name}`;
+    case "schema-pair":
+      return `schema-pair:${t.source}:${t.from}:${t.to}`;
   }
 }
 
@@ -287,6 +290,7 @@ function underTarget(e: ApprovalEntry, target: Target | undefined): boolean {
     case "access":
       return e.ref === "access";
     case "golden":
+    case "schema-pair":
       return false;
   }
 }
@@ -478,9 +482,9 @@ export async function approveMany(ctx: CommandContext, values: OptionValues, ref
 }
 
 const spec: CommandSpec = {
-  summary: "Mark a model, field, metric or the access file approved on the owner's recorded yes, or revoke an approval.",
+  summary: "Mark a model, field, metric, schema pair or the access file approved on the owner's recorded yes, or revoke an approval.",
   usage:
-    "approve --target <source.model | source.model.field | metric:<name> | access> [--by <name>] [--recursive]\n" +
+    "approve --target <source.model | source.model.field | metric:<name> | access | schema-pair:<source>:<from>:<to>> [--by <name>] [--recursive]\n" +
     "       approve --readback <readback_id> [--by <name>]\n" +
     "       approve --target <ref> --target <ref> ... [--by <name>]\n" +
     "       approve --target <ref> --revoke [--recursive]\n" +
@@ -515,6 +519,8 @@ const spec: CommandSpec = {
       if (targetRefs.length > 1) throw new UserError(`--stamp-hashes takes one --target at most, not ${targetRefs.join(", ")}.`);
       const target = targetRefs[0] ? parseTarget(targetRefs[0]) : undefined;
       if (target?.kind === "golden") throw new UserError("Goldens are confirmed with semlayer goldens confirm and carry no approved_hash.");
+      if (target?.kind === "schema-pair")
+        throw new UserError(`A schema pair is approved only with its hash, so there is none to stamp. Read it back with semlayer readback --targets ${targetRefs[0]} and approve it on the owner's yes with semlayer approve --target ${targetRefs[0]}.`);
       const stamped = stampHashes(ctx.root, target, bool(values, "confirm-unchanged"));
       const refs = stamped.flatMap((s) => s.refs);
       if (ctx.json) {
@@ -536,7 +542,7 @@ const spec: CommandSpec = {
     const ref = refs[0];
     if (!ref) {
       throw new UserError(
-        "--target is required: source.model, source.model.field, metric:<name> or access (a golden:<name> is confirmed with semlayer goldens confirm). " +
+        "--target is required: source.model, source.model.field, metric:<name>, access or schema-pair:<source>:<from>:<to> (a golden:<name> is confirmed with semlayer goldens confirm). " +
           "Or pass --readback <readback_id> to approve each item of a readback the owner said yes to.",
       );
     }
@@ -567,7 +573,8 @@ const spec: CommandSpec = {
     const warnings: { target: string; text: string }[] = [];
     // Items already in the requested state, reported when nothing changes.
     let skipped = 0;
-    const hashed = !revoke && projectHashed(ctx.root);
+    // A schema pair is new with content hashes, so one approved without a hash is approved again.
+    const hashed = !revoke && (target.kind === "schema-pair" || projectHashed(ctx.root));
     const isSettled = (item: Approval, hash: string) => settled(item, mode, hash, hashed);
     const consider = (targetRef: string, path: (string | number)[], item: Approval, hash: string, keepLast = false): boolean => {
       if (isSettled(item, hash)) {
@@ -608,6 +615,21 @@ const spec: CommandSpec = {
           );
         }
         consider("access", [], access, itemHash("access", obj(access)), true);
+        break;
+      }
+
+      case "schema-pair": {
+        const loc = locate(ctx.root, ref, { pairs: true });
+        file = loc.file;
+        if (!revoke && loc.item.status === "declined") {
+          const keys = `semlayer add-cross-schema --source ${target.source} --from ${target.from} --to ${target.to} --keys <table>.<column>=<table>.<column>`;
+          throw new UserError(
+            `Cannot approve ${ref}: the owner declined joining ${target.from} to ${target.to}, so it has no keys to approve; nothing was approved. ` +
+              `If they now want the join, record its keys with ${keys}, read it back with semlayer readback --targets ${ref}, and approve it on their yes.`,
+            keys,
+          );
+        }
+        consider(ref, loc.path, loc.item as unknown as Approval, itemHash("schema-pair", loc.item));
         break;
       }
 

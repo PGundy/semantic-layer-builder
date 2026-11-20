@@ -53,16 +53,18 @@ function canonical(v: unknown): string {
   return JSON.stringify(v) ?? "null";
 }
 
-type Area = "ledger" | "layer" | "dir";
+type Area = "ledger" | "layer" | "source" | "dir";
 
 // Which guarded part of the root a path is: the ledger and pending readbacks, a layer YAML file
-// (models/, goldens/, metrics.yaml, access.yaml), or a directory holding either.
+// (models/, goldens/, metrics.yaml, access.yaml), a source file (sources/<s>.yaml, whose schema pairs
+// carry approvals), or a directory holding either.
 function areaOf(root: string, abs: string): { area: Area; rel: string } | undefined {
   const rel = relative(root, abs).split(sep).join("/");
   if (rel.startsWith("../") || rel === ".." || isAbsolute(rel)) return undefined;
   if (rel === ".semlayer" || rel === ".semlayer/ledger.jsonl" || rel === ".semlayer/pending" || rel.startsWith(".semlayer/pending/")) return { area: "ledger", rel };
   if (rel === "" || rel === "models" || rel === "goldens") return { area: "dir", rel };
   if (rel === "metrics.yaml" || rel === "access.yaml") return { area: "layer", rel };
+  if (/^sources\/[^/]+\.ya?ml$/.test(rel)) return { area: "source", rel };
   if (/^(models|goldens)\//.test(rel)) {
     if (/\.ya?ml$/.test(rel)) return { area: "layer", rel };
     if (existsSync(abs) && statSync(abs).isDirectory()) return { area: "dir", rel };
@@ -79,13 +81,15 @@ function guarded(abs: string, self = false) {
 
 // --- YAML files ------------------------------------------------------------------------------
 
-type FileKind = { kind: "model"; source: string; name: string } | { kind: "golden"; name: string } | { kind: "metrics" | "access" | "other" };
+type FileKind = { kind: "model"; source: string; name: string } | { kind: "golden"; name: string } | { kind: "source"; source: string } | { kind: "metrics" | "access" | "other" };
 
 function fileKind(rel: string): FileKind {
   const m = /^models\/([^/]+)\/([^/]+)\.ya?ml$/.exec(rel);
   if (m) return { kind: "model", source: m[1]!, name: m[2]! };
   const g = /^goldens\/([^/]+)\.ya?ml$/.exec(rel);
   if (g) return { kind: "golden", name: g[1]! };
+  const s = /^sources\/([^/]+)\.ya?ml$/.exec(rel);
+  if (s) return { kind: "source", source: s[1]! };
   return { kind: rel === "metrics.yaml" ? "metrics" : rel === "access.yaml" ? "access" : "other" };
 }
 
@@ -102,7 +106,7 @@ function parse(text: string | null, label: string): { ok: true; value: unknown }
 }
 
 // Every approval field in a parsed file, keyed by where it sits: list items by name when they have
-// one, so reordering a list moves nothing.
+// one, and a schema pair by its from and to, so reordering a list moves nothing.
 function marks(v: unknown, skip: ReadonlySet<string>, path = "", out = new Map<string, string>()): Map<string, string> {
   if (Array.isArray(v)) {
     const seen = new Map<string, number>();
@@ -112,7 +116,7 @@ function marks(v: unknown, skip: ReadonlySet<string>, path = "", out = new Map<s
         const n = (seen.get(x.name) ?? 0) + 1;
         seen.set(x.name, n);
         seg = n > 1 ? `${x.name}#${n}` : x.name;
-      }
+      } else if (isObject(x) && typeof x.from === "string" && typeof x.to === "string") seg = `${x.from}:${x.to}`;
       marks(x, skip, `${path}[${seg}]`, out);
     });
   } else if (isObject(v)) {
@@ -210,7 +214,9 @@ function repairProblem(root: string, kind: FileKind, before: string, after: stri
         ? itemApprovals(listApprovals({ metrics: isObject(value) ? value.metrics : undefined }))
         : kind.kind === "access"
           ? itemApprovals(listApprovals({ access: value }))
-          : undefined;
+          : kind.kind === "source"
+            ? pairApprovals(kind.source, value)
+            : undefined;
   if (!own) return marked ? `the hook cannot match its approval fields to ${kind.kind === "golden" ? "the rows a confirmed golden records" : "items"}` : undefined;
   // Fields of the source's other models that read through this model's joins count too; their
   // hashes are recorded in their own files.
@@ -223,6 +229,11 @@ function repairProblem(root: string, kind: FileKind, before: string, after: stri
   const fields: [string, RegExp][] = [...MARK_KEYS.map((k): [string, RegExp] => [k, new RegExp(`\\b${k}\\b`, "g")]), ["status: approved", new RegExp(STATUS_TEXT.source, "g")]];
   for (const [label, re] of fields) if ((after.match(re)?.length ?? 0) > (before.match(re)?.length ?? 0)) return `it would add an approval field (${label})`;
   return undefined;
+}
+
+// The schema pairs of a source file's parsed value, as semlayer approve hashes them.
+function pairApprovals(source: string, value: unknown): ApprovalEntry[] {
+  return itemApprovals(listApprovals({ sources: [{ source, config: value }] }));
 }
 
 function markViolations(kind: FileKind, before: unknown, after: unknown): Violation[] {
@@ -251,6 +262,10 @@ function refOf(kind: FileKind, path: string): string {
     }
     case "access":
       return "access";
+    case "source": {
+      const f = /^cross_schema\[([^\]#]+)/.exec(path);
+      return f ? `schema-pair:${kind.source}:${f[1]}` : `sources/${kind.source}.yaml${path ? ` (${path})` : ""}`;
+    }
     case "golden":
       return `golden:${kind.name}`;
     case "other":
@@ -278,6 +293,7 @@ function message(v: Violation): string {
       );
     case "removed": {
       const head = `this edit removes or renames approved ${v.ref}.`;
+      if (v.ref.startsWith("schema-pair:")) return `${head} ${pairChange(v.ref)}`;
       const revoke = `make it a draft first with semlayer approve --target ${v.ref} --revoke`;
       if (!v.ref.includes(":") && v.ref.split(".").length === 3) return `${head} Rename it with semlayer rename ${v.ref} <new_name> or remove it with semlayer remove-field ${v.ref}, or ${revoke}.`;
       if (v.ref.startsWith("metric:")) return `${head} Rename it with semlayer rename ${v.ref} <new_name> or remove it with semlayer remove-metric ${v.ref.slice(7)} --force (on the owner's yes), or ${revoke}.`;
@@ -295,6 +311,7 @@ function message(v: Violation): string {
         `Change the join with semlayer set <source.model.join> <key> <value>, which names every approved item to read back again, or revoke ${v.ref} first (semlayer approve --target ${v.ref} --revoke).`
       );
     case "changed":
+      if (v.ref.startsWith("schema-pair:")) return `${v.ref} is approved, and this edit changes the keys the owner approved. ${pairChange(v.ref)}`;
       if (v.ref === "access")
         return (
           "access.yaml is approved, and this edit changes the rules the owner approved. Revoke it first (semlayer approve --target access --revoke; " +
@@ -305,6 +322,16 @@ function message(v: Violation): string {
         `for re-approval, or make it a draft first with semlayer approve --target ${v.ref} --revoke. Descriptions and open questions are outside the approval and may be edited directly.`
       );
   }
+}
+
+// How an approved schema pair is changed: its commands, which send it back to draft, or a revoke first.
+function pairChange(ref: string): string {
+  const [, source, from, to] = ref.split(":");
+  const which = `--source ${source} --from ${from} --to ${to}`;
+  return (
+    `Change its keys with semlayer add-cross-schema ${which} --keys ... or semlayer remove-cross-schema ${which}, which send it back to draft for the owner, ` +
+    `or make it a draft first with semlayer approve --target ${ref} --revoke.`
+  );
 }
 
 // The violations of replacing a layer file's text `before` (null: no file) with `after` (null: deleted).
@@ -334,6 +361,7 @@ export function layerViolations(root: string, rel: string, before: string | null
   const entries = (value: unknown) =>
     itemApprovals(listApprovals(kind.kind === "metrics" ? { metrics: isObject(value) ? value.metrics : undefined } : kind.kind === "access" ? { access: value } : {}));
   if (kind.kind === "metrics" || kind.kind === "access") out.push(...contentViolations(entries(b.value), entries(a.value), "changed"));
+  if (kind.kind === "source") out.push(...contentViolations(pairApprovals(kind.source, b.value), pairApprovals(kind.source, a.value), "changed"));
   if (kind.kind === "golden" && isObject(b.value) && b.value.status === "approved") {
     if (canonical(b.value.expected) !== canonical(isObject(a.value) ? a.value.expected : undefined)) out.push({ ref: `golden:${kind.name}`, what: "expected" });
   }
@@ -445,6 +473,8 @@ function bashCall(input: Obj, cwd: string): Verdict {
       }
       const g = guarded(p, true);
       if (!g || seen.has(g.real)) continue;
+      // A source file is guarded only while it holds approval fields: those of its schema pairs.
+      if (g.area === "source" && !(existsSync(g.real) && statSync(g.real).isFile() && MARK_TEXT.test(readFileSync(g.real, "utf8")))) continue;
       seen.add(g.real);
       const where = g.rel || "the semantic root itself";
       lines.push(

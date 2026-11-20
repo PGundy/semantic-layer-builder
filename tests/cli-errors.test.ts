@@ -178,7 +178,7 @@ describe("the --json error envelope", () => {
       envelope(json.out);
     }
     expect((await raw(["approve", "--target", "a.b.c.d", "--root", t.root, "--json"], REPO)).err).toBe(
-      'semlayer approve: Cannot read target "a.b.c.d". Use source.model, source.model.field, metric:<name>, golden:<name> or access.',
+      'semlayer approve: Cannot read target "a.b.c.d". Use source.model, source.model.field, metric:<name>, golden:<name>, access or schema-pair:<source>:<from>:<to>.',
     );
   });
 

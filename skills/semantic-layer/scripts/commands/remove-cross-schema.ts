@@ -76,7 +76,7 @@ const spec: CommandSpec = {
     const lines = pair
       ? [
           `Removed ${removed.map((k) => `${k.from} = ${k.to}`).join(" and ")} from the pair ${from} -> ${to} in ${outcome.file}; the pair is a draft again.`,
-          `Next: read the pair to the owner, and on their yes run ${next}; semlayer validate names any join that crossed on a removed key.`,
+          `Next: read the pair to the owner with semlayer readback --targets schema-pair:${sourceName}:${from}:${to}, and on their yes run ${next}; semlayer validate names any join that crossed on a removed key.`,
         ]
       : [`Removed the pair ${from} -> ${to} from ${outcome.file}.`, `Next: ${next} names any join that still crosses between ${from} and ${to}.`];
     ctx.out(lines.join("\n"));

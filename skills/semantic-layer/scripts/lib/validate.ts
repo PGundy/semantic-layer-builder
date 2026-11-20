@@ -2153,6 +2153,7 @@ export class Validator {
       identRules: (source) => this.identRules(source),
       checkSqlRefs: (file, path, sql, model, role) => this.checkSqlRefs(file, path, sql, model, role),
       joinPaths: (source, from, to, maxHops) => this.joinPaths(source, from, to, maxHops),
+      hasYes: (ref, hash) => !!currentYes(this.replies(), ref, hash),
       error: this.error.bind(this),
       warn: this.warn.bind(this),
     };

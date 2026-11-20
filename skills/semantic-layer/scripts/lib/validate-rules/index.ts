@@ -40,6 +40,8 @@ export interface RuleContext extends Reporting {
   checkSqlRefs(file: string, path: string, sql: unknown, model: Model, role: SqlRole): JoinRef[];
   // Every path of at most maxHops to-one joins from one model to another, as model.join steps.
   joinPaths(source: string, from: string, to: string, maxHops?: number): string[][];
+  // Whether the owner's latest reply in the ledger for a target is a yes to this hash of it.
+  hasYes(ref: string, hash: string): boolean;
 }
 
 export type Rule = (ctx: RuleContext) => void;

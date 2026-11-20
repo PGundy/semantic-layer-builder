@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type AccessLayer, type AccessVisibility, evaluateLayer, loadAccessLayer } from "./access.ts";
-import { type ApprovalEntry, goldenHash, itemApprovals, listApprovals } from "./approval-hash.ts";
+import { type ApprovalEntry, goldenHash, itemApprovals, listApprovals, pairEntries } from "./approval-hash.ts";
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { findTable, qualifiedName } from "./naming.ts";
@@ -682,6 +682,25 @@ function renderAccess(aud: Audiences, access: Obj): Rendered {
   return { lines: out };
 }
 
+// A schema pair: the two schemas, and each key a join between them may use, with its constraint.
+function renderPair(ref: string, source: string, pair: Obj): Rendered {
+  const from = String(pair.from);
+  const to = String(pair.to);
+  const keys = objs<Obj>(pair.keys).map((k) => {
+    const constraint = typeof k.constraint === "string" && k.constraint.trim() ? `, from the foreign key ${plainText(k.constraint)}` : ", named by hand (no foreign key recorded)";
+    return `  - ${from}.${plainText(String(k.from))} = ${to}.${plainText(String(k.to))}${constraint}`;
+  });
+  return {
+    lines: [
+      `${ref} (schema pair of source ${source}, from ${from} to ${to})`,
+      `- A join may cross between schemas ${from} and ${to}, either way, only on these keys:`,
+      ...(keys.length ? keys : ["  - none"]),
+      `- A join between the two schemas on any other columns stays refused until a pair listing it is approved; every other join stays within one schema.`,
+      `- Saying yes lets semlayer add-join add joins on these keys and semlayer draft draft them, so a question can read tables of ${from} and ${to} together.`,
+    ],
+  };
+}
+
 // A golden's rows as semlayer readback ran them, with the tolerance the readback states.
 export interface GoldenRun {
   rows: ResultRows;
@@ -813,7 +832,7 @@ export function renderReadbacks(
   let evaluated: ReturnType<Audiences> | undefined;
   const aud: Audiences = () => (evaluated ??= audiences(root));
   const unknown = (ref: string, why: string) =>
-    new UserError(`Unknown target "${ref}": ${why}. Run semlayer status to see the models, fields, metrics and goldens; targets are source.model, source.model.field, metric:<name>, golden:<name> or access.`);
+    new UserError(`Unknown target "${ref}": ${why}. Run semlayer status to see the models, fields, metrics and goldens; targets are source.model, source.model.field, metric:<name>, golden:<name>, access or schema-pair:<source>:<from>:<to>.`);
   const blocks = new Map<string, number>();
   return [...new Set(refs)].map((ref, index) => {
     const t = parseTarget(ref);
@@ -834,6 +853,16 @@ export function renderReadbacks(
         entry = itemApprovals(listApprovals({ access }))[0];
         if (!entry) throw unknown(ref, "there is no access.yaml; write it as a draft first");
         r = renderAccess(aud, entry.item);
+        break;
+      }
+      case "schema-pair": {
+        const file = paths(root).source(t.source);
+        const config = existsSync(file) ? readYamlIfExists<Obj>(file) : null;
+        if (!config) throw unknown(ref, `there is no source ${t.source}`);
+        entry = pairEntries(t.source, config).find((e) => e.ref === ref);
+        if (!entry) throw unknown(ref, `sources/${t.source}.yaml declares no schema pair ${t.from} -> ${t.to}; record it with semlayer add-cross-schema`);
+        if (entry.item.status === "declined") throw unknown(ref, `the owner declined joining ${t.from} to ${t.to}, so it has no keys to read back; record them with semlayer add-cross-schema first`);
+        r = renderPair(ref, t.source, entry.item);
         break;
       }
       case "metric": {
