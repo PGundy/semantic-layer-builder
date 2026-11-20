@@ -104,7 +104,7 @@ export const ROLES: Record<RoleName, Role> = {
 // The typed edits semlayer apply runs as its entries: each changes layer files only, through lib/edit.ts
 // (semlayer goldens new writes a draft golden and compiles its request, querying nothing).
 export const APPLY_COMMANDS = [
-  "set", "add-field", "remove-field", "rename", "tag", "ignore-column", "question add", "add-metric", "remove-metric", "add-join", "add-bridge", "remove-join",
+  "set", "add-field", "remove-field", "rename", "tag", "ignore-column", "question add", "add-metric", "remove-metric", "add-join", "add-bridge", "remove-join", "add-segment", "remove-segment",
   "add-role", "remove-role", "add-restriction", "remove-restriction", "add-row-filter", "remove-row-filter", "add-attribute", "remove-attribute",
   "goldens new",
 ] as const;
