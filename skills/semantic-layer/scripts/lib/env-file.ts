@@ -205,8 +205,10 @@ export function variableFrom(name: string, root: string, env: Env, opts?: EnvLoo
   return find([name], root, env, opts).hits.get(name)?.from;
 }
 
-// The parts connection.env_prefix names, each read from <prefix><PART>.
+// The parts connection.env_prefix names, each read from <prefix><PART>. SSLROOTCERT, the path of a
+// CA certificate file, is read too but left out of the lines a missing part asks for.
 export const PREFIX_PARTS = ["HOST", "PORT", "USER", "PASSWORD", "DATABASE", "SSLMODE"] as const;
+const OPTIONAL_PARTS = ["SSLROOTCERT"] as const;
 const REQUIRED_PARTS: readonly string[] = ["HOST", "USER", "DATABASE"];
 const PLACEHOLDERS: Record<string, string> = { HOST: "<host>", PORT: "5432", USER: "<user>", PASSWORD: "<password>", DATABASE: "<database>", SSLMODE: "require" };
 export const URL_PLACEHOLDER = "postgres://<user>:<password>@<host>:5432/<database>?sslmode=require";
@@ -256,7 +258,7 @@ export function readConnection(root: string, source: SourceConfig, env: Env, opt
   if (variable && prefix !== undefined) {
     throw new UserError(`Source "${source.source}" has both connection.env and connection.env_prefix; keep one: semlayer setup --source ${source.source} --dialect postgres --env <VAR> or --env-prefix <PREFIX> writes it.`);
   }
-  const names = variable ? [variable] : PREFIX_PARTS.map((p) => `${prefix}${p}`);
+  const names = variable ? [variable] : [...PREFIX_PARTS, ...OPTIONAL_PARTS].map((p) => `${prefix}${p}`);
   const required = variable ? [variable] : REQUIRED_PARTS.map((p) => `${prefix}${p}`);
   const { hits, files } = find(names, root, env, opts);
   const missing = required.filter((n) => !hits.has(n));

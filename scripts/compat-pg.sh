@@ -23,12 +23,12 @@ PORT="${COMPAT_PG_PORT:-55432}"
 NAME="${COMPAT_PG_NAME:-semlayer-compat-$VERSION}"
 PASSWORD="compat-$$"
 
-cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
+cleanup() { docker rm -f -v "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-docker rm -f "$NAME" >/dev/null 2>&1 || true
+docker rm -f -v "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" -e POSTGRES_PASSWORD="$PASSWORD" -p "127.0.0.1:$PORT:5432" "postgres:$VERSION-alpine" >/dev/null \
   || die "could not start postgres:$VERSION-alpine; check that the version exists and that port $PORT is free (COMPAT_PG_PORT)."
 

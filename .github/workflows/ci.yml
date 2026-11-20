@@ -62,3 +62,17 @@ jobs:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
       - run: bash scripts/compat-pg.sh ${{ matrix.pg }}
+
+  # The pooled and TLS connection tests (docs/PLAN-v1x.md, F3): the script starts postgres:16, PgBouncer
+  # in transaction mode in front of it, and a TLS-only postgres:16 with a certificate it makes for the
+  # run, all in Docker on the runner, so the job needs no service container and no secret.
+  compat-network:
+    name: compat-network
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bash scripts/compat-network.sh
