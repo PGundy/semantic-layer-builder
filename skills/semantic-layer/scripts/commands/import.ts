@@ -5,6 +5,7 @@ import { str } from "../lib/command.ts";
 import { UserError } from "../lib/errors.ts";
 import { patternFlags } from "../lib/export-filters.ts";
 import { droppedText, dropOtherSchemas, insideRoot, intakeMode, intakeSchemas, schemaListText } from "../lib/intake.ts";
+import { placeDbtSemantic, semanticJson, semanticLines } from "../lib/importers/dbt-semantic.ts";
 import { IMPORT_FORMATS, type ImportFormat, importSnapshot } from "../lib/importers/index.ts";
 import { qualifiedName } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
@@ -76,7 +77,7 @@ const spec: CommandSpec = {
   summary: "Build the snapshot from a schema export, a dbt manifest or DDL.",
   usage:
     "import --source <source> [--file <path>] [--format information_schema|dbt_manifest|ddl] [--catalog <catalog.json>]\n" +
-    "       [--include <pattern>]... [--exclude <pattern>]...\n\n" +
+    "       [--include <pattern>]... [--exclude <pattern>]... [--semantic]\n\n" +
     "  --file is optional for an export source whose intake.export.file names the export (read from the semantic root).\n" +
     "  When the source file's intake.schemas lists schemas, only their tables are kept; the rest are dropped and counted.\n\n" +
     "  --format is read from the file when left out: a .sql file is ddl, a JSON object with nodes is dbt_manifest,\n" +
@@ -90,7 +91,9 @@ const spec: CommandSpec = {
     "  ddl                 a .sql file of CREATE TABLE / CREATE VIEW / COMMENT ON statements (pg_dump, get_ddl, SHOW CREATE TABLE)\n\n" +
     "  --include, --exclude  keep only the tables that match an include and no exclude (the scope pattern grammar),\n" +
     "                      such as the patterns semlayer export-sql lists for its query to leave to semlayer import;\n" +
-    "                      they apply to the tables intake.schemas keeps.",
+    "                      they apply to the tables intake.schemas keeps.\n\n" +
+    "  --semantic          with a dbt manifest, also report its semantic models and metrics: counts, join candidates and what\n" +
+    "                      was skipped, with a reason for each. It reads only; no layer file is written.",
   options: {
     source: { type: "string" },
     format: { type: "string" },
@@ -98,6 +101,7 @@ const spec: CommandSpec = {
     catalog: { type: "string" },
     include: { type: "string", multiple: true },
     exclude: { type: "string", multiple: true },
+    semantic: { type: "boolean" },
   },
   writes: "whole",
   async run({ values }, ctx) {
@@ -121,7 +125,13 @@ const spec: CommandSpec = {
     const include = patternFlags(values, "include");
     const exclude = patternFlags(values, "exclude");
 
-    const { snapshot, warnings, format: used, detected } = await importSnapshot(source, format as ImportFormat | undefined, { file, catalog }, ctx.now().toISOString());
+    const wantSemantic = values.semantic === true;
+    const { snapshot, warnings, format: used, detected, semantic } = await importSnapshot(
+      source,
+      format as ImportFormat | undefined,
+      { file, catalog, semantic: wantSemantic },
+      ctx.now().toISOString(),
+    );
     if (!snapshot.tables.length) {
       throw new UserError(`No tables found in ${shown}.${warnings.length ? ` ${warnings.join(" ")}` : ""}`);
     }
@@ -175,6 +185,7 @@ const spec: CommandSpec = {
       );
     }
     saveSnapshot(ctx.root, snapshot);
+    const outside = semantic ? placeDbtSemantic(semantic, snapshot.tables, left.removed) : [];
 
     const columns = snapshot.tables.reduce((n, t) => n + t.columns.length, 0);
     const primaryKeys = snapshot.tables.filter((t) => (t.primary_key ?? []).length).length;
@@ -206,6 +217,7 @@ const spec: CommandSpec = {
           changes,
           next,
           ...(filters ? { filters } : {}),
+          ...(semantic ? { semantic: semanticJson(semantic, outside) } : {}),
         }),
       );
       return 0;
@@ -219,6 +231,7 @@ const spec: CommandSpec = {
         `Kept the ${filters.kept} table${filters.kept === 1 ? "" : "s"} matching --include and --exclude; dropped ${filters.dropped} other${filters.dropped === 1 ? "" : "s"} ${left.tables ? "of the tables intake.schemas keeps" : "from the file"}.`,
       );
     }
+    if (semantic) lines.push(...semanticLines(semantic, outside));
     if (warnings.length) lines.push("Warnings:", ...warnings.map((w) => `  - ${w}`));
     const modeled = diff ? modeledTables(snapshot, loadModels, scope) : undefined;
     lines.push(...changeLines(diff, source.source, modeled), ...scopeLines(scopeChanges, source.source, diff?.tables_removed));
