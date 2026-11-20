@@ -274,5 +274,6 @@ export function readbackGate(root: string, refs: string[]): void {
       ...fix,
     ].join("\n"),
     "semlayer apply --file -",
+    "readback_blocked",
   );
 }

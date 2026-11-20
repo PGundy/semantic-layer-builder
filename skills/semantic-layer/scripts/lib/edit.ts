@@ -194,8 +194,12 @@ export function neverRight(i: Issue): boolean {
 }
 
 // A typed edit refused for a value that can never be right (neverRight). semlayer apply names every
-// entry refused this way, not only the first.
-export class ValueRefusal extends UserError {}
+// entry refused this way, not only the first. Its code is the code of the first warning it names.
+export class ValueRefusal extends UserError {
+  constructor(message: string, code: string) {
+    super(message, undefined, code);
+  }
+}
 
 // An issue as one line: the file, the path in it and validate's message.
 export function issueLine(i: Issue): string {
@@ -347,9 +351,12 @@ function invalid(what: string, added: Issue[]): UserError {
     return new ValueRefusal(
       `Cannot ${what}: semlayer validate would warn about the value, and it can never be right here, so nothing was written:\n${lines.join("\n")}\n` +
         "Leave the key out or give a value the warning allows, then run it again; semlayer validate lists the project's issues.",
+      added[0]?.code ?? "user_error",
     );
   return new UserError(
     `Cannot ${what}: the result would not validate, so nothing was written:\n${lines.join("\n")}\nFix the value and run it again; semlayer validate lists the project's errors.`,
+    undefined,
+    added[0]?.code,
   );
 }
 

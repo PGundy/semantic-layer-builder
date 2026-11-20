@@ -114,7 +114,8 @@ export function buildSnapshot(source: SourceConfig, results: PlanResults, captur
   for (const r of rows(results, "columns")) {
     const k = tableKey(r);
     if (k === null || text(r.column_name) === null) continue;
-    ensure(text(r.table_schema), text(r.table_name)!);
+    // A column of a table the tables query did not return (a relation the role cannot read) has no entry.
+    if (!tables.has(k)) continue;
     const list = columnRows.get(k) ?? [];
     list.push(r);
     columnRows.set(k, list);

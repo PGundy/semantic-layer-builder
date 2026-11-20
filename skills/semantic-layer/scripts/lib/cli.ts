@@ -64,19 +64,42 @@ async function usage(io: CliIO): Promise<void> {
   io.out(lines.join("\n"));
 }
 
+// A failed command's --json object on stdout: the message, a stable code and, where there is one, the
+// command that fixes it (schemas/cli-error.schema.json).
+export interface CliError {
+  error: string;
+  code: string;
+  next?: string;
+}
+
+function envelope(error: string, code: string, next?: string): string {
+  const body: CliError = { error, code, ...(next !== undefined ? { next } : {}) };
+  return JSON.stringify(body, null, 2);
+}
+
 // Runs one CLI invocation and returns its exit code. Tests call this directly.
 export async function runCli(argv: string[], io: CliIO): Promise<number> {
   const [name, ...rest] = argv;
+  // Read before the flags are parsed, so a usage error and an unknown command answer in JSON too.
+  const end = argv.indexOf("--");
+  const json = (end === -1 ? argv : argv.slice(0, end)).includes("--json");
   if (!name || name === "help" || name === "--help" || name === "-h") {
     await usage(io);
     return name ? 0 : 1;
   }
   const load = COMMANDS[name];
   if (!load) {
-    io.err(`Unknown command "${name}". Run \`semlayer help\` for the list.`);
+    const message = `Unknown command "${name}". Run \`semlayer help\` for the list.`;
+    if (json) io.out(envelope(message, "usage", "semlayer help"));
+    io.err(message);
     return 1;
   }
-  let json = false;
+  // Whether the command printed to stdout: a failure after its own output adds no second object.
+  let printed = false;
+  const out = (text: string) => {
+    printed = true;
+    io.out(text);
+  };
   resetEditWarnings();
   const releases: (() => void)[] = [];
   try {
@@ -88,9 +111,8 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
       strict: true,
     });
     const values = parsed.values as Record<string, string | boolean | string[] | undefined>;
-    json = values.json === true;
     if (values.help) {
-      io.out(`${spec.summary}\n\nUsage: semlayer ${spec.usage}\n\n${GLOBAL_HELP}`);
+      out(`${spec.summary}\n\nUsage: semlayer ${spec.usage}\n\n${GLOBAL_HELP}`);
       return 0;
     }
     // Each connection a command opens is said once on stderr; with --json the output carries the first as connection_from instead.
@@ -119,7 +141,7 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
       json,
       now,
       // A typed edit's output carries the warnings it added (lib/edit.ts withEditWarnings).
-      out: json ? (text) => io.out(withConnectionFrom(withEditWarnings(text, true), uses)) : (text) => io.out(withEditWarnings(text, false)),
+      out: json ? (text) => out(withConnectionFrom(withEditWarnings(text, true), uses)) : (text) => out(withEditWarnings(text, false)),
       err: io.err,
       lock,
       stdin: io.stdin,
@@ -131,14 +153,20 @@ export async function runCli(argv: string[], io: CliIO): Promise<number> {
     if (writes === "whole" && existsSync(paths(root).project)) await lock();
     return await spec.run(input, ctx);
   } catch (e) {
-    if (e instanceof UserError || (e as { code?: string }).code?.startsWith("ERR_PARSE_ARGS")) {
-      // A refusal is one plain line on stderr. One that carries the command that fixes it (a
-      // malformed file, a directory with no layer) is also, with --json, one JSON object on stdout.
-      const next = e instanceof UserError ? e.next : undefined;
-      if (json && next) io.out(JSON.stringify({ error: (e as Error).message, next }, null, 2));
+    // A refusal is one plain line on stderr; with --json it is also one {error, code, next?} object
+    // on stdout, unless the command already printed its own.
+    const report = json && !printed;
+    if (e instanceof UserError) {
+      if (report) out(envelope(e.message, e.code, e.next));
+      io.err(`semlayer ${name}: ${e.message}`);
+      return 1;
+    }
+    if ((e as { code?: string }).code?.startsWith("ERR_PARSE_ARGS")) {
+      if (report) out(envelope((e as Error).message, "usage", `semlayer ${name} --help`));
       io.err(`semlayer ${name}: ${(e as Error).message}`);
       return 1;
     }
+    if (report) out(envelope(e instanceof Error ? e.message : String(e), "internal"));
     io.err(`semlayer ${name}: unexpected error: ${(e as Error).stack ?? e}`);
     return 2;
   } finally {
