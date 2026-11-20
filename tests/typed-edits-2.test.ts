@@ -199,6 +199,14 @@ describe("semlayer remove-field", () => {
       warnings: [
         "snapshots/warehouse.json tables[12].columns[4].profile: acme.fct_refunds.reason is protected but the snapshot holds raw sample values; run semlayer profile --source warehouse --redact",
       ],
+      warning_issues: [
+        {
+          code: "access.protected_profile_values",
+          file: "snapshots/warehouse.json",
+          path: "tables[12].columns[4].profile",
+          message: "acme.fct_refunds.reason is protected but the snapshot holds raw sample values; run semlayer profile --source warehouse --redact",
+        },
+      ],
     });
     const start = before.indexOf("  - name: reason\n");
     const field = before.slice(start, before.indexOf("measures:\n", start));

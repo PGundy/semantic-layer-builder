@@ -806,7 +806,7 @@ describe("semlayer validate", () => {
         level: "error",
         file: "sources/lake.yaml",
         path: "connection",
-        code: "issue.unclassified",
+        code: "source.env_and_prefix",
         message: "has both env and env_prefix; a source names one variable that holds the URL or a prefix for the parts, not both: keep one (semlayer setup --source lake --dialect postgres --env <VAR> or --env-prefix <PREFIX> writes it)",
       },
     ]);
