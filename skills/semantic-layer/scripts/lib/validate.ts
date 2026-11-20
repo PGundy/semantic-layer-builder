@@ -20,6 +20,7 @@ import { quoteIdent } from "./dialect.ts";
 import { type Env, envFilesInRoot, rootEnvFile, trackedEnvFiles } from "./env-file.ts";
 import { UserError } from "./errors.ts";
 import { intakeIssues, intakeMode, upgradeCommand } from "./intake.ts";
+import { UNCLASSIFIED } from "./issue-codes/index.ts";
 import { countedReplies, currentYes } from "./ledger.ts";
 import { layerReads, sourceRowFilters } from "./layer-reads.ts";
 import { findTable } from "./naming.ts";
@@ -172,7 +173,7 @@ function yamlFiles(dir: string): string[] {
     .sort();
 }
 
-class Validator {
+export class Validator {
   readonly issues: Issue[] = [];
   project?: Loaded<Project>;
   sources = new Map<string, Loaded<SourceConfig>>();
@@ -194,12 +195,13 @@ class Validator {
     readonly removed?: ReadonlySet<string>,
   ) {}
 
-  error(file: string, path: string, message: string): void {
-    this.issues.push({ level: "error", file, path, message });
+  // code is a registered code (lib/issue-codes/); a check without one of its own reports issue.unclassified.
+  error(file: string, path: string, message: string, code: string = UNCLASSIFIED): void {
+    this.issues.push({ level: "error", file, path, message, code });
   }
 
-  warn(file: string, path: string, message: string): void {
-    this.issues.push({ level: "warning", file, path, message });
+  warn(file: string, path: string, message: string, code: string = UNCLASSIFIED): void {
+    this.issues.push({ level: "warning", file, path, message, code });
   }
 
   rel(abs: string): string {
@@ -506,7 +508,7 @@ class Validator {
       this.checkSourceCredentials(l);
       // A DuckDB source's setup and views run on every connection, so each must be one the adapter
       // accepts (lib/source-safety.ts). Like credentials, this holds for a file that fails its schema.
-      for (const problem of sourceSafetyIssues(l.data)) this.error(l.file, problem.path, problem.message);
+      for (const problem of sourceSafetyIssues(l.data)) this.error(l.file, problem.path, problem.message, problem.code);
       if (!l.valid) continue;
       const s = l.data;
       if (s.source !== stem) this.error(l.file, "source", `is "${s.source}" but the file is named ${stem}.yaml`);
@@ -518,7 +520,7 @@ class Validator {
       }
       // A tables_file that is not a string is already a schema error.
       if (typeof s.scope?.tables_file === "string") this.checkTablesFile(l.file, s.source, s.scope.tables_file);
-      for (const x of intakeIssues(s, this.root)) this.issues.push({ level: x.level, file: l.file, path: x.path, message: x.message });
+      for (const x of intakeIssues(s, this.root)) this.issues.push({ level: x.level, file: l.file, path: x.path, message: x.message, code: x.code });
       if (s.connection?.env !== undefined && s.connection.env_prefix !== undefined) {
         this.error(l.file, "connection", `has both env and env_prefix; a source names one variable that holds the URL or a prefix for the parts, not both: keep one (semlayer setup --source ${s.source} --dialect ${s.dialect} --env <VAR> or --env-prefix <PREFIX> writes it)`);
       }
@@ -2323,6 +2325,7 @@ export function trackedEnvFileIssues(root: string, env: Env): Issue[] {
     level: "error" as const,
     file: relative(root, path).split("\\").join("/"),
     path: "",
+    code: "env.file_tracked",
     message: `git tracks this env file, so the secrets in it are in the repository: run git -C ${dirname(path)} rm --cached ${basename(path)} and commit, have the owner rotate the credentials it held, then run semlayer validate again (semlayer setup keeps .env out of version control)`,
   }));
 }
