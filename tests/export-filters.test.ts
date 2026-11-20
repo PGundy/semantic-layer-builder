@@ -8,7 +8,7 @@ import { EXPORT_DIALECTS, EXPORTS_DIR, type ExportDialect, exportSql } from "../
 import { applyTableFilter, portableRegex } from "../skills/semantic-layer/scripts/lib/export-filters.ts";
 import { filterInScope } from "../skills/semantic-layer/scripts/lib/patterns.ts";
 import type { Snapshot } from "../skills/semantic-layer/scripts/lib/types.ts";
-import { assertLocalPg, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, initProject, PG_URL, semlayer, serverVersionNum, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -608,6 +608,7 @@ describe("export filters: unusual names, live", () => {
   });
 
   // An ICU database, where lower() and ~* fold the Kelvin sign to k as most UTF-8 databases do.
+  // locale_provider arrived in PostgreSQL 15; older servers skip this case.
   const live = Boolean(PG_URL);
   const db = uniqueSchema("t_export_icu");
   let admin: SQL | undefined;
@@ -615,6 +616,9 @@ describe("export filters: unusual names, live", () => {
   beforeAll(async () => {
     if (!live) return;
     assertLocalPg(PG_URL);
+    if ((await serverVersionNum(PG_URL!)) < 150000) {
+      return;
+    }
     admin = new SQL({ url: PG_URL!, max: 1 });
     await admin.unsafe(`create database ${db} template template0 encoding 'UTF8' locale_provider icu icu_locale 'und' locale 'C'`);
     const url = new URL(PG_URL!);
@@ -630,6 +634,10 @@ describe("export filters: unusual names, live", () => {
   });
 
   test.skipIf(!live)("postgres", async () => {
+    if (!pg) {
+      console.log("skipped: PostgreSQL before 15 has no ICU database to build");
+      return;
+    }
     expect(await disagreements("postgres", "odd", ODD, async (sql) => (await pg!.unsafe(sql)) as never)).toEqual([]);
   }, 60_000);
 });
