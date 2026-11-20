@@ -4,6 +4,7 @@
 import { changedMessage, integrity, pairEntries, pathText } from "../approval-hash.ts";
 import { intakeSchemas } from "../intake.ts";
 import { addPairCommand, type CrossSchemaPair, crossSchemaLevel, crossSchemaPairs, findPair, keyProblem, pairApproved, type SchemaJoin, undeclaredJoinText } from "../schema-scope.ts";
+import { joinLegs } from "../through.ts";
 import type { Join, Model } from "../types.ts";
 import type { RuleContext } from "./index.ts";
 
@@ -50,26 +51,29 @@ export default function scope(ctx: RuleContext): void {
     for (const m of ctx.models.get(name)?.values() ?? []) {
       const model = m.data;
       if (typeof model.table !== "string" || !Array.isArray(model.joins)) continue;
-      const near = ctx.snapshotTable(name, model.table).table;
-      const nearSchema = near?.schema;
-      if (!near || typeof nearSchema !== "string") continue;
       model.joins.forEach((join, i) => {
         if (!join || typeof join !== "object" || !Array.isArray(join.keys)) return;
-        const target = ctx.models.get(name)?.get(join.to)?.data;
-        const far = target && typeof target.table === "string" ? ctx.snapshotTable(name, target.table).table : undefined;
-        const farSchema = far?.schema;
-        if (!far || typeof farSchema !== "string" || farSchema === nearSchema) return;
-        const keys = join.keys.filter((k) => k && typeof k.from === "string" && typeof k.to === "string");
-        const shape = { fromSchema: nearSchema, fromTable: near.name, toSchema: farSchema, toTable: far.name, keys };
-        const pair = findPair(pairs, nearSchema, farSchema);
-        const level = crossSchemaLevel(pairs, shape, join.status);
-        if (!level) {
-          crossed.add(`${pair!.from}\u0000${pair!.to}`);
-          return;
+        // A bridge join makes two hops, and each obeys the rule as a join of its own.
+        for (const leg of joinLegs(model, join)) {
+          const from = ctx.models.get(name)?.get(leg.from)?.data;
+          const to = ctx.models.get(name)?.get(leg.to)?.data;
+          const near = from && typeof from.table === "string" ? ctx.snapshotTable(name, from.table).table : undefined;
+          const far = to && typeof to.table === "string" ? ctx.snapshotTable(name, to.table).table : undefined;
+          const nearSchema = near?.schema;
+          const farSchema = far?.schema;
+          if (!near || !far || typeof nearSchema !== "string" || typeof farSchema !== "string" || farSchema === nearSchema) continue;
+          const keys = leg.keys.filter((k) => k && typeof k.from === "string" && typeof k.to === "string");
+          const shape = { fromSchema: nearSchema, fromTable: near.name, toSchema: farSchema, toTable: far.name, keys };
+          const pair = findPair(pairs, nearSchema, farSchema);
+          const level = crossSchemaLevel(pairs, shape, join.status);
+          if (!level) {
+            crossed.add(`${pair!.from}\u0000${pair!.to}`);
+            continue;
+          }
+          const message = undeclaredMessage(name, model, join, shape, pairs);
+          if (level === "warning") ctx.warn(m.file, `joins[${i}]`, message, "scope.cross_schema_undeclared");
+          else ctx.error(m.file, `joins[${i}]`, message, "scope.cross_schema_undeclared");
         }
-        const message = undeclaredMessage(name, model, join, shape, pairs);
-        if (level === "warning") ctx.warn(m.file, `joins[${i}]`, message, "scope.cross_schema_undeclared");
-        else ctx.error(m.file, `joins[${i}]`, message, "scope.cross_schema_undeclared");
       });
     }
 

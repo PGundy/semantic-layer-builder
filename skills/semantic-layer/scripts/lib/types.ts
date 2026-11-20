@@ -1,4 +1,5 @@
 // Types mirroring references/spec.md. The spec is authoritative; these follow it.
+import type { Through } from "./through.ts";
 
 export const DIALECTS = ["duckdb", "postgres", "snowflake", "bigquery", "databricks"] as const;
 export type Dialect = (typeof DIALECTS)[number];
@@ -233,6 +234,8 @@ export interface Join extends Approval {
   evidence?: JoinEvidence;
   // Why an approved to-one join stands although its evidence shows fan-out (a known-dirty key).
   fanout_override?: string;
+  // Present on a bridge join (lib/through.ts): the bridge model, its keys to the target and the dedupe rule.
+  through?: Through;
 }
 
 export interface Model extends Approval {
