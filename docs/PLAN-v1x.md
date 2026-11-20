@@ -1,6 +1,6 @@
 # Plan: a first PostgreSQL layer, then fast iteration
 
-Status: the owner said on 2026-11-20 to proceed, on the defaults of section 8; it is being built: wave 0 and wave 1 have landed except A3c, which lands separately. Owner: PGundy. Built on `release/v1`, after `docs/PRD.md` and `docs/PRD-hardening.md`. This file is temporary: the pull request that lands the plan's last item deletes it and adds one line per workstream to "After this plan" in `docs/PRD-hardening.md`. It changes none of the invariants of `docs/PRD.md` section 7; the build loop, the PR rules and the definition of done are that document's section 10.
+Status: the owner said on 2026-11-20 to proceed, on the defaults of section 8; it is being built: waves 0, 1 and 2 have landed, A3c with wave 2. Owner: PGundy. Built on `release/v1`, after `docs/PRD.md` and `docs/PRD-hardening.md`. This file is temporary: the pull request that lands the plan's last item deletes it and adds one line per workstream to "After this plan" in `docs/PRD-hardening.md`. It changes none of the invariants of `docs/PRD.md` section 7; the build loop, the PR rules and the definition of done are that document's section 10.
 
 How to read it: sections 1 to 6 and 8 to 11 are the plan and are what the owner reviews. Section 7 is one block per pull request, written for the agent that builds it. Terms used throughout:
 
@@ -157,11 +157,11 @@ After wave 0 these hold for every pull request in the plan.
 | Wave | Pull requests | Starts in parallel | Ends at |
 |---|---|---|---|
 | 0 | W0.1 (landed: computed token counts), W0.2 (landed: split shared lists), W0.3 (landed: validation seam), W0.4 (landed: public test database) | W0.1 to W0.3 one at a time; W0.4 beside them | the rules of section 5 hold |
-| 1 | F4 (landed: PostgreSQL-only text), F1 (landed: version matrix), F2 (landed: catalog and restricted role), F3 (landed: pooler and TLS); B1 (landed: issue codes), B2 (landed: codes on existing checks), B3 (landed: JSON error envelope), B4 (landed: code docs); G1 (landed: primary schema), G2 (landed: declare a schema pair), G2b (landed: approve a schema pair), G2c (landed: enforce schema pairs), G3 (landed: schema question); A2 (landed: validate grader), A3a (landed: PostgreSQL intake), A3b (landed: Acme on PostgreSQL), A3c (walkthrough fixtures, landing separately) | F4, B1, G1 | milestone M1 |
-| 2 | H5 (drift record), H1 (version and changelog), H2 (item diff), H3 (change entry point), H4 (close a round); C1a (segments), C1b (segment commands), C2 (calendar), C3 (balances), C4 (running and trailing totals), C5 (comparison by grain), C6 (last n days window); D1a (part builder), D1b (multi-fact requests), D3 (through schema), D4 (through compile), D5 (bridge check and readback); A4 (200-table scenario) | D1a, D3, H5, H1, A4 | milestone M2 |
+| 1 | F4 (landed: PostgreSQL-only text), F1 (landed: version matrix), F2 (landed: catalog and restricted role), F3 (landed: pooler and TLS); B1 (landed: issue codes), B2 (landed: codes on existing checks), B3 (landed: JSON error envelope), B4 (landed: code docs); G1 (landed: primary schema), G2 (landed: declare a schema pair), G2b (landed: approve a schema pair), G2c (landed: enforce schema pairs), G3 (landed: schema question); A2 (landed: validate grader), A3a (landed: PostgreSQL intake), A3b (landed: Acme on PostgreSQL), A3c (landed: walkthrough fixtures) | F4, B1, G1 | milestone M1 |
+| 2 | H5 (landed: drift record), H1 (landed: version and changelog), H2 (landed: item diff), H3 (landed: change entry point), H4 (landed: close a round); C1a (landed: segments), C1b (landed: segment commands), C2 (landed: calendar), C3 (landed: balances), C4 (landed: running and trailing totals), C5 (landed: comparison by grain), C6 (landed: last n days window); D1a (landed: part builder), D1b (landed: multi-fact requests), D3 (landed: through schema), D4 (landed: through compile), D5 (landed: bridge check and readback); A4 (landed: 200-table scenario) | D1a, D3, H5, H1, A4 | milestone M2 |
 | 3 | D2 (conformed dimensions), D6 (drafted bridges); E1 (read dbt), E2a (dbt filters), E2b (dbt drafts); A5 (live baseline and job); F5 (provider kit) | D2, D6, E1, E2a, A5, F5 | milestone M3 |
 
-Within a workstream the order is in its section. In the shared-files table, the Wave 1 column names what landed. A wave starts when the one before it has reached its milestone, with one exception: a wave 2 or wave 3 pull request whose "after" list is already merged may start early if it touches no file in the table below for the current wave.
+Within a workstream the order is in its section. In the shared-files table, the Wave 1 and Wave 2 columns name what landed. A wave starts when the one before it has reached its milestone, with one exception: a wave 2 or wave 3 pull request whose "after" list is already merged may start early if it touches no file in the table below for the current wave.
 
 ### Order across workstreams
 
@@ -190,30 +190,36 @@ Every file that exists today and is edited by more than one workstream, with the
 | File | Wave 1 | Wave 2 | Wave 3 |
 |---|---|---|---|
 | `.github/workflows/ci.yml` | A3a: job `eval-smoke`, add `services.postgres` and the `PG_URL` env<br>F1: new job `compat`, appended after the existing jobs<br>F3: new job `compat-network`, appended after `compat` |   |   |
-| `SKILL.md` | B4: one principle line (B's budget of 1, spent: the file is 108 lines of 110)<br>F4: frontmatter description and the topic-table row "Only when a source is not a live postgres or duckdb connection", in place | H3: router-table row `change` and one principle line (H's budget of 2, the two lines left) |   |
+| `SKILL.md` | B4: one principle line (B's budget of 1, spent: the file is 108 lines of 110)<br>F4: frontmatter description and the topic-table row "Only when a source is not a live postgres or duckdb connection", in place | H3: router-table row `change` and one principle line (H's budget of 2, spent: the file is 110 lines of 110) |   |
 | `references/phases/intake.md` | F4: the "Which database, and where the connection lives" paragraph, the query-plan and export-dialect lines, and the two MySQL and SQL Server sentences (moved to `references/other-dialects.md`)<br>G3: new paragraph after F4's "Which Postgres database?" paragraph |   | E2b: paragraph "What the folder already holds" and bullet "Other shared context" |
 | `references/phases/joins.md` |   | D5: the bridge interview step | E2b: a paragraph on checking imported joins |
-| `schemas/model.schema.json` |   | C1a: model `properties.segments`; measure `properties.segments`<br>C2: model and measure `properties.default_time_dimension`<br>C3: measure `properties.non_additive_dimension`<br>D3: `$defs.join` (`through` object) | D2: `$defs.dimension` (`conforms_to`) |
+| `schemas/model.schema.json` |   | C1a: model `properties.segments`; measure `properties.segments`<br>C2: model and measure `properties.default_time_dimension`<br>C3: measure `properties.non_additive_dimension`<br>D3: `$defs.join` (`through` object)<br>D5: the join's `evidence.through` | D2: `$defs.dimension` (`conforms_to`) |
 | `schemas/source.schema.json` | G1: `intake.properties` (new `primary` key)<br>G2: top-level properties (new `cross_schema` array) | C2: `properties.calendar` (new key) |   |
 | `scripts/commands/approve.ts` | B3: the ledger refusals, which are throws here (`approval.no_ledger_yes`, `by_mismatch`), not in `lib/approve-checks.ts`<br>G2b: a case beside `"access"` for the schema-pair kind, after B3 | C2: the hash scope built for a model target (`weekStart`) |   |
 | `scripts/commands/check-join.ts` | G2c: `buildTarget` (the guard that refuses to measure a join across an undeclared pair; under `--all` it skips the join with that reason), called by `run`; `resolveTable` is unchanged | D5: a branch for a through join in `run`, also under `--all` (`evidence.through`) |   |
-| `scripts/commands/goldens.ts` | G2c: `checkCommand` (print the compiler's warnings under each golden's result; `--json` gains `warnings`) | D1b: the `share one model` line of the request help<br>C4, C5, C6: one line each in the request help after the `Filter ops` sentence (a different line from D1b's)<br>C6: `newCommand` (writes the resolved `as_of` into the request) |   |
-| `scripts/commands/sql.ts` | G2c: `run` (one added line prints the compiler's warnings) | C6: `run` (prints the `as_of` date it used), after G2c |   |
-| `scripts/lib/goldens.ts`, `scripts/lib/approvals.ts` | G2c: `compileGolden` (passes `joinStatus`, so a draft-golden preview keeps each join's real status)<br>G2b: `projectApprovals` in `approvals.ts` (the pair listing, so the approvals grader covers pairs) |   |   |
+| `scripts/commands/goldens.ts` | G2c: `checkCommand` (print the compiler's warnings under each golden's result; `--json` gains `warnings`) | D1b: the `share one model` line of the request help<br>C4, C5, C6: one line each in the request help after the `Filter ops` sentence (a different line from D1b's)<br>C4: `newCommand`, `runCommand` and `confirmCommand` (one line each, the time view in words)<br>C6: `newCommand` (writes the resolved `as_of` into the request) |   |
+| `scripts/commands/sql.ts` | G2c: `run` (one added line prints the compiler's warnings) | C4: `run` (one line, the time view in words)<br>C6: `run` (fills a missing `as_of` from the clock and prints it), after G2c |   |
+| `scripts/lib/goldens.ts`, `scripts/lib/approvals.ts` | G2c: `compileGolden` (passes `joinStatus`, so a draft-golden preview keeps each join's real status)<br>G2b: `projectApprovals` in `approvals.ts` (the pair listing, so the approvals grader covers pairs) | H2: `goldenDraftFields` and the new `goldenReads` in `goldens.ts`<br>C6: `goldenReads` (`window.dimension`)<br>C2: `projectApprovals` (`weekStart`) |   |
 | `scripts/commands/introspect.ts` | F2: live-run branch around the `buildSnapshot` call (print skipped relations) | H5: after the `diffSnapshots` call (`writeDrift`) |   |
 | `scripts/lib/approval-hash.ts` | G2b: `ItemKind`, `itemContent` (case `"schema-pair"`), and `pairEntries` with the `listApprovals` entry listing | C1a: `itemContent` case `"measure"` (segment filters)<br>C2: `itemContent` cases `"model"` and `"measure"` (`default_time_dimension`), `HashScope` and `modelEntries` (`weekStart`), case `"dimension"` (week start)<br>C3: `itemContent` case `"measure"` (`non_additive_dimension`)<br>D3: `joinContent` (`through`) | D2: `itemContent` case `"dimension"` (`conforms_to`) |
-| `scripts/lib/compiler/index.ts` | G2c: `RefusalCode` union (one member); `Compiled` (`warnings` field); `compileLayer` is now a thin wrapper that calls `compileLayerInner` and adds the join warnings, and the `JoinPlan` constructor call in `compileLayerInner` takes `pairs` and `joinStatus` | C1a: `RefusalCode` union (one member); the request check before `compileMetrics`; `texts` in `compileLayerInner`; the `aggregate` call in the measure branch of `sqlOf` (`measureFilter`)<br>C2: `sqlOf` dimension branch (`grained` call)<br>C3: `compileLayerInner` final assembly (`const lines`) and its refusal of mixed measures<br>D1b: `resolve` in `compileLayerInner` (the measures branch)<br>D4: the `aggregate` call in the measure branch of `sqlOf` (allocation factor), after C1a<br>C4: `compileLayerInner`, one call to `compileTimeShapes` on the line before the `compileMetrics` call, after C1a |   |
+| `scripts/lib/compiler/index.ts` | G2c: `RefusalCode` union (one member); `Compiled` (`warnings` field); `compileLayer` is now a thin wrapper that calls `compileLayerInner` and adds the join warnings, and the `JoinPlan` constructor call in `compileLayerInner` takes `pairs` and `joinStatus` | C1a: `RefusalCode` union (one member); the request check before `compileMetrics`; `texts` in `compileLayerInner`; the `aggregate` call in the measure branch of `sqlOf` (`measureFilter`)<br>C2: `sqlOf` dimension branch (`grained` call)<br>C3: `compileLayerInner` final assembly (`const lines`) and its refusal of mixed measures<br>D1b: `resolve` in `compileLayerInner` (the measures branch) and `RefusalCode` (`join.multi_fact_segments`)<br>D4: the `aggregate` call in the measure branch of `sqlOf` (allocation factor), after C1a<br>C4: `compileLayerInner`, one call to `compileTimeShapes` on the line before the `compileMetrics` call, after C1a |   |
 | `scripts/lib/compiler/joins.ts` | G2c: `requestPath` and `hop` (undeclared pair); the `JoinPlan` constructor (`pairs`, `joinStatus`), `JoinContext` and the new `joinWarnings`<br>G2c: `lib/compiler/check-rule.ts`, one added line (`pairs: crossSchemaPairs(source)`) | D3: `requestPath` (refuse a through route)<br>D4: `requestPath` (bridge and target instances) and `PlannedJoin` (`through`) |   |
 | `scripts/lib/draft.ts` | G1: `joinCandidates`, `keyNameCandidates` and the declared-FK loop<br>G2: the declared-FK loop (a key into a declined pair asks nothing)<br>G2c: the declared-FK loop (draft an approved pair from its listed keys; every foreign key between an approved pair's schemas is silent, listed or not) |   | D6: one call in `draftModels` |
-| `scripts/lib/edit.ts` | B2: `neverRight` and `withEditWarnings` (`warning_issues` entries are `{code, file, path, message}`); `scripts/commands/apply.ts`, one line to carry `warning_issues` in `apply --json`<br>B3: `ValueRefusal` (its own code)<br>G2b: `ItemKind` and `locate` (schema-pair case), after B2 and B3 |   |   |
+| `scripts/lib/edit.ts` | B2: `neverRight` and `withEditWarnings` (`warning_issues` entries are `{code, file, path, message}`); `scripts/commands/apply.ts`, one line to carry `warning_issues` in `apply --json`<br>B3: `ValueRefusal` (its own code)<br>G2b: `ItemKind` and `locate` (schema-pair case), after B2 and B3 | C2: the hash scope of an approved item (`weekStart`)<br>C4, C5, C6: one line each where a rename follows into a golden's request (`running.over`, `compare.over`, `window.dimension`), and the same line in `lib/rename-model.ts` |   |
 | `scripts/lib/introspect.ts` | G1: `fks.push` (keep the constraint name) and the dedupe right after it (it keys on columns and target and prefers a named key)<br>F2: the columns loop of `buildSnapshot` (rows of returned tables only), after G1 |   |   |
-| `scripts/lib/next.ts` | F4: `noLayerAction` (the why and ask strings name postgres and duckdb)<br>G2b: `targetPhase` (schema-pair prefix)<br>G3: new `schemaScopeAction` (the `schema_scope` `ask_owner` step), called in `fromStatus` before the generic `fromAction` | H3: `nextAction` and `fromStatus` after G3's call (phase `change` and the next step per pending item) | D6: `nextAction` (one case asking for the dedupe rule) |
-| `scripts/lib/readback.ts` | G2b: case `"schema-pair"` beside case `"access"` in the item builder | C1b: `renderField` ("Excludes:" line) and `renderModel` (segment list)<br>C3: `renderField` (balance sentence)<br>D5: `joinWords` (call to `readback-bridge.ts`)<br>C4: `requestWords`, one call to `timeShapeWords` at its end | D2: `renderField` (conformed paragraph) |
+| `scripts/lib/next.ts` | F4: `noLayerAction` (the why and ask strings name postgres and duckdb)<br>G2b: `targetPhase` (schema-pair prefix)<br>G3: new `schemaScopeAction` (the `schema_scope` `ask_owner` step), called in `fromStatus` before the generic `fromAction` | H3: `nextAction` and `fromStatus` after G3's call (phase `change` and the next step per pending item)<br>H4: `changeAction` (the close is a `run` step, with the owner's version question in `why`)<br>D5: `lackQuestions`, case `"through"` (the dedupe question) | D6: `nextAction` (one case for a drafted bridge, beside the dedupe question D5 added to `lackQuestions`) |
+| `scripts/lib/readback.ts` | G2b: case `"schema-pair"` beside case `"access"` in the item builder | C1a: `renderField` (each named segment's conditions under "It counts only rows where:", marked `(segment <name>)`)<br>C1b: `renderModel` (segment list)<br>C3: `renderField` (balance sentence)<br>D5: `joinWords` (call to `readback-bridge.ts`)<br>C4: `requestWords`, one call to `timeShapeWords` at its end | D2: `renderField` (conformed paragraph) |
 | `scripts/lib/refs.ts` | B3: its refusals (codes, `bad_target`)<br>G2b: `Target` and `parseTarget` (schema-pair kind), after B3 | C2: `parseRequestField` (bare `:grain` shorthand) |   |
-| `scripts/lib/status.ts` | G2b: `statusDetail` (the schema pairs join `targets`, `changed_since_approval`, `hash_missing` and `approved_without_yes`)<br>G3: `nextStep` (new `schema_scope` step after the first introspect, a postgres source whose tables in scope sit in more than one schema; a draft pair waiting for its readback gets its own step), the source report's `schemaQuestion` and `StepContext.schemaQuestions` | H3: `Phase` union (`change`), the `done` step of `nextStep`, and the `computeStatus` JSON (`layer_version`, open change) |   |
-| `scripts/lib/validate.ts` | B1: `Validator.error`, `Validator.warn`, the `intakeIssues` merge line in `checkSources`, and `trackedEnvFileIssues`<br>B2: every existing `this.error(` and `this.warn(` call and the `report()` closure<br>G2b: `view()` (the `RuleContext` gained `hasYes(ref, hash)`) | D1b: `checkMeasureModels` (body emptied) and its call<br>D3: the join check's one_to_many warning (skipped when `through` is set) |   |
+| `scripts/lib/status.ts` | G2b: `statusDetail` (the schema pairs join `targets`, `changed_since_approval`, `hash_missing` and `approved_without_yes`)<br>G3: `nextStep` (new `schema_scope` step after the first introspect, a postgres source whose tables in scope sit in more than one schema; a draft pair waiting for its readback gets its own step), the source report's `schemaQuestion` and `StepContext.schemaQuestions` | H3: `Phase` union (`change`), the `done` step of `nextStep`, and the `computeStatus` JSON (`layer_version`, open change)<br>H4: `statusDetail` (each target's `stamped`, which tells a draft never approved, the kind a close leaves out) |   |
+| `scripts/lib/validate.ts` | B1: `Validator.error`, `Validator.warn`, the `intakeIssues` merge line in `checkSources`, and `trackedEnvFileIssues`<br>B2: every existing `this.error(` and `this.warn(` call and the `report()` closure<br>G2b: `view()` (the `RuleContext` gained `hasYes(ref, hash)`) | C1a: the column checks read a measure's segment filters (`segmentFilters`)<br>D1b: `checkMeasureModels` and its call deleted; the golden check's spanning rule (`golden.dimension_not_shared`) also covers a request whose measures span models<br>D3: the join check's one_to_many warning (skipped when `through` is set) and its key check (a bridge join's keys are checked against the bridge)<br>D4: the golden field check (one bridge join straight to a model reaches it) |   |
 | `scripts/lib/validate-rules/index.ts` | G2b: `RuleContext` (the method `hasYes(ref, hash)`); no other edit |   |   |
-| `scripts/lib/issue-codes/*.ts` | B1, B2: `index.ts`, `schema.ts`, `source.ts`, `layer.ts` (B owns them)<br>F3: `source.ts` (`source.pooler_startup_parameter`, `source.ssl_root_cert_unreadable`)<br>G2, G3: `scope.ts` (G owns it) |   |   |
+| `scripts/lib/validate-rules/scope.ts` | G2, G2c (G owns it) | D3: the join loop, so each leg of a bridge join (model to bridge, bridge to target) obeys `pairAllowed` |   |
+| `scripts/lib/issue-codes/*.ts` | B1, B2: `index.ts`, `schema.ts`, `source.ts`, `layer.ts` (B owns them)<br>F3: `source.ts` (`source.pooler_startup_parameter`, `source.ssl_root_cert_unreadable`)<br>G2, G3: `scope.ts` (G owns it) | C: `metric.ts`; D: `join.ts`; H: `release.ts`<br>D1b: `layer.ts` (retires `golden.measures_span_models`) |   |
+| `scripts/lib/readback-figures.ts`, `scripts/lib/snapshot-diff.ts`, `scripts/lib/layer-reads.ts`, `scripts/lib/profile.ts` |   | C1a: a segment's columns count as read wherever a measure filter's do (`referencedColumns` in `snapshot-diff.ts`)<br>C3: `measurePlan` in `readback-figures.ts` (the readback figure keeps the last value) |   |
+| `scripts/lib/roles.ts` |   | C1b, D5: `APPLY_COMMANDS` (`add-segment`, `remove-segment`, `add-bridge`) |   |
+| `scripts/hooks/guard-edits.ts` |   | C1b: the list of typed edits it names (`add-segment`, `remove-segment`)<br>C2: the hash scope of an approved item (`weekStart`)<br>H1, H3: refuse a hand write of `changelog.yaml` and `.semlayer/change.json` |   |
+| `scripts/commands/scope.ts` |   | H1: the root's own files (`changelog.yaml`), which `scope --to-file` never overwrites; a new root file is added there too |   |
+| `fixtures/acme/load-postgres.ts` |   | A4: an optional fourth argument, `{tables, extraSql}`, to load three tables and the decoy DDL; the default load is unchanged |   |
 
 Where two pull requests in one cell edit the same function, an "after" list or the order table fixes who goes first; only C1a and D4 share an anchor, and D4 merges second. `lib/validate.ts` has one owner per wave: B in wave 1, D in wave 2. Every other workstream adds validation through its own file in `lib/validate-rules/`.
 
@@ -228,7 +234,9 @@ Where two pull requests in one cell edit the same function, an "after" list or t
 - `evals/runner/drivers/scripted.ts` replays canned turns. A change to `SKILL.md` or `references/phases/*.md` moves no score; only the live driver `evals/runner/drivers/sdk.ts` (needs `ANTHROPIC_API_KEY`, SDK loaded by dynamic import) measures skill text, and no `evals/baseline.sdk.json` is committed.
 - `evals/runner/types.ts` and `skills/semantic-layer/schemas/eval-scenario.schema.json` allow `"duckdb"` and `"postgres"` (with `schema` and `url_env`) as the intake dialect (A3a); `evals/graders/figures.ts` `produce()` opens a postgres source through `openAdapter`.
 - `evals/graders/` holds eight graders (figures, secrets, selection, approvals, connection_first, authority, validate, effort); `validate` runs the validate library on the final root (A2).
-- `fixtures/acme/load-postgres.ts` loads Acme into a named Postgres schema from `PG_URL`; the `eval-smoke` job has a postgres:16 service (A3a). `fixtures/acme/evolve.sql` exists but no scenario uses it.
+- `fixtures/acme/load-postgres.ts` loads Acme into a named Postgres schema from `PG_URL`, all its tables or, with its optional `{tables, extraSql}` argument (A4), some of them plus extra DDL; the `eval-smoke` job has a postgres:16 service (A3a). `fixtures/acme/evolve.sql` exists but no scenario uses it.
+- With `PG_URL` set, the smoke runs `acme-pg-structured` and `acme-noisy-200` (A3b, A4); without it each is reported as not run and its baseline entry holds.
+- `evals/walkthrough/README.md` gives the two-schema run and the change run (A3c); `evals/walkthrough/prompt.md` names only `owner-brief.md`, so the README gives the sentence to append to the prompt's owner paragraph for each run.
 - `evals/graders/grade.ts` cannot grade a PostgreSQL run again: the scenario's schema is dropped when the run ends, so the figures grader finds no data. The baseline entry of `acme-pg-structured` must hold with and without `PG_URL`, so `evals/smoke.ts` reports the scenario as not run when `PG_URL` is unset.
 
 **Scope.**
@@ -282,7 +290,7 @@ Steps:
 1. Write `fixtures/acme/billing.sql`: a schema `billing` whose table has a foreign key into `acme.dim_customers`, every value synthetic. F2's `tests/compat/two-schemas.sql` is not reused: it holds no Acme data, and the walkthrough's owner answers from Acme figures.
 2. Write `fixtures/acme/load-two-schema.ts`, which calls `loadPostgres` for `acme` and then runs `billing.sql` against the same `PG_URL`.
 3. Write `fixtures/acme/owner-brief-two-schema.md` (how the owner answers the schema question) and `fixtures/acme/owner-brief-change.md` (one added metric, one changed definition).
-4. Say in `evals/walkthrough/README.md` how to run each.
+4. Say in `evals/walkthrough/README.md` how to run each. `evals/walkthrough/prompt.md` tells the played owner to read only `owner-brief.md`, so the README gives, for each run, the sentence to append to the prompt's owner paragraph; `prompt.md` is unchanged.
 Proves it:
 - Each brief names only tables and figures that exist in the loaded schemas and in `reference-figures.json`.
 - `evals/walkthrough/README.md` gives the command for each run.
@@ -290,9 +298,9 @@ Proves it:
 #### A4. 200-table single-schema scenario (wave 2; after A3b)
 Grade scope selection when 197 of 200 tables are decoys.
 Steps:
-1. Write `fixtures/noisy/generate.ts`, a seeded generator emitting DDL for 200 tables: three Acme tables and 197 decoys with near-identical names.
+1. Write `fixtures/noisy/generate.ts`, a seeded generator emitting DDL for 200 tables: three Acme tables and 197 decoys with near-identical names. Its output is committed as `fixtures/noisy/decoys.sql`, with a test that the two agree. The run's schema holds the three Acme tables with their data and the 197 decoys empty, loaded through an optional fourth argument of `loadPostgres`, `{tables, extraSql}`; its default load is unchanged.
 2. Write `acme-noisy-200.json`, its script and baseline entry. It names a PostgreSQL source, so, like A3b's, it joins the smoke subset only when `PG_URL` is set and its baseline entry holds with and without it.
-3. In `selection.ts`, name each wrongly included decoy in details.
+3. In `selection.ts`, name each wrongly included decoy in details. It already did: `evals/graders/selection.ts` names every kept extra table, so A4 left it unchanged.
 Proves it:
 - Generator output is byte-identical on two runs.
 - A script that scopes a decoy scores selection below 1 and names it.
@@ -418,7 +426,7 @@ Proves it:
 
 **Outcome.** An owner can name a reusable rule once (a segment), get a balance that is not summed across months, and set which day a week starts. Any approved figure can be asked for as a running or trailing total, against the period before and the same period a year earlier, or over the last n days as of a stated date against the n days before and the same days a year earlier. Segments, the calendar and balances are approved on a recorded yes. The time views add no new definition: a golden records the request, its as-of date included, and the owner's yes to its figures. Today each of these means copying a predicate into every measure, writing the SQL by hand, or getting a silently wrong number.
 
-**Today.**
+**Before wave 2.** Every block of C has landed; the bullets describe the code before it.
 - No segment exists. `schemas/model.schema.json` measures allow `name, expr, agg, filter, format, currency, description, synonyms, tags` only (`additionalProperties: false`), so a shared rule is a copy in each `filter`.
 - `scripts/lib/compiler/metrics.ts:127-129` (`formula()`) compiles `ratio` and `derived` only; any other type is refused as `unsupported_metric`. `schemas/metrics.schema.json` rejects other types first.
 - `scripts/lib/compiler/sql.ts:26` `grained()` is `date_trunc(grain, expr)`: ISO Monday weeks, calendar quarters and years, no setting. `sqlOf` in `compileLayerInner` (`scripts/lib/compiler/index.ts:276-290`) is the only caller of `aggregate()` and `grained()`.
@@ -449,8 +457,10 @@ A model declares named predicates and a measure or plain request applies them.
 Steps:
 1. `lib/segments.ts`: `Segment {name, filter, description}`; add `segments?` to Model and Measure and `segments?` to QueryRequest in `lib/types.ts`; add the keys to the model and golden schemas.
 2. `lib/validate-rules/metric.ts`: unique names, `sqlTextProblem` on each filter, measure names exist; the file is found by name, with no index to edit. Register the codes in `lib/issue-codes/metric.ts`.
-3. `lib/compiler/segments.ts` `measureFilter(measure, model)` ANDs the measure filter with its segments; call it in the `sqlOf` measure branch and in `texts` of `compileLayerInner`. Request segments join `where`. A request that names a metric and segments is refused with a new RefusalCode, before `compileMetrics`.
+3. `lib/compiler/segments.ts` `measureFilter(measure, model)` ANDs the measure filter with its segments; call it in the `sqlOf` measure branch and in `texts` of `compileLayerInner`. Request segments join `where`; a request segment applies only when an approved measure the user may see names it (else `not_visible`) and it is a segment of the base model (else `invalid_request`), so its SQL always rests on an owner's approval. A request that names a metric and segments is refused with a new RefusalCode, `metric.segments_on_metric`, before `compileMetrics`.
 4. `lib/approval-hash.ts` measure case: add the resolved segment filter texts.
+5. A segment's columns count as read wherever a measure filter's do: the readback figures (`lib/readback-figures.ts`), `referencedColumns` in `lib/snapshot-diff.ts`, `lib/layer-reads.ts`, the column checks in `lib/validate.ts` and `lib/profile.ts`. `parts.ts` and `metrics.ts` are unchanged: a ratio's numerator with a segment compiles through the `compileLayer` callback.
+6. Write `## Metric semantics` in `references/spec.md` with its whole Segments subsection; C1b and C2 extend it.
 Proves it:
 - A measure with a segment compiles to `filter (where a and b)` and equals hand SQL on the demo database.
 - Editing the filter after approval makes validate report the measure's hash mismatch.
@@ -459,20 +469,20 @@ Proves it:
 #### C1b. Segment commands and readback (wave 2; after C1a)
 The owner can add and remove a segment with typed commands and read it back.
 Steps:
-1. `commands/add-segment.ts` (with `--replace` for a draft) and `commands/remove-segment.ts`, with their spec CLI rows.
-2. Readback prints "Excludes: ..." in `renderField` and lists a model's segments in `renderModel`.
-3. Write the "Segments" paragraph of `metrics.md`, the segments part of the spec's `## Metric semantics`, and `tests/docs-rules/metric-semantics.ts`.
+1. `commands/add-segment.ts` (with `--replace`) and `commands/remove-segment.ts`, with their spec CLI rows; both are typed edits that `semlayer apply` runs. `--replace` on a segment an approved measure names sends each such measure back to draft by the rule `semlayer set` follows, and names each in its output and under `--json`; `remove-segment` refuses while a measure or a golden names the segment.
+2. Readback lists a model's segments in `renderModel`, each with its conditions in words and the measures that name it. A measure's readback already lists each named segment's conditions under "It counts only rows where:", marked `(segment <name>)` (C1a), and that list stands in for an "Excludes:" line.
+3. Write the "Segments" paragraph of `metrics.md`, the readback and commands part of the spec's Segments subsection (C1a wrote the rest), and `tests/docs-rules/metric-semantics.ts`.
 Proves it:
-- `add-segment` then `readback` on a measure that names it shows its "Excludes:" line.
+- `add-segment` then `readback` on a measure that names it shows the segment's conditions marked `(segment <name>)`.
 - `remove-segment` after `add-segment` leaves the model file byte for byte as before.
 
 #### C2. Calendar and default time dimension (wave 2; after C1a)
 A source sets the week start and a measure names the date it is measured over.
 Steps:
-1. `schemas/source.schema.json`: `calendar.week_start`; `lib/compiler/calendar.ts` `weekStart(expr, day)`.
+1. `schemas/source.schema.json`: `calendar.week_start`, written by `semlayer setup --week-start <day>`; `lib/compiler/calendar.ts` `weekStart(expr, day)`.
 2. `grained()` takes the calendar; `sqlOf` dimension branch passes it. No calendar means today's SQL.
 3. `default_time_dimension` on model and measure; the rule in `validate-rules/metric.ts`.
-4. `lib/refs.ts` accepts `:month`, resolved to the base default or refused with a named code.
+4. `lib/refs.ts` accepts `:month`, resolved to the default time dimension of the request's first measure or refused as `metric.default_time_missing`; a golden's request names the field in full.
 5. `approval-hash.ts`: add `default_time_dimension` to the model and measure cases; add `weekStart?: string` to `HashScope`, set it in `modelEntries` and in the scope `commands/approve.ts` builds, and hash it into the dimension case for week grains. `metrics.md` asks the question.
 Proves it:
 - With `sunday`, 2024-01-03 buckets to 2023-12-31; unset stays 2024-01-01.
@@ -485,7 +495,7 @@ Steps:
 1. Schema and `validate-rules/metric.ts`: a time dimension of the same model; agg sum, avg, min or max; model has a primary key.
 2. `lib/compiler/semi-additive.ts`: `DISTINCT ON` (the primary key minus the `non_additive_dimension` column, plus the requested group keys with the time dimension at the requested grain), ordered by those keys and then the non-additive column descending for `last` or ascending for `first`. The measure filter applies in the inner `WHERE`, and the aggregate runs outside.
 3. Edit the final assembly of `compileLayerInner` to use it; refuse a request mixing it with additive measures.
-4. Hash field and readback sentence.
+4. Hash field and readback sentence; the readback figure (`measurePlan` in `lib/readback-figures.ts`) keeps the last value by the same rule. `semlayer set <s>.<m>.<measure> non_additive_dimension '{name: <dimension>, window: last}'` writes the key.
 5. Add `fixtures/semantics/balances.sql`, one file of DDL and inserts that runs unchanged on PostgreSQL and DuckDB, every value synthetic. Add `tests/compat/balances.test.ts`: it loads the file into a unique schema from `PG_URL`, builds the small layer with typed commands and confirms a golden with `semlayer goldens confirm`; it is required in F1's `compat` job and skipped locally without `PG_URL`.
 Proves it:
 - Daily rows for two accounts across two months return the last day's balance per month, which differs from the sum of the days; no time dimension gives the latest.
@@ -503,7 +513,9 @@ Steps:
    - `over` that is not one of the request's dimensions;
    - a measure whose agg is not `sum` or `count`, or that has `non_additive_dimension`;
    - a metric;
-   - a filter on the `over` dimension without a grain or at another grain.
+   - a filter on the `over` dimension without a grain or at another grain;
+   - a filter on a measure or metric, and another dimension that is the `over` field at another grain;
+   - an `over` written as the bare `:grain` shorthand.
 
    It compiles the inner request (the request without `running`, `order_by`, `limit` and its filters on the `over` dimension) through `compile`. Joins, segments, row filters and D1b's several models therefore apply as they do today.
 4. In the same file, export `spine(...)` for C5 and C6:
@@ -516,7 +528,7 @@ Steps:
    - With `periods: n`, `<m>_trailing_<n>` is `case when row_number() over (...) >= n then sum(<m>) over (... rows between n-1 preceding and current row) end`, null until n periods exist.
 
    A filter on the `over` dimension at its grain applies in the outer `WHERE` on the period, with a `Params` started after the inner parameters. `order_by` and `limit` apply last, by the rules of `compileLayer`.
-6. `lib/time-request-words.ts` `timeShapeWords(request)` is called once at the end of `requestWords` in `lib/readback.ts`. It prints the golden readback line: "Running total of each figure over invoice.invoice_date by month, from the first month of data; a month with no rows adds 0", or "Total of the last 3 months, each month included; blank until 3 months of data".
+6. `lib/time-request-words.ts` `timeShapeWords(request)` is called once at the end of `requestWords` in `lib/readback.ts`, and the same words print in `goldens new`, `run` and `confirm` and in `semlayer sql`; a rename follows `running.over` in a golden's request (one line each in `lib/edit.ts` and `lib/rename-model.ts`, as C5 and C6 add for `compare.over` and `window.dimension`). It prints the golden readback line: "Running total of each figure over invoice.invoice_date by month, from the first month of data; a month with no rows adds 0", or "Total of the last 3 months, each month included; blank until 3 months of data".
 7. Docs:
    - the "Running totals and comparisons" part of `## Metric semantics` in `references/spec.md`;
    - the "Running totals and comparisons" paragraph of `references/phases/metrics.md`, which asks for the figure, the grain, and running or last n;
@@ -564,7 +576,7 @@ Steps:
    - `<m>_<c>_pct` as `cast(<m> - <m>_<c> as numeric) / nullif(<m>_<c>, 0)`, a fraction (-0.25 for a fall of a quarter), null when the compared value is 0 or null.
 
    A column the request already selects refuses as today.
-5. `timeShapeWords` adds: "Each figure beside the month before and the same month a year earlier, with the change and the change as a fraction of the earlier figure; blank where the earlier month is before the data. A filter on invoice.invoice_date:month only picks the months shown."
+5. `timeShapeWords` adds: "Each figure beside the month before and the same month a year earlier, with the change and the change as a fraction of the earlier figure (revenue_prior, ...), over invoice.invoice_date by month; blank where the earlier month is before the data; a month with no rows counts as 0 for a sum or a count (any other figure, a balance or a metric there is blank) ...", and with a filter on the period, "A filter on invoice.invoice_date:month only picks the months shown; each is still compared with the earlier months, shown or not."
 6. Docs: the comparison part of the spec's "Running totals and comparisons", the card paragraph, one line for `compare` in the request help of `commands/goldens.ts`, and its docs rules.
 7. `tests/compat/period-compare.test.ts` confirms the 2025 month-over-month and year-over-year golden on Chinook, in the `compat` job.
 
@@ -600,8 +612,9 @@ Steps:
    - a filter on that dimension at any grain;
    - a request dimension that is that dimension while `compare` is set;
    - `compare.over`, or `running`, together with `window`;
-   - a measure with `non_additive_dimension`, naming C5's comparison by grain instead.
-4. One sub-request per window, `"current window"`, `"prior window"` and `"year ago window"`, each compiled through `compile` with parameters chained as `compileMetrics` chains its parts.
+   - a measure with `non_additive_dimension`, naming C5's comparison by grain instead;
+   - a filter on a measure or metric, and a request with no measure.
+4. One sub-request per window, `"current window"`, `"prior window"` and `"year ago window"`, each compiled through `compile` with parameters chained as `compileMetrics` chains its parts; `compileParts` numbers its parameters after the earlier windows' values, so a ratio metric compiles in a later window.
    - Each is the request without `window`, `compare`, `order_by` and `limit`, plus `{field: <dimension>, op: gte, value: <start>}` and `{field: <dimension>, op: lt, value: <end plus one day>}`.
    - A day is therefore a day of the dimension's expr as `grained()` reads it, and the column's index still serves the filter.
    - A ratio metric compiles per window, as a nested `WITH`, before it is compared.
@@ -669,11 +682,11 @@ Proves it:
 
 **Outcome.** An owner can ask for orders and refunds by month in one request. They can also model a many-valued attribute, such as order tags, through a bridge table with a dedupe rule they chose, and read back what the totals will and will not add up to.
 
-**Today.**
-- A request whose measures come from two models is refused with "a request's measures must share one model, or be one metric" (`lib/compiler/index.ts:176`, `lib/compiler/metrics.ts:167`, `checkMeasureModels` in `lib/validate.ts`).
-- Metrics already compile one CTE per model and combine them on the union of dimension keys with `is not distinct from` (`metrics.ts`, from `const parts`). A plain request cannot use that path.
-- `Join` has no `through`. `$defs.join` in `schemas/model.schema.json` forbids extra keys and allows three relationships. `JoinPlan.requestPath` in `lib/compiler/joins.ts` follows to-one joins only, and `hop` refuses many_to_many evidence.
-- `validate.ts` errors on an approved join with many_to_many evidence and warns on every one_to_many. `check-join` measures one key pair (`lib/sql/join-check.ts`).
+**Today.** D1a, D1b, D3, D4 and D5 have landed; D2 and D6 have not.
+- A request whose measures come from several models compiles in parts, as a metric does: `compileParts` in `lib/compiler/parts.ts` (D1a) builds one CTE per model and combines them through `"request groups"` on `is not distinct from` (D1b). `mapped` in `parts.ts` maps a dimension to a part by a to-one path or by the same name; nothing declares two dimensions the same. A dimension no part reaches gives `no_shared_dimension`, and `golden.dimension_not_shared` in `lib/validate.ts` errors on a golden that groups by one.
+- `Join` has `through` (`lib/through.ts`, `$defs.join`): a bridge model, its keys to the target, and the dedupe rule `distinct_pairs`, `equal_split` or `weight`, optional on a draft and required to approve. `semlayer add-bridge` writes it as a draft and `semlayer apply` runs it; `lib/validate-rules/join.ts` checks it with the codes of `lib/issue-codes/join.ts`, and its bridge must be a model of the source (`join.through_bridge_unknown`).
+- `lib/compiler/bridge.ts` compiles a request grouped by a bridge join's target (D4); `semlayer check-join` measures the bridge into `evidence.through` (`lib/sql/through-check.ts`), and `lib/readback-bridge.ts` reads it back (D5).
+- `semlayer next` asks the owner the dedupe question for a draft bridge join with no rule (`bridgeLacks` in `lib/approve-checks.ts`, case `"through"` of `lackQuestions` in `lib/next.ts`, D5), and names `check-join` for one with no evidence.
 - `roleOf` in `lib/baseline.ts` classes a table as `bridge`, but `draftModels` writes no join for it.
 
 **Scope.**
@@ -692,7 +705,7 @@ Not planned: MetricFlow and Cube entity vocabulary (E3, E4 deferred), a bridge d
 Move the per-model CTE builder out of `metrics.ts` with no change in SQL.
 Steps:
 1. Create `lib/compiler/parts.ts` exporting `compileParts`, holding `metrics.ts` from `const parts` to the final return (`reaches`, `mapped`, the part loop, the union-of-keys outer query).
-2. `metrics.ts` keeps `parseFormula`, `render` and `formula`, and calls `compileParts`.
+2. `metrics.ts` keeps `parseFormula`, `render` and `formula`, and calls `compileParts`, handing it the `compileLayer` callback with its arguments unchanged.
 
 Proves it:
 - `compiler-metrics.test.ts` and `goldens-recompile.test.ts` pass unedited.
@@ -703,7 +716,7 @@ A plain request over several models compiles to one CTE per model, combined on t
 Steps:
 1. In `compileMetrics`, widen the entry guard so plain measures naming several models go to `compileParts`; delete its `must share one model` refusal.
 2. In `compileLayerInner`'s `resolve`, delete the measures branch (its `must share one model` refusal) and keep the filter refusal.
-3. Empty `checkMeasureModels` and its call in `validate.ts`.
+3. Delete `checkMeasureModels` and its call in `validate.ts`, retiring `golden.measures_span_models`, and let the golden check's spanning rule (`golden.dimension_not_shared`) cover a request whose measures span models. A multi-fact request that names segments is refused, `join.multi_fact_segments` (a `RefusalCode`). `goldenDraftFields` in `lib/goldens.ts` and `goldenModels` in `lib/status.ts` already see every measure of a multi-fact golden.
 4. Rewrite the sentence in `spec.md`, `verify.md`, `verification.md`, the `share one model` line of the request help in `commands/goldens.ts`, and the docs-rules rows that pin it; flip the five tests that assert it in `compiler.test.ts`, `compiler-metrics.test.ts`, `goldens-recompile.test.ts` and `validate.test.ts` (two).
 5. Add `tests/compat/multifact.test.ts`: it loads the Acme warehouse with `fixtures/acme/load-postgres.ts` into a unique schema from `PG_URL`, builds the small layer with typed commands and confirms the orders-and-refunds-by-month golden with `semlayer goldens confirm`; it is required in F1's `compat` job and skipped locally without `PG_URL`.
 
@@ -718,10 +731,10 @@ Steps:
 1. `lib/through.ts` defines `Through` (`model`, bridge-to-target `keys`, `dedupe`: `distinct_pairs`, `equal_split` or `weight`, `weight` column); `Join` gains `through?`.
 2. Add `through` to `$defs.join`; `keys` stays fact-to-bridge, relationship `one_to_many`.
 3. `commands/add-bridge.ts` writes the draft; add its spec row.
-4. `lib/validate-rules/join.ts`, with codes registered in `lib/issue-codes/join.ts`: `join.through_bridge_unknown`, `join.through_columns_missing`, `join.through_dedupe_missing` (error once approved), `join.through_weight_invalid`.
-5. `joinContent` in `approval-hash.ts` includes `through`; the one_to_many warning in `validate.ts` skips a through join.
+4. `lib/validate-rules/join.ts`, with codes registered in `lib/issue-codes/join.ts`: `join.through_bridge_unknown`, `join.through_columns_missing`, `join.through_dedupe_missing` (error once approved), `join.through_weight_invalid`, `join.through_relationship_invalid`.
+5. `joinContent` in `approval-hash.ts` includes `through`; the one_to_many warning in `validate.ts` skips a through join, and its key check reads a bridge join's keys against the bridge. Each leg of a through join (fact to bridge, bridge to target) obeys `pairAllowed`, through the join loop of `lib/validate-rules/scope.ts`.
 6. `requestPath` refuses a through route with `no_join_path` until D4.
-7. Add `fixtures/semantics/bridge.sql`: one file of DDL and inserts for orders, tags and an order-tag bridge that runs unchanged on PostgreSQL and DuckDB, every value synthetic.
+7. Add `fixtures/semantics/bridge.sql`, with `fixtures/semantics/README.md`: one file of DDL and inserts for orders, tags and an order-tag bridge that runs unchanged on PostgreSQL and DuckDB, every value synthetic.
 
 Proves it:
 - The schema rejects an approved through join with no dedupe; each code fires on its fixture.
@@ -732,7 +745,7 @@ Grouping by a many-valued dimension returns figures that are not multiplied.
 Steps:
 1. `lib/compiler/bridge.ts` builds the deduped bridge subselect and the allocation factor.
 2. `requestPath` returns the bridge and target instances; `PlannedJoin` gains `through`, which marks the result many-valued.
-3. In `compileLayerInner`'s `sqlOf` (measure branch) multiply `sum` and `count` by the factor; refuse other aggregates, a second through path, and a filter on a through dimension that is not grouped.
+3. In `compileLayerInner`'s `sqlOf` (measure branch) multiply `sum` and `count` by the factor. Refuse, each with its code: an `avg`, `min`, `max` or `count_distinct` under `equal_split` or `weight` (`join.through_aggregate_unsupported`), a second bridge path (`join.through_second_path`), a filter on a through dimension that is not grouped (`join.through_filter_ungrouped`), a semi-additive measure grouped through a bridge (`join.through_semi_additive`), and a computed target field under `distinct_pairs` (`join.through_coarse_group`). Under `weight`, a row whose total weight is 0 or empty is split equally, so its shares still add up to its figure.
 4. The bridge applies the user's row filters; a bridge hidden from the role gives `not_visible`.
 5. Add `tests/compat/bridge.test.ts`: it loads `fixtures/semantics/bridge.sql` into a unique schema from `PG_URL`, builds the small layer with typed commands and confirms a by-tag golden with `semlayer goldens confirm`; it is required in F1's `compat` job and skipped locally without `PG_URL`.
 
@@ -745,30 +758,30 @@ Proves it:
 The owner sees the bridge's measured facts and confirms the dedupe rule.
 Steps:
 1. `lib/sql/through-check.ts` measures duplicate pairs, orphan bridge rows, facts with no bridge row and values per fact.
-2. `commands/check-join.ts` runs it for a through join, also under `--all`, and records `evidence.through`.
+2. `commands/check-join.ts` runs it for a through join, also under `--all`, and records `evidence.through` (`schemas/model.schema.json`); `lackQuestions` in `lib/next.ts` gains case `"through"`, the dedupe question; `semlayer apply` runs `add-bridge`.
 3. `lib/readback-bridge.ts`, called from `joinWords` in `readback.ts`, states the rule and that group totals can exceed the overall total.
 4. A `join.through_facts_unbridged` warning; the bridge interview step in `phases/joins.md`.
 
 Proves it:
 - Evidence counts equal hand-computed values on a bridge fixture.
-- Readback contains the rule and the overlap sentence; orphans give the warning.
+- Readback contains the rule and the overlap sentence; facts with no bridge row give the `join.through_facts_unbridged` warning, and orphan bridge rows are shown by `check-join` and the readback.
 
 #### D2. Conformed dimensions (wave 3; after D1b)
 The owner can declare that two models' dimensions are the same.
-Steps: add `conforms_to` to the dimension schema; `commands/conform.ts` writes it; `mapped` in `parts.ts` accepts it; `join.conformed_type_mismatch` checks type and grain; readback paragraph.
+Steps: add `conforms_to` to the dimension schema; `commands/conform.ts` writes it; `mapped` in `parts.ts` accepts it (since D1b `mapped` serves plain multi-fact requests as well as metrics); `join.conformed_type_mismatch` checks type and grain, registered in the existing `lib/issue-codes/join.ts` and checked in the existing `lib/validate-rules/join.ts`; readback paragraph.
 Proves it:
 - Renamed dimensions group on one name; a type mismatch errors; the approval hash changes.
 
 #### D6. Draft proposes bridges (wave 3; after D3)
 A table classed `bridge` yields a draft through join and an open question.
-Steps: `lib/draft-bridge.ts`, one call in `draftModels`, a candidate list from `roleOf`, one case in `nextAction`.
+Steps: `lib/draft-bridge.ts`, one call in `draftModels`, a candidate list from `roleOf`, one case in `nextAction`. The drafted join has the shape `semlayer add-bridge` writes, and its `through.model` must be a model of the source (`join.through_bridge_unknown`), so the bridge table is drafted as a model too. `semlayer next` already asks the dedupe question for every draft bridge join with no rule (`bridgeLacks` in `lib/approve-checks.ts`, case `"through"` of `lackQuestions` in `lib/next.ts`, since D5); the case in `nextAction` covers only what that question does not.
 Proves it:
 - A `user_roles` fixture drafts the join with dedupe unset; a non-bridge table drafts none.
 
 **Milestones.**
 - After D1a, D1b: `semlayer sql` with orders.amount and refunds.refunded by month prints two CTEs and a union-of-months select, and the orders-and-refunds golden is confirmed on PostgreSQL.
 - After D3, D4: `semlayer sql` by tag name prints a deduped (order, tag) subselect, and the by-tag golden is confirmed on PostgreSQL.
-- After D5: `semlayer check-join --join tags` prints orphans, duplicates and unbridged facts.
+- After D5: `semlayer check-join --source <s> --model orders --join tags` prints orphans, duplicates and unbridged facts.
 
 **Risks.**
 - The `parts.ts` move changes metric SQL; the D1a snapshot shows it before D1b starts.
@@ -1044,7 +1057,7 @@ Proves it:
 
 **Outcome.** When a finished layer needs one more metric, table or definition, a person or agent opens a change round, sees exactly what moved, and closes it with a version the owner chose and a changelog entry showing which goldens' figures changed. A schema refresh leaves a record, and a retyped column is flagged without a hand-written question.
 
-**Today.**
+**Before wave 2.** Every block of H has landed; the bullets describe the code before it.
 - On a finished layer `semlayer next` returns phase `done` with action `validate` (`skills/semantic-layer/scripts/lib/status.ts` ~1185-1203). Nothing tells the agent that `add-metric` works there.
 - No version or changelog exists. `schemas/project.schema.json` `version` is the spec version, const 1. No command is named change, diff, release or version.
 - `introspect` prints the snapshot diff, including retyped columns, then overwrites the snapshot (`commands/introspect.ts` ~217, `lib/snapshot-diff.ts`). `references/phases/drift.md` step 2 has the agent write a question for each retyped column by hand.
@@ -1067,8 +1080,8 @@ Not planned: a migration framework, branches or environments inside the tool (gi
 #### H5. Keep the drift record (wave 2; after nothing)
 A schema refresh leaves a record, and a retyped column that an approved field reads is flagged.
 Steps:
-1. Add `lib/drift-record.ts` with `writeDrift` and `readDrift` for `.semlayer/drift.json` (`{at, source, diff}`), validated by `schemas/drift.schema.json`.
-2. In `commands/introspect.ts`, after `diffSnapshots` succeeds, call `writeDrift`, which merges the new diff into the record: a retyped entry stays until the field that reads the column is edited or re-approved (its hash changes).
+1. Add `lib/drift-record.ts` with `writeDrift` and `readDrift` for `.semlayer/drift.json` (`{version, sources: [{source, at, diff, unreadable?, retyped}]}`), validated by `schemas/drift.schema.json`.
+2. In `commands/introspect.ts`, after `diffSnapshots` succeeds, call `writeDrift`, which merges the new diff into the record: a retyped entry stays until the field that reads the column is edited or re-approved (its hash changes). A table the role can no longer read is in `tables_removed`, and `unreadable` names it. Only `introspect` writes the record: `semlayer import` of an export does not, so a column retyped in a fresh export gets no warning.
 3. Add `lib/validate-rules/release-drift.ts`: warning `release.column_retyped` naming field, from and to types, using the column lookup status uses for phase `drift`; register it in `lib/issue-codes/release.ts`.
 4. Rewrite `drift.md` step 2 to rely on the warning.
 5. Add `fixtures/acme/evolve-retype.sql`, which names no schema (it runs through the search path), retypes `fct_orders.amount_cents` to `numeric(12,2)` and drops one column. Add `tests/compat/drift.test.ts`: it loads the Acme warehouse into a unique schema from `PG_URL`, builds and approves a small layer with typed commands, applies the file and runs `semlayer introspect`; it runs in the `compat` job.
@@ -1086,6 +1099,8 @@ Steps:
 3. `lib/release.ts`: `readChangelog`, `appendEntry` (temp file and rename; refuses a version not above the last).
 4. `lib/validate-rules/release.ts`: `release.changelog_malformed`, `release.version_mismatch`, registered in `lib/issue-codes/release.ts`.
 5. `tests/release-fixture.ts`: copies `examples/acme/semantic` to a temp dir.
+6. List `changelog.yaml` among the root's own files in `commands/scope.ts`, so `scope --to-file` never overwrites it; a later new root file needs the same entry.
+7. An entry's `goldens` hold each golden's rows as its file stores them, a protected column's values included; the changelog adds no value the golden does not hold. H4 writes them this way.
 Proves it:
 - `appendEntry` refuses 1.0 after 1.1.
 - A malformed changelog fails validate with the file name and code.
@@ -1094,8 +1109,8 @@ Proves it:
 #### H2. Item diff against the last release (wave 2; after H1, G2)
 `semlayer change status` lists items added, changed and removed since the last release.
 Steps:
-1. `lib/changeset.ts` `itemMap(root)`: ref-to-hash from `statusDetail(root).targets`, which carries each schema pair as `schema-pair:<source>:<from>:<to>` since G2b, plus each source's `intake.primary`.
-2. `diffItems(baseline, now)`, marking changed items re-approved or still draft, and listing for each changed item the approved goldens whose request reads it (`affected_goldens`).
+1. `lib/changeset.ts` `itemMap(root)`: ref-to-hash from `statusDetail(root).targets`, which carries each schema pair as `schema-pair:<source>:<from>:<to>` since G2b, plus each source's `intake.primary` as `primary:<source>`, a ref hashed over `{kind, source, schema}` that is never a draft and is not an approve target.
+2. `diffItems(baseline, now)`, marking changed items re-approved or still draft, and listing for each changed item the approved goldens whose request reads it (`affected_goldens`). A join edit other than `through` changes no measure or dimension hash, so a join's affected goldens are those that read either model it joins.
 3. `commands/change.ts` `status`, plain and `--json`; quote `.semlayer/drift.json` when present. With no changelog, `change status` exits 0 and says there is no release yet, naming `semlayer change close --version 1.0`.
 4. Add the spec CLI row.
 Proves it:
@@ -1106,7 +1121,7 @@ Proves it:
 #### H3. Entry point for a change request (wave 2; after H2, G3)
 On a finished layer, `next` says how to start a change and tracks it.
 Steps:
-1. `change start --note <text>` writes `.semlayer/change.json` (`change.schema.json`).
+1. `change start --note <text> --by <name>` writes `.semlayer/change.json` (`change.schema.json`), with the round's `drafts_at_start`; it refuses a second round (`release.change_open`), an unreleased layer (`release.change_unreleased`), a missing input (`release.change_missing_input`) and a note over 500 characters or a name over 200 (`release.change_too_long`).
 2. In `lib/next.ts` `nextAction`, name the next step per pending item from H2, then `change close`.
 3. In `lib/status.ts`, add phase `change` to the `Phase` union, returned while `.semlayer/change.json` exists, and have `nextAction` map it; reword the `done` message; show `layer_version` and the open change in `status --json`.
 4. Write `references/phases/change.md`, whose first line is "Load this card when `semlayer next` names phase `change`."; add the `SKILL.md` router row `change` | `references/phases/change.md` and one principle line (H's budget of 2; the file is 108 lines of 110 with B's line spent, so the two lines left are H's); `tests/docs-rules/release.ts`.
@@ -1118,22 +1133,22 @@ Proves it:
 #### H4. Close a round (wave 2; after H3)
 `change close --version 1.1` refuses unless clean, then writes the version, entry and moved goldens; with no changelog, `change close --version 1.0` records the first release.
 Steps:
-1. With no changelog, `change close --version 1.0` writes the first entry (item hashes and recorded golden rows) with no round open, and refuses while any item is draft or changed since approval.
-2. Blockers: draft or changed-since-approval items, validate errors, and an affected golden (from H2) whose figures moved and were not confirmed again. `change close` reruns each affected golden with `goldenRun`; one whose rows differ from its recorded rows blocks the close until `semlayer goldens confirm` records the owner's yes to the new rows. A golden on a source that cannot be queried is listed as not rerun. List the blockers, exit 1.
+1. With no changelog, `change close --version 1.0` writes the first entry (item hashes and recorded golden rows) with no round open. A draft never approved and absent from the last release (a field the owner deferred) is left out of the release and named under drafts left out; it blocks nothing.
+2. Blockers: an item approved before, or held by the last release, that is now a draft or changed since approval; a confirmed golden that reads a left-out draft; validate errors; and an affected golden (from H2) whose figures moved and were not confirmed again. `change close` reruns each affected golden with `goldenRun`; one whose rows differ from its recorded rows blocks the close until `semlayer goldens confirm` records the owner's yes to the new rows. A golden on a source that cannot be queried is listed as not rerun. List the blockers, exit 1.
 3. `goldens_moved` lists each affected golden whose recorded rows differ from the last entry's `goldens`, with cell counts.
-4. Write `layer_version` to `semantic.yaml`, call `appendEntry`, delete `change.json`.
+4. Write `layer_version` to `semantic.yaml`, call `appendEntry`, delete `change.json`. A version with a leading zero is refused (`release.version_invalid`; `VERSION_PATTERN` in `lib/release.ts`).
 5. Print items, moved goldens and version.
-6. Edit `references/phases/handoff.md` so the agent records the layer as 1.0 with `semlayer change close --version 1.0` when a first build ends.
+6. Edit `references/phases/handoff.md` so the agent records the layer as 1.0 with `semlayer change close --version 1.0` when a first build ends and names the drafts it left out. In a round, `semlayer next` names the readback of what the round added or changed, then the close as a `run` step, with the owner's version question in `why`.
 Proves it:
-- On the fixture with no changelog, `change close --version 1.0` writes the first entry, and refuses while an item is draft.
-- Refuses on a draft metric and names it.
+- On the fixture with no changelog, `change close --version 1.0` writes the first entry, with the deferred `products.launched_on` left out and named.
+- Refuses on an approved measure edited and not approved again, and on a confirmed golden that reads a left-out draft, naming each.
 - Edit a measure read by two goldens: close refuses and names both; after `goldens confirm` on a recorded yes for each, the entry lists both with before and after.
 - Closing twice with one version fails.
 
 **Milestones.**
 - After H5: `semlayer introspect` on a changed table, then `semlayer validate`, shows `release.column_retyped`, and a second identical introspect keeps it.
 - After H1, H2: `semlayer change status --root <fixture>` after `semlayer set` on a measure shows it changed.
-- After H3: `semlayer next` on the fixture says `change start`.
+- After H3: `semlayer next` on the fixture, once released, says `change start`.
 - After H4: `semlayer change close --version 1.0` on the fixture records the first release, and after one added metric `semlayer change close --version 1.1` shows `layer_version: 1.1` and a changelog entry naming it.
 
 **Risks.**
@@ -1156,12 +1171,12 @@ The owner said on 2026-11-20 to proceed. The plan runs on the default in each ro
 | 6 | Where the primary schema is recorded | An explicit `intake.primary`, set by `semlayer setup --primary`; with none set, the only schema read, else no primary and no guess (built: G1) | The first entry of `intake.schemas` | G1 |
 | 7 | What a cross-schema declaration holds | A directional pair, from one schema to another, with at least one key relationship (a foreign key constraint or a column pair), approved on a recorded yes; a declined pair holds no keys (built: G2, G2b) | An unordered pair; a pair with no keys | G2 |
 | 8 | A join across an undeclared schema pair | A draft join is an error at once in validate, the join commands and the compiler; a join across schemas approved before pairs existed compiles with a warning from validate and the compiler until the tool's version reaches 0.2.0 (`UNDECLARED_GRACE_ENDS` in `lib/schema-scope.ts`, a version because no date can be derived from the manifest), then an error (built: G2, G2c) | An error at once for every such join | G2, G2c |
-| 9 | Where a layer's version lives and who chooses it | `layer_version` in `semantic.yaml` with `changelog.yaml` beside it; the owner passes the number and the tool checks that it rises | Git tags only; the tool proposes the number | H1, H4 |
-| 10 | Is a change round required before editing a finished layer | Optional: edits work as today, and closing a round compares with the last release | Required before any edit | H3 |
-| 11 | A request naming measures of two fact tables | Allowed whenever the models share a dimension, refused with a code when they do not | Allowed only after the owner confirms the shared dimension in a readback | D1b |
-| 12 | The dedupe rule of a bridge | Mandatory, no default; `distinct_pairs`, `equal_split` or a weight column | A default of `distinct_pairs` | D3 |
-| 13 | Segments, calendar and week start | Segments belong to one model; the calendar is set per source; weeks start on Monday as today; fiscal years are out | Shared segments; a calendar per time dimension; fiscal years in C2 | C1a, C2 |
-| 14 | Running totals and period-over-period | Wave 2, with the last-n-days comparison (C4, C5, C6), as the owner asked on 2026-11-20 | none | C4 |
+| 9 | Where a layer's version lives and who chooses it | `layer_version` in `semantic.yaml` with `changelog.yaml` beside it; the owner passes the number and the tool checks that it rises (built: H1, H4) | Git tags only; the tool proposes the number | H1, H4 |
+| 10 | Is a change round required before editing a finished layer | Optional: edits work as today, and closing a round compares with the last release (built: H3, H4) | Required before any edit | H3 |
+| 11 | A request naming measures of two fact tables | Allowed whenever the models share a dimension, refused with a code when they do not (built: D1b) | Allowed only after the owner confirms the shared dimension in a readback | D1b |
+| 12 | The dedupe rule of a bridge | Mandatory, no default; `distinct_pairs`, `equal_split` or a weight column (built: D3; a draft may leave it unset, an approved join must have it) | A default of `distinct_pairs` | D3 |
+| 13 | Segments, calendar and week start | Segments belong to one model; the calendar is set per source; weeks start on Monday as today; fiscal years are out (built: C1a, C2) | Shared segments; a calendar per time dimension; fiscal years in C2 | C1a, C2 |
+| 14 | Running totals and period-over-period | Wave 2, with the last-n-days comparison (C4, C5, C6), as the owner asked on 2026-11-20 (built: C4, C5, C6) | none | C4 |
 | 15 | What dbt import does | Reads semantic models and metrics as drafts with origin `inferred`; nothing is approved; no export | Also export to MetricFlow, or to Cube | E1 |
 | 16 | Who runs the check on managed PostgreSQL services | The owner runs the kit on Supabase and Neon and commits the redacted output | Rely on the pooler and TLS containers only | F5 |
 | 17 | Warnings under `--json` | Existing string lists stay; objects with codes are added beside them: `warning_issues` entries `{code, file, path, message}` in typed edits and `apply --json` (built: B2) | Replace the strings (breaks current readers) | B2 |
@@ -1169,16 +1184,16 @@ The owner said on 2026-11-20 to proceed. The plan runs on the default in each ro
 | 19 | The Snowflake, BigQuery and Databricks query-plan material | Moved to `references/other-dialects.md`, marked unsupported (built: F4) | Kept on the intake card | F4 |
 | 20 | The direction of a schema pair | From the schema holding the foreign key to the schema it references; a join either way between those tables is allowed (built: G2) | The direction of the model a join is declared on | G2 |
 | 21 | Statement timeout and time zone through a pooler | `SET LOCAL` inside each read-only transaction; read-only rests on `BEGIN TRANSACTION READ ONLY` (built: F3; `default_transaction_read_only` and `TimeZone` stay startup parameters, and only the statement timeout moved) | Startup parameters only, with poolers unsupported | F3 |
-| 22 | Who records 1.0, and when | The agent, with `semlayer change close --version 1.0`, when a first build ends | The owner, by hand | H4 |
-| 23 | Running totals and comparisons as request options or as metric types the owner names in `metrics.yaml` | Request options over any approved measure or metric | Metric types the owner names in `metrics.yaml` | C4 |
-| 24 | Does "the last 30 days as of D" include D | Yes: D-29 to D | It ends the day before D | C6 |
-| 25 | The default as-of date when a request names none | The clock's date in UTC | Yesterday, the last whole day | C6 |
-| 26 | What "a year earlier" means | The same calendar dates, 29 February read as 28 February, so 29 to 31 days | The same number of days 364 days back, which keeps the weekdays | C6 |
-| 27 | What a window that starts before the first day of data shows | Null for the whole window | The partial figure with a flag | C6 |
-| 28 | Whether percent change is a fraction or a percentage | A fraction, -0.2217 | A percentage, -22.17 | C5 |
-| 29 | Where a running total starts | At the first period of data, with a time filter only picking the periods shown | At the filter's first period | C4 |
-| 30 | What "a year earlier" means at week grain | Refused | 52 weeks earlier | C5 |
-| 31 | Whether a trailing total for its first n-1 periods is null or partial | Null | The partial sum | C4 |
+| 22 | Who records 1.0, and when | The agent, with `semlayer change close --version 1.0`, when a first build ends (built: H4; a draft never approved is left out of the release and named) | The owner, by hand | H4 |
+| 23 | Running totals and comparisons as request options or as metric types the owner names in `metrics.yaml` | Request options over any approved measure or metric (built: C4) | Metric types the owner names in `metrics.yaml` | C4 |
+| 24 | Does "the last 30 days as of D" include D | Yes: D-29 to D (built: C6) | It ends the day before D | C6 |
+| 25 | The default as-of date when a request names none | The clock's date in UTC, filled by `semlayer sql` and written by `goldens new` (built: C6) | Yesterday, the last whole day | C6 |
+| 26 | What "a year earlier" means | The same calendar dates, 29 February read as 28 February, so 29 to 31 days (built: C6) | The same number of days 364 days back, which keeps the weekdays | C6 |
+| 27 | What a window that starts before the first day of data shows | Null for the whole window (built: C6) | The partial figure with a flag | C6 |
+| 28 | Whether percent change is a fraction or a percentage | A fraction, -0.2217 (built: C5) | A percentage, -22.17 | C5 |
+| 29 | Where a running total starts | At the first period of data, with a time filter only picking the periods shown (built: C4) | At the filter's first period | C4 |
+| 30 | What "a year earlier" means at week grain | Refused (built: C5) | 52 weeks earlier | C5 |
+| 31 | Whether a trailing total for its first n-1 periods is null or partial | Null (built: C4) | The partial sum | C4 |
 | 32 | The public test database | Chinook 1.4.5, vendored unmodified with its MIT licence under `fixtures/chinook/` | Downloaded at test time and not committed | W0.4 |
 
 ## 9. Not in this plan
