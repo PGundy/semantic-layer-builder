@@ -529,3 +529,54 @@ describe("check call sites", () => {
     }
   });
 });
+
+describe("semlayer validate --codes", () => {
+  const nowhere = join(tempDir("codes-none"), "no-layer");
+
+  test("lists every registered code once with its level and meaning, reading no layer", async () => {
+    const r = await semlayer(nowhere, ["validate", "--codes"]);
+    expect(r.code).toBe(0);
+    const lines = r.out.split("\n").filter((l) => /^  [a-z_]+\.[a-z0-9_]+  /.test(l));
+    expect(lines.length).toBe(issueCodes().size);
+    for (const [code, info] of issueCodes()) {
+      const mine = lines.filter((l) => l.startsWith(`  ${code}  `));
+      expect(mine).toHaveLength(1);
+      expect(mine[0]).toContain(`  ${info.level}  ${info.meaning}`);
+    }
+  });
+
+  test("groups the codes by prefix in sorted order", async () => {
+    const r = await semlayer(nowhere, ["validate", "--codes"]);
+    const heads = r.out.split("\n").filter((l) => /^[a-z_]+\.\*$/.test(l));
+    expect(heads).toEqual([...new Set([...issueCodes().keys()].map((c) => `${c.slice(0, c.indexOf("."))}.*`))].sort());
+    expect(heads).toContain("access.*");
+  });
+
+  test("--json prints an array of {code, level, meaning, next?} for every code", async () => {
+    const r = await semlayer(nowhere, ["validate", "--codes", "--json"]);
+    const rows = r.json<{ code: string; level: string; meaning: string; next?: string }[]>();
+    expect(rows.map((x) => x.code)).toEqual([...issueCodes().keys()].sort());
+    for (const x of rows) {
+      const info = issueCodes().get(x.code)!;
+      expect([x.level, x.meaning, x.next]).toEqual([info.level, info.meaning, info.next]);
+    }
+    expect(rows.find((x) => x.code === "approval.hash_changed")?.next).toBeDefined();
+  });
+
+  test("the meaning of source.connection_missing says it comes from a refusal", () => {
+    expect(issueCodes().get("source.connection_missing")!.meaning).toContain("not from validate");
+  });
+
+  test("a registered code with no meaning line is refused by the registry", () => {
+    const dir = tempDir("codes-family");
+    writeFileSync(join(dir, "index.ts"), "");
+    writeFileSync(join(dir, "x.ts"), 'export default { "x.no_meaning": { level: "error", meaning: " " } };\n');
+    expect(() => loadCodes(dir)).toThrow(/meaning/);
+  });
+
+  test("a family file added beside the others is listed, with no list of files in the command", async () => {
+    const src = readFileSync(join(REPO, "skills", "semantic-layer", "scripts", "commands", "validate.ts"), "utf8");
+    expect(src).not.toMatch(/issue-codes\/(schema|source|layer|scope)/);
+    expect(src).toContain("issueCodes()");
+  });
+});
