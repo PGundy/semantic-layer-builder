@@ -3,10 +3,12 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { approvalLacks, type Lack, lacksFile, lacksNote } from "./approve-checks.ts";
+import { releaseLead } from "./change-record.ts";
 import { inTurnApply } from "./edit.ts";
 import { type Env, resolveConnection } from "./env-file.ts";
 import { intakeMode } from "./intake.ts";
 import { latestReply, openAccessChanges } from "./ledger.ts";
+import { loadChangelog } from "./release.ts";
 import { plainText } from "./output.ts";
 import { PLAN_ID_PATTERN, planStatus, loadStoredPlan } from "./plan.ts";
 import { loadSnapshot, loadSource, paths } from "./project.ts";
@@ -403,6 +405,8 @@ function fromStatus(root: string, d: StatusDetail): NextAction {
   // Step schema_scope (G3): the schema question in the owner's words, with the commands per answer.
   const schema = schemaScopeAction(root, step, blocked_on);
   if (schema) return schema;
+  // Phase change (H3): bounded, beside the schema_scope branch above.
+  if (step.phase === "change") return changeAction(root, d, step, blocked_on);
   if (step.phase !== "done") return fromAction(step.action, step.phase, step.message, blocked_on);
   // A golden's hash as it stands comes from rows only a run gives, so any verdict to it while its file exists counts.
   const refs = st.approved_without_yes.filter((ref) => !answered(d.replies, ref, hashNow(root, d, ref, latestReply(d.replies, ref)?.content_hash ?? "")));
@@ -411,6 +415,7 @@ function fromStatus(root: string, d: StatusDetail): NextAction {
     const batch = items.length ? items.slice(0, BACKFILL_BATCH) : refs.slice(0, 1);
     const golden = items.length ? undefined : batch[0]!.slice(7);
     const readback = act("readback", ["--targets", batch.join(",")]);
+    const lead = releaseLead(root);
     // dispatchRunner comes before this, so a plan of the golden here has every result or there is none.
     const planned = golden !== undefined && !goldenRunnable(root, golden) ? withGoldenPlan(root, golden, "readback", readback.args) : undefined;
     return fromAction(
@@ -418,11 +423,49 @@ function fromStatus(root: string, d: StatusDetail): NextAction {
       "done",
       `Every phase is done, but ${refs.length} approved item(s) have no recorded owner yes that matches them as they stand (approved before semlayer approve required one). ` +
         "They stay approved: read them back so the owner's answer is in the ledger, and revoke any the owner no longer confirms." +
-        (planned?.command === "goldens" ? ` semlayer cannot run golden:${golden}'s SQL: write its plan with the command below, store the rows with semlayer results add, then run semlayer next again.` : ""),
+        (planned?.command === "goldens" ? ` semlayer cannot run golden:${golden}'s SQL: write its plan with the command below, store the rows with semlayer results add, then run semlayer next again.` : "") +
+        (lead ? ` Meanwhile: ${lead}` : ""),
       blocked_on,
     );
   }
   return fromAction(step.action, "done", step.message, blocked_on);
+}
+
+// Phase change: while a change round is open and every earlier phase is complete, the next step per
+// item the round left to read back (added or changed since the last release, and not approved), up to
+// BACKFILL_BATCH in one readback, then the close with a version the owner chooses. semlayer change close
+// is the last step of a round; its action is ask_owner, the kind for a command that waits on an
+// answer, so the step does not claim the command runs before the owner has named a version.
+function changeAction(root: string, d: StatusDetail, step: ProjectStatus["next_step"], blocked_on: string | null): NextAction {
+  const last = loadChangelog(root).log?.entries.at(-1);
+  const baseline = last?.items ?? {};
+  const pending = [...d.targets]
+    .filter(([ref, t]) => !ref.startsWith("golden:") && t.state !== "current" && t.state !== "unhashed" && baseline[ref] !== t.hash)
+    .map(([ref]) => ref)
+    .sort();
+  if (pending.length) {
+    const batch = pending.slice(0, BACKFILL_BATCH);
+    // A metric is read back by the metrics card's rules; anything else by the change card's.
+    return fromAction(
+      act("readback", ["--targets", batch.join(",")]),
+      batch[0]!.startsWith("metric:") ? "metrics" : "change",
+      `${step.message} ${pending.length} item(s) the round changed or added wait for the owner's yes (${batch.join(", ")}${pending.length > batch.length ? ", and more" : ""}): read ${batch.length === 1 ? "it" : "them"} back, record the answer, then run semlayer next again.`,
+      blocked_on,
+    );
+  }
+  const [major, minor] = (last?.version ?? "1.-1").split(".").map(Number) as [number, number];
+  const suggested = `${major}.${minor + 1}`;
+  const ask =
+    `The change is ready to release${last ? `; the layer is at ${last.version}` : ""}. Which version should it be? I suggest ${suggested}` +
+    `${last ? ` (a large change could be ${major + 1}.0)` : ""}; say if you prefer another.`;
+  return fromAction(
+    act("change", ["close", "--version", "<version>"], "ask_owner"),
+    "change",
+    `${step.message} Every item the round changed is approved. The last step closes the round with a version the owner chooses: semlayer change close --version <version> ` +
+      "records the release and its changelog entry. That command is not available in this version of semlayer yet, so tell the owner the change is ready and the version you suggest, and stop there.",
+    blocked_on,
+    ask,
+  );
 }
 
 // The schema question of semlayer status's scope step, when that is the step: ask_owner with the

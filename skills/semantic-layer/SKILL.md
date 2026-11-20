@@ -44,6 +44,7 @@ From a clone of the repository it is `bun skills/semantic-layer/scripts/semlayer
 11. **Connection first.** A source starts from a read-only connection the owner sets up; a schema export is the fallback, offered only after the owner says a connection is not possible (`references/phases/intake.md`).
 12. **Protected values are never shown.** `semlayer run` and `semlayer goldens run` print a protected column as `[protected]` (never ask for its values) and refuse output with two columns of the same name: alias them. Never pass `--show-protected`: it exists for the owner, run by hand. Renaming or wrapping a protected column (`select email as e`, `lower(email)`) does not show it: a statement that reads one shows its counts and the columns that read nothing protected, and says why once under the table.
 13. **Branch on `code` and `next`, not on text.** Every validate issue and every `--json` error carries a stable `code`, and often a `next` command; the wording may change. `semlayer validate --codes` lists the codes.
+14. **Change only what was asked.** On a released layer a change is a round (`semlayer change start`, `references/phases/change.md`): edit only what the owner asked, read back only the items that changed, and an approved item you change is a draft until their recorded yes.
 
 ## Start or resume
 
@@ -86,6 +87,7 @@ Load the card for the `phase` that `semlayer next` (or `semlayer status`'s `next
 | `verify` | `references/phases/verify.md` |
 | `reapprove` | `references/phases/reapprove.md` |
 | `drift` | `references/phases/drift.md` |
+| `change` | `references/phases/change.md` |
 | `done` | `references/phases/handoff.md` |
 
 Outside `semlayer next`: a new project, or a new source, loads `references/phases/intake.md`; the owner saying tables changed, or a scheduled rerun, loads `references/phases/drift.md`.
