@@ -41,6 +41,46 @@ what it found hard; the counts come from the log.
    `semlayer validate` and `semlayer status --json` in `<WALK>/work` (through `w.sh run`, which puts
    the plugin's `bin/` on `PATH`).
 
+## The two-schema run and the change run
+
+Two more runs use the same wrapper, the same counts and the same steps 2 to 4 as above. Only the
+database and the brief the played owner reads differ. All data is synthetic.
+
+**Two schemas.** The agent must ask the schema question and may join across schemas only after the
+owner's recorded yes to the pair.
+
+1. Load both schemas into one database, with an administrator's URL (`acme` first, then `billing`,
+   whose `invoices` table has the foreign key `invoices_customer_fk` into `acme.dim_customers`):
+
+   ```sh
+   PG_URL=<an administrator's URL> bun fixtures/acme/load-two-schema.ts
+   bun skills/semantic-layer/scripts/semlayer.ts setup --print-role-sql --dialect postgres --schemas acme,billing
+   ```
+
+   Give the printed statements, with a password of your own, to the administrator connection, as in
+   step 1 above.
+2. The agent plays the owner from `fixtures/acme/owner-brief.md` and `fixtures/acme/owner-brief-two-schema.md`.
+   In the log, look for `semlayer next` asking the schema question before any join to `billing`
+   exists, `setup --primary acme`, `add-cross-schema` with the constraint, a readback of the schema
+   pair and its approval on the owner's yes, and `semlayer validate` clean at the end.
+
+   The prompt names only `owner-brief.md`; for this run append to its owner paragraph: "Also read the second brief `<PLUGIN>/fixtures/acme/owner-brief-two-schema.md`."
+
+**A change round.** The layer of a finished one-schema run over `acme` takes two changes without the
+interview being redone: one added metric (shipping charged) and one changed definition (revenue counts
+`completed` orders only).
+
+1. Start from the directory of a finished one-schema run, with its database still loaded.
+2. The agent plays the owner from `fixtures/acme/owner-brief.md` and `fixtures/acme/owner-brief-change.md`
+   and is asked for the two changes in the brief's words. The brief pins the figures to check: shipping
+   charged, and revenue before and after, for 2025, each with its order count.
+
+   The prompt names only `owner-brief.md`; for this run append to its owner paragraph: "Also read the second brief `<PLUGIN>/fixtures/acme/owner-brief-change.md`."
+
+`tests/fixture-two-schema.test.ts` checks that both briefs name only tables and figures that exist
+in the loaded schemas and in `fixtures/acme/reference-figures.json`, and that the change figures are the
+ones the Acme data gives.
+
 ## Reading the counts
 
 | Exit condition | Where to look |
