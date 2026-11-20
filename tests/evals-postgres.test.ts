@@ -150,13 +150,21 @@ describe("with a connection URL", () => {
     assertLocalPg(PG_URL);
     const { scenario, script, file } = pgScenario();
     const out = temp();
-    const password = decodeURIComponent(new URL(PG_URL!).password);
+    const url = new URL(PG_URL!);
+    const password = decodeURIComponent(url.password);
     // A password that is not the cluster's own would not connect, so the connection URL used below is
-    // the real one and the check is on every file for the real password (when it has one) and the URL.
+    // the real one and the check is on every file for the URL, for the password as a URL carries it
+    // and, when it has one, for the bare password. A password that is also the role's name or the
+    // dialect's (CI's is "postgres") appears in the files as that word, so only its URL form is checked.
+    const ordinaryWord = password === decodeURIComponent(url.username) || password === "postgres";
     await runScenario({ scenario, driver: scriptedDriver(script, steppingClock(START)), driverName: "scripted", clock: steppingClock(START), outDir: out, scenarioFile: file, env: { PG_URL } });
     for (const text of allText(out)) {
       expect(text).not.toContain(PG_URL!);
-      if (password) expect(text).not.toContain(password);
+      if (password) {
+        expect(text).not.toContain(`:${password}@`);
+        expect(text).not.toContain(`:${url.password}@`);
+        if (!ordinaryWord) expect(text).not.toContain(password);
+      }
     }
   });
 
