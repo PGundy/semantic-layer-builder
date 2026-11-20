@@ -1,5 +1,6 @@
 // Types mirroring references/spec.md. The spec is authoritative; these follow it.
 import type { Through } from "./through.ts";
+import type { ThroughEvidence } from "./sql/through-check.ts";
 
 export const DIALECTS = ["duckdb", "postgres", "snowflake", "bigquery", "databricks"] as const;
 export type Dialect = (typeof DIALECTS)[number];
@@ -224,6 +225,8 @@ export interface JoinEvidence {
   left_key_unique: boolean;
   max_fanout: number;
   suggested_relationship: Relationship | "many_to_many";
+  // A bridge join's bridge, measured by semlayer check-join (lib/sql/through-check.ts): counts only.
+  through?: ThroughEvidence;
 }
 
 export interface Join extends Approval {

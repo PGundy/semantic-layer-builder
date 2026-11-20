@@ -85,7 +85,7 @@ function fromAction(a: StepAction | NextStepAction, phase: string, why: string, 
 
 const REPLY = (id: string) => `semlayer reply --readback ${id} --item <n> --text "<owner's words>" --verdict yes|no|change --by "<owner>"`;
 const EDITS =
-  "a typed edit (semlayer set, semlayer tag, semlayer ignore-column, semlayer question add, semlayer add-field, semlayer remove-field, semlayer add-metric, semlayer remove-metric, semlayer add-join, semlayer remove-join or semlayer rename), " +
+  "a typed edit (semlayer set, semlayer tag, semlayer ignore-column, semlayer question add, semlayer add-field, semlayer remove-field, semlayer add-metric, semlayer remove-metric, semlayer add-join, semlayer add-bridge, semlayer remove-join or semlayer rename), " +
   "every edit of the owner's turn as one entry of one semlayer apply --file -";
 // Who sees an item is decided once, in the access phase, so a change to it never holds the item.
 const ABOUT_ACCESS = "--verdict change --about access";
@@ -582,6 +582,8 @@ function lackQuestions(lacks: Lack[]): string {
         return `Which column, or columns, tell one row of ${it.replace(/^the table /, "")} from another?`;
       case "currency":
         return `Which currency are the amounts of ${it} in?`;
+      case "through":
+        return `When one row has several values through the join ${it}, how is its figure shared: in full to each (distinct_pairs), split equally (equal_split), or by a numeric column of the bridge (weight)?`;
       case "fanout_override":
         return `The join ${it} matches some rows more than once. Why is that fine?`;
       case "numerator":

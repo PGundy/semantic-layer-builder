@@ -625,6 +625,39 @@
                 "many_to_many"
               ],
               "description": "Relationship the data supports. many_to_many needs a bridge table."
+            },
+            "through": {
+              "type": "object",
+              "description": "A bridge join's bridge, measured by semlayer check-join: counts only, never a value.",
+              "additionalProperties": false,
+              "required": ["model", "keys", "fact_rows", "bridge_rows", "duplicate_rows", "rows_without_fact", "rows_without_target", "facts_unbridged", "facts_one_value", "facts_many_values", "max_values_per_fact"],
+              "properties": {
+                "model": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "description": "Bridge model the check measured." },
+                "keys": {
+                  "type": "array",
+                  "minItems": 1,
+                  "description": "Bridge-to-target key pairs the check measured.",
+                  "items": {
+                    "type": "object",
+                    "description": "One key pair.",
+                    "additionalProperties": false,
+                    "required": ["from", "to"],
+                    "properties": {
+                      "from": { "type": "string", "minLength": 1, "description": "Column of the bridge's table." },
+                      "to": { "type": "string", "minLength": 1, "description": "Column of the target's table." }
+                    }
+                  }
+                },
+                "fact_rows": { "type": "integer", "minimum": 0, "description": "Rows in this model's table." },
+                "bridge_rows": { "type": "integer", "minimum": 0, "description": "Rows in the bridge's table." },
+                "duplicate_rows": { "type": "integer", "minimum": 0, "description": "Bridge rows that repeat a pair an earlier row holds." },
+                "rows_without_fact": { "type": "integer", "minimum": 0, "description": "Bridge rows whose key matches no row of this model." },
+                "rows_without_target": { "type": "integer", "minimum": 0, "description": "Bridge rows whose key matches no row of the target." },
+                "facts_unbridged": { "type": "integer", "minimum": 0, "description": "Rows of this model with no bridge row." },
+                "facts_one_value": { "type": "integer", "minimum": 0, "description": "Rows of this model with one target value." },
+                "facts_many_values": { "type": "integer", "minimum": 0, "description": "Rows of this model with several target values." },
+                "max_values_per_fact": { "type": "integer", "minimum": 0, "description": "Most target values of one row of this model." }
+              }
             }
           }
         },

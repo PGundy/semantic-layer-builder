@@ -1,9 +1,11 @@
 // Bridge joins (spec: Bridges and multi-fact requests): the bridge of a `through` join is a third model
 // of the source, its key and weight columns are columns of the tables in the snapshot, the weight is
-// numeric and goes with dedupe weight, and an approved bridge join has a dedupe rule. The schema-pair
-// rule for the join's two hops is in scope.ts.
+// numeric and goes with dedupe weight, and an approved bridge join has a dedupe rule; a bridge whose
+// evidence shows rows of the model with no bridge row is a warning. The schema-pair rule for the join's
+// two hops is in scope.ts.
 import { classifyType, isNumeric } from "../column-types.ts";
-import type { SnapshotTable } from "../types.ts";
+import { unbridgedText } from "../readback-bridge.ts";
+import type { Join, SnapshotTable } from "../types.ts";
 import type { RuleContext } from "./index.ts";
 
 const hasColumn = (table: SnapshotTable, name: string) => table.columns.some((c) => c.name === name || c.name.toLowerCase() === name.toLowerCase());
@@ -63,6 +65,9 @@ export default function join(ctx: RuleContext): void {
             "join.through_dedupe_missing",
           );
         const weightColumn = typeof t.weight === "string" ? bridgeTable?.columns.find((c) => c.name.toLowerCase() === t.weight!.toLowerCase()) : undefined;
+        const ev = j.evidence?.through;
+        if (ev && typeof ev === "object" && typeof ev.facts_unbridged === "number" && ev.facts_unbridged > 0)
+          ctx.warn(m.file, `joins[${i}].evidence.through.facts_unbridged`, unbridgedText(model.model, j as Join, ev), "join.through_facts_unbridged");
         if (t.dedupe === "weight" && t.weight === undefined)
           ctx.error(m.file, `${at}.weight`, `${ref} shares by weight but names no weight column of ${bridge.model}; add the join again with semlayer add-bridge --dedupe weight --weight <column>`, "join.through_weight_invalid");
         else if (t.weight !== undefined && t.dedupe !== "weight")

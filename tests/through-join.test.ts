@@ -95,17 +95,121 @@ const bridgeJoin = (through: Record<string, unknown>, status: "draft" | "approve
     ...(status === "approved" ? ok : { status: "draft" }),
   }) as Join;
 
+// Evidence check-join writes for the bridge of fixtures/semantics/bridge.sql (tests/check-join-bridge.test.ts measures it).
+const EVIDENCE = {
+  checked_at: "2026-01-15T12:00:00.000Z",
+  to: "tags",
+  keys: [{ from: "order_id", to: "order_id" }],
+  left_rows: 5,
+  left_null_keys: 0,
+  matched_rows: 4,
+  match_rate: 0.8,
+  right_rows: 8,
+  right_key_unique: false,
+  left_key_unique: true,
+  max_fanout: 3,
+  suggested_relationship: "one_to_many",
+  through: {
+    model: "order_tags",
+    keys: [{ from: "tag_id", to: "tag_id" }],
+    fact_rows: 5,
+    bridge_rows: 8,
+    duplicate_rows: 1,
+    rows_without_fact: 0,
+    rows_without_target: 0,
+    facts_unbridged: 1,
+    facts_one_value: 2,
+    facts_many_values: 2,
+    max_values_per_fact: 3,
+  },
+};
+const withEvidence = (j: Join, evidence: unknown = EVIDENCE): Join => ({ ...j, evidence }) as Join;
+
+interface Refusal {
+  error: string;
+  code: string;
+  next?: string;
+}
+
 describe("readback of a bridge join", () => {
-  test("is refused with readback_blocked and writes no pending readback, so a bridge join cannot be approved blind", async () => {
+  test("states the three models, both key pairs, the rule, that totals by tags can exceed the overall total, and the measured counts", async () => {
+    const root = await project([withEvidence(bridgeJoin({ dedupe: "distinct_pairs" }))]);
+    const r = await semlayer(root, ["readback", "--targets", "shop.orders.tag"]);
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    for (const line of [
+      "- Links each row of orders to rows of tags through the bridge order_tags: orders.order_id = order_tags.order_id, then order_tags.tag_id = tags.tag_id.",
+      "- An order can have several tags, or none; an order without one is kept, with the tags columns empty.",
+      "- Dedupe rule: distinct_pairs. Each (order, tag) pair counts once, however many times order_tags lists it, so an order with several tags adds its whole figure to each of them.",
+      "- Totals by tag can add up to more than the overall total: an order with several tags counts in full under each of them, while the overall total counts it once.",
+      "- Of 5 orders (rows of orders), 2 have one tag, 2 have several (at most 3), and 1 has none, so a figure grouped by tag shows it under an empty tag.",
+      "- order_tags has 8 rows: 1 repeats a pair already listed, and counts once; 0 name no row of orders and 0 no row of tags.",
+      "join tag: orders.order_id = order_tags.order_id, then order_tags.tag_id = tags.tag_id (one_to_many through order_tags, dedupe distinct_pairs, left join)",
+    ])
+      expect(r.out).toContain(line);
+    expect(existsSync(join(root, PENDING_DIR))).toBe(true);
+  });
+
+  test("equal_split and weight say how a figure is shared and that totals by tags then add up to the overall total", async () => {
+    const split = await project([withEvidence(bridgeJoin({ dedupe: "equal_split" }))]);
+    const s = await semlayer(split, ["readback", "--targets", "shop.orders.tag"]);
+    expect(s.code).toBe(0);
+    expect(s.out).toContain("- Dedupe rule: equal_split. An order with n tags gives each 1/n of its figure, so its shares add up to its figure once.");
+    expect(s.out).toContain("- Totals by tag add up to the overall total of the orders that have a tag; without this rule they could add up to more than it");
+    const weight = await project([withEvidence(bridgeJoin({ dedupe: "weight", weight: "share" }))]);
+    const w = await semlayer(weight, ["readback", "--targets", "shop.orders.tag"]);
+    expect(w.code).toBe(0);
+    expect(w.out).toContain("- Dedupe rule: weight, by order_tags.share. An order gives each of its tags a share of its figure in proportion to order_tags.share");
+  });
+
+  test("with no bridge evidence it is refused with readback_blocked, naming the one check-join that measures it, and writes nothing", async () => {
     const root = await project([bridgeJoin({ dedupe: "distinct_pairs" })]);
     const r = await semlayer(root, ["readback", "--targets", "shop.orders.tag", "--json"]);
     expect(r.code).toBe(1);
-    expect(r.json<{ code: string; error: string }>()).toMatchObject({ code: "readback_blocked" });
-    expect(r.err).toContain("it is a bridge join through order_tags");
+    expect(r.json<Refusal>()).toMatchObject({ code: "readback_blocked", next: "semlayer check-join --source shop --model orders --join tag" });
+    expect(r.json<Refusal>().error).toContain("shop.orders.tag: it is a bridge join with no bridge evidence");
     expect(existsSync(join(root, PENDING_DIR))).toBe(false);
-    // A plain join of the same model is still read back.
-    const plain = await project([{ name: "tag", to: "tags", keys: [{ from: "order_id", to: "tag_id" }], relationship: "many_to_one", status: "draft" } as Join]);
-    expect((await semlayer(plain, ["readback", "--targets", "shop.orders.tag"])).code).toBe(0);
+    // Evidence of a plain join, without through, is no bridge evidence either; evidence of another bridge is stale.
+    const plain = await project([withEvidence(bridgeJoin({ dedupe: "distinct_pairs" }), { ...EVIDENCE, through: undefined })]);
+    expect((await semlayer(plain, ["readback", "--targets", "shop.orders.tag", "--json"])).json<Refusal>().next).toBe("semlayer check-join --source shop --model orders --join tag");
+    const stale = await project([withEvidence(bridgeJoin({ dedupe: "distinct_pairs" }), { ...EVIDENCE, through: { ...EVIDENCE.through, model: "other_tags" } })]);
+    const st = await semlayer(stale, ["readback", "--targets", "shop.orders.tag", "--json"]);
+    expect(st.json<Refusal>()).toMatchObject({ code: "readback_blocked", next: "semlayer check-join --source shop --model orders --join tag" });
+    expect(st.json<Refusal>().error).toContain("its bridge evidence measured another bridge or other keys");
+  });
+
+  test("with no dedupe rule it is refused with readback_blocked, naming the semlayer apply whose set gives the rule; filled in, it reads back", async () => {
+    const root = await project([withEvidence(bridgeJoin({}))]);
+    const r = await semlayer(root, ["readback", "--targets", "shop.orders.tag", "--json"]);
+    expect(r.code).toBe(1);
+    const out = r.json<Refusal>();
+    expect(out).toMatchObject({ code: "readback_blocked", next: "semlayer apply --file -" });
+    expect(out.error).toContain("it is a bridge join with no dedupe rule");
+    expect(out.error.match(/no dedupe rule/g)).toHaveLength(1);
+    const input = JSON.parse(/standard input: (\{.*\})$/m.exec(out.error)![1]!) as { edits: string[][] };
+    expect(input.edits).toEqual([["set", "shop.orders.tag", "through", '{"model":"order_tags","keys":[{"from":"tag_id","to":"tag_id"}],"dedupe":"<distinct_pairs, equal_split or weight, as the owner chose>"}']]);
+    expect(existsSync(join(root, PENDING_DIR))).toBe(false);
+    // The owner's answer in place of the placeholder gives the rule, and the readback then goes ahead.
+    const file = join(root, "..", "edits.json");
+    writeFileSync(file, JSON.stringify({ edits: [input.edits[0]!.map((w) => w.replace("<distinct_pairs, equal_split or weight, as the owner chose>", "equal_split"))] }));
+    expect((await semlayer(root, ["apply", "--file", file])).code).toBe(0);
+    expect(readYaml<Model>(ordersFile(root)).joins![0]!.through).toEqual({ model: "order_tags", keys: [{ from: "tag_id", to: "tag_id" }], dedupe: "equal_split" });
+    expect((await semlayer(root, ["readback", "--targets", "shop.orders.tag"])).code).toBe(0);
+    // A plain join of the same model is read back as before.
+    const plainJoin = await project([{ name: "tag", to: "tags", keys: [{ from: "order_id", to: "tag_id" }], relationship: "many_to_one", status: "draft" } as Join]);
+    expect((await semlayer(plainJoin, ["readback", "--targets", "shop.orders.tag"])).code).toBe(0);
+  });
+});
+
+describe("semlayer apply", () => {
+  test("an add-bridge entry writes the same YAML as the command", async () => {
+    const root = await project();
+    const file = join(root, "..", "edits.json");
+    writeFileSync(file, JSON.stringify({ edits: [[...BASE, "--dedupe", "distinct_pairs", "--description", "Tags an order carries."]] }));
+    const r = await semlayer(root, ["apply", "--file", file, "--json"]);
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(readFileSync(ordersFile(root), "utf8")).toBe(readFileSync(join(import.meta.dir, "fixtures", "bridge", "orders-with-tag.yaml"), "utf8"));
   });
 });
 
