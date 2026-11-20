@@ -22,15 +22,16 @@ const q = (n: string) => quoteIdent("postgres", n);
 
 // The three columns a comparison adds to the figure `name`, each with its SQL over the columns
 // `<name>` and `<name>_<c>`: the earlier figure, the change and the change as a fraction of the
-// earlier figure (null when that is 0 or null).
-export function compareColumns(name: string, comparisons: Comparison[]): { name: string; sql: string }[] {
+// earlier figure (null when that is 0 or null). `fraction` marks the column that is a fraction, not
+// an amount in the figure's unit.
+export function compareColumns(name: string, comparisons: Comparison[]): { name: string; sql: string; fraction: boolean }[] {
   return comparisons.flatMap((c) => {
     const m = q(name);
     const e = q(`${name}_${c}`);
     return [
-      { name: `${name}_${c}`, sql: e },
-      { name: `${name}_${c}_change`, sql: `${m} - ${e}` },
-      { name: `${name}_${c}_pct`, sql: `cast(${m} - ${e} as numeric) / nullif(${e}, 0)` },
+      { name: `${name}_${c}`, sql: e, fraction: false },
+      { name: `${name}_${c}_change`, sql: `${m} - ${e}`, fraction: false },
+      { name: `${name}_${c}_pct`, sql: `cast(${m} - ${e} as numeric) / nullif(${e}, 0)`, fraction: true },
     ];
   });
 }

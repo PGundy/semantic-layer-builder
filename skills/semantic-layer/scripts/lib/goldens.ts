@@ -1,5 +1,7 @@
 import { type AccessLayer, andList, CHANGED_SINCE_APPROVAL, loadAccessLayer } from "./access.ts";
+import { runningColumn } from "./compiler/cumulative.ts";
 import { type CompileResult, compileLayer, compileRequest, type Refused } from "./compiler/index.ts";
+import { compareColumns } from "./compiler/period-compare.ts";
 import { UserError } from "./errors.ts";
 import { PROTECTED_VALUE } from "./output.ts";
 import { loadSnapshot, loadSource } from "./project.ts";
@@ -636,6 +638,14 @@ export function currencyColumns(golden: Golden, models: Model[], metrics: Metric
     }
     const metric = usableMetrics.find((m) => m.name === r && (m.source ?? request.source) === request.source);
     if (metric?.format === "currency") names.add(r.toLowerCase());
+  }
+  // A comparison sets each figure beside its earlier figure and the change (money when the figure is);
+  // the change as a fraction is not. A running total adds one column per figure.
+  const compare = request.compare && Array.isArray(request.compare.with) ? request.compare.with : [];
+  const periods = request.running && typeof request.running === "object" ? (request.running as { periods?: number }).periods : undefined;
+  for (const base of [...names]) {
+    if (request.running) names.add(runningColumn(base, periods).toLowerCase());
+    for (const c of compareColumns(base, compare)) if (!c.fraction) names.add(c.name.toLowerCase());
   }
   return columns.filter((c) => names.has(c.toLowerCase()));
 }
