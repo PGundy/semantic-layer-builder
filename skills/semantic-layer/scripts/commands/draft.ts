@@ -13,7 +13,7 @@ import { protectedColumns, redactSnapshot } from "../lib/profile.ts";
 import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot, saveSnapshot } from "../lib/project.ts";
 import { effectiveScope } from "../lib/table-list.ts";
 import { rankTables } from "../lib/rank.ts";
-import { crossSchemaFks, crossSchemaPairs, findPair } from "../lib/schema-scope.ts";
+import { crossSchemaFks, crossSchemaPairs, findPair, pairAnswered } from "../lib/schema-scope.ts";
 import type { Model, Scope, Snapshot, SnapshotTable, SourceConfig } from "../lib/types.ts";
 import { updateYaml, writeYaml } from "../lib/yaml.ts";
 import { sourceFlag } from "./tables.ts";
@@ -338,11 +338,15 @@ const spec: CommandSpec = {
     }
 
     const redacted = redactDrafted(ctx, source, snapshot, drafted.map((d) => d.table));
-    // The declared keys of the drafted tables that point into another schema: questions, not joins (spec: Schema scope).
+    // The declared keys of the drafted tables that point into another schema with no answer from
+    // the owner yet: questions, not joins. A declined pair or an approved one answers them (spec: Schema scope).
     const draftedTables = new Set(drafted.map((d) => d.table.toLowerCase()));
+    const answered = (x: { from_schema: string | null; to_schema: string | null }) => {
+      return pairAnswered(findPair(crossSchemaPairs(source), x.from_schema ?? "", x.to_schema ?? ""));
+    };
     const crossKeys = crossSchemaFks({ tables: selected })
       .filter((x) => draftedTables.has(qualifiedName(x.table).toLowerCase()))
-      .filter((x) => findPair(crossSchemaPairs(source), x.from_schema ?? "", x.to_schema ?? "")?.status !== "declined")
+      .filter((x) => !answered(x))
       .map((x) => ({
         table: qualifiedName(x.table),
         columns: x.fk.columns,

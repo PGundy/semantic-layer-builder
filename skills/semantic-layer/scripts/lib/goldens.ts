@@ -382,8 +382,14 @@ export function compileGolden(root: string, golden: Golden): CompileResult {
   const source = loadSource(root, golden.request.source);
   try {
     if (golden.status === "approved") return compileRequest(root, golden.request, { ...(role ? { role } : {}), user: attributes });
+    const real = loadAccessLayer(root);
+    const joinStatus = (via: string): unknown => {
+      const dot = via.indexOf(".");
+      return real.models.find((m) => m.model === via.slice(0, dot))?.joins?.find((j) => j.name === via.slice(dot + 1))?.status;
+    };
     return compileLayer({
-      layer: approvedLayer(loadAccessLayer(root)),
+      layer: approvedLayer(real),
+      joinStatus,
       source,
       snapshot: loadSnapshot(root, source.source),
       request: golden.request,

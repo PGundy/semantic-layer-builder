@@ -122,6 +122,7 @@ const spec: CommandSpec = {
         ),
       );
     }
+    for (const w of result.warnings ?? []) ctx.out(plainText(`Warning: ${w.message}.`));
     ctx.out(
       `Compiled for ${result.dialect} from model ${result.model}; semlayer sql never runs it. Run it with the parameters bound and the session time zone UTC, ` +
         "and compare a golden's recorded rows with semlayer goldens check.",
