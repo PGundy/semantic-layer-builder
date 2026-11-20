@@ -7,11 +7,13 @@
 // dispatched: each runs its semlayer commands through the role guard of lib/roles.ts, which refuses a
 // command the role may not run, and comes back to the interviewer as that role's turn. An owner
 // turn with "fill" fills in a review form the skill wrote and hands it back under shared/.
+// Each turn's tokens are computed at replay by the counting rule of ../count.ts.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, relative, sep } from "node:path";
 import { parseReviewJson, parseReviewMarkdown, renderReviewJson, renderReviewMarkdown } from "../../../skills/semantic-layer/scripts/lib/review.ts";
 import { type Role, ROLES, semlayerRefusal } from "../../../skills/semantic-layer/scripts/lib/roles.ts";
-import { estimateTokens, type FormFill, REPO_ROOT, type Script, type ScriptTurn, scriptWritePath } from "../files.ts";
+import { interviewerTokens, ownerTokens, printed, roleTokens } from "../count.ts";
+import { type FormFill, REPO_ROOT, type Script, type ScriptTurn, scriptWritePath } from "../files.ts";
 import { semlayerIn } from "../runner.ts";
 import type { Clock, CommandRun, Driver, RoleTurn } from "../types.ts";
 import { EvalError } from "../types.ts";
@@ -40,41 +42,48 @@ export function scriptedDriver(script: Script, clock: Clock, fixture?: string): 
   let skillAt = 0;
   let ownerAt = 0;
   // Runs a turn's semlayer commands as `role`; a command the role may not run is refused and not run.
-  const runAs = async (role: Role, turn: ScriptTurn, root: string): Promise<CommandRun[]> => {
+  // Returns the commands and what each printed, as the counting rule reads it.
+  const runAs = async (role: Role, turn: ScriptTurn, root: string): Promise<{ commands: CommandRun[]; printed: string[] }> => {
     const commands: CommandRun[] = [];
+    const shown: string[] = [];
     const fixtureDir = fixture === undefined ? undefined : relative(root, join(REPO_ROOT, "fixtures", fixture)).split(sep).join("/");
     for (const args of turn.semlayer ?? []) {
       const command = ["semlayer", ...args].join(" ");
       const refused = semlayerRefusal(role, args);
       if (refused) {
         commands.push({ command, exit_code: 1, refused });
+        shown.push(refused);
         continue;
       }
       const r = await semlayerIn(root, fixtureDir === undefined ? args : args.map((a) => a.replaceAll("{fixture}", fixtureDir)), clock);
       commands.push({ command, exit_code: r.code });
+      shown.push(printed(r.out, r.err, root));
     }
-    return commands;
+    return { commands, printed: shown };
   };
   return {
     async skillTurn(input) {
       const turn = script.skill[skillAt++];
       if (!turn) throw new EvalError(`The script has ${script.skill.length} skill turn(s) and the run asked for another; add turns or mark the last one "done": true.`);
       if (turn.agent) throw new EvalError(`Skill turn ${skillAt} is a ${turn.agent} task where an interviewer turn was due; put an interviewer turn before it.`);
+      const written: string[] = [];
       for (const [file, text] of Object.entries(turn.write ?? {})) {
         const path = scriptWritePath(input.root, file, text);
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, text);
+        written.push(text);
       }
-      const commands = await runAs(ROLES.interviewer, turn, input.root);
+      const { commands, printed: shown } = await runAs(ROLES.interviewer, turn, input.root);
       const dispatches: RoleTurn[] = [];
       while (script.skill[skillAt]?.agent) {
         const task = script.skill[skillAt++]!;
-        const done = await runAs(ROLES[task.agent!], task, input.root);
-        dispatches.push({ agent: task.agent!, text: task.text, tokens: task.tokens ?? estimateTokens(task.text), ...(done.length ? { commands: done } : {}) });
+        const role = ROLES[task.agent!];
+        const done = await runAs(role, task, input.root);
+        dispatches.push({ agent: task.agent!, text: task.text, tokens: roleTokens(role, { text: task.text, printed: done.printed }), ...(done.commands.length ? { commands: done.commands } : {}) });
       }
       return {
         text: turn.text,
-        tokens: turn.tokens ?? estimateTokens(turn.text),
+        tokens: interviewerTokens({ text: turn.text, written, printed: shown, reports: dispatches.map((d) => d.text) }),
         done: turn.done === true,
         commands,
         ...(dispatches.length ? { dispatches } : {}),
@@ -84,7 +93,7 @@ export function scriptedDriver(script: Script, clock: Clock, fixture?: string): 
       const turn = script.owner[ownerAt++];
       if (!turn) throw new EvalError(`The script has ${script.owner.length} owner turn(s) and the run asked for another; add owner turns or end the skill turns with "done": true.`);
       const files = Object.fromEntries((turn.fill ?? []).map((f) => [f.as, fillForm(f, input.forms ?? {}, ownerAt)]));
-      return { text: turn.text, tokens: turn.tokens ?? estimateTokens(turn.text), ...(turn.fill?.length ? { files } : {}) };
+      return { text: turn.text, tokens: ownerTokens(turn.text), ...(turn.fill?.length ? { files } : {}) };
     },
   };
 }

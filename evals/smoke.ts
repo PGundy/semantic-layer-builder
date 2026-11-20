@@ -20,6 +20,11 @@ import { EvalError, type StopReason } from "./runner/types.ts";
 export const SMOKE_SCENARIOS = ["acme-structured", "acme-terse"] as const;
 // Graders that measure and never fail: recorded in the baseline's `effort`, never compared.
 export const REPORT_ONLY_GRADERS = new Set(["effort"]);
+// The effort metrics the baseline records: every one but the per-item and per-role token figures,
+// which the scripted driver computes at replay; `tokens`, the run's total, stays as a reference.
+export const recordedEffort = (metric: string) => metric === "tokens" || !metric.includes("token");
+// How far above the baseline's `effort.tokens` a run's total may go before the smoke warns.
+export const TOKEN_WARN_SHARE = 0.1;
 export const BASELINE_FILE = join(REPO_ROOT, "evals", "baseline.json");
 // The scripted driver's clock starts here on every run, so its runs and the baseline are reproducible.
 export const SMOKE_START = "2026-01-01T00:00:00Z";
@@ -82,7 +87,7 @@ export function aggregate(o: Observed): { scores: Map<string, { score: number | 
   for (const { report } of o.runs) {
     for (const g of report.graders) {
       if (REPORT_ONLY_GRADERS.has(g.grader)) {
-        for (const [k, v] of Object.entries(g.metrics ?? {})) {
+        for (const [k, v] of Object.entries(g.metrics ?? {}).filter(([k]) => recordedEffort(k))) {
           if (!metricValues.has(k)) metricValues.set(k, []);
           if (v !== null) metricValues.get(k)!.push(v);
         }
@@ -164,17 +169,28 @@ export function formatRows(rows: Row[]): string {
   return [line(head), ...cells.map(line)].join("\n");
 }
 
-// The effort metrics beside the baseline's: reported, never compared.
-export function formatEffort(baseline: Baseline | undefined, observed: Observed[]): string {
+// The effort metrics beside the baseline's: reported, never compared. A run whose total tokens are
+// more than TOKEN_WARN_SHARE above the baseline's `effort.tokens` gets a warning, which fails nothing.
+export function formatEffort(baseline: Baseline | undefined, observed: Observed[], recordWith = RECORD_COMMAND): string {
   const lines = ["Effort (report only; it never fails the smoke):"];
+  const warnings: string[] = [];
   for (const o of observed) {
     const base = baseline?.scenarios[o.scenario]?.effort ?? {};
-    const parts = Object.entries(aggregate(o).effort)
+    const effort = aggregate(o).effort;
+    const parts = Object.entries(effort)
       .filter(([k, v]) => v !== null || (base[k] ?? null) !== null)
       .map(([k, v]) => `${k} ${show(v)} (baseline ${show(base[k])})`);
     lines.push(`  ${o.scenario}: ${parts.join(", ") || "nothing measured"}`);
+    const now = effort.tokens ?? null;
+    const was = base.tokens ?? null;
+    if (now !== null && was !== null && was > 0 && now > was * (1 + TOKEN_WARN_SHARE)) {
+      warnings.push(
+        `Warning: ${o.scenario} used ${now} tokens, ${Math.round((now / was - 1) * 100)}% above the baseline's ${was} (more than ${TOKEN_WARN_SHARE * 100}%). ` +
+          `Check what the change makes the agent read; if the rise is intended, record it with ${recordWith}.`,
+      );
+    }
   }
-  return lines.join("\n");
+  return [...lines, ...warnings].join("\n");
 }
 
 // The baseline in an existing file, or what is wrong with it.
@@ -307,7 +323,7 @@ export async function main(argv: string[], io: SmokeIO): Promise<number> {
     const regressions = rows.filter((r) => r.status === "REGRESSION");
     io.out(formatRows(rows));
     io.out("");
-    io.out(formatEffort(baseline, observed));
+    io.out(formatEffort(baseline, observed, recordWith));
     io.out("");
     const kept = values.out ? ` The runs are in ${shownPath(outRoot)}.` : "";
     if (regressions.length) {

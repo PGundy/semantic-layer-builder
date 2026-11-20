@@ -9,9 +9,11 @@ import type { StopReason } from "../evals/runner/types.ts";
 import {
   aggregate,
   BASELINE_FILE,
+  baselineText,
   buildBaseline,
   compare,
   main,
+  recordedEffort,
   shownPath,
   SMOKE_SCENARIOS,
   type Baseline,
@@ -23,7 +25,8 @@ import { tempDir } from "./helpers.ts";
 
 // The smoke run and evals/baseline.json (FR-6.4, D6): the committed baseline passes, a lowered score
 // is a regression with exit 1, --report-only exits 0, --update-baseline writes the same bytes every
-// time, the baseline matches its schema, and the CI job is non-blocking and uses no secret.
+// time, the baseline matches its schema, and the CI job blocks a merge and uses no secret. Token
+// counts are computed at replay: the baseline keeps only effort.tokens, and a rise only warns.
 
 
 const committed = () => JSON.parse(readFileSync(BASELINE_FILE, "utf8")) as Baseline;
@@ -147,11 +150,33 @@ describe("regressions", () => {
     expect(t).toContain("Smoke: 3 regression(s)");
   });
 
-  test("effort metrics never fail the smoke, however far they move", async () => {
+  test("effort metrics never fail the smoke, however far they move; a token rise over 10% warns", async () => {
+    const was = committed().scenarios["acme-terse"]!.effort.tokens!;
     const f = fakeIO({ "acme-terse": report("acme-terse", {}, [], { tokens: 999999, owner_turns: 40 }) });
     expect(await main([], f.io)).toBe(0);
-    expect(f.text()).toContain("tokens 999999 (baseline 10354)");
+    expect(f.text()).toContain(`tokens 999999 (baseline ${was})`);
+    expect(f.text()).toContain(`Warning: acme-terse used 999999 tokens, ${Math.round((999999 / was - 1) * 100)}% above the baseline's ${was} (more than 10%).`);
+    expect(f.text()).toContain("if the rise is intended, record it with bun run eval:smoke -- --update-baseline.");
+    expect(f.text()).not.toContain("Warning: acme-structured");
     expect(f.text()).not.toContain("REGRESSION");
+  });
+
+  test("a token total up to 10% above the baseline does not warn, and one just past it does", async () => {
+    const was = committed().scenarios["acme-terse"]!.effort.tokens!;
+    const within = fakeIO({ "acme-terse": report("acme-terse", {}, [], { tokens: Math.floor(was * 1.1) }) });
+    expect(await main([], within.io)).toBe(0);
+    expect(within.text()).not.toContain("Warning:");
+    const past = fakeIO({ "acme-terse": report("acme-terse", {}, [], { tokens: Math.floor(was * 1.1) + 1 }) });
+    expect(await main([], past.io)).toBe(0);
+    expect(past.text()).toContain("Warning: acme-terse used");
+  });
+
+  test("the baseline keeps effort.tokens and no other token figure", () => {
+    for (const s of Object.values(committed().scenarios)) {
+      expect(Object.keys(s.effort).filter((k) => k.includes("tokens"))).toEqual(["tokens"]);
+    }
+    const built = buildBaseline([{ scenario: "acme-terse", runs: [{ report: report("acme-terse", {}, [], { tokens_per_approved_item: 5, interviewer_tokens: 7 }), stop_reason: "done" }] }], "scripted", 1);
+    expect(Object.keys(built.scenarios["acme-terse"]!.effort).filter((k) => k.includes("tokens"))).toEqual(["tokens"]);
   });
 
   test("a score within the band is ok; below it, a regression; above it, improved", () => {
@@ -198,6 +223,11 @@ describe("regressions", () => {
     expect(f.text()).toContain(`record it with bun run eval:smoke -- --update-baseline --baseline ${shownPath(file)} and say why`);
   });
 
+  test("the baseline records no token figure but the run's total", () => {
+    const kept = ["tokens", "interviewer_tokens", "interviewer_token_share", "reference_interviewer_tokens", "interviewer_tokens_vs_reference", "owner_words"].filter(recordedEffort);
+    expect(kept).toEqual(["tokens", "owner_words"]);
+  });
+
   test("aggregate: the mean ignores nulls, the spread covers scored runs, the stop reason is the first not done", () => {
     const r = (secrets: number | null) => report("acme-terse", { secrets });
     const a = aggregate({
@@ -214,16 +244,28 @@ describe("regressions", () => {
 });
 
 describe("--update-baseline", () => {
-  test("writes the same bytes every time, equal to the committed baseline", async () => {
+  test("writes the same bytes every time, equal to the committed baseline but for effort.tokens, the run's total", async () => {
     const dir = tempDir();
     const file = join(dir, "baseline.json");
+    const runs = join(dir, "runs");
     const r1 = realIO();
-    expect(await main(["--update-baseline", "--baseline", file], r1.io)).toBe(0);
+    expect(await main(["--update-baseline", "--baseline", file, "--out", runs], r1.io)).toBe(0);
     const first = readFileSync(file, "utf8");
     const r2 = realIO();
     expect(await main(["--update-baseline", "--baseline", file], r2.io)).toBe(0);
     expect(readFileSync(file, "utf8")).toBe(first);
-    expect(first).toBe(readFileSync(BASELINE_FILE, "utf8"));
+    // effort.tokens follows whatever the tool prints, so it is the run's computed total, never a pinned figure.
+    const written = JSON.parse(first) as Baseline;
+    for (const s of SMOKE_SCENARIOS) {
+      const summary = JSON.parse(readFileSync(join(runs, `${s}-20260101T000000000Z`, "summary.json"), "utf8")) as { tokens: number };
+      expect(written.scenarios[s]!.effort.tokens).toBe(summary.tokens);
+    }
+    const withoutTokens = (b: Baseline) => {
+      const c = structuredClone(b);
+      for (const s of Object.values(c.scenarios)) delete s.effort.tokens;
+      return c;
+    };
+    expect(baselineText(withoutTokens(written))).toBe(baselineText(withoutTokens(committed())));
     expect(evalSchemaIssues("eval-baseline", JSON.parse(first), file)).toEqual([]);
     // Keys sorted at every level.
     const walk = (v: unknown): void => {
@@ -381,10 +423,10 @@ describe("the CI job", () => {
   const ci = parseYamlText(text, "ci.yml") as { jobs: Record<string, Record<string, unknown>> };
   const job = ci.jobs["eval-smoke"]!;
 
-  test("eval-smoke parses, is non-blocking and runs the smoke command after an install", () => {
+  test("eval-smoke parses, blocks a merge and runs the smoke command after an install", () => {
     expect(job).toBeDefined();
-    expect(job["continue-on-error"]).toBe(true);
-    expect(String(job.name)).toContain("non-blocking");
+    expect(job["continue-on-error"]).toBeUndefined();
+    expect(job.name).toBe("eval-smoke");
     const runs = (job.steps as { run?: string }[]).map((s) => s.run).filter(Boolean);
     expect(runs).toEqual(["bun install --frozen-lockfile", "bun run eval:smoke"]);
   });

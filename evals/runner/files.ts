@@ -11,7 +11,6 @@ export const PERSONAS_DIR = join(import.meta.dir, "personas");
 
 export interface ScriptTurn {
   text: string;
-  tokens?: number;
   semlayer?: string[][];
   // Files the skill writes by hand, by path relative to the working root, before its semlayer commands run.
   write?: Record<string, string>;
@@ -33,7 +32,6 @@ export interface FormFill {
 
 export interface OwnerScriptTurn {
   text: string;
-  tokens?: number;
   fill?: FormFill[];
 }
 
@@ -253,9 +251,4 @@ export function stableJson(value: unknown, indent?: number): string {
     return v;
   };
   return JSON.stringify(sort(value), null, indent);
-}
-
-// A token estimate for text that carries no count: its length divided by 4, rounded up.
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
 }
