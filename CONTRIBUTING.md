@@ -26,6 +26,7 @@ The repository has one `package.json`, at the root, and one `bun.lock` beside it
 - `skills/semantic-layer/schemas/`: JSON Schemas for the YAML files.
 - `tests/`: the test suites; `tests/skill-docs.test.ts` checks the docs against the CLI.
 - `fixtures/acme/`: the synthetic Acme dataset (`bun run fixtures` regenerates it); `examples/`: layers built from it.
+- `fixtures/chinook/`: the public Chinook sample database (version 1.4.5, MIT), vendored unmodified with its licence; `bun fixtures/chinook/load-postgres.ts` loads it into a schema of a local Postgres. No test needs a model API key.
 
 ## Tests
 
