@@ -6,7 +6,7 @@ import { fillForm, scriptedDriver } from "../evals/runner/drivers/scripted.ts";
 import { loadScenario, loadScript, REPO_ROOT, SCENARIOS_DIR, type Script, type ScriptTurn, scenarioPath, scriptWritePath } from "../evals/runner/files.ts";
 import { runScenario, semlayerIn, steppingClock } from "../evals/runner/runner.ts";
 import type { Driver, Scenario, Summary, TranscriptTurn } from "../evals/runner/types.ts";
-import { BASELINE_FILE, type Baseline } from "../evals/smoke.ts";
+import { BASELINE_FILE, type Baseline, SMOKE_SCENARIOS } from "../evals/smoke.ts";
 import { type Role, ROLES, semlayerRefusal } from "../skills/semantic-layer/scripts/lib/roles.ts";
 import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { tempDir } from "./helpers.ts";
@@ -38,14 +38,14 @@ async function recount(file: string): Promise<{ skill: number[]; owner: number[]
   const owner: number[] = [];
   let at = 0;
   let ownerAt = 0;
-  const run = async (role: Role, turn: ScriptTurn, root: string) => {
+  const run = async (role: Role, turn: ScriptTurn, root: string, schema = "", env?: Record<string, string>) => {
     const fixtureDir = relative(root, join(REPO_ROOT, "fixtures", scenario.fixture)).split(sep).join("/");
     const shown: string[] = [];
     for (const args of turn.semlayer ?? []) {
       const refused = semlayerRefusal(role, args);
       if (refused) shown.push(refused);
       else {
-        const r = await semlayerIn(root, args.map((a) => a.replaceAll("{fixture}", fixtureDir)), clock);
+        const r = await semlayerIn(root, args.map((a) => a.replaceAll("{fixture}", fixtureDir).replaceAll("{schema}", schema)), clock, env);
         shown.push(printed(r.out, r.err, root));
       }
     }
@@ -60,13 +60,13 @@ async function recount(file: string): Promise<{ skill: number[]; owner: number[]
         writeFileSync(path, text);
         return text;
       });
-      const shown = await run(ROLES.interviewer, turn, input.root);
+      const shown = await run(ROLES.interviewer, turn, input.root, input.schema, input.env);
       const roles: number[] = [];
       const reports: string[] = [];
       while (script.skill[at]?.agent) {
         const task = script.skill[at++]!;
         const role = ROLES[task.agent!];
-        roles.push(roleTokens(role, { text: task.text, printed: await run(role, task, input.root) }));
+        roles.push(roleTokens(role, { text: task.text, printed: await run(role, task, input.root, input.schema, input.env) }));
         reports.push(task.text);
       }
       const tokens = interviewerTokens({ text: turn.text, written, printed: shown, reports });
@@ -151,6 +151,7 @@ describe("scripted token counts", () => {
       "acme-hedging.json",
       "acme-injection.json",
       "acme-multi.json",
+      "acme-pg-structured.json",
       "acme-structured.json",
       "acme-terse.json",
     ]);
@@ -160,8 +161,11 @@ describe("scripted token counts", () => {
   });
 
   for (const file of scenarios) {
-    const name = loadScenario(file).name;
-    test(`${name}: every turn the driver records equals a recount by the rule`, async () => {
+    const scenario = loadScenario(file);
+    const name = scenario.name;
+    // A PostgreSQL scenario is replayed only where its URL variable is set.
+    const needsUrl = scenario.intake.path === "connection" && scenario.intake.dialect === "postgres" ? scenario.intake.url_env : undefined;
+    test.skipIf(needsUrl !== undefined && !process.env[needsUrl])(`${name}: every turn the driver records equals a recount by the rule`, async () => {
       const r = await replay(file, tempDir("evals-tokens"));
       expect(r.summary.stop_reason).toBe("done");
       const answers = r.transcript.slice(1).filter((t) => t.speaker === "owner");
@@ -210,8 +214,11 @@ function reword(dir: string, from: string, to: string) {
   writeFileSync(file, text.replace(from, to));
 }
 
+// The smoke here runs the lake scenarios only: without the PostgreSQL URL the PostgreSQL scenario is not
+// run, which keeps stderr empty (a superuser connection warns) and the printed totals to the lake's.
 function smokeIn(dir: string) {
-  const r = Bun.spawnSync(["bun", "evals/smoke.ts"], { cwd: dir, env: { ...process.env, NO_COLOR: "1" } });
+  const { PG_URL: _url, ...env } = process.env;
+  const r = Bun.spawnSync(["bun", "evals/smoke.ts"], { cwd: dir, env: { ...env, NO_COLOR: "1" } });
   return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() };
 }
 
@@ -238,7 +245,8 @@ describe("a reworded printed sentence", () => {
     expect(small.err).toBe("");
     expect(small.code).toBe(0);
     const totals = printedTotals(small.out);
-    for (const [name, s] of Object.entries(baseline.scenarios)) {
+    for (const name of SMOKE_SCENARIOS) {
+      const s = baseline.scenarios[name]!;
       expect(totals[name]!.was).toBe(s.effort.tokens!);
       expect(totals[name]!.now).not.toBe(s.effort.tokens!);
     }
@@ -253,7 +261,7 @@ describe("a reworded printed sentence", () => {
     reword(dir, "`The layer is valid, with ${", '`${"The layer is valid. ".repeat(400)}${');
     const big = smokeIn(dir);
     expect(big.code).toBe(0);
-    for (const name of Object.keys(baseline.scenarios)) expect(big.out).toContain(`Warning: ${name} used `);
+    for (const name of SMOKE_SCENARIOS) expect(big.out).toContain(`Warning: ${name} used `);
     expect(big.out).toContain("Smoke: no regression against evals/baseline.json.");
   }, 240_000);
 });

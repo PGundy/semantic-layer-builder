@@ -2,8 +2,8 @@
 // bun evals/smoke.ts [--report-only] [--update-baseline] [--baseline <file>] [--out <dir>]
 //   [--driver scripted|sdk] [--runs <n>] [--model <id>]
 // Runs the smoke subset, grades each run and compares every grader's score with evals/baseline.json
-// (docs/PRD.md FR-6.4). Exit codes: 0 when no score fell below its baseline by more than its band
-// (always with --report-only or --update-baseline), 1 on a regression, 2 when the smoke could not run.
+// (docs/PRD.md FR-6.4); a PostgreSQL scenario whose URL variable is unset is reported "not run".
+// Exit codes: 0 when no score fell below its baseline by more than its band (always with --report-only or --update-baseline), 1 on a regression, 2 when the smoke could not run.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -14,10 +14,13 @@ import { scriptedDriver } from "./runner/drivers/scripted.ts";
 import { sdkDriver } from "./runner/drivers/sdk.ts";
 import { loadScenario, loadScript, REPO_ROOT, scenarioPath, stableJson } from "./runner/files.ts";
 import { runScenario, steppingClock } from "./runner/runner.ts";
-import { EvalError, type StopReason } from "./runner/types.ts";
+import { EvalError, NotRun, type StopReason } from "./runner/types.ts";
 
 // One fixture, two personas.
 export const SMOKE_SCENARIOS = ["acme-structured", "acme-terse"] as const;
+// The PostgreSQL scenario joins the subset when its URL variable is set; otherwise the smoke says it
+// was not run, compares nothing for it and keeps its baseline entry as it is.
+export const PG_SMOKE_SCENARIO = "acme-pg-structured";
 // Graders that measure and never fail: recorded in the baseline's `effort`, never compared.
 export const REPORT_ONLY_GRADERS = new Set(["effort"]);
 // The effort metrics the baseline records: every one but the per-item and per-role token figures,
@@ -161,6 +164,11 @@ export function compare(baseline: Baseline, observed: Observed[]): Row[] {
   return rows;
 }
 
+// The baseline without the named scenarios, for a comparison that leaves them out.
+function withoutScenarios(b: Baseline, names: Set<string>): Baseline {
+  return { ...b, scenarios: Object.fromEntries(Object.entries(b.scenarios).filter(([n]) => !names.has(n))) };
+}
+
 export function formatRows(rows: Row[]): string {
   const head = ["scenario", "grader", "baseline", "score", "band", "status"];
   const cells = rows.map((r) => [r.scenario, r.grader, r.baseline, r.score, r.band, r.why ? `${r.status} (${r.why})` : r.status]);
@@ -298,33 +306,49 @@ export async function main(argv: string[], io: SmokeIO): Promise<number> {
     const outRoot = values.out ? resolve(values.out) : (tempDir = mkdtempSync(join(tmpdir(), "semlayer-smoke-")));
     const run = io.runOne ?? runOne;
     const observed: Observed[] = [];
-    for (const name of SMOKE_SCENARIOS) {
+    const notRun: { scenario: string; why: string }[] = [];
+    for (const name of [...SMOKE_SCENARIOS, PG_SMOKE_SCENARIO]) {
       const o: Observed = { scenario: name, runs: [] };
-      for (let i = 0; i < runs; i++) {
-        const outDir = runs > 1 ? join(outRoot, `run-${i + 1}`) : outRoot;
-        mkdirSync(outDir, { recursive: true });
-        o.runs.push(await run(name, { driver, model: values.model, env: io.env, outDir }));
+      try {
+        for (let i = 0; i < runs; i++) {
+          const outDir = runs > 1 ? join(outRoot, `run-${i + 1}`) : outRoot;
+          mkdirSync(outDir, { recursive: true });
+          o.runs.push(await run(name, { driver, model: values.model, env: io.env, outDir }));
+        }
+      } catch (e) {
+        if (!(e instanceof NotRun)) throw e;
+        notRun.push({ scenario: name, why: e.message });
+        continue;
       }
       observed.push(o);
     }
+    // A scenario that was not run is neither compared nor dropped from the baseline.
+    const skipped = new Set(notRun.map((n) => n.scenario));
+    const notRunText = notRun.map((n) => n.why).join("\n");
 
     if (update) {
       const next = buildBaseline(observed, driver, runs, baseline);
-      if (baseline) io.out(`${formatRows(compare(baseline, observed))}\n`);
+      for (const name of skipped) if (baseline?.scenarios[name]) next.scenarios[name] = baseline.scenarios[name]!;
+      if (baseline) io.out(`${formatRows(compare(withoutScenarios(baseline, skipped), observed.filter((o) => baseline!.scenarios[o.scenario])))}\n`);
       writeFileSync(file, baselineText(next));
       io.out(formatEffort(next, observed));
       io.out("");
-      io.out(`Wrote ${rel} from ${runs} ${driver} run(s) of ${SMOKE_SCENARIOS.join(" and ")}.`);
+      if (notRunText) io.out(`${notRunText}\nIts baseline entry is kept as it was; record it where the variable is set.\n`);
+      io.out(`Wrote ${rel} from ${runs} ${driver} run(s) of ${observed.map((o) => o.scenario).join(", ")}.`);
       io.out(`Next: commit ${rel}, and say in the pull request why the scores changed.`);
       return 0;
     }
 
-    const rows = compare(baseline!, observed);
+    const rows = compare(withoutScenarios(baseline!, skipped), observed);
     const regressions = rows.filter((r) => r.status === "REGRESSION");
     io.out(formatRows(rows));
     io.out("");
     io.out(formatEffort(baseline, observed, recordWith));
     io.out("");
+    if (notRunText) {
+      io.out(notRunText);
+      io.out("");
+    }
     const kept = values.out ? ` The runs are in ${shownPath(outRoot)}.` : "";
     if (regressions.length) {
       io.out(`Smoke: ${regressions.length} regression(s) against ${rel}.${kept}`);

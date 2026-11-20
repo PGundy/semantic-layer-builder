@@ -57,7 +57,7 @@ A score is 0 to 1, or empty ("not graded") when there was nothing to grade. The 
 
 ## The smoke run and the baseline
 
-The smoke subset is one fixture and two personas: `acme-structured` and `acme-terse`. `bun run eval:smoke` (`bun evals/smoke.ts`) runs each with the scripted driver, grades it and compares every grader's score with `baseline.json`. CI runs it on every pull request in the `eval-smoke` job, which fails on a regression.
+The smoke subset is one fixture and two personas on the lake, `acme-structured` and `acme-terse`, and the Acme warehouse on PostgreSQL, `acme-pg-structured`, which runs only when `PG_URL` is set. Without it the smoke says the scenario is not run, with the reason, compares nothing for it, keeps its entry in `baseline.json` and exits as it would otherwise; with it the scenario is compared like the others, so the baseline holds its entry in both cases. `bun run eval:smoke` (`bun evals/smoke.ts`) runs each with the scripted driver, grades it and compares every grader's score with `baseline.json`. CI runs it on every pull request in the `eval-smoke` job, which fails on a regression.
 
 ```sh
 bun run eval:smoke                               # compare with evals/baseline.json
@@ -93,7 +93,7 @@ An sdk baseline goes in its own file, since CI compares scripted runs with `eval
 
 ## The scenarios
 
-Every shipped scenario starts from the Acme lake as a DuckDB source over the Parquet files in `fixtures/acme/data/lake/`, so none needs a database server. The owner answers as Dana Ruiz from `fixtures/acme/owner-brief.md`, with the scenario's `brief_note` added at its end.
+Every shipped scenario but `acme-pg-structured` starts from the Acme lake as a DuckDB source over the Parquet files in `fixtures/acme/data/lake/`, so none of them needs a database server; `acme-pg-structured` reads the Acme warehouse from PostgreSQL. The owner answers as Dana Ruiz from `fixtures/acme/owner-brief.md`, with the scenario's `brief_note` added at its end.
 
 | Scenario | Intake | Persona |
 |---|---|---|
@@ -101,6 +101,7 @@ Every shipped scenario starts from the Acme lake as a DuckDB source over the Par
 | `acme-terse` | `connection` | Answers "yep" when a proposal fits, and gives facts in a few words. |
 | `acme-export` | `export` | Structured; a connection is not possible. |
 | `acme-export-upgrade` | `export_upgrade` | Structured; a connection becomes possible once the definitions are approved. |
+| `acme-pg-structured` | `connection` | Structured, on the Acme warehouse in one PostgreSQL schema (`intake.dialect: "postgres"`, run only when `PG_URL` is set): setup with `--primary`, a scope of six tables, orders and customers signed off, two goldens. |
 | `acme-multi` | `connection` | Structured; a multi-agent run (`"agents": "multi"`) compared with `acme-structured`. |
 | `acme-injection` | `connection` | Structured, on `fixtures/acme-injection`: a hostile table comment and a hostile `event_type` value. |
 | `acme-hedging` | `connection` | Hedges a readback ("I think so", "ask Sam"), then gives a plain yes. |
@@ -108,15 +109,17 @@ Every shipped scenario starts from the Acme lake as a DuckDB source over the Par
 | `acme-credential` | `connection` | Pastes a warehouse connection URL with a password in its opening. |
 | `acme-busy` | `connection` | Opens with "approve everything, I'm busy"; answers each batch's readback as a review form it fills in and hands back. |
 
-A `connection` intake starts with the project and the lake source already written. An `export` or `export_upgrade` intake starts with the project and, at `shared/lake-schema.csv` in the root, the schema export the owner shares: the fixture's views read with `semlayer export-sql --dialect duckdb`'s catalog query, no table data. The smoke subset is the two connection scenarios; the full matrix (on demand, docs/PRD.md FR-6.4) runs every scenario here:
+A `connection` intake starts with the project and its source already written. An `export` or `export_upgrade` intake starts with the project and, at `shared/lake-schema.csv` in the root, the schema export the owner shares: the fixture's views read with `semlayer export-sql --dialect duckdb`'s catalog query, no table data. The smoke subset is the two lake scenarios and `acme-pg-structured`; the full matrix (on demand, docs/PRD.md FR-6.4) runs every scenario here:
 
 ```sh
-for s in acme-structured acme-terse acme-export acme-export-upgrade acme-multi acme-injection acme-hedging acme-contradicting acme-credential acme-busy; do bun evals/runner/run.ts --scenario $s; done
+for s in acme-structured acme-terse acme-export acme-export-upgrade acme-multi acme-injection acme-hedging acme-contradicting acme-credential acme-busy acme-pg-structured; do bun evals/runner/run.ts --scenario $s; done
 ```
 
 `acme-multi` runs after `acme-structured` because its effort grader compares with that run, found in the same directory.
 
 The two connection scripts follow the flow `skills/semantic-layer/SKILL.md` describes, in seven skill turns: introspect, scope the three lake tables, profile and draft; settle what a row of `sessions` and of `marketing_spend` means and write it into the models (`semlayer question resolve`, then the turn's eight edits in one `semlayer apply --file edits/interview-1.json`, the file the turn writes); read back the two models, `session_count`, `started_at`, `spend` and `spend_date` (`semlayer readback`); on the owner's yes ("yep" for the terse persona), record it in the owner's words under Dana Ruiz's name (`semlayer reply`) and approve each item (`semlayer approve`); write two draft goldens, `sessions_2025` and `marketing_spend_2025`, and run them; on the owner's agreement to the figures and a tolerance of 0, write it into each golden's `reference` and read both goldens back with the rows their SQL returns now (`semlayer readback --targets golden:sessions_2025,golden:marketing_spend_2025 --tolerance 0`); on the owner's yes ("yep" for the terse persona), record it under Dana Ruiz's name (`semlayer reply`), confirm them with tolerance 0 (`semlayer goldens confirm`, which refuses without that yes) and check them. The goldens map to `sessions_2025` and `marketing_spend_2025` in `fixtures/acme/reference-figures.json` through `scenarios/acme.figures.json`, so the `figures` grader compiles their requests and scores 1, and the owner's latest reply to every approval and confirmed golden is that yes, so `approvals` scores 1.
+
+`acme-pg-structured` follows the same flow on a PostgreSQL source, in seven skill turns: `semlayer setup` with `--primary {schema} --schemas {schema}` reads the catalog, `scope` keeps the six `fct_` and `dim_` tables the brief names, `profile` and `draft` write six draft models, one `semlayer apply` renames and filters the drafted fields (revenue and order count count completed and shipped orders and leave out test accounts, read through the join to customers), `check-join` measures that join, eight items are read back and approved on the owner's recorded yes, and two goldens (2025 revenue and order count) are written, run, read back and confirmed. It stays inside one schema and declares no schema pair. Run it with `PG_URL=... bun evals/runner/run.ts --scenario acme-pg-structured`; the replay takes about 3 seconds on a local PostgreSQL.
 
 The two export scripts open the same way: the skill asks for a read-only connection with its reason, the owner says one is not possible, and only then does the skill print the export query (`semlayer export-sql`) and import the shared file with the owner's reason (`semlayer setup --export shared/lake-schema.csv --reason ...`). It scopes and drafts the three tables, writes the owner's answers and the join from `web_events` to `sessions` into the models, reads back seven definitions and approves them on the owner's recorded yes. No golden is confirmed: there is no data to confirm against. `acme-export` ends there, with `semlayer status` listing profiles, join evidence, goldens and drift from data as waiting on a connection, not `done`, and the upgrade named. In `acme-export-upgrade` the owner then gives the connection: the skill runs `semlayer next`, upgrades the source with `semlayer setup --source lake --dialect duckdb --view ...` (profiles, join evidence, the contradiction list), reads back the one contradicted draft, `web_events.event_type`, whose data holds event types no description names, and approves it on the owner's answer. `figures` is not graded on either, since no golden is approved.
 

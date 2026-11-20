@@ -285,3 +285,61 @@ describe("the figures grader on a postgres source", () => {
     expect(existsSync(join(dir, "summary.json"))).toBe(true);
   });
 });
+
+// The Acme warehouse on PostgreSQL, scripted (docs/PLAN-v1x.md, A3b): the layer is built the way the skill
+// is told to on a connection-first PostgreSQL source, inside one schema.
+describe("the acme-pg-structured scenario", () => {
+  const file = join(REPO_ROOT, "evals", "scenarios", "acme-pg-structured.json");
+
+  test("names the warehouse in one per-run schema, the six tables the brief keeps and the protected columns", () => {
+    const scenario = loadScenario(file);
+    expect(scenario.intake).toMatchObject({ path: "connection", source: "warehouse", dialect: "postgres", schema: "per_run", url_env: "PG_URL" });
+    expect(scenario.grading!.selection).toEqual({ warehouse: ["fct_orders", "fct_order_items", "fct_refunds", "dim_customers", "dim_products", "dim_regions"] });
+    expect(scenario.grading!.protected_columns).toEqual(["dim_customers.email", "dim_customers.phone", "dim_customers.first_name", "dim_customers.last_name"]);
+    // The script reads and sets up only through {schema}; it names no other schema.
+    const script = JSON.stringify(loadScript(scenario, file));
+    expect(script).toContain("--primary\",\"{schema}\"");
+    expect(script).not.toMatch(/\bacme\./);
+    expect(script).not.toContain("add-cross-schema");
+  });
+
+  test("without the URL it is not run", async () => {
+    const scenario = loadScenario(file);
+    const err = await runScenario({ scenario, driver: scriptedDriver(loadScript(scenario, file), steppingClock(START)), driverName: "scripted", clock: steppingClock(START), outDir: temp(), scenarioFile: file, env: {} }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NotRun);
+  });
+
+  test.skipIf(!PG_URL)("a scripted run finishes in under 10 seconds with figures, validate, secrets and selection at 1", async () => {
+    assertLocalPg(PG_URL);
+    const scenario = loadScenario(file);
+    const out = temp();
+    const before = await evalSchemas(PG_URL!);
+    const t0 = performance.now();
+    const r = await runScenario({ scenario, driver: scriptedDriver(loadScript(scenario, file), steppingClock(START), scenario.fixture), driverName: "scripted", clock: steppingClock(START), outDir: out, scenarioFile: file, env: { PG_URL } });
+    const seconds = (performance.now() - t0) / 1000;
+    expect(r.summary.stop_reason).toBe("done");
+    expect(seconds).toBeLessThan(10);
+    const scores = Object.fromEntries(r.grades.graders.filter((g) => g.grader !== "effort").map((g) => [g.grader, g.score]));
+    expect(scores).toEqual({ figures: 1, validate: 1, secrets: 1, selection: 1, approvals: 1, connection_first: 1, authority: 1 });
+    // Both goldens were compared with the reference figures, which were computed outside the layer.
+    const figures = r.grades.graders.find((g) => g.grader === "figures")!;
+    expect(figures.details.join("\n")).toContain("revenue_2025 matches the reference figure");
+    expect(figures.details.join("\n")).toContain("order_count_2025 matches the reference figure");
+    const schema = evalSchemaName(r.summary.run_id);
+    const source = readFileSync(join(r.runDir, "semantic", "sources", "warehouse.yaml"), "utf8");
+    expect(source).toContain(`primary: ${schema}`);
+    expect(source).not.toContain("cross_schema");
+    expect(await evalSchemas(PG_URL!)).toEqual(before);
+    // No file of the run holds the URL or the `user:password@` form; the bare password is looked for only when it is distinctive.
+    const url = new URL(PG_URL!);
+    const password = decodeURIComponent(url.password);
+    const ordinaryWord = password === decodeURIComponent(url.username) || password === "postgres";
+    for (const text of allText(out)) {
+      expect(text).not.toContain(PG_URL!);
+      if (password) {
+        expect(text).not.toContain(`:${password}@`);
+        if (!ordinaryWord) expect(text).not.toContain(password);
+      }
+    }
+  }, 60_000);
+});
