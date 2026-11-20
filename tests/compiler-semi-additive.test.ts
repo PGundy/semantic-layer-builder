@@ -432,3 +432,30 @@ describe("approval hash and readback", () => {
     expect((await semlayer(root, ["status", "--json"])).json<{ changed_since_approval: string[] }>().changed_since_approval).toEqual(["bank.balances.closing_balance"]);
   });
 });
+
+describe("a rename follows non_additive_dimension", () => {
+  test("renaming the time dimension rewrites the measures' non_additive_dimension.name, so validate stays clean and comments stay", async () => {
+    // The model's default_time_dimension names the same dimension and is rewritten with it.
+    // Each measure gets its own copy of the key, so the file holds no YAML alias.
+    const { root } = await duck((m) => {
+      m.default_time_dimension = "snapshot_date";
+      for (const x of m.measures as Obj[]) if (x.non_additive_dimension) x.non_additive_dimension = { ...(x.non_additive_dimension as Obj) };
+    });
+    const file = join(root, "models", "bank", "balances.yaml");
+    writeFileSync(file, `# keep this note\n${readFileSync(file, "utf8")}`);
+    const errors = () => validateProject(root).filter((i) => i.level === "error");
+    expect(errors()).toEqual([]);
+    const rn = await semlayer(root, ["rename", "bank.balances.snapshot_date", "read_on"]);
+    expect(rn.err).toBe("");
+    expect(rn.code).toBe(0);
+    // The measures' hashes cover the key, so a rewritten key sends each back for approval, as the code does for any rewritten reference.
+    expect(rn.out).toContain("bank.balances.closing_balance is approved and changed since its approval");
+    expect(errors()).toEqual([]);
+    const model = readYaml<{ default_time_dimension?: string; measures: { name: string; non_additive_dimension?: { name: string } }[] }>(file);
+    expect(model.default_time_dimension).toBe("read_on");
+    const names = model.measures.filter((m) => m.non_additive_dimension).map((m) => m.non_additive_dimension!.name);
+    expect(names.length).toBeGreaterThan(0);
+    expect(names.every((n) => n === "read_on")).toBe(true);
+    expect(readFileSync(file, "utf8")).toStartWith("# keep this note\n");
+  });
+});

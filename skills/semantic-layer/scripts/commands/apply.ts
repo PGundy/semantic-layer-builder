@@ -87,6 +87,9 @@ function refusal(refused: Failure[]): UserError {
   return new UserError(`${counted}, so nothing was written:\n${lines.join("\n")}\nRemove or fix each entry named and run semlayer apply again.`, undefined, code);
 }
 
+// Prefix of a segment's bare name in a creates set: a measure's segments list holds the bare name.
+const SEGMENT = "segment:";
+
 // The names a typed edit would create, as later entries name them.
 function creates(words: string[]): Set<string> {
   const [command, first, second] = words;
@@ -101,7 +104,13 @@ function creates(words: string[]): Set<string> {
     out.add(`${first}.${name}`);
     out.add(`${first.split(".").slice(1).join(".")}.${name}`);
   } else if (command === "add-join" && first && name) out.add(`${first}.${name}`);
-  else if (command === "add-metric" && name) [name, `metric:${name}`].forEach((n) => out.add(n));
+  else if (command === "add-segment" && name) {
+    // A request names it model.segment; a measure lists it by its bare name in segments (see dependsOn).
+    const [source, model] = [flag("source"), flag("model")];
+    if (model) out.add(`${model}.${name}`);
+    if (source && model) out.add(`${source}.${model}.${name}`);
+    out.add(`${SEGMENT}${name}`);
+  } else if (command === "add-metric" && name) [name, `metric:${name}`].forEach((n) => out.add(n));
   else if ((command === "add-role" || command === "add-attribute" || command === "add-restriction") && name) [name, `${command.slice(4)}:${name}`].forEach((n) => out.add(n));
   else if (command === "goldens" && first === "new" && name) [name, `golden:${name}`].forEach((n) => out.add(n));
   else if (command === "rename" && first && second) {
@@ -118,7 +127,13 @@ function creates(words: string[]): Set<string> {
 function dependsOn(words: string[], names: Set<string>): boolean {
   if (!names.size) return false;
   const named = (t: string) => names.has(t) || names.has(t.replace(/^user\./, ""));
-  return words.some((w) => named(w) || w.split(/[\s,=()'"\[\]{}]+/).some((t) => /[.:]\w/.test(t) && named(t.replace(/[.:]+$/, ""))));
+  // A list in a word, as [sales, big] or segments=[sales], holds segment names.
+  const listed = (w: string) =>
+    (/\[([^\]]*)\]/.exec(w)?.[1] ?? "")
+      .split(",")
+      .map((t) => t.trim().replace(/^['"]|['"]$/g, ""))
+      .some((t) => t && names.has(`${SEGMENT}${t}`));
+  return words.some(listed) || words.some((w) => named(w) || w.split(/[\s,=()'"\[\]{}]+/).some((t) => /[.:]\w/.test(t) && named(t.replace(/[.:]+$/, ""))));
 }
 
 const spec: CommandSpec = {

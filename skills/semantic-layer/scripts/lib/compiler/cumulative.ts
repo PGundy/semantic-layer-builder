@@ -205,6 +205,12 @@ export function viewQuery(
 
 const RUNNING_WORDS: ViewWords = { key: "running", noun: "a running total", measureFilter: "a filter on a total would leave a period out of the running total" };
 
+// The column a running total adds for the figure `name`: <name>_running over every period so far,
+// or <name>_trailing_<n> over the last n.
+export function runningColumn(name: string, periods?: number): string {
+  return periods === undefined ? `${name}_running` : `${name}_trailing_${periods}`;
+}
+
 export function compileRunning(input: CompileInput, request: QueryRequest, compile: Compile): CompileResult {
   const { layer, source } = input;
   const dialect = source.dialect;
@@ -256,7 +262,7 @@ export function compileRunning(input: CompileInput, request: QueryRequest, compi
   // <m>_running over every period so far, or <m>_trailing_<n> over the last n, null until n exist.
   const n = running.periods;
   const win = `${others.length ? `partition by ${others.map(q).join(", ")} ` : ""}order by ${q(period)}`;
-  const added: CompiledColumn[] = valueCols.map((c) => ({ name: n === undefined ? `${c.name}_running` : `${c.name}_trailing_${n}`, ref: c.ref, kind: c.kind }));
+  const added: CompiledColumn[] = valueCols.map((c) => ({ name: runningColumn(c.name, n), ref: c.ref, kind: c.kind }));
   const windowed = valueCols.map((c, i) => {
     const m = q(c.name);
     const sum =
