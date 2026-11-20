@@ -109,10 +109,20 @@ function postgresQueries(schemas: string[]): PlannedQuery[] {
       "tables",
       `select n.nspname as table_schema, c.relname as table_name,
   case c.relkind when 'v' then 'view' when 'm' then 'view' when 'f' then 'external' else 'table' end as table_kind,
-  case when c.relkind in ('r', 'p', 'm') and c.reltuples >= 0 then c.reltuples::bigint end as row_count,
+  case
+    when c.relkind = 'p' then (
+      select sum(p.reltuples)::bigint
+      from pg_partition_tree(c.oid) t
+      join pg_class p on p.oid = t.relid
+      where t.isleaf and p.reltuples >= 0 and (v.known_empty or p.reltuples > 0 or p.relpages > 0))
+    when c.relkind in ('r', 'm') and c.reltuples >= 0 and (v.known_empty or c.reltuples > 0 or c.relpages > 0)
+      then c.reltuples::bigint
+  end as row_count,
   obj_description(c.oid, 'pg_class') as description
 from pg_class c
 join pg_namespace n on n.oid = c.relnamespace
+-- From PostgreSQL 14 a table never analyzed has reltuples = -1, so 0 means analyzed and empty; before 14 both read 0.
+cross join (select current_setting('server_version_num')::int >= 140000 as known_empty) v
 where ${relation}
   and ${where("n")}
 order by 1, 2`,
