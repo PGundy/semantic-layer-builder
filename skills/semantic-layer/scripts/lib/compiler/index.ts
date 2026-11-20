@@ -26,6 +26,7 @@ import { resolveDefaultTime, sourceWeekStart } from "./calendar.ts";
 import { semiAdditive, semiAdditiveRequest } from "./semi-additive.ts";
 import { compileTimeShapes } from "./time-shapes.ts";
 import { aggregate, COMPILER_DIALECTS, embed, grained, Params, predicate } from "./sql.ts";
+import { throughMeasure } from "./bridge.ts";
 
 export type { CompileWarning, PlannedJoin } from "./joins.ts";
 export type { AppliedRows } from "./rowfilters.ts";
@@ -45,7 +46,12 @@ export type RefusalCode =
   | "metric.segments_on_metric"
   | "metric.default_time_missing"
   | "join.multi_fact_segments"
-  | "metric.semi_additive_mixed";
+  | "metric.semi_additive_mixed"
+  | "join.through_second_path"
+  | "join.through_filter_ungrouped"
+  | "join.through_semi_additive"
+  | "join.through_aggregate_unsupported"
+  | "join.through_coarse_group";
 
 export interface Refusal {
   code: RefusalCode;
@@ -348,7 +354,10 @@ function compileLayerInner(input: CompileInput): CompileResult {
   const filterJoins = baseRows?.rows === "filtered" && baseRows.branches.some((b) => !b.no_rows && b.filters.some((f) => f.join_refs?.length));
   const qualified =
     filterJoins || segments.some((s) => readsJoin(s.text, base)) || used.some((f) => f.model !== base || texts(f).some((t) => t !== undefined && readsJoin(t, f.model)));
-  const plan: JoinPlan = new JoinPlan({ source: source.source, dialect, models, snapshot: input.snapshot, pairs, joinStatus: input.joinStatus, base, qualified, add, restrict: (inst) => restrict(inst, "on") });
+  const plan: JoinPlan = new JoinPlan({ source: source.source, dialect, models, snapshot: input.snapshot, pairs, joinStatus: input.joinStatus, base, qualified, add, restrict: (inst) => restrict(inst, "on"), hidden: (m) => {
+    const v = vis.sources.find((s) => s.source === source.source)?.models.find((x) => x.model === m.model);
+    return v && !v.visible ? v.reasons : undefined;
+  } });
   const done = new Map<string, string>();
   const sqlOf = (f: Field): string => {
     const known = done.get(f.ref);
@@ -359,7 +368,11 @@ function compileLayerInner(input: CompileInput): CompileResult {
     if (f.kind === "measure") {
       const m = f.item as Measure;
       const filter = measureFilter(m, f.model);
-      out = aggregate(dialect, m.agg, m.expr === undefined ? undefined : own(m.expr), filter === undefined ? undefined : own(filter));
+      const expr = m.expr === undefined ? undefined : own(m.expr);
+      const cond = filter === undefined ? undefined : own(filter);
+      // Grouped through a bridge join, a sum or count is multiplied by each pair's share (bridge.ts).
+      const t = throughMeasure({ dialect, plan, ref: f.ref, base: base.model, measure: m, expr, filter: cond, dims, filters: filterFields, semiAdditive: !!semi, add });
+      out = t ?? aggregate(dialect, m.agg, expr, cond);
     } else {
       const d = f.item as Dimension;
       out = f.grain ? grained(dialect, embed(own(d.expr)), f.grain, sourceWeekStart(source)) : embed(own(d.expr));
