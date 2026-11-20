@@ -12,7 +12,7 @@ import { renderReadbacks } from "../skills/semantic-layer/scripts/lib/readback.t
 import { figureTimeout, readbackFigures } from "../skills/semantic-layer/scripts/lib/readback-figures.ts";
 import type { PendingReadback } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { schemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
-import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
+import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { assertLocalPg, PG_URL, semlayer, tempDir } from "./helpers.ts";
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
@@ -73,6 +73,19 @@ describe("the figure on a connected source", () => {
     expect(item!.evidence!.figure).toBeCloseTo(Number(want.cents) / 100, 6);
     expect(item!.evidence!.row_count).toBe(Number(want.n));
     expect(item!.text).toContain("Measured from the data, no need to confirm:\n- On today's data it comes to 535,381.93 USD, over the 4,049 rows it counts, before any role's row filter.\n");
+  });
+
+  test("a measure's segments narrow the rows behind its total as they narrow the total", async () => {
+    const root = acme();
+    const path = join(root, "models", "warehouse", "orders.yaml");
+    const orders = readYaml<Record<string, unknown> & { measures: Record<string, unknown>[] }>(path);
+    orders.segments = [{ name: "shipped", filter: "status = 'shipped'" }];
+    orders.measures.find((m) => m.name === "revenue")!.segments = ["shipped"];
+    writeYaml(path, orders);
+    const [item] = await readback(root, "warehouse.orders.revenue");
+    const want = await direct(`select sum(o.amount_cents) as cents, count(*) as n ${REVENUE_ROWS} and o.status = 'shipped'`);
+    expect(item!.evidence!.figure).toBeCloseTo(Number(want.cents) / 100, 6);
+    expect(item!.evidence!.row_count).toBe(Number(want.n));
   });
 
   test("a ratio metric: its figure, and each measure it combines with its rows", async () => {

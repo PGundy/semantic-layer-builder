@@ -29,6 +29,7 @@ export interface Project {
   name: string;
   description?: string;
   default_source?: string;
+  layer_version?: string;
   settings?: ProjectSettings;
 }
 
@@ -201,6 +202,8 @@ export interface Measure extends Approval {
   description?: string;
   synonyms?: string[];
   tags?: string[];
+  // Names of segments of the model whose filters narrow this measure, ANDed with filter (lib/segments.ts).
+  segments?: string[];
 }
 
 export interface JoinKey {
@@ -255,6 +258,7 @@ export interface Model extends Approval {
   dimensions: Dimension[];
   measures: Measure[];
   joins?: Join[];
+  segments?: import("./segments.ts").Segment[];
 }
 
 // Metrics
@@ -382,6 +386,8 @@ export interface QueryRequest {
   filters?: RequestFilter[];
   order_by?: { field: string; direction?: "asc" | "desc" }[];
   limit?: number;
+  // model.segment: segments of the request's base model whose filters narrow every row it reads.
+  segments?: string[];
 }
 
 export interface Golden {

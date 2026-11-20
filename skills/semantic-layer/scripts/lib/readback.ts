@@ -14,6 +14,7 @@ import { formatTable, maskRows, PROTECTED_VALUE, plainText } from "./output.ts";
 import { protectedColumns } from "./profile.ts";
 import { listModels, loadAccess, loadFile, loadMetrics, loadSnapshot, paths } from "./project.ts";
 import { parseTarget } from "./refs.ts";
+import { andPredicates, findSegment, segmentNames } from "./segments.ts";
 import { referencedColumns } from "./snapshot-diff.ts";
 import { sqlNames } from "./sql-names.ts";
 import type { Dialect, FigureEvidence, Golden, Join, Metric, Model, PendingReadback, ResultRows, Snapshot, SnapshotTable } from "./types.ts";
@@ -552,12 +553,20 @@ function renderField(ref: string, source: string, model: Model, e: ApprovalEntry
     if (typeof f.time_zone === "string") out.push(`- Stored in time zone ${f.time_zone}.`);
   } else {
     out.push(`- ${f.agg === "count" && !f.expr ? "A count of rows" : `${AGG_WORDS[String(f.agg)] ?? `The ${String(f.agg)} of`} ${String(f.expr)}`}.`);
-    const clauses = typeof f.filter === "string" ? filterClauses(f.filter) : [];
-    if (clauses.length) out.push("- It counts only rows where:", ...clauses.map((c, i) => `  ${i + 1}. ${clauseWords(c)}`));
+    // The measure's own filter and the filter of each segment it names narrow the same rows, so the
+    // owner is shown all of them: a segment's conditions carry its name.
+    const clauses = typeof f.filter === "string" ? filterClauses(f.filter).map((c) => clauseWords(c)) : [];
+    const named = segmentNames(f).map((name) => ({ name, filter: findSegment(model, name)?.filter }));
+    for (const seg of named) {
+      if (typeof seg.filter === "string") clauses.push(...filterClauses(seg.filter).map((c) => `${clauseWords(c)} (segment ${seg.name})`));
+      else clauses.push(`the conditions of segment ${seg.name}, which model ${model.model} does not declare`);
+    }
+    if (clauses.length) out.push("- It counts only rows where:", ...clauses.map((c, i) => `  ${i + 1}. ${c}`));
     else out.push("- It counts every row.");
     const fmt = typeof f.format === "string" ? f.format : "not set";
     out.push(`- Format: ${fmt}${typeof f.currency === "string" ? `, in ${f.currency}` : ""}.`);
-    sql.push(`${String(f.agg)}(${f.expr === undefined ? "*" : String(f.expr)})${typeof f.filter === "string" ? ` where ${f.filter}` : ""}`);
+    const where = andPredicates([f.filter, ...named.map((seg) => seg.filter)].filter((t): t is string => typeof t === "string"));
+    sql.push(`${String(f.agg)}(${f.expr === undefined ? "*" : String(f.expr)})${where === undefined ? "" : ` where ${where}`}`);
   }
   const hops = new Map<string, Join & { from: string }>();
   for (const r of reads) {

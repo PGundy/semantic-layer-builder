@@ -16,6 +16,7 @@ semantic/
   models/<source>/<model>.yaml  one per modeled table
   metrics.yaml                  derived and ratio metrics
   access.yaml                   access mode, roles, restrictions, row filters, denials
+  changelog.yaml                the releases of the layer, append-only; written by semlayer change close (see Iterating a layer)
   goldens/<name>.yaml           confirmed question and answer pairs
   .gitignore                    written by semlayer init: ignores .semlayer/plans/, .semlayer/lock, .semlayer/lock.takeover and *.semlayer-tmp
   .semlayer/plans/                    query plans and their stored results (gitignored, see Query-plan protocol)
@@ -109,7 +110,7 @@ Tools only ever write `status: draft`. The `semlayer approve` command sets `appr
 `semlayer approve` records `approved_hash`: `sha256:` and the 64 hex characters of the SHA-256 of the item's normalized semantic content (`scripts/lib/approval-hash.ts`). The content is, for each kind of item:
 
 - a dimension: its identity (its source, its model, its `name` and the model's `table`), `expr`, `type`, `time_grains`, `time_zone`, `synonyms`, `tags`, and the definitions (`to`, `keys`, `relationship`, `type`) of the joins its join references read through;
-- a measure: its identity, `expr`, `filter`, `agg`, `format`, `currency`, `synonyms`, `tags`, and the definitions of the joins its `expr` and `filter` read through;
+- a measure: its identity, `expr`, `filter`, `agg`, `format`, `currency`, `synonyms`, `tags`, the `filter` text of each segment it names (left out when it names none), and the definitions of the joins its `expr`, `filter` and segments read through;
 - a join: its identity, `to`, `keys`, `relationship` and `type`;
 - a model: its source and `model` name, `table`, `grain`, `primary_key` and `tags`;
 - a metric: its `name` and definition, `source`, `type`, `numerator`, `denominator` or `expr`, `format`, `currency`, `synonyms` and `tags`;
@@ -149,6 +150,7 @@ default_source: warehouse
 settings:
   focus_threshold: 12    # more in-scope tables than this and the skill asks the owner to focus
   batch_size: 5          # tables per interview batch
+layer_version: "1.1"   # optional: the version last released, major.minor; written by semlayer change close (see Iterating a layer)
 ```
 
 ## sources/<source>.yaml
@@ -652,6 +654,31 @@ A ratio divides after both sides aggregate. A derived metric's `expr` combines `
 
 A metric may combine measures of several models of its source. Each measure aggregates over its own model, and the metric groups by dimensions that every model it uses reaches through one path of to-one joins, or that exist with the same name in each. So `refunds`, with a `many_to_one` join `order` to `orders`, groups by `orders.order_date:month` through that join; a model with no such path carries a dimension of the same name (`visits.order_date`). `semlayer validate` errors when a golden groups such a metric by a dimension one of its models neither reaches nor has.
 
+## Metric semantics
+
+### Segments
+
+A segment is a named predicate a model declares once, under `segments` in its model file, and that its measures name instead of copying the predicate into each `filter`:
+
+```yaml
+segments:
+  - name: sales
+    filter: status in ('completed', 'shipped')
+    description: Orders that count as sales.
+measures:
+  - name: revenue
+    expr: amount_cents * 0.01
+    agg: sum
+    filter: ship_region <> 'INT'
+    segments: [sales]               # names of this model's segments, ANDed with filter
+```
+
+- A segment's `filter` is written and checked as a measure `filter` is (see Expression text): the model's own columns and join references through its to-one joins, one expression, no subquery. `semlayer validate` reports a problem in it at `segments[<i>].filter` with the code a measure filter's problem has, a name declared twice as `metric.segment_duplicate`, and a measure, or a golden's request, that names a segment its model does not declare as `metric.segment_unknown`.
+- A measure's filter is its `filter` and the filters of its `segments`, in that order, combined with AND, each in parentheses when there are several: `sum(amount_cents * 0.01) filter (where (ship_region <> 'INT') and (status in ('completed', 'shipped')))`. A measure that names no segment compiles exactly as before. Inside a metric each part compiles its measures this way, so a ratio's numerator keeps its segments. `semlayer sql` refuses a measure that names a segment its model does not declare as `invalid_layer`.
+- The owner approves a segment through each measure that names it: a measure's approval hash covers the filter text of each segment it names (see Approval hashes), so editing a segment's filter after approval changes the hash of every approved measure that names it, and `semlayer validate` reports each as changed since approved. A measure that names no segment keeps the hash it had.
+- A segment that reads a protected column counts as the measure's filter does: when the measure or its model is tagged `pii` or `sensitive`, the columns the segment reads are protected (see Profiles of protected columns). The user's row filters apply on top of a segment, as on top of a measure filter.
+- A plain request may name segments as `model.segment` in `segments` (`schemas/golden.schema.json`): each is a segment of the model of the request's fields and narrows it in `WHERE`, after the user's row filters and before the request's own filters, binding no parameter. A request segment applies only once an approved measure the user may see names it, since that approval covers its filter; otherwise it is refused as `not_visible`. A request that names a metric and segments is refused as `metric.segments_on_metric`, because a metric's parts take no request segments.
+
 ## access.yaml
 
 `access.yaml` says who sees what. No `access.yaml` means open mode with no roles: everyone sees every approved item. A draft model, dimension, measure or metric, or an approved one that changed since its approval (see Approval hashes), is never exposed to anyone in either mode; tools that read the layer flag every draft item they use, and `semlayer access` reports one hidden with the reason `draft`.
@@ -997,6 +1024,31 @@ The answer ledger: the owner's answers to readback items (`semlayer reply`) and 
 - `semlayer validate` warns `release.column_retyped` on each approved field still open, naming the column, its old and new types and when the change was found, with `next` `semlayer readback --targets <ref>`. A record that does not parse or match its schema is skipped by `semlayer validate` and replaced by the next introspect without a message. `semlayer import` of an export does not write the record, so a column retyped in a fresh export gets no warning. A field is matched by the bare column name in its `expr` or `filter`; a table-qualified reference such as `orders.amount_cents` is not matched.
 - The record is written whole (see Locking and whole-file writes) under the root's lock, before the snapshot, and only when it changed, so a second identical introspect leaves its bytes as they were. A failed introspect leaves the record as it was. When `.semlayer` is a link that leads outside the semantic root or nowhere, the introspect refuses and writes neither the record nor the snapshot.
 
+### Layer version and changelog
+
+`layer_version` in `semantic.yaml` (`major.minor`, such as `1.1`) is the version of the layer as last released; the owner chooses it, and the tool checks that it rises. `changelog.yaml` beside `semantic.yaml` (`schemas/changelog.schema.json`, types in `scripts/lib/release-types.ts`) holds one entry per release, oldest first. A layer with neither has never been released, which is every layer built before releases existed: `semlayer validate` says nothing about it.
+
+```yaml
+version: 1
+entries:
+  - version: "1.1"
+    date: 2026-02-03
+    note: Added the refund rate.
+    items:                       # approve target to content hash, every item at the release
+      warehouse.orders.revenue: sha256:f1f1...
+    goldens:                     # golden name to its recorded rows
+      revenue_by_month: [{ month: "2025-01", revenue: 120000 }]
+    added: [metric:refund_rate]
+    changed: []
+    removed: []
+    goldens_moved:               # goldens whose rows differ from the last entry's, with cell counts
+      - { golden: revenue_by_month, before: 24, after: 24, changed: 2 }
+```
+
+- Append-only. `appendEntry` (`scripts/lib/release.ts`) replaces the file whole (temp file and rename, under the root's lock) and refuses a version that is not above the last entry's, comparing `major` and `minor` as numbers (1.10 is above 1.9), so one version is never recorded twice. `semlayer change close` is the command that calls it. The hook refuses a hand edit or shell write of `changelog.yaml` as it refuses one of the ledger (see Hand edits), because later releases compare against the hashes and rows an entry records.
+- An entry holds approve targets, content hashes, golden names and the rows a golden file already holds, never a connection URL, a password or any other data value. Golden rows are recorded as the golden file stores them: a confirmed golden's `expected.rows` hold what its query returned, in the clear, a protected column's values included (see Protected values in results); the changelog copies those rows and adds no value the golden does not hold, so a protected column the golden holds is as visible in the changelog as in the golden.
+- `semlayer validate` reports `release.changelog_malformed` (an error naming `changelog.yaml`) when the file is not valid YAML, does not match its schema or has versions that do not rise, and `release.version_mismatch` (an error on `semantic.yaml`) when `layer_version` is not the version of the last entry, set without a changelog or absent beside one.
+
 ## Review forms
 
 `semlayer review export --readback <readback_id> --format md|json` writes a pending readback as a form the owner fills in, to `.semlayer/reviews/<readback_id>.<md|json>` by default. It holds nothing the pending readback and the YAML do not already hold, so it never holds a protected column's values. The JSON form (schema `review.schema.json`):
@@ -1065,7 +1117,7 @@ The answer ledger: the owner's answers to readback items (`semlayer reply`) and 
 
 It refuses a source of another dialect, naming that a later version adds other dialects, a field whose expr or filter holds a subquery, and a field or metric whose text is not one expression (see Expression text) as `invalid_layer`.
 
-`--json` prints `{ ok: true, source, dialect, model, sql, params, columns: [{ name, ref, kind }], joins: [{ alias, via, model, type, for }], row_filters: [{ model, alias, in, roles, rows }], session_time_zone, warnings? }`, where `warnings`, when present, lists `{ code, message }` for each join the query adds that compiles with a warning (see Schema scope), and where each column's `kind` is `dimension`, `measure` or `metric`, each join names its alias, the declared join it follows as `model.join`, its target model, `left` or `inner`, `for` `request` or `definition` and, for a metric, `part`, the model of the CTE that joins it, and each row filter applied, in the SQL's order, names its model, the alias it limits, `in` `on` or `where`, the held roles whose filters limit it and `rows` `filtered` or `none` (for a metric, every part's in turn, each with `part`, the model of its CTE); or `{ ok: false, source, reason, refusals: [{ code, ref?, message, next?, reasons?, awaits? }], next }`, where `code` is one of `invalid_request`, `unknown_role`, `not_visible`, `unsupported_dialect`, `unsupported_metric`, `invalid_layer`, `no_join_path`, `ambiguous_join_path`, `join_fans_out`, `no_shared_dimension` and `scope.cross_schema_undeclared`, a refusal's `next` says what resolves that refusal when it is specific to it, a `not_visible` refusal's `reasons` are the evaluator's reasons (`draft`, `protected_tag:<tag>`, `measure_hidden:<model.measure>`, ...) and `awaits` the approve targets it waits on when nothing but approval hides it, and the top-level `next` names the command to run next.
+`--json` prints `{ ok: true, source, dialect, model, sql, params, columns: [{ name, ref, kind }], joins: [{ alias, via, model, type, for }], row_filters: [{ model, alias, in, roles, rows }], session_time_zone, warnings? }`, where `warnings`, when present, lists `{ code, message }` for each join the query adds that compiles with a warning (see Schema scope), and where each column's `kind` is `dimension`, `measure` or `metric`, each join names its alias, the declared join it follows as `model.join`, its target model, `left` or `inner`, `for` `request` or `definition` and, for a metric, `part`, the model of the CTE that joins it, and each row filter applied, in the SQL's order, names its model, the alias it limits, `in` `on` or `where`, the held roles whose filters limit it and `rows` `filtered` or `none` (for a metric, every part's in turn, each with `part`, the model of its CTE); or `{ ok: false, source, reason, refusals: [{ code, ref?, message, next?, reasons?, awaits? }], next }`, where `code` is one of `invalid_request`, `unknown_role`, `not_visible`, `unsupported_dialect`, `unsupported_metric`, `invalid_layer`, `no_join_path`, `ambiguous_join_path`, `join_fans_out`, `no_shared_dimension`, `scope.cross_schema_undeclared` and `metric.segments_on_metric`, a refusal's `next` says what resolves that refusal when it is specific to it, a `not_visible` refusal's `reasons` are the evaluator's reasons (`draft`, `protected_tag:<tag>`, `measure_hidden:<model.measure>`, ...) and `awaits` the approve targets it waits on when nothing but approval hides it, and the top-level `next` names the command to run next.
 
 ### Bridges and multi-fact requests
 
@@ -1679,13 +1731,14 @@ The Claude Code plugin (`.claude-plugin/plugin.json`) registers a `PreToolUse` h
 - add, change or remove an approval field (`status: approved`, `approved_by`, `approved_at`, `approved_hash`, `last_approved`, `confirmed_by`, `confirmed_at`, `confirmed_as`) anywhere in `models/`, `metrics.yaml`, `access.yaml`, `goldens/` or the schema pairs of `sources/<s>.yaml`: only `semlayer approve` and `semlayer goldens confirm` write them, on the owner's recorded yes;
 - change what the content hash of an approved model, dimension, measure, join, metric or schema pair, or of an approved `access.yaml`, covers (see Approval hashes), or remove one; for a pair the refusal names `semlayer add-cross-schema` and `semlayer remove-cross-schema`, which send it back to draft. That includes a join in another model that an approved field reads through, and the `model` and `source` keys of a model file that holds approved items. A change that restores the content its `approved_hash` records is allowed. Use a typed edit, which routes the item to re-approval (for `access.yaml`, an access edit, which makes it a draft again), or `semlayer approve --target <ref> --revoke` first;
 - change a confirmed golden's `expected` rows or tolerance: only `semlayer goldens confirm` records them;
-- write `.semlayer/ledger.jsonl` or anything under `.semlayer/pending/`.
+- write `.semlayer/ledger.jsonl` or anything under `.semlayer/pending/`;
+- write `changelog.yaml`: it is append-only and only `semlayer change close` adds to it.
 
 `Edit` and `MultiEdit` are checked on the file as their edits would leave it, matched as the Edit tool matches (also across CRLF line endings and curly quotes). Everything else is allowed: drafts and every field of them, descriptions and open questions of approved items (outside the hash), a confirmed golden's question, request, sql, role, user and reference (`semlayer validate` warns until an owner yes matches it again), `semantic.yaml`, everything in `sources/` but the approval of its schema pairs, `snapshots/`, `.semlayer/plans/`, and every file outside a semantic root.
 
-For `Bash`, the hook reads the command as a shell splits it (quotes, escapes, heredocs, brace expansion, `$(...)` and backquoted commands, `sh -c` and `bash -ec` strings, a heredoc or `<<<` string given to a shell, `eval`, and the options of `sudo`, `env`, `xargs` and `timeout`), finds each command's name past the shell keywords before it (`if`, `then`, `else`, `elif`, `while`, `until`, `do`, `{`, `!`, and a function body: `if true; then rm models/wh/orders.yaml; fi`), and refuses any plain write to `models/`, `goldens/`, `metrics.yaml`, `access.yaml`, a `sources/<s>.yaml` that holds approval fields, `.semlayer/ledger.jsonl`, `.semlayer/pending/` or the root itself: a redirection (`>`, `>>`, `&>`, ...), `tee`, `sed -i`, `perl -i`, `yq -i`, `awk -i inplace`, `cp`, `mv`, `install`, `ln`, `rsync`, `patch`, `rm`, `unlink`, `shred`, `truncate` or `dd of=`, with globs expanded against the files that exist. A relative path counts against the call's `cwd` and against every directory a `cd` or `pushd` in the command names, since a subshell, `cd -` or `popd` may return to any of them; this can refuse a command that writes elsewhere. Removing or moving a root's `semantic.yaml` (`rm`, `unlink`, `mv`) is refused too, since it would leave the root unguarded. A shell write cannot be compared item by item, so it is refused for drafts too; edit a draft with the Edit tool. A path built from a variable is refused only when it names the ledger or `.semlayer/pending/`. `semlayer` commands, reads and writes elsewhere are allowed.
+For `Bash`, the hook reads the command as a shell splits it (quotes, escapes, heredocs, brace expansion, `$(...)` and backquoted commands, `sh -c` and `bash -ec` strings, a heredoc or `<<<` string given to a shell, `eval`, and the options of `sudo`, `env`, `xargs` and `timeout`), finds each command's name past the shell keywords before it (`if`, `then`, `else`, `elif`, `while`, `until`, `do`, `{`, `!`, and a function body: `if true; then rm models/wh/orders.yaml; fi`), and refuses any plain write to `models/`, `goldens/`, `metrics.yaml`, `access.yaml`, `changelog.yaml`, a `sources/<s>.yaml` that holds approval fields, `.semlayer/ledger.jsonl`, `.semlayer/pending/` or the root itself: a redirection (`>`, `>>`, `&>`, ...), `tee`, `sed -i`, `perl -i`, `yq -i`, `awk -i inplace`, `cp`, `mv`, `install`, `ln`, `rsync`, `patch`, `rm`, `unlink`, `shred`, `truncate` or `dd of=`, with globs expanded against the files that exist. A relative path counts against the call's `cwd` and against every directory a `cd` or `pushd` in the command names, since a subshell, `cd -` or `popd` may return to any of them; this can refuse a command that writes elsewhere. Removing or moving a root's `semantic.yaml` (`rm`, `unlink`, `mv`) is refused too, since it would leave the root unguarded. A shell write cannot be compared item by item, so it is refused for drafts too; edit a draft with the Edit tool. A path built from a variable is refused only when it names the ledger or `.semlayer/pending/`. `semlayer` commands, reads and writes elsewhere are allowed.
 
-A hook sees only what a tool call states. A program that writes files itself (a script, `python -c`, `find -exec`, `git checkout`, `git apply`, an editor), commands piped into a shell (`... | sh`), files `xargs` reads from its input, files a diff names when `patch` is given none, a write to `models/` through a variable path, and the removal of a directory that holds a root are not seen by these checks. What such a program changes in the answer ledger and the pending readbacks is put back by the comparison below. For the layer's YAML the CLI's checks remain the guarantee: `semlayer validate` reports an approved item whose content no longer matches its `approved_hash` and an approval without a matching ledger yes, and `semlayer approve` and `semlayer goldens confirm` approve nothing without one.
+A hook sees only what a tool call states. A program that writes files itself (a script, `python -c`, `find -exec`, `git checkout`, `git apply`, an editor), commands piped into a shell (`... | sh`), files `xargs` reads from its input, files a diff names when `patch` is given none, a write to `models/` or `changelog.yaml` through a variable path, a file named in another case or spelling such as `CHANGELOG.yaml`, and the removal of a directory that holds a root are not seen by these checks. What such a program changes in the answer ledger and the pending readbacks is put back by the comparison below. For the layer's YAML the CLI's checks remain the guarantee: `semlayer validate` reports an approved item whose content no longer matches its `approved_hash` and an approval without a matching ledger yes, and `semlayer approve` and `semlayer goldens confirm` approve nothing without one.
 
 Input that names no file (not JSON, or no `tool_name`, `tool_input`, path or command) is let through with a warning on stderr, since there is nothing to check. For a file inside a semantic root, an edit the hook cannot apply (an `old_string` not in the file, a missing `content`), YAML that would not parse in a file that holds approval fields, and an error while checking are refused. A file with approval fields that does not parse now (a merge conflict, say) may be repaired with text that parses when every approved item in it matches the `approved_hash` it records, a hash the old text holds, and no approval field appears more often than in the old text; otherwise, and for a confirmed golden, the refusal names `git checkout -- <file>` or the owner. These checks write nothing; the hook needs `bun` on `PATH` and the plugin's packages, which Claude Code installs from the plugin root's `package.json` and `bun.lock` (the `SessionStart` hook names the fallback, `bun install --frozen-lockfile --production` in the plugin root), as the CLI does.
 
