@@ -448,3 +448,49 @@ describe("the compiler", () => {
     expect(parse(readFileSync(ordersFile(root), "utf8"))).toBeDefined();
   });
 });
+
+describe("join.through_facts_unbridged asks only while the join is not settled", () => {
+  const unbridged = async (root: string) => (await issues(root)).filter((i) => i.code === "join.through_facts_unbridged");
+  const TARGET = "shop.orders.tag";
+
+  // Reads the join back, records the owner's yes and approves it.
+  async function approveTag(root: string): Promise<void> {
+    const rb = (await semlayer(root, ["readback", "--targets", TARGET, "--json"])).json<{ readback_id: string }>().readback_id;
+    const reply = await semlayer(root, ["reply", "--readback", rb, "--item", "1", "--text", "Yes, the order without a tag is a test order.", "--verdict", "yes", "--by", "Dana"]);
+    expect(reply.err).toBe("");
+    const approved = await semlayer(root, ["approve", "--target", TARGET, "--by", "Dana"]);
+    expect(approved.err).toBe("");
+    expect(approved.code).toBe(0);
+  }
+
+  test("a draft bridge join with unbridged rows warns, and the warning names the readback and the owner's approval", async () => {
+    const root = await project([withEvidence(bridgeJoin({ dedupe: "distinct_pairs" }))]);
+    const w = await unbridged(root);
+    expect(w.map((i) => i.level)).toEqual(["warning"]);
+    expect(w[0]!.message).toContain("1 of 5 rows of orders have no tags in order_tags");
+    expect(w[0]!.message).toContain("semlayer readback --targets shop.orders.tag");
+    expect(w[0]!.message).toContain("approval");
+  });
+
+  test("after the owner's yes to a readback that showed the count it is silent; changed evidence or a changed join brings it back", async () => {
+    const root = await project([withEvidence(bridgeJoin({ dedupe: "distinct_pairs" }))]);
+    await approveTag(root);
+    expect(await unbridged(root)).toEqual([]);
+    // The count stored now is not the one the owner saw: the warning is back, with no new approval.
+    const m = readYaml<Model>(ordersFile(root));
+    const ev = m.joins![0]!.evidence as unknown as { through: { facts_unbridged: number } };
+    ev.through.facts_unbridged = 2;
+    writeYaml(ordersFile(root), m);
+    expect((await issues(root)).filter((i) => i.code === "approval.hash_changed")).toEqual([]);
+    expect((await unbridged(root)).map((i) => i.level)).toEqual(["warning"]);
+    ev.through.facts_unbridged = 1;
+    writeYaml(ordersFile(root), m);
+    expect(await unbridged(root)).toEqual([]);
+    // A change to the join itself makes it changed since its approval: an error, and the warning asks again.
+    m.joins![0]!.through!.dedupe = "equal_split";
+    writeYaml(ordersFile(root), m);
+    const after = await issues(root);
+    expect(after.filter((i) => i.code === "approval.hash_changed").map((i) => i.path)).toEqual(["joins[0]"]);
+    expect((await unbridged(root)).length).toBe(1);
+  });
+});

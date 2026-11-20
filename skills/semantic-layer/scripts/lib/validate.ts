@@ -20,7 +20,7 @@ import { quoteIdent } from "./dialect.ts";
 import { type Env, envFilesInRoot, rootEnvFile, trackedEnvFiles } from "./env-file.ts";
 import { UserError } from "./errors.ts";
 import { intakeIssues, intakeMode, upgradeCommand } from "./intake.ts";
-import { countedReplies, currentYes } from "./ledger.ts";
+import { countedReplies, currentYes, readPending } from "./ledger.ts";
 import { layerReads, sourceRowFilters } from "./layer-reads.ts";
 import { findTable } from "./naming.ts";
 import { segmentFilters } from "./segments.ts";
@@ -2138,6 +2138,15 @@ export class Validator {
       checkSqlRefs: (file, path, sql, model, role) => this.checkSqlRefs(file, path, sql, model, role),
       joinPaths: (source, from, to, maxHops) => this.joinPaths(source, from, to, maxHops),
       hasYes: (ref, hash) => !!currentYes(this.replies(), ref, hash),
+      yesReadbackText: (ref, hash) => {
+        const r = currentYes(this.replies(), ref, hash);
+        if (!r) return undefined;
+        try {
+          return readPending(this.root, r.readback_id).items.find((i) => i.n === r.item)?.text;
+        } catch {
+          return undefined;
+        }
+      },
       error: this.error.bind(this),
       warn: this.warn.bind(this),
     };
