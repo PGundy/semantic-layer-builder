@@ -56,7 +56,7 @@ interface SetupJson {
       export_file: string | null;
     };
   };
-  intake: { mode: string; schemas: string[]; reason?: string; export_file?: string };
+  intake: { mode: string; schemas: string[]; primary: string | null; reason?: string; export_file?: string };
   snapshot: { read: boolean; current: boolean; tables?: number; columns?: number };
   scope: { in_scope: number; total: number; tables: { table: string }[]; by_schema: unknown[]; added: string[]; removed: string[]; needs_focus: boolean; unmatched_patterns: string[] } | null;
   changed: boolean;
@@ -132,7 +132,7 @@ describe("the Acme DuckDB lake from nothing", () => {
     expect(j.project).toBe(projectName(join(dir, "semantic")));
     expect([projectName("/work/Acme-Shop/semantic"), projectName("/work/layers/acme_lake")]).toEqual(["acme_shop", "acme_lake"]);
     expect(j.source).toMatchObject({ name: "lake", path: "sources/lake.yaml", created: true, updated: false });
-    expect(j.intake).toEqual({ mode: "connection", schemas: ["main"] });
+    expect(j.intake).toEqual({ mode: "connection", schemas: ["main"], primary: "main" });
     expect(j.snapshot).toMatchObject({ read: true, current: true, tables: 4 });
     expect(j.scope!.tables.map((t) => t.table)).toEqual(["main.marketing_spend", "main.sessions", "main.web_events"]);
     expect(j.scope!.by_schema).toEqual([{ schema: "main", in_scope: 3, total: 4 }]);
@@ -313,7 +313,7 @@ describe("export path", () => {
     expect(r.code).toBe(0);
     const j = r.json<SetupJson>();
     expect(j.project).toBe("acme");
-    expect(j.intake).toEqual({ mode: "export", schemas: ["acme"], reason: "The warehouse accepts no outside connections.", export_file: "exports/warehouse.csv" });
+    expect(j.intake).toEqual({ mode: "export", schemas: ["acme"], primary: "acme", reason: "The warehouse accepts no outside connections.", export_file: "exports/warehouse.csv" });
     expect(j.warnings).toEqual([]);
     expect(j.next).toBe("semlayer baseline --source warehouse");
     expect(j.scope!.tables.map((t) => t.table)).toEqual([

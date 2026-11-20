@@ -1,0 +1,102 @@
+{
+  "snapshot_version": 1,
+  "source": "warehouse",
+  "dialect": "postgres",
+  "captured_at": "2026-01-15T12:00:00.000Z",
+  "method": "live",
+  "tables": [
+    {
+      "schema": "crm",
+      "name": "customers",
+      "kind": "table",
+      "row_count": 200,
+      "description": null,
+      "primary_key": ["customer_id"],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        { "name": "customer_id", "type": "integer", "nullable": false, "description": null },
+        { "name": "segment", "type": "text", "nullable": true, "description": null }
+      ]
+    },
+    {
+      "schema": "crm",
+      "name": "products",
+      "kind": "table",
+      "row_count": 50,
+      "description": null,
+      "primary_key": ["sku"],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        { "name": "sku", "type": "text", "nullable": false, "description": null },
+        { "name": "category", "type": "text", "nullable": true, "description": null }
+      ]
+    },
+    {
+      "schema": "crm",
+      "name": "regions",
+      "kind": "table",
+      "row_count": 5,
+      "description": null,
+      "primary_key": ["region_id"],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        { "name": "region_id", "type": "integer", "nullable": false, "description": null },
+        { "name": "region_name", "type": "text", "nullable": true, "description": null }
+      ]
+    },
+    {
+      "schema": "sales",
+      "name": "orders",
+      "kind": "table",
+      "row_count": 1000,
+      "description": null,
+      "primary_key": ["order_id"],
+      "unique_keys": [],
+      "foreign_keys": [
+        { "columns": ["customer_id"], "references": { "schema": "crm", "table": "customers", "columns": ["customer_id"] }, "constraint": "orders_customer_fk" },
+        { "columns": ["store_id"], "references": { "schema": "sales", "table": "stores", "columns": ["store_id"] }, "constraint": "orders_store_fk" }
+      ],
+      "columns": [
+        { "name": "order_id", "type": "integer", "nullable": false, "description": null },
+        { "name": "customer_id", "type": "integer", "nullable": false, "description": null },
+        { "name": "store_id", "type": "integer", "nullable": false, "description": null },
+        { "name": "channel_id", "type": "integer", "nullable": true, "description": null },
+        { "name": "region_id", "type": "integer", "nullable": true, "description": null },
+        { "name": "sku", "type": "text", "nullable": false, "description": null },
+        { "name": "amount_cents", "type": "bigint", "nullable": false, "description": null },
+        { "name": "ordered_at", "type": "timestamp with time zone", "nullable": false, "description": null }
+      ]
+    },
+    {
+      "schema": "sales",
+      "name": "channels",
+      "kind": "table",
+      "row_count": 3,
+      "description": null,
+      "primary_key": ["channel_id"],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        { "name": "channel_id", "type": "integer", "nullable": false, "description": null },
+        { "name": "channel_name", "type": "text", "nullable": true, "description": null }
+      ]
+    },
+    {
+      "schema": "sales",
+      "name": "stores",
+      "kind": "table",
+      "row_count": 10,
+      "description": null,
+      "primary_key": ["store_id"],
+      "unique_keys": [],
+      "foreign_keys": [],
+      "columns": [
+        { "name": "store_id", "type": "integer", "nullable": false, "description": null },
+        { "name": "store_name", "type": "text", "nullable": true, "description": null }
+      ]
+    }
+  ]
+}
