@@ -598,6 +598,7 @@ export function goldenReads(golden: Golden, models: Model[], metrics: Metric[], 
   for (const d of list(request.dimensions)) ref(d);
   for (const f of list(request.filters)) ref((f as { field?: unknown } | null)?.field);
   for (const o of list(request.order_by)) ref((o as { field?: unknown } | null)?.field);
+  ref((request.window as { dimension?: unknown } | undefined)?.dimension);
   return [...out].map(([r, status]) => ({ ref: r, status }));
 }
 

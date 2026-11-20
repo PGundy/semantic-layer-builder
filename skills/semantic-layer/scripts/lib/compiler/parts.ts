@@ -99,7 +99,7 @@ export function compileParts(p: PartsRequest): CompileResult {
 
   const q = (s: string) => quoteIdent(dialect, s);
   const cte = (model: string) => q(`${model} measures`);
-  const params = new Params();
+  const params = new Params(input.paramStart);
   const joins: PlannedJoin[] = [];
   const rowFilters: AppliedRows[] = [];
   const bodies: string[] = [];
@@ -116,7 +116,7 @@ export function compileParts(p: PartsRequest): CompileResult {
     };
     // Each part is compiled for the request's user, so it applies their row filters as a plain
     // request does; its parameters follow those of the parts before it.
-    const r = compile({ ...input, request: part, paramStart: params.values.length });
+    const r = compile({ ...input, request: part, paramStart: (input.paramStart ?? 0) + params.values.length });
     if (!r.ok) {
       for (const x of r.refusals)
         add(x.code, model === base ? x.message : `for the measures of ${model}: ${x.message}`, x.ref, x.next, {

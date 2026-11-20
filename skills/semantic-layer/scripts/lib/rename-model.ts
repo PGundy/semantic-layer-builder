@@ -80,6 +80,7 @@ export function modelReferenceSites(root: string, source: string, from: string, 
     for (const key of ["measures", "dimensions"]) arr(request[key]).forEach((v, i) => check(["request", key, i], v));
     check(["request", "running", "over"], obj(request.running).over);
     check(["request", "compare", "over"], obj(request.compare).over);
+    check(["request", "window", "dimension"], obj(request.window).dimension);
     for (const key of ["filters", "order_by"]) arr(request[key]).forEach((v, i) => check(["request", key, i, "field"], obj(v).field));
   }
 

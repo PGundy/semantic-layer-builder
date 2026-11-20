@@ -1,8 +1,8 @@
 // Metric semantics (spec: Metric semantics): a model's segments have unique names and filters
 // checked as a measure filter is, a measure names only segments its model declares, a golden's
-// request names only segments that exist, and a default_time_dimension names a time dimension of
-// its model; a non_additive_dimension names a time dimension over a primary key column, with an agg
-// that reads one row per entity.
+// request names only segments that exist and states the as_of of its window, and a
+// default_time_dimension names a time dimension of its model; a non_additive_dimension names a time
+// dimension over a primary key column, with an agg that reads one row per entity.
 import { entityKeys, nonAdditiveDimension, SEMI_AGGREGATIONS } from "../compiler/semi-additive.ts";
 import { parseRequestField } from "../refs.ts";
 import { modelSegments, segmentNames } from "../segments.ts";
@@ -90,6 +90,15 @@ export default function metric(ctx: RuleContext): void {
   for (const g of ctx.goldens) {
     if (!g.valid) continue;
     const request = g.data.request;
+    // A golden states the as-of date of its window: its figures are the owner's yes for those days,
+    // so no check of it reads the clock.
+    if (request?.window && request.window.as_of === undefined)
+      ctx.error(
+        g.file,
+        "request.window",
+        `has no as_of, so its days depend on the day it runs; add the last day of the window the owner's figures are for, as "as_of": "YYYY-MM-DD" (semlayer goldens new writes it), then semlayer validate`,
+        "metric.window_as_of_missing",
+      );
     (request?.segments ?? []).forEach((ref, i) => {
       const p = parseRequestField(ref);
       const model = p ? ctx.models.get(request.source)?.get(p.model)?.data : undefined;

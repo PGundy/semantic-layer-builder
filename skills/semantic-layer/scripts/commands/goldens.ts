@@ -7,6 +7,7 @@ import { validDate } from "./approve.ts";
 import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.ts";
 import { bool, str } from "../lib/command.ts";
 import { goldenHash } from "../lib/approval-hash.ts";
+import { withAsOf } from "../lib/time-request.ts";
 import { timeShapeWords } from "../lib/time-request-words.ts";
 import { batchWrite, blamed, deferValidation } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
@@ -844,7 +845,9 @@ async function newCommand(ctx: CommandContext, values: OptionValues): Promise<nu
   const role = str(values, "role") ?? read.role;
   const userFlag = str(values, "user");
   const user = userFlag !== undefined ? parseUserFlag(userFlag) : read.user;
-  const golden = { name, question, ...(role !== undefined ? { role } : {}), ...(user !== undefined ? { user } : {}), request: read.request, status: "draft" } as unknown as Golden;
+  // A window with no as_of gets the clock's date in UTC, written into the golden, so its checks never read the clock.
+  const { request, filled } = withAsOf(read.request, ctx.now());
+  const golden = { name, question, ...(role !== undefined ? { role } : {}), ...(user !== undefined ? { user } : {}), request, status: "draft" } as unknown as Golden;
   const issues = schemaIssues("golden", golden, file);
   if (issues.length) {
     throw new UserError(
@@ -882,6 +885,7 @@ async function newCommand(ctx: CommandContext, values: OptionValues): Promise<nu
         status: "draft",
         source: source.source,
         compiled: compiled.ok,
+        ...(filled ? { as_of: filled } : {}),
         ...(compiled.ok ? { sql: compiled.sql, params: compiled.params } : { refused }),
         next,
       }),
@@ -889,6 +893,7 @@ async function newCommand(ctx: CommandContext, values: OptionValues): Promise<nu
     return 0;
   }
   ctx.out(`Wrote ${file}, a draft golden.`);
+  if (filled) ctx.out(`Its window is as of ${filled}, from the clock (the date in UTC), and the golden now states it as window.as_of.`);
   for (const w of timeShapeWords(golden.request)) ctx.out(plainText(w));
   if (compiled.ok) {
     ctx.out(`Its request compiles from the current YAML to this SQL, which the golden does not store (semlayer sql --request ${file} prints it again):`);
@@ -1005,7 +1010,9 @@ const spec: CommandSpec = {
     'running (PostgreSQL only): {"over": "orders.order_date:month"}, one of the dimensions in full, adds <measure>_running to each sum or count\n' +
     'measure; with "periods": 3 it adds <measure>_trailing_3, the total of the last 3 months.\n' +
     'compare (PostgreSQL only): {"over": "orders.order_date:month", "with": ["prior", "year_ago"]}, one of the dimensions in full,\n' +
-    "adds <measure>_prior and <measure>_year_ago to each measure or metric, each with its _change and _pct (a fraction).",
+    "adds <measure>_prior and <measure>_year_ago to each measure or metric, each with its _change and _pct (a fraction).\n" +
+    'window (PostgreSQL only): {"dimension": "orders.order_date", "days": 30, "as_of": "2025-12-22"}, the 30 days to as_of, both included; with\n' +
+    '"compare": {"with": ["prior", "year_ago"]} (no over) beside the 30 days before and the same dates a year earlier; new writes a missing as_of from the clock.',
   options: {
     name: { type: "string" },
     by: { type: "string" },
