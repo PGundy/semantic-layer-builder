@@ -11,7 +11,7 @@ import { batchWrite, blamed, deferValidation } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { goldenUpgradeNext } from "../lib/export-goldens.ts";
 import { intakeMode } from "../lib/intake.ts";
-import type { CompileResult } from "../lib/compiler/index.ts";
+import type { CompileResult, CompileWarning } from "../lib/compiler/index.ts";
 import {
   compareRows,
   compileGolden,
@@ -56,6 +56,8 @@ export interface GoldenCheck {
   cross_check?: "pass" | "fail";
   // The step that resolves a refusal.
   next?: string;
+  // What the compiler reported without refusing the request, when it reported something.
+  warnings?: CompileWarning[];
 }
 
 // The golden file for a name, refusing any name that could reach outside goldens/.
@@ -737,7 +739,8 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
         protectedColumns: [...maskedColumns(ctx, values, source, resultColumns([...expected, ...(compiledRows ?? []), ...(crossRows ?? [])])), ...crossed.columns],
         groupingColumns: groupingColumns(compiled),
       });
-      checks.push({ name: g.name, ...judged, ...(compiled.ok ? {} : { compiled: "unsupported" as const }) });
+      const warnings = compiled.ok && compiled.warnings?.length ? { warnings: compiled.warnings } : {};
+      checks.push({ name: g.name, ...judged, ...(compiled.ok ? {} : { compiled: "unsupported" as const }), ...warnings });
     }
   }
   checks.sort((a, b) => a.name.localeCompare(b.name));
@@ -752,6 +755,7 @@ async function checkCommand(ctx: CommandContext, values: OptionValues): Promise<
       const note = c.compiled === "unsupported" ? "  (checked by cross_check_sql alone: semlayer sql compiles postgres and duckdb sources)" : "";
       lines.push(`${c.ok ? "pass" : "FAIL"}  ${c.name}${note}`);
       for (const d of c.diffs) lines.push(`      ${plainText(d)}`);
+      for (const w of c.warnings ?? []) lines.push(`      warning: ${plainText(w.message)}`);
       if (c.next) lines.push(`      Next: ${plainText(c.next)}`);
     }
     lines.push(`${passed} passed, ${failed} failed.`);

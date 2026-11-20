@@ -6,7 +6,7 @@ import { quoteIdent } from "./dialect.ts";
 import { findTable, qualifiedName, toSpecName } from "./naming.ts";
 import { summarizeTable } from "./profile.ts";
 import { classifyTable } from "./rank.ts";
-import { type CrossSchemaPair, crossesSchema, findPair, referencedSchema } from "./schema-scope.ts";
+import { type CrossSchemaPair, crossesSchema, findPair, pairAnswered, pairApproved, referencedSchema, splitKeyEnd } from "./schema-scope.ts";
 import { nearUnique, PII_NAME, sensitivityOf } from "./sensitivity.ts";
 import { incomingKeyColumns, referencedColumns, sqlIdentifiers, unreferencedColumns } from "./snapshot-diff.ts";
 import type {
@@ -740,7 +740,9 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
     if (crossesSchema(table, fk)) {
       const fromSchema = table.schema ?? "no schema";
       const toSchema = referencedSchema(table, fk) ?? "no schema";
-      if (findPair(ctx.opts.crossSchema ?? [], fromSchema, toSchema)?.status === "declined") continue;
+      const declared = findPair(ctx.opts.crossSchema ?? [], fromSchema, toSchema);
+      // A declined pair asks nothing; an approved one is drafted from its listed keys below.
+      if (pairAnswered(declared)) continue;
       const by = fk.constraint ? `the foreign key ${fk.constraint}` : "a foreign key whose name the snapshot does not record";
       const record = fk.constraint
         ? `--constraint ${fk.constraint}`
@@ -774,6 +776,37 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
       columns: fk.columns,
       relationship: isSolePk(fk.columns) ? "one_to_one" : "many_to_one",
     });
+  }
+  // An approved schema pair from this table's schema drafts a join to each table its keys pair with
+  // this one, on the keys it lists only: one join per target table and constraint.
+  const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  for (const pair of ctx.opts.crossSchema ?? []) {
+    if (pair.from !== table.schema || !pairApproved(pair)) continue;
+    const groups = new Map<string, { target: SnapshotTable; keys: JoinKey[] }>();
+    for (const key of pair.keys ?? []) {
+      const near = splitKeyEnd(key.from);
+      const far = splitKeyEnd(key.to);
+      if (!near || !far || !sameName(near.table, table.name)) continue;
+      const target = referencedTable(ctx, table, { schema: pair.to, table: far.table });
+      const from = table.columns.find((c) => sameName(c.name, near.column))?.name;
+      const to = target?.columns.find((c) => sameName(c.name, far.column))?.name;
+      // A key missing from the snapshot is reported by semlayer validate (scope.key_not_in_snapshot).
+      if (!target || !from || !to) continue;
+      const id = `${tableKey(target)}\u0000${key.constraint ?? ""}`;
+      const group = groups.get(id) ?? { target, keys: [] };
+      group.keys.push({ from, to });
+      groups.set(id, group);
+    }
+    for (const { target, keys } of groups.values()) {
+      const columns = keys.map((k) => k.from);
+      for (const c of columns) fkColumns.add(c.toLowerCase());
+      if (!ctx.known.has(tableKey(target))) {
+        ask(`${columns.join(", ")} joins ${qualifiedName(target)} by the approved pair ${pair.from} -> ${pair.to}, but ${qualifiedName(target)} is out of scope and has no model. Bring it into scope to draft this join?`, columns);
+        continue;
+      }
+      for (const c of columns) joinTargets.set(c, qualifiedName(target));
+      pending.push({ target, keys, origin: "declared", columns, relationship: isSolePk(columns) ? "one_to_one" : "many_to_one" });
+    }
   }
   for (const col of table.columns) {
     const norm = toSpecName(col.name);

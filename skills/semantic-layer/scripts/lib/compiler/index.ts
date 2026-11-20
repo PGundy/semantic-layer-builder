@@ -15,12 +15,13 @@ import { sqlTextProblem, type TextRole } from "../sql-text.ts";
 import type { Dimension, FilterOp, Measure, Model, QueryRequest, Snapshot, SourceConfig, TimeGrain } from "../types.ts";
 import { AGGREGATIONS, NAME_PATTERN, TIME_GRAINS } from "../types.ts";
 import { schemaIssues } from "../schema.ts";
-import { type Instance, JoinPlan, type PlannedJoin, readsJoin } from "./joins.ts";
+import { crossSchemaPairs } from "../schema-scope.ts";
+import { type CompileWarning, type Instance, JoinPlan, joinWarnings, type PlannedJoin, readsJoin } from "./joins.ts";
 import { compileMetrics } from "./metrics.ts";
 import { type AppliedRows, rowsPredicate } from "./rowfilters.ts";
 import { aggregate, COMPILER_DIALECTS, embed, grained, Params, predicate } from "./sql.ts";
 
-export type { PlannedJoin } from "./joins.ts";
+export type { CompileWarning, PlannedJoin } from "./joins.ts";
 export type { AppliedRows } from "./rowfilters.ts";
 
 export type RefusalCode =
@@ -33,7 +34,8 @@ export type RefusalCode =
   | "no_join_path"
   | "ambiguous_join_path"
   | "join_fans_out"
-  | "no_shared_dimension";
+  | "no_shared_dimension"
+  | "scope.cross_schema_undeclared";
 
 export interface Refusal {
   code: RefusalCode;
@@ -67,6 +69,9 @@ export interface Compiled {
   row_filters: AppliedRows[];
   // The session time zone the SQL assumes: a grain over a value with a time zone buckets in it.
   session_time_zone: "UTC";
+  // What the query reports without refusing it, when there is something: a join across schemas
+  // that no approved pair declares, approved before pairs were checked (spec: Schema scope).
+  warnings?: CompileWarning[];
 }
 
 export interface Refused {
@@ -88,6 +93,9 @@ export interface CompileInput {
   root?: string;
   // The parameters bound before this query's, when it is one part of a larger query (metrics.ts).
   paramStart?: number;
+  // The status a join has for the schema pair check, when the layer was read as approved for a
+  // preview: a join that is still a draft is refused across an undeclared pair, never warned.
+  joinStatus?: (via: string) => unknown;
 }
 
 const LATER = "a later version of semlayer sql adds";
@@ -108,6 +116,17 @@ function refuse(source: string, refusals: Refusal[]): Refused {
 
 // Compiles a request against an already loaded layer.
 export function compileLayer(input: CompileInput): CompileResult {
+  const r = compileLayerInner(input);
+  if (!r.ok) return r;
+  // A compiled query carries the warnings of the joins it adds, a metric's parts' joins included.
+  const warnings = joinWarnings(
+    { source: input.source.source, models: input.layer.models.filter((m) => m.source === input.source.source), snapshot: input.snapshot, pairs: crossSchemaPairs(input.source), joinStatus: input.joinStatus },
+    r.joins,
+  );
+  return warnings.length ? { ...r, warnings } : r;
+}
+
+function compileLayerInner(input: CompileInput): CompileResult {
   const { layer, source } = input;
   const dialect = source.dialect;
   const refusals: Refusal[] = [];
@@ -128,6 +147,7 @@ export function compileLayer(input: CompileInput): CompileResult {
   for (const r of vis.unknown_roles) add("unknown_role", `role ${r} is not a role in access.yaml`);
   for (const p of checkRequest(vis, request).problems) add("not_visible", p.message, p.ref, undefined, { reasons: p.reasons, ...(p.awaits ? { awaits: p.awaits } : {}) });
 
+  const pairs = crossSchemaPairs(source);
   const metric = compileMetrics(input, request, refusals, compileLayer);
   if (metric) return metric;
   const measures = request.measures ?? [];
@@ -251,7 +271,7 @@ export function compileLayer(input: CompileInput): CompileResult {
   };
   const filterJoins = baseRows?.rows === "filtered" && baseRows.branches.some((b) => !b.no_rows && b.filters.some((f) => f.join_refs?.length));
   const qualified = filterJoins || used.some((f) => f.model !== base || texts(f).some((t) => t !== undefined && readsJoin(t, f.model)));
-  const plan: JoinPlan = new JoinPlan({ source: source.source, dialect, models, snapshot: input.snapshot, base, qualified, add, restrict: (inst) => restrict(inst, "on") });
+  const plan: JoinPlan = new JoinPlan({ source: source.source, dialect, models, snapshot: input.snapshot, pairs, joinStatus: input.joinStatus, base, qualified, add, restrict: (inst) => restrict(inst, "on") });
   const done = new Map<string, string>();
   const sqlOf = (f: Field): string => {
     const known = done.get(f.ref);

@@ -2,7 +2,9 @@
 // declared foreign keys that leave a table's own schema.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { UserError } from "./errors.ts";
 import { intakeSchemas } from "./intake.ts";
+import { findTable } from "./naming.ts";
 import type { ForeignKey, Snapshot, SnapshotTable, SourceConfig } from "./types.ts";
 
 // The source's primary schema: intake.primary when set; else the only entry of intake.schemas; else,
@@ -121,6 +123,11 @@ export function pairApproved(pair: CrossSchemaPair | undefined): boolean {
   return pair?.status === "approved" && typeof pair.approved_by === "string" && typeof pair.approved_at === "string";
 }
 
+// Whether the owner has answered the question a key between the pair's schemas asks: declined or approved.
+export function pairAnswered(pair: CrossSchemaPair | undefined): boolean {
+  return pair?.status === "declined" || pairApproved(pair);
+}
+
 // `<table>.<column>`, split at its last dot.
 export function splitKeyEnd(end: string): { table: string; column: string } | undefined {
   const dot = end.lastIndexOf(".");
@@ -152,6 +159,57 @@ export function pairAllowed(pairs: readonly CrossSchemaPair[], join: SchemaJoin)
     const [f, t] = forward ? [near, far] : [far, near];
     return declared.some((d) => d.from && d.to && same(d.from.table, f.table) && same(d.from.column, f.column) && same(d.to.table, t.table) && same(d.to.column, t.column));
   });
+}
+
+// The join between the tables two models read, as the snapshot places them; undefined when the
+// snapshot lacks either table or its schema, so nothing is known about the schemas it joins.
+export function schemaJoin(snapshot: Pick<Snapshot, "tables"> | null | undefined, nearTable: string, farTable: string, keys: readonly { from: string; to: string }[]): SchemaJoin | undefined {
+  if (!snapshot || !Array.isArray(snapshot.tables)) return undefined;
+  const near = findTable(snapshot.tables, nearTable);
+  const far = findTable(snapshot.tables, farTable);
+  if (!near || !far || typeof near.schema !== "string" || typeof far.schema !== "string") return undefined;
+  return { fromSchema: near.schema, fromTable: near.name, toSchema: far.schema, toTable: far.name, keys };
+}
+
+// How a join across schemas stands: undefined when it stays in one schema or an approved pair
+// declares its keys; else an error, or a warning for an approved join until UNDECLARED_GRACE_ENDS.
+// validate, add-join, check-join and the compiler all decide by it.
+export function crossSchemaLevel(pairs: readonly CrossSchemaPair[], join: SchemaJoin, joinStatus: unknown): "warning" | "error" | undefined {
+  if (pairAllowed(pairs, join)) return undefined;
+  return joinStatus === "approved" && undeclaredApprovedLevel(toolVersion()) === "warning" ? "warning" : "error";
+}
+
+// What is wrong with a join across an undeclared pair, in the words every check uses.
+export function undeclaredJoinText(join: SchemaJoin): string {
+  return `joins ${join.fromSchema}.${join.fromTable} to ${join.toSchema}.${join.toTable} across schemas, and no approved schema pair declares these keys`;
+}
+
+// The join as the pair between its schemas runs, when one is declared the other way round.
+export function pairOriented(pairs: readonly CrossSchemaPair[], join: SchemaJoin): SchemaJoin {
+  if (findPair(pairs, join.fromSchema, join.toSchema)?.from !== join.toSchema) return join;
+  return { fromSchema: join.toSchema, fromTable: join.toTable, toSchema: join.fromSchema, toTable: join.fromTable, keys: join.keys.map((k) => ({ from: k.to, to: k.from })) };
+}
+
+// The command that records the pair a join across schemas needs, with the join's keys, in the
+// direction of the pair already declared between the schemas when there is one.
+export function addPairCommand(source: string, join: SchemaJoin, pairs: readonly CrossSchemaPair[] = []): string {
+  const j = pairOriented(pairs, join);
+  const keys = j.keys.map((k) => `${j.fromTable}.${k.from}=${j.toTable}.${k.to}`).join(",");
+  return `semlayer add-cross-schema --source ${source} --from ${j.fromSchema} --to ${j.toSchema} --keys ${keys}`;
+}
+
+// The refusal of a command that would add or measure a join across an undeclared pair (add-join,
+// check-join): what joins which schemas, the pair to record, and the command to run once it is
+// approved. Its code is scope.cross_schema_undeclared.
+export function undeclaredPairError(what: string, source: string, join: SchemaJoin, pairs: readonly CrossSchemaPair[], then: string): UserError {
+  const record = addPairCommand(source, join, pairs);
+  const pair = pairOriented(pairs, join);
+  return new UserError(
+    `${what} ${undeclaredJoinText(join)}. Nothing was written. Ask the owner whether the layer joins these schemas; ` +
+      `if yes, record the pair with ${record}, read it back and approve it on their yes ` +
+      `(semlayer approve --target schema-pair:${source}:${pair.fromSchema}:${pair.toSchema}), then ${then}.`,
+    record,
+  );
 }
 
 // What is wrong with one key of a pair against the snapshot: a table missing from its schema, a

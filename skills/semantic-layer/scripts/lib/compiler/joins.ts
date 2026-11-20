@@ -2,6 +2,7 @@
 // takes to another model's fields, and the definition joins a field's expr or filter reads through.
 import { quoteIdent, quoteTable } from "../dialect.ts";
 import { findTable, splitQualified } from "../naming.ts";
+import { addPairCommand, type CrossSchemaPair, crossSchemaLevel, schemaJoin, UNDECLARED_GRACE_ENDS, undeclaredJoinText } from "../schema-scope.ts";
 import type { Dialect, Join, Model, Snapshot } from "../types.ts";
 import { columnRefs, rewriteRefs } from "./qualify.ts";
 
@@ -22,13 +23,24 @@ export interface PlannedJoin {
   part?: string; // in a metric, the model of the part (CTE) that joins it
 }
 
-export type JoinRefusalCode = "invalid_layer" | "no_join_path" | "ambiguous_join_path" | "join_fans_out";
+export type JoinRefusalCode = "invalid_layer" | "no_join_path" | "ambiguous_join_path" | "join_fans_out" | "scope.cross_schema_undeclared";
+
+// What a compiled query reports without refusing it.
+export interface CompileWarning {
+  code: "scope.cross_schema_undeclared";
+  message: string;
+}
 
 export interface JoinContext {
   source: string;
   dialect: Dialect;
   models: Model[];
   snapshot?: Snapshot | null;
+  // The source's declared schema pairs: a join across schemas follows only an approved pair's keys
+  // (spec: Schema scope). Left out, joins across schemas are not checked.
+  pairs?: readonly CrossSchemaPair[];
+  // A join's status for the pair check, by its "model.join" name; the join's own status when left out.
+  joinStatus?: (via: string) => unknown;
   base: Model;
   // false when the query reads one table: exprs then stay exactly as written.
   qualified: boolean;
@@ -108,6 +120,16 @@ export class JoinPlan {
     const via = `${owner.model.model}.${j.name}`;
     if (!target) {
       add("invalid_layer", `join ${via} goes to ${j.to}, which is not a model of source ${source}; run semlayer validate`, ref);
+      return undefined;
+    }
+    const scope = this.cx.pairs && schemaJoin(this.cx.snapshot, owner.model.table, target.table, j.keys);
+    if (scope && crossSchemaLevel(this.cx.pairs!, scope, this.cx.joinStatus ? this.cx.joinStatus(via) : j.status) === "error") {
+      add(
+        "scope.cross_schema_undeclared",
+        `${ref} reads through join ${via}, which ${undeclaredJoinText(scope)}`,
+        ref,
+        `Ask the owner whether the layer joins these schemas; if yes, record the pair with ${addPairCommand(source, scope, this.cx.pairs)}, read it back and approve it on their yes, then run semlayer sql again.`,
+      );
       return undefined;
     }
     if (!toOne(j)) {
@@ -227,4 +249,23 @@ export class JoinPlan {
         : `${j.type} join ${j.table} as ${q(j.alias)} on ${j.on}`;
     return [this.cx.qualified ? `from ${t} as ${q(this.base.alias)}` : `from ${t}`, ...this.lines.map(line)];
   }
+}
+
+// The warnings of the joins a compiled query adds: a join across schemas that no approved pair
+// declares, which compiles only because it was approved before pairs existed, until the grace ends.
+export function joinWarnings(cx: Pick<JoinContext, "source" | "models" | "snapshot" | "pairs" | "joinStatus">, joins: readonly PlannedJoin[]): CompileWarning[] {
+  const out: CompileWarning[] = [];
+  for (const planned of joins) {
+    const dot = planned.via.indexOf(".");
+    const owner = cx.models.find((m) => m.model === planned.via.slice(0, dot));
+    const j = owner?.joins?.find((x) => x.name === planned.via.slice(dot + 1));
+    const target = j && cx.models.find((m) => m.model === j.to);
+    const scope = cx.pairs && owner && j && target ? schemaJoin(cx.snapshot, owner.table, target.table, j.keys) : undefined;
+    if (!scope || crossSchemaLevel(cx.pairs!, scope, cx.joinStatus ? cx.joinStatus(planned.via) : j!.status) !== "warning") continue;
+    const message =
+      `join ${planned.via} ${undeclaredJoinText(scope)}; it compiles only because it was approved before schema pairs were checked, and from semlayer ${UNDECLARED_GRACE_ENDS} it is refused. ` +
+      `Ask the owner whether the layer joins these schemas; if yes, record the pair with ${addPairCommand(cx.source, scope, cx.pairs)}, read it back and approve it on their yes`;
+    if (!out.some((w) => w.message === message)) out.push({ code: "scope.cross_schema_undeclared", message });
+  }
+  return out;
 }
