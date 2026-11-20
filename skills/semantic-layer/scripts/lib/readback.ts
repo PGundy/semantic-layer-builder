@@ -16,7 +16,7 @@ import { listModels, loadAccess, loadFile, loadMetrics, loadSnapshot, paths } fr
 import { parseTarget } from "./refs.ts";
 import { sourceWeekStart, type WeekDay } from "./compiler/calendar.ts";
 import { entityKeys, nonAdditiveDimension } from "./compiler/semi-additive.ts";
-import { andPredicates, findSegment, segmentNames } from "./segments.ts";
+import { andPredicates, findSegment, modelSegments, segmentNames } from "./segments.ts";
 import { referencedColumns } from "./snapshot-diff.ts";
 import { sqlNames } from "./sql-names.ts";
 import { timeShapeWords } from "./time-request-words.ts";
@@ -439,6 +439,18 @@ function grainLines(model: Model, table: SnapshotTable | undefined): string[] {
   return quoted("", fromComment ? `grain (what one row is), copied from the database comment on ${model.table}` : "grain (what one row is), from the YAML", model.grain);
 }
 
+// The segments a model declares: each one's conditions in words and the measures that name it.
+function segmentLines(model: Model): string[] {
+  const segments = modelSegments(model);
+  if (!segments.length) return [];
+  const each = segments.map((seg) => {
+    const clauses = typeof seg.filter === "string" ? filterClauses(seg.filter).map((c) => clauseWords(c)) : [];
+    const users = (model.measures ?? []).filter((m) => segmentNames(m).includes(seg.name)).map((m) => m.name);
+    return `  - ${seg.name}: keeps rows where ${clauses.length ? clauses.join("; ") : "no condition is written"}. ${users.length ? `Named by ${users.join(", ")}.` : "No measure names it yet."}`;
+  });
+  return ["- Segments (named conditions its measures can add to their own):", ...each];
+}
+
 function renderModel(source: string, model: Model, info: SourceInfo): Rendered {
   const table = tableOf(info, model);
   const pk = strs(model.primary_key);
@@ -449,6 +461,7 @@ function renderModel(source: string, model: Model, info: SourceInfo): Rendered {
     ...grainLines(model, table),
     `- Primary key: ${listText(pk)}.`,
     ...(typeof model.default_time_dimension === "string" ? [`- Its measures are measured over ${model.default_time_dimension} by default, unless a measure names its own.`] : []),
+    ...segmentLines(model),
     ...common(model),
     WHO,
   ];
