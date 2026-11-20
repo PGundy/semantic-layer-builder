@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import { quoteIdent } from "../dialect.ts";
 import { findTable, qualifiedName, toSpecName } from "../naming.ts";
+import { crossSchemaPairs } from "../schema-scope.ts";
 import { globInsideViews } from "../source-safety.ts";
 import { assertReadOnly, type Token, tokenize } from "../sql-guard.ts";
 import { type SqlToken, sqlNames, tokenizeSql } from "../sql-names.ts";
@@ -402,6 +403,7 @@ export function checkRule(input: RuleInput): RuleCheck {
       dialect: source.dialect,
       models: input.models,
       snapshot: input.snapshot,
+      pairs: crossSchemaPairs(source),
       base: model,
       qualified: readsJoin(text, model),
       add: (code, message, _ref, next) =>
