@@ -509,6 +509,15 @@ function renderField(ref: string, source: string, model: Model, e: ApprovalEntry
   const out = [`${ref} (${e.kind})`];
   if (e.kind === "join") {
     const j = f as unknown as Join;
+    // A bridge join's readback must show its bridge and how a figure is shared across it, which this
+    // text does not hold, so it is refused rather than read back as a plain join; without a readback
+    // there is no owner yes, and the join stays a draft.
+    if (j.through)
+      throw new UserError(
+        `Cannot read ${ref} back yet: it is a bridge join through ${String(j.through.model)}, and a readback does not yet show a bridge or its dedupe rule, so the owner would say yes to a link they were not shown. Nothing was written, and the join stays a draft.`,
+        undefined,
+        "readback_blocked",
+      );
     out.push(...description(j, null, ""), `- Links ${joinWords(model.model, j)}.`, WHO);
     const who = [`${source}.${model.model}`, `${source}.${j.to}`];
     const sql = technical([joinSql(model.model, j)]);

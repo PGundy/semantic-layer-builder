@@ -24,6 +24,7 @@ semantic/
   .semlayer/pending/<readback_id>.discarded  empty marker semlayer readback --discard leaves, so the id is not issued again (committed)
   .semlayer/ledger.jsonl              the owner's answers, appended by semlayer reply, semlayer question resolve and semlayer review apply (committed)
   .semlayer/reviews/<readback_id>.<md|json>  review forms for the owner, written by semlayer review export (committed)
+  .semlayer/drift.json                the last schema change per source and the retyped columns approved fields read, written by semlayer introspect (committed, see Iterating a layer)
 ```
 
 File names equal the name inside the file: `sources/lake.yaml` holds `source: lake`, and `models/lake/web_events.yaml` holds `model: web_events` with `source: lake`.
@@ -133,6 +134,7 @@ Approval rules that `semlayer validate` enforces:
 - An approved measure or metric with `format: currency` has a `currency`; without it validation warns.
 - An approved metric references only approved measures.
 - An approved join has `evidence` from `semlayer check-join`; without it validation warns.
+- An approved bridge join (one with `through`) has a `through.dedupe` rule (`join.through_dedupe_missing`; the schema asks for it too).
 - An approved `many_to_one` or `one_to_one` join whose current evidence contradicts that relationship (`right_key_unique: false`, or `max_fanout` above 1) is an error, because it multiplies every measure a request reaches through it, unless the join records why the owner accepts it in `fanout_override: "<reason>"` (a known-dirty key). Evidence measured for another target or other keys is stale and gets its own warning instead. `semlayer approve` warns when it approves such a join.
 - An approved item inside a draft model is allowed; the model's own status says whether the table as a whole is signed off.
 - An approved golden whose request uses a draft measure, dimension or metric gets a warning: approve the field after its readback, then run `semlayer goldens check --name <g>`; if it passes, the recorded rows stand, and only changed rows need a new confirm.
@@ -596,6 +598,25 @@ Money stored in cents becomes an exact decimal amount, written per dialect: `amo
 
 A `one_to_many` join fans out and multiplies the left model's measures. The compiler must aggregate the many side before joining, and the skill flags every such join to the owner.
 
+A join with `through` is a bridge join, for a many-valued attribute such as an order's tags held in a bridge table with one row per (order, tag):
+
+```text
+  - name: tag
+    to: tags                        # the target model
+    keys:
+      - { from: order_id, to: order_id }   # this model's column, the bridge's column
+    relationship: one_to_many       # always, for a bridge join
+    through:
+      model: order_tags             # the bridge model, a third model of the same source
+      keys:
+        - { from: tag_id, to: tag_id }     # the bridge's column, the target's column
+      dedupe: distinct_pairs        # distinct_pairs | equal_split | weight; the owner's choice
+      # weight: share              # a numeric column of the bridge, only with dedupe weight
+    status: draft
+```
+
+`semlayer add-bridge` writes it. See Bridges and multi-fact requests.
+
 Joins across sources are invalid in version 1. Federating sources is a separate source with its own engine.
 
 ### Expression text
@@ -971,6 +992,36 @@ The answer ledger: the owner's answers to readback items (`semlayer reply`) and 
 - A command refuses to append, writing nothing, when a line of the file is not a JSON object or the last line has no line break, when the file is a symbolic link, or when `.semlayer` is a link that points nowhere or outside the semantic root.
 - `semlayer validate` checks each line against `schemas/ledger.schema.json` and reports a line that is not JSON, a last line without a line break, an id used twice, an id lower than one before it, and a ledger that is not a plain file inside the root (it or its `.semlayer` directory is a link). That earlier lines were never changed cannot be checked: version control shows it.
 
+## Iterating a layer
+
+### The drift record
+
+`semlayer introspect` keeps `.semlayer/drift.json` under the semantic root (`schemas/drift.schema.json`), so a schema change stays on record after the snapshot is replaced. It is committed. It holds table, column and type names, the approve targets of fields, content hashes and ledger ids: never a data value, a URL or a credential.
+
+```json
+{
+  "version": 1,
+  "sources": [
+    {
+      "source": "warehouse",
+      "at": "2026-01-15T12:00:00.000Z",
+      "diff": { "tables_added": [], "tables_removed": [], "columns": [
+        { "table": "acme.fct_orders", "added": [], "removed": ["shipping_cents"], "retyped": [{ "name": "amount_cents", "from": "integer", "to": "numeric(12,2)" }] } ] },
+      "retyped": [
+        { "table": "acme.fct_orders", "column": "amount_cents", "from": "integer", "to": "numeric(12,2)", "at": "2026-01-15T12:00:00.000Z",
+          "reads": [{ "ref": "warehouse.orders.revenue", "hash": "sha256:f1f11e0edc5941e0b100e49cb3a3f8fd9947f70045b51eaf084b1e89edd240d9", "yes": "ans_0003" }] }
+      ]
+    }
+  ]
+}
+```
+
+- One entry per source, sorted by source. `at` and `diff` are those of the last introspect that found a change against the previous snapshot (`diff` has the shape of `changes` in `semlayer introspect --json`; see Scope changes); a run that finds none leaves them. The first introspect of a source has no previous snapshot and records nothing.
+- A table the connection's role can no longer read leaves the snapshot and is listed in `tables_removed` like a dropped one; `unreadable` names those of them the database still holds but the role cannot read (a Postgres source on a live run), so the fix is a grant and another introspect, not an edit of the layer.
+- `retyped` lists the retyped columns still open. When an introspect finds a column retyped, it records each approved dimension or measure whose `expr` or `filter` names the column (the model's table found in the snapshot as `semlayer status` finds it, the names read as the column-usage checks read them) with its content hash and the id of the owner's latest yes to it in the ledger (`null` when there is none). The column stays open for that field until the field is edited (its content hash changes) or approved again (a newer yes from the owner in the ledger); the next introspect drops the fields that closed, and a column no field keeps open. A column retyped again keeps its first `from` and `at`, and closes when it returns to that type; a column the table no longer has closes too (a field reading it is then a missing column).
+- `semlayer validate` warns `release.column_retyped` on each approved field still open, naming the column, its old and new types and when the change was found, with `next` `semlayer readback --targets <ref>`. A record that does not parse or match its schema is skipped by `semlayer validate` and replaced by the next introspect without a message. `semlayer import` of an export does not write the record, so a column retyped in a fresh export gets no warning. A field is matched by the bare column name in its `expr` or `filter`; a table-qualified reference such as `orders.amount_cents` is not matched.
+- The record is written whole (see Locking and whole-file writes) under the root's lock, before the snapshot, and only when it changed, so a second identical introspect leaves its bytes as they were. A failed introspect leaves the record as it was. When `.semlayer` is a link that leads outside the semantic root or nowhere, the introspect refuses and writes neither the record nor the snapshot.
+
 ## Review forms
 
 `semlayer review export --readback <readback_id> --format md|json` writes a pending readback as a form the owner fills in, to `.semlayer/reviews/<readback_id>.<md|json>` by default. It holds nothing the pending readback and the YAML do not already hold, so it never holds a protected column's values. The JSON form (schema `review.schema.json`):
@@ -1040,6 +1091,14 @@ The answer ledger: the owner's answers to readback items (`semlayer reply`) and 
 It refuses a source of another dialect, naming that a later version adds other dialects, a field whose expr or filter holds a subquery, and a field or metric whose text is not one expression (see Expression text) as `invalid_layer`.
 
 `--json` prints `{ ok: true, source, dialect, model, sql, params, columns: [{ name, ref, kind }], joins: [{ alias, via, model, type, for }], row_filters: [{ model, alias, in, roles, rows }], session_time_zone, warnings? }`, where `warnings`, when present, lists `{ code, message }` for each join the query adds that compiles with a warning (see Schema scope), and where each column's `kind` is `dimension`, `measure` or `metric`, each join names its alias, the declared join it follows as `model.join`, its target model, `left` or `inner`, `for` `request` or `definition` and, for a metric, `part`, the model of the CTE that joins it, and each row filter applied, in the SQL's order, names its model, the alias it limits, `in` `on` or `where`, the held roles whose filters limit it and `rows` `filtered` or `none` (for a metric, every part's in turn, each with `part`, the model of its CTE); or `{ ok: false, source, reason, refusals: [{ code, ref?, message, next?, reasons?, awaits? }], next }`, where `code` is one of `invalid_request`, `unknown_role`, `not_visible`, `unsupported_dialect`, `unsupported_metric`, `invalid_layer`, `no_join_path`, `ambiguous_join_path`, `join_fans_out`, `no_shared_dimension`, `scope.cross_schema_undeclared` and `metric.segments_on_metric`, a refusal's `next` says what resolves that refusal when it is specific to it, a `not_visible` refusal's `reasons` are the evaluator's reasons (`draft`, `protected_tag:<tag>`, `measure_hidden:<model.measure>`, ...) and `awaits` the approve targets it waits on when nothing but approval hides it, and the top-level `next` names the command to run next.
+
+### Bridges and multi-fact requests
+
+A bridge join (`through`; see the join in model files) declares that a model reaches a target by way of a bridge model, and carries the owner's dedupe rule: `distinct_pairs` (each (row, target value) pair counts once), `equal_split` (each of n target values gets 1/n of the figure) or `weight` (each gets its share of the numeric bridge column named by `through.weight`). A draft may leave the rule unset; an approved bridge join must have it. The join's `keys` pair the model's columns with the bridge's and `through.keys` pair the bridge's with the target's; the relationship is `one_to_many`, and the generic `model.join_one_to_many` warning is not raised for it.
+
+`semlayer validate` checks each bridge join with five codes: `join.through_bridge_unknown` (the bridge is not a third model of the source), `join.through_columns_missing` (a key or weight column is not in the snapshot's table), `join.through_dedupe_missing` (an approved join without the rule), `join.through_relationship_invalid` (a relationship other than `one_to_many`) and `join.through_weight_invalid` (a weight without dedupe `weight`, dedupe `weight` without a weight, or a weight column that is not numeric). The join makes two hops, model to bridge and bridge to target, and each obeys the schema-pair rule of Schema scope as a join of its own (`scope.cross_schema_undeclared`). The approval hash of a bridge join includes the bridge, its keys, the dedupe rule and the weight.
+
+This version does not compile a request that reaches a model through a bridge join: `semlayer sql` refuses it as `no_join_path`, naming the bridge join.
 
 ### Checking a rule
 
@@ -1334,6 +1393,7 @@ The plugin root's `package.json` lists the CLI's packages (`yaml`, `ajv`, `@duck
 |---|---|
 | `access [--user <json object of attributes>] [--user-file <path>] [--roles r1,r2] [--show visible\|hidden\|all]` | Explains what one user sees: the roles they hold and why (`assigned`, `condition`, `default`), and per source the visible and hidden models, fields and metrics with the reason each is hidden, and the row filters per model with their bound attribute values or `no rows` (see access.yaml). With no `--user` and no `--roles`, the default audience. A draft `access.yaml` is explained and labelled as a draft, naming the version that keeps applying when it has `last_approved`. An approved item that changed since its approval, or lost its hash while others carry one, is treated as a draft and named with the command that approves it again; `--json` lists them in `changed_since_approval` and `hash_missing` (see Checking access). Human output shows each source's visible counts on its own line under the totals line "Items visible across N source(s) (row filters limit rows, not these counts): ...", always prints each source's row filters section ("row filters: none (every row of every visible model)" when there are none), names assigned roles only when `--roles` was given, and shows hidden items by default; `--json` carries everything. |
 | `add-attribute --name <n> --type string\|number\|string_list\|number_list [--description <text>]` | Appends a user attribute to `access.yaml`'s `user_attributes`. See Access edits. `--json`: `{ changed, file, reapprove, warnings, entry, attribute }`, plus `returned_to_draft` and `last_approved` as every access edit. |
+| `add-bridge --source <s> --model <m> --name <join> --to <target model> --through <bridge model> --keys <left>=<bridge column>[,...] --through-keys <bridge column>=<target column>[,...] [--dedupe distinct_pairs\|equal_split\|weight] [--weight <bridge column>] [--type left\|inner] [--origin owner\|inferred] [--description <text>]` | Appends a draft bridge join (`status: draft`, `relationship: one_to_many`) to the model's `joins`: the target (`to`), the fact-to-bridge `keys`, and `through` with the bridge model, its `keys` to the target, and `dedupe` and `weight` when given (the owner chooses the dedupe rule; a draft may leave it unset, an approved join needs it). `--weight` goes only with `--dedupe weight` and names a numeric column of the bridge. Refuses a name a dimension, measure or join of the model already has; a target or bridge that is not a model of the source, or a bridge that is the model or the target; a column the snapshot's table lacks; a key or weight column in an `ignored_columns` list; and either hop across schemas no approved pair declares (`scope.cross_schema_undeclared`). Names `semlayer readback --targets <ref>` next, or, with no rule yet, what to ask the owner. See Typed edits. `--json`: `{ changed, file, reapprove, ref, join, warnings, next }`. |
 | `add-cross-schema --source <s> --from <schema> --to <schema> --decline --reply <owner's words>` | Records that the owner does not want the two schemas joined: a pair with `status: declined`, the owner's words (credentials redacted) in `reply` and today's date in `declined_at`, replacing a pair of the two schemas either way. A declined pair asks no more draft questions about keys between them. Takes no `--keys` or `--constraint`. See Schema scope, Schema pairs. `--json`: `{ changed, file, ref, pair, next }`. |
 | `add-cross-schema --source <s> --from <schema> --to <schema> [--keys <table>.<column>=<table>.<column>[,...]] [--constraint <name>[,<name>]]` | Records a draft schema pair in the source's `cross_schema`, from the schema holding the foreign key to the schema it references, with at least one key: `--keys` pairs a column of a table in `--from` with one of a table in `--to`, and `--constraint` takes the columns of a foreign key the snapshot names. Refuses a key or constraint the snapshot lacks, a schema that is not among the schemas the source reads (naming the `semlayer setup --schemas` command that reads it), the same schema twice, and a pair the source already declares the other way. Keys added to a recorded pair are merged and send it back to draft; the same keys again change nothing. Names `semlayer approve --target schema-pair:<s>:<from>:<to>` next, on the owner's yes. See Schema scope, Schema pairs. `--json`: `{ changed, file, ref, pair, next }`. |
 | `add-field <source.model> --kind dimension\|measure --name <n> --expr <e> [--type time\|string\|number\|boolean] [--agg sum\|count\|count_distinct\|avg\|min\|max] [--filter <f>] [--description <text>] [--set key=value]... [--unignore]` | Appends a draft dimension or measure (always `status: draft`) to the model's `dimensions` or `measures`, its keys in the JSON Schema's order. A dimension needs `--expr` and `--type`; a measure needs `--agg`, and `--expr` unless `--agg count`. `--set key=value`, repeatable, sets any other key the schema allows (`time_grains`, `time_zone`, `format`, `currency`, `synonyms`, `tags`), its value read as `set` reads one; the approval fields and `name` are refused. Refuses a name a dimension, measure or join of the model already has; an expr that is one bare or quoted column the snapshot's table lacks; and a field reading a column in `ignored_columns`, naming `ignore-column --remove`, unless `--unignore`, which removes the model's own column from `ignored_columns` in the same edit (a column of a model a join reference reaches is refused even so; see Ignored columns in typed edits). A computed expr is written, with a warning naming the names in it that are not columns of the table. A field tagged `pii` or `sensitive` over a column whose profile holds sample values names `semlayer profile --source <s> --redact`. See Typed edits. `--json`: `{ changed, file, reapprove, ref, kind, field, unignored, warnings, redact }`. |

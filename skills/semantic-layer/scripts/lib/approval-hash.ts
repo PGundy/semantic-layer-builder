@@ -57,6 +57,13 @@ function joinContent(j: Obj): Obj {
   const content: Obj = { to: text(j.to), keys: set(keys), relationship: j.relationship, type: j.type ?? "left" };
   // An override silences the fan-out error, so adding or changing one needs a new approval.
   if (j.fanout_override !== undefined) content.fanout_override = j.fanout_override;
+  // A bridge join's meaning includes its bridge, the bridge's keys to the target and how a figure is shared.
+  if (isObject(j.through)) {
+    const t = j.through;
+    const through: Obj = { model: text(t.model), keys: set(objects(t.keys).map((k) => ({ from: text(k.from), to: text(k.to) }))), dedupe: t.dedupe ?? null };
+    if (t.weight !== undefined) through.weight = text(t.weight);
+    content.through = through;
+  }
   return content;
 }
 
