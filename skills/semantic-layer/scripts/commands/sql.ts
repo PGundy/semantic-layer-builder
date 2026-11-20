@@ -5,6 +5,7 @@ import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { type CompileResult, compileRequest, type Refusal } from "../lib/compiler/index.ts";
 import { UserError } from "../lib/errors.ts";
+import { withAsOf } from "../lib/time-request.ts";
 import { timeShapeWords } from "../lib/time-request-words.ts";
 import { formatJson, plainText } from "../lib/output.ts";
 import { parseYamlText } from "../lib/yaml.ts";
@@ -93,10 +94,15 @@ const spec: CommandSpec = {
     const userFlag = str(values, "user");
     const user = userFlag !== undefined ? parseUser(userFlag) : (read.user ?? {});
     const role = str(values, "role") ?? read.role;
-    const result: CompileResult = compileRequest(ctx.root, read.request, { source: str(values, "source"), role, user });
+    // A window with no as_of runs as of the clock's date in UTC, and the output says so; the
+    // compiler itself never reads the clock.
+    const { request, filled } = withAsOf(read.request, ctx.now());
+    const w = isObj(request) && isObj(request.window) ? request.window : undefined;
+    const asOf = w && typeof w.as_of === "string" ? { as_of: w.as_of, as_of_from: filled ? "clock" : "request" } : {};
+    const result: CompileResult = compileRequest(ctx.root, request, { source: str(values, "source"), role, user });
     if (!result.ok) {
       const next = nextStep(result.refusals, result.source, user, role, read.golden);
-      if (ctx.json) ctx.out(formatJson({ ...result, next }));
+      if (ctx.json) ctx.out(formatJson({ ...result, ...asOf, next }));
       else {
         ctx.err(plainText(`semlayer sql refused the request: ${result.refusals.length === 1 ? result.reason : ""}`).trimEnd());
         if (result.refusals.length > 1) for (const r of result.refusals) ctx.err(plainText(`  - ${r.message}`));
@@ -105,12 +111,13 @@ const spec: CommandSpec = {
       return 1;
     }
     if (ctx.json) {
-      ctx.out(formatJson(result));
+      ctx.out(formatJson({ ...result, ...asOf }));
       return 0;
     }
     ctx.out(plainText(result.sql));
     ctx.out("");
-    for (const w of timeShapeWords(read.request)) ctx.out(plainText(w));
+    if (filled) ctx.out(`The window runs as of ${filled}, from the clock (the date in UTC); ${read.golden ? "add window.as_of to that golden file so it states its date" : "a golden states its as_of, and semlayer goldens new writes this one"}.`);
+    for (const line of timeShapeWords(request)) ctx.out(plainText(line));
     const shown = result.params.map((v, i) => `$${i + 1} = ${JSON.stringify(v)}`).join(", ");
     ctx.out(plainText(`Parameters, bound in order: ${shown || "none"}`));
     for (const r of result.row_filters) {

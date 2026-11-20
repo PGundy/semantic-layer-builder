@@ -22,6 +22,7 @@ const codes: CodeFamily = {
     meaning: "A request, or one model's part of a metric, names a semi-additive measure with an additive one, or with one kept along another time dimension, window or filter, so semlayer sql refuses it.",
     next: "semlayer sql",
   },
+  "metric.window_as_of_missing": { level: "error", meaning: "A golden's request has a window with no as_of, so its days would depend on the day it runs." },
   "metric.segments_on_metric": { level: "error", meaning: "A request names a metric and segments; segments apply to a request of one model's measures, so semlayer sql refuses it.", next: "semlayer sql" },
 };
 export default codes;

@@ -1,7 +1,7 @@
 // Types mirroring references/spec.md. The spec is authoritative; these follow it.
 import type { Through } from "./through.ts";
 import type { ThroughEvidence } from "./sql/through-check.ts";
-import type { CompareRequest, RunningRequest } from "./time-request.ts";
+import type { CompareRequest, RunningRequest, WindowRequest } from "./time-request.ts";
 
 export const DIALECTS = ["duckdb", "postgres", "snowflake", "bigquery", "databricks"] as const;
 export type Dialect = (typeof DIALECTS)[number];
@@ -396,6 +396,7 @@ export interface QueryRequest {
   segments?: string[];
   running?: RunningRequest;
   compare?: CompareRequest;
+  window?: WindowRequest;
 }
 
 export interface Golden {
