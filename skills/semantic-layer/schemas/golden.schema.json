@@ -108,6 +108,27 @@
           },
           "uniqueItems": true,
           "description": "model.segment: segments of the model of the request's fields, applied in WHERE. Not with a metric."
+        },
+        "running": {
+          "type": "object",
+          "description": "A running total of each measure over one of the request's time dimensions, or with periods the total of the last n periods. PostgreSQL sources only.",
+          "additionalProperties": false,
+          "required": [
+            "over"
+          ],
+          "properties": {
+            "over": {
+              "type": "string",
+              "pattern": "^([a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*)?:[a-z]+$",
+              "description": "model.field:grain, one of the request's dimensions written in full; the :grain shorthand is refused here."
+            },
+            "periods": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 120,
+              "description": "The number of periods a trailing total adds up, the current one included."
+            }
+          }
         }
       }
     },

@@ -1,6 +1,7 @@
 // Types mirroring references/spec.md. The spec is authoritative; these follow it.
 import type { Through } from "./through.ts";
 import type { ThroughEvidence } from "./sql/through-check.ts";
+import type { RunningRequest } from "./time-request.ts";
 
 export const DIALECTS = ["duckdb", "postgres", "snowflake", "bigquery", "databricks"] as const;
 export type Dialect = (typeof DIALECTS)[number];
@@ -393,6 +394,7 @@ export interface QueryRequest {
   limit?: number;
   // model.segment: segments of the request's base model whose filters narrow every row it reads.
   segments?: string[];
+  running?: RunningRequest;
 }
 
 export interface Golden {
