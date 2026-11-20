@@ -20,7 +20,7 @@ export function projectName(root: string): string {
 const ORDER: Record<string, string[]> = {
   "": ["source", "dialect", "description", "connection", "intake", "scope"],
   connection: ["env", "env_prefix", "database", "setup", "views"],
-  intake: ["mode", "reason", "schemas", "export"],
+  intake: ["mode", "reason", "schemas", "primary", "export"],
   scope: ["include", "exclude", "tables_file"],
 };
 
@@ -77,6 +77,8 @@ export interface SourceState {
   mode: "connection" | "export";
   reason?: string;
   schemas?: string[];
+  // intake.primary (spec: Schema scope); left out, the file's stays.
+  primary?: string;
   exportFile?: string;
   scope?: Scope;
 }
@@ -113,6 +115,7 @@ export function applySourceState(doc: Document, state: SourceState): void {
     setKey(doc, intake, "export", { file: state.exportFile }, ORDER.intake!);
   }
   if (state.schemas !== undefined) setKey(doc, intake, "schemas", state.schemas.length ? state.schemas : undefined, ORDER.intake!);
+  if (state.primary !== undefined) setKey(doc, intake, "primary", state.primary, ORDER.intake!);
   if (state.scope !== undefined) {
     const scope = section("scope");
     setKey(doc, scope, "include", state.scope.include?.length ? state.scope.include : undefined, ORDER.scope!);

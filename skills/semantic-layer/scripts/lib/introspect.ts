@@ -165,12 +165,21 @@ export function buildSnapshot(source: SourceConfig, results: PlanResults, captur
     for (const c of [...byConstraint.keys()].sort()) {
       const list = distinctColumns(byConstraint.get(c)!.sort(byOrdinal));
       const first = list[0]!;
+      // A named key keeps its name; an unnamed one's grouping key is not a name and is not kept.
       fks.push({
         columns: list.map((r) => text(r.column_name)!),
         references: { schema: text(first.ref_schema), table: text(first.ref_table)!, columns: list.map((r) => text(r.ref_column)!) },
+        ...(c.startsWith("\u0000") ? {} : { constraint: c }),
       });
     }
-    const distinct = new Map(fks.map((fk) => [JSON.stringify(fk), fk]));
+    // Two keys of the same columns and target are one, under the first name in sorted order;
+    // a named key wins over an unnamed one of the same shape.
+    const distinct = new Map<string, ForeignKey>();
+    for (const fk of fks) {
+      const shape = JSON.stringify([fk.columns, fk.references]);
+      const kept = distinct.get(shape);
+      if (!kept || (kept.constraint === undefined && fk.constraint !== undefined)) distinct.set(shape, fk);
+    }
     tables.get(k)!.foreign_keys = [...distinct.values()];
   }
 

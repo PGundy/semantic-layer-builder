@@ -246,6 +246,11 @@
               "minItems": 1
             }
           }
+        },
+        "constraint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The constraint's name, as the catalog gives it; absent when the key has no name or the snapshot does not record one."
         }
       }
     },

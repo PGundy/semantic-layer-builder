@@ -784,6 +784,7 @@ describe("semlayer validate", () => {
         level: "error",
         file: "../.env",
         path: "",
+        code: "env.file_tracked",
         message: `git tracks this env file, so the secrets in it are in the repository: run git -C ${p.dir} rm --cached .env and commit, have the owner rotate the credentials it held, then run semlayer validate again (semlayer setup keeps .env out of version control)`,
       },
     ]);
@@ -805,6 +806,7 @@ describe("semlayer validate", () => {
         level: "error",
         file: "sources/lake.yaml",
         path: "connection",
+        code: "issue.unclassified",
         message: "has both env and env_prefix; a source names one variable that holds the URL or a prefix for the parts, not both: keep one (semlayer setup --source lake --dialect postgres --env <VAR> or --env-prefix <PREFIX> writes it)",
       },
     ]);

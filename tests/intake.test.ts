@@ -69,7 +69,7 @@ describe("intake schema", () => {
     const section = spec.slice(spec.indexOf("### Intake"), spec.indexOf("### Scope patterns"));
     const props = JSON.parse(readFileSync(SCHEMA, "utf8")).properties.intake.properties as Record<string, { properties?: Record<string, unknown> }>;
     const keys = Object.entries(props).flatMap(([k, v]) => (v.properties ? Object.keys(v.properties).map((c) => `${k}.${c}`) : [k]));
-    expect(keys.sort()).toEqual(["export.file", "mode", "reason", "schemas"]);
+    expect(keys.sort()).toEqual(["export.file", "mode", "primary", "reason", "schemas"]);
     for (const k of keys) expect(section).toContain(`| \`${k}\` |`);
   });
 

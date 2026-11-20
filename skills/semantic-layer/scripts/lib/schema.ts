@@ -11,6 +11,10 @@ export interface Issue {
   file: string;
   path: string;
   message: string;
+  // The registered code (lib/issue-codes/), stable across releases, for an agent to branch on.
+  code: string;
+  // The command that fixes or explains the issue, where there is one.
+  next?: string;
 }
 
 export const SCHEMA_KINDS = ["project", "source", "snapshot", "model", "metrics", "access", "golden", "pending", "plan", "ledger", "review", "usage"] as const;
@@ -114,6 +118,26 @@ function schemaMessage(e: ErrorObject): { path: string; message: string } | null
   }
 }
 
+// The code of a schema issue, from the Ajv keyword that found it (lib/issue-codes/schema.ts). A const
+// is a list of one allowed value, so it shares schema.enum.
+function schemaCode(keyword: string): string {
+  switch (keyword) {
+    case "required":
+      return "schema.required";
+    case "additionalProperties":
+      return "schema.unknown_property";
+    case "enum":
+    case "const":
+      return "schema.enum";
+    case "type":
+      return "schema.type";
+    case "pattern":
+      return "schema.pattern";
+    default:
+      return "schema.other";
+  }
+}
+
 // Hints added to a schema message, by file kind and property path.
 const SCHEMA_HINTS: Partial<Record<SchemaKind, Record<string, string>>> = {
   model: {
@@ -140,7 +164,7 @@ export function schemaIssues(kind: SchemaKind, data: unknown, file: string): Iss
     const key = `${m.path}\0${m.message}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ level: "error", file, ...m });
+    out.push({ level: "error", file, ...m, code: schemaCode(e.keyword) });
   }
   return out;
 }
@@ -330,7 +354,7 @@ export function evalSchemaIssues(kind: EvalSchemaKind, data: unknown, file: stri
     const m = schemaMessage(e);
     if (!m || seen.has(`${m.path}\0${m.message}`)) continue;
     seen.add(`${m.path}\0${m.message}`);
-    out.push({ level: "error", file, ...m });
+    out.push({ level: "error", file, ...m, code: schemaCode(e.keyword) });
   }
   return out;
 }

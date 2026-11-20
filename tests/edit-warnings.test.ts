@@ -287,6 +287,7 @@ describe("semlayer next does not undo semlayer ignore-column --remove (HR-15 ite
         level: "warning",
         file: "models/warehouse/orders.yaml",
         path: "ignored_columns[0]",
+        code: "issue.unclassified",
         message:
           '"gift_message" is read by the filter of measure refunds.refund_amount through a join, so it is not left out; take it back in with semlayer ignore-column --source warehouse --model orders --column gift_message --remove',
       },
