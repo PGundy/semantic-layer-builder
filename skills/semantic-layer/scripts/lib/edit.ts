@@ -25,7 +25,7 @@ import { editYamlText, parseYaml, parseYamlText, readYamlIfExists } from "./yaml
 // Keys only semlayer approve writes.
 export const APPROVAL_FIELDS = ["status", "approved_by", "approved_at", "approved_hash", "last_approved"];
 
-export type ItemKind = "model" | "dimension" | "measure" | "join" | "metric" | "access";
+export type ItemKind = "model" | "dimension" | "measure" | "join" | "metric" | "access" | "schema-pair";
 
 // One item a ref names: the file that holds it, its path inside the file and its parsed value.
 export interface Located {
@@ -38,11 +38,28 @@ export interface Located {
   model?: Model;
 }
 
-// Finds the item of an approve-style ref: source.model, source.model.field, metric:<name> or access.
-export function locate(root: string, ref: string): Located {
+// Finds the item of an approve-style ref: source.model, source.model.field, metric:<name> or access,
+// and with `pairs` a schema pair (schema-pair:<source>:<from>:<to>), whose entry in sources/<s>.yaml
+// semlayer approve stamps. A schema pair takes no typed edit: without `pairs` it is refused.
+export function locate(root: string, ref: string, opts: { pairs?: boolean } = {}): Located {
   const t = parseTarget(ref);
   const obj = (x: unknown) => x as Record<string, unknown>;
   switch (t.kind) {
+    case "schema-pair": {
+      if (!opts.pairs)
+        throw new UserError(
+          `${ref} is a schema pair, which takes no typed edit: change its keys with semlayer add-cross-schema or semlayer remove-cross-schema ` +
+            `(--source ${t.source} --from ${t.from} --to ${t.to}), read it back with semlayer readback --targets ${ref}, and approve it on the owner's yes with semlayer approve --target ${ref}.`,
+        );
+      const file = paths(root).source(t.source);
+      const config = readYamlIfExists<Record<string, unknown>>(file);
+      if (!config) throw new UserError(`No source "${t.source}" (${file}). Run semlayer status to list the sources.`);
+      const pairs = Array.isArray(config.cross_schema) ? (config.cross_schema as unknown[]) : [];
+      const index = pairs.findIndex((p) => !!p && typeof p === "object" && (p as { from?: unknown }).from === t.from && (p as { to?: unknown }).to === t.to);
+      if (index < 0)
+        throw new UserError(`sources/${t.source}.yaml declares no schema pair ${t.from} -> ${t.to}. Record it with semlayer add-cross-schema --source ${t.source} --from ${t.from} --to ${t.to} --keys <table>.<column>=<table>.<column>.`);
+      return { ref, kind: "schema-pair", file, path: ["cross_schema", index], item: obj(pairs[index]), source: t.source };
+    }
     case "golden":
       throw new UserError(`Goldens are not edited with typed edits; semlayer goldens run --name ${t.name} shows one.`);
     case "access": {

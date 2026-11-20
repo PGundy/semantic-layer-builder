@@ -380,7 +380,7 @@ describe("approve refusals", () => {
     const root = await project();
     const r = await semlayer(root, ["approve", "--help"]);
     expect(r.code).toBe(0);
-    expect(r.out).toContain("approve --target <source.model | source.model.field | metric:<name> | access>");
+    expect(r.out).toContain("approve --target <source.model | source.model.field | metric:<name> | access | schema-pair:<source>:<from>:<to>>");
     expect(r.out).not.toContain("golden");
   });
 

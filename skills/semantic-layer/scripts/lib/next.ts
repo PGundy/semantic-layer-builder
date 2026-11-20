@@ -133,6 +133,7 @@ function targetPhase(st: ProjectStatus, ref: string): string {
   if (st.approved_without_yes.includes(ref)) return "done";
   if (ref.startsWith("golden:")) return "verify";
   if (ref.startsWith("metric:")) return "metrics";
+  if (ref.startsWith("schema-pair:")) return "scope";
   return ref === "access" ? "access" : "interview";
 }
 

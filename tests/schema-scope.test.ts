@@ -3,11 +3,14 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SQL } from "bun";
+import { checkToolUse } from "../skills/semantic-layer/scripts/hooks/guard-edits.ts";
+import { itemHash } from "../skills/semantic-layer/scripts/lib/approval-hash.ts";
 import { buildSnapshot } from "../skills/semantic-layer/scripts/lib/introspect.ts";
 import { type CrossSchemaPair, crossSchemaFks, pairAllowed, primarySchema, toolVersion, UNDECLARED_GRACE_ENDS, undeclaredApprovedLevel } from "../skills/semantic-layer/scripts/lib/schema-scope.ts";
 import type { Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, duckdbSource, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
+import { parseTarget } from "../skills/semantic-layer/scripts/lib/refs.ts";
+import { approveWithYes, assertLocalPg, duckdbSource, initProject, PG_URL, recordReply, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 const FIXTURE = join(import.meta.dir, "fixtures", "two-schemas", "snapshot.json");
 const twoSchemas = (): Snapshot => JSON.parse(readFileSync(FIXTURE, "utf8")) as Snapshot;
@@ -257,9 +260,12 @@ describe("schema pairs", () => {
     return (r.json<{ issues: { level: string; code: string; file: string; path: string; message: string }[] }>().issues ?? []).filter((i) => i.code.startsWith("scope."));
   };
 
-  // What semlayer approve --target schema-pair:... writes once the owner says yes.
-  const stampApproval = (root: string) =>
-    writeFileSync(sourceFile(root), readFileSync(sourceFile(root), "utf8").replace("status: draft", "status: approved\n    approved_by: Dana\n    approved_at: 2026-01-15"));
+  // What semlayer approve --target schema-pair:... writes once the owner says yes: the stamp and the
+  // hash of the pair as it stands.
+  const stampApproval = (root: string) => {
+    const hash = itemHash("schema-pair", pairsOf(root)![0] as unknown as Record<string, unknown>);
+    writeFileSync(sourceFile(root), readFileSync(sourceFile(root), "utf8").replace("status: draft", `status: approved\n    approved_by: Dana\n    approved_at: 2026-01-15\n    approved_hash: ${hash}`));
+  };
 
   test("add-cross-schema writes a draft pair from a constraint or from columns, and the same keys again change nothing", async () => {
     const root = await project();
@@ -337,7 +343,7 @@ describe("schema pairs", () => {
     ]);
     expect((await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--constraint", "orders_customer_fk"])).code).toBe(0);
     expect(await scopeIssues(root)).toEqual(before);
-    stampApproval(root);
+    expect((await approveWithYes(root, ["--target", "schema-pair:warehouse:sales:crm"])).code).toBe(0);
     expect(await scopeIssues(root)).toEqual([]);
     const v = await semlayer(root, ["validate", "--json"]);
     expect(JSON.stringify(v.json())).not.toContain("cross_schema");
@@ -357,7 +363,9 @@ describe("schema pairs", () => {
   });
 
   test("an approved pair allows a join either way on its keys only", () => {
-    const pair = { from: "sales", to: "crm", status: "approved" as const, approved_by: "Dana", approved_at: "2026-01-15", keys: [{ from: "orders.customer_id", to: "customers.customer_id" }] };
+    const keys = [{ from: "orders.customer_id", to: "customers.customer_id" }];
+    const approved_hash = itemHash("schema-pair", { from: "sales", to: "crm", keys });
+    const pair = { from: "sales", to: "crm", status: "approved" as const, approved_by: "Dana", approved_at: "2026-01-15", approved_hash, keys };
     const forward = { fromSchema: "sales", fromTable: "orders", toSchema: "crm", toTable: "customers", keys: [{ from: "customer_id", to: "customer_id" }] };
     const back = { fromSchema: "crm", fromTable: "customers", toSchema: "sales", toTable: "orders", keys: [{ from: "customer_id", to: "customer_id" }] };
     expect(pairAllowed([pair], forward)).toBe(true);
@@ -398,5 +406,197 @@ describe("schema pairs", () => {
     const all = await rm("--from", "sales", "--to", "crm");
     expect(all.out).toContain("Removed the pair sales -> crm from sources/warehouse.yaml.");
     expect(readFileSync(sourceFile(root), "utf8")).toBe(SOURCE);
+  });
+  // Approving a pair (spec: Schema scope, Approving a schema pair): semlayer approve on the owner's yes.
+  const PAIR = "schema-pair:warehouse:sales:crm";
+  const addPair = (root: string) => semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--constraint", "orders_customer_fk"]);
+
+  test("readback prints the pair, its keys and their constraints", async () => {
+    const root = await project();
+    expect((await addPair(root)).code).toBe(0);
+    expect((await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--keys", "orders.region_id=regions.region_id"])).code).toBe(0);
+    const r = await semlayer(root, ["readback", "--targets", PAIR, "--json"]);
+    expect(r.code).toBe(0);
+    const item = r.json<{ items: { target: string; text: string; content_hash: string }[] }>().items[0]!;
+    expect(item.target).toBe(PAIR);
+    expect(item.content_hash).toBe(itemHash("schema-pair", pairsOf(root)![0] as unknown as Record<string, unknown>));
+    expect(item.text.split("\n")).toEqual([
+      `${PAIR} (schema pair of source warehouse, from sales to crm)`,
+      "- A join may cross between schemas sales and crm, either way, only on these keys:",
+      "  - sales.orders.customer_id = crm.customers.customer_id, from the foreign key orders_customer_fk",
+      "  - sales.orders.region_id = crm.regions.region_id, named by hand (no foreign key recorded)",
+      "- A join between the two schemas on any other columns stays refused until a pair listing it is approved; every other join stays within one schema.",
+      "- Saying yes lets semlayer add-join add joins on these keys and semlayer draft draft them, so a question can read tables of sales and crm together.",
+    ]);
+    expect((await semlayer(root, ["readback", "--targets", "schema-pair:warehouse:sales:finance"])).err).toContain("sources/warehouse.yaml declares no schema pair sales -> finance");
+  });
+
+  test("approve without a recorded yes is refused; with one it records approver, date and hash in the pair entry", async () => {
+    const root = await crossJoin();
+    expect((await addPair(root)).code).toBe(0);
+    writeFileSync(sourceFile(root), readFileSync(sourceFile(root), "utf8").replace("    keys:\n", "    keys: # read from the catalog\n"));
+    const before = readFileSync(sourceFile(root), "utf8");
+    const refused = await semlayer(root, ["approve", "--target", PAIR, "--json"]);
+    expect(refused.code).toBe(1);
+    const envelope = refused.json<{ error: string; code: string }>();
+    expect(envelope.code).toBe("approval.no_ledger_yes");
+    expect(envelope.error).toContain(`Cannot approve ${PAIR}: no owner reply to its readback is recorded; nothing was approved.`);
+    expect(readFileSync(sourceFile(root), "utf8")).toBe(before);
+
+    await recordReply(root, PAIR, { verdict: "no" });
+    expect((await semlayer(root, ["approve", "--target", PAIR])).err).toContain('is "no", not yes');
+    await recordReply(root, PAIR);
+    expect((await semlayer(root, ["approve", "--target", PAIR, "--by", "Lee"])).err).toContain("is not the owner who said yes");
+    const ok = await semlayer(root, ["approve", "--target", PAIR, "--json"]);
+    expect(ok.code).toBe(0);
+    expect(ok.json()).toMatchObject({ changed: [{ target: PAIR, from: "draft", to: "approved" }] });
+    const pair = pairsOf(root)![0]!;
+    expect(pair).toMatchObject({ from: "sales", to: "crm", status: "approved", approved_by: "Dana", approved_at: "2026-01-15" });
+    expect(pair.approved_hash).toBe(itemHash("schema-pair", pair as unknown as Record<string, unknown>));
+    expect(readFileSync(sourceFile(root), "utf8")).toStartWith(SOURCE);
+    expect(readFileSync(sourceFile(root), "utf8")).toContain("    keys: # read from the catalog\n");
+    // The join across the pair now passes validate, and approving again changes nothing.
+    expect(await scopeIssues(root)).toEqual([]);
+    expect((await semlayer(root, ["approve", "--target", PAIR])).out).toContain(`${PAIR} is already approved; nothing changed.`);
+  });
+
+  test("editing an approved pair marks it changed since approval, and it counts as a draft until approved again", async () => {
+    const root = await crossJoin();
+    expect((await addPair(root)).code).toBe(0);
+    expect((await approveWithYes(root, ["--target", PAIR])).code).toBe(0);
+    // A key added by hand, outside add-cross-schema.
+    writeFileSync(sourceFile(root), readFileSync(sourceFile(root), "utf8").replace("        constraint: orders_customer_fk\n", "        constraint: orders_customer_fk\n      - from: orders.region_id\n        to: regions.region_id\n"));
+    const v = await semlayer(root, ["validate", "--json"]);
+    const issues = v.json<{ issues: { level: string; code: string; file: string; path: string; message: string }[] }>().issues;
+    expect(issues.find((i) => i.code === "approval.hash_changed")).toMatchObject({
+      level: "error",
+      file: "sources/warehouse.yaml",
+      path: "cross_schema[0]",
+      message: expect.stringContaining(`${PAIR} changed since it was approved by Dana on 2026-01-15`),
+    });
+    // The join across it is refused again, by validate and by the compiler's rule.
+    expect((await scopeIssues(root)).map((i) => [i.level, i.code])).toEqual([["error", "scope.cross_schema_undeclared"]]);
+    expect(pairAllowed(pairsOf(root)!, { fromSchema: "sales", fromTable: "orders", toSchema: "crm", toTable: "customers", keys: [{ from: "customer_id", to: "customer_id" }] })).toBe(false);
+    // Approving it again needs a yes to it as it now stands.
+    expect((await semlayer(root, ["approve", "--target", PAIR])).code).toBe(1);
+    const again = await approveWithYes(root, ["--target", PAIR]);
+    expect(again.out).toContain(`Approved ${PAIR} again (it changed since its last approval) by Dana on 2026-01-15`);
+    expect(await scopeIssues(root)).toEqual([]);
+  });
+
+  test("a stamp written by hand without semlayer approve leaves the pair a draft", async () => {
+    const root = await crossJoin();
+    expect((await addPair(root)).code).toBe(0);
+    writeFileSync(sourceFile(root), readFileSync(sourceFile(root), "utf8").replace("status: draft", "status: approved\n    approved_by: Dana\n    approved_at: 2026-01-15"));
+    const issues = (await semlayer(root, ["validate", "--json"])).json<{ issues: { level: string; code: string; message: string }[] }>().issues;
+    expect(issues.find((i) => i.code === "approval.hash_missing")).toMatchObject({ level: "warning", message: expect.stringContaining(`${PAIR} is marked approved but records no approved_hash, so it counts as a draft`) });
+    expect(issues.filter((i) => i.code.startsWith("scope.")).map((i) => [i.level, i.code])).toEqual([["error", "scope.cross_schema_undeclared"]]);
+    // add-join refuses on it, as on a draft pair.
+    const add = await semlayer(root, ["add-join", "--source", "warehouse", "--model", "orders", "--to", "customers", "--keys", "customer_id=customer_id", "--name", "customer2"]);
+    expect(add.err).toContain("no approved schema pair declares these keys");
+    // A hash that is not the pair's own does not approve it either.
+    writeFileSync(sourceFile(root), readFileSync(sourceFile(root), "utf8").replace("approved_at: 2026-01-15", `approved_at: 2026-01-15\n    approved_hash: sha256:${"0".repeat(64)}`));
+    expect((await scopeIssues(root)).map((i) => i.code)).toEqual(["scope.cross_schema_undeclared"]);
+  });
+
+  test("revoke makes an approved pair a draft and clears its stamp; a declined pair and --stamp-hashes are refused", async () => {
+    const root = await project();
+    expect((await addPair(root)).code).toBe(0);
+    expect((await approveWithYes(root, ["--target", PAIR])).code).toBe(0);
+    const r = await semlayer(root, ["approve", "--target", PAIR, "--revoke"]);
+    expect(r.out).toContain(`Revoked ${PAIR} (approved -> draft).`);
+    expect(pairsOf(root)).toEqual([{ from: "sales", to: "crm", status: "draft", keys: [{ from: "orders.customer_id", to: "customers.customer_id", constraint: "orders_customer_fk" }] }]);
+    expect((await semlayer(root, ["approve", "--stamp-hashes", "--target", PAIR])).err).toContain("A schema pair is approved only with its hash, so there is none to stamp.");
+    // Keys added to an approved pair send it back to draft, with no stamp left behind.
+    expect((await approveWithYes(root, ["--target", PAIR])).code).toBe(0);
+    const more = await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--keys", "orders.region_id=regions.region_id"]);
+    expect(more.out).toContain("The pair was approved; with these keys it is a draft again, and its approval is gone");
+    expect(more.out).toContain(`Next: read the pair to the owner with semlayer readback --targets ${PAIR}`);
+    expect(Object.keys(pairsOf(root)![0]!).sort()).toEqual(["from", "keys", "status", "to"]);
+    expect((await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--decline", "--reply", "No"])).code).toBe(0);
+    const declined = await semlayer(root, ["approve", "--target", PAIR]);
+    expect(declined.err).toContain(`Cannot approve ${PAIR}: the owner declined joining sales to crm, so it has no keys to approve; nothing was approved.`);
+    expect((await semlayer(root, ["readback", "--targets", PAIR])).err).toContain("the owner declined joining sales to crm");
+  });
+
+  test("the edit hook refuses a hand edit of a pair's approval fields or of an approved pair's keys", async () => {
+    const root = await project();
+    expect((await addPair(root)).code).toBe(0);
+    const file = sourceFile(root);
+    const hook = (tool: string, input: Record<string, unknown>) =>
+      checkToolUse(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: tool, tool_input: { file_path: file, ...input }, cwd: root }));
+    const edit = (from: string, to: string) => {
+      expect(readFileSync(file, "utf8")).toContain(from);
+      return hook("Edit", { old_string: from, new_string: to });
+    };
+    // A draft pair: its keys may be edited, but a stamp written by hand is refused.
+    expect(edit("constraint: orders_customer_fk", "constraint: orders_customer_fk2").allow).toBe(true);
+    const stamp = edit("status: draft", "status: approved\n    approved_by: Dana\n    approved_at: 2026-01-15");
+    expect(stamp.allow).toBe(false);
+    expect(stamp.message).toContain(`this edit changes the approval fields of ${PAIR} (approved_at, approved_by, status). Only semlayer approve writes them`);
+    // A source file without approval fields takes a shell write; once a pair is approved it does not.
+    const shell = () => checkToolUse(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: `echo "description: x" >> ${file}` }, cwd: root }));
+    expect(shell().allow).toBe(true);
+    expect((await approveWithYes(root, ["--target", PAIR])).code).toBe(0);
+    expect(shell().allow).toBe(false);
+    const hash = edit("approved_hash: sha256:", "approved_hash: sha256:0");
+    expect(hash.allow).toBe(false);
+    expect(hash.message).toContain(`this edit changes the approval fields of ${PAIR} (approved_hash)`);
+    const keys = edit("        constraint: orders_customer_fk\n", "        constraint: orders_customer_fk\n      - from: orders.region_id\n        to: regions.region_id\n");
+    expect(keys.allow).toBe(false);
+    expect(keys.message).toContain(
+      `${PAIR} is approved, and this edit changes the keys the owner approved. Change its keys with semlayer add-cross-schema --source warehouse --from sales --to crm --keys ... or semlayer remove-cross-schema --source warehouse --from sales --to crm, which send it back to draft for the owner, or make it a draft first with semlayer approve --target ${PAIR} --revoke.`,
+    );
+    const removed = hook("Write", { content: SOURCE });
+    expect(removed.allow).toBe(false);
+    expect(removed.message).toContain(`this edit removes or renames approved ${PAIR}.`);
+    // Outside the pairs, the source file is edited as before.
+    expect(edit("dialect: postgres\n", "dialect: postgres\ndescription: The warehouse\n").allow).toBe(true);
+  });
+
+  test("a pair takes no typed edit, and its target keeps its case", async () => {
+    const root = await project();
+    expect((await addPair(root)).code).toBe(0);
+    const set = await semlayer(root, ["set", PAIR, "status", "approved"]);
+    expect(set.code).toBe(1);
+    const tag = await semlayer(root, ["tag", PAIR, "pii"]);
+    expect(tag.err).toContain(`${PAIR} is a schema pair, which takes no typed edit: change its keys with semlayer add-cross-schema or semlayer remove-cross-schema`);
+    expect(parseTarget("schema-pair:wh:Sales:CRM_2")).toEqual({ kind: "schema-pair", source: "wh", from: "Sales", to: "CRM_2" });
+    expect(() => parseTarget("schema-pair:wh:sales")).toThrow("Cannot read target");
+    expect(() => parseTarget("schema-pair:wh:sales:crm.x")).toThrow("Cannot read target");
+  });
+  const hashedStamp = (root: string) => {
+    const pair = readYaml<SourceConfig>(sourceFile(root)).cross_schema![0] as unknown as Record<string, unknown>;
+    return readFileSync(sourceFile(root), "utf8").replace("status: draft", `status: approved\n    approved_by: Dana\n    approved_at: 2026-01-15\n    approved_hash: ${itemHash("schema-pair", pair)}`);
+  };
+
+  test("a pair stamped with a correct hash but no recorded yes is reported by validate and status", async () => {
+    const root = await project();
+    expect((await addPair(root)).code).toBe(0);
+    writeFileSync(sourceFile(root), hashedStamp(root));
+    const codes = (await semlayer(root, ["validate", "--json"])).json<{ issues: { code: string }[] }>().issues.map((i) => i.code);
+    expect(codes).toContain("approval.no_ledger_yes");
+    const status = (await semlayer(root, ["status", "--json"])).json<{ approved_without_yes: string[] }>();
+    expect(status.approved_without_yes).toContain(PAIR);
+  });
+
+  test("a pair approved with the owner's yes is clean, and status lists it once its keys are edited by hand", async () => {
+    const root = await project();
+    expect((await addPair(root)).code).toBe(0);
+    expect((await approveWithYes(root, ["--target", PAIR])).code).toBe(0);
+    const clean = (await semlayer(root, ["status", "--json"])).json<{ approved_without_yes: string[]; changed_since_approval: string[] }>();
+    expect(clean.approved_without_yes).not.toContain(PAIR);
+    expect(clean.changed_since_approval).not.toContain(PAIR);
+    const text = readFileSync(sourceFile(root), "utf8");
+    writeFileSync(sourceFile(root), text.replace("        constraint: orders_customer_fk\n", "        constraint: orders_customer_fk\n      - from: orders.region_id\n        to: regions.region_id\n"));
+    const changed = (await semlayer(root, ["status", "--json"])).json<{ changed_since_approval: string[] }>();
+    expect(changed.changed_since_approval).toContain(PAIR);
+  });
+
+  test("the readback of a pair names the pair commands for a no or a change", async () => {
+    const root = await project();
+    expect((await addPair(root)).code).toBe(0);
+    const r = await semlayer(root, ["readback", "--targets", PAIR]);
+    expect(r.out).toContain("semlayer add-cross-schema or semlayer remove-cross-schema");
   });
 });

@@ -3,11 +3,13 @@
 // pair compiles with a warning until the grace ends.
 //
 // On tests/fixtures/two-schemas/snapshot.json, sales.orders joins crm.customers through
-// orders_customer_fk. The pair's approval is stamped by hand, as semlayer approve writes it.
+// orders_customer_fk. The pair's approval is stamped by hand, as semlayer approve writes it, hash included.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SQL } from "bun";
+import { parse } from "yaml";
+import { itemHash } from "../skills/semantic-layer/scripts/lib/approval-hash.ts";
 import type { Model, Snapshot } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { assertLocalPg, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
@@ -15,7 +17,13 @@ import { assertLocalPg, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } 
 const FIXTURE = join(import.meta.dir, "fixtures", "two-schemas", "snapshot.json");
 const ok = { status: "approved", approved_by: "Dana", approved_at: "2026-01-10" };
 const PAIR_DRAFT = "cross_schema:\n  - from: sales\n    to: crm\n    status: draft\n    keys:\n      - from: orders.customer_id\n        to: customers.customer_id\n        constraint: orders_customer_fk\n";
-const PAIR_APPROVED = PAIR_DRAFT.replace("status: draft", "status: approved\n    approved_by: Dana\n    approved_at: 2026-01-15");
+// What semlayer approve writes into the first pair of a source's text on the owner's yes: the stamp and
+// the hash of the pair as it stands.
+function approved(text: string): string {
+  const pair = (parse(text) as { cross_schema: Record<string, unknown>[] }).cross_schema[0]!;
+  return text.replace("status: draft", `status: approved\n    approved_by: Dana\n    approved_at: 2026-01-15\n    approved_hash: ${itemHash("schema-pair", pair)}`);
+}
+const PAIR_APPROVED = approved(PAIR_DRAFT);
 const sourceText = (schemas: [string, string], pair = "") =>
   `source: warehouse\ndialect: postgres\nconnection:\n  env: WAREHOUSE_URL\nintake:\n  schemas: [${schemas.join(", ")}]\n  primary: ${schemas[0]}\n${pair}`;
 const REQUEST = JSON.stringify({ source: "warehouse", measures: ["orders.revenue"], dimensions: ["customers.segment"] });
@@ -235,7 +243,7 @@ describe("draft", () => {
   test("an approved pair listing a key no foreign key carries drafts that join too", async () => {
     const { root } = tempRoot();
     await initProject(root, "two");
-    const pair = PAIR_APPROVED.replace("        constraint: orders_customer_fk\n", "        constraint: orders_customer_fk\n      - from: orders.region_id\n        to: regions.region_id\n");
+    const pair = approved(PAIR_DRAFT.replace("        constraint: orders_customer_fk\n", "        constraint: orders_customer_fk\n      - from: orders.region_id\n        to: regions.region_id\n"));
     writeFileSync(join(root, "sources", "warehouse.yaml"), sourceText(["sales", "crm"], pair));
     mkdirSync(join(root, "snapshots"), { recursive: true });
     writeFileSync(join(root, "snapshots", "warehouse.json"), readFileSync(FIXTURE, "utf8"));
@@ -303,7 +311,7 @@ describe("schema pairs on postgres", () => {
     const added = await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", a, "--to", b, "--constraint", "orders_customer_fk"], env);
     expect(added.code).toBe(0);
     const file = join(root, "sources", "warehouse.yaml");
-    writeFileSync(file, readFileSync(file, "utf8").replace("status: draft", "status: approved\n    approved_by: Dana\n    approved_at: 2026-01-15"));
+    writeFileSync(file, approved(readFileSync(file, "utf8")));
     const r = await semlayer(root, ["sql", "--request", REQUEST, "--json"], env);
     expect(r.code).toBe(0);
     const c = r.json<{ sql: string; params: unknown[]; warnings?: unknown }>();

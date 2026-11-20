@@ -2,6 +2,7 @@
 // declared foreign keys that leave a table's own schema.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { itemHash } from "./approval-hash.ts";
 import { UserError } from "./errors.ts";
 import { intakeSchemas } from "./intake.ts";
 import { findTable } from "./naming.ts";
@@ -118,9 +119,13 @@ export function findPair(pairs: readonly CrossSchemaPair[], a: string, b: string
   return pairs.find((p) => (p.from === a && p.to === b) || (p.from === b && p.to === a));
 }
 
-// An approved pair carries the fields semlayer approve stamps on it.
+// The one definition of an approved pair, which validate, the join commands, the compiler and draft
+// all read: it carries the fields semlayer approve stamps on it, and its approved_hash is the hash of
+// its from, to and keys as they stand (approval-hash.ts). A key added or changed by hand, or a stamp
+// written by hand without its hash, leaves the pair a draft.
 export function pairApproved(pair: CrossSchemaPair | undefined): boolean {
-  return pair?.status === "approved" && typeof pair.approved_by === "string" && typeof pair.approved_at === "string";
+  if (pair?.status !== "approved" || typeof pair.approved_by !== "string" || typeof pair.approved_at !== "string") return false;
+  return typeof pair.approved_hash === "string" && pair.approved_hash === itemHash("schema-pair", pair as unknown as Record<string, unknown>);
 }
 
 // Whether the owner has answered the question a key between the pair's schemas asks: declined or approved.

@@ -14,7 +14,7 @@ import {
   metricMeasureRefs,
 } from "./access.ts";
 import { canRun } from "./adapters/index.ts";
-import { type ApprovalEntry, holdsHashes, type Integrity, integrity, itemApprovals, listApprovals } from "./approval-hash.ts";
+import { type ApprovalEntry, holdsHashes, type Integrity, integrity, itemApprovals, listApprovals, pairEntries } from "./approval-hash.ts";
 import { currentYes, ledgerState } from "./ledger.ts";
 import { accessRowFilters, layerReads } from "./layer-reads.ts";
 import { findTable, qualifiedName } from "./naming.ts";
@@ -1385,6 +1385,9 @@ export function statusDetail(root: string, only?: string): StatusDetail {
     ...allMetricEntries.filter((e) => typeof e.item.source === "string" && reported.has(e.item.source)),
     ...accessEntries,
   ];
+  // The schema pairs of the reported sources: a stamped pair counts only with a matching hash, so
+  // they are read as hashed whatever the rest of the project records.
+  const pairApprovals = reports.flatMap((r) => pairEntries(r.status.source, loadSource(root, r.status.source)));
   // Whether any of them, or any metric, records an approved_hash.
   const projectHashed = holdsHashes([...reports.flatMap((r) => r.approvals), ...allMetricEntries, ...accessEntries]);
   // A file that holds only comments parses to null but still exists: a draft with no roles.
@@ -1411,6 +1414,7 @@ export function statusDetail(root: string, only?: string): StatusDetail {
   for (const e of [...reports.flatMap((r) => r.approvals), ...allMetricEntries, ...accessEntries]) {
     if (!targets.has(e.ref)) targets.set(e.ref, { hash: e.hash, state: integrity(e, projectHashed) });
   }
+  for (const e of pairApprovals) targets.set(e.ref, { hash: e.hash, state: integrity(e, true) });
   for (const g of listApprovals({ goldens: loadedGoldens })) if (g.kind === "golden" && g.complete && g.status === "approved") targets.set(g.ref, { hash: g.hash, state: "current" });
   const withoutYes = (refs: string[]) =>
     refs.filter((ref) => {
@@ -1434,9 +1438,9 @@ export function statusDetail(root: string, only?: string): StatusDetail {
       ...(lastApproved ? { last_approved: lastApproved } : {}),
     },
     open_questions: sources.reduce((n, s) => n + s.open_questions, accessQuestions),
-    changed_since_approval: refsIn(approvals, "changed", projectHashed),
-    hash_missing: refsIn(approvals, "missing", projectHashed),
-    approved_without_yes: withoutYes([...approvals.map((e) => e.ref), ...approvedGoldens.map((g) => `golden:${g.name}`)]),
+    changed_since_approval: [...refsIn(approvals, "changed", projectHashed), ...refsIn(pairApprovals, "changed", true)],
+    hash_missing: [...refsIn(approvals, "missing", projectHashed), ...refsIn(pairApprovals, "missing", true)],
+    approved_without_yes: withoutYes([...approvals.map((e) => e.ref), ...pairApprovals.map((e) => e.ref), ...approvedGoldens.map((g) => `golden:${g.name}`)]),
     goldens: count(goldens),
     draft_goldens: draftGoldenNames(loadedGoldens),
     roles_without_goldens: roleNames(access).filter((r) => !goldenRoles.has(r)),

@@ -380,7 +380,8 @@ describe("the prefix form", () => {
       adapter: "postgres",
       max: 1,
       prepare: false,
-      connection: { default_transaction_read_only: "on", statement_timeout: 5000, TimeZone: "UTC" },
+      // A transaction-mode pooler refuses statement_timeout at startup; each query's transaction sets it.
+      connection: { default_transaction_read_only: "on", TimeZone: "UTC" },
       hostname: "db.internal",
       port: 6432,
       username: USER,
@@ -388,6 +389,7 @@ describe("the prefix form", () => {
       database: "acme",
       tls: "require",
     });
+    expect(conn.timeoutMs).toBe(5000);
     expect(password(conn)).toBe(PASSWORD);
     expect(conn.options).not.toHaveProperty("url");
     expect(conn.target).toEqual({ host: "db.internal", port: "6432" });

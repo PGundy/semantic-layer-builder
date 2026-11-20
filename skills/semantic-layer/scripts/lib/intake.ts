@@ -13,7 +13,7 @@ export function intakeMode(source: Pick<SourceConfig, "intake">): IntakeMode {
 // A schema name is a plain identifier, or two joined by a dot where the tools read one: a
 // BigQuery project.dataset (the project id may hold hyphens; a dataset holds no $) or a DuckDB
 // attached database's <database>.<schema>, as introspect reports it.
-const IDENT = "[A-Za-z_][A-Za-z0-9_$]*";
+export const IDENT = "[A-Za-z_][A-Za-z0-9_$]*";
 const BQ_IDENT = "[A-Za-z_][A-Za-z0-9_]*";
 const SCHEMA_NAME = new RegExp(`^${IDENT}(\\.${IDENT})?$`);
 const BIGQUERY_SCHEMA_NAME = new RegExp(`^([A-Za-z][A-Za-z0-9-]*\\.)?${BQ_IDENT}$`);
