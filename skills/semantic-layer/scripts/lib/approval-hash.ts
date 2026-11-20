@@ -124,13 +124,23 @@ function fieldIdentity(item: Obj, scope: HashScope): Obj {
   return { source: scope.source, model: text(scope.model?.model), table: text(scope.model?.table), name: text(item.name) };
 }
 
+// A measure's non_additive_dimension as hashed: its name and window, and the expr of the dimension it
+// names as the model declares it now (null when it declares none), since that column decides which
+// row is kept.
+function nonAdditiveContent(nad: unknown, model: Obj | undefined): Obj {
+  const n = isObject(nad) ? nad : {};
+  const dim = objects(model?.dimensions).find((d) => d.name === n.name);
+  return { name: text(n.name), window: n.window, expr: dim ? text(dim.expr) : null };
+}
+
 // The semantic content each kind of item is hashed over:
 // - a dimension: its identity (source, model, name and the model's table), expr, type, time_grains,
 //   time_zone, synonyms, tags, the joins its expr reads and, for one with a week grain on a source
 //   whose weeks do not start on Monday, the week start (left out otherwise, so its hash is as before);
 // - a measure: its identity, expr, filter, agg, format, currency, synonyms, tags, the filter texts of
 //   the segments it names (left out when it names none, so its hash is as before segments) and the
-//   joins its expr, filter and segments read, and its default_time_dimension when set;
+//   joins its expr, filter and segments read, its default_time_dimension when set, and its
+//   non_additive_dimension when set (its name, window and the expr of the dimension it names);
 // - a join: its identity, to, keys, relationship and type;
 // - a model: its source and name, table, grain, primary_key, tags and its default_time_dimension when set;
 // - a metric: name, source, type, numerator, denominator, expr, format, currency, synonyms and tags;
@@ -169,6 +179,7 @@ function itemContent(kind: ItemKind, item: Obj, scope: HashScope): Obj {
         tags: set(item.tags),
         ...(segments ? { segments: set(segments) } : {}),
         ...(item.default_time_dimension !== undefined ? { default_time_dimension: text(item.default_time_dimension) } : {}),
+        ...(item.non_additive_dimension !== undefined ? { non_additive_dimension: nonAdditiveContent(item.non_additive_dimension, model) } : {}),
         joins: model ? readJoins(model, [item.expr, item.filter, ...(segments ?? [])], lookup, dialect) : [],
       };
     }
