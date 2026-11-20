@@ -819,12 +819,14 @@ export class Validator {
         claim(j.name, p);
         const target = this.model(m.source, j.to);
         if (!target) this.error(f, `${p}.to`, `"${j.to}" is not a model of source ${m.source}`, "ref.unknown_model");
-        const targetTable = target && typeof target.table === "string" ? this.snapshotTable(m.source, target.table).table : undefined;
+        // A bridge join's keys pair the model with its bridge; lib/validate-rules/join.ts checks the rest.
+        const keyed = j.through && typeof j.through.model === "string" ? this.model(m.source, j.through.model) : target;
+        const targetTable = keyed && typeof keyed.table === "string" ? this.snapshotTable(m.source, keyed.table).table : undefined;
         j.keys.forEach((k, ki) => {
           this.checkColumnName(f, `${p}.keys[${ki}].from`, k.from, table);
           this.checkColumnName(f, `${p}.keys[${ki}].to`, k.to, targetTable);
         });
-        if (j.relationship === "one_to_many")
+        if (j.relationship === "one_to_many" && !j.through)
           this.warn(f, `${p}.relationship`, `one_to_many fans out and multiplies the measures of ${m.model}; aggregate ${j.to} before joining and confirm with the owner`, "model.join_one_to_many");
         const ev = j.evidence;
         if (ev?.suggested_relationship === "many_to_many") {
