@@ -2,7 +2,7 @@
 // change round). semlayer change start writes it, semlayer change close removes it, and status reads it:
 // while it exists a finished layer is in phase `change`. It holds the owner's note, who asked, when
 // (the command's clock) and the version the round started from; never a data value or a connection detail.
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import type { ValidateFunction } from "ajv/dist/2020.js";
@@ -19,6 +19,9 @@ export interface ChangeRecord {
   started_by: string;
   started_at: string;
   from_version: string;
+  // The drafts never approved that were present when the round started (refs, sorted): the owner's deferred ones.
+  // A round written without it counts none as deferred.
+  drafts_at_start?: string[];
 }
 
 let validator: ValidateFunction | undefined;
@@ -72,6 +75,13 @@ export function writeChange(root: string, record: ChangeRecord): void {
   const file = join(root, CHANGE_FILE);
   mkdirSync(dirname(file), { recursive: true });
   writeFileAtomic(file, `${JSON.stringify(record, null, 2)}\n`);
+}
+
+// Removes the record, when there is one: semlayer change close does, as the last write of a close. Called under the root's lock.
+export function removeChange(root: string): void {
+  assertInside(root);
+  const file = join(root, CHANGE_FILE);
+  if (existsSync(file)) unlinkSync(file);
 }
 
 // The sentence a finished layer's next step ends with (spec: Iterating a layer, The change round). A layer
