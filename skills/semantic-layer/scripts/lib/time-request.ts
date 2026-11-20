@@ -10,6 +10,15 @@ export interface RunningRequest {
   periods?: number;
 }
 
+// compare: each measure beside its value in the period before (prior) and the same period a year
+// earlier (year_ago), with the change and the change as a fraction, over the dimension `over`
+// (model.field:grain, one of the request's dimensions).
+export type Comparison = "prior" | "year_ago";
+export interface CompareRequest {
+  over?: string;
+  with: Comparison[];
+}
+
 // The request keys that each turn a grouped request into a time view; a request takes at most one.
 export const TIME_SHAPE_KEYS = ["running", "compare", "window"] as const;
 
@@ -23,7 +32,7 @@ export function grainPlural(grain: string): string {
   return `${grain}s`;
 }
 
-// running.over split into its field (model.field) and grain, or undefined when it is not
+// running.over or compare.over split into its field (model.field) and grain, or undefined when it is not
 // model.field:grain.
 export function overField(over: unknown): { field: string; model: string; name: string; grain: string } | undefined {
   const p = typeof over === "string" ? parseRequestField(over) : undefined;

@@ -129,6 +129,33 @@
               "description": "The number of periods a trailing total adds up, the current one included."
             }
           }
+        },
+        "compare": {
+          "type": "object",
+          "description": "Each measure beside its value in the period before (prior) and the same period a year earlier (year_ago), with the change and the change as a fraction of the earlier value, over one of the request's time dimensions. PostgreSQL sources only.",
+          "additionalProperties": false,
+          "required": [
+            "with"
+          ],
+          "properties": {
+            "over": {
+              "type": "string",
+              "pattern": "^([a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*)?:[a-z]+$",
+              "description": "model.field:grain, one of the request's dimensions written in full; the :grain shorthand is refused here."
+            },
+            "with": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "prior",
+                  "year_ago"
+                ]
+              },
+              "description": "prior: the period before; year_ago: the same period a year earlier (day, month, quarter or year grain)."
+            }
+          }
         }
       }
     },
