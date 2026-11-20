@@ -24,6 +24,7 @@ import { findSegment, segmentNames } from "../segments.ts";
 import { type AppliedRows, rowsPredicate } from "./rowfilters.ts";
 import { resolveDefaultTime, sourceWeekStart } from "./calendar.ts";
 import { semiAdditive, semiAdditiveRequest } from "./semi-additive.ts";
+import { compileTimeShapes } from "./time-shapes.ts";
 import { aggregate, COMPILER_DIALECTS, embed, grained, Params, predicate } from "./sql.ts";
 import { throughMeasure } from "./bridge.ts";
 
@@ -181,6 +182,8 @@ function compileLayerInner(input: CompileInput): CompileResult {
     );
     return refuse(source.source, refusals);
   }
+  const shaped = compileTimeShapes(input, request, refusals, compileLayer);
+  if (shaped) return shaped;
   const metric = compileMetrics(input, request, refusals, compileLayer);
   if (metric) return metric;
   const measures = request.measures ?? [];

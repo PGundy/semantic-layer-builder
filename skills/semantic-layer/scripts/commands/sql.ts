@@ -5,6 +5,7 @@ import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { type CompileResult, compileRequest, type Refusal } from "../lib/compiler/index.ts";
 import { UserError } from "../lib/errors.ts";
+import { timeShapeWords } from "../lib/time-request-words.ts";
 import { formatJson, plainText } from "../lib/output.ts";
 import { parseYamlText } from "../lib/yaml.ts";
 
@@ -109,6 +110,7 @@ const spec: CommandSpec = {
     }
     ctx.out(plainText(result.sql));
     ctx.out("");
+    for (const w of timeShapeWords(read.request)) ctx.out(plainText(w));
     const shown = result.params.map((v, i) => `$${i + 1} = ${JSON.stringify(v)}`).join(", ");
     ctx.out(plainText(`Parameters, bound in order: ${shown || "none"}`));
     for (const r of result.row_filters) {
