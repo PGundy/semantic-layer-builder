@@ -60,6 +60,7 @@ const byName = (s: Snapshot, name: string): SnapshotTable => {
 };
 
 // What the two paths must agree on. The foreign-key copies a partitioned table's partitions keep are not compared.
+// The export file carries no constraint names, so a key is compared by its columns and target.
 const shape = (s: Snapshot) =>
   s.tables.map((t) => ({
     name: t.name,
@@ -67,7 +68,7 @@ const shape = (s: Snapshot) =>
     description: t.description,
     row_count: t.row_count,
     primary_key: t.primary_key,
-    foreign_keys: t.foreign_keys,
+    foreign_keys: (t.foreign_keys ?? []).map((fk) => ({ columns: fk.columns, references: fk.references })),
     columns: t.columns.map(({ profile: _, ...c }) => c),
   }));
 
@@ -97,7 +98,9 @@ describe("postgres version", () => {
     // A never-analyzed table has no count; an analyzed empty table reads 0 from PostgreSQL 14 and no count before.
     expect(byName(snap, "orders").row_count).toBeNull();
     expect(byName(snap, "empty_analyzed").row_count).toBe(versionNum >= 140000 ? 0 : null);
-    expect(byName(snap, "orders").foreign_keys).toEqual([{ columns: ["customer_id"], references: { schema, table: "customers", columns: ["customer_id"] } }]);
+    expect(byName(snap, "orders").foreign_keys).toEqual([
+      { columns: ["customer_id"], references: { schema, table: "customers", columns: ["customer_id"] }, constraint: "orders_customer_id_fkey" },
+    ]);
     expect(byName(snap, "order_lines").primary_key).toEqual(["line_no", "order_id"]);
     expect(byName(snap, "order_lines").columns.find((c) => c.name === "qty")!.type).toBe("numeric(10,2)");
     expect(byName(snap, "events").primary_key).toEqual(["event_id", "happened_at"]);
