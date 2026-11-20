@@ -1003,7 +1003,9 @@ const spec: CommandSpec = {
     "A time dimension takes a grain as model.field:grain. Filter ops: eq, neq, in, not_in, gt, gte, lt, lte, between\n" +
     "(value [low, high]), is_null, not_null (no value). A request with no measures starts from its first dimension's model.\n" +
     'running (PostgreSQL only): {"over": "orders.order_date:month"}, one of the dimensions in full, adds <measure>_running to each sum or count\n' +
-    'measure; with "periods": 3 it adds <measure>_trailing_3, the total of the last 3 months.',
+    'measure; with "periods": 3 it adds <measure>_trailing_3, the total of the last 3 months.\n' +
+    'compare (PostgreSQL only): {"over": "orders.order_date:month", "with": ["prior", "year_ago"]}, one of the dimensions in full,\n' +
+    "adds <measure>_prior and <measure>_year_ago to each measure or metric, each with its _change and _pct (a fraction).",
   options: {
     name: { type: "string" },
     by: { type: "string" },

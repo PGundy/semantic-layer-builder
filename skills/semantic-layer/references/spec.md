@@ -747,6 +747,27 @@ request:
 - A filter on the `over` dimension at its grain applies after the totals, in the outer `WHERE` on the period, with its parameters after the inner request's: it picks the periods shown and never moves where a total starts. `order_by` and `limit` apply last.
 - The golden readback, `semlayer goldens new`, `run` and `confirm` and `semlayer sql` state the option in words: "Running total of each figure (revenue_running) over invoice.invoice_date by month, from the first month of data; a month with no rows adds 0; rows with no invoice.invoice_date are left out.", or "Total of the last 3 months of each figure (revenue_trailing_3) over invoice.invoice_date by month, each month included; blank until 3 months of data; ...", and with a filter on the period, "A filter on invoice.invoice_date:month only picks the months shown; the totals still start at the first month of data."
 
+A request asks for each figure beside an earlier period with `compare`. Like `running`, it adds no item to approve, and the golden's hash covers it as written.
+
+```yaml
+request:
+  source: chinook
+  measures: [invoice.revenue, avg_invoice_value]
+  dimensions: [invoice.invoice_date:month]
+  compare:
+    over: invoice.invoice_date:month   # one of the request's dimensions, in full
+    with: [prior, year_ago]            # one or both, each once
+  filters:
+    - {field: invoice.invoice_date:month, op: gte, value: "2025-01-01"}   # picks the months shown
+```
+
+- `over` follows the rules of `running.over`: one of the request's dimensions in full, the `:grain` shorthand refused, no other dimension that is the same field at another grain, PostgreSQL sources only. `with` lists `prior` (the period before) and `year_ago` (the same period a year earlier), at least one, each once. `year_ago` takes the day, month, quarter and year grains; by `week` or `hour` it is refused as `invalid_request`, naming `prior` and the month grain.
+- It takes any measure, a balance included, and any ratio or derived metric. The inner request (without `compare`, `order_by`, `limit` and the filters on the `over` dimension) compiles as any request does, a metric through its own `WITH` nested inside `"periods"`, so a ratio is divided in each period before it is compared. It lies over `"series"`, `"groups"` and `"filled"` as a running total's does: in `"filled"` a period with no rows is 0 for a `sum`, `count` or `count_distinct` measure, and null for a balance, a metric and any other measure.
+- `prior` is `lag(<m>) over (partition by <other dimensions> order by <period>)` over `"filled"`: the period before, even when it had no rows. `year_ago` is a left join of `"filled"` to itself as `"year ago"` on `<period> = cast(<period> - interval '1 year' as date)`, the other dimensions `is not distinct from`; by day, 29 February reads 28 February of the year before. A period whose earlier period falls before the series starts gets null.
+- Each figure gets three columns per comparison, in the order of `with`: `<m>_<c>`, `<m>_<c>_change` (`<m> - <m>_<c>`) and `<m>_<c>_pct` (`cast(<m> - <m>_<c> as numeric) / nullif(<m>_<c>, 0)`), a fraction (-0.25 for a fall of a quarter), null when the earlier figure is 0 or null. A column the request already selects is refused.
+- A filter on the `over` dimension at its grain applies after the comparison, in the outer `WHERE`: it picks the periods shown, and the first of them is still compared with the period before it. A filter on a measure or metric is refused as `invalid_request`, since it would hide the earlier period a row is compared with; so are a filter on the `over` field with no grain or at another grain, a request with no measure, and a `compare` with no `over`. The user's row filters and visibility apply in the inner request: a restricted user's comparison is over the rows they may see, and a measure they may not see refuses the whole request.
+- The golden readback, `semlayer goldens new`, `run` and `confirm` and `semlayer sql` state it in words: "Each figure beside the month before and the same month a year earlier, with the change and the change as a fraction of the earlier figure (revenue_prior, ...), over invoice.invoice_date by month; blank where the earlier month is before the data; a month with no rows counts as 0 for a sum or a count (any other figure, a balance or a metric there is blank), and the fraction is blank when the earlier figure is 0 or blank; rows with no invoice.invoice_date are left out.", by day with `year_ago` "A year before 29 February is 28 February.", and with a filter on the period "A filter on invoice.invoice_date:month only picks the months shown; each is still compared with the earlier months, shown or not."
+
 ## access.yaml
 
 `access.yaml` says who sees what. No `access.yaml` means open mode with no roles: everyone sees every approved item. A draft model, dimension, measure or metric, or an approved one that changed since its approval (see Approval hashes), is never exposed to anyone in either mode; tools that read the layer flag every draft item they use, and `semlayer access` reports one hidden with the reason `draft`.
