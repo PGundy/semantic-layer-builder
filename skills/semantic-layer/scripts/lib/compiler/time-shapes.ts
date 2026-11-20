@@ -1,10 +1,12 @@
 // The time views of a request in the reference compiler (spec: Metric semantics, Running totals and
-// comparisons): a request with `running` is compiled by cumulative.ts over the grouped request
-// without it. compileTimeShapes returns undefined for a request with no time view, so it compiles
-// as before. A time view compiles for PostgreSQL only, and a request takes one of them.
+// comparisons): a request with `running` is compiled by cumulative.ts, and one with `compare` by
+// period-compare.ts, over the grouped request without it. compileTimeShapes returns undefined for a
+// request with no time view, so it compiles as before. A time view compiles for PostgreSQL only, and
+// a request takes one of them.
 import type { QueryRequest } from "../types.ts";
 import { TIME_SHAPE_KEYS } from "../time-request.ts";
 import { compileRunning } from "./cumulative.ts";
+import { compileCompare } from "./period-compare.ts";
 import type { CompileInput, CompileResult, Refusal } from "./index.ts";
 
 type Compile = (input: CompileInput) => CompileResult;
@@ -25,5 +27,5 @@ export function compileTimeShapes(input: CompileInput, request: QueryRequest, pr
   if (asked.length > 1)
     refusals.push({ code: "invalid_request", message: `the request names ${asked.join(" and ")}; a request takes one of ${TIME_SHAPE_KEYS.join(", ")}: ask for each in a request of its own` });
   if (refusals.length) return { ok: false, source: source.source, reason: refusals.map((r) => r.message).join("; "), refusals };
-  return compileRunning(input, request, compile);
+  return request.compare ? compileCompare(input, request, compile) : compileRunning(input, request, compile);
 }
