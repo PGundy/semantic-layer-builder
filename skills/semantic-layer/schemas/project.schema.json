@@ -27,6 +27,11 @@
       "pattern": "^[a-z][a-z0-9_]*$",
       "description": "Source used when a command or request names none."
     },
+    "layer_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$",
+      "description": "The version of the layer as last released (semlayer change close), such as 1.1. Absent until a first release is recorded."
+    },
     "settings": {
       "type": "object",
       "description": "Tuning for the skill's interview.",
