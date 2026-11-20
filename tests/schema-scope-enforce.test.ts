@@ -78,6 +78,13 @@ describe("add-join and check-join", () => {
           "read it back and approve it on their yes (semlayer approve --target schema-pair:warehouse:sales:crm), then run this semlayer add-join again.",
       );
       expect(readFileSync(ordersFile(root), "utf8")).toBe(before);
+      // With --json the refusal is one object carrying the code validate and the compiler use.
+      const j = await semlayer(root, ["add-join", "--source", "warehouse", "--model", "orders", "--name", "customer", "--to", "customers", "--keys", "customer_id=customer_id", "--json"]);
+      expect(j.code).toBe(1);
+      expect(j.json<{ code: string; next: string }>()).toMatchObject({
+        code: "scope.cross_schema_undeclared",
+        next: "semlayer add-cross-schema --source warehouse --from sales --to crm --keys orders.customer_id=customers.customer_id",
+      });
     }
     const root = await project(PAIR_APPROVED, "none");
     const add = (keys: string, name = "customer") => semlayer(root, ["add-join", "--source", "warehouse", "--model", "orders", "--name", name, "--to", "customers", "--keys", keys]);

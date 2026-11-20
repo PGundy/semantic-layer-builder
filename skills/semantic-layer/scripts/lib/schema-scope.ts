@@ -209,6 +209,7 @@ export function undeclaredPairError(what: string, source: string, join: SchemaJo
       `if yes, record the pair with ${record}, read it back and approve it on their yes ` +
       `(semlayer approve --target schema-pair:${source}:${pair.fromSchema}:${pair.toSchema}), then ${then}.`,
     record,
+    "scope.cross_schema_undeclared",
   );
 }
 
