@@ -2,7 +2,9 @@
 // write files in the working root by hand (a draft golden), then run semlayer commands there, with the
 // run's clock. With the scenario's fixture, `{fixture}` in a semlayer argument stands for the fixture
 // directory relative to the working root, as in a scenario's views, so a script can give a source
-// its connection (the upgrade from an export); the transcript keeps the argument as written.
+// its connection (the upgrade from an export); the transcript keeps the argument as written. In a
+// postgres scenario `{schema}` stands for the run's schema, and the commands run with the connection
+// URL in the variable the scenario names.
 // In a multi-agent script, the turns with "agent" after an interviewer turn are the tasks it
 // dispatched: each runs its semlayer commands through the role guard of lib/roles.ts, which refuses a
 // command the role may not run, and comes back to the interviewer as that role's turn. An owner
@@ -43,7 +45,7 @@ export function scriptedDriver(script: Script, clock: Clock, fixture?: string): 
   let ownerAt = 0;
   // Runs a turn's semlayer commands as `role`; a command the role may not run is refused and not run.
   // Returns the commands and what each printed, as the counting rule reads it.
-  const runAs = async (role: Role, turn: ScriptTurn, root: string): Promise<{ commands: CommandRun[]; printed: string[] }> => {
+  const runAs = async (role: Role, turn: ScriptTurn, root: string, schema?: string, env?: Record<string, string>): Promise<{ commands: CommandRun[]; printed: string[] }> => {
     const commands: CommandRun[] = [];
     const shown: string[] = [];
     const fixtureDir = fixture === undefined ? undefined : relative(root, join(REPO_ROOT, "fixtures", fixture)).split(sep).join("/");
@@ -55,7 +57,11 @@ export function scriptedDriver(script: Script, clock: Clock, fixture?: string): 
         shown.push(refused);
         continue;
       }
-      const r = await semlayerIn(root, fixtureDir === undefined ? args : args.map((a) => a.replaceAll("{fixture}", fixtureDir)), clock);
+      if (schema === undefined && args.some((a) => a.includes("{schema}"))) {
+        throw new EvalError(`The command ${command} uses {schema}, which only a postgres scenario has (intake.dialect "postgres"); name the schema there or drop the placeholder.`);
+      }
+      const given = args.map((a) => a.replaceAll("{schema}", schema ?? ""));
+      const r = await semlayerIn(root, fixtureDir === undefined ? given : given.map((a) => a.replaceAll("{fixture}", fixtureDir)), clock, env);
       commands.push({ command, exit_code: r.code });
       shown.push(printed(r.out, r.err, root));
     }
@@ -73,12 +79,12 @@ export function scriptedDriver(script: Script, clock: Clock, fixture?: string): 
         writeFileSync(path, text);
         written.push(text);
       }
-      const { commands, printed: shown } = await runAs(ROLES.interviewer, turn, input.root);
+      const { commands, printed: shown } = await runAs(ROLES.interviewer, turn, input.root, input.schema, input.env);
       const dispatches: RoleTurn[] = [];
       while (script.skill[skillAt]?.agent) {
         const task = script.skill[skillAt++]!;
         const role = ROLES[task.agent!];
-        const done = await runAs(role, task, input.root);
+        const done = await runAs(role, task, input.root, input.schema, input.env);
         dispatches.push({ agent: task.agent!, text: task.text, tokens: roleTokens(role, { text: task.text, printed: done.printed }), ...(done.commands.length ? { commands: done.commands } : {}) });
       }
       return {

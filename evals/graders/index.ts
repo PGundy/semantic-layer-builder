@@ -23,6 +23,8 @@ export interface GradeOptions {
   scenario?: Scenario;
   // Its file, which a mapping file in grading resolves from; evals/scenarios/ when not given.
   scenarioFile?: string;
+  // The environment sources are opened with, such as the URL variable of a postgres source.
+  env?: Record<string, string | undefined>;
 }
 
 // JSON text, or an EvalError naming the file (and line) that does not parse.
@@ -68,6 +70,7 @@ export function loadRun(dir: string, opts: GradeOptions = {}): RunFiles {
     grading: scenario.grading ?? {},
     intakeSource: scenario.intake.source,
     scenarioDir: scenarioFile ? dirname(scenarioFile) : SCENARIOS_DIR,
+    ...(opts.env ? { env: opts.env } : {}),
   };
 }
 
