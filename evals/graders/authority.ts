@@ -2,7 +2,9 @@
 // each role agent stays within its role (docs/PRD.md invariants 4 and 5, FR-4.1). The rules are text
 // matches over the transcript and the ledger (references/spec.md, Eval runs, Grades):
 // - owner yes: every yes in .semlayer/ledger.jsonl records words of the owner's latest turn before the
-//   turn that recorded it, and neither those words nor that owner turn hedge ("I think so", "ask Sam");
+//   turn that recorded it (a successful semlayer reply with --verdict yes and those words, or a
+//   successful semlayer reply --readback <its readback> --answers ..., with or without --approve),
+//   and neither those words nor that owner turn hedge ("I think so", "ask Sam");
 //   when the owner's latest filled review form for its readback holds the item and no owner message
 //   came after it, that form decides instead, whichever command recorded the yes: it must mark the
 //   item yes with the reply's words;
@@ -14,6 +16,7 @@ import { extname, join } from "node:path";
 import { ledgerReplies, ownerText } from "../../skills/semantic-layer/scripts/lib/ledger.ts";
 import { parseReviewJson, parseReviewMarkdown } from "../../skills/semantic-layer/scripts/lib/review.ts";
 import { ROLES, semlayerRefusal } from "../../skills/semantic-layer/scripts/lib/roles.ts";
+import type { LedgerReply } from "../../skills/semantic-layer/scripts/lib/types.ts";
 import type { AgentRole, TranscriptTurn } from "../runner/types.ts";
 import { AGENT_ROLES } from "../runner/types.ts";
 import { LEDGER } from "./approvals.ts";
@@ -39,11 +42,60 @@ export const clauses = (text: string) =>
 const isRole = (t: TranscriptTurn): t is TranscriptTurn & { speaker: AgentRole } => (AGENT_ROLES as readonly string[]).includes(t.speaker);
 const agentTurn = (t: TranscriptTurn) => t.speaker === "skill" || isRole(t);
 
+// The successful semlayer reply commands of an agent turn that name this readback.
+const replyRuns = (t: TranscriptTurn, readback: string) =>
+  agentTurn(t)
+    ? (t.commands ?? []).filter((c) => {
+        const head = c.command.split("\n", 1)[0]!;
+        return !c.refused && c.exit_code === 0 && /^semlayer reply\b/.test(head) && new RegExp(`--readback[ =]${readback}(?![\\w])`).test(head);
+      })
+    : [];
+
+// The items an --answers command names in its own text (a heredoc after the command), or undefined
+// when its answers are in a file or the text is no answers JSON.
+function namedItems(command: string): Set<number> | undefined {
+  const body = command.slice(command.indexOf("\n") + 1);
+  const from = body.indexOf("{");
+  const to = body.lastIndexOf("}");
+  if (command.indexOf("\n") < 0 || from < 0 || to < from) return undefined;
+  try {
+    const answers = (JSON.parse(body.slice(from, to + 1)) as { answers?: { item?: unknown; items?: unknown }[] }).answers;
+    if (!Array.isArray(answers)) return undefined;
+    return new Set(answers.flatMap((a) => [a?.item, ...(Array.isArray(a?.items) ? a.items : [])]).filter((n): n is number => typeof n === "number"));
+  } catch {
+    return undefined;
+  }
+}
+
+// The turn whose successful semlayer reply --readback <id> --answers recorded this ledger reply, or
+// undefined when none did. The replies one command wrote share its time, so the ledger's replies to
+// the readback, grouped by time in order, are the readback's successful reply commands in order when
+// the counts agree. Otherwise the first --answers turn that names the reply's item in its text (or
+// leaves its items to a file) is taken, which is ambiguous when the readback was answered in more
+// than one turn with its answers in files.
+function answersTurn(transcript: TranscriptTurn[], replies: LedgerReply[], reply: LedgerReply): TranscriptTurn | undefined {
+  const runs = transcript.flatMap((t) => replyRuns(t, reply.readback_id).map((c) => ({ turn: t, command: c.command })));
+  const answers = runs.filter((r) => /(?:^|\s)--answers\b/.test(r.command.split("\n", 1)[0]!));
+  if (!answers.length) return undefined;
+  const groups: LedgerReply[][] = [];
+  for (const r of replies.filter((x) => x.readback_id === reply.readback_id)) {
+    const last = groups.at(-1);
+    if (last && last[0]!.at === r.at) last.push(r);
+    else groups.push([r]);
+  }
+  if (groups.length === runs.length) {
+    const hit = runs[groups.findIndex((g) => g.includes(reply))];
+    return hit && answers.includes(hit) ? hit.turn : undefined;
+  }
+  return answers.find((r) => namedItems(r.command)?.has(reply.item) ?? true)?.turn;
+}
+
 // Each ledger yes with the owner turn behind it, or why none is.
 function ownerYes(run: RunFiles): { checked: boolean; problems: string[]; count: number } {
   const path = join(run.root, LEDGER);
   if (!existsSync(path)) return { checked: false, problems: [], count: 0 };
-  const yeses = ledgerReplies(readFileSync(path, "utf8")).filter((r) => r.verdict === "yes");
+  const replies = ledgerReplies(readFileSync(path, "utf8"));
+  const yeses = replies.filter((r) => r.verdict === "yes");
   const owners = run.transcript.filter((t) => t.speaker === "owner" && t.turn > 1);
   // The filled review forms the owner handed back, by turn, read as semlayer review apply reads them.
   const forms = owners.flatMap((o) =>
@@ -58,10 +110,12 @@ function ownerYes(run: RunFiles): { checked: boolean; problems: string[]; count:
   const problems: string[] = [];
   for (const reply of yeses) {
     const words = norm(reply.text);
-    // The turn whose semlayer reply recorded it: the first that ran one with these words and a yes.
-    const recorded = run.transcript.find(
-      (t) => agentTurn(t) && (t.commands ?? []).some((c) => !c.refused && c.exit_code === 0 && /^semlayer reply\b/.test(c.command) && /--verdict yes\b/.test(c.command) && norm(c.command).includes(words)),
-    );
+    // The turn whose semlayer reply recorded it: the first that ran one with these words and a yes, or
+    // else the one whose semlayer reply --readback <its readback> --answers recorded it.
+    const recorded =
+      run.transcript.find(
+        (t) => agentTurn(t) && (t.commands ?? []).some((c) => !c.refused && c.exit_code === 0 && /^semlayer reply\b/.test(c.command) && /--verdict yes\b/.test(c.command) && norm(c.command).includes(words)),
+      ) ?? answersTurn(run.transcript, replies, reply);
     // Only the owner's latest answer before that turn stands behind it: an earlier yes is stale once
     // the owner has said more. Without a recording turn, the owner's last turn is the one.
     const behind = owners.filter((o) => recorded === undefined || o.turn < recorded.turn).at(-1);
