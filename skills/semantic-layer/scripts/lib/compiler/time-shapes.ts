@@ -1,12 +1,14 @@
 // The time views of a request in the reference compiler (spec: Metric semantics, Running totals and
-// comparisons): a request with `running` is compiled by cumulative.ts, and one with `compare` by
-// period-compare.ts, over the grouped request without it. compileTimeShapes returns undefined for a
-// request with no time view, so it compiles as before. A time view compiles for PostgreSQL only, and
-// a request takes one of them.
+// comparisons): a request with `running` is compiled by cumulative.ts, one with `compare` by
+// period-compare.ts, over the grouped request without it, and one with `window` by trailing-window.ts.
+// compileTimeShapes returns undefined for a request with no time view, so it compiles as before. A
+// time view compiles for PostgreSQL only, and a request takes one of them, except that a window takes
+// a compare that names only `with` (compileWindow refuses compare.over and running beside it).
 import type { QueryRequest } from "../types.ts";
 import { TIME_SHAPE_KEYS } from "../time-request.ts";
 import { compileRunning } from "./cumulative.ts";
 import { compileCompare } from "./period-compare.ts";
+import { compileWindow } from "./trailing-window.ts";
 import type { CompileInput, CompileResult, Refusal } from "./index.ts";
 
 type Compile = (input: CompileInput) => CompileResult;
@@ -24,8 +26,9 @@ export function compileTimeShapes(input: CompileInput, request: QueryRequest, pr
       message: `source ${source.source} is ${source.dialect}; a request with ${asked.join(" or ")} compiles for PostgreSQL sources only`,
       next: `Ask for the request without ${asked.join(" or ")} on this source, or on a PostgreSQL source, and run semlayer sql again.`,
     });
-  if (asked.length > 1)
+  if (asked.length > 1 && !request.window)
     refusals.push({ code: "invalid_request", message: `the request names ${asked.join(" and ")}; a request takes one of ${TIME_SHAPE_KEYS.join(", ")}: ask for each in a request of its own` });
   if (refusals.length) return { ok: false, source: source.source, reason: refusals.map((r) => r.message).join("; "), refusals };
+  if (request.window) return compileWindow(input, request, compile);
   return request.compare ? compileCompare(input, request, compile) : compileRunning(input, request, compile);
 }

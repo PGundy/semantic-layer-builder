@@ -67,7 +67,7 @@ export function spine(s: SpineInput): string[] {
 // The words a time view's refusals use: its request key, the view as a noun ("a running total"),
 // and why a filter on a measure is refused under it.
 export interface ViewWords {
-  key: "running" | "compare";
+  key: "running" | "compare" | "window";
   noun: string;
   measureFilter: string;
 }

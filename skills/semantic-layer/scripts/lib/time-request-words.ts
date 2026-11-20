@@ -2,12 +2,14 @@
 // golden readback, semlayer goldens new, run and confirm, and semlayer sql: the sentences say what
 // the owner's yes to the figures covers.
 import { parseRequestField } from "./refs.ts";
-import { grainPlural, overField } from "./time-request.ts";
+import { dayCount, isDate, windowBounds } from "./compiler/trailing-window.ts";
+import { type Comparison, grainPlural, overField } from "./time-request.ts";
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
 // One sentence per time option of the request, none for a request without one.
 export function timeShapeWords(request: unknown): string[] {
+  if (isObj(request) && isObj(request.window)) return windowWords(request, request.window);
   if (isObj(request) && isObj(request.compare)) return compareWords(request, request.compare);
   if (!isObj(request) || !isObj(request.running)) return [];
   const running = request.running;
@@ -49,5 +51,33 @@ function compareWords(request: Record<string, unknown>, compare: Record<string, 
   if (g === "day" && withs.includes("year_ago")) out.push("A year before 29 February is 28 February.");
   const filtered = (Array.isArray(request.filters) ? request.filters : []).some((f) => isObj(f) && f.field === compare.over);
   if (filtered) out.push(`A filter on ${compare.over} only picks the ${grainPlural(g)} shown; each is still compared with the earlier ${grainPlural(g)}, shown or not.`);
+  return out;
+}
+
+// The window in words: its days as dates from windowBounds, the dates it is set beside, the
+// columns it adds, and what an empty or early window shows.
+function windowWords(request: Record<string, unknown>, window: Record<string, unknown>): string[] {
+  const dim = String(window.dimension);
+  const days = typeof window.days === "number" ? window.days : NaN;
+  if (window.as_of !== undefined && !isDate(window.as_of))
+    return [`A window of ${Number.isFinite(days) ? days : "?"} days of ${dim} whose as-of date (window.as_of) is not a day of the calendar, so it does not compile; write the last day of the window as YYYY-MM-DD.`];
+  if (!isDate(window.as_of))
+    return [`A window of ${Number.isFinite(days) ? days : "?"} days of ${dim} that states no as-of date (window.as_of), so it does not compile: semlayer validate reports it as metric.window_as_of_missing, and semlayer sql fills it from the clock.`];
+  const cmp = isObj(request.compare) && Array.isArray(request.compare.with) ? request.compare.with : [];
+  const withs = cmp.filter((w): w is Comparison => w === "prior" || w === "year_ago");
+  const b = windowBounds({ days, as_of: window.as_of }, withs);
+  const span = (d: { start: string; end: string }) => `${d.start} to ${d.end}`;
+  const against = withs.map((w) => `against ${span(b[w]!)}`).join(" and ");
+  const out = [
+    `Over the ${days} days ${span(b.current)} (as of ${window.as_of})${against ? `, ${against}` : ""}; days of ${dim} as its expr gives them; a window that starts before the first day of data is blank.`,
+  ];
+  const names = (Array.isArray(request.measures) ? request.measures : []).flatMap((m) => (typeof m === "string" ? [parseRequestField(m)?.field ?? m] : []));
+  const columns = names.flatMap((n) => [n, ...withs.flatMap((w) => [`${n}_${w}`, `${n}_${w}_change`, `${n}_${w}_pct`])]);
+  const which = withs.map((w) => (w === "prior" ? `_prior the ${days} days before` : "_year_ago the same dates a year earlier")).join(", ");
+  out.push(
+    `Columns ${columns.join(", ")}${which ? ` (${which}, each with the change and the change as a fraction of the earlier figure)` : ""}; a window with no rows counts as 0 for a sum or a count (a metric or any other figure there is blank)${withs.length ? ", and the fraction is blank when the earlier figure is 0 or blank" : ""}.`,
+  );
+  if (b.year_ago && dayCount(b.year_ago) !== days)
+    out.push(`The year-ago window is ${dayCount(b.year_ago)} days, not ${days}: one of the two ranges holds 29 February, and a year before 29 February is 28 February.`);
   return out;
 }
