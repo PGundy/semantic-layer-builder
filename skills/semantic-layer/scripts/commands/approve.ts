@@ -735,9 +735,11 @@ const spec: CommandSpec = {
         throw new UserError(
           `Cannot approve ${r.target}: ${r.reason}; nothing was approved. semlayer approve needs the owner's yes in ${LEDGER_FILE} to it as it now stands. ` +
             `Next: ${nextFor(r)}.${fixFirst.length ? ` Before reading it back, fix: ${fixFirst.map((p) => p.replace(/\.$/, "")).join("; ")}.` : ""}`,
+          undefined,
+          r.byMismatch ? "by_mismatch" : "approval.no_ledger_yes",
         );
       }
-      throw new UserError(`Cannot approve ${ref}; nothing was approved:\n${refusedText()}`);
+      throw new UserError(`Cannot approve ${ref}; nothing was approved:\n${refusedText()}`, undefined, unanswered.length ? "approval.no_ledger_yes" : "by_mismatch");
     }
 
     // The approval a revoke of access.yaml set aside in last_approved.

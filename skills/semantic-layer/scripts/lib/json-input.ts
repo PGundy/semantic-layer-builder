@@ -9,7 +9,7 @@ import { UserError } from "./errors.ts";
 export async function readJsonObject(ctx: CommandContext, flag: string, file: string, usage: string): Promise<Record<string, unknown>> {
   let text: string;
   if (file === "-") {
-    if (!ctx.stdin) throw new UserError(`--${flag} - reads stdin, which this caller does not give; write the answers to a file and pass --${flag} <path>. ${usage}`);
+    if (!ctx.stdin) throw new UserError(`--${flag} - reads stdin, which this caller does not give; write the answers to a file and pass --${flag} <path>. ${usage}`, undefined, "input_unreadable");
     text = await ctx.stdin();
   } else {
     try {
@@ -17,7 +17,7 @@ export async function readJsonObject(ctx: CommandContext, flag: string, file: st
     } catch (e) {
       const code = (e as { code?: string }).code;
       const why = code === "ENOENT" ? "there is no such file" : code === "EISDIR" ? "it is a directory" : (e as Error).message;
-      throw new UserError(`Cannot read ${file}: ${why}. Nothing was written. Write the answers to that file, or pass --${flag} - to read them from stdin. ${usage}`);
+      throw new UserError(`Cannot read ${file}: ${why}. Nothing was written. Write the answers to that file, or pass --${flag} - to read them from stdin. ${usage}`, undefined, "input_unreadable");
     }
   }
   const where = file === "-" ? "stdin" : file;
@@ -25,9 +25,9 @@ export async function readJsonObject(ctx: CommandContext, flag: string, file: st
   try {
     data = JSON.parse(text);
   } catch (e) {
-    throw new UserError(`${where} is not JSON (${(e as Error).message}); nothing was written. ${usage}`);
+    throw new UserError(`${where} is not JSON (${(e as Error).message}); nothing was written. ${usage}`, undefined, "input_invalid");
   }
-  if (typeof data !== "object" || data === null || Array.isArray(data)) throw new UserError(`${where} is not a JSON object; nothing was written. ${usage}`);
+  if (typeof data !== "object" || data === null || Array.isArray(data)) throw new UserError(`${where} is not a JSON object; nothing was written. ${usage}`, undefined, "input_invalid");
   return data as Record<string, unknown>;
 }
 

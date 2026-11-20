@@ -396,7 +396,10 @@ describe("a client without elicitation", () => {
     const a = await acme(false);
     const refused = await a.client.call("semlayer_approve", { target: TARGET });
     expect(refused.result.isError).toBe(true);
-    expect(texts(refused).join("\n")).toBe((await semlayer(a.root, ["approve", "--target", TARGET, "--json"])).err);
+    const cli = await semlayer(a.root, ["approve", "--target", TARGET, "--json"]);
+    expect(texts(refused)).toEqual([cli.out, cli.err]);
+    expect(refused.result.structuredContent).toEqual(cli.json());
+    expect(refused.result.structuredContent.code).toBe("approval.no_ledger_yes");
     const rb = (await a.client.call("semlayer_readback", { targets: [TARGET] })).result.content[0].text;
     const id = JSON.parse(rb).readback_id;
     expect((await a.client.call("semlayer_reply", { readback: id, item: "1", text: "yes", verdict: "yes", by: "Dana Ruiz" })).result.isError).toBeUndefined();
