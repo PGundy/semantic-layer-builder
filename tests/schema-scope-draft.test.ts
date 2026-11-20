@@ -61,7 +61,7 @@ describe("draft on a two-schema snapshot", () => {
   test("semlayer draft --source warehouse writes the same-schema joins and the question", async () => {
     const { root } = tempRoot();
     await initProject(root, "two");
-    writeFileSync(join(root, "sources", "warehouse.yaml"), "source: warehouse\ndialect: postgres\nconnection:\n  env: WAREHOUSE_URL\nintake:\n  schemas: [sales, crm]\n");
+    writeFileSync(join(root, "sources", "warehouse.yaml"), "source: warehouse\ndialect: postgres\nconnection:\n  env: WAREHOUSE_URL\nintake:\n  schemas: [sales, crm]\n  primary: sales\n");
     mkdirSync(join(root, "snapshots"), { recursive: true });
     writeFileSync(join(root, "snapshots", "warehouse.json"), readFileSync(FIXTURE, "utf8"));
     const r = await semlayer(root, ["draft", "--source", "warehouse", "--json"]);

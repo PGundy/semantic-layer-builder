@@ -16,4 +16,13 @@ export const RULES: DocRule[] = [
   ["spec.md", "a pair is approved on the owner's yes with its target", "`semlayer approve --target schema-pair:<s>:<from>:<to>` writes `status: approved`, `approved_by`, `approved_at` and `approved_hash`"],
   ["spec.md", "a pair counts as approved only while its hash matches", "A pair counts as approved only when its `approved_hash` matches the hash of its `from`, `to` and `keys` as they now stand"],
   ["spec.md", "the edit hook guards a pair's approval fields", "or the schema pairs of `sources/<s>.yaml`: only `semlayer approve` and `semlayer goldens confirm` write them"],
+  ["spec.md", "the schema question asks before draft on more than one schema", "While it is open, `semlayer status` holds the `scope` phase at it"],
+  ["spec.md", "the schema question's words", "Your data sits in more than one schema (A, B). Is A enough for your questions?"],
+  ["spec.md", "the answers carry their commands", "`ask_owner.options`, `[{ answer, commands }]`"],
+  ["spec.md", "draft refuses until a primary is set", "`semlayer draft` refuses with `scope.primary_unset`"],
+  ["spec.md", "draft keeps to the primary schema by default", "draft without `--tables` drafts only the primary schema's tables"],
+  ["phases/intake.md", "intake names the schema question", "**Which schema?** A first layer reads one schema, the primary"],
+  ["phases/scope.md", "the scope card reads the question and runs the chosen answer", "Read `ask_owner.text` to the owner as written, then run the commands of the answer they give from `ask_owner.options`"],
+  ["phases/scope.md", "a pair is approved only on the owner's yes", "approves it only on their yes"],
+  ["phases/draft.md", "draft keeps to the primary schema", "draft drafts by default only the primary schema's tables"],
 ];

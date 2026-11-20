@@ -241,3 +241,153 @@ export function keyProblem(snapshot: Pick<Snapshot, "tables">, pair: Pick<CrossS
   }
   return undefined;
 }
+
+// The schemas of the snapshot's tables in scope (`inScope`, every table when omitted): those
+// intake.schemas lists, in its order, then the rest by name. A table with no schema counts for none.
+export function schemasRead(
+  source: Pick<SourceConfig, "intake" | "source">,
+  snapshot: Pick<Snapshot, "tables"> | null | undefined,
+  inScope: (t: SnapshotTable) => boolean = () => true,
+): string[] {
+  const seen = new Set((snapshot?.tables ?? []).filter(inScope).map((t) => t.schema).filter((s): s is string => typeof s === "string" && s !== ""));
+  let listed: string[] = [];
+  try {
+    listed = intakeSchemas(source);
+  } catch {
+    // A malformed list is reported by the intake checks.
+  }
+  return [...listed.filter((s) => seen.has(s)), ...[...seen].filter((s) => !listed.includes(s)).sort()];
+}
+
+// Whether the source keeps a first layer to its primary schema: the schema question and draft's
+// refusal and default are designed for postgres only, so a source of another dialect drafts as before.
+export function keepsToPrimary(source: Pick<SourceConfig, "dialect">): boolean {
+  return source.dialect === "postgres";
+}
+
+// intake.primary as written, trimmed; undefined when the source names none.
+export function explicitPrimary(source: Pick<SourceConfig, "intake">): string | undefined {
+  const p = source.intake?.primary;
+  return typeof p === "string" && p.trim() ? p.trim() : undefined;
+}
+
+// The schema question (spec: Schema scope, The schema question): asked once the snapshot's tables in
+// scope are in more than one schema, while intake.primary is unset, or while a declared foreign key of
+// such a table between the primary schema and another of those schemas has no approved or declined pair.
+export interface SchemaQuestion {
+  source: string;
+  // The schemas read, the primary first.
+  schemas: string[];
+  // intake.primary, or, while it is unset, the schema the question proposes: the first intake.schemas
+  // lists, else the first by name. It is only proposed; nothing records it until the owner answers.
+  primary: string;
+  primary_set: boolean;
+  others: string[];
+  // The foreign keys between the primary schema and another schema read that no pair answers.
+  keys: { from: string; to: string; table: string; columns: string[]; references: string; constraint: string | null; draft: boolean }[];
+  // The semlayer setup that writes intake.primary, with the source's connection flags.
+  setup: string[];
+}
+
+export function schemaQuestion(
+  source: SourceConfig,
+  snapshot: Pick<Snapshot, "tables"> | null | undefined,
+  inScope: (t: SnapshotTable) => boolean = () => true,
+): SchemaQuestion | undefined {
+  if (!keepsToPrimary(source)) return undefined;
+  const read = schemasRead(source, snapshot, inScope);
+  if (read.length < 2) return undefined;
+  const explicit = explicitPrimary(source);
+  const primary = explicit ?? read[0]!;
+  const pairs = crossSchemaPairs(source);
+  const keys = crossSchemaFks({ tables: snapshot!.tables.filter(inScope) })
+    .filter((x) => x.from_schema !== null && x.to_schema !== null && read.includes(x.from_schema) && read.includes(x.to_schema))
+    .filter((x) => (x.from_schema === primary || x.to_schema === primary) && !pairAnswered(findPair(pairs, x.from_schema!, x.to_schema!)))
+    .map((x) => ({
+      from: x.from_schema!,
+      to: x.to_schema!,
+      table: `${x.from_schema}.${x.table.name}`,
+      columns: x.fk.columns,
+      references: `${x.to_schema}.${x.fk.references.table}`,
+      constraint: x.fk.constraint ?? null,
+      draft: findPair(pairs, x.from_schema!, x.to_schema!) !== undefined,
+    }));
+  if (explicit !== undefined && !keys.length) return undefined;
+  return {
+    source: source.source,
+    schemas: [primary, ...read.filter((s) => s !== primary)],
+    primary,
+    primary_set: explicit !== undefined,
+    others: read.filter((s) => s !== primary),
+    keys,
+    setup: ["--source", source.source, "--dialect", source.dialect, ...connectionArgs(source)],
+  };
+}
+
+// The flags semlayer setup takes again to update an existing source: its connection as written.
+function connectionArgs(source: SourceConfig): string[] {
+  const c = source.connection ?? {};
+  if (source.intake?.mode === "export") return ["--export", "<export file>"];
+  if (c.env) return ["--env", c.env];
+  if (c.env_prefix) return ["--env-prefix", c.env_prefix];
+  if (source.dialect === "duckdb") {
+    const views = Object.entries(c.views ?? {}).flatMap(([k, v]) => ["--view", `${k}=${v}`]);
+    return [...(c.database ? ["--database", c.database] : []), ...views];
+  }
+  return ["--env", "<VAR>"];
+}
+
+const words = (items: string[], last: string) => (items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} ${last} ${items[items.length - 1]}`);
+
+// The question as the owner hears it.
+export function schemaQuestionText(q: SchemaQuestion): string {
+  const others = words(q.others, "or");
+  return (
+    `Your data sits in more than one schema (${q.schemas.join(", ")}). Is ${q.primary} enough for your questions? ` +
+    `If you also need ${others}, tell me which ${q.primary} tables relate to which ${others} tables, and by which columns.`
+  );
+}
+
+// One answer the owner can give, and the commands that record it, in order.
+export interface SchemaAnswer {
+  answer: string;
+  commands: string[];
+}
+
+// The answers to the schema question: keep to the primary (setup --primary, then a declined pair for
+// each pair of schemas a foreign key leaves unanswered); also join the other schemas (the pair of
+// each such key, or one the owner names, read back for their yes); or another schema as the primary.
+export function schemaAnswers(q: SchemaQuestion): SchemaAnswer[] {
+  const setup = (schema: string) => ["semlayer", "setup", ...q.setup, "--primary", schema].join(" ");
+  const first = q.primary_set ? [] : [setup(q.primary)];
+  const add = `semlayer add-cross-schema --source ${q.source}`;
+  const declared = [...new Map(q.keys.map((k) => [`${k.from}\u0000${k.to}`, k])).values()];
+  const keep = declared.map((k) => `${add} --from ${k.from} --to ${k.to} --decline --reply "<the owner's words>"`);
+  const join = q.keys.map((k) =>
+    k.constraint !== null
+      ? `${add} --from ${k.from} --to ${k.to} --constraint ${k.constraint}`
+      : `${add} --from ${k.from} --to ${k.to} --keys ${k.table.slice(k.from.length + 1)}.${k.columns[0]}=${k.references.slice(k.to.length + 1)}.<column>`,
+  );
+  const named = q.others.filter((s) => !declared.some((k) => k.from === s || k.to === s));
+  for (const s of named) join.push(`${add} --from ${q.primary} --to ${s} --keys <${q.primary} table>.<column>=<${s} table>.<column>`);
+  const pairs = [...declared.map((k) => [k.from, k.to] as const), ...named.map((s) => [q.primary, s] as const)];
+  const readback = `semlayer readback --targets ${pairs.map(([f, t]) => `schema-pair:${q.source}:${f}:${t}`).join(",")}`;
+  const out: SchemaAnswer[] = [
+    { answer: `No, keep to ${q.primary}`, commands: [...first, ...keep] },
+    { answer: `Yes, I also need ${words(q.others, "and")}`, commands: [...first, ...join, readback] },
+  ];
+  if (!q.primary_set) out.push({ answer: "Another schema holds what my questions are about", commands: [setup("<schema>")] });
+  return out;
+}
+
+// The step that asks it: semlayer setup --primary while intake.primary is unset, else the declined
+// pair of the first key no pair answers. Both wait on the owner's answer.
+// A pair the owner said yes to and that still waits for its readback is not asked again: the step
+// is that readback, so no step that follows it declines what the owner just asked for.
+export function schemaQuestionArgs(q: SchemaQuestion): { command: string; args: string[]; kind: "run" | "ask_owner" } {
+  if (!q.primary_set) return { command: "setup", args: [...q.setup, "--primary", q.primary], kind: "ask_owner" };
+  const d = q.keys.find((x) => x.draft);
+  if (d) return { command: "readback", args: ["--targets", `schema-pair:${q.source}:${d.from}:${d.to}`], kind: "run" };
+  const k = q.keys[0]!;
+  return { kind: "ask_owner", command: "add-cross-schema", args: ["--source", q.source, "--from", k.from, "--to", k.to, "--decline", "--reply", "<the owner's words>"] };
+}

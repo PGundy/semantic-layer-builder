@@ -9,12 +9,15 @@ import { intakeMode } from "./intake.ts";
 import { latestReply, openAccessChanges } from "./ledger.ts";
 import { plainText } from "./output.ts";
 import { PLAN_ID_PATTERN, planStatus, loadStoredPlan } from "./plan.ts";
-import { loadSource, paths } from "./project.ts";
+import { loadSnapshot, loadSource, paths } from "./project.ts";
 import { PENDING_DIR } from "./readback.ts";
 import { APPLY_COMMANDS } from "./roles.ts";
 import { act, actionText, flagValue, liveRunnable, type ProjectStatus, type StatusDetail, type StepAction, statusDetail } from "./status.ts";
 import type { Golden, LedgerReply, PendingReadback, ReadbackItem, SourceConfig } from "./types.ts";
+import { inScope } from "./patterns.ts";
 import { schemaIssues } from "./schema.ts";
+import { effectiveScope } from "./table-list.ts";
+import { type SchemaAnswer, type SchemaQuestion, schemaAnswers, schemaQuestion, schemaQuestionArgs, schemaQuestionText } from "./schema-scope.ts";
 import { readYaml } from "./yaml.ts";
 
 export const NEXT_KINDS = ["run", "ask_owner", "record_reply", "dispatch", "done"] as const;
@@ -52,7 +55,13 @@ export interface NextAction {
   run?: { command: string };
   // A pending readback's open items (readback_id set), or, without readback_id, what to ask the owner
   // (text, with items empty) before running action, whose <placeholders> stand for their answer.
-  ask_owner?: { readback_id?: string; text: string; items: { n: number; target: string; kind: ReadbackItem["kind"] }[] };
+  ask_owner?: {
+    readback_id?: string;
+    text: string;
+    items: { n: number; target: string; kind: ReadbackItem["kind"] }[];
+    // The schema question only: each answer the owner can give and the commands that record it.
+    options?: SchemaAnswer[];
+  };
   dispatch?: { role: "connector_runner"; task: ConnectorTask };
   // What the action waits on: open_questions while open questions in access.yaml or a model wait on
   // the owner, whatever the action, which can be taken meanwhile; "connection: <variables> in <env file>"
@@ -391,6 +400,9 @@ function fromStatus(root: string, d: StatusDetail): NextAction {
       );
     }
   }
+  // Step schema_scope (G3): the schema question in the owner's words, with the commands per answer.
+  const schema = schemaScopeAction(root, step, blocked_on);
+  if (schema) return schema;
   if (step.phase !== "done") return fromAction(step.action, step.phase, step.message, blocked_on);
   // A golden's hash as it stands comes from rows only a run gives, so any verdict to it while its file exists counts.
   const refs = st.approved_without_yes.filter((ref) => !answered(d.replies, ref, hashNow(root, d, ref, latestReply(d.replies, ref)?.content_hash ?? "")));
@@ -411,6 +423,28 @@ function fromStatus(root: string, d: StatusDetail): NextAction {
     );
   }
   return fromAction(step.action, "done", step.message, blocked_on);
+}
+
+// The schema question of semlayer status's scope step, when that is the step: ask_owner with the
+// question and, in ask_owner.options and in why, the commands that record each answer.
+function schemaScopeAction(root: string, step: ProjectStatus["next_step"], blocked_on: string | null): NextAction | undefined {
+  if (step.phase !== "scope" || !step.source || step.action.kind !== "ask_owner") return undefined;
+  let q: SchemaQuestion | undefined;
+  try {
+    const source = loadSource(root, step.source);
+    const scope = effectiveScope(root, source);
+    q = schemaQuestion(source, loadSnapshot(root, step.source), (t) => inScope(scope, t));
+  } catch {
+    return undefined;
+  }
+  if (!q) return undefined;
+  const a = schemaQuestionArgs(q);
+  if (a.command !== step.action.command || a.args.join("\u0000") !== step.action.args.join("\u0000")) return undefined;
+  const text = schemaQuestionText(q);
+  const options = schemaAnswers(q);
+  const answers = options.map((o) => `"${o.answer}": ${o.commands.join(", then ")}`).join("; ");
+  const out = fromAction(step.action, step.phase, `${step.message} Ask: "${text}" Then record the answer. ${answers}.`, blocked_on, text);
+  return { ...out, ask_owner: { ...out.ask_owner!, options } };
 }
 
 // The source whose connection a run action opens, or undefined: introspect, profile, check-join and

@@ -1,6 +1,6 @@
 // The primary schema and kept constraint names (spec: Schema scope).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SQL } from "bun";
 import { checkToolUse } from "../skills/semantic-layer/scripts/hooks/guard-edits.ts";
@@ -225,7 +225,7 @@ describe("introspect keeps constraint names: postgres", () => {
 // Schema pairs (spec: Schema scope, Schema pairs): on the two-schema fixture, sales.orders joins
 // crm.customers through orders_customer_fk.
 describe("schema pairs", () => {
-  const SOURCE = "source: warehouse\ndialect: postgres\nconnection:\n  env: WAREHOUSE_URL\nintake:\n  schemas: [sales, crm]\n";
+  const SOURCE = "source: warehouse\ndialect: postgres\nconnection:\n  env: WAREHOUSE_URL\nintake:\n  schemas: [sales, crm]\n  primary: sales\n";
   const sourceFile = (root: string) => join(root, "sources", "warehouse.yaml");
   const pairsOf = (root: string) => readYaml<SourceConfig>(sourceFile(root)).cross_schema;
 
@@ -243,6 +243,8 @@ describe("schema pairs", () => {
   async function crossJoin(status: "draft" | "approved" = "draft"): Promise<string> {
     const root = await project();
     expect((await semlayer(root, ["draft", "--source", "warehouse"])).code).toBe(0);
+    // The primary schema's tables are drafted by default; crm.customers is named.
+    expect((await semlayer(root, ["draft", "--source", "warehouse", "--tables", "crm.customers"])).code).toBe(0);
     const file = join(root, "models", "warehouse", "orders.yaml");
     const approval = status === "approved" ? "    approved_by: Dana\n    approved_at: '2026-01-10'\n" : "";
     writeFileSync(
@@ -378,7 +380,7 @@ describe("schema pairs", () => {
   });
 
   test("validate names a pair key missing from the snapshot, a primary outside the schemas read, and an approved pair no join crosses", async () => {
-    const root = await project(SOURCE.replace("  schemas: [sales, crm]\n", "  schemas: [sales, crm]\n  primary: finance\n"));
+    const root = await project(SOURCE.replace("  primary: sales\n", "  primary: finance\n"));
     expect((await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--constraint", "orders_customer_fk"])).code).toBe(0);
     stampApproval(root);
     const snap = JSON.parse(readFileSync(FIXTURE, "utf8")) as Snapshot;
@@ -598,5 +600,172 @@ describe("schema pairs", () => {
     expect((await addPair(root)).code).toBe(0);
     const r = await semlayer(root, ["readback", "--targets", PAIR]);
     expect(r.out).toContain("semlayer add-cross-schema or semlayer remove-cross-schema");
+  });
+});
+
+// The schema question (spec: Schema scope, The schema question): semlayer next asks it before draft
+// on the two-schema fixture, draft refuses until a primary is set, and an answer clears it.
+describe("the schema question", () => {
+  const BARE = "source: warehouse\ndialect: postgres\nconnection:\n  env: WAREHOUSE_URL\nintake:\n  schemas: [sales, crm]\n";
+  const sourceFile = (root: string) => join(root, "sources", "warehouse.yaml");
+  const SETUP = "semlayer setup --source warehouse --dialect postgres --env WAREHOUSE_URL";
+  const QUESTION =
+    "Your data sits in more than one schema (sales, crm). Is sales enough for your questions? If you also need crm, tell me which sales tables relate to which crm tables, and by which columns.";
+  const DECLINE = 'semlayer add-cross-schema --source warehouse --from sales --to crm --decline --reply "<the owner\'s words>"';
+
+  interface Next {
+    kind: string;
+    phase: string;
+    why: string;
+    action: { command: string; args: string[]; kind: string };
+    ask_owner?: { text: string; items: unknown[]; options?: { answer: string; commands: string[] }[] };
+  }
+
+  async function project(source = BARE): Promise<string> {
+    const { root } = tempRoot();
+    await initProject(root, "two");
+    writeFileSync(sourceFile(root), source);
+    mkdirSync(join(root, "snapshots"), { recursive: true });
+    writeFileSync(join(root, "snapshots", "warehouse.json"), readFileSync(FIXTURE, "utf8"));
+    return root;
+  }
+  const next = async (root: string) => (await semlayer(root, ["next", "--json"])).json<Next>();
+  // A command of ask_owner.options as semlayer takes it: the words after "semlayer", with the
+  // owner's words in place of the placeholder.
+  const words = (command: string) =>
+    [...command.replaceAll("<the owner's words>", "No, keep to sales").matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]!).slice(1);
+  const runAll = async (root: string, commands: string[]) => {
+    for (const c of commands) expect({ c, code: (await semlayer(root, words(c))).code }).toEqual({ c, code: 0 });
+  };
+
+  test("with two schemas and no primary, next asks the question with the commands for each answer", async () => {
+    const root = await project();
+    const n = await next(root);
+    expect(n).toMatchObject({ kind: "ask_owner", phase: "scope", action: { command: "setup", args: [...SETUP.split(" ").slice(2), "--primary", "sales"], kind: "ask_owner" } });
+    expect(n.ask_owner).toEqual({
+      text: QUESTION,
+      items: [],
+      options: [
+        { answer: "No, keep to sales", commands: [`${SETUP} --primary sales`, DECLINE] },
+        {
+          answer: "Yes, I also need crm",
+          commands: [`${SETUP} --primary sales`, "semlayer add-cross-schema --source warehouse --from sales --to crm --constraint orders_customer_fk", "semlayer readback --targets schema-pair:warehouse:sales:crm"],
+        },
+        { answer: "Another schema holds what my questions are about", commands: [`${SETUP} --primary <schema>`] },
+      ],
+    });
+    expect(n.why).toContain(`Ask: "${QUESTION}"`);
+    const status = (await semlayer(root, ["status", "--json"])).json<{ next_step: { phase: string; source: string; command: string } }>().next_step;
+    expect(status).toMatchObject({ phase: "scope", source: "warehouse", command: `${SETUP} --primary sales` });
+    const plain = await semlayer(root, ["next"]);
+    expect(plain.out).toContain(`Ask the owner, then: ${SETUP} --primary sales`);
+  });
+
+  test("draft before the answer refuses with scope.primary_unset and the setup command, writing nothing", async () => {
+    const root = await project();
+    const r = await semlayer(root, ["draft", "--source", "warehouse", "--json"]);
+    expect(r.code).toBe(1);
+    expect(r.json()).toEqual({
+      error:
+        'Source "warehouse" reads more than one schema (sales, crm) and names no primary schema, so draft does not know which one the layer is about. Nothing was written. ' +
+        `Ask the owner the schema question semlayer next gives, then record the schema their questions are about with ${SETUP} --primary <schema>.`,
+      code: "scope.primary_unset",
+      next: `${SETUP} --primary <schema>`,
+    });
+    expect((await semlayer(root, ["draft", "--source", "warehouse", "--new-columns"])).err).toContain("names no primary schema");
+    expect(existsSync(join(root, "models", "warehouse"))).toBe(false);
+    expect(readFileSync(sourceFile(root), "utf8")).toBe(BARE);
+  });
+
+  test('"No, keep to sales" sets the primary and declines the pair, and the step clears', async () => {
+    const root = await project();
+    const keep = (await next(root)).ask_owner!.options![0]!;
+    // semlayer setup reads the catalog through the connection, which this test has none of (the live
+    // test runs it): its write of intake.primary is made by hand.
+    expect(keep.commands[0]).toBe(`${SETUP} --primary sales`);
+    writeFileSync(sourceFile(root), BARE.replace("  schemas: [sales, crm]\n", "  schemas: [sales, crm]\n  primary: sales\n"));
+    // With the primary set, the foreign key into crm still waits for an answer.
+    const half = await next(root);
+    expect(half).toMatchObject({ phase: "scope", action: { command: "add-cross-schema", args: ["--source", "warehouse", "--from", "sales", "--to", "crm", "--decline", "--reply", "<the owner's words>"] }, ask_owner: { text: QUESTION } });
+    expect(half.ask_owner!.options!.map((o) => o.commands)).toEqual([[DECLINE], ["semlayer add-cross-schema --source warehouse --from sales --to crm --constraint orders_customer_fk", "semlayer readback --targets schema-pair:warehouse:sales:crm"]]);
+    await runAll(root, keep.commands.slice(1));
+    expect(readYaml<SourceConfig>(sourceFile(root))).toMatchObject({ intake: { primary: "sales" }, cross_schema: [{ from: "sales", to: "crm", status: "declined", reply: "No, keep to sales" }] });
+    const after = await next(root);
+    expect(after.phase).not.toBe("scope");
+    expect(after.ask_owner?.options).toBeUndefined();
+  });
+
+  test("the step clears once the pair is approved on the owner's yes, and not before", async () => {
+    const root = await project(BARE.replace("  schemas: [sales, crm]\n", "  schemas: [sales, crm]\n  primary: sales\n"));
+    expect((await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "crm", "--constraint", "orders_customer_fk"])).code).toBe(0);
+    // The owner has said yes and the draft pair is recorded: the step is its readback, not the question again.
+    const pending = await next(root);
+    expect(pending.ask_owner).toBeUndefined();
+    expect(pending.action).toMatchObject({ command: "readback", args: ["--targets", "schema-pair:warehouse:sales:crm"] });
+    expect(JSON.stringify(pending)).not.toContain("--decline");
+    expect((await approveWithYes(root, ["--target", "schema-pair:warehouse:sales:crm"])).code).toBe(0);
+    const after = await next(root);
+    expect(after.ask_owner?.options).toBeUndefined();
+    expect(after.phase).not.toBe("scope");
+  });
+
+  test("with the primary set, draft keeps to it, lists the other schema as left out, and --tables brings it in", async () => {
+    const root = await project(BARE.replace("  schemas: [sales, crm]\n", "  schemas: [sales, crm]\n  primary: sales\n"));
+    const r = await semlayer(root, ["draft", "--source", "warehouse", "--json"]);
+    expect(r.code).toBe(0);
+    const out = r.json<{ drafted: { table: string }[]; left_out_schemas: unknown[] }>();
+    expect(out.drafted.map((d) => d.table).sort()).toEqual(["sales.channels", "sales.orders", "sales.stores"]);
+    expect(out.left_out_schemas).toEqual([{ schema: "crm", tables: 3, command: "semlayer draft --source warehouse --tables crm.*" }]);
+    const more = await semlayer(root, ["draft", "--source", "warehouse", "--tables", "crm.*", "--json"]);
+    expect(more.json<{ drafted: { table: string }[] }>().drafted.map((d) => d.table).sort()).toEqual(["crm.customers", "crm.products", "crm.regions"]);
+    const again = await semlayer(root, ["draft", "--source", "warehouse"]);
+    expect(again.out).not.toContain("Left out");
+  });
+
+  test("a primary that is not among the schemas read refuses draft with a code and the setup command", async () => {
+    const root = await project(BARE.replace("  schemas: [sales, crm]\n", "  schemas: [sales, crm]\n  primary: archive\n"));
+    const r = await semlayer(root, ["draft", "--source", "warehouse", "--json"]);
+    expect(r.code).toBe(1);
+    expect(r.json()).toMatchObject({ code: "scope.primary_not_in_schemas", next: `${SETUP} --primary <schema>`.replace(/^semlayer setup .*?--primary/, "semlayer setup --source warehouse --primary") });
+    expect(existsSync(join(root, "models", "warehouse"))).toBe(false);
+  });
+
+  test("the plain draft output names the left-out schema and its command", async () => {
+    const root = await project(BARE.replace("  schemas: [sales, crm]\n", "  schemas: [sales, crm]\n  primary: sales\n"));
+    const r = await semlayer(root, ["draft", "--source", "warehouse"]);
+    expect(r.out).toContain("Left out, outside the primary schema sales:\n  crm: 3 tables; semlayer draft --source warehouse --tables crm.* drafts them");
+  });
+
+  test("a scope that selects one schema asks nothing, and draft drafts as before", async () => {
+    const root = await project(`${BARE}scope:\n  include: [sales.*]\n`);
+    expect((await next(root)).ask_owner?.options).toBeUndefined();
+    const r = await semlayer(root, ["draft", "--source", "warehouse", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json()).not.toHaveProperty("left_out_schemas");
+  });
+
+  test("add-cross-schema with a --to outside the schemas read refuses and names the setup --schemas command", async () => {
+    const root = await project(BARE.replace("  schemas: [sales, crm]\n", "  schemas: [sales, crm]\n  primary: sales\n"));
+    const r = await semlayer(root, ["add-cross-schema", "--source", "warehouse", "--from", "sales", "--to", "finance", "--decline", "--reply", "No"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain(`${SETUP} --schemas sales,crm,finance, which reads the catalog again`);
+  });
+
+  test("a DuckDB source of two schemas asks nothing and drafts as before", async () => {
+    const root = await project(BARE.replace("dialect: postgres\nconnection:\n  env: WAREHOUSE_URL", 'dialect: duckdb\nconnection:\n  database: ":memory:"'));
+    expect((await next(root)).ask_owner?.options).toBeUndefined();
+    const r = await semlayer(root, ["draft", "--source", "warehouse", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.json()).not.toHaveProperty("left_out_schemas");
+    expect(r.json<{ drafted: unknown[] }>().drafted).toHaveLength(6);
+  });
+
+  test("the demo project never sees the question", async () => {
+    const { dir } = tempRoot();
+    const demo = join(dir, "demo");
+    expect((await semlayer(dir, ["demo", "--dir", demo])).code).toBe(0);
+    const n = (await semlayer(join(demo, "semantic"), ["next", "--json"])).json<Next>();
+    expect(n.ask_owner?.options).toBeUndefined();
+    expect(n.why).not.toContain("more than one schema");
   });
 });
