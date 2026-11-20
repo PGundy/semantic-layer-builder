@@ -1,6 +1,6 @@
 # Plan: a first PostgreSQL layer, then fast iteration
 
-Status: the owner said on 2026-11-20 to proceed, on the defaults of section 8; it is being built. Owner: PGundy. Built on `release/v1`, after `docs/PRD.md` and `docs/PRD-hardening.md`. This file is temporary: the pull request that lands the plan's last item deletes it and adds one line per workstream to "After this plan" in `docs/PRD-hardening.md`. It changes none of the invariants of `docs/PRD.md` section 7; the build loop, the PR rules and the definition of done are that document's section 10.
+Status: the owner said on 2026-11-20 to proceed, on the defaults of section 8; it is being built: wave 0 and wave 1 have landed except A3c, which lands separately. Owner: PGundy. Built on `release/v1`, after `docs/PRD.md` and `docs/PRD-hardening.md`. This file is temporary: the pull request that lands the plan's last item deletes it and adds one line per workstream to "After this plan" in `docs/PRD-hardening.md`. It changes none of the invariants of `docs/PRD.md` section 7; the build loop, the PR rules and the definition of done are that document's section 10.
 
 How to read it: sections 1 to 6 and 8 to 11 are the plan and are what the owner reviews. Section 7 is one block per pull request, written for the agent that builds it. Terms used throughout:
 
@@ -83,7 +83,7 @@ A change to anything the tool prints no longer needs a recount, and a regression
 Steps:
 1. Move the counting rule from `tests/evals-tokens.test.ts` into `evals/runner/count.ts`, and have `evals/runner/drivers/scripted.ts` compute each turn's tokens at replay.
 2. Remove the `tokens` field from every `evals/scenarios/*.script.json` and from the script's schema.
-3. Take the token fields out of `evals/baseline.json` and its builder in `evals/smoke.ts`, except `effort.tokens`, which only `--update-baseline` writes and nothing compares as a failure; the smoke compares grader scores and the stop reason, and prints effort without failing on it.
+3. Take the token fields out of `evals/baseline.json` and its builder in `evals/smoke.ts`: the builder leaves out every effort metric whose name contains `token`, except `tokens`, which only `--update-baseline` writes and nothing compares as a failure; the smoke compares grader scores and the stop reason, and prints effort without failing on it. The test that checks the baseline is written byte for byte sets `effort.tokens` aside and checks it against the run's computed total.
 4. In `tests/evals-multi.test.ts`, `tests/evals-runner.test.ts`, `tests/evals-baseline.test.ts` and `tests/evals-graders.test.ts`, replace each pinned token figure with a relation (a share under its limit, a total equal to the sum of its parts, a figure read from the baseline at run time); the 80% interviewer share in `tests/evals-multi.test.ts` stays and is recomputed. Update `tests/next-runnable.test.ts`, which reads `turn.tokens`.
 5. Replace the literal figures in `evals/README.md` and the spec's eval summary example with the rule that produces them.
 6. Delete `continue-on-error` from the `eval-smoke` job in `.github/workflows/ci.yml`, and rename the job from `eval-smoke (non-blocking)` to `eval-smoke` before the owner marks it required. The smoke prints each scenario's computed total tokens beside `effort.tokens` in `baseline.json` and warns when it is more than ten percent above.
@@ -100,21 +100,21 @@ Two pull requests that each add a command, a docs rule or a router line no longe
 Steps:
 1. Move the rule rows of `tests/skill-docs.test.ts` into `tests/docs-rules/doc-<document>.ts` (for example `doc-joins.ts`, `doc-phases-intake.ts`), one array per document, loaded in sorted file order; a workstream's own rules file takes its topic name with no `doc-` prefix. The count of rules run is unchanged.
 2. Rewrite the spec's CLI table so each command form has its own single-line row and rows are in alphabetical order, with a test for both.
-3. Shorten `SKILL.md` to 110 lines or fewer without moving a numbered principle: move the Dispatching bullets and the Hand edits detail into the cards that use them, and leave every docs rule that pins a `SKILL.md` sentence unchanged in document and phrase. Pin the 110 in the test; the cap of 120 stays. Budgets: B 1 line, H 2 lines, every other workstream 0 (F4 edits lines in place, net 0).
+3. Shorten `SKILL.md` to 107 lines or fewer (110 less B's 1 line and H's 2), so that the pin of 110 holds once the budgets are spent, without moving a numbered principle: move the Dispatching bullets and the Hand edits detail into the cards that use them, and leave every docs rule that pins a `SKILL.md` sentence unchanged in document and phrase. Pin the 110 in the test; the cap of 120 stays. Budgets: B 1 line (spent: `SKILL.md` is 108 lines), H 2 lines (left), every other workstream 0 (F4 edited lines in place, net 0).
 4. Add a "Parallel work" section to `CONTRIBUTING.md` with the rules of section 5 below.
 
 Proves it:
 - `bun test tests/skill-docs.test.ts` runs the same number of rules as before the split.
 - The CLI table's command column is sorted and every command has a row.
-- `SKILL.md` is at most 110 lines, holds every numbered principle, and every docs rule that pins a `SKILL.md` sentence is unchanged in document and phrase.
+- `SKILL.md` is at most 110 lines (107 before the budgets), holds every numbered principle, and every docs rule that pins a `SKILL.md` sentence is unchanged in document and phrase.
 
 #### W0.3. A seam in validation (after W0.2)
 
-A workstream adds its checks in its own file and never edits the body of `lib/validate.ts` (2,305 lines, one `Validator` class).
+A workstream adds its checks in its own file and never edits the body of `lib/validate.ts` (2,333 lines after the seam, one `Validator` class).
 
 Steps:
-1. Define a read-only view of what the `Validator` has already loaded (project, sources, snapshots, models, metrics, access, goldens), the lookups a rule needs (`snapshotTable`, `identRules`, `checkSqlRefs`, `joinPaths`) and the two reporting calls, `error` and `warn`.
-2. Add `lib/validate-rules/index.ts`, which loads the rule modules beside it synchronously, with `require` over a sorted `readdirSync` of `lib/validate-rules/`, cached at module load, and calls each at the end of `validateProject`. Adding a rule file needs no edit to any shared file.
+1. Define a read-only view of what the `Validator` has already loaded (project, sources, snapshots, models, metrics, access, goldens), the lookups a rule needs (`snapshotTable`, `identRules`, `checkSqlRefs`, `joinPaths`) and the two reporting calls, `error` and `warn`, typed as `Pick<Validator, "error" | "warn">` and passed as bound methods, so B1's trailing `code` argument reached rules with no edit to the seam.
+2. Add `lib/validate-rules/index.ts`, which loads the rule modules beside it synchronously, with `require` over a sorted `readdirSync` of `lib/validate-rules/`, cached on the first validation (so a rule module can import helpers from `lib/validate.ts` without an import cycle), and calls each at the end of `validateProject`. Adding a rule file needs no edit to any shared file.
 3. The worked example is a rule file that exists only in a test; no existing check moves behind the seam.
 4. Say in `CONTRIBUTING.md` that new validation goes in `lib/validate-rules/<topic>.ts`, and that a new type lives beside the code that owns it, with at most a one-line field added to an existing type in `lib/types.ts`.
 
@@ -156,12 +156,12 @@ After wave 0 these hold for every pull request in the plan.
 
 | Wave | Pull requests | Starts in parallel | Ends at |
 |---|---|---|---|
-| 0 | W0.1 (computed token counts), W0.2 (split shared lists), W0.3 (validation seam), W0.4 (public test database) | W0.1 to W0.3 one at a time; W0.4 beside them | the rules of section 5 hold |
-| 1 | F4 (PostgreSQL-only text), F1 (version matrix), F2 (catalog and restricted role), F3 (pooler and TLS); B1 (issue codes), B2 (codes on existing checks), B3 (JSON error envelope), B4 (code docs); G1 (primary schema), G2 (declare a schema pair), G2b (approve a schema pair), G2c (enforce schema pairs), G3 (schema question); A2 (validate grader), A3a (PostgreSQL intake), A3b (Acme on PostgreSQL), A3c (walkthrough fixtures) | F4, B1, G1 | milestone M1 |
+| 0 | W0.1 (landed: computed token counts), W0.2 (landed: split shared lists), W0.3 (landed: validation seam), W0.4 (landed: public test database) | W0.1 to W0.3 one at a time; W0.4 beside them | the rules of section 5 hold |
+| 1 | F4 (landed: PostgreSQL-only text), F1 (landed: version matrix), F2 (landed: catalog and restricted role), F3 (landed: pooler and TLS); B1 (landed: issue codes), B2 (landed: codes on existing checks), B3 (landed: JSON error envelope), B4 (landed: code docs); G1 (landed: primary schema), G2 (landed: declare a schema pair), G2b (landed: approve a schema pair), G2c (landed: enforce schema pairs), G3 (landed: schema question); A2 (landed: validate grader), A3a (landed: PostgreSQL intake), A3b (landed: Acme on PostgreSQL), A3c (walkthrough fixtures, landing separately) | F4, B1, G1 | milestone M1 |
 | 2 | H5 (drift record), H1 (version and changelog), H2 (item diff), H3 (change entry point), H4 (close a round); C1a (segments), C1b (segment commands), C2 (calendar), C3 (balances), C4 (running and trailing totals), C5 (comparison by grain), C6 (last n days window); D1a (part builder), D1b (multi-fact requests), D3 (through schema), D4 (through compile), D5 (bridge check and readback); A4 (200-table scenario) | D1a, D3, H5, H1, A4 | milestone M2 |
 | 3 | D2 (conformed dimensions), D6 (drafted bridges); E1 (read dbt), E2a (dbt filters), E2b (dbt drafts); A5 (live baseline and job); F5 (provider kit) | D2, D6, E1, E2a, A5, F5 | milestone M3 |
 
-Within a workstream the order is in its section. A wave starts when the one before it has reached its milestone, with one exception: a wave 2 or wave 3 pull request whose "after" list is already merged may start early if it touches no file in the table below for the current wave.
+Within a workstream the order is in its section. In the shared-files table, the Wave 1 column names what landed. A wave starts when the one before it has reached its milestone, with one exception: a wave 2 or wave 3 pull request whose "after" list is already merged may start early if it touches no file in the table below for the current wave.
 
 ### Order across workstreams
 
@@ -190,26 +190,30 @@ Every file that exists today and is edited by more than one workstream, with the
 | File | Wave 1 | Wave 2 | Wave 3 |
 |---|---|---|---|
 | `.github/workflows/ci.yml` | A3a: job `eval-smoke`, add `services.postgres` and the `PG_URL` env<br>F1: new job `compat`, appended after the existing jobs<br>F3: new job `compat-network`, appended after `compat` |   |   |
-| `SKILL.md` | B4: one principle line (B's budget of 1)<br>F4: frontmatter description and the topic-table row "Only when a source is not a live postgres or duckdb connection", in place | H3: router-table row `change` and one principle line (H's budget of 2) |   |
-| `references/phases/intake.md` | F4: the "Which database, and where the connection lives" paragraph, the query-plan and export-dialect lines, and the two MySQL and SQL Server sentences<br>G3: new paragraph after F4's "Which Postgres database?" paragraph |   | E2b: paragraph "What the folder already holds" and bullet "Other shared context" |
+| `SKILL.md` | B4: one principle line (B's budget of 1, spent: the file is 108 lines of 110)<br>F4: frontmatter description and the topic-table row "Only when a source is not a live postgres or duckdb connection", in place | H3: router-table row `change` and one principle line (H's budget of 2, the two lines left) |   |
+| `references/phases/intake.md` | F4: the "Which database, and where the connection lives" paragraph, the query-plan and export-dialect lines, and the two MySQL and SQL Server sentences (moved to `references/other-dialects.md`)<br>G3: new paragraph after F4's "Which Postgres database?" paragraph |   | E2b: paragraph "What the folder already holds" and bullet "Other shared context" |
 | `references/phases/joins.md` |   | D5: the bridge interview step | E2b: a paragraph on checking imported joins |
 | `schemas/model.schema.json` |   | C1a: model `properties.segments`; measure `properties.segments`<br>C2: model and measure `properties.default_time_dimension`<br>C3: measure `properties.non_additive_dimension`<br>D3: `$defs.join` (`through` object) | D2: `$defs.dimension` (`conforms_to`) |
 | `schemas/source.schema.json` | G1: `intake.properties` (new `primary` key)<br>G2: top-level properties (new `cross_schema` array) | C2: `properties.calendar` (new key) |   |
-| `scripts/commands/approve.ts` | G2b: a case beside `"access"` for the schema-pair kind | C2: the hash scope built for a model target (`weekStart`) |   |
-| `scripts/commands/check-join.ts` | G2c: `resolveTable` (refuse an undeclared pair) | D5: a branch for a through join, also under `--all` (`evidence.through`) |   |
-| `scripts/commands/goldens.ts` | G2c: `checkCommand` (print the compiler's warnings) | D1b: the `share one model` line of the request help<br>C4, C5, C6: one line each in the request help after the `Filter ops` sentence (a different line from D1b's)<br>C6: `newCommand` (writes the resolved `as_of` into the request) |   |
+| `scripts/commands/approve.ts` | B3: the ledger refusals, which are throws here (`approval.no_ledger_yes`, `by_mismatch`), not in `lib/approve-checks.ts`<br>G2b: a case beside `"access"` for the schema-pair kind, after B3 | C2: the hash scope built for a model target (`weekStart`) |   |
+| `scripts/commands/check-join.ts` | G2c: `buildTarget` (the guard that refuses to measure a join across an undeclared pair; under `--all` it skips the join with that reason), called by `run`; `resolveTable` is unchanged | D5: a branch for a through join in `run`, also under `--all` (`evidence.through`) |   |
+| `scripts/commands/goldens.ts` | G2c: `checkCommand` (print the compiler's warnings under each golden's result; `--json` gains `warnings`) | D1b: the `share one model` line of the request help<br>C4, C5, C6: one line each in the request help after the `Filter ops` sentence (a different line from D1b's)<br>C6: `newCommand` (writes the resolved `as_of` into the request) |   |
+| `scripts/commands/sql.ts` | G2c: `run` (one added line prints the compiler's warnings) | C6: `run` (prints the `as_of` date it used), after G2c |   |
+| `scripts/lib/goldens.ts`, `scripts/lib/approvals.ts` | G2c: `compileGolden` (passes `joinStatus`, so a draft-golden preview keeps each join's real status)<br>G2b: `projectApprovals` in `approvals.ts` (the pair listing, so the approvals grader covers pairs) |   |   |
 | `scripts/commands/introspect.ts` | F2: live-run branch around the `buildSnapshot` call (print skipped relations) | H5: after the `diffSnapshots` call (`writeDrift`) |   |
-| `scripts/lib/approval-hash.ts` | G2b: `ItemKind` and the `listApprovals` entry listing (schema-pair entry) | C1a: `itemContent` case `"measure"` (segment filters)<br>C2: `itemContent` cases `"model"` and `"measure"` (`default_time_dimension`), `HashScope` and `modelEntries` (`weekStart`), case `"dimension"` (week start)<br>C3: `itemContent` case `"measure"` (`non_additive_dimension`)<br>D3: `joinContent` (`through`) | D2: `itemContent` case `"dimension"` (`conforms_to`) |
-| `scripts/lib/compiler/index.ts` | G2c: `RefusalCode` union (one member); `Compiled` (`warnings` field) | C1a: `RefusalCode` union (one member); the request check before `compileMetrics`; `texts` in `compileLayer`; the `aggregate` call in the measure branch of `sqlOf` (`measureFilter`)<br>C2: `sqlOf` dimension branch (`grained` call)<br>C3: `compileLayer` final assembly (`const lines`) and its refusal of mixed measures<br>D1b: `resolve` in `compileLayer` (the measures branch)<br>D4: the `aggregate` call in the measure branch of `sqlOf` (allocation factor), after C1a<br>C4: `compileLayer`, one call to `compileTimeShapes` on the line before the `compileMetrics` call, after C1a |   |
-| `scripts/lib/compiler/joins.ts` | G2c: `requestPath` and `hop` (undeclared pair) | D3: `requestPath` (refuse a through route)<br>D4: `requestPath` (bridge and target instances) and `PlannedJoin` (`through`) |   |
-| `scripts/lib/draft.ts` | G1: `joinCandidates`, `keyNameCandidates` and the declared-FK loop<br>G2c: the declared-FK loop (draft an approved pair from its keys) |   | D6: one call in `draftModels` |
-| `scripts/lib/edit.ts` | B2: `neverRight` and `withEditWarnings`<br>B3: `ValueRefusal` (its own code)<br>G2b: `ItemKind` and `locate` (schema-pair case), after B2 and B3 |   |   |
-| `scripts/lib/introspect.ts` | G1: `fks.push` (keep the constraint name)<br>F2: the columns loop of `buildSnapshot` (rows of returned tables only), after G1 |   |   |
-| `scripts/lib/next.ts` | G2b: `targetPhase` (schema-pair prefix)<br>G3: new `schema_scope` `ask_owner` branch | H3: `nextAction` (phase `change` and the next step per pending item) | D6: `nextAction` (one case asking for the dedupe rule) |
-| `scripts/lib/readback.ts` | G2b: the neighbour of case `"access"` in the item builder | C1b: `renderField` ("Excludes:" line) and `renderModel` (segment list)<br>C3: `renderField` (balance sentence)<br>D5: `joinWords` (call to `readback-bridge.ts`)<br>C4: `requestWords`, one call to `timeShapeWords` at its end | D2: `renderField` (conformed paragraph) |
-| `scripts/lib/refs.ts` | B3: its refusals (codes)<br>G2b: `Target` and `parseTarget` (schema-pair kind), after B3 | C2: `parseRequestField` (bare `:grain` shorthand) |   |
-| `scripts/lib/status.ts` | G3: `nextStep` (new `schema_scope` step after the first introspect) | H3: `Phase` union (`change`), the `done` step of `nextStep`, and the `computeStatus` JSON (`layer_version`, open change) |   |
-| `scripts/lib/validate.ts` | B1: `Validator.error`, `Validator.warn`, the `intakeIssues` merge line in `checkSources`, and `trackedEnvFileIssues`<br>B2: every existing `this.error(` and `this.warn(` call and the `report()` closure | D1b: `checkMeasureModels` (body emptied) and its call<br>D3: the join check's one_to_many warning (skipped when `through` is set) |   |
+| `scripts/lib/approval-hash.ts` | G2b: `ItemKind`, `itemContent` (case `"schema-pair"`), and `pairEntries` with the `listApprovals` entry listing | C1a: `itemContent` case `"measure"` (segment filters)<br>C2: `itemContent` cases `"model"` and `"measure"` (`default_time_dimension`), `HashScope` and `modelEntries` (`weekStart`), case `"dimension"` (week start)<br>C3: `itemContent` case `"measure"` (`non_additive_dimension`)<br>D3: `joinContent` (`through`) | D2: `itemContent` case `"dimension"` (`conforms_to`) |
+| `scripts/lib/compiler/index.ts` | G2c: `RefusalCode` union (one member); `Compiled` (`warnings` field); `compileLayer` is now a thin wrapper that calls `compileLayerInner` and adds the join warnings, and the `JoinPlan` constructor call in `compileLayerInner` takes `pairs` and `joinStatus` | C1a: `RefusalCode` union (one member); the request check before `compileMetrics`; `texts` in `compileLayerInner`; the `aggregate` call in the measure branch of `sqlOf` (`measureFilter`)<br>C2: `sqlOf` dimension branch (`grained` call)<br>C3: `compileLayerInner` final assembly (`const lines`) and its refusal of mixed measures<br>D1b: `resolve` in `compileLayerInner` (the measures branch)<br>D4: the `aggregate` call in the measure branch of `sqlOf` (allocation factor), after C1a<br>C4: `compileLayerInner`, one call to `compileTimeShapes` on the line before the `compileMetrics` call, after C1a |   |
+| `scripts/lib/compiler/joins.ts` | G2c: `requestPath` and `hop` (undeclared pair); the `JoinPlan` constructor (`pairs`, `joinStatus`), `JoinContext` and the new `joinWarnings`<br>G2c: `lib/compiler/check-rule.ts`, one added line (`pairs: crossSchemaPairs(source)`) | D3: `requestPath` (refuse a through route)<br>D4: `requestPath` (bridge and target instances) and `PlannedJoin` (`through`) |   |
+| `scripts/lib/draft.ts` | G1: `joinCandidates`, `keyNameCandidates` and the declared-FK loop<br>G2: the declared-FK loop (a key into a declined pair asks nothing)<br>G2c: the declared-FK loop (draft an approved pair from its listed keys; every foreign key between an approved pair's schemas is silent, listed or not) |   | D6: one call in `draftModels` |
+| `scripts/lib/edit.ts` | B2: `neverRight` and `withEditWarnings` (`warning_issues` entries are `{code, file, path, message}`); `scripts/commands/apply.ts`, one line to carry `warning_issues` in `apply --json`<br>B3: `ValueRefusal` (its own code)<br>G2b: `ItemKind` and `locate` (schema-pair case), after B2 and B3 |   |   |
+| `scripts/lib/introspect.ts` | G1: `fks.push` (keep the constraint name) and the dedupe right after it (it keys on columns and target and prefers a named key)<br>F2: the columns loop of `buildSnapshot` (rows of returned tables only), after G1 |   |   |
+| `scripts/lib/next.ts` | F4: `noLayerAction` (the why and ask strings name postgres and duckdb)<br>G2b: `targetPhase` (schema-pair prefix)<br>G3: new `schemaScopeAction` (the `schema_scope` `ask_owner` step), called in `fromStatus` before the generic `fromAction` | H3: `nextAction` and `fromStatus` after G3's call (phase `change` and the next step per pending item) | D6: `nextAction` (one case asking for the dedupe rule) |
+| `scripts/lib/readback.ts` | G2b: case `"schema-pair"` beside case `"access"` in the item builder | C1b: `renderField` ("Excludes:" line) and `renderModel` (segment list)<br>C3: `renderField` (balance sentence)<br>D5: `joinWords` (call to `readback-bridge.ts`)<br>C4: `requestWords`, one call to `timeShapeWords` at its end | D2: `renderField` (conformed paragraph) |
+| `scripts/lib/refs.ts` | B3: its refusals (codes, `bad_target`)<br>G2b: `Target` and `parseTarget` (schema-pair kind), after B3 | C2: `parseRequestField` (bare `:grain` shorthand) |   |
+| `scripts/lib/status.ts` | G2b: `statusDetail` (the schema pairs join `targets`, `changed_since_approval`, `hash_missing` and `approved_without_yes`)<br>G3: `nextStep` (new `schema_scope` step after the first introspect, a postgres source whose tables in scope sit in more than one schema; a draft pair waiting for its readback gets its own step), the source report's `schemaQuestion` and `StepContext.schemaQuestions` | H3: `Phase` union (`change`), the `done` step of `nextStep`, and the `computeStatus` JSON (`layer_version`, open change) |   |
+| `scripts/lib/validate.ts` | B1: `Validator.error`, `Validator.warn`, the `intakeIssues` merge line in `checkSources`, and `trackedEnvFileIssues`<br>B2: every existing `this.error(` and `this.warn(` call and the `report()` closure<br>G2b: `view()` (the `RuleContext` gained `hasYes(ref, hash)`) | D1b: `checkMeasureModels` (body emptied) and its call<br>D3: the join check's one_to_many warning (skipped when `through` is set) |   |
+| `scripts/lib/validate-rules/index.ts` | G2b: `RuleContext` (the method `hasYes(ref, hash)`); no other edit |   |   |
+| `scripts/lib/issue-codes/*.ts` | B1, B2: `index.ts`, `schema.ts`, `source.ts`, `layer.ts` (B owns them)<br>F3: `source.ts` (`source.pooler_startup_parameter`, `source.ssl_root_cert_unreadable`)<br>G2, G3: `scope.ts` (G owns it) |   |   |
 
 Where two pull requests in one cell edit the same function, an "after" list or the order table fixes who goes first; only C1a and D4 share an anchor, and D4 merges second. `lib/validate.ts` has one owner per wave: B in wave 1, D in wave 2. Every other workstream adds validation through its own file in `lib/validate-rules/`.
 
@@ -220,11 +224,12 @@ Where two pull requests in one cell edit the same function, an "after" list or t
 **Outcome.** A contributor gets a failing check when a change breaks the scripted eval, and an owner can see how a live model builds a first PostgreSQL layer over one schema, including a 200-table schema where three tables matter. Neither is possible today: the smoke job cannot fail a merge, and every scenario runs on DuckDB.
 
 **Today.**
-- `.github/workflows/ci.yml` (job `eval-smoke`, lines 38-48) has `continue-on-error: true`, so a regression shows as a yellow job. Wave 0 (W0.1) removes that flag and the committed token counts; this workstream starts after it.
+- `.github/workflows/ci.yml` job `eval-smoke` no longer has `continue-on-error`: W0.1 removed it and the committed token counts, so a score below baseline fails the job, and the owner still marks the job required (decision 5).
 - `evals/runner/drivers/scripted.ts` replays canned turns. A change to `SKILL.md` or `references/phases/*.md` moves no score; only the live driver `evals/runner/drivers/sdk.ts` (needs `ANTHROPIC_API_KEY`, SDK loaded by dynamic import) measures skill text, and no `evals/baseline.sdk.json` is committed.
-- `evals/runner/types.ts` and `skills/semantic-layer/schemas/eval-scenario.schema.json` (line 26) allow only `"duckdb"` as the intake dialect; `evals/graders/figures.ts` `produce()` refuses compiled SQL that is not DuckDB, because it reads DuckDB data from files.
-- `evals/graders/` holds seven graders (figures, secrets, selection, approvals, connection_first, authority, effort); none runs `semlayer validate` on the final root.
-- `fixtures/acme/load-postgres.ts` loads Acme into a named Postgres schema from `PG_URL`; `ci.yml` gives the `checks` job a postgres:16 service, the eval job none. `fixtures/acme/evolve.sql` exists but no scenario uses it.
+- `evals/runner/types.ts` and `skills/semantic-layer/schemas/eval-scenario.schema.json` allow `"duckdb"` and `"postgres"` (with `schema` and `url_env`) as the intake dialect (A3a); `evals/graders/figures.ts` `produce()` opens a postgres source through `openAdapter`.
+- `evals/graders/` holds eight graders (figures, secrets, selection, approvals, connection_first, authority, validate, effort); `validate` runs the validate library on the final root (A2).
+- `fixtures/acme/load-postgres.ts` loads Acme into a named Postgres schema from `PG_URL`; the `eval-smoke` job has a postgres:16 service (A3a). `fixtures/acme/evolve.sql` exists but no scenario uses it.
+- `evals/graders/grade.ts` cannot grade a PostgreSQL run again: the scenario's schema is dropped when the run ends, so the figures grader finds no data. The baseline entry of `acme-pg-structured` must hold with and without `PG_URL`, so `evals/smoke.ts` reports the scenario as not run when `PG_URL` is unset.
 
 **Scope.**
 - In this plan: validate grader, PostgreSQL intake and Acme scenario (one schema), two-schema and change-round walkthrough fixtures, 200-table single-schema scenario, live-model baseline and `--gate` mode, scheduled live job.
@@ -233,7 +238,7 @@ Where two pull requests in one cell edit the same function, an "after" list or t
 
 **Owns.**
 - New: `evals/graders/validate.ts`, `evals/baseline.sdk.json`, `evals/scenarios/acme-pg-structured.json` and `.script.json`, `evals/scenarios/acme-noisy-200.json` and `.script.json`, `fixtures/noisy/generate.ts`, `fixtures/noisy/README.md`, `fixtures/acme/billing.sql`, `fixtures/acme/load-two-schema.ts`, `fixtures/acme/owner-brief-two-schema.md`, `fixtures/acme/owner-brief-change.md`, `.github/workflows/eval-live.yml`, `tests/evals-validate-grader.test.ts`, `tests/evals-postgres.test.ts`, `tests/evals-noisy.test.ts`, `tests/evals-live-workflow.test.ts`, `tests/docs-rules/evals.ts`.
-- Edited by A alone: `evals/smoke.ts` (`--gate`, scenario subset), `evals/baseline.json`, `evals/graders/index.ts`, `evals/graders/figures.ts`, `evals/graders/selection.ts`, `evals/runner/runner.ts`, `evals/runner/types.ts`, `evals/runner/drivers/scripted.ts`, `evals/README.md`, `evals/walkthrough/README.md`.
+- Edited by A alone: `evals/smoke.ts` (`--gate`, scenario subset), `evals/baseline.json`, `evals/graders/index.ts`, `evals/graders/types.ts`, `evals/graders/figures.ts`, `evals/graders/selection.ts`, `evals/runner/runner.ts`, `evals/runner/run.ts`, `evals/runner/types.ts`, `evals/runner/drivers/scripted.ts`, `schemas/eval-scenario.schema.json`, `schemas/eval-grades.schema.json`, `evals/README.md`, `evals/walkthrough/README.md`.
 - Code family: none (`eval.*` stays unused; the validate grader reports B's codes). Phase card: none. Spec section: `## Eval runs` in `references/spec.md`.
 
 **Pull requests.**
@@ -242,7 +247,7 @@ Where two pull requests in one cell edit the same function, an "after" list or t
 Score a run on whether the final root passes validation.
 Steps:
 1. Add `evals/graders/validate.ts`: call the validate library in process on the final root, score 1 or 0, put the issue `code` values in details; register it in `evals/graders/index.ts`.
-2. Re-record `evals/baseline.json` for the scripted driver with the new grader.
+2. Re-record `evals/baseline.json` for the scripted driver with the new grader, and add the grader to `schemas/eval-grades.schema.json`.
 3. Document the grader in the `## Eval runs` section of `spec.md` and in `evals/README.md`.
 Proves it:
 - A root with a broken join scores 0 and lists the code from B1.
@@ -252,7 +257,7 @@ Proves it:
 Let a scenario name a PostgreSQL source and let the figures grader run compiled SQL on it.
 Steps:
 1. Add `"postgres"` with `schema` and `url_env` to `ConnectionIntake` in `evals/runner/types.ts` and the `intake.dialect` enum in `eval-scenario.schema.json`.
-2. In `runner.ts` create a schema named `semlayer_eval_<run id>` (underscores, as the loader's name check requires), load it with `loadPostgres(url, dataDir, schema)` from `fixtures/acme/load-postgres.ts` (unchanged), and drop it in `finally`; report "not run" when `PG_URL` is unset.
+2. In `runner.ts` create a schema named `semlayer_eval_<run id>` (underscores, as the loader's name check requires), load it with `loadPostgres(url, dataDir, schema)` from `fixtures/acme/load-postgres.ts` (unchanged), and drop it in `finally`; report "not run" when `PG_URL` is unset (`evals/runner/run.ts` says so and exits 0; the smoke does the same, because its `runOne` does not catch the not-run signal).
 3. Pass the scenario's `url_env` value into the env that `semlayerIn` gives each command and into the figures grader's `openAdapter` call, and add a `{schema}` placeholder beside `{fixture}` in `evals/runner/drivers/scripted.ts`.
 4. In `figures.ts` `produce()`, open the postgres source through `openAdapter` instead of refusing.
 5. Add the Postgres service to the `eval-smoke` job in `ci.yml`.
@@ -264,8 +269,8 @@ Proves it:
 #### A3b. Acme scenario on PostgreSQL (wave 1; after A3a)
 Build and grade the Acme layer over one PostgreSQL schema.
 Steps:
-1. Write `acme-pg-structured.json` and a new script over the warehouse tables (`fct_orders`, `fct_refunds`, `dim_customers` and the rest), scoped to `{schema}`, with selection and `protected_columns` for the warehouse.
-2. Add it to the smoke subset only when `PG_URL` is set; re-record `baseline.json`.
+1. Write `acme-pg-structured.json` and a new script over the warehouse tables (`fct_orders`, `fct_refunds`, `dim_customers` and the rest), scoped to `{schema}`, with selection and `protected_columns` for the warehouse. The script records each yes as its own `semlayer reply --readback <id> --item <n> --verdict yes`, ten in all, not as one `reply --answers - --approve`, because the authority grader scored the `--answers` form 0 when the script was built; `evals/graders/authority.ts` is outside A's list, and whether to change the grader is an open item for the M1 review.
+2. Add it to the smoke subset only when `PG_URL` is set; re-record `baseline.json` so that the entry holds with and without `PG_URL`.
 3. Add its rule to `tests/docs-rules/evals.ts`.
 Proves it:
 - figures, validate, secrets and selection score 1 against `reference-figures.json`.
@@ -286,7 +291,7 @@ Proves it:
 Grade scope selection when 197 of 200 tables are decoys.
 Steps:
 1. Write `fixtures/noisy/generate.ts`, a seeded generator emitting DDL for 200 tables: three Acme tables and 197 decoys with near-identical names.
-2. Write `acme-noisy-200.json`, its script and baseline entry.
+2. Write `acme-noisy-200.json`, its script and baseline entry. It names a PostgreSQL source, so, like A3b's, it joins the smoke subset only when `PG_URL` is set and its baseline entry holds with and without it.
 3. In `selection.ts`, name each wrongly included decoy in details.
 Proves it:
 - Generator output is byte-identical on two runs.
@@ -322,7 +327,7 @@ Proves it:
 
 **Outcome.** An agent running `semlayer validate --json` or any failing command with `--json` gets a stable `code` it can branch on, and a `next` command where one exists, without matching message text. Every later workstream can add its validation issues and refusals under that contract.
 
-**Today.**
+**Before wave 1.** Every block of B has landed; the bullets describe the code before it.
 - `Issue` is `{level, file, path, message}` with no code (`lib/schema.ts:9-14`). `Validator.error()` and `warn()` (`lib/validate.ts:196-202`) have 137 call sites, plus the `report()` closure near line 615.
 - Other producers build issues by hand: `schemaIssues` and `evalSchemaIssues` (`lib/schema.ts:143, 333`), `intakeIssues` (11 sites, merged at `lib/validate.ts:520`), `sourceSafetyIssues` (`lib/source-safety.ts:248`) and `trackedEnvFileIssues` (`lib/validate.ts:2293`).
 - `UserError(message, next?)` (`lib/errors.ts`) has 608 construction sites. Under `--json`, `runCli` prints `{error, next}` only when `next` is set (`lib/cli.ts:133-140`). Usage errors and exit 2 print no JSON.
@@ -336,7 +341,7 @@ Not planned: codes on all 608 `UserError` sites (the rest share `user_error`), c
 
 **Owns.**
 - New: `lib/issue-codes/index.ts`, `lib/issue-codes/schema.ts`, `lib/issue-codes/source.ts`, `lib/issue-codes/layer.ts`; `schemas/cli-error.schema.json`, `schemas/issue.schema.json`; `tests/issue-codes.test.ts`, `tests/cli-errors.test.ts`; `tests/docs-rules/codes.ts`.
-- Edited by B alone in wave 1: `lib/errors.ts`, `lib/source-safety.ts`, `lib/approve-checks.ts`, `commands/validate.ts`, `mcp/elicit.ts`.
+- Edited by B alone in wave 1: `lib/errors.ts`, `lib/source-safety.ts`, `lib/approve-checks.ts`, `commands/validate.ts`, `commands/apply.ts` (one line), `mcp/elicit.ts`. `lib/issue-codes/source.ts` also took F3's two codes.
 - Code family: `schema.*`, `intake.*`, `source.*`, `env.*`, and the existing-check codes in `layer.ts` (`ref.*`, `model.*`, `field.*`, `approval.*`, `time.*`, `expr.*`, `access.*`, `golden.*`). Reserved to others: `scope.*` G, `metric.*` C, `join.*` D, `release.*` H.
 - Card: none; SKILL.md gets one line (budget 1).
 - Spec heading: `### Codes and errors`.
@@ -363,7 +368,7 @@ Steps:
 1. Create `lib/issue-codes/layer.ts`. Put the model, dimension, measure and filter variants in the path, not the code, so about 90 codes cover the sites.
 2. Replace the default at each `this.error(` and `this.warn(` call and in `report()`, inside the existing check bodies only.
 3. Add `next` templates for `approval.hash_changed`, `approval.no_ledger_yes` and `approval.stamp_hashes`.
-4. In `lib/edit.ts`, `neverRight` tests `time.zone_carries_own`, `expr.divides_by_literal` and `ignore.column_read`. `withEditWarnings` adds `warning_issues: [{code,path,message}]` and leaves `warnings` as strings.
+4. In `lib/edit.ts`, `neverRight` tests `time.zone_carries_own`, `expr.divides_by_literal` and `ignore.column_read`. `withEditWarnings` adds `warning_issues`, a list of `{code, file, path, message}` (a batch builds its own warnings, and a path alone is ambiguous across files), and leaves `warnings` as strings; `commands/apply.ts` carries the list in `apply --json` with one added line.
 5. Remove `issue.unclassified` and add a test that it never appears.
 Proves it:
 - Ten mutations of the valid fixture each return their expected code through `expectIssue`.
@@ -376,7 +381,7 @@ Every failing command under `--json` prints one `{error, code, next?}` object on
 Steps:
 1. Add `code` (default `user_error`) to `UserError`; let `ValueRefusal` in `lib/edit.ts` set its own.
 2. In `runCli`, detect `--json` in argv before `parseArgs`. Print the envelope for `UserError`, for usage errors and `Unknown command` (`usage`), and for exit 2 (`internal`). The stderr line is unchanged.
-3. Give codes to the errors an agent branches on: `noLayer` in `lib/project.ts` (`no_layer`), `lib/refs.ts`, `lib/json-input.ts`, `lib/env-file.ts:145` (`source.connection_missing`), and approval refusals in `lib/approve-checks.ts`.
+3. Give codes to the errors an agent branches on: `noLayer` in `lib/project.ts` (`no_layer`), `lib/refs.ts`, `lib/json-input.ts`, `lib/env-file.ts:145` (`source.connection_missing`), and the approval refusals, which are throws in `commands/approve.ts` and `lib/approve-checks.ts`; `semlayer apply` passes on the code of its refused entries, or the bare code `batch_refused` when they differ.
 4. Add `structuredContent: {code, error, next?}` to failed results in `toolResult` (`mcp/elicit.ts`). Text and `isError` stay.
 5. Add the two schemas.
 Proves it:
@@ -389,7 +394,7 @@ Proves it:
 `semlayer validate --codes` lists every code, the spec states the envelope and the families, and the agent is told to branch on `code`.
 Steps:
 1. Add `semlayer validate --codes` in `commands/validate.ts`: it prints every registered code with its level and one-line meaning, read from the family files.
-2. Write `### Codes and errors` in `references/spec.md`: the envelope, one sentence naming each family, the rule that a code is added or retired, never renamed or reused, and a pointer to `semlayer validate --codes`. The section carries no generated table.
+2. Rewrite `### Codes and errors` in `references/spec.md`, which B1 started: the envelope, one sentence naming each family, the rule that a code is added or retired, never renamed or reused, and a pointer to `semlayer validate --codes`. The section carries no generated table.
 3. Edit the `validate` row of the CLI table for the new JSON shape and `--codes`.
 4. Add one line to `SKILL.md`: branch on `code` and `next`, not text.
 5. Add `tests/docs-rules/codes.ts`.
@@ -416,8 +421,8 @@ Proves it:
 **Today.**
 - No segment exists. `schemas/model.schema.json` measures allow `name, expr, agg, filter, format, currency, description, synonyms, tags` only (`additionalProperties: false`), so a shared rule is a copy in each `filter`.
 - `scripts/lib/compiler/metrics.ts:127-129` (`formula()`) compiles `ratio` and `derived` only; any other type is refused as `unsupported_metric`. `schemas/metrics.schema.json` rejects other types first.
-- `scripts/lib/compiler/sql.ts:26` `grained()` is `date_trunc(grain, expr)`: ISO Monday weeks, calendar quarters and years, no setting. `scripts/lib/compiler/index.ts:264-267` (`sqlOf`) is the only caller of `aggregate()` and `grained()`.
-- `scripts/lib/approval-hash.ts:111-170` (`itemContent`) hashes fixed field lists; a new key outside them edits an approved item without invalidating it.
+- `scripts/lib/compiler/sql.ts:26` `grained()` is `date_trunc(grain, expr)`: ISO Monday weeks, calendar quarters and years, no setting. `sqlOf` in `compileLayerInner` (`scripts/lib/compiler/index.ts:276-290`) is the only caller of `aggregate()` and `grained()`.
+- `scripts/lib/approval-hash.ts:122-190` (`itemContent`) hashes fixed field lists, with a case for the schema pair since G2b; a new key outside them edits an approved item without invalidating it.
 - `metricMeasureRefs` exists twice: `scripts/lib/access.ts:615` and `scripts/lib/approve-checks.ts:40`. Both read only ratio and `{ }` expr metrics.
 
 **Scope.**
@@ -433,7 +438,7 @@ Proves it:
 **Owns.**
 - New: `skills/semantic-layer/scripts/lib/segments.ts`, `lib/time-request.ts`, `lib/time-request-words.ts`, `lib/compiler/{segments,calendar,semi-additive,time-shapes,cumulative,period-compare,trailing-window}.ts`, `lib/validate-rules/metric.ts`, `lib/issue-codes/metric.ts`, `commands/add-segment.ts`, `commands/remove-segment.ts`, `fixtures/semantics/balances.sql`.
 - New tests: `tests/compiler-{segments,calendar,semi-additive,cumulative,period-compare,trailing-window}.test.ts`, `tests/segments-validate.test.ts`, `tests/compat/{balances,running-total,period-compare,trailing-window}.test.ts`, `tests/compat/chinook-layer.ts`, `tests/docs-rules/metric-semantics.ts`.
-- Exclusive edits: `references/phases/metrics.md`, `schemas/golden.schema.json` (`request.properties`), `commands/sql.ts` (`run`, C6).
+- Exclusive edits: `references/phases/metrics.md`, `schemas/golden.schema.json` (`request.properties`), `commands/sql.ts` (`run`, C6, after G2c's added line that prints the compiler's warnings).
 - Code family `metric.*` (for example `metric.segment_unknown`, `metric.non_additive_dimension_not_time`, `metric.window_as_of_missing`).
 - Phase card: `metrics.md`, paragraphs "Segments", "Time and balances", "Running totals and comparisons".
 - Spec heading: `## Metric semantics`.
@@ -444,7 +449,7 @@ A model declares named predicates and a measure or plain request applies them.
 Steps:
 1. `lib/segments.ts`: `Segment {name, filter, description}`; add `segments?` to Model and Measure and `segments?` to QueryRequest in `lib/types.ts`; add the keys to the model and golden schemas.
 2. `lib/validate-rules/metric.ts`: unique names, `sqlTextProblem` on each filter, measure names exist; the file is found by name, with no index to edit. Register the codes in `lib/issue-codes/metric.ts`.
-3. `lib/compiler/segments.ts` `measureFilter(measure, model)` ANDs the measure filter with its segments; call it in the `sqlOf` measure branch and in `texts` of `compileLayer`. Request segments join `where`. A request that names a metric and segments is refused with a new RefusalCode, before `compileMetrics`.
+3. `lib/compiler/segments.ts` `measureFilter(measure, model)` ANDs the measure filter with its segments; call it in the `sqlOf` measure branch and in `texts` of `compileLayerInner`. Request segments join `where`. A request that names a metric and segments is refused with a new RefusalCode, before `compileMetrics`.
 4. `lib/approval-hash.ts` measure case: add the resolved segment filter texts.
 Proves it:
 - A measure with a segment compiles to `filter (where a and b)` and equals hand SQL on the demo database.
@@ -479,7 +484,7 @@ A measure with `non_additive_dimension` returns the last or first value per peri
 Steps:
 1. Schema and `validate-rules/metric.ts`: a time dimension of the same model; agg sum, avg, min or max; model has a primary key.
 2. `lib/compiler/semi-additive.ts`: `DISTINCT ON` (the primary key minus the `non_additive_dimension` column, plus the requested group keys with the time dimension at the requested grain), ordered by those keys and then the non-additive column descending for `last` or ascending for `first`. The measure filter applies in the inner `WHERE`, and the aggregate runs outside.
-3. Edit the final assembly of `compileLayer` to use it; refuse a request mixing it with additive measures.
+3. Edit the final assembly of `compileLayerInner` to use it; refuse a request mixing it with additive measures.
 4. Hash field and readback sentence.
 5. Add `fixtures/semantics/balances.sql`, one file of DDL and inserts that runs unchanged on PostgreSQL and DuckDB, every value synthetic. Add `tests/compat/balances.test.ts`: it loads the file into a unique schema from `PG_URL`, builds the small layer with typed commands and confirms a golden with `semlayer goldens confirm`; it is required in F1's `compat` job and skipped locally without `PG_URL`.
 Proves it:
@@ -493,7 +498,7 @@ A request adds to each of its measures a running total, or a total of the last n
 
 Steps:
 1. `lib/time-request.ts`: `RunningRequest { over: string; periods?: number }`. Add `running?: RunningRequest` to `QueryRequest` in `lib/types.ts` (one line). Add `request.properties.running` to `schemas/golden.schema.json`: `over` as `model.field:grain`, required; `periods` an integer from 2 to 120; no other key.
-2. `lib/compiler/time-shapes.ts` `compileTimeShapes(input, request, prior, compile)` returns undefined for a request with none of `running`, `compare` or `window`. It refuses a source that is not postgres (`unsupported_dialect`, naming PostgreSQL), and a request with more than one of the three keys (`invalid_request`). Otherwise it calls the shape's compiler. In `compileLayer` in `lib/compiler/index.ts`, on the line before the `compileMetrics` call, call it and return its result when there is one. This is C's only edit of `index.ts` for C4, C5 and C6.
+2. `lib/compiler/time-shapes.ts` `compileTimeShapes(input, request, prior, compile)` returns undefined for a request with none of `running`, `compare` or `window`. It refuses a source that is not postgres (`unsupported_dialect`, naming PostgreSQL), and a request with more than one of the three keys (`invalid_request`). Otherwise it calls the shape's compiler. In `compileLayerInner` in `lib/compiler/index.ts` (`compileLayer` is a thin wrapper over it that adds join warnings), on the line before the `compileMetrics` call, call it and return its result when there is one. This is C's only edit of `index.ts` for C4, C5 and C6.
 3. `lib/compiler/cumulative.ts` `compileRunning` refuses (`invalid_request`, each naming what to change):
    - `over` that is not one of the request's dimensions;
    - a measure whose agg is not `sum` or `count`, or that has `non_additive_dimension`;
@@ -655,7 +660,7 @@ Proves it:
 
 **Risks.**
 - Approval bypass: a key missing from `approval-hash.ts` skips the owner's yes. Each of C1a to C3 has a mutate-after-approve test. C4 to C6 add no item; the golden hash covers the whole request, `as_of` included, and C6 proves a changed `as_of` needs a new yes.
-- C and D edit different named anchors of `compileLayer`. Only C1a and D4 share one, the `aggregate(...)` call in the measure branch of `sqlOf`, and D4 goes second. C4 adds one call before `compileMetrics`, after C1a's request check.
+- C and D edit different named anchors of `compileLayerInner`. Only C1a and D4 share one, the `aggregate(...)` call in the measure branch of `sqlOf`, and D4 goes second. C4 adds one call before `compileMetrics`, after C1a's request check.
 - A spine that steps in the session time zone drops or doubles a bucket at a DST change. C4 casts the series to `timestamp` and back as `grained()` casts, and proves the same rows under a New York session.
 - Clock dependence: a window with no `as_of` depends on the day it runs. `semlayer sql` prints the date it used, `goldens new` writes it, and `validate` errors on a golden without one.
 - Cost: C6 reads the base table once per window, plus once for the first day of data. On a large table this is slower than one scan with `filter (where ...)`. That form would edit the `aggregate` anchor and the part builder, so it waits for a measured need.
@@ -665,7 +670,7 @@ Proves it:
 **Outcome.** An owner can ask for orders and refunds by month in one request. They can also model a many-valued attribute, such as order tags, through a bridge table with a dedupe rule they chose, and read back what the totals will and will not add up to.
 
 **Today.**
-- A request whose measures come from two models is refused with "a request's measures must share one model, or be one metric" (`lib/compiler/index.ts:156`, `lib/compiler/metrics.ts:167`, `checkMeasureModels` in `lib/validate.ts`).
+- A request whose measures come from two models is refused with "a request's measures must share one model, or be one metric" (`lib/compiler/index.ts:176`, `lib/compiler/metrics.ts:167`, `checkMeasureModels` in `lib/validate.ts`).
 - Metrics already compile one CTE per model and combine them on the union of dimension keys with `is not distinct from` (`metrics.ts`, from `const parts`). A plain request cannot use that path.
 - `Join` has no `through`. `$defs.join` in `schemas/model.schema.json` forbids extra keys and allows three relationships. `JoinPlan.requestPath` in `lib/compiler/joins.ts` follows to-one joins only, and `hop` refuses many_to_many evidence.
 - `validate.ts` errors on an approved join with many_to_many evidence and warns on every one_to_many. `check-join` measures one key pair (`lib/sql/join-check.ts`).
@@ -678,7 +683,7 @@ Not planned: MetricFlow and Cube entity vocabulary (E3, E4 deferred), a bridge d
 
 **Owns.**
 - New: `lib/compiler/parts.ts`, `lib/compiler/bridge.ts`, `lib/through.ts`, `lib/conformed.ts`, `lib/validate-rules/join.ts`, `lib/issue-codes/join.ts`, `lib/readback-bridge.ts`, `lib/sql/through-check.ts`, `lib/draft-bridge.ts`, `commands/add-bridge.ts`, `commands/conform.ts`, `fixtures/semantics/bridge.sql`, `tests/docs-rules/bridges.ts`, `tests/compat/{multifact,bridge}.test.ts`, and `tests/{compiler-multifact,compiler-bridge,through-join,check-join-bridge,conformed,draft-bridge}.test.ts`.
-- Edited by D alone in waves 2 and 3: `lib/compiler/joins.ts` and `commands/check-join.ts` (G2c edits both in wave 1). `lib/compiler/sql.ts` is left untouched.
+- Edited by D alone in waves 2 and 3: `lib/compiler/joins.ts` and `commands/check-join.ts` (G2c edited both in wave 1: `JoinPlan` takes `pairs` and `joinStatus`, `requestPath` and `hop` check the pair, and the pair guard of `check-join` sits in `buildTarget`). `lib/compiler/sql.ts` is left untouched.
 - Code family `join.*`. Card `references/phases/joins.md` (at most 8 lines). Spec heading `### Bridges and multi-fact requests`, under Reference compiler.
 
 **Pull requests.**
@@ -697,7 +702,7 @@ Proves it:
 A plain request over several models compiles to one CTE per model, combined on the shared dimensions.
 Steps:
 1. In `compileMetrics`, widen the entry guard so plain measures naming several models go to `compileParts`; delete its `must share one model` refusal.
-2. In `compileLayer`'s `resolve`, delete the measures branch (its `must share one model` refusal) and keep the filter refusal.
+2. In `compileLayerInner`'s `resolve`, delete the measures branch (its `must share one model` refusal) and keep the filter refusal.
 3. Empty `checkMeasureModels` and its call in `validate.ts`.
 4. Rewrite the sentence in `spec.md`, `verify.md`, `verification.md`, the `share one model` line of the request help in `commands/goldens.ts`, and the docs-rules rows that pin it; flip the five tests that assert it in `compiler.test.ts`, `compiler-metrics.test.ts`, `goldens-recompile.test.ts` and `validate.test.ts` (two).
 5. Add `tests/compat/multifact.test.ts`: it loads the Acme warehouse with `fixtures/acme/load-postgres.ts` into a unique schema from `PG_URL`, builds the small layer with typed commands and confirms the orders-and-refunds-by-month golden with `semlayer goldens confirm`; it is required in F1's `compat` job and skipped locally without `PG_URL`.
@@ -727,7 +732,7 @@ Grouping by a many-valued dimension returns figures that are not multiplied.
 Steps:
 1. `lib/compiler/bridge.ts` builds the deduped bridge subselect and the allocation factor.
 2. `requestPath` returns the bridge and target instances; `PlannedJoin` gains `through`, which marks the result many-valued.
-3. In `compileLayer`'s `sqlOf` (measure branch) multiply `sum` and `count` by the factor; refuse other aggregates, a second through path, and a filter on a through dimension that is not grouped.
+3. In `compileLayerInner`'s `sqlOf` (measure branch) multiply `sum` and `count` by the factor; refuse other aggregates, a second through path, and a filter on a through dimension that is not grouped.
 4. The bridge applies the user's row filters; a bridge hidden from the role gives `not_visible`.
 5. Add `tests/compat/bridge.test.ts`: it loads `fixtures/semantics/bridge.sql` into a unique schema from `PG_URL`, builds the small layer with typed commands and confirms a by-tag golden with `semlayer goldens confirm`; it is required in F1's `compat` job and skipped locally without `PG_URL`.
 
@@ -779,8 +784,8 @@ Proves it:
 - `semlayer import` builds a snapshot only: `ImportResult` is `{tables, warnings}` (`scripts/lib/importers/information-schema.ts:10`), and `commands/import.ts` (234 lines) prints table counts and scope changes.
 - `scripts/lib/importers/dbt.ts` (419 lines) reads `nodes` and `sources` and never reads `semantic_models`, `metrics` or `saved_queries`; the test fixture holds all three empty (`tests/fixtures/imports/dbt/manifest.json:243,250,251`).
 - Typed edits already cover the targets: `add-field`, `add-join --origin inferred` and `add-metric` (draft, ratio or derived only, `commands/add-metric.ts:18`) run as one validated batch through `semlayer apply --file` (`commands/apply.ts`).
-- Every expression passes `sqlTextProblem(text, role)` in `scripts/lib/sql-text.ts:61`; dbt text is already treated as evidence (`references/spec.md:35`).
-- No layer export exists. The word "export" is taken by `export-sql` and the Schema exports section (`references/spec.md:964`).
+- Every expression passes `sqlTextProblem(text, role)` in `scripts/lib/sql-text.ts:61`; dbt text is already treated as evidence (the spec's Trust model).
+- No layer export exists. The word "export" is taken by `export-sql` and the Schema exports section of `references/spec.md`.
 
 **Scope.**
 - In this plan: read a manifest's semantic models and metrics (E1), translate simple dbt filters (E2a), write drafts through typed edits (E2b).
@@ -826,7 +831,7 @@ Proves it:
 `import --semantic --emit <file>` writes a typed-edit file for models already drafted; `semlayer apply` then adds the drafts.
 Steps:
 1. Create `toEdits(semantic, layer)` in `lib/dbt-edits.ts`: `add-field`, `add-join --origin inferred` and `add-metric` entries; a simple metric becomes its measure with the filter translated through `translateDbtFilter`, given a `columns` map built from E1's dimensions.
-2. Skip existing names and list them; list models not yet drafted as "run `semlayer draft` first"; skip a join across schemas and say it needs G's declaration.
+2. Skip existing names and list them; list models not yet drafted as "run `semlayer draft` first"; skip a join across schemas whose pair is not approved and say it needs `semlayer add-cross-schema` and the owner's approval of the pair (the rule is `crossSchemaLevel` in `lib/schema-scope.ts`).
 3. Add `--emit` to `commands/import.ts`; the descriptions say "from the dbt manifest".
 4. Extend the spec CLI row and section.
 5. Edit `phases/intake.md` (the folder-evidence paragraph and the "Other shared context" bullet) and `phases/joins.md` (a paragraph on checking imported joins).
@@ -851,11 +856,11 @@ Proves it:
 **Outcome.** A first-time owner is asked about a Postgres database only, and the layer is built against a database whose version, pooler and TLS setup have been run in CI, not assumed. A restricted role gets a snapshot of only the tables it can read, and says which it skipped.
 
 **Today.**
-- CI runs one server, `postgres:16` with a password over TCP and no TLS (`.github/workflows/ci.yml:15-26`). `references/exports/postgres.sql:1` promises "12 or later"; no other version has ever run.
-- The first-turn question offers five dialects plus export-only MySQL and SQL Server (`references/phases/intake.md:26`). Lines 42-43 list the query-plan path and eight export dialects. `references/intake.md:143-196` and 203-224 is warehouse query-plan and Snowflake, BigQuery and Databricks material, loaded with the intake card.
-- `startupSettings` sends `default_transaction_read_only` and `statement_timeout` as startup parameters (`lib/adapters/postgres.ts:42-43`). A transaction-mode pooler rejects unknown startup parameters unless configured to ignore them, and `connectFailure` (`:251`) reports that as a plain "cannot connect". Each query already runs inside `BEGIN TRANSACTION READ ONLY` (`:298`).
-- `SSL_MODES` accepts `verify-ca` and `verify-full` (`:169`) and passes the mode to Bun's `tls` option (`:214`). No test connects over TLS, and there is no way to give a CA file.
-- The `tables` query in `postgresQueries` (`lib/sql/introspection.ts:98-125`) lists every relation with no privilege check, so a SELECT-only role on part of a schema gets tables that `profile` then fails on. Only the export query is tested on partitioned, materialized and foreign tables (`tests/export-sql.test.ts`).
+- CI runs the `compat` job on `postgres:13` to `postgres:17` (`scripts/compat-pg.sh <major>`) and the `compat-network` job (`scripts/compat-network.sh`: PgBouncer in transaction mode, and a TLS-only server with a certificate made for the run). The lowest tested major is 13, stated in the header of `references/exports/postgres.sql` and in the README.
+- The first-turn question and the README offer Postgres, with DuckDB for sample and file data; the query-plan path and the other warehouses' notes are in `references/other-dialects.md`, marked unsupported for new work.
+- `startupSettings` sends `default_transaction_read_only` and `TimeZone` as startup parameters; `run()` in `lib/adapters/postgres.ts` issues `SET LOCAL statement_timeout` after `BEGIN TRANSACTION READ ONLY`, so a transaction-mode pooler accepts the connection. `connectFailure` names an unsupported startup parameter. `<PREFIX>SSLROOTCERT` and `sslrootcert` in the URL give a CA file; `sslrootcert=system` is not supported and is refused as an unreadable file.
+- The `tables`, `columns`, `primary_keys` and `foreign_keys` queries in `postgresQueries` apply `has_any_column_privilege(c.oid, 'SELECT')`, and `semlayer introspect` prints the relations the role cannot read as skipped (`lib/sql/unreadable.ts`). The catalog tests cover partitioned, materialized, foreign and mixed-case relations.
+- `commands/doctor.ts` reports the role and the connection by variable name; it holds no server version, pooler guess or TLS status yet (F5).
 
 **Scope.**
 - In this plan: first-turn and README narrowed to Postgres (DuckDB for the demo and files), version matrix 13 to 17, pooler and TLS tests, catalog edge cases, restricted role.
@@ -863,8 +868,8 @@ Proves it:
 - Not planned: MySQL and SQL Server source dialects (no compiler or plan design), live runs of Snowflake, BigQuery and Databricks, deleting the mysql, sqlserver and redshift export code (kept so 2.0 can revive it; hidden from the card and README).
 
 **Owns.**
-- New: `scripts/compat-pg.sh`; `tests/compat/{version,catalog,pooler,tls}.test.ts`; `tests/compat/two-schemas.sql`; `tests/compat/docker/`; `tests/docs-rules/dialects.ts`; `references/other-dialects.md`; `lib/sql/unreadable.ts`; later `docs/compat/postgres.md`, `scripts/compat-provider.sh`, `tests/fixtures/managed/`.
-- Alone in its wave: `lib/adapters/postgres.ts`, `lib/sql/introspection.ts`, `references/intake.md`, `references/exports/postgres.sql`, `commands/doctor.ts` (F5). F4 edits `references/phases/intake.md` first; G3 follows in the same wave (section 6).
+- New: `scripts/compat-pg.sh`, `scripts/compat-network.sh`; `tests/compat/{version,catalog,pooler,tls}.test.ts`; `tests/compat/two-schemas.sql`; `tests/compat/docker/`; `tests/docs-rules/dialects.ts`; `references/other-dialects.md`; `lib/sql/unreadable.ts`; later `docs/compat/postgres.md`, `scripts/compat-provider.sh`, `tests/fixtures/managed/`.
+- Alone in its wave: `lib/adapters/postgres.ts`, `lib/env-file.ts` (F3, with `tests/env-file.test.ts`), `lib/sql/introspection.ts`, `references/intake.md`, `references/exports/postgres.sql`, `commands/doctor.ts` (F5). F4 edits `references/phases/intake.md` first; G3 follows in the same wave (section 6).
 - Code family: none (messages keep stable text for B to code). Card: `phases/intake.md` first-turn paragraph. Spec section: "Schema exports" (one sentence only).
 
 **Pull requests.**
@@ -887,8 +892,8 @@ Steps:
 1. Write `scripts/compat-pg.sh <version>`: start `postgres:<v>`, wait on `pg_isready`, set `PG_URL`, run the files that read it (every file under `tests/compat/` among them), remove the container; `scripts/pg-local.sh` stays the no-Docker path.
 2. Add a `compat` job to `ci.yml`, matrix 13 to 17, appended after the existing jobs.
 3. Add `tests/compat/version.test.ts`: record `server_version_num`, run `introspectionPlan` and `executePlan` on a small schema.
-4. Fix what older versions show (`pg_partition_tree`, `reltuples` at `postgres.sql:29`).
-5. State the lowest passing major in the `references/exports/postgres.sql` header and in the PR description; the orchestrator's end-of-wave pull request carries it to `README.md`.
+4. Fix what older versions show (`pg_partition_tree`, and `reltuples`: on 13 it is -1 for a table never analyzed and 0 for an analyzed empty one, so `lib/sql/introspection.ts` reports an empty analyzed table as a null row count before 14). The tests that start a server (`tests/helpers.ts` `serverVersionNum`, masking, export-filters, connection-first), `examples/acme-export/export.sql` and `references/intake.md` changed with it.
+5. State the lowest passing major (13) in the `references/exports/postgres.sql` header and in the PR description; the end-of-wave pull request carried it to `README.md`.
 Proves it:
 - Each version returns the fixture schema's tables, columns, keys.
 - The export query imports to the same snapshot on each version.
@@ -909,13 +914,13 @@ Proves it:
 #### F3. Pooled and TLS connections (wave 1; after F1)
 A connection through PgBouncer or over TLS works, or says what to change.
 Steps:
-1. Add `tests/compat/docker/` with PgBouncer (transaction mode, default config) and a TLS Postgres with a self-signed certificate; add a `compat-network` job to `ci.yml`.
+1. Add `scripts/compat-network.sh`, which starts PgBouncer (transaction mode, default config) and a TLS-only Postgres with a certificate made for the run (`tests/compat/docker/tls-entrypoint.sh` starts it), and add a `compat-network` job to `ci.yml`.
 2. In `run()` in `adapters/postgres.ts`, issue `SET LOCAL statement_timeout` after `BEGIN TRANSACTION READ ONLY`; keep `default_transaction_read_only` and `TimeZone` as startup settings only if the pooler test passes, else drop the first and `SET LOCAL` the second. Read-only rests on `BEGIN TRANSACTION READ ONLY`, and the pooler write-refusal test proves it.
 3. In `connectFailure`, match "unsupported startup parameter" and name the fix.
-4. Accept `<PREFIX>SSLROOTCERT` (and `sslrootcert` in the URL) and pass `Bun.file(path)` in Bun's `tls` option; test `verify-full` against the self-signed container.
+4. Accept `<PREFIX>SSLROOTCERT` (and `sslrootcert` in the URL; `lib/env-file.ts` passes the prefixed variable to the adapter, `source.ssl_root_cert_unreadable` names a file that cannot be read) and pass `Bun.file(path)` in Bun's `tls` option; test `verify-full` against the TLS container.
 Proves it:
 - Through the pooler, setup, introspect and profile succeed; a sleep past `SEMLAYER_STATEMENT_TIMEOUT_MS` is cancelled.
-- The existing `tests/adapters.test.ts` "postgres, read-only" test still refuses `create table`, and a new pooler test refuses a write. Moving the statement timeout touches the read-only guarantee, so F3 does not land unless this test passes through the pooler.
+- The existing `tests/adapters.test.ts` "postgres, read-only" test still refuses `create table`, and a new pooler test refuses a write. Moving the statement timeout touches the read-only guarantee, so F3 does not land unless this test passes through the pooler. That test cannot prove `BEGIN TRANSACTION READ ONLY` alone while `default_transaction_read_only` is sent at startup, so `openPostgres` and `driverConnection` take a startup-settings argument and the proof connects without that default.
 - `sslmode=require` connects; a no-TLS server with `sslmode=require` gives the `noSslHint` message.
 - `verify-full` with the container's CA file connects.
 
@@ -930,7 +935,7 @@ Proves it:
 
 **Milestones.**
 - After F4: `semlayer next` on a fresh project and `phases/intake.md` name Postgres and DuckDB only.
-- After F1: `bash scripts/compat-pg.sh 14` exits 0 and the CI `compat` job is green on five versions.
+- After F1: `bash scripts/compat-pg.sh 14` exits 0 and the CI `compat` job is green on five versions (landed).
 - After F2, F3: `bun test tests/compat` passes against the PgBouncer and TLS containers, and a SELECT-only role's `semlayer introspect` prints the tables it skipped.
 
 **Risks.**
@@ -942,7 +947,7 @@ Proves it:
 
 **Outcome.** A first layer reads one named primary schema, and no join leaves it by accident. When the owner wants data from a second schema, the agent asks, records the pair with its key relationships, and only then can a join cross.
 
-**Today.**
+**Before wave 1.** Every block of G has landed; the bullets describe the code before it.
 - `intake.schemas` filters what is read (`schemas/source.schema.json:92`, `lib/intake.ts`, `lib/sql/introspection.ts:98-165`), but there is no primary schema and no meaning beyond that filter.
 - The catalog returns each foreign key's constraint name; `lib/introspect.ts:140-175` groups by it and then drops it.
 - `lib/draft.ts` `joinCandidates` and `keyNameCandidates` search every snapshot table, so a join can be inferred across schemas from names alone. The declared-FK loop (`table.foreign_keys`, ~:740) drafts a cross-schema FK without a question.
@@ -965,8 +970,8 @@ A source names a primary schema and draft stops joining outside it.
 Steps:
 1. Add `intake.primary` to `source.schema.json` and one line to `SourceConfig.intake`; add optional `constraint` to snapshot foreign keys and `ForeignKey`.
 2. Write `lib/schema-scope.ts`: `primarySchema(source, snapshot)` (explicit, else the sole entry, else undefined: no guess), `crossSchemaFks(snapshot)`.
-3. Keep the name in the `fks.push` of `lib/introspect.ts` for named keys only.
-4. In `joinCandidates` and `keyNameCandidates` keep only the table's own schema; in the declared-FK loop call `ask()` naming both schemas and the constraint, and add no join.
+3. Keep the name in the `fks.push` of `lib/introspect.ts` for named keys only, and key the dedupe right after it on columns and target, preferring a named key. A snapshot imported from a schema export records no constraint name (the importer does not keep `fk_name`), and its question says so.
+4. In `joinCandidates` and `keyNameCandidates` keep only the table's own schema; in the declared-FK loop call `ask()` naming both schemas and the constraint, and add no join; `semlayer draft` lists the cross-schema keys in its output, and `--json` adds `cross_schema_keys`.
 5. Add `setup --primary <schema>` (`lib/setup.ts` `ORDER`, `commands/setup.ts`) and print the primary; write spec `### Schema scope` and the `setup --primary` CLI row.
 
 Proves it:
@@ -977,9 +982,9 @@ Proves it:
 #### G2. Declare a schema pair and validate it (wave 1; after G1, B1)
 The source can hold an owner-approved directional pair with keys, or a declined one, and validate checks it.
 Steps:
-1. Add `cross_schema` to `source.schema.json` (from, to, keys, status, approval fields) and `pairAllowed`, `pairIssues` to `schema-scope.ts`; it counts only approved pairs. An entry may have `status: declined` (from, to, recorded reply); a declined pair clears G3's FK condition and resolves G1's per-FK question. Add the grace date for decision 8 as a constant in `schema-scope.ts`.
-2. Write `add-cross-schema` (`--source --from --to --keys t.c=t.c... --constraint`, and `--decline`, which writes a declined pair) and `remove-cross-schema`; both refuse a key absent from the snapshot. When `--to` is not among the schemas read, `add-cross-schema` refuses and names `semlayer setup --source <s> --dialect postgres --env <VAR> --schemas <existing>,<to>`, which reads the catalog again.
-3. Write `lib/validate-rules/scope.ts` (found by name; no index edit) and register its codes in `lib/issue-codes/scope.ts`: `scope.cross_schema_undeclared` (an error for a draft join across an undeclared pair; a warning for an approved one until the grace date, then an error), `scope.key_not_in_snapshot`, `scope.primary_not_in_schemas`, warning `scope.pair_unused`.
+1. Add `cross_schema` to `source.schema.json` (from, to, keys, status, approval fields) and `pairAllowed`, `pairIssues` to `schema-scope.ts`; it counts only approved pairs; the pair checks themselves live in `lib/validate-rules/scope.ts`, which uses `pairAllowed` and `keyProblem` from `schema-scope.ts` (no `pairIssues` was built). An entry may have `status: declined` (from, to, recorded reply); a declined pair clears G3's FK condition and resolves G1's per-FK question. Add the grace for decision 8 as a constant in `schema-scope.ts`, `UNDECLARED_GRACE_ENDS = "0.2.0"`, keyed on the tool version because no date can be derived from the manifest.
+2. Write `add-cross-schema` (`--source --from --to --keys t.c=t.c... --constraint`, and `--decline`, which writes a declined pair) and `remove-cross-schema`; both refuse a key absent from the snapshot; `--constraint` takes the keys of a foreign key the snapshot records by name, so a pair over a snapshot imported from an export uses `--keys`. When `--to` is not among the schemas read, `add-cross-schema` refuses and names `semlayer setup --source <s> --dialect postgres --env <VAR> --schemas <existing>,<to>`, which reads the catalog again.
+3. Write `lib/validate-rules/scope.ts` (found by name; no index edit) and register its codes in `lib/issue-codes/scope.ts`: `scope.cross_schema_undeclared` (an error for a draft join across an undeclared pair; a warning for an approved one until the tool version reaches the grace constant, then an error), `scope.key_not_in_snapshot`, `scope.primary_not_in_schemas`, warning `scope.pair_unused`.
 4. Add spec CLI rows and the pair paragraph.
 
 Proves it:
@@ -990,9 +995,9 @@ Proves it:
 `semlayer approve --target schema-pair:<source>:<from>:<to>` rests on a ledger reply.
 Steps:
 1. Extend `Target` and `parseTarget` in `lib/refs.ts` with `schema-pair:<source>:<from>:<to>`, split on ':', each part an identifier as `lib/intake.ts` defines one (`IDENT`), case kept.
-2. Add the kind to `ItemKind` and the entry listing (`listApprovals`) in `lib/approval-hash.ts`.
+2. Add the kind to `ItemKind` and the entry listing (`listApprovals`, through `pairEntries`) in `lib/approval-hash.ts`. `pairApproved` in `lib/schema-scope.ts` calls `itemHash` directly, the function `listApprovals` uses, so there is one definition of approved. `lib/status.ts` (`statusDetail`) and `lib/approvals.ts` (`projectApprovals`) take a small anchored edit so status and the approvals grader cover pairs.
 3. Add the kind to `ItemKind` and a `locate` case in `lib/edit.ts`, so the approval stamp is written into the pair entry of `sources/<source>.yaml`; add a case to `openQuestions` and `where` in `lib/review.ts`.
-4. Add a case beside `access` in `commands/approve.ts` and `lib/readback.ts`; map it in `targetPhase` of `lib/next.ts`.
+4. Add a case beside `access` in `commands/approve.ts` and `lib/readback.ts`; map it in `targetPhase` of `lib/next.ts`. The ledger refusals are throws in `commands/approve.ts`, not in `lib/approve-checks.ts`, and a pair follows them with the same codes. `RuleContext` gains `hasYes(ref, hash)` (`lib/validate-rules/index.ts`, and `view()` in `lib/validate.ts`) for the rule file. `hooks/guard-edits.ts` refuses a hand edit to a pair's approval fields and to the keys of an approved pair; it stays content-based, so a hashed stamp written whole by `Bash` is caught afterwards (`approval.no_ledger_yes`), not refused at write time.
 
 Proves it:
 - Approve without a recorded yes is refused; with one it records approver, date and hash.
@@ -1002,10 +1007,10 @@ Proves it:
 #### G2c. Enforce pairs in join commands, compiler and draft (wave 1; after G2)
 No new join crosses schemas unless its pair is approved, and an approved one that does is reported.
 Steps:
-1. Refuse in `commands/add-join.ts` `run` and `check-join.ts` `resolveTable`, naming `add-cross-schema`.
-2. In `lib/compiler/joins.ts`, refuse a draft join across an undeclared pair with `scope.cross_schema_undeclared` (one `RefusalCode` member in `lib/compiler/index.ts`); compile an approved one and report the code in a new `warnings?: { code, message }[]` field on `Compiled`, until the grace date, then refuse.
-3. Print the compiler's warnings in `semlayer goldens check` (`checkCommand` in `commands/goldens.ts`).
-4. Let `draft.ts` draft an approved pair from its listed keys only.
+1. Refuse in `commands/add-join.ts` `run` and in the guard of `check-join.ts` `buildTarget`, naming `add-cross-schema` (the refusals carry `scope.cross_schema_undeclared`; `check-join` skips the join with that reason under `--all`).
+2. In `lib/compiler/joins.ts`, refuse a draft join across an undeclared pair with `scope.cross_schema_undeclared` (one `RefusalCode` member in `lib/compiler/index.ts`); compile an approved one and report the code in a new `warnings?: { code, message }[]` field on `Compiled`, until the tool version reaches the grace constant, then refuse. `JoinPlan` takes `pairs` and `joinStatus`, `compileLayer` wraps `compileLayerInner` to add the warnings of the joins it used, and `lib/compiler/check-rule.ts` and `lib/goldens.ts` (`compileGolden`) pass the new inputs.
+3. Print the compiler's warnings in `semlayer goldens check` (`checkCommand` in `commands/goldens.ts`, and `warnings` in its `--json` result) and in `semlayer sql` (`commands/sql.ts`).
+4. Let `draft.ts` draft an approved pair from its listed keys only; a foreign key between the two schemas of an approved pair, listed or not, asks nothing.
 
 Proves it:
 - `semlayer sql` refuses a draft join across an undeclared pair with the code, and prints schema-qualified SQL for a declared one.
@@ -1015,7 +1020,7 @@ Proves it:
 #### G3. `semlayer next` asks the schema question (wave 1; after F2, F4, G2b, G2c)
 The owner is asked before any cross-schema work, and before draft when more than one schema is read.
 Steps:
-1. Add a `schema_scope` step in `nextStep` of `lib/status.ts`, inside the existing phase `scope` (no new phase, card or router row), after the first introspect and before draft, when more than one schema is read with no `intake.primary`, or an FK points to a schema with no approved or declined pair. `commands/draft.ts` refuses with `scope.primary_unset` while more than one schema is read and `intake.primary` is unset.
+1. Add a `schema_scope` step in `nextStep` of `lib/status.ts`, inside the existing phase `scope` (no new phase, card or router row), after the first introspect and before draft, when more than one schema is read with no `intake.primary`, or an FK points to a schema with no approved or declined pair. `commands/draft.ts` refuses with `scope.primary_unset` while more than one schema is read and `intake.primary` is unset; once it is set, draft without `--tables` drafts the primary schema's tables and the tables an approved pair names, and lists the other tables per schema with the command that drafts them. A draft pair that waits for its owner's readback has a step of its own (the readback), so that `next` does not decline what the owner asked for; `schemaQuestionArgs` returns the action kind, `run` for the readback and `ask_owner` otherwise.
 2. Return `ask_owner` from `lib/next.ts`: "Your data sits in more than one schema (A, B). Is A enough for your questions? If you also need B, tell me which A tables relate to which B tables, and by which columns." Options carry `setup --primary`, `add-cross-schema`, and "No, keep to A", which maps to `setup --primary A` plus `add-cross-schema --decline`.
 3. Write the card paragraphs in `intake.md` (a new paragraph after F4's "Which Postgres database?" paragraph), `scope.md`, `draft.md` and the rules file.
 4. Add `tests/compat/schema-scope.test.ts`: with `tests/compat/two-schemas.sql` loaded from `PG_URL`, `semlayer next --json` returns `ask_owner` before any cross-schema join exists, and `validate` passes only after `add-cross-schema` and `approve`; it runs in the `compat` job.
@@ -1040,10 +1045,10 @@ Proves it:
 **Outcome.** When a finished layer needs one more metric, table or definition, a person or agent opens a change round, sees exactly what moved, and closes it with a version the owner chose and a changelog entry showing which goldens' figures changed. A schema refresh leaves a record, and a retyped column is flagged without a hand-written question.
 
 **Today.**
-- On a finished layer `semlayer next` returns phase `done` with action `validate` (`skills/semantic-layer/scripts/lib/status.ts` ~1150-1166). Nothing tells the agent that `add-metric` works there.
+- On a finished layer `semlayer next` returns phase `done` with action `validate` (`skills/semantic-layer/scripts/lib/status.ts` ~1185-1203). Nothing tells the agent that `add-metric` works there.
 - No version or changelog exists. `schemas/project.schema.json` `version` is the spec version, const 1. No command is named change, diff, release or version.
-- `introspect` prints the snapshot diff, including retyped columns, then overwrites the snapshot (`commands/introspect.ts` ~203-205, `lib/snapshot-diff.ts`). `references/phases/drift.md` step 2 has the agent write a question for each retyped column by hand.
-- `goldens check` gives pass or fail per golden and saves nothing (`commands/goldens.ts` `checkCommand`). `goldenRun` (exported, line 363) already returns a golden's current rows.
+- `introspect` prints the snapshot diff, including retyped columns, then overwrites the snapshot (`commands/introspect.ts` ~217, `lib/snapshot-diff.ts`). `references/phases/drift.md` step 2 has the agent write a question for each retyped column by hand.
+- `goldens check` gives pass or fail per golden and saves nothing (`commands/goldens.ts` `checkCommand`). `goldenRun` (exported, line 365) already returns a golden's current rows.
 - `examples/acme/semantic` is a finished layer: 17 approved goldens with recorded rows, `approved_hash` on its items, phase `done`. Tests copy it (`tests/ledger.test.ts`); DuckDB data for reruns is in `fixtures/acme/data` (`tests/goldens-recompile.test.ts`). No new layer fixture is built.
 
 **Scope.**
@@ -1089,7 +1094,7 @@ Proves it:
 #### H2. Item diff against the last release (wave 2; after H1, G2)
 `semlayer change status` lists items added, changed and removed since the last release.
 Steps:
-1. `lib/changeset.ts` `itemMap(root)`: ref-to-hash from `statusDetail(root).targets`, plus G2's scope and cross-schema declarations.
+1. `lib/changeset.ts` `itemMap(root)`: ref-to-hash from `statusDetail(root).targets`, which carries each schema pair as `schema-pair:<source>:<from>:<to>` since G2b, plus each source's `intake.primary`.
 2. `diffItems(baseline, now)`, marking changed items re-approved or still draft, and listing for each changed item the approved goldens whose request reads it (`affected_goldens`).
 3. `commands/change.ts` `status`, plain and `--json`; quote `.semlayer/drift.json` when present. With no changelog, `change status` exits 0 and says there is no release yet, naming `semlayer change close --version 1.0`.
 4. Add the spec CLI row.
@@ -1104,7 +1109,7 @@ Steps:
 1. `change start --note <text>` writes `.semlayer/change.json` (`change.schema.json`).
 2. In `lib/next.ts` `nextAction`, name the next step per pending item from H2, then `change close`.
 3. In `lib/status.ts`, add phase `change` to the `Phase` union, returned while `.semlayer/change.json` exists, and have `nextAction` map it; reword the `done` message; show `layer_version` and the open change in `status --json`.
-4. Write `references/phases/change.md`, whose first line is "Load this card when `semlayer next` names phase `change`."; add the `SKILL.md` router row `change` | `references/phases/change.md` and one principle line (H's budget of 2); `tests/docs-rules/release.ts`.
+4. Write `references/phases/change.md`, whose first line is "Load this card when `semlayer next` names phase `change`."; add the `SKILL.md` router row `change` | `references/phases/change.md` and one principle line (H's budget of 2; the file is 108 lines of 110 with B's line spent, so the two lines left are H's); `tests/docs-rules/release.ts`.
 Proves it:
 - `next` on the fixture names `change start` once, not after start.
 - After start and `add-metric`, `next` names the metrics phase.
@@ -1143,14 +1148,14 @@ The owner said on 2026-11-20 to proceed. The plan runs on the default in each ro
 
 | # | Decision | Default the plan assumes | Other options | Needed before |
 |---|---|---|---|---|
-| 1 | The export files and code for MySQL, SQL Server and Redshift, which were never run on a real server | Keep the code; take it out of the first-turn card, the README and the default agent path | Remove it (smaller surface, harder to revive) | F4 |
-| 2 | Lowest supported PostgreSQL major | The lowest of 13 to 17 that passes the version matrix, stated in the README | 12 (claimed today, past end of life); 14 | F1 |
+| 1 | The export files and code for MySQL, SQL Server and Redshift, which were never run on a real server | Keep the code; take it out of the first-turn card, the README and the default agent path (built: F4) | Remove it (smaller surface, harder to revive) | F4 |
+| 2 | Lowest supported PostgreSQL major | 13, the lowest of 13 to 17 that passes the version matrix, stated in the README and the export header (built: F1) | 12 (claimed before F1, past end of life); 14 | F1 |
 | 3 | Does a live-model eval block a merge | No: it runs on a schedule and on a label, and reports; the owner asked for testing without an API key, so the scheduled job is built and stays switched off until a key is set | Required on pull requests labelled as changing agent text; required on every pull request | A5 |
 | 4 | A model API key as a repository secret, and its monthly spend cap | A scheduled job with a cap the owner sets; the owner records the first baseline by hand; the owner asked for testing without an API key, so the scheduled job is built and stays switched off until a key is set | No key: scripted evals only | A5 |
 | 5 | Marking `eval-smoke` a required check | The owner sets it in branch protection after W0.1 merges; a pull request cannot | Leave it blocking only by job status | after W0.1 |
-| 6 | Where the primary schema is recorded | An explicit `intake.primary`, set by `semlayer setup --primary` | The first entry of `intake.schemas` | G1 |
-| 7 | What a cross-schema declaration holds | A directional pair, from one schema to another, with at least one key relationship (a foreign key constraint or a column pair), approved on a recorded yes | An unordered pair; a pair with no keys | G2 |
-| 8 | A join across an undeclared schema pair | A draft join is an error at once in validate, the join commands and the compiler; a join approved before this change compiles with a warning from validate and the compiler until the tool's next minor version (a dated constant in `lib/schema-scope.ts`), then an error | An error at once for every such join | G2, G2c |
+| 6 | Where the primary schema is recorded | An explicit `intake.primary`, set by `semlayer setup --primary`; with none set, the only schema read, else no primary and no guess (built: G1) | The first entry of `intake.schemas` | G1 |
+| 7 | What a cross-schema declaration holds | A directional pair, from one schema to another, with at least one key relationship (a foreign key constraint or a column pair), approved on a recorded yes; a declined pair holds no keys (built: G2, G2b) | An unordered pair; a pair with no keys | G2 |
+| 8 | A join across an undeclared schema pair | A draft join is an error at once in validate, the join commands and the compiler; a join across schemas approved before pairs existed compiles with a warning from validate and the compiler until the tool's version reaches 0.2.0 (`UNDECLARED_GRACE_ENDS` in `lib/schema-scope.ts`, a version because no date can be derived from the manifest), then an error (built: G2, G2c) | An error at once for every such join | G2, G2c |
 | 9 | Where a layer's version lives and who chooses it | `layer_version` in `semantic.yaml` with `changelog.yaml` beside it; the owner passes the number and the tool checks that it rises | Git tags only; the tool proposes the number | H1, H4 |
 | 10 | Is a change round required before editing a finished layer | Optional: edits work as today, and closing a round compares with the last release | Required before any edit | H3 |
 | 11 | A request naming measures of two fact tables | Allowed whenever the models share a dimension, refused with a code when they do not | Allowed only after the owner confirms the shared dimension in a readback | D1b |
@@ -1159,11 +1164,11 @@ The owner said on 2026-11-20 to proceed. The plan runs on the default in each ro
 | 14 | Running totals and period-over-period | Wave 2, with the last-n-days comparison (C4, C5, C6), as the owner asked on 2026-11-20 | none | C4 |
 | 15 | What dbt import does | Reads semantic models and metrics as drafts with origin `inferred`; nothing is approved; no export | Also export to MetricFlow, or to Cube | E1 |
 | 16 | Who runs the check on managed PostgreSQL services | The owner runs the kit on Supabase and Neon and commits the redacted output | Rely on the pooler and TLS containers only | F5 |
-| 17 | Warnings under `--json` | Existing string lists stay; objects with codes are added beside them | Replace the strings (breaks current readers) | B2 |
-| 18 | Does the smoke fail on token or effort growth | It warns when a scenario's tokens rise more than 10% above the baseline (W0.1) | Fail above a set share | W0.1 |
-| 19 | The Snowflake, BigQuery and Databricks query-plan material | Moved to `references/other-dialects.md`, marked unsupported | Kept on the intake card | F4 |
-| 20 | The direction of a schema pair | From the schema holding the foreign key to the schema it references; a join either way between those tables is allowed | The direction of the model a join is declared on | G2 |
-| 21 | Statement timeout and time zone through a pooler | `SET LOCAL` inside each read-only transaction; read-only rests on `BEGIN TRANSACTION READ ONLY` | Startup parameters only, with poolers unsupported | F3 |
+| 17 | Warnings under `--json` | Existing string lists stay; objects with codes are added beside them: `warning_issues` entries `{code, file, path, message}` in typed edits and `apply --json` (built: B2) | Replace the strings (breaks current readers) | B2 |
+| 18 | Does the smoke fail on token or effort growth | It warns when a scenario's tokens rise more than 10% above the baseline (built: W0.1) | Fail above a set share | W0.1 |
+| 19 | The Snowflake, BigQuery and Databricks query-plan material | Moved to `references/other-dialects.md`, marked unsupported (built: F4) | Kept on the intake card | F4 |
+| 20 | The direction of a schema pair | From the schema holding the foreign key to the schema it references; a join either way between those tables is allowed (built: G2) | The direction of the model a join is declared on | G2 |
+| 21 | Statement timeout and time zone through a pooler | `SET LOCAL` inside each read-only transaction; read-only rests on `BEGIN TRANSACTION READ ONLY` (built: F3; `default_transaction_read_only` and `TimeZone` stay startup parameters, and only the statement timeout moved) | Startup parameters only, with poolers unsupported | F3 |
 | 22 | Who records 1.0, and when | The agent, with `semlayer change close --version 1.0`, when a first build ends | The owner, by hand | H4 |
 | 23 | Running totals and comparisons as request options or as metric types the owner names in `metrics.yaml` | Request options over any approved measure or metric | Metric types the owner names in `metrics.yaml` | C4 |
 | 24 | Does "the last 30 days as of D" include D | Yes: D-29 to D | It ends the day before D | C6 |
