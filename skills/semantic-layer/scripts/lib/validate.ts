@@ -1758,8 +1758,12 @@ export class Validator {
       const spanning = arr<string>(req.measures)
         .map((r) => this.metric(r))
         .filter((m): m is Metric => !!m && m.source === req.source)
-        .map((m) => ({ metric: m, models: this.metricModels(m).filter((x) => this.model(req.source, x)) }))
+        .map((m) => ({ what: `metric ${m.name} combines`, models: this.metricModels(m).filter((x) => this.model(req.source, x)) }))
         .filter((x) => x.models.length > 1);
+      // Measures of several models compile in parts on the shared dimensions too, as one metric
+      // over them does (spec: Bridges and multi-fact requests).
+      const spanned = [...new Set(arr<string>(req.measures).flatMap((r) => (typeof r === "string" ? this.measureModels(req.source, r) : [])))];
+      if (spanned.length > 1 && !spanning.some((x) => x.models.length === spanned.length)) spanning.push({ what: "the request has", models: spanned });
       const check = (path: string, ref: string, allow: { metric: boolean; measure: boolean; dimension: boolean }, kind: "measure" | "dimension" | "filter" | "order_by") => {
         const problem = this.requestFieldProblem(req.source, ref, allow);
         if (problem) {
@@ -1778,14 +1782,14 @@ export class Validator {
         const pathIssue = base && this.model(req.source, base.model) ? this.pathProblem(req.source, base.model, base.why, parsed.model) : null;
         if (pathIssue) this.error(f, path, pathIssue, "golden.field_unreachable");
         if (kind !== "dimension") return;
-        for (const { metric, models } of spanning) {
+        for (const { what, models } of spanning) {
           // A model reaches the dimension through one shortest to-one path, or has its own of the same name.
           const missing = models.filter((m) => !this.dimension(req.source, m, parsed.field) && this.pathProblem(req.source, m, "", parsed.model));
           if (missing.length)
             this.error(
               f,
               path,
-              `metric ${metric.name} combines measures of ${models.join(", ")}, so it groups by dimensions that exist with the same name in each, or that each reaches through one path of to-one joins; ` +
+              `${what} measures of ${models.join(", ")}, so it groups by dimensions that exist with the same name in each, or that each reaches through one path of to-one joins; ` +
                 `${missing.join(", ")} ${missing.length === 1 ? "has" : "have"} no dimension "${parsed.field}" and no such path to ${parsed.model}`,
               "golden.dimension_not_shared",
             );
@@ -1796,7 +1800,6 @@ export class Validator {
       const all = { metric: true, measure: true, dimension: true };
       arr<{ field: string }>(req.filters).forEach((x, i) => check(`request.filters[${i}].field`, x.field, all, "filter"));
       arr<{ field: string }>(req.order_by).forEach((x, i) => check(`request.order_by[${i}].field`, x.field, all, "order_by"));
-      this.checkMeasureModels(f, req);
       this.checkGoldenSqlRules(l);
       if (g.status === "approved")
         for (const [path, label] of this.draftFieldsUsed(req.source, req))
@@ -1809,33 +1812,6 @@ export class Validator {
           );
       this.checkGoldenAccess(l, roles);
       this.checkConfirmedAs(l);
-    }
-  }
-
-  // Errors when a request's measures come from more than one model and are not one metric: each
-  // measure aggregates at its own model's grain, and nothing defines how such results combine.
-  checkMeasureModels(f: string, req: Golden["request"]): void {
-    const measures = strings(req.measures);
-    if (measures.length < 2) return;
-    const seen = new Set<string>();
-    let first: { ref: string; models: string[] } | undefined;
-    for (const [i, ref] of measures.entries()) {
-      const models = this.measureModels(req.source, ref);
-      if (!models.length) continue;
-      for (const x of models) seen.add(x);
-      if (!first) {
-        first = { ref, models };
-        continue;
-      }
-      if (seen.size < 2) continue;
-      this.error(
-        f,
-        `request.measures[${i}]`,
-        `${ref} aggregates over ${models.join(", ")}, and ${first.ref} over ${first.models.join(", ")}; ` +
-          "a request's measures must share one model, or be one metric: write a metric that combines them in metrics.yaml, or split the golden",
-        "golden.measures_span_models",
-      );
-      return;
     }
   }
 

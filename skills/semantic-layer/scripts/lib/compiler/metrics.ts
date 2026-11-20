@@ -1,8 +1,10 @@
 // Metrics in the reference compiler (references/spec.md, Reference compiler): a request that names
-// a ratio or derived metric. This file reads the metrics' formulas and works out the measures the
-// request needs and how its filters split; parts.ts builds the per-model CTEs, combines them on the
-// request's dimensions and computes each metric over their columns. Filters on dimensions, and the
-// user's row filters, apply inside every CTE; filters on measures and metrics in the outer WHERE.
+// a ratio or derived metric, or whose plain measures come from several models (a multi-fact request,
+// spec: Bridges and multi-fact requests). This file reads the metrics' formulas and works out the
+// measures the request needs and how its filters split; parts.ts builds the per-model CTEs, combines
+// them on the request's dimensions and computes each metric over their columns. Filters on
+// dimensions, and the user's row filters, apply inside every CTE; filters on measures and metrics in
+// the outer WHERE.
 import { parseRequestField } from "../refs.ts";
 import type { Dialect, Measure, Metric, QueryRequest, RequestFilter } from "../types.ts";
 import { NAME_PATTERN } from "../types.ts";
@@ -75,7 +77,8 @@ function render(n: Node, dialect: Dialect, column: Column, parent = 0, right = f
   return p < parent || (right && p === parent) ? `(${text})` : text;
 }
 
-// Compiles a request that names a metric anywhere, or returns undefined for one that names none.
+// Compiles a request that names a metric anywhere, or whose measures come from several models, or
+// returns undefined for any other request.
 // prior holds the refusals the request already has (visibility, dialect); compile is compileLayer,
 // which compiles each model's part.
 export function compileMetrics(input: CompileInput, request: QueryRequest, prior: Refusal[], compile: Compile): CompileResult | undefined {
@@ -87,7 +90,18 @@ export function compileMetrics(input: CompileInput, request: QueryRequest, prior
   const dimensions = request.dimensions ?? [];
   const filters: RequestFilter[] = request.filters ?? [];
   const orderBy = request.order_by ?? [];
-  if (![...measures, ...dimensions, ...filters.map((f) => f.field), ...orderBy.map((o) => o.field)].some((r) => metricOf(r))) return undefined;
+  const models = layer.models.filter((m) => m.source === source.source);
+  const modelOf = (name: string) => models.find((m) => m.model === name);
+  const measureOf = (model: string, name: string): Measure | undefined => (modelOf(model)?.measures ?? []).find((m) => m.name === name);
+  // A request of plain measures of several models (a multi-fact request) compiles in parts too.
+  const plainModels = new Set(
+    measures.flatMap((ref) => {
+      const p = parseRequestField(ref);
+      return p && measureOf(p.model, p.field) ? [p.model] : [];
+    }),
+  );
+  const named = [...measures, ...dimensions, ...filters.map((f) => f.field), ...orderBy.map((o) => o.field)].some((r) => metricOf(r));
+  if (!named && plainModels.size < 2) return undefined;
 
   const refusals = [...prior];
   const add = (code: RefusalCode, message: string, ref?: string, next?: string, extra?: Pick<Refusal, "reasons" | "awaits">) => {
@@ -95,10 +109,18 @@ export function compileMetrics(input: CompileInput, request: QueryRequest, prior
   };
   const refuse = (): CompileResult => ({ ok: false, source: source.source, reason: refusals.map((r) => r.message).join("; "), refusals });
   if (refusals.length) return refuse();
-
-  const models = layer.models.filter((m) => m.source === source.source);
-  const modelOf = (name: string) => models.find((m) => m.model === name);
-  const measureOf = (model: string, name: string): Measure | undefined => (modelOf(model)?.measures ?? []).find((m) => m.name === name);
+  // A request segment narrows the base model of a one-model request; a multi-fact request has no
+  // single base, so it is refused rather than applied to one part (spec: Bridges and multi-fact requests).
+  const segments = request.segments ?? [];
+  if (!named && segments.length) {
+    add(
+      "join.multi_fact_segments",
+      `the request names segments ${segments.join(", ")}, but its measures come from ${[...plainModels].join(" and ")}, each aggregated on its own model; a request's segments apply to a request of one model's measures`,
+      segments[0],
+      "Ask for each model's measures in a request of its own with the segments of that model, or remove segments from the request, and run semlayer sql again.",
+    );
+    return refuse();
+  }
 
   // Each metric's formula, its measures checked against the layer.
   const formulas = new Map<string, Node | undefined>();
@@ -133,14 +155,12 @@ export function compileMetrics(input: CompileInput, request: QueryRequest, prior
     if (!list.includes(measure)) list.push(measure);
     needs.set(model, list);
   };
-  const entryModels: string[][] = [];
   measures.forEach((ref, i) => {
     const metric = metricOf(ref);
     if (metric) {
       const f = formula(metric);
       const rs = f ? refs(f) : [];
       for (const r of rs) need(r.model, r.measure);
-      entryModels.push([...new Set(rs.map((r) => r.model))]);
       return;
     }
     const p = parseRequestField(ref);
@@ -151,10 +171,7 @@ export function compileMetrics(input: CompileInput, request: QueryRequest, prior
     }
     if (p.grain !== undefined) add("invalid_request", `measures[${i}] names ${ref}, but ${p.model}.${p.field} is not a time dimension, so it takes no grain`, ref);
     need(p.model, p.field);
-    entryModels.push([p.model]);
   });
-  if (measures.length > 1 && new Set(entryModels.flat()).size > 1)
-    add("invalid_request", "a request's measures must share one model, or be one metric: write a metric that combines them in metrics.yaml, or split the request");
   dimensions.forEach((ref, i) => {
     const p = parseRequestField(ref);
     if (metricOf(ref)) add("invalid_request", `dimensions[${i}] names ${ref}, which is a metric; list it under measures`, ref);

@@ -1,9 +1,10 @@
 // The reference compiler (references/spec.md, Reference compiler): turns a request into SQL for a
 // postgres or duckdb source, with every request filter value a bound parameter. A request reaches
 // other models' fields through to-one joins, and a field's definition joins come along with it; a
-// request that names a metric compiles each model's measures on their own (metrics.ts). It never
-// runs the SQL. The user's row filters limit the base model in WHERE and a model a request path
-// reaches in its join's ON clause (rowfilters.ts), in every part of a metric as in a plain request.
+// request that names a metric, or measures of several models, compiles each model's measures on
+// their own (metrics.ts). It never runs the SQL. The user's row filters limit the base model in WHERE
+// and a model a request path reaches in its join's ON clause (rowfilters.ts), in every part of a
+// metric as in a plain request.
 import { type AccessLayer, type AccessUser, checkRequest, evaluateLayer, loadAccessLayer, type ModelRows } from "../access.ts";
 import { quoteIdent } from "../dialect.ts";
 import { loadSnapshot, loadSource } from "../project.ts";
@@ -40,7 +41,8 @@ export type RefusalCode =
   | "no_shared_dimension"
   | "scope.cross_schema_undeclared"
   | "metric.segments_on_metric"
-  | "metric.default_time_missing";
+  | "metric.default_time_missing"
+  | "join.multi_fact_segments";
 
 export interface Refusal {
   code: RefusalCode;
@@ -184,8 +186,8 @@ function compileLayerInner(input: CompileInput): CompileResult {
   const base = models.find((m) => m.model === baseName);
   if (!measures.length && !dimensions.length) add("invalid_request", "the request names no measure or dimension");
 
-  // Measures come from the base model; dimensions and dimension filters may be on any model the
-  // base reaches through to-one joins.
+  // Measures come from the base model (measures of several models compile in parts, metrics.ts);
+  // dimensions and dimension filters may be on any model the base reaches through to-one joins.
   const resolve = (ref: string, position: string): Field | undefined => {
     const p = parseRequestField(ref);
     const model = p && models.find((m) => m.model === p.model);
@@ -196,8 +198,7 @@ function compileLayerInner(input: CompileInput): CompileResult {
     if (!item) return undefined;
     const kind = dim ? "dimension" : "measure";
     if (model !== base && mea && !position.startsWith("dimensions")) {
-      if (position.startsWith("measures")) add("invalid_request", "a request's measures must share one model, or be one metric");
-      else add("invalid_request", `${position} names ${ref}, a measure of model ${model.model}; a request filters only on measures of ${base.model}, the model of its measures`, ref);
+      add("invalid_request", `${position} names ${ref}, a measure of model ${model.model}; a request filters only on measures of ${base.model}, the model of its measures`, ref);
       return undefined;
     }
     if (p.grain !== undefined) {

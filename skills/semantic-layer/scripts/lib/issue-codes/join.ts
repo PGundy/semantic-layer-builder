@@ -1,7 +1,13 @@
-// Codes of the bridge-join checks (lib/validate-rules/join.ts; spec: Bridges and multi-fact requests).
+// Codes of the bridge-join checks (lib/validate-rules/join.ts) and the compiler's refusal of segments in a
+// multi-fact request (spec: Bridges and multi-fact requests).
 import type { CodeFamily } from "./index.ts";
 
 const codes: CodeFamily = {
+  "join.multi_fact_segments": {
+    level: "error",
+    meaning: "A request whose measures come from several models names segments; a request's segments narrow the one model of its measures, so semlayer sql refuses it.",
+    next: "semlayer sql",
+  },
   "join.through_bridge_unknown": {
     level: "error",
     meaning: "A bridge join names a bridge model that is not a model of the source, or is the join's own model or target.",

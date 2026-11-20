@@ -68,7 +68,7 @@ export const RULES: DocRule[] = [
   ["verification.md", "cross_check_sql disagreement is named", "requires both to give the recorded rows and names the one that differs"],
   ["verification.md", "keeping the SQL in step", "### Keeping the SQL in step with the YAML"],
   ["verification.md", "the rule warning", "this hand-written SQL may not apply <measure>'s rule"],
-  ["verification.md", "a request's measures share one model", "a request's measures must share one model, or be one metric"],
+  ["verification.md", "measures of several models combine on shared dimensions", "aggregates each model on its own and combines them on the dimensions they share, so neither total repeats across the other's rows"],
   ["verification.md", "drift checks compile the YAML", "It compiles every approved golden's request from the current YAML"],
   // Time zones per type and dialect.
   ["verification.md", "golden SQL converts per type", "with the conversion its column's type needs"],

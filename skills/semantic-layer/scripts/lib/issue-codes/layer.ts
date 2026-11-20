@@ -100,7 +100,6 @@ const codes: CodeFamily = {
   "golden.field_missing_draft": { level: "warning", meaning: "A draft golden's request names a field that does not exist yet." },
   "golden.field_unreachable": { level: "error", meaning: "A golden's request field is not reachable from the base model through one shortest path of to-one joins." },
   "golden.dimension_not_shared": { level: "error", meaning: "A golden groups a metric that spans models by a dimension one of those models lacks and cannot reach." },
-  "golden.measures_span_models": { level: "error", meaning: "A golden's request has measures of more than one model that are not one metric." },
   "golden.uses_draft": { level: "warning", meaning: "An approved golden's request uses a draft field or metric." },
   "golden.cross_check_misses_rule": { level: "warning", meaning: "A golden's cross_check_sql never names a column a requested measure's expr or filter reads." },
   "golden.field_hidden": { level: "error", meaning: "An approved golden's request names a field or metric the user it runs as may not see." },
