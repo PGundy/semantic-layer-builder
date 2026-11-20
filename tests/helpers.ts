@@ -120,6 +120,17 @@ export function assertLocalPg(url: string | undefined, env: Record<string, strin
   );
 }
 
+// The server_version_num of the Postgres a URL names, for a test that needs a feature of a newer major.
+export async function serverVersionNum(url: string): Promise<number> {
+  const { SQL } = await import("bun");
+  const db = new SQL({ url, max: 1 });
+  try {
+    return Number(((await db.unsafe("show server_version_num")) as { server_version_num: string }[])[0]!.server_version_num);
+  } finally {
+    await db.close();
+  }
+}
+
 // A schema name no other live test uses: the prefix, the process id and a random suffix.
 export function uniqueSchema(prefix: string): string {
   return `${prefix}_${process.pid}_${Math.random().toString(36).slice(2, 8)}`;

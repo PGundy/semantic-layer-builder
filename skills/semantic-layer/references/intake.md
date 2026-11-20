@@ -168,7 +168,7 @@ It prints the query, with its schema filter line (marked `semlayer:schema-filter
 
 | Database | `--dialect` | Run it and save CSV |
 |---|---|---|
-| PostgreSQL 12 or later | `postgres` | `psql -X "$DATABASE_URL" --csv -f postgres.sql > schema.csv` |
+| PostgreSQL 13 or later | `postgres` | `psql -X "$DATABASE_URL" --csv -f postgres.sql > schema.csv` |
 | Amazon Redshift | `redshift` | `psql -X "host=<cluster> port=5439 dbname=<db> user=<user>" --csv -f redshift.sql > schema.csv` |
 | MySQL 5.7 or later, MariaDB | `mysql` | `mysql --batch --raw -h <host> -u <user> -p <database> < mysql.sql > schema.tsv`, a tab-separated file `semlayer import` reads as it is |
 | SQL Server 2012 or later, Azure SQL | `sqlserver` | `sqlcmd -S <server> -d <database> -i sqlserver.sql -f 65001 -s, -W > schema.csv`; `semlayer import` skips the dashed line under the header |

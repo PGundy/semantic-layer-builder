@@ -20,7 +20,6 @@ import { quoteIdent } from "./dialect.ts";
 import { type Env, envFilesInRoot, rootEnvFile, trackedEnvFiles } from "./env-file.ts";
 import { UserError } from "./errors.ts";
 import { intakeIssues, intakeMode, upgradeCommand } from "./intake.ts";
-import { UNCLASSIFIED } from "./issue-codes/index.ts";
 import { countedReplies, currentYes } from "./ledger.ts";
 import { layerReads, sourceRowFilters } from "./layer-reads.ts";
 import { findTable } from "./naming.ts";
@@ -195,13 +194,13 @@ export class Validator {
     readonly removed?: ReadonlySet<string>,
   ) {}
 
-  // code is a registered code (lib/issue-codes/); a check without one of its own reports issue.unclassified.
-  error(file: string, path: string, message: string, code: string = UNCLASSIFIED): void {
-    this.issues.push({ level: "error", file, path, message, code });
+  // code is a registered code (lib/issue-codes/); next, where given, is the command that fixes the issue.
+  error(file: string, path: string, message: string, code: string, next?: string): void {
+    this.issues.push({ level: "error", file, path, message, code, ...(next !== undefined ? { next } : {}) });
   }
 
-  warn(file: string, path: string, message: string, code: string = UNCLASSIFIED): void {
-    this.issues.push({ level: "warning", file, path, message, code });
+  warn(file: string, path: string, message: string, code: string, next?: string): void {
+    this.issues.push({ level: "warning", file, path, message, code, ...(next !== undefined ? { next } : {}) });
   }
 
   rel(abs: string): string {
@@ -219,10 +218,10 @@ export class Validator {
       const stem = f.replace(/\.ya?ml$/, "");
       if (f.endsWith(".yml")) {
         if (files.includes(`${stem}.yaml`)) {
-          this.error(this.rel(join(dir, f)), "", `${stem} is defined twice (${stem}.yaml and ${f}); delete one`);
+          this.error(this.rel(join(dir, f)), "", `${stem} is defined twice (${stem}.yaml and ${f}); delete one`, "file.defined_twice");
           continue;
         }
-        this.warn(this.rel(join(dir, f)), "", `other semlayer commands read ${stem}.yaml; rename this file`);
+        this.warn(this.rel(join(dir, f)), "", `other semlayer commands read ${stem}.yaml; rename this file`, "file.yml_extension");
       }
       out.push({ file: f, stem });
     }
@@ -236,7 +235,7 @@ export class Validator {
     try {
       text ??= readFileSync(abs, "utf8");
     } catch (e) {
-      this.error(file, "", (e as { code?: string }).code === "EISDIR" ? "is a directory, not a file" : `cannot be read (${(e as { code?: string }).code ?? "unknown error"})`);
+      this.error(file, "", (e as { code?: string }).code === "EISDIR" ? "is a directory, not a file" : `cannot be read (${(e as { code?: string }).code ?? "unknown error"})`, "file.unreadable");
       return undefined;
     }
     let data: unknown;
@@ -244,14 +243,14 @@ export class Validator {
       try {
         data = JSON.parse(text);
       } catch (e) {
-        this.error(file, "", `invalid JSON: ${parserLine(e)}`);
+        this.error(file, "", `invalid JSON: ${parserLine(e)}`, "file.invalid_json");
         return undefined;
       }
     } else {
       try {
         data = parseYaml(text);
       } catch (e) {
-        this.error(file, "", `invalid YAML: ${parserLine(e)}`);
+        this.error(file, "", `invalid YAML: ${parserLine(e)}`, "file.invalid_yaml");
         return undefined;
       }
     }
@@ -263,7 +262,7 @@ export class Validator {
 
   loadAll(): void {
     const projectPath = join(this.root, "semantic.yaml");
-    if (!existsSync(projectPath)) this.error("semantic.yaml", "", "missing: run `semlayer init --name <name>` to create it");
+    if (!existsSync(projectPath)) this.error("semantic.yaml", "", "missing: run `semlayer init --name <name>` to create it", "file.project_missing");
     else this.project = this.load<Project>(projectPath, "project", "semantic");
 
     const sourcesDir = join(this.root, "sources");
@@ -279,7 +278,7 @@ export class Validator {
         if (f.endsWith(".usage.json")) {
           const stem = f.replace(/\.usage\.json$/, "");
           const l = this.load<{ source?: unknown }>(join(snapshotsDir, f), "usage", stem);
-          if (l && l.data.source !== stem) this.error(l.file, "source", `is "${String(l.data.source)}" but the file is ${f}; run semlayer usage clear --source ${stem} and add the files again`);
+          if (l && l.data.source !== stem) this.error(l.file, "source", `is "${String(l.data.source)}" but the file is ${f}; run semlayer usage clear --source ${stem} and add the files again`, "file.name_mismatch");
           continue;
         }
         const stem = f.replace(/\.json$/, "");
@@ -293,7 +292,7 @@ export class Validator {
       for (const entry of readdirSync(modelsDir).sort()) {
         const dir = join(modelsDir, entry);
         if (!statSync(dir).isDirectory()) {
-          if (/\.ya?ml$/.test(entry)) this.error(this.rel(dir), "", "models live in models/<source>/<model>.yaml, not directly under models/");
+          if (/\.ya?ml$/.test(entry)) this.error(this.rel(dir), "", "models live in models/<source>/<model>.yaml, not directly under models/", "file.model_misplaced");
           continue;
         }
         const byName = new Map<string, Loaded<Model>>();
@@ -327,7 +326,7 @@ export class Validator {
       for (const f of readdirSync(pendingDir).filter((x) => x.endsWith(".json")).sort()) {
         const l = this.load<{ readback_id?: unknown }>(join(pendingDir, f), "pending", f.replace(/\.json$/, ""));
         if (l?.valid && l.data.readback_id !== l.stem)
-          this.error(l.file, "readback_id", `is "${String(l.data.readback_id)}" but the file is ${f}; the id equals the file name, so run semlayer readback again instead of renaming`);
+          this.error(l.file, "readback_id", `is "${String(l.data.readback_id)}" but the file is ${f}; the id equals the file name, so run semlayer readback again instead of renaming`, "file.name_mismatch");
       }
     }
 
@@ -349,10 +348,10 @@ export class Validator {
     const fix = "the ledger is append-only: restore it from version control (git checkout -- .semlayer/ledger.jsonl)";
     // semlayer approve reads only a plain file inside the root, so a link is refused there (lib/ledger.ts readReplies).
     if (!lstatSync(dirname(abs)).isDirectory() || !lstatSync(abs).isFile()) {
-      return this.error(file, "", `is not a plain file inside the semantic root (it or its .semlayer directory is a link), so semlayer approve refuses it; replace the link with the file it points to, or ${fix}`);
+      return this.error(file, "", `is not a plain file inside the semantic root (it or its .semlayer directory is a link), so semlayer approve refuses it; replace the link with the file it points to, or ${fix}`, "ledger.not_plain_file");
     }
     const text = this.overrides?.get(abs) ?? readFileSync(abs, "utf8");
-    if (text && !text.endsWith("\n")) this.error(file, "", `the last line has no line break, as when an append is cut off; ${fix}`);
+    if (text && !text.endsWith("\n")) this.error(file, "", `the last line has no line break, as when an append is cut off; ${fix}`, "ledger.no_final_newline");
     const seen = new Map<string, number>();
     let last: { id: string; n: number } | undefined;
     const lines = text.split("\n");
@@ -363,7 +362,7 @@ export class Validator {
       try {
         data = JSON.parse(line);
       } catch (e) {
-        return this.error(file, at, `is not valid JSON (${parserLine(e)}); ${fix}`);
+        return this.error(file, at, `is not valid JSON (${parserLine(e)}); ${fix}`, "ledger.invalid_json");
       }
       const issues = schemaIssues("ledger", data, file);
       for (const issue of issues) this.issues.push({ ...issue, path: issue.path ? `${at} ${issue.path}` : at });
@@ -371,8 +370,8 @@ export class Validator {
       const m = id ? /^ans_(\d{4,})$/.exec(id) : null;
       if (!id || !m) return;
       const first = seen.get(id);
-      if (first !== undefined) this.error(file, at, `id ${id} is used again (first on line ${first}); ${fix}`);
-      else if (last && Number(m[1]) <= last.n) this.error(file, at, `id ${id} comes after ${last.id}; ids go up line by line, so ${fix}`);
+      if (first !== undefined) this.error(file, at, `id ${id} is used again (first on line ${first}); ${fix}`, "ledger.id_reused");
+      else if (last && Number(m[1]) <= last.n) this.error(file, at, `id ${id} comes after ${last.id}; ids go up line by line, so ${fix}`, "ledger.id_out_of_order");
       seen.set(id, seen.get(id) ?? i + 1);
       if (!last || Number(m[1]) > last.n) last = { id, n: Number(m[1]) };
     });
@@ -458,7 +457,7 @@ export class Validator {
     const p = this.project;
     if (!p?.valid) return;
     if (p.data.default_source && !this.sources.has(p.data.default_source))
-      this.error(p.file, "default_source", `names unknown source "${p.data.default_source}"`);
+      this.error(p.file, "default_source", `names unknown source "${p.data.default_source}"`, "ref.unknown_source");
   }
 
   // Errors on a credential in a source's DuckDB connection values, naming the key, never the value.
@@ -467,7 +466,7 @@ export class Validator {
     const c: unknown = l.data.connection;
     if (!isObject(c)) return;
     const flag = (path: string, slot: CredentialSlot) =>
-      this.error(l.file, path, `contains a credential; credentials never go in source files, so ${credentialHint(slot)}`);
+      this.error(l.file, path, `contains a credential; credentials never go in source files, so ${credentialHint(slot)}`, "source.credential_in_file");
     if (typeof c.database === "string" && hasCredential("database", c.database)) flag("connection.database", "database");
     // A setup written as one string instead of a list is read as one statement.
     if (typeof c.setup === "string") {
@@ -489,7 +488,7 @@ export class Validator {
       list = readSourceTableList(this.root, rel);
     } catch (e) {
       if (!(e instanceof UserError)) throw e;
-      this.error(file, "scope.tables_file", e.message);
+      this.error(file, "scope.tables_file", e.message, "source.tables_file_unreadable");
       return;
     }
     if (!list.exists) {
@@ -497,10 +496,11 @@ export class Validator {
         file,
         "scope.tables_file",
         `names ${rel}, which does not exist; import a table-list file with \`semlayer scope --source ${source} --from-file <path> --write\`, or remove scope.tables_file`,
+        "source.tables_file_missing",
       );
       return;
     }
-    for (const p of list.problems) this.error(this.rel(list.path), `line ${p.line}, character ${p.column}`, p.message);
+    for (const p of list.problems) this.error(this.rel(list.path), `line ${p.line}, character ${p.column}`, p.message, "source.tables_file_entry_invalid");
   }
 
   checkSources(): void {
@@ -511,33 +511,33 @@ export class Validator {
       for (const problem of sourceSafetyIssues(l.data)) this.error(l.file, problem.path, problem.message, problem.code);
       if (!l.valid) continue;
       const s = l.data;
-      if (s.source !== stem) this.error(l.file, "source", `is "${s.source}" but the file is named ${stem}.yaml`);
+      if (s.source !== stem) this.error(l.file, "source", `is "${s.source}" but the file is named ${stem}.yaml`, "file.name_mismatch");
       for (const key of ["include", "exclude"] as const) {
         arr<string>(s.scope?.[key]).forEach((p, i) => {
           const problem = validatePattern(p);
-          if (problem) this.error(l.file, `scope.${key}[${i}]`, problem);
+          if (problem) this.error(l.file, `scope.${key}[${i}]`, problem, "source.pattern_invalid");
         });
       }
       // A tables_file that is not a string is already a schema error.
       if (typeof s.scope?.tables_file === "string") this.checkTablesFile(l.file, s.source, s.scope.tables_file);
       for (const x of intakeIssues(s, this.root)) this.issues.push({ level: x.level, file: l.file, path: x.path, message: x.message, code: x.code });
       if (s.connection?.env !== undefined && s.connection.env_prefix !== undefined) {
-        this.error(l.file, "connection", `has both env and env_prefix; a source names one variable that holds the URL or a prefix for the parts, not both: keep one (semlayer setup --source ${s.source} --dialect ${s.dialect} --env <VAR> or --env-prefix <PREFIX> writes it)`);
+        this.error(l.file, "connection", `has both env and env_prefix; a source names one variable that holds the URL or a prefix for the parts, not both: keep one (semlayer setup --source ${s.source} --dialect ${s.dialect} --env <VAR> or --env-prefix <PREFIX> writes it)`, "source.env_and_prefix");
       }
-      if (s.connection?.env_prefix !== undefined && s.dialect !== "postgres") this.warn(l.file, "connection.env_prefix", `is used only by postgres sources, not ${s.dialect}`);
+      if (s.connection?.env_prefix !== undefined && s.dialect !== "postgres") this.warn(l.file, "connection.env_prefix", `is used only by postgres sources, not ${s.dialect}`, "source.key_unused");
       if (s.dialect !== "duckdb") {
         for (const key of ["database", "setup", "views"] as const)
-          if (s.connection?.[key] !== undefined) this.warn(l.file, `connection.${key}`, `is used only by duckdb sources, not ${s.dialect}`);
+          if (s.connection?.[key] !== undefined) this.warn(l.file, `connection.${key}`, `is used only by duckdb sources, not ${s.dialect}`, "source.key_unused");
       }
     }
     for (const [stem, l] of this.snapshots) {
       if (!l.valid) continue;
       const snap = l.data;
-      if (snap.source !== stem) this.error(l.file, "source", `is "${snap.source}" but the file is named ${stem}.json`);
+      if (snap.source !== stem) this.error(l.file, "source", `is "${snap.source}" but the file is named ${stem}.json`, "file.name_mismatch");
       const src = this.sources.get(stem);
-      if (!src) this.warn(l.file, "", `no source file sources/${stem}.yaml for this snapshot`);
+      if (!src) this.warn(l.file, "", `no source file sources/${stem}.yaml for this snapshot`, "source.snapshot_without_source");
       else if (src.valid && src.data.dialect !== snap.dialect)
-        this.warn(l.file, "dialect", `is ${snap.dialect} but the source's dialect is ${src.data.dialect}`);
+        this.warn(l.file, "dialect", `is ${snap.dialect} but the source's dialect is ${src.data.dialect}`, "source.snapshot_dialect_differs");
     }
   }
 
@@ -554,13 +554,13 @@ export class Validator {
       const loose = table.columns.find((c) => c.name.toLowerCase() === name.toLowerCase());
       if (loose && !rules.quotedExact) return;
       const hint = loose ? `; quoted names are case-sensitive, write ${quoteIdent(rules.dialect ?? "postgres", loose.name)}` : "";
-      this.error(file, path, `expr "${name}" is not a column of ${qualified(table)}${hint}`);
+      this.error(file, path, `expr "${name}" is not a column of ${qualified(table)}${hint}`, loose ? "expr.column_case_mismatch" : "expr.unknown_column");
       return;
     }
     if (!BARE_IDENT.test(trimmed) || SQL_LITERALS.has(trimmed.toLowerCase())) return;
     const loose = table.columns.find((c) => c.name.toLowerCase() === trimmed.toLowerCase());
     if (rules.fold === "none") {
-      if (!loose) this.error(file, path, `expr "${trimmed}" is not a column of ${qualified(table)}`);
+      if (!loose) this.error(file, path, `expr "${trimmed}" is not a column of ${qualified(table)}`, "expr.unknown_column");
       return;
     }
     const folded = rules.fold === "lower" ? trimmed.toLowerCase() : trimmed.toUpperCase();
@@ -570,8 +570,9 @@ export class Validator {
         file,
         path,
         `expr ${trimmed} resolves to ${folded} in ${rules.dialect}, but the column is "${loose.name}"; write ${quoteIdent(rules.dialect ?? "postgres", loose.name)}`,
+        "expr.column_case_mismatch",
       );
-    else this.error(file, path, `expr "${trimmed}" is not a column of ${qualified(table)}`);
+    else this.error(file, path, `expr "${trimmed}" is not a column of ${qualified(table)}`, "expr.unknown_column");
   }
 
   // Errors when a physical column name (a join key or primary key entry) is not a column of the
@@ -581,7 +582,7 @@ export class Validator {
     if (table.columns.some((c) => c.name === name)) return;
     if (table.columns.some((c) => c.name.toLowerCase() === name.toLowerCase())) return;
     const hint = /^(".*"|`.*`)$/.test(name.trim()) ? "; write the column name without quotes" : "";
-    this.error(file, path, `"${name}" is not a column of ${qualified(table)}${hint}`);
+    this.error(file, path, `"${name}" is not a column of ${qualified(table)}${hint}`, "ref.unknown_column");
   }
 
   // Errors when a dimension or measure expr or a measure filter is not one expression the compiler can
@@ -591,7 +592,7 @@ export class Validator {
   checkText(file: string, path: string, text: unknown, role: TextRole, rules: IdentRules): boolean {
     if (typeof text !== "string" || !readsText(rules.dialect)) return false;
     const problem = sqlTextProblem(text, role);
-    if (problem) this.error(file, path, problem);
+    if (problem) this.error(file, path, problem, "expr.not_one_expression");
     return problem !== undefined;
   }
 
@@ -606,7 +607,7 @@ export class Validator {
     const rules = this.identRules(model.source);
     const names = sqlNames(sql, rules.dialect);
     if (names.subquery) {
-      this.error(file, path, `has a subquery; a ${role} may ${OUTSIDE_HINT[role]}`);
+      this.error(file, path, `has a subquery; a ${role} may ${OUTSIDE_HINT[role]}`, "expr.subquery");
       return refs;
     }
     const table = typeof model.table === "string" ? this.snapshotTable(model.source, model.table).table : undefined;
@@ -615,11 +616,11 @@ export class Validator {
     const joins = named<Join>(model.joins);
     const otherTables = this.tableNames(model.source);
     const seen = new Set<string>();
-    const report = (level: Issue["level"], message: string) => {
+    const report = (level: Issue["level"], message: string, code: string) => {
       if (seen.has(message)) return;
       seen.add(message);
-      if (level === "error") this.error(file, path, message);
-      else this.warn(file, path, message);
+      if (level === "error") this.error(file, path, message, code);
+      else this.warn(file, path, message, code);
     };
     for (const chain of names.chains) {
       const { parts, quoted, text } = chain;
@@ -629,7 +630,7 @@ export class Validator {
       if (!join && isOwn(first)) continue;
       if (join) {
         if (role === "measure expr") {
-          report("error", `${text} is a join reference; a measure expr is over the model's own columns, so put the condition in the measure's filter or the field in a dimension`);
+          report("error", `${text} is a join reference; a measure expr is over the model's own columns, so put the condition in the measure's filter or the field in a dimension`, "expr.join_in_measure_expr");
           continue;
         }
         const ref = this.resolveJoinRef(model, join, chain, rules, report, names.chains);
@@ -637,12 +638,12 @@ export class Validator {
         continue;
       }
       if (parts.length > 2 || otherTables.has(first.toLowerCase())) {
-        report("error", `${text} names a table or schema directly; a ${role} may ${OUTSIDE_HINT[role]}`);
+        report("error", `${text} names a table or schema directly; a ${role} may ${OUTSIDE_HINT[role]}`, "expr.names_table");
         continue;
       }
       if (own) {
         const list = joins.length ? `its joins are ${joins.map((j) => j.name).join(", ")}` : "it has no joins";
-        report("error", `${text}: "${first}" is neither a column nor a join of model ${model.model} (${list})`);
+        report("error", `${text}: "${first}" is neither a column nor a join of model ${model.model} (${list})`, "expr.unknown_name");
       }
     }
     return refs;
@@ -659,7 +660,7 @@ export class Validator {
     first: Join,
     chain: SqlNames["chains"][number],
     rules: IdentRules,
-    report: (level: Issue["level"], message: string) => void,
+    report: (level: Issue["level"], message: string, code: string) => void,
     fieldChains: SqlNames["chains"],
   ): JoinRef | undefined {
     const { parts, quoted, text } = chain;
@@ -672,6 +673,7 @@ export class Validator {
         report(
           "error",
           `${text} goes through ${via}, which is ${join.relationship}; a join reference needs many_to_one or one_to_one joins, because ${join.relationship} repeats ${from.model}'s rows`,
+          "expr.join_ref_to_many",
         );
         return undefined;
       }
@@ -687,6 +689,7 @@ export class Validator {
           report(
             "error",
             `${text} goes more than two hops; a join reference is <join>.<column> or <join>.<join>.<column>, so add a join from ${model.model} that comes closer to the model you need`,
+            "expr.join_ref_too_deep",
           );
           return undefined;
         }
@@ -702,6 +705,7 @@ export class Validator {
         report(
           "error",
           `${text}: "${name}" is not a join of model ${join.to}, and the table of ${join.to} is not in the snapshot; a join reference is <join>.<column> or <join>.<join>.<column>`,
+          "expr.join_ref_not_join",
         );
         return undefined;
       }
@@ -709,7 +713,7 @@ export class Validator {
       if (resolved !== true) {
         const nor = isLast ? "" : `, nor a join of model ${join.to}`;
         const hint = resolved === false ? "" : `; ${resolved}`;
-        report("error", `${text}: "${name}" is not a column of ${qualified(targetTable!)}, the table of model ${join.to} that ${via} reaches${nor}${hint}`);
+        report("error", `${text}: "${name}" is not a column of ${qualified(targetTable!)}, the table of model ${join.to} that ${via} reaches${nor}${hint}`, "expr.join_ref_unknown_column");
         return undefined;
       }
       // The reference reads the physical column, which a same-named dimension of the target may
@@ -725,6 +729,7 @@ export class Validator {
           "warning",
           `${text} reads the column ${name} of ${qualified(targetTable!)}, not dimension ${dim.name} of model ${join.to} (expr: ${dim.expr}); ` +
             `write that dimension's rule out here over join references if it is the one meant`,
+          "expr.join_ref_reads_column",
         );
       }
       return ref;
@@ -765,16 +770,16 @@ export class Validator {
       if (!l.valid) continue;
       const m = l.data;
       const f = l.file;
-      if (m.model !== l.stem) this.error(f, "model", `is "${m.model}" but the file is named ${l.stem}.yaml`);
-      if (m.source !== dirSource) this.error(f, "source", `is "${m.source}" but the model lives in models/${dirSource}/`);
-      if (!this.sources.has(m.source)) this.error(f, "source", `names unknown source "${m.source}" (no sources/${m.source}.yaml)`);
+      if (m.model !== l.stem) this.error(f, "model", `is "${m.model}" but the file is named ${l.stem}.yaml`, "file.name_mismatch");
+      if (m.source !== dirSource) this.error(f, "source", `is "${m.source}" but the model lives in models/${dirSource}/`, "file.name_mismatch");
+      if (!this.sources.has(m.source)) this.error(f, "source", `names unknown source "${m.source}" (no sources/${m.source}.yaml)`, "ref.unknown_source");
 
       const { snapshot, table } = this.snapshotTable(m.source, m.table);
-      if (snapshot && !table) this.warn(f, "table", `"${m.table}" is not in snapshots/${m.source}.json`);
+      if (snapshot && !table) this.warn(f, "table", `"${m.table}" is not in snapshots/${m.source}.json`, "model.table_not_in_snapshot");
 
       if (m.status === "approved") {
-        if (!m.grain) this.error(f, "grain", "is required on an approved model");
-        if (!m.primary_key?.length) this.error(f, "primary_key", "is required on an approved model");
+        if (!m.grain) this.error(f, "grain", "is required on an approved model", "approval.required_missing");
+        if (!m.primary_key?.length) this.error(f, "primary_key", "is required on an approved model", "approval.required_missing");
       }
       const rules = this.identRules(m.source);
       arr<string>(m.primary_key).forEach((c, i) => this.checkColumnName(f, `primary_key[${i}]`, c, table));
@@ -783,7 +788,7 @@ export class Validator {
       const names = new Map<string, string>();
       const claim = (name: string, path: string) => {
         const prior = names.get(name);
-        if (prior) this.error(f, `${path}.name`, `"${name}" is already used by ${prior}; dimensions, measures and joins share one namespace`);
+        if (prior) this.error(f, `${path}.name`, `"${name}" is already used by ${prior}; dimensions, measures and joins share one namespace`, "ref.name_taken");
         else names.set(name, path);
       };
 
@@ -793,7 +798,7 @@ export class Validator {
         this.checkColumnRef(f, `${p}.expr`, d.expr, table, rules);
         const refs = this.checkText(f, `${p}.expr`, d.expr, "dimension expr", rules) ? [] : this.checkSqlRefs(f, `${p}.expr`, d.expr, m, "dimension expr");
         if (refs.length) this.dimensionRefs.set(`${m.source}.${m.model}.${d.name}`, refs);
-        if (d.time_grains && d.type !== "time") this.error(f, `${p}.time_grains`, `is only allowed on time dimensions, not ${d.type}`);
+        if (d.time_grains && d.type !== "time") this.error(f, `${p}.time_grains`, `is only allowed on time dimensions, not ${d.type}`, "time.not_time_dimension");
         if (d.time_zone !== undefined) this.checkTimeZone(f, `${p}.time_zone`, d, table, rules);
       });
 
@@ -803,9 +808,9 @@ export class Validator {
         this.checkColumnRef(f, `${p}.expr`, x.expr, table, rules);
         if (!this.checkText(f, `${p}.expr`, x.expr, "measure expr", rules)) this.checkSqlRefs(f, `${p}.expr`, x.expr, m, "measure expr");
         if (rules.dialect === "duckdb" && typeof x.expr === "string" && dividesByLiteral(x.expr, rules.dialect))
-          this.warn(f, `${p}.expr`, 'divides by a numeric literal; on duckdb "/ 100.0" gives a DOUBLE, so write <col> * 0.01 for an exact amount; this warning never stands');
+          this.warn(f, `${p}.expr`, 'divides by a numeric literal; on duckdb "/ 100.0" gives a DOUBLE, so write <col> * 0.01 for an exact amount; this warning never stands', "expr.divides_by_literal");
         if (!this.checkText(f, `${p}.filter`, x.filter, "measure filter", rules)) this.checkSqlRefs(f, `${p}.filter`, x.filter, m, "measure filter");
-        if (x.status === "approved" && !x.description) this.error(f, `${p}.description`, "is required on an approved measure");
+        if (x.status === "approved" && !x.description) this.error(f, `${p}.description`, "is required on an approved measure", "approval.required_missing");
         this.checkCurrency(f, p, x.format, x.currency, x.status);
       });
 
@@ -813,40 +818,41 @@ export class Validator {
         const p = `joins[${i}]`;
         claim(j.name, p);
         const target = this.model(m.source, j.to);
-        if (!target) this.error(f, `${p}.to`, `"${j.to}" is not a model of source ${m.source}`);
+        if (!target) this.error(f, `${p}.to`, `"${j.to}" is not a model of source ${m.source}`, "ref.unknown_model");
         const targetTable = target && typeof target.table === "string" ? this.snapshotTable(m.source, target.table).table : undefined;
         j.keys.forEach((k, ki) => {
           this.checkColumnName(f, `${p}.keys[${ki}].from`, k.from, table);
           this.checkColumnName(f, `${p}.keys[${ki}].to`, k.to, targetTable);
         });
         if (j.relationship === "one_to_many")
-          this.warn(f, `${p}.relationship`, `one_to_many fans out and multiplies the measures of ${m.model}; aggregate ${j.to} before joining and confirm with the owner`);
+          this.warn(f, `${p}.relationship`, `one_to_many fans out and multiplies the measures of ${m.model}; aggregate ${j.to} before joining and confirm with the owner`, "model.join_one_to_many");
         const ev = j.evidence;
         if (ev?.suggested_relationship === "many_to_many") {
           const msg = "evidence shows many_to_many: neither key is unique, so the join needs a bridge table or a pre-aggregated model";
-          if (j.status === "approved") this.error(f, `${p}.evidence.suggested_relationship`, msg);
-          else this.warn(f, `${p}.evidence.suggested_relationship`, msg);
+          if (j.status === "approved") this.error(f, `${p}.evidence.suggested_relationship`, msg, "model.join_many_to_many");
+          else this.warn(f, `${p}.evidence.suggested_relationship`, msg, "model.join_many_to_many_draft");
         } else if (ev && ev.suggested_relationship !== j.relationship) {
-          this.warn(f, `${p}.relationship`, `is ${j.relationship} but the evidence suggests ${ev.suggested_relationship}`);
+          this.warn(f, `${p}.relationship`, `is ${j.relationship} but the evidence suggests ${ev.suggested_relationship}`, "model.join_evidence_differs");
         }
         if (j.status === "approved" && !ev) {
           const src = this.sources.get(m.source)?.data;
           // Decision D2: an export source may approve a join, which carries this warning until a connection measures it.
           if (src && intakeMode(src) === "export") {
-            this.warn(f, p, `is approved without evidence, and source ${m.source} is a schema export, so its evidence waits on a connection: ${upgradeCommand(m.source, src.dialect)}, then \`semlayer check-join\``);
-          } else this.warn(f, p, "is approved without evidence; run `semlayer check-join`");
+            this.warn(f, p, `is approved without evidence, and source ${m.source} is a schema export, so its evidence waits on a connection: ${upgradeCommand(m.source, src.dialect)}, then \`semlayer check-join\``, "model.join_no_evidence");
+          } else this.warn(f, p, "is approved without evidence; run `semlayer check-join`", "model.join_no_evidence");
         }
         // Evidence measured for another target or other keys no longer describes the join; evidence
         // without them predates their recording and is taken as current.
         const staleTo = ev?.to !== undefined && ev.to !== j.to;
         const staleKeys = Array.isArray(ev?.keys) && keySignature(ev.keys) !== keySignature(j.keys);
         if (staleTo)
-          this.warn(f, `${p}.evidence.to`, `the evidence was measured for a join to ${ev!.to}, but the join now goes to ${j.to}; run \`semlayer check-join\` again`);
+          this.warn(f, `${p}.evidence.to`, `the evidence was measured for a join to ${ev!.to}, but the join now goes to ${j.to}; run \`semlayer check-join\` again`, "model.join_evidence_stale");
         if (staleKeys)
           this.warn(
             f,
             `${p}.evidence.keys`,
             `the evidence was measured on keys ${describeKeys(ev!.keys!)}, but the join's keys are now ${describeKeys(j.keys)}; run \`semlayer check-join\` again`,
+            "model.join_evidence_stale",
           );
         // An approved to-one join whose current evidence shows fan-out multiplies every measure a
         // request reaches through it, unless the owner recorded why the data may be trusted.
@@ -871,6 +877,7 @@ export class Validator {
             `is approved as ${j.relationship}, but its evidence contradicts that: ${why.join(", and ")}, so the join fans out and multiplies ` +
               `the measures of ${m.model}; fix the keys or the relationship and run semlayer check-join again, or record why the owner accepts the data ` +
               'in fanout_override: "<reason>"',
+            "model.join_fans_out",
           );
         }
       });
@@ -916,14 +923,14 @@ export class Validator {
     const hashed = this.projectHashed();
     for (const e of entries) {
       const state = integrity(e, hashed);
-      if (state === "changed") this.error(file, pathText(e.path), changedMessage(e));
-      else if (state === "missing") this.warn(file, pathText(e.path), missingMessage(e));
+      if (state === "changed") this.error(file, pathText(e.path), changedMessage(e), "approval.hash_changed", `semlayer readback --targets ${e.ref}`);
+      else if (state === "missing") this.warn(file, pathText(e.path), missingMessage(e), "approval.hash_missing");
       else if (state === "unhashed") unhashed++;
       if (state !== "draft" && state !== "changed" && !currentYes(this.replies(), e.ref, e.hash)) unanswered.push(e.ref);
     }
     if (unhashed)
-      this.warn(file, "", `${unhashed} approved item${unhashed === 1 ? " was" : "s were"} ${UNHASHED_MESSAGE}`);
-    if (unanswered.length) this.warn(file, "", unansweredMessage(unanswered));
+      this.warn(file, "", `${unhashed} approved item${unhashed === 1 ? " was" : "s were"} ${UNHASHED_MESSAGE}`, "approval.stamp_hashes", "semlayer approve --stamp-hashes");
+    if (unanswered.length) this.warn(file, "", unansweredMessage(unanswered), "approval.no_ledger_yes", `semlayer readback --targets ${unanswered.slice(0, 3).join(",")}`);
   }
 
   // A time dimension's time_zone: an IANA zone, and only for values stored without a zone. When the
@@ -931,11 +938,11 @@ export class Validator {
   checkTimeZone(f: string, path: string, d: Dimension, table: SnapshotTable | undefined, rules: IdentRules): void {
     const zone = d.time_zone;
     if (d.type !== "time") {
-      this.error(f, path, `is only allowed on time dimensions, not ${d.type}`);
+      this.error(f, path, `is only allowed on time dimensions, not ${d.type}`, "time.not_time_dimension");
       return;
     }
     if (typeof zone !== "string" || !knownTimeZone(zone)) {
-      this.error(f, path, `${JSON.stringify(zone)} is not an IANA time zone, such as UTC or America/New_York`);
+      this.error(f, path, `${JSON.stringify(zone)} is not an IANA time zone, such as UTC or America/New_York`, "time.zone_unknown");
       return;
     }
     const col = typeof d.expr === "string" ? table?.columns.find((c) => isBareColumn(d.expr, c.name)) : undefined;
@@ -946,6 +953,7 @@ export class Validator {
         `names the zone timestamps without a time zone are stored in, but column ${col.name} is ${col.type}, which carries its own; ` +
           `remove time_zone, and to count days in ${zone} write the expr as ${zonedExpr(d.expr as string, zone, rules.dialect)} ` +
           "(without it, days are counted in UTC when semlayer runs the query)",
+        "time.zone_carries_own",
       );
   }
 
@@ -958,7 +966,7 @@ export class Validator {
     if (table?.columns.length)
       ignored.forEach((c, i) => {
         if (!table.columns.some((x) => x.name.toLowerCase() === c.toLowerCase()))
-          this.warn(f, `ignored_columns[${i}]`, `"${c}" is not a column of ${qualified(table)}; remove it from ignored_columns`);
+          this.warn(f, `ignored_columns[${i}]`, `"${c}" is not a column of ${qualified(table)}; remove it from ignored_columns`, "ignore.column_unknown");
       });
     const listed: SnapshotTable = { schema: null, name: m.model, kind: "table", columns: ignored.map((name) => ({ name, type: "" })) };
     const models = [...(this.models.get(m.source)?.values() ?? [])].map((x) => x.data);
@@ -973,16 +981,17 @@ export class Validator {
           f,
           `ignored_columns[${i}]`,
           `"${c}" is read by a field, a join key, the primary key of model ${m.model} or a join from another model, so it is not left out; ${back}`,
+          "ignore.column_read",
         );
       else if (other)
-        this.warn(f, `ignored_columns[${i}]`, `"${c}" is read by ${other.by}${other.by.startsWith("a row filter") ? "" : " through a join"}, so it is not left out; ${back}`);
+        this.warn(f, `ignored_columns[${i}]`, `"${c}" is read by ${other.by}${other.by.startsWith("a row filter") ? "" : " through a join"}, so it is not left out; ${back}`, "ignore.column_read");
     });
   }
 
   checkCurrency(file: string, path: string, format: string | undefined, currency: string | undefined, status: string | undefined): void {
-    if (currency !== undefined && format !== "currency") this.error(file, `${path}.currency`, "is only allowed with format currency");
+    if (currency !== undefined && format !== "currency") this.error(file, `${path}.currency`, "is only allowed with format currency", "field.currency_without_format");
     if (format === "currency" && currency === undefined && status === "approved")
-      this.warn(file, `${path}.currency`, "is missing on an approved item with format currency; add the ISO 4217 code, such as USD");
+      this.warn(file, `${path}.currency`, "is missing on an approved item with format currency; add the ISO 4217 code, such as USD", "field.currency_missing");
   }
 
   checkMetrics(): void {
@@ -993,13 +1002,13 @@ export class Validator {
     l.data.metrics.forEach((m, i) => {
       const p = `metrics[${i}]`;
       const prior = seen.get(m.name);
-      if (prior !== undefined) this.error(f, `${p}.name`, `"${m.name}" is already defined at metrics[${prior}]`);
+      if (prior !== undefined) this.error(f, `${p}.name`, `"${m.name}" is already defined at metrics[${prior}]`, "ref.name_taken");
       else seen.set(m.name, i);
       if (!this.sources.has(m.source)) {
-        this.error(f, `${p}.source`, `names unknown source "${m.source}"`);
+        this.error(f, `${p}.source`, `names unknown source "${m.source}"`, "ref.unknown_source");
         return;
       }
-      if (m.status === "approved" && !m.description) this.error(f, `${p}.description`, "is required on an approved metric");
+      if (m.status === "approved" && !m.description) this.error(f, `${p}.description`, "is required on an approved metric", "approval.required_missing");
       this.checkCurrency(f, p, m.format, m.currency, m.status);
 
       const refs: { path: string; model: string; measure: string }[] = [];
@@ -1010,19 +1019,19 @@ export class Validator {
         }
       } else {
         for (const match of m.expr.matchAll(METRIC_PLACEHOLDER)) refs.push({ path: `${p}.expr`, model: match[1]!, measure: match[2]! });
-        if (!refs.length) this.error(f, `${p}.expr`, "has no {model.measure} placeholder");
+        if (!refs.length) this.error(f, `${p}.expr`, "has no {model.measure} placeholder", "expr.metric_no_placeholder");
         const rest = m.expr.replace(METRIC_PLACEHOLDER, "");
         const textProblem = sqlTextProblem(m.expr, "metric expr");
-        if (textProblem) this.error(f, `${p}.expr`, textProblem);
-        else if (!/^[\s\d.+\-*/()]*$/.test(rest)) this.error(f, `${p}.expr`, "may combine {model.measure} placeholders with numbers and + - * / ( ) only");
+        if (textProblem) this.error(f, `${p}.expr`, textProblem, "expr.not_one_expression");
+        else if (!/^[\s\d.+\-*/()]*$/.test(rest)) this.error(f, `${p}.expr`, "may combine {model.measure} placeholders with numbers and + - * / ( ) only", "expr.metric_not_arithmetic");
       }
       for (const r of refs) {
         const measure = this.measure(m.source, r.model, r.measure);
         if (!measure) {
           const why = this.model(m.source, r.model) ? `model ${r.model} has no measure "${r.measure}"` : `"${r.model}" is not a model of source ${m.source}`;
-          this.error(f, r.path, `${r.model}.${r.measure} does not resolve: ${why}`);
+          this.error(f, r.path, `${r.model}.${r.measure} does not resolve: ${why}`, "ref.unknown_measure");
         } else if (m.status === "approved" && measure.status !== "approved") {
-          this.error(f, r.path, `an approved metric may use only approved measures; ${r.model}.${r.measure} is ${measure.status}`);
+          this.error(f, r.path, `an approved metric may use only approved measures; ${r.model}.${r.measure} is ${measure.status}`, "approval.uses_draft");
         }
       }
     });
@@ -1050,16 +1059,16 @@ export class Validator {
     const roleNames = new Map<string, number>();
     roles.forEach((r, i) => {
       const prior = roleNames.get(r.name);
-      if (prior !== undefined) this.error(f, `roles[${i}].name`, `"${r.name}" is already defined at roles[${prior}]`);
+      if (prior !== undefined) this.error(f, `roles[${i}].name`, `"${r.name}" is already defined at roles[${prior}]`, "ref.name_taken");
       else roleNames.set(r.name, i);
     });
-    if (a.default_role && !roleNames.has(a.default_role)) this.error(f, "default_role", `names unknown role "${a.default_role}"`);
+    if (a.default_role && !roleNames.has(a.default_role)) this.error(f, "default_role", `names unknown role "${a.default_role}"`, "ref.unknown_role");
     if (mode === "closed" && !roles.length)
-      this.warn(f, "mode", "is closed but there are no roles, so no one sees anything; add roles with allow.models, or use mode open");
+      this.warn(f, "mode", "is closed but there are no roles, so no one sees anything; add roles with allow.models, or use mode open", "access.closed_no_roles");
 
     const attrs = new Map<string, UserAttribute>();
     arr<UserAttribute>(a.user_attributes).forEach((u, i) => {
-      if (attrs.has(u.name)) this.error(f, `user_attributes[${i}].name`, `"${u.name}" is already defined`);
+      if (attrs.has(u.name)) this.error(f, `user_attributes[${i}].name`, `"${u.name}" is already defined`, "ref.name_taken");
       else attrs.set(u.name, u);
     });
 
@@ -1069,42 +1078,43 @@ export class Validator {
       const p = `roles[${i}]`;
       const allowModels = r.allow?.models;
       if (mode === "closed" && allowModels === undefined)
-        this.error(f, `${p}.allow.models`, "is required in closed mode, where a role sees only the models its allow.models matches");
+        this.error(f, `${p}.allow.models`, "is required in closed mode, where a role sees only the models its allow.models matches", "access.allow_models_required");
       if (mode === "open" && allowModels !== undefined)
         this.warn(
           f,
           `${p}.allow.models`,
           "has no effect in open mode, where everyone sees every approved model the roles they hold do not deny; remove it, or set mode: closed to make it an allowlist",
+          "access.allow_models_unused",
         );
       arr<string>(allowModels).forEach((pat, pi) => {
         const problem = validatePattern(pat);
-        if (problem) this.error(f, `${p}.allow.models[${pi}]`, problem);
-        else if (mode === "closed" && !modelRefs.some((ref) => matchesDotted(pat, ref))) this.warn(f, `${p}.allow.models[${pi}]`, `"${pat}" matches no model`);
+        if (problem) this.error(f, `${p}.allow.models[${pi}]`, problem, "access.pattern_invalid");
+        else if (mode === "closed" && !modelRefs.some((ref) => matchesDotted(pat, ref))) this.warn(f, `${p}.allow.models[${pi}]`, `"${pat}" matches no model`, "access.pattern_matches_nothing");
       });
       arr<string>(r.allow?.tags).forEach((tag, ti) => {
         if (!(PROTECTED_TAGS as readonly string[]).includes(tag))
-          this.warn(f, `${p}.allow.tags[${ti}]`, `"${tag}" is not a protected tag; allow.tags grants ${PROTECTED_TAGS.join(" or ")}, and no other tag hides anything`);
+          this.warn(f, `${p}.allow.tags[${ti}]`, `"${tag}" is not a protected tag; allow.tags grants ${PROTECTED_TAGS.join(" or ")}, and no other tag hides anything`, "access.tag_not_protected");
       });
       if (r.assign_when !== undefined) this.checkCondition(f, `${p}.assign_when`, r.assign_when, attrs);
       arr<string>(r.deny?.models).forEach((pat, pi) => {
         const problem = validatePattern(pat);
-        if (problem) this.error(f, `${p}.deny.models[${pi}]`, problem);
+        if (problem) this.error(f, `${p}.deny.models[${pi}]`, problem, "access.pattern_invalid");
       });
       arr<string>(r.deny?.fields).forEach((ref, fi) => {
         if (this.hasField(ref)) return;
         const [source, model, field] = ref.split(".") as [string, string, string];
         const join = named<Join>(this.model(source, model)?.joins).find((j) => j.name === field);
         const rule = "deny.fields names dimensions and measures only; a join is hidden from a role when its target model is not allowed or is denied for that role";
-        if (join) this.error(f, `${p}.deny.fields[${fi}]`, `"${ref}" is a join; ${rule}, so deny ${source}.${join.to} to hide it`);
-        else this.error(f, `${p}.deny.fields[${fi}]`, `"${ref}" is not a dimension or measure of any model; ${rule}`);
+        if (join) this.error(f, `${p}.deny.fields[${fi}]`, `"${ref}" is a join; ${rule}, so deny ${source}.${join.to} to hide it`, "access.deny_field_is_join");
+        else this.error(f, `${p}.deny.fields[${fi}]`, `"${ref}" is not a dimension or measure of any model; ${rule}`, "ref.unknown_field");
       });
       arr<string>(r.deny?.tags).forEach((tag, ti) => {
-        if (!usedTags.has(tag)) this.warn(f, `${p}.deny.tags[${ti}]`, `tag "${tag}" is not used by any model, dimension, measure or metric`);
+        if (!usedTags.has(tag)) this.warn(f, `${p}.deny.tags[${ti}]`, `tag "${tag}" is not used by any model, dimension, measure or metric`, "access.tag_unused");
       });
       arr<RowFilter>(r.row_filters).forEach((rf, ri) => {
         const rp = `${p}.row_filters[${ri}]`;
         const known = this.hasModel(rf.model);
-        if (!known) this.error(f, `${rp}.model`, `"${rf.model}" is not a model`);
+        if (!known) this.error(f, `${rp}.model`, `"${rf.model}" is not a model`, "ref.unknown_model");
         if ("hierarchy" in rf && rf.hierarchy) {
           this.checkHierarchy(f, rp, rf, attrs);
           return;
@@ -1116,14 +1126,14 @@ export class Validator {
           this.checkSqlRefs(f, `${rp}.expr`, expr, this.model(source, name)!, "row filter");
         }
         const textProblem = sqlTextProblem(expr, "row filter");
-        if (textProblem) this.error(f, `${rp}.expr`, textProblem);
+        if (textProblem) this.error(f, `${rp}.expr`, textProblem, "expr.not_one_expression");
         for (const match of expr.matchAll(USER_PLACEHOLDER))
-          if (!attrs.has(match[1]!)) this.error(f, `${rp}.expr`, `{{ user.${match[1]} }} names an undeclared user attribute`);
+          if (!attrs.has(match[1]!)) this.error(f, `${rp}.expr`, `{{ user.${match[1]} }} names an undeclared user attribute`, "ref.unknown_attribute");
         const rest = expr.replace(USER_PLACEHOLDER, "");
         for (const match of rest.matchAll(ANY_PLACEHOLDER))
-          this.error(f, `${rp}.expr`, `${match[0]} is not a placeholder; write {{ user.<attribute> }}`);
+          this.error(f, `${rp}.expr`, `${match[0]} is not a placeholder; write {{ user.<attribute> }}`, "access.placeholder_invalid");
         if (/\{\{|\}\}/.test(rest.replace(ANY_PLACEHOLDER, "")))
-          this.error(f, `${rp}.expr`, "has an unclosed {{ or a stray }}; write {{ user.<attribute> }}");
+          this.error(f, `${rp}.expr`, "has an unclosed {{ or a stray }}; write {{ user.<attribute> }}", "access.placeholder_invalid");
       });
       this.checkDefinitionJoinVisibility(r, p, mode);
       this.checkChildTables(r, p, mode);
@@ -1141,16 +1151,16 @@ export class Validator {
     try {
       cond = parseCondition(src);
     } catch (e) {
-      this.error(f, path, (e as Error).message);
+      this.error(f, path, (e as Error).message, "access.condition_invalid");
       return;
     }
     for (const name of conditionAttributes(cond))
-      if (!attrs.has(name)) this.error(f, path, `reads user.${name}, which is not a declared user attribute; declare it in user_attributes`);
+      if (!attrs.has(name)) this.error(f, path, `reads user.${name}, which is not a declared user attribute; declare it in user_attributes`, "ref.unknown_attribute");
     const seen = new Set<string>();
     const say = (message: string) => {
       if (seen.has(message)) return;
       seen.add(message);
-      this.warn(f, path, message);
+      this.warn(f, path, message, "access.condition_fixed");
     };
     // A test inside an odd number of nots has the opposite outcome.
     let negated = false;
@@ -1200,12 +1210,12 @@ export class Validator {
     if (model && typeof h.column === "string" && h.column.includes(".")) {
       // A join reference to the column that holds the person's id, through the model's to-one joins.
       if (!JOIN_REF_TEXT.test(h.column.trim()))
-        this.error(f, `${hp}.column`, `"${h.column}" is neither a column nor a join reference; write a column of ${rf.model}, or <join>.<column> or <join>.<join>.<column>`);
+        this.error(f, `${hp}.column`, `"${h.column}" is neither a column nor a join reference; write a column of ${rf.model}, or <join>.<column> or <join>.<join>.<column>`, "access.hierarchy_column_invalid");
       else this.checkSqlRefs(f, `${hp}.column`, h.column, model, "row filter");
     } else if (model && typeof model.table === "string") this.checkColumnName(f, `${hp}.column`, h.column, this.snapshotTable(source, model.table).table);
     const [viaSource, viaName] = h.via.split(".") as [string, string];
     if (viaSource !== source) {
-      this.error(f, `${hp}.via`, `"${h.via}" is in source ${viaSource}, but ${rf.model} is in ${source}; the closure model must be a model of the same source`);
+      this.error(f, `${hp}.via`, `"${h.via}" is in source ${viaSource}, but ${rf.model} is in ${source}; the closure model must be a model of the same source`, "access.hierarchy_via_other_source");
     } else {
       const via = this.model(viaSource, viaName);
       if (!via) {
@@ -1213,6 +1223,7 @@ export class Validator {
           f,
           `${hp}.via`,
           `"${h.via}" is not a model; model the closure table (one row per manager and member pair at any depth), or ask the owner for a view that holds it`,
+          "ref.unknown_model",
         );
       } else if (typeof via.table === "string") {
         const viaTable = this.snapshotTable(viaSource, via.table).table;
@@ -1222,9 +1233,9 @@ export class Validator {
     }
     const attr = h.user.replace(/^user\./, "");
     const declared = attrs.get(attr);
-    if (!declared) this.error(f, `${hp}.user`, `user.${attr} is not a declared user attribute; declare it in user_attributes`);
+    if (!declared) this.error(f, `${hp}.user`, `user.${attr} is not a declared user attribute; declare it in user_attributes`, "ref.unknown_attribute");
     else if (declared.type.endsWith("_list"))
-      this.error(f, `${hp}.user`, `user.${attr} is a ${declared.type}; a hierarchy filter needs the user's own id, a string or a number`);
+      this.error(f, `${hp}.user`, `user.${attr} is a ${declared.type}; a hierarchy filter needs the user's own id, a string or a number`, "access.hierarchy_user_list");
   }
 
   checkRestrictions(f: string, restrictions: Restriction[], roleNames: Map<string, number>, attrs: Map<string, UserAttribute>): void {
@@ -1240,7 +1251,7 @@ export class Validator {
     restrictions.forEach((x, i) => {
       const p = `restrictions[${i}]`;
       const prior = names.get(x.name);
-      if (prior !== undefined) this.error(f, `${p}.name`, `"${x.name}" is already defined at restrictions[${prior}]`);
+      if (prior !== undefined) this.error(f, `${p}.name`, `"${x.name}" is already defined at restrictions[${prior}]`, "ref.name_taken");
       else names.set(x.name, i);
       x.targets.forEach((t, ti) => {
         const tp = `${p}.targets[${ti}]`;
@@ -1248,22 +1259,22 @@ export class Validator {
         const pattern = metric ? t.slice("metric:".length) : t;
         const problem = pattern.trim() ? validatePattern(pattern) : "names no metric after metric:";
         if (problem) {
-          this.error(f, tp, problem);
+          this.error(f, tp, problem, "access.pattern_invalid");
           return;
         }
         if (metric) {
-          if (!metricNames.some((n) => matchesDotted(pattern, n))) this.warn(f, tp, `"${t}" matches no metric, so it hides nothing`);
+          if (!metricNames.some((n) => matchesDotted(pattern, n))) this.warn(f, tp, `"${t}" matches no metric, so it hides nothing`, "access.pattern_matches_nothing");
           return;
         }
         if (modelRefs.some((ref) => matchesDotted(pattern, ref)) || fieldRefs.some((ref) => matchesDotted(pattern, ref))) return;
         const hint = metricNames.some((n) => matchesDotted(pattern, n)) ? `; write metric:${pattern} to name a metric` : "; write source.model, source.model.field or metric:<name>";
-        this.warn(f, tp, `"${t}" matches no model or field, so it hides nothing${hint}`);
+        this.warn(f, tp, `"${t}" matches no model or field, so it hides nothing${hint}`, "access.pattern_matches_nothing");
       });
       const allowRoles = arr<string>(x.allow?.roles);
       if (!allowRoles.length && x.allow?.when === undefined)
-        this.error(f, `${p}.allow`, "names neither roles nor when, so its targets are hidden from everyone; give the roles, or the condition, whose users may see them");
+        this.error(f, `${p}.allow`, "names neither roles nor when, so its targets are hidden from everyone; give the roles, or the condition, whose users may see them", "access.restriction_hides_from_all");
       allowRoles.forEach((name, ri) => {
-        if (!roleNames.has(name)) this.error(f, `${p}.allow.roles[${ri}]`, `names unknown role "${name}"`);
+        if (!roleNames.has(name)) this.error(f, `${p}.allow.roles[${ri}]`, `names unknown role "${name}"`, "ref.unknown_role");
       });
       if (x.allow?.when !== undefined) this.checkCondition(f, `${p}.allow.when`, x.allow.when, attrs);
     });
@@ -1299,6 +1310,7 @@ export class Validator {
             `may see dimension ${key}, whose expr reads ${ref.text} through ${via.length > 1 ? "joins" : "join"} ${via.join(".")} ` +
               `to model ${target}, which the role ${why}; the dimension would show the values of ${target} to this role, so ${grant}, ` +
               `deny ${key} in deny.fields, or confirm with the owner that the role may see them`,
+            "access.dimension_reads_hidden",
           );
         });
       }
@@ -1377,6 +1389,7 @@ export class Validator {
           `${p}.row_filters[${ri}]`,
           `rows of ${child} that belong to ${rf.model} are not limited by ${rf.model}'s row filter for role ${r.name}; ` +
             `add a row filter on ${child}${read}, deny ${child} to ${r.name}, or record why in the role's open_questions`,
+          "access.child_table_unfiltered",
         );
       }
     });
@@ -1464,6 +1477,7 @@ export class Validator {
             l.file,
             `${fv.kind === "dimension" ? "dimensions" : "measures"}[${index}]`,
             `${fv.ref} is visible to everyone and looks sensitive (${found.reason}); tag it pii or sensitive, or tag it public if everyone may see it`,
+            "access.looks_sensitive",
           );
         }
       }
@@ -1504,6 +1518,7 @@ export class Validator {
                 `${fv.ref} is visible to the default audience (a user with no attributes and no assigned roles), and its expr reads ${ref.text} ` +
                   `through ${via.length > 1 ? "joins" : "join"} ${via.join(".")} to model ${target.ref}, which that audience does not see (${why.join("; ")}); ` +
                   `the dimension would show the values of ${target.ref} to that audience, so ${fixes.join(" and ")}, or confirm with the owner that everyone may see them`,
+                "access.dimension_reads_hidden",
               );
             });
           }
@@ -1695,29 +1710,30 @@ export class Validator {
       if (!l.valid) continue;
       const g = l.data;
       const f = l.file;
-      if (g.name !== l.stem) this.error(f, "name", `is "${g.name}" but the file is named ${l.stem}.yaml`);
+      if (g.name !== l.stem) this.error(f, "name", `is "${g.name}" but the file is named ${l.stem}.yaml`, "file.name_mismatch");
       if (!this.accessPresent) {
         // Goldens may be written before access.yaml; role and user wait for it.
-        if (g.role !== undefined) this.warn(f, "role", `names role "${g.role}" but there is no access.yaml yet; leave role and user out until access.yaml exists`);
+        if (g.role !== undefined) this.warn(f, "role", `names role "${g.role}" but there is no access.yaml yet; leave role and user out until access.yaml exists`, "golden.role_before_access");
         for (const key of Object.keys(g.user ?? {}))
-          this.warn(f, `user.${key}`, `"${key}" cannot be checked: there is no access.yaml yet; leave role and user out until it exists`);
+          this.warn(f, `user.${key}`, `"${key}" cannot be checked: there is no access.yaml yet; leave role and user out until it exists`, "golden.role_before_access");
       } else if (this.access) {
         // An access.yaml that exists but cannot be read is reported on its own; its roles are unknown here.
-        if (g.role !== undefined && !roles.has(g.role)) this.error(f, "role", `names unknown role "${g.role}"`);
+        if (g.role !== undefined && !roles.has(g.role)) this.error(f, "role", `names unknown role "${g.role}"`, "ref.unknown_role");
         for (const key of Object.keys(g.user ?? {}))
-          if (!attrs.has(key)) this.error(f, `user.${key}`, `"${key}" is not a declared user attribute`);
+          if (!attrs.has(key)) this.error(f, `user.${key}`, `"${key}" is not a declared user attribute`, "ref.unknown_attribute");
       }
-      if (g.status === "approved" && !g.expected?.rows.length) this.error(f, "expected.rows", "an approved golden needs at least one expected row");
+      if (g.status === "approved" && !g.expected?.rows.length) this.error(f, "expected.rows", "an approved golden needs at least one expected row", "golden.no_expected_rows");
       else if (g.status === "approved" && !currentYes(this.replies(), `golden:${g.name}`, listApprovals({ goldens: [{ golden: g }] })[0]!.hash))
-        this.warn(f, "", unconfirmedGoldenMessage(g.name));
+        this.warn(f, "", unconfirmedGoldenMessage(g.name), "golden.no_ledger_yes");
       const crossKey = crossCheckKey(g);
       if (typeof g.sql === "string" && typeof g.cross_check_sql === "string")
-        this.error(f, "sql", "is the older name of cross_check_sql, and the golden has both; keep cross_check_sql and remove sql");
+        this.error(f, "sql", "is the older name of cross_check_sql, and the golden has both; keep cross_check_sql and remove sql", "golden.sql_and_cross_check");
       else if (typeof g.sql === "string")
         this.warn(
           f,
           "sql",
           `is now cross_check_sql: rename the key; until then it is read as cross_check_sql, a hand-written query that semlayer goldens check runs next to the request compiled from the YAML, and both must give expected.rows`,
+          "golden.sql_renamed",
         );
       if (crossKey && callsRound(g[crossKey]!, this.identRules(g.request.source).dialect))
         this.warn(
@@ -1726,11 +1742,12 @@ export class Validator {
           "calls round(); a golden's SQL applies the measure exactly as written; round() hides float noise, so remove it. " +
             "This warning never stands, whatever the golden's reference says; once round() is removed, " +
             `semlayer goldens check --name ${g.name} fails on rows recorded rounded until the owner says yes to the unrounded figure and it is confirmed again`,
+          "golden.calls_round",
         );
 
       const req = g.request;
       if (!this.sources.has(req.source)) {
-        this.error(f, "request.source", `names unknown source "${req.source}"`);
+        this.error(f, "request.source", `names unknown source "${req.source}"`, "ref.unknown_source");
         continue;
       }
       const base = this.requestBaseModel(req.source, req);
@@ -1744,8 +1761,8 @@ export class Validator {
         if (problem) {
           // A draft golden may record the owner's figure before its field exists.
           if (problem.unknown && g.status !== "approved")
-            this.warn(f, path, `${problem.message}; a draft golden may name a field before it exists; add the field before confirming the golden, because semlayer validate errors on it once the golden is approved`);
-          else this.error(f, path, problem.message);
+            this.warn(f, path, `${problem.message}; a draft golden may name a field before it exists; add the field before confirming the golden, because semlayer validate errors on it once the golden is approved`, "golden.field_missing_draft");
+          else this.error(f, path, problem.message, "golden.field_invalid");
           return;
         }
         if (kind !== "dimension" && kind !== "filter") return;
@@ -1755,7 +1772,7 @@ export class Validator {
         const isDim = !!this.dimension(req.source, parsed.model, parsed.field);
         if (!isDim && !(kind === "filter" && this.measure(req.source, parsed.model, parsed.field))) return;
         const pathIssue = base && this.model(req.source, base.model) ? this.pathProblem(req.source, base.model, base.why, parsed.model) : null;
-        if (pathIssue) this.error(f, path, pathIssue);
+        if (pathIssue) this.error(f, path, pathIssue, "golden.field_unreachable");
         if (kind !== "dimension") return;
         for (const { metric, models } of spanning) {
           // A model reaches the dimension through one shortest to-one path, or has its own of the same name.
@@ -1766,6 +1783,7 @@ export class Validator {
               path,
               `metric ${metric.name} combines measures of ${models.join(", ")}, so it groups by dimensions that exist with the same name in each, or that each reaches through one path of to-one joins; ` +
                 `${missing.join(", ")} ${missing.length === 1 ? "has" : "have"} no dimension "${parsed.field}" and no such path to ${parsed.model}`,
+              "golden.dimension_not_shared",
             );
         }
       };
@@ -1783,6 +1801,7 @@ export class Validator {
             path,
             `an approved golden uses draft ${label}; approve it after its readback, then run semlayer goldens check --name ${g.name}; ` +
               "if it passes the recorded rows stand, and only changed rows need a new confirm",
+            "golden.uses_draft",
           );
       this.checkGoldenAccess(l, roles);
       this.checkConfirmedAs(l);
@@ -1810,6 +1829,7 @@ export class Validator {
         `request.measures[${i}]`,
         `${ref} aggregates over ${models.join(", ")}, and ${first.ref} over ${first.models.join(", ")}; ` +
           "a request's measures must share one model, or be one metric: write a metric that combines them in metrics.yaml, or split the golden",
+        "golden.measures_span_models",
       );
       return;
     }
@@ -1864,6 +1884,7 @@ export class Validator {
         `this hand-written SQL may not apply ${key}'s rule: it never names ${missing.join(", ")}, which the measure's ` +
           `${measure.filter ? "expr or filter" : "expr"} reads. Write the measure's expr and filter into the SQL as the model defines them, ` +
           `then run semlayer goldens check --name ${g.name} and read any change back to the owner`,
+        "golden.cross_check_misses_rule",
       );
     }
   }
@@ -1941,8 +1962,8 @@ export class Validator {
       const message =
         `names ${problem.ref}, which ${who.who} may not see (${reasons.join(", ")})${who.why}; ` +
         "give the golden a role and user who may see every field it names, or change access.yaml after the owner's yes";
-      if (g.status === "approved") this.error(l.file, path, message);
-      else this.warn(l.file, path, message);
+      if (g.status === "approved") this.error(l.file, path, message, "golden.field_hidden");
+      else this.warn(l.file, path, message, "golden.field_hidden_draft");
     }
   }
 
@@ -1959,6 +1980,7 @@ export class Validator {
       "confirmed_as",
       `the golden was confirmed as ${describeRunAs(g.confirmed_as)} but now runs as ${describeRunAs({ role: g.role, user: g.user })}; ` +
         `run semlayer goldens check --name ${g.name}, read the change back and confirm again on the owner's yes`,
+      "golden.run_as_changed",
     );
   }
 
@@ -1988,6 +2010,7 @@ export class Validator {
               ? `${qualified(t)}.${c.name} is protected but the snapshot holds raw sample values; run semlayer profile --source ${source} --redact`
               : `${qualified(t)}.${c.name} is protected but the snapshot holds hashed top values, which a list of likely values reverses; ` +
                   `run semlayer profile --source ${source} --redact to remove them`,
+            "access.protected_profile_values",
           );
         });
       });
@@ -2068,6 +2091,7 @@ export class Validator {
         path,
         `quotes "${quoted}", a value of column ${hit.column} of ${hit.table}, which ${hit.field} reads and tags ${hit.tag}; ` +
           "this text is shown to people the tag hides that column from, so write an id or a count instead",
+        "access.quotes_protected_value",
       );
     const scan = (file: string, path: string, text: unknown) => {
       if (typeof text !== "string") return;
@@ -2095,7 +2119,7 @@ export class Validator {
   // Errors on each env file under the root: a secret is never kept inside it.
   checkEnvFiles(): void {
     for (const file of envFilesInRoot(this.root)) {
-      this.error(file, "", `an env file inside the semantic root, where no secret is kept: move it to ${rootEnvFile(this.root)} (semlayer reads it there and keeps it out of version control), then run semlayer validate again`);
+      this.error(file, "", `an env file inside the semantic root, where no secret is kept: move it to ${rootEnvFile(this.root)} (semlayer reads it there and keeps it out of version control), then run semlayer validate again`, "env.file_in_root");
     }
   }
 
