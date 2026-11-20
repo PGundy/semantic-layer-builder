@@ -184,14 +184,13 @@ export interface EditOutcome {
 
 // The warnings semlayer validate gives for a value of one key that can never be right, whatever else the
 // layer holds: a typed edit that adds one is refused with validate's own words, as an error is.
-// - time_zone on a time dimension whose column carries its own zone;
-// - a measure expr dividing by a numeric literal on duckdb (validate: "this warning never stands");
-// - a column listed in ignored_columns that a field, a filter, a join key or a row filter reads.
+// - time.zone_carries_own: time_zone on a time dimension whose column carries its own zone;
+// - expr.divides_by_literal: a measure expr dividing by a numeric literal on duckdb;
+// - ignore.column_read: a column listed in ignored_columns that a field, a filter, a join key or a row filter reads.
+const NEVER_RIGHT: ReadonlySet<string> = new Set(["time.zone_carries_own", "expr.divides_by_literal", "ignore.column_read"]);
+
 export function neverRight(i: Issue): boolean {
-  if (i.level !== "warning") return false;
-  if (/\.time_zone$/.test(i.path) && i.message.includes("which carries its own")) return true;
-  if (/\.expr$/.test(i.path) && i.message.includes("this warning never stands")) return true;
-  return /^ignored_columns\[\d+\]$/.test(i.path) && i.message.includes("so it is not left out");
+  return i.level === "warning" && NEVER_RIGHT.has(i.code);
 }
 
 // A typed edit refused for a value that can never be right (neverRight). semlayer apply names every
@@ -212,11 +211,12 @@ export function resetEditWarnings(): void {
 }
 
 // A command's output with the warnings its typed edits added: with --json lines added to the
-// object's "warnings" list (made when it has none), otherwise a "Warning: " line each, before the
-// output's Next: line.
+// object's "warnings" list (made when it has none) and {code, path, message} objects to its
+// "warning_issues" list, otherwise a "Warning: " line each, before the output's Next: line.
 export function withEditWarnings(text: string, json: boolean): string {
   if (!pendingWarnings.length) return text;
   const lines = pendingWarnings.map(issueLine);
+  const issues = warningIssues(pendingWarnings);
   pendingWarnings = [];
   if (json) {
     let value: unknown;
@@ -228,12 +228,19 @@ export function withEditWarnings(text: string, json: boolean): string {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return text;
     const own = (value as { warnings?: unknown }).warnings;
     if (own !== undefined && !Array.isArray(own)) return text;
-    return JSON.stringify({ ...value, warnings: [...(own ?? []), ...lines] }, null, text.includes("\n") ? 2 : undefined);
+    const ownIssues = (value as { warning_issues?: unknown }).warning_issues;
+    const before = Array.isArray(ownIssues) ? ownIssues : [];
+    return JSON.stringify({ ...value, warnings: [...(own ?? []), ...lines], warning_issues: [...before, ...issues] }, null, text.includes("\n") ? 2 : undefined);
   }
   const out = text.split("\n");
   const at = out.findLastIndex((l) => l.startsWith("Next: "));
   out.splice(at < 0 ? out.length : at, 0, ...lines.map((l) => `Warning: ${l}`));
   return out.join("\n");
+}
+
+// Warnings as --json carries them beside their lines: the code, the file's path and validate's message.
+export function warningIssues(warnings: Issue[]): { code: string; file: string; path: string; message: string }[] {
+  return warnings.map((i) => ({ code: i.code, file: i.file, path: i.path, message: i.message }));
 }
 
 // One file's edit; several for the same file run in order on one document.
