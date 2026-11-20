@@ -1,6 +1,6 @@
 ---
 name: semlayer
-description: Build, extend or review a governed semantic layer with a data owner, who may not be technical. Use it to onboard a database, warehouse or data lake (Postgres, DuckDB, Parquet or CSV files, Snowflake, BigQuery, Databricks, or a shared schema export), including hundreds of tables or several sources; to write metrics YAML, models, dimensions and approved measures; to define and check joins; to set access rules (open by default, with exceptions), roles, protected PII and sensitive fields, restricted metrics, row-level security or a manager's span of control; to keep a layer current when columns change; to record golden questions and answers; or to prepare data for a chat-with-your-data, text-to-SQL or BI tool. Triggers include "semantic layer", "metrics layer", "define our KPIs", "model these tables", "what does this column mean", "who can see which data", "row-level security", "a new column appeared", "here is our schema export" and "get our warehouse ready for AI"; a person invokes it as /semlayer.
+description: Build, extend or review a governed semantic layer with a data owner, who may not be technical. Use it to onboard a Postgres database (or DuckDB, Parquet or CSV files for sample data, or a shared schema export), including hundreds of tables or several sources; to write metrics YAML, models, dimensions and approved measures; to define and check joins; to set access rules (open by default, with exceptions), roles, protected PII and sensitive fields, restricted metrics, row-level security or a manager's span of control; to keep a layer current when columns change; to record golden questions and answers; or to prepare data for a chat-with-your-data, text-to-SQL or BI tool. Triggers include "semantic layer", "metrics layer", "define our KPIs", "model these tables", "what does this column mean", "who can see which data", "row-level security", "a new column appeared", "here is our schema export" and "get our warehouse ready for AI"; a person invokes it as /semlayer.
 argument-hint: "[status | doctor | demo | what you want]"
 ---
 
@@ -97,7 +97,7 @@ Make every change inside the semantic root with a typed CLI command: each card n
 
 | Case | Load |
 |---|---|
-| Only when a source is not a live postgres or duckdb connection (a warehouse dialect through your own SQL tool, `--emit-sql`, a schema export with `semlayer export-sql`, an import, lake files, manual snapshots) or a source check needs explaining | `references/intake.md` |
+| Only when a source is not a live postgres or duckdb connection (a schema export with `semlayer export-sql`, an import, lake files, manual snapshots) or a source check needs explaining; a database that is neither, not supported for new work, loads `references/other-dialects.md` instead | `references/intake.md` |
 | Only when the owner asks how the baseline reached a guess, or a candidate measure or split does not map onto a field | `references/baseline.md` |
 | Only when the owner widens scope, defers a table, hands over a list of tables or scopes a lake per source | `references/scoping.md` |
 | Only when a rule needs more than the interview card gives: time zones per type and dialect, a rule or dimension through a join reference, model YAML, rerunning introspect, `ignored_columns` | `references/interview-guide.md` |

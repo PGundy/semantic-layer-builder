@@ -358,6 +358,7 @@ describe("validate warns on approvals without a matching yes", () => {
         level: "warning",
         file: ORDERS_FILE,
         path: "",
+        code: "issue.unclassified",
         message:
           "4 approved items have no recorded owner yes in .semlayer/ledger.jsonl that matches them as they stand (approved before semlayer approve required one): " +
           "wh.orders, wh.orders.order_status, wh.orders.revenue and 1 more; they stay approved. To record a yes, read them back with " +

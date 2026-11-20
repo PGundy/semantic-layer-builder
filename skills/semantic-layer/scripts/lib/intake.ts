@@ -44,6 +44,8 @@ export interface IntakeIssue {
   level: "error" | "warning";
   path: string;
   message: string;
+  // Registered in lib/issue-codes/source.ts.
+  code: string;
 }
 
 // Problems with a list of schema names: a name that is not one, an exact repeat (errors), two
@@ -61,7 +63,7 @@ export function schemaListIssues(
   schemas.forEach((name, i) => {
     if (!isSchemaName(name, source.dialect)) {
       const dotted = NO_DOTTED.includes(source.dialect) && SCHEMA_NAME.test(name);
-      out.push({ level: "error", path: at(i), message: dotted ? NO_DOTTED_HINT : `is not a schema name; ${SCHEMA_NAME_HINT}` });
+      out.push({ level: "error", path: at(i), message: dotted ? NO_DOTTED_HINT : `is not a schema name; ${SCHEMA_NAME_HINT}`, code: "intake.schema_name_invalid" });
       return;
     }
     const [db, schema] = name.split(".");
@@ -69,12 +71,13 @@ export function schemaListIssues(
       out.push({
         level: "warning",
         path: at(i),
+        code: "intake.schema_in_own_database",
         message: `names a schema of the database this source opens (${db}), which introspect reports as ${schema} alone, so it matches no table; write ${schema}`,
       });
     }
     const first = seen.get(name);
     if (first !== undefined) {
-      out.push({ level: "error", path: at(i), message: `repeats ${at(first)} ("${name}"); remove one of them` });
+      out.push({ level: "error", path: at(i), message: `repeats ${at(first)} ("${name}"); remove one of them`, code: "intake.schema_repeated" });
       return;
     }
     seen.set(name, i);
@@ -83,6 +86,7 @@ export function schemaListIssues(
       out.push({
         level: "warning",
         path: at(i),
+        code: "intake.schema_case_differs",
         message: `differs from ${at(other)} ("${schemas[other]}") only in case; most warehouses read unquoted names in one case, so keep the one the catalog shows`,
       });
     } else folded.set(name.toLowerCase(), i);
@@ -121,13 +125,19 @@ export function intakeIssues(source: SourceConfig, root: string): IntakeIssue[] 
     out.push({
       level: "warning",
       path: "intake.reason",
+      code: "intake.reason_missing",
       message:
         "is empty while intake.mode is export. The interview asks for a connection first and takes an export only when one is not possible; " +
         `write why in intake.reason, or set intake.mode to connection if the owner can connect, ${AFTER}`,
     });
   }
   if (intake.schemas?.length === 0) {
-    out.push({ level: "warning", path: "intake.schemas", message: `is empty, which reads every schema; list the schemas to read or remove intake.schemas, ${AFTER}` });
+    out.push({
+      level: "warning",
+      path: "intake.schemas",
+      code: "intake.schemas_empty",
+      message: `is empty, which reads every schema; list the schemas to read or remove intake.schemas, ${AFTER}`,
+    });
   }
   out.push(...schemaListIssues(intake.schemas ?? [], source, (i) => `intake.schemas[${i}]`).map((x) => ({ ...x, message: `${x.message}, ${AFTER}` })));
   const file = intake.export?.file;
@@ -135,6 +145,7 @@ export function intakeIssues(source: SourceConfig, root: string): IntakeIssue[] 
     out.push({
       level: "error",
       path: "intake.export",
+      code: "intake.export_in_connection_mode",
       message: `applies only to intake.mode export, and this source's mode is connection; remove intake.export, or set intake.mode to export with a reason, ${AFTER}`,
     });
   }
@@ -143,16 +154,23 @@ export function intakeIssues(source: SourceConfig, root: string): IntakeIssue[] 
       out.push({
         level: "error",
         path: "intake.export.file",
+        code: "intake.export_outside_root",
         message: `must be a path inside the semantic root, written relative to it; copy the export under the root (for example exports/<file>) and point intake.export.file at it, ${AFTER}`,
       });
     } else if (!existsSync(resolve(root, file))) {
       out.push({
         level: "warning",
         path: "intake.export.file",
+        code: "intake.export_file_missing",
         message: `names a file that does not exist under the semantic root; copy the export there or fix the path, ${AFTER}`,
       });
     } else if (!statSync(resolve(root, file)).isFile()) {
-      out.push({ level: "warning", path: "intake.export.file", message: `names a directory, not a file; point it at the export file itself, ${AFTER}` });
+      out.push({
+        level: "warning",
+        path: "intake.export.file",
+        code: "intake.export_not_a_file",
+        message: `names a directory, not a file; point it at the export file itself, ${AFTER}`,
+      });
     }
   }
   return out;

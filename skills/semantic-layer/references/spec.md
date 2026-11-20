@@ -979,7 +979,7 @@ An expressible rule is measured by one read-only query over the model's table wi
 
 ## Schema exports
 
-`references/exports/<dialect>.sql` holds one catalog query per database: `postgres`, `redshift`, `mysql`, `sqlserver`, `snowflake`, `bigquery`, `databricks` and `duckdb`. `semlayer export-sql --dialect <d>` prints it. Each query is read-only and reads only the catalog, never table data. It leaves out the system schemas, and its header comment says how to run it, how to save the result as CSV (tab-separated from `mysql --batch`, which `semlayer import` reads as well), and how to restrict it to some schemas: uncomment the filter line marked `semlayer:schema-filter` and list them, or let `semlayer export-sql --schemas` apply it. BigQuery reads each dataset's metadata separately: its blocks between `semlayer:per-dataset` and `semlayer:end-per-dataset` read `my_dataset`, and `--schemas` repeats each block once per dataset, joined by `union all`. It returns one row per column, with exactly these lowercase columns:
+`references/exports/<dialect>.sql` holds one catalog query per database: `postgres`, `redshift`, `mysql`, `sqlserver`, `snowflake`, `bigquery`, `databricks` and `duckdb`. `semlayer export-sql --dialect <d>` prints it. The `mysql`, `sqlserver` and `redshift` exports are kept but unsupported, as is every dialect but `postgres` and `duckdb` for new work (`references/other-dialects.md`). Each query is read-only and reads only the catalog, never table data. It leaves out the system schemas, and its header comment says how to run it, how to save the result as CSV (tab-separated from `mysql --batch`, which `semlayer import` reads as well), and how to restrict it to some schemas: uncomment the filter line marked `semlayer:schema-filter` and list them, or let `semlayer export-sql --schemas` apply it. BigQuery reads each dataset's metadata separately: its blocks between `semlayer:per-dataset` and `semlayer:end-per-dataset` read `my_dataset`, and `--schemas` repeats each block once per dataset, joined by `union all`. It returns one row per column, with exactly these lowercase columns:
 
 | Column | Holds |
 |---|---|
@@ -1348,6 +1348,12 @@ The check reads a 50,000-table, 1,000,000-column snapshot in about 0.1 s, beside
 `semlayer validate` reads every file itself and lists each problem, a malformed file's among them, and does not stop at the first.
 
 With `--json`, a refusal that carries its next command as data also prints one JSON object on stdout, `{ "error": "<message>", "next": "<command>" }`, beside the line on stderr: a malformed layer file, pending readback or ledger (`next` is `semlayer validate`) and a directory with no semantic layer (`next` is `semlayer init --name <name>`), so `semlayer status --json` and `semlayer next --json` in an empty directory print a JSON error naming `semlayer init`. Any other refusal prints the stderr line and leaves stdout empty.
+
+### Codes and errors
+
+`semlayer validate --json` prints `{ "ok", "errors", "warnings", "issues" }`, and each issue is `{ "level", "file", "path", "message", "code", "next"? }`. `code` is stable across releases, so an agent branches on it rather than on the message, which may be reworded; `next`, where present, is the command that fixes or explains the issue. The human lines of `semlayer validate` do not show codes.
+
+A code is a family and a name, `family.name` in lowercase letters, digits and underscores, such as `schema.required`. Each family is registered in its own file under `scripts/lib/issue-codes/`, which maps each code to its usual level and a one-line meaning; the registry finds the files by name. `schema.*` codes come from the JSON Schema keyword that failed (`schema.required`, `schema.unknown_property`, `schema.enum`, `schema.type`, `schema.pattern`, and `schema.other` for the rest); `source.*`, `intake.*` and `env.*` from a source's connection, its intake block and a tracked env file. A check of a layer's own files that has no code of its own yet reports `issue.unclassified`, at either level; it is a placeholder, not a stable code, and each such check moves to a code of its own. A rule file under `scripts/lib/validate-rules/` passes a registered code as the last argument of every `error` and `warn` call. A code is added or retired, never renamed or reused.
 
 ### semlayer status --json
 

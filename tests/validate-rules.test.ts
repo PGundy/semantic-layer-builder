@@ -74,6 +74,7 @@ describe("validate-rules seam", () => {
       file: "semantic.yaml",
       path: name,
       message: `probe ${name}: 3 models, sources lake,warehouse, fold none, helper true, goldens 3, table fct_orders, paths orders.customer, bound error, bound warn`,
+      code: "issue.unclassified",
     }));
     expect(out.issues).toEqual([...expected.issues, ...probes]);
     expect(out.warnings).toBe(expected.warnings + 2);
@@ -90,7 +91,7 @@ describe("validate-rules seam", () => {
     expect(json.code).toBe(1);
     const out = JSON.parse(json.stdout) as { ok: boolean; issues: unknown[] };
     expect(out.ok).toBe(false);
-    expect(out.issues.at(-1)).toEqual({ level: "error", file: "semantic.yaml", path: "probe", message: "probe refuses; fix it, then run semlayer validate" });
+    expect(out.issues.at(-1)).toEqual({ level: "error", file: "semantic.yaml", path: "probe", message: "probe refuses; fix it, then run semlayer validate", code: "issue.unclassified" });
     const plain = run(["validate"]);
     expect(plain.code).toBe(1);
     expect(plain.stdout + plain.stderr).toContain("probe refuses");

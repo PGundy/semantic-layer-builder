@@ -23,7 +23,9 @@ const spec: CommandSpec = {
     const errors = issues.filter((i) => i.level === "error").length;
     const warnings = issues.length - errors;
     if (ctx.json) {
-      ctx.out(formatJson({ ok: errors === 0, errors, warnings, issues }));
+      // Each issue as {level, file, path, message, code, next?}: code is registered in lib/issue-codes/.
+      const listed = issues.map(({ level, file, path, message, code, next }) => ({ level, file, path, message, code, ...(next !== undefined ? { next } : {}) }));
+      ctx.out(formatJson({ ok: errors === 0, errors, warnings, issues: listed }));
     } else {
       const byFile = new Map<string, Issue[]>();
       for (const i of issues) byFile.set(i.file, [...(byFile.get(i.file) ?? []), i]);
