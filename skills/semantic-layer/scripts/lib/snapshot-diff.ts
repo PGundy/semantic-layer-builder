@@ -3,6 +3,7 @@
 import { intakeSchemas, schemaFilter } from "./intake.ts";
 import { findTable, qualifiedName, splitQualified } from "./naming.ts";
 import { inScope, scopeTest } from "./patterns.ts";
+import { segmentFilters } from "./segments.ts";
 import type { Dialect, Model, Scope, Snapshot, SnapshotScopeState, SnapshotTable, SourceConfig } from "./types.ts";
 
 export interface ColumnChanges {
@@ -465,7 +466,7 @@ export function incomingKeyColumns(model: Pick<Model, "model">, models: Pick<Mod
 }
 
 // The columns of `table` the model reads: bare columns (and the first part of dotted names that
-// are not join references) in dimension exprs, measure exprs and filters, its joins' `from`
+// are not join references) in dimension exprs, measure exprs, filters and segment filters, its joins' `from`
 // keys, its primary key, and `extraKeys` (the keys other models join to it on). Names match the
 // snapshot's columns ignoring case, except a quoted name that matches one exactly. Returned in
 // the table's column order, as the snapshot spells them.
@@ -478,6 +479,7 @@ export function referencedColumns(model: Model, table: SnapshotTable, dialect?: 
   for (const m of Array.isArray(model.measures) ? model.measures : []) {
     if (typeof m?.expr === "string") exprs.push(m.expr);
     if (typeof m?.filter === "string") exprs.push(m.filter);
+    for (const f of segmentFilters(m, model)) if (typeof f === "string") exprs.push(f);
   }
   for (const sql of exprs) {
     for (const id of sqlIdentifiers(sql, dialect)) {

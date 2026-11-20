@@ -18,6 +18,8 @@ import { schemaIssues } from "../schema.ts";
 import { crossSchemaPairs } from "../schema-scope.ts";
 import { type CompileWarning, type Instance, JoinPlan, joinWarnings, type PlannedJoin, readsJoin } from "./joins.ts";
 import { compileMetrics } from "./metrics.ts";
+import { measureFilter, unknownSegments } from "./segments.ts";
+import { findSegment, segmentNames } from "../segments.ts";
 import { type AppliedRows, rowsPredicate } from "./rowfilters.ts";
 import { aggregate, COMPILER_DIALECTS, embed, grained, Params, predicate } from "./sql.ts";
 
@@ -35,7 +37,8 @@ export type RefusalCode =
   | "ambiguous_join_path"
   | "join_fans_out"
   | "no_shared_dimension"
-  | "scope.cross_schema_undeclared";
+  | "scope.cross_schema_undeclared"
+  | "metric.segments_on_metric";
 
 export interface Refusal {
   code: RefusalCode;
@@ -148,6 +151,20 @@ function compileLayerInner(input: CompileInput): CompileResult {
   for (const p of checkRequest(vis, request).problems) add("not_visible", p.message, p.ref, undefined, { reasons: p.reasons, ...(p.awaits ? { awaits: p.awaits } : {}) });
 
   const pairs = crossSchemaPairs(source);
+  // A request's segments narrow a plain request; a metric's parts are compiled without them.
+  const named = request.segments ?? [];
+  const metricNamed = [...(request.measures ?? []), ...(request.dimensions ?? []), ...(request.filters ?? []).map((f) => f.field), ...(request.order_by ?? []).map((o) => o.field)].find(
+    (r) => NAME_PATTERN.test(r) && layer.metrics.some((m) => m.name === r && (m.source ?? source.source) === source.source),
+  );
+  if (named.length && metricNamed) {
+    add(
+      "metric.segments_on_metric",
+      `the request names metric ${metricNamed} and segments ${named.join(", ")}; segments apply to a request of one model's measures, not to a metric`,
+      metricNamed,
+      "Remove segments from the request, or ask for the measures alone with the segments in a request of their own, and run semlayer sql again.",
+    );
+    return refuse(source.source, refusals);
+  }
   const metric = compileMetrics(input, request, refusals, compileLayer);
   if (metric) return metric;
   const measures = request.measures ?? [];
@@ -184,12 +201,24 @@ function compileLayerInner(input: CompileInput): CompileResult {
         add("invalid_request", `${position} names ${ref}, but ${p.model}.${p.field} has the grains ${grains.join(", ")}`, ref);
     }
     const at = dim ? `dimensions[${(model.dimensions ?? []).indexOf(dim)}]` : `measures[${(model.measures ?? []).indexOf(mea!)}]`;
-    const texts: [TextRole, string, unknown][] = dim ? [["dimension expr", "expr", dim.expr]] : [["measure expr", "expr", mea!.expr], ["measure filter", "filter", mea!.filter]];
-    for (const [role, key, t] of texts) {
+    const texts: [TextRole, string, unknown][] = dim ? [["dimension expr", `${at}.expr`, dim.expr]] : [["measure expr", `${at}.expr`, mea!.expr], ["measure filter", `${at}.filter`, mea!.filter]];
+    // A measure's segments are read as its filter is, each at its place in the model file.
+    for (const name of mea ? segmentNames(mea) : []) {
+      const k = (model.segments ?? []).findIndex((s) => s?.name === name);
+      if (k >= 0) texts.push(["measure filter", `segments[${k}].filter`, model.segments![k]!.filter]);
+    }
+    for (const name of mea ? unknownSegments(mea, model) : [])
+      add(
+        "invalid_layer",
+        `${p.model}.${p.field} names segment ${name}, which model ${p.model} does not declare with a filter`,
+        ref,
+        `Add segment ${name} to ${p.model}'s model file or take it out of the measure's segments, run semlayer validate, and run semlayer sql again.`,
+      );
+    for (const [role, path, t] of texts) {
       if (t === undefined && !dim) continue;
       const problem = typeof t === "string" ? sqlTextProblem(t, role) : undefined;
       if (problem) {
-        add("invalid_layer", `model ${p.model} ${at}.${key} (${p.field}) ${problem}`, ref, `Fix the ${role} of ${p.model}.${p.field} in its model file, run semlayer validate, and run semlayer sql again.`);
+        add("invalid_layer", `model ${p.model} ${path} (${p.field}) ${problem}`, ref, `Fix the ${role} of ${p.model}.${p.field} in its model file, run semlayer validate, and run semlayer sql again.`);
         continue;
       }
       if (typeof t !== "string" || !t.trim() || sqlNames(t, dialect).subquery) {
@@ -241,6 +270,39 @@ function compileLayerInner(input: CompileInput): CompileResult {
     return k;
   });
 
+  // The request's segments: each a segment of the base model, applied only once an approved measure
+  // the user may see names it, since that measure's approval covers the segment's filter.
+  const fieldsOf = (m: Model) => vis.sources.find((s) => s.source === source.source)?.models.find((x) => x.model === m.model)?.fields ?? [];
+  const segments = named.flatMap((ref, i) => {
+    const p = parseRequestField(ref);
+    const model = p && !p.grain ? models.find((m) => m.model === p.model) : undefined;
+    const seg = model && p ? findSegment(model, p.field) : undefined;
+    if (!model || !seg || typeof seg.filter !== "string") {
+      add("invalid_request", `segments[${i}] names ${ref}, which is not a segment of a model of source ${source.source}; a request segment is model.segment`, ref);
+      return [];
+    }
+    if (base && model !== base) {
+      add("invalid_request", `segments[${i}] names ${ref}, a segment of model ${model.model}; a request's segments are those of ${base.model}, the model of its fields`, ref);
+      return [];
+    }
+    const users = (model.measures ?? []).filter((m) => segmentNames(m).includes(seg.name)).map((m) => m.name);
+    if (!fieldsOf(model).some((f) => f.kind === "measure" && f.visible && users.includes(f.name))) {
+      add(
+        "not_visible",
+        `segments[${i}] names ${ref}, which no approved measure this user may see names; a request applies a segment once a measure that names it is approved, since that approval covers its filter`,
+        ref,
+        `Add ${seg.name} to the segments of a measure of ${model.model}, read the measure back and approve it on the owner's yes, then run semlayer sql again; or leave ${ref} out of the request.`,
+      );
+      return [];
+    }
+    const problem = sqlTextProblem(seg.filter, "measure filter") ?? (sqlNames(seg.filter, dialect).subquery ? "has a subquery" : undefined);
+    if (problem) {
+      add("invalid_layer", `model ${model.model} segment ${seg.name} ${problem}`, ref, `Fix the filter of segment ${seg.name} in ${model.model}'s model file, run semlayer validate, and run semlayer sql again.`);
+      return [];
+    }
+    return [{ ref, text: seg.filter }];
+  });
+
   if (refusals.length || !base) return refuse(source.source, refusals);
 
   for (const f of selected) {
@@ -255,7 +317,7 @@ function compileLayerInner(input: CompileInput): CompileResult {
   // filters, then HAVING ones), so the joins follow it.
   const kept = filterFields.filter((f): f is Field => !!f);
   const used = [...columns.map((c) => c.field), ...kept.filter((f) => f.kind === "dimension"), ...kept.filter((f) => f.kind === "measure")];
-  const texts = (f: Field) => (f.kind === "dimension" ? [(f.item as Dimension).expr] : [(f.item as Measure).expr, (f.item as Measure).filter]);
+  const texts = (f: Field) => (f.kind === "dimension" ? [(f.item as Dimension).expr] : [(f.item as Measure).expr, measureFilter(f.item as Measure, f.model)]);
   // The user's row filters, as lib/access.ts evaluates them: each limits its model where the query
   // reads it, the base in WHERE and a request path's model in its join's ON clause. Parameters are
   // numbered in reading order: those ON clauses, then WHERE, then HAVING.
@@ -270,7 +332,8 @@ function compileLayerInner(input: CompileInput): CompileResult {
     return rowsPredicate(rows, inst, { source: source.source, dialect, models, params, plan: () => plan, add });
   };
   const filterJoins = baseRows?.rows === "filtered" && baseRows.branches.some((b) => !b.no_rows && b.filters.some((f) => f.join_refs?.length));
-  const qualified = filterJoins || used.some((f) => f.model !== base || texts(f).some((t) => t !== undefined && readsJoin(t, f.model)));
+  const qualified =
+    filterJoins || segments.some((s) => readsJoin(s.text, base)) || used.some((f) => f.model !== base || texts(f).some((t) => t !== undefined && readsJoin(t, f.model)));
   const plan: JoinPlan = new JoinPlan({ source: source.source, dialect, models, snapshot: input.snapshot, pairs, joinStatus: input.joinStatus, base, qualified, add, restrict: (inst) => restrict(inst, "on") });
   const done = new Map<string, string>();
   const sqlOf = (f: Field): string => {
@@ -281,7 +344,8 @@ function compileLayerInner(input: CompileInput): CompileResult {
     let out: string;
     if (f.kind === "measure") {
       const m = f.item as Measure;
-      out = aggregate(dialect, m.agg, m.expr === undefined ? undefined : own(m.expr), m.filter === undefined ? undefined : own(m.filter));
+      const filter = measureFilter(m, f.model);
+      out = aggregate(dialect, m.agg, m.expr === undefined ? undefined : own(m.expr), filter === undefined ? undefined : own(filter));
     } else {
       const d = f.item as Dimension;
       out = f.grain ? grained(dialect, embed(own(d.expr)), f.grain) : embed(own(d.expr));
@@ -290,13 +354,19 @@ function compileLayerInner(input: CompileInput): CompileResult {
     return out;
   };
   for (const f of used) sqlOf(f);
+  // The request's segments narrow the base in WHERE, after the user's row filters and before the
+  // request's own filters; they bind no parameters.
+  const segmentWhere = segments.map((s) => {
+    const t = plan.sql(s.text, plan.base, s.ref);
+    return `(${t.includes("--") ? `${t}\n` : t})`;
+  });
   const baseFilter = restrict(plan.base, "where");
   if (refusals.length) return refuse(source.source, refusals);
 
   // WHERE predicates are built before HAVING ones, so parameter numbers rise in reading order.
   const clause = (kind: Field["kind"]) =>
     filters.flatMap((f, i) => (filterFields[i]!.kind === kind ? [predicate(sqlOf(filterFields[i]!), f.op as FilterOp, f.value, params)] : []));
-  const where = [...(baseFilter ? [baseFilter] : []), ...clause("dimension")];
+  const where = [...(baseFilter ? [baseFilter] : []), ...segmentWhere, ...clause("dimension")];
   const having = clause("measure");
   const lines = ["select", columns.map((c) => `  ${sqlOf(c.field)} as ${quoteIdent(dialect, c.name)}`).join(",\n"), ...plan.from()];
   if (where.length) lines.push(`where ${where.join("\n  and ")}`);

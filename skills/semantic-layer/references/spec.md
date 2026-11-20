@@ -109,7 +109,7 @@ Tools only ever write `status: draft`. The `semlayer approve` command sets `appr
 `semlayer approve` records `approved_hash`: `sha256:` and the 64 hex characters of the SHA-256 of the item's normalized semantic content (`scripts/lib/approval-hash.ts`). The content is, for each kind of item:
 
 - a dimension: its identity (its source, its model, its `name` and the model's `table`), `expr`, `type`, `time_grains`, `time_zone`, `synonyms`, `tags`, and the definitions (`to`, `keys`, `relationship`, `type`) of the joins its join references read through;
-- a measure: its identity, `expr`, `filter`, `agg`, `format`, `currency`, `synonyms`, `tags`, and the definitions of the joins its `expr` and `filter` read through;
+- a measure: its identity, `expr`, `filter`, `agg`, `format`, `currency`, `synonyms`, `tags`, the `filter` text of each segment it names (left out when it names none), and the definitions of the joins its `expr`, `filter` and segments read through;
 - a join: its identity, `to`, `keys`, `relationship` and `type`;
 - a model: its source and `model` name, `table`, `grain`, `primary_key` and `tags`;
 - a metric: its `name` and definition, `source`, `type`, `numerator`, `denominator` or `expr`, `format`, `currency`, `synonyms` and `tags`;
@@ -652,6 +652,31 @@ A ratio divides after both sides aggregate. A derived metric's `expr` combines `
 
 A metric may combine measures of several models of its source. Each measure aggregates over its own model, and the metric groups by dimensions that every model it uses reaches through one path of to-one joins, or that exist with the same name in each. So `refunds`, with a `many_to_one` join `order` to `orders`, groups by `orders.order_date:month` through that join; a model with no such path carries a dimension of the same name (`visits.order_date`). `semlayer validate` errors when a golden groups such a metric by a dimension one of its models neither reaches nor has.
 
+## Metric semantics
+
+### Segments
+
+A segment is a named predicate a model declares once, under `segments` in its model file, and that its measures name instead of copying the predicate into each `filter`:
+
+```yaml
+segments:
+  - name: sales
+    filter: status in ('completed', 'shipped')
+    description: Orders that count as sales.
+measures:
+  - name: revenue
+    expr: amount_cents * 0.01
+    agg: sum
+    filter: ship_region <> 'INT'
+    segments: [sales]               # names of this model's segments, ANDed with filter
+```
+
+- A segment's `filter` is written and checked as a measure `filter` is (see Expression text): the model's own columns and join references through its to-one joins, one expression, no subquery. `semlayer validate` reports a problem in it at `segments[<i>].filter` with the code a measure filter's problem has, a name declared twice as `metric.segment_duplicate`, and a measure, or a golden's request, that names a segment its model does not declare as `metric.segment_unknown`.
+- A measure's filter is its `filter` and the filters of its `segments`, in that order, combined with AND, each in parentheses when there are several: `sum(amount_cents * 0.01) filter (where (ship_region <> 'INT') and (status in ('completed', 'shipped')))`. A measure that names no segment compiles exactly as before. Inside a metric each part compiles its measures this way, so a ratio's numerator keeps its segments. `semlayer sql` refuses a measure that names a segment its model does not declare as `invalid_layer`.
+- The owner approves a segment through each measure that names it: a measure's approval hash covers the filter text of each segment it names (see Approval hashes), so editing a segment's filter after approval changes the hash of every approved measure that names it, and `semlayer validate` reports each as changed since approved. A measure that names no segment keeps the hash it had.
+- A segment that reads a protected column counts as the measure's filter does: when the measure or its model is tagged `pii` or `sensitive`, the columns the segment reads are protected (see Profiles of protected columns). The user's row filters apply on top of a segment, as on top of a measure filter.
+- A plain request may name segments as `model.segment` in `segments` (`schemas/golden.schema.json`): each is a segment of the model of the request's fields and narrows it in `WHERE`, after the user's row filters and before the request's own filters, binding no parameter. A request segment applies only once an approved measure the user may see names it, since that approval covers its filter; otherwise it is refused as `not_visible`. A request that names a metric and segments is refused as `metric.segments_on_metric`, because a metric's parts take no request segments.
+
 ## access.yaml
 
 `access.yaml` says who sees what. No `access.yaml` means open mode with no roles: everyone sees every approved item. A draft model, dimension, measure or metric, or an approved one that changed since its approval (see Approval hashes), is never exposed to anyone in either mode; tools that read the layer flag every draft item they use, and `semlayer access` reports one hidden with the reason `draft`.
@@ -1065,7 +1090,7 @@ The answer ledger: the owner's answers to readback items (`semlayer reply`) and 
 
 It refuses a source of another dialect, naming that a later version adds other dialects, a field whose expr or filter holds a subquery, and a field or metric whose text is not one expression (see Expression text) as `invalid_layer`.
 
-`--json` prints `{ ok: true, source, dialect, model, sql, params, columns: [{ name, ref, kind }], joins: [{ alias, via, model, type, for }], row_filters: [{ model, alias, in, roles, rows }], session_time_zone, warnings? }`, where `warnings`, when present, lists `{ code, message }` for each join the query adds that compiles with a warning (see Schema scope), and where each column's `kind` is `dimension`, `measure` or `metric`, each join names its alias, the declared join it follows as `model.join`, its target model, `left` or `inner`, `for` `request` or `definition` and, for a metric, `part`, the model of the CTE that joins it, and each row filter applied, in the SQL's order, names its model, the alias it limits, `in` `on` or `where`, the held roles whose filters limit it and `rows` `filtered` or `none` (for a metric, every part's in turn, each with `part`, the model of its CTE); or `{ ok: false, source, reason, refusals: [{ code, ref?, message, next?, reasons?, awaits? }], next }`, where `code` is one of `invalid_request`, `unknown_role`, `not_visible`, `unsupported_dialect`, `unsupported_metric`, `invalid_layer`, `no_join_path`, `ambiguous_join_path`, `join_fans_out`, `no_shared_dimension` and `scope.cross_schema_undeclared`, a refusal's `next` says what resolves that refusal when it is specific to it, a `not_visible` refusal's `reasons` are the evaluator's reasons (`draft`, `protected_tag:<tag>`, `measure_hidden:<model.measure>`, ...) and `awaits` the approve targets it waits on when nothing but approval hides it, and the top-level `next` names the command to run next.
+`--json` prints `{ ok: true, source, dialect, model, sql, params, columns: [{ name, ref, kind }], joins: [{ alias, via, model, type, for }], row_filters: [{ model, alias, in, roles, rows }], session_time_zone, warnings? }`, where `warnings`, when present, lists `{ code, message }` for each join the query adds that compiles with a warning (see Schema scope), and where each column's `kind` is `dimension`, `measure` or `metric`, each join names its alias, the declared join it follows as `model.join`, its target model, `left` or `inner`, `for` `request` or `definition` and, for a metric, `part`, the model of the CTE that joins it, and each row filter applied, in the SQL's order, names its model, the alias it limits, `in` `on` or `where`, the held roles whose filters limit it and `rows` `filtered` or `none` (for a metric, every part's in turn, each with `part`, the model of its CTE); or `{ ok: false, source, reason, refusals: [{ code, ref?, message, next?, reasons?, awaits? }], next }`, where `code` is one of `invalid_request`, `unknown_role`, `not_visible`, `unsupported_dialect`, `unsupported_metric`, `invalid_layer`, `no_join_path`, `ambiguous_join_path`, `join_fans_out`, `no_shared_dimension`, `scope.cross_schema_undeclared` and `metric.segments_on_metric`, a refusal's `next` says what resolves that refusal when it is specific to it, a `not_visible` refusal's `reasons` are the evaluator's reasons (`draft`, `protected_tag:<tag>`, `measure_hidden:<model.measure>`, ...) and `awaits` the approve targets it waits on when nothing but approval hides it, and the top-level `next` names the command to run next.
 
 ### Bridges and multi-fact requests
 
