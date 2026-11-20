@@ -12,6 +12,16 @@ const codes: CodeFamily = {
     meaning: "A request names a bare :grain field, and its first measure has no default time dimension to read it as (none on the measure or its model, or the first measure is a metric or missing), so semlayer sql refuses it.",
     next: "semlayer sql",
   },
+  "metric.non_additive_dimension_unknown": { level: "error", meaning: "A measure's non_additive_dimension names no dimension of its model." },
+  "metric.non_additive_dimension_not_time": { level: "error", meaning: "A measure's non_additive_dimension names a dimension that is not type: time." },
+  "metric.non_additive_no_primary_key": { level: "error", meaning: "A measure has non_additive_dimension, and its model has no primary_key to tell one entity's rows apart." },
+  "metric.non_additive_dimension_not_key": { level: "error", meaning: "A measure's non_additive_dimension is a time dimension whose expr is not a column of its model's primary_key." },
+  "metric.non_additive_agg": { level: "error", meaning: "A measure with non_additive_dimension has an agg other than sum, avg, min or max." },
+  "metric.semi_additive_mixed": {
+    level: "error",
+    meaning: "A request, or one model's part of a metric, names a semi-additive measure with an additive one, or with one kept along another time dimension, window or filter, so semlayer sql refuses it.",
+    next: "semlayer sql",
+  },
   "metric.segments_on_metric": { level: "error", meaning: "A request names a metric and segments; segments apply to a request of one model's measures, so semlayer sql refuses it.", next: "semlayer sql" },
 };
 export default codes;

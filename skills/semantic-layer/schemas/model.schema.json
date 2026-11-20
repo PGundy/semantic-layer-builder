@@ -373,6 +373,29 @@
           "uniqueItems": true,
           "description": "Names of segments of this model whose filters narrow the measure, ANDed with its filter. Their filter texts are part of the measure's approval hash."
         },
+        "non_additive_dimension": {
+          "type": "object",
+          "description": "Makes the measure semi-additive, as a balance is: it is not added up across this time dimension, and in each period keeps the last (or first) row of each entity along it (spec.md, Metric semantics). Part of the measure's approval hash when set.",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "window"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "description": "A type: time dimension of this model whose expr is a column of its primary_key."
+            },
+            "window": {
+              "enum": [
+                "last",
+                "first"
+              ],
+              "description": "last keeps the latest row in each period (a closing balance), first the earliest (an opening balance)."
+            }
+          }
+        },
         "status": {
           "enum": [
             "draft",

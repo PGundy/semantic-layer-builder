@@ -1,7 +1,9 @@
 // Metric semantics (spec: Metric semantics): a model's segments have unique names and filters
 // checked as a measure filter is, a measure names only segments its model declares, a golden's
 // request names only segments that exist, and a default_time_dimension names a time dimension of
-// its model.
+// its model; a non_additive_dimension names a time dimension over a primary key column, with an agg
+// that reads one row per entity.
+import { entityKeys, nonAdditiveDimension, SEMI_AGGREGATIONS } from "../compiler/semi-additive.ts";
 import { parseRequestField } from "../refs.ts";
 import { modelSegments, segmentNames } from "../segments.ts";
 import { readsText, sqlTextProblem } from "../sql-text.ts";
@@ -40,6 +42,36 @@ export default function metric(ctx: RuleContext): void {
         if (!dim) ctx.error(file, path, `names ${name}, which is not a dimension of model ${model.model}; ${fix}, or remove the key`, "metric.default_time_unknown");
         else if (dim.type !== "time") ctx.error(file, path, `names ${name}, a ${dim.type} dimension; a default time dimension is type: time, so ${fix}, or remove the key`, "metric.default_time_not_time");
       }
+      // A semi-additive measure keeps one row per entity and period along a time dimension whose
+      // column is part of the primary key, and aggregates those rows (compiler/semi-additive.ts).
+      (Array.isArray(model.measures) ? model.measures : []).forEach((m, i) => {
+        const nad = nonAdditiveDimension(m);
+        if (!nad) return;
+        const path = `measures[${i}].non_additive_dimension.name`;
+        const dims = Array.isArray(model.dimensions) ? model.dimensions : [];
+        const dim = dims.find((d) => d.name === nad.name);
+        const times = dims.filter((d) => d.type === "time").map((d) => d.name);
+        const fix = times.length ? `name one of its time dimensions (${times.join(", ")})` : "add a time dimension to the model first";
+        if (!dim) ctx.error(file, path, `names ${nad.name}, which is not a dimension of model ${model.model}; ${fix}, or remove non_additive_dimension; set one with semlayer set ${source}.${model.model}.${m.name} non_additive_dimension '{name: <time dimension>, window: last}'`, "metric.non_additive_dimension_unknown");
+        else if (dim.type !== "time")
+          ctx.error(file, path, `names ${nad.name}, a ${dim.type} dimension; a balance is kept along a type: time dimension, so ${fix}, or remove non_additive_dimension; set one with semlayer set ${source}.${model.model}.${m.name} non_additive_dimension '{name: <time dimension>, window: last}'`, "metric.non_additive_dimension_not_time");
+        else if (!Array.isArray(model.primary_key) || !model.primary_key.length)
+          ctx.error(
+            file,
+            path,
+            `model ${model.model} has no primary_key, so semlayer cannot tell which rows are one entity's values on different days; set it with semlayer set ${source}.${model.model} primary_key <columns>`,
+            "metric.non_additive_no_primary_key",
+          );
+        else if (!entityKeys(model, dim))
+          ctx.error(
+            file,
+            path,
+            `names ${nad.name}, whose expr ${String(dim.expr)} is not a column of the primary_key (${model.primary_key.join(", ")}) of model ${model.model}; a balance needs one row per entity and day, so name a time dimension over a primary key column, or set the primary_key with semlayer set ${source}.${model.model} primary_key <entity columns and that column>`,
+            "metric.non_additive_dimension_not_key",
+          );
+        if (!(SEMI_AGGREGATIONS as readonly string[]).includes(m.agg))
+          ctx.error(file, `measures[${i}].agg`, `is ${m.agg}; a measure with non_additive_dimension takes ${SEMI_AGGREGATIONS.join(", ")}, over each entity's kept row; change the agg with semlayer set ${source}.${model.model}.${m.name} agg sum, or remove non_additive_dimension; then run semlayer validate`, "metric.non_additive_agg");
+      });
       const declared = new Set(modelSegments(model).map((s) => s.name));
       (Array.isArray(model.measures) ? model.measures : []).forEach((m, i) => {
         segmentNames(m).forEach((name, k) => {
