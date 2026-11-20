@@ -1,0 +1,38 @@
+{
+  "name": "acme-pg-structured",
+  "description": "The Acme warehouse over one PostgreSQL schema (a schema per run, loaded from the fixture), with the structured owner persona. Runs only when PG_URL is set.",
+  "fixture": "acme",
+  "intake": {
+    "path": "connection",
+    "source": "warehouse",
+    "dialect": "postgres",
+    "schema": "per_run",
+    "url_env": "PG_URL"
+  },
+  "persona": "structured",
+  "budgets": {
+    "max_turns": 40,
+    "max_tokens": 400000
+  },
+  "opening": "Hi, I am Dana Ruiz, head of analytics at Acme. Our warehouse is connected as the source warehouse, through the variable PG_URL. Can you build the layer with me?",
+  "script": "acme-pg-structured.script.json",
+  "grading": {
+    "figures": "acme.figures.json",
+    "selection": {
+      "warehouse": [
+        "fct_orders",
+        "fct_order_items",
+        "fct_refunds",
+        "dim_customers",
+        "dim_products",
+        "dim_regions"
+      ]
+    },
+    "protected_columns": [
+      "dim_customers.email",
+      "dim_customers.phone",
+      "dim_customers.first_name",
+      "dim_customers.last_name"
+    ]
+  }
+}

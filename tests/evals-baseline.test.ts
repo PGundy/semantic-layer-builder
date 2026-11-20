@@ -5,7 +5,7 @@ import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { REPO_ROOT } from "../evals/runner/files.ts";
 import type { GradeReport } from "../evals/graders/types.ts";
-import type { StopReason } from "../evals/runner/types.ts";
+import { NotRun, type StopReason } from "../evals/runner/types.ts";
 import {
   aggregate,
   BASELINE_FILE,
@@ -15,13 +15,14 @@ import {
   main,
   recordedEffort,
   shownPath,
+  PG_SMOKE_SCENARIO,
   SMOKE_SCENARIOS,
   type Baseline,
   type Observed,
   type RunOneOptions,
   type SmokeIO,
 } from "../evals/smoke.ts";
-import { tempDir } from "./helpers.ts";
+import { assertLocalPg, PG_URL, tempDir } from "./helpers.ts";
 
 // The smoke run and evals/baseline.json (FR-6.4, D6): the committed baseline passes, a lowered score
 // is a regression with exit 1, --report-only exits 0, --update-baseline writes the same bytes every
@@ -79,7 +80,7 @@ describe("the committed baseline", () => {
   test("matches its schema and covers the smoke subset", () => {
     const b = committed();
     expect(evalSchemaIssues("eval-baseline", b, "evals/baseline.json")).toEqual([]);
-    expect(Object.keys(b.scenarios).sort()).toEqual([...SMOKE_SCENARIOS].sort());
+    expect(Object.keys(b.scenarios).sort()).toEqual([...SMOKE_SCENARIOS, PG_SMOKE_SCENARIO].sort());
     expect(b.driver).toBe("scripted");
     for (const s of Object.values(b.scenarios)) {
       expect(s.stop_reason).toBe("done");
@@ -243,10 +244,79 @@ describe("regressions", () => {
   });
 });
 
+// The PostgreSQL scenario joins the smoke only where PG_URL is set; the committed baseline holds its entry
+// either way and the smoke passes either way (docs/PLAN-v1x.md, A3b).
+describe("the PostgreSQL scenario in the smoke", () => {
+  // An io whose PostgreSQL scenario is not run, as the runner reports it without the URL.
+  function withoutUrl() {
+    const f = fakeIO({});
+    const inner = f.io.runOne!;
+    f.io.runOne = async (name, opts) => {
+      if (name === PG_SMOKE_SCENARIO) throw new NotRun(`Scenario ${name} is not run: it reads PostgreSQL through PG_URL, which is not set.`);
+      return inner(name, opts);
+    };
+    return f;
+  }
+
+  test("without the URL it is said to be not run, compared with nothing, and the smoke exits 0", async () => {
+    const f = withoutUrl();
+    expect(await main([], f.io)).toBe(0);
+    expect(f.text()).toContain(`Scenario ${PG_SMOKE_SCENARIO} is not run: it reads PostgreSQL through PG_URL, which is not set.`);
+    expect(f.text()).not.toContain("REGRESSION");
+    expect(f.text().split("\n").some((l) => l.startsWith(`${PG_SMOKE_SCENARIO} `))).toBe(false);
+    expect(f.text()).toContain("Next: nothing to do for the evals.");
+    expect(f.err).toEqual([]);
+  });
+
+  test("the real smoke without the URL exits 0, and the committed baseline holds the entry", async () => {
+    const r = realIO();
+    expect(await main([], r.io)).toBe(0);
+    expect(r.text()).toContain(`Scenario ${PG_SMOKE_SCENARIO} is not run:`);
+    expect(r.text()).toContain("PG_URL, which is not set");
+    expect(committed().scenarios[PG_SMOKE_SCENARIO]).toBeDefined();
+  }, 30_000);
+
+  test("--update-baseline without the URL keeps the entry exactly as it was", async () => {
+    const dir = tempDir();
+    const file = join(dir, "baseline.json");
+    writeFileSync(file, readFileSync(BASELINE_FILE));
+    const f = withoutUrl();
+    expect(await main(["--update-baseline", "--baseline", file], f.io)).toBe(0);
+    const written = JSON.parse(readFileSync(file, "utf8")) as Baseline;
+    expect(written.scenarios[PG_SMOKE_SCENARIO]).toEqual(committed().scenarios[PG_SMOKE_SCENARIO]!);
+    expect(baselineText(written)).toBe(readFileSync(BASELINE_FILE, "utf8"));
+    expect(f.text()).toContain(`Scenario ${PG_SMOKE_SCENARIO} is not run:`);
+    // With no entry to keep there is none to write.
+    const bare = join(dir, "bare.json");
+    expect(await main(["--update-baseline", "--baseline", bare], withoutUrl().io)).toBe(0);
+    expect(Object.keys((JSON.parse(readFileSync(bare, "utf8")) as Baseline).scenarios).sort()).toEqual([...SMOKE_SCENARIOS].sort());
+  });
+
+  test("with the URL it is compared like the others, and a lowered score is a regression", async () => {
+    const f = fakeIO({ [PG_SMOKE_SCENARIO]: report(PG_SMOKE_SCENARIO, { figures: 0.5 }) });
+    expect(await main([], f.io)).toBe(1);
+    expect(tableRow(f.text(), PG_SMOKE_SCENARIO, "figures")).toContain("REGRESSION");
+    expect(f.text()).not.toContain("is not run:");
+  });
+
+  test.skipIf(!PG_URL)("the real smoke with the URL runs it and every grader scores 1 against the baseline", async () => {
+    assertLocalPg(PG_URL);
+    const out: string[] = [];
+    const io: SmokeIO = { out: (t) => out.push(t), err: () => {}, env: { PG_URL } };
+    expect(await main([], io)).toBe(0);
+    const text = out.join("\n");
+    for (const g of ["figures", "secrets", "selection", "approvals", "connection_first", "authority", "validate"]) expect(tableRow(text, PG_SMOKE_SCENARIO, g)).toMatch(/\s1\s+1\s+0\s+ok$/);
+    expect(text).not.toContain("is not run:");
+    expect(text).not.toContain("REGRESSION");
+  }, 60_000);
+});
+
 describe("--update-baseline", () => {
   test("writes the same bytes every time, equal to the committed baseline but for effort.tokens, the run's total", async () => {
     const dir = tempDir();
     const file = join(dir, "baseline.json");
+    // The PostgreSQL scenario is not run here (no URL in realIO's env), so its entry must come through as it was.
+    writeFileSync(file, readFileSync(BASELINE_FILE));
     const runs = join(dir, "runs");
     const r1 = realIO();
     expect(await main(["--update-baseline", "--baseline", file, "--out", runs], r1.io)).toBe(0);
@@ -395,7 +465,7 @@ describe("errors and where runs go", () => {
   test("runs go to a temporary directory that is removed afterwards, never into the repository", async () => {
     const f = fakeIO({});
     expect(await main([], f.io)).toBe(0);
-    expect(f.outDirs.length).toBe(SMOKE_SCENARIOS.length);
+    expect(f.outDirs.length).toBe(SMOKE_SCENARIOS.length + 1);
     for (const d of f.outDirs) {
       expect(d.startsWith(REPO_ROOT)).toBe(false);
       expect(existsSync(d)).toBe(false);
