@@ -53,6 +53,7 @@ import { intakeMode, upgradeCommand } from "./intake.ts";
 import { effectiveScope } from "./table-list.ts";
 import { type SchemaQuestion, schemaQuestion, schemaQuestionArgs } from "./schema-scope.ts";
 import { DIALECTS, TO_ONE_RELATIONSHIPS } from "./types.ts";
+import { sourceWeekStart } from "./compiler/calendar.ts";
 import type { AccessMode, Approval, Dialect, Golden, IntakeMode, LedgerReply, Metric, Model, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
 
 // Golden count below which the verify phase stays open.
@@ -439,7 +440,7 @@ function refsIn(entries: ApprovalEntry[], state: "changed" | "missing", projectH
 function modelApprovals(source: string, config: SourceConfig, models: LoadedModel["model"][]): ApprovalEntry[] {
   const byName = new Map(models.filter((m) => isRecord(m) && typeof m.model === "string").map((m) => [m.model, m]));
   const dialect = typeof config.dialect === "string" && (DIALECTS as readonly string[]).includes(config.dialect) ? config.dialect : undefined;
-  return itemApprovals(listApprovals({ models: [...byName.values()].map((m) => ({ source, model: m, lookup: (name: string) => byName.get(name), dialect })) }));
+  return itemApprovals(listApprovals({ models: [...byName.values()].map((m) => ({ source, model: m, lookup: (name: string) => byName.get(name), dialect, weekStart: sourceWeekStart(config) })) }));
 }
 
 // The rule semlayer validate applies to an expr that is one column: a bare identifier that is not a SQL

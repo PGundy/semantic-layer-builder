@@ -21,6 +21,7 @@ import { compileMetrics } from "./metrics.ts";
 import { measureFilter, unknownSegments } from "./segments.ts";
 import { findSegment, segmentNames } from "../segments.ts";
 import { type AppliedRows, rowsPredicate } from "./rowfilters.ts";
+import { resolveDefaultTime, sourceWeekStart } from "./calendar.ts";
 import { aggregate, COMPILER_DIALECTS, embed, grained, Params, predicate } from "./sql.ts";
 
 export type { CompileWarning, PlannedJoin } from "./joins.ts";
@@ -38,7 +39,8 @@ export type RefusalCode =
   | "join_fans_out"
   | "no_shared_dimension"
   | "scope.cross_schema_undeclared"
-  | "metric.segments_on_metric";
+  | "metric.segments_on_metric"
+  | "metric.default_time_missing";
 
 export interface Refusal {
   code: RefusalCode;
@@ -140,8 +142,12 @@ function compileLayerInner(input: CompileInput): CompileResult {
   const shape = schemaIssues("golden", { name: "request", question: "request", sql: "-", status: "draft", request: input.request }, "request");
   for (const i of shape) if (i.path.startsWith("request")) add("invalid_request", `${i.path} ${i.message}`);
   if (refusals.length) return refuse(source.source, refusals);
-  const request = input.request as QueryRequest;
-  if (request.source !== source.source) return refuse(source.source, [{ code: "invalid_request", message: `request.source is ${request.source}, not ${source.source}` }]);
+  const asked = input.request as QueryRequest;
+  if (asked.source !== source.source) return refuse(source.source, [{ code: "invalid_request", message: `request.source is ${asked.source}, not ${source.source}` }]);
+  // A bare :grain field reads the default time dimension of the request's first measure (calendar.ts).
+  const resolved = resolveDefaultTime(asked, layer.models.filter((m) => m.source === source.source));
+  if ("refusal" in resolved) return refuse(source.source, [{ code: "metric.default_time_missing", ...resolved.refusal }]);
+  const request = resolved.request;
   if (!COMPILER_DIALECTS.includes(dialect))
     add("unsupported_dialect", `source ${source.source} is ${dialect}; semlayer sql compiles for ${COMPILER_DIALECTS.join(" and ")} sources, and ${LATER} other dialects`);
 
@@ -348,7 +354,7 @@ function compileLayerInner(input: CompileInput): CompileResult {
       out = aggregate(dialect, m.agg, m.expr === undefined ? undefined : own(m.expr), filter === undefined ? undefined : own(filter));
     } else {
       const d = f.item as Dimension;
-      out = f.grain ? grained(dialect, embed(own(d.expr)), f.grain) : embed(own(d.expr));
+      out = f.grain ? grained(dialect, embed(own(d.expr)), f.grain, sourceWeekStart(source)) : embed(own(d.expr));
     }
     done.set(f.ref, out);
     return out;

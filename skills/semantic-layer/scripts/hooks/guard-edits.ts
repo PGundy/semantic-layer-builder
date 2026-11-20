@@ -14,6 +14,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type ApprovalEntry, carriesHash, itemApprovals, listApprovals } from "../lib/approval-hash.ts";
+import { sourceWeekStart, type WeekDay } from "../lib/compiler/calendar.ts";
 import { applyFileRefusals, commandList, DENIED_FLAGS, roleOf, semlayerRefusal, type Role } from "../lib/roles.ts";
 import { DIALECTS, type Dialect, type Model } from "../lib/types.ts";
 import { parseYamlText } from "../lib/yaml.ts";
@@ -139,10 +140,11 @@ interface Violation {
   keys?: string[];
 }
 
-function sourceDialect(root: string, source: string): Dialect | undefined {
+// The dialect a source file names and the day its weeks start, as semlayer approve reads them.
+function sourceHashScope(root: string, source: string): { dialect: Dialect | undefined; weekStart: WeekDay | undefined } {
   const p = parse(readText(join(root, "sources", `${source}.yaml`)), "source");
   const d = p.ok && isObject(p.value) ? p.value.dialect : undefined;
-  return typeof d === "string" && (DIALECTS as readonly string[]).includes(d) ? (d as Dialect) : undefined;
+  return { dialect: typeof d === "string" && (DIALECTS as readonly string[]).includes(d) ? (d as Dialect) : undefined, weekStart: sourceWeekStart(p.ok ? p.value : undefined) };
 }
 
 // The approved items of `before` whose content `after` changes or drops, unless the change restores
@@ -177,13 +179,13 @@ function sourceModels(root: string, source: string): Map<string, Model> {
 function modelScope(root: string, k: { source: string; name: string }) {
   let siblings: Map<string, Model> | undefined;
   const others = () => (siblings ??= sourceModels(root, k.source));
-  const dialects = new Map<string, Dialect | undefined>();
+  const scopes = new Map<string, ReturnType<typeof sourceHashScope>>();
   const entries = (self: unknown, of: string = k.name, value: unknown = self): ApprovalEntry[] => {
     if (!isObject(value)) return [];
     const source = typeof value.source === "string" ? value.source : k.source;
-    if (!dialects.has(source)) dialects.set(source, sourceDialect(root, source));
+    if (!scopes.has(source)) scopes.set(source, sourceHashScope(root, source));
     const lookup = (n: string) => (n === k.name ? (isObject(self) ? (self as unknown as Model) : undefined) : others().get(n));
-    return itemApprovals(listApprovals({ models: [{ source, model: { ...(value as unknown as Model), model: typeof value.model === "string" ? value.model : of }, lookup, dialect: dialects.get(source) }] }));
+    return itemApprovals(listApprovals({ models: [{ source, model: { ...(value as unknown as Model), model: typeof value.model === "string" ? value.model : of }, lookup, ...scopes.get(source) }] }));
   };
   return { entries, others };
 }

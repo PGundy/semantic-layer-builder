@@ -4,6 +4,7 @@ import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import type { LastApproval } from "../lib/access.ts";
 import { type ApprovalEntry, carriesHash, holdsHashes, integrity, itemApprovals, itemHash, type LayerModel, listApprovals } from "../lib/approval-hash.ts";
 import type { CommandSpec } from "../lib/command.ts";
+import { sourceWeekStart, type WeekDay } from "../lib/compiler/calendar.ts";
 import { approvedIssues, describedProblem, metricProblems, modelProblems } from "../lib/approve-checks.ts";
 import { bool, list, str, type CommandContext, type OptionValues } from "../lib/command.ts";
 import { locate } from "../lib/edit.ts";
@@ -74,6 +75,15 @@ function sourceDialect(root: string, source: string): Dialect | undefined {
   }
   const d = config?.dialect;
   return typeof d === "string" && (DIALECTS as readonly string[]).includes(d) ? d : undefined;
+}
+
+// The day a source's weeks start, when it is not Monday: part of the hash of a week-grain dimension.
+function sourceWeek(root: string, source: string): WeekDay | undefined {
+  try {
+    return sourceWeekStart(readYamlIfExists<SourceConfig>(paths(root).source(source)));
+  } catch {
+    return undefined;
+  }
 }
 
 // Finds the other models of a source by name, for the second hop of a join reference.
@@ -302,7 +312,7 @@ function projectEntries(root: string): { file: string; entries: ApprovalEntry[] 
     const file = paths(root).model(source, name);
     const model = readYaml<Model>(file);
     if (!model || typeof model !== "object") continue;
-    models.push({ source, model: { ...model, model: name }, file, lookup: modelLookup(root, source), dialect: sourceDialect(root, source) });
+    models.push({ source, model: { ...model, model: name }, file, lookup: modelLookup(root, source), dialect: sourceDialect(root, source), weekStart: sourceWeek(root, source) });
   }
   const metricsFile = paths(root).metrics;
   const metrics = existsSync(metricsFile) ? loadMetrics(root)?.metrics : undefined;
@@ -659,7 +669,7 @@ const spec: CommandSpec = {
         const base = `${target.source}.${target.model}`;
         const lookup = modelLookup(ctx.root, target.source);
         const dialect = sourceDialect(ctx.root, target.source);
-        const scope = { source: target.source, model: obj(model), lookup, dialect };
+        const scope = { source: target.source, model: obj(model), lookup, dialect, weekStart: sourceWeek(ctx.root, target.source) };
         const hash = (kind: "dimension" | "measure" | "join", item: unknown) => itemHash(kind, obj(item), scope);
         const modelHash = itemHash("model", obj(model), { source: target.source });
         if (!revoke && !isSettled(model, modelHash)) problems.push(...modelProblems(base, model).map((text) => ({ target: base, text })));
@@ -701,6 +711,7 @@ const spec: CommandSpec = {
           model: obj(model),
           lookup: modelLookup(ctx.root, target.source),
           dialect: sourceDialect(ctx.root, target.source),
+          weekStart: sourceWeek(ctx.root, target.source),
         });
         const changing = consider(full, [section, match.index], match.item, hash);
         if (changing && !revoke) {

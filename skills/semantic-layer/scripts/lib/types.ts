@@ -83,6 +83,7 @@ export interface SourceConfig {
   profile?: SourceProfileSettings;
   draft?: { strip_prefixes?: string[] };
   cross_schema?: import("./schema-scope.ts").CrossSchemaPair[];
+  calendar?: { week_start?: import("./compiler/calendar.ts").WeekDay };
 }
 
 // Snapshot
@@ -204,6 +205,7 @@ export interface Measure extends Approval {
   tags?: string[];
   // Names of segments of the model whose filters narrow this measure, ANDed with filter (lib/segments.ts).
   segments?: string[];
+  default_time_dimension?: string;
 }
 
 export interface JoinKey {
@@ -259,6 +261,7 @@ export interface Model extends Approval {
   measures: Measure[];
   joins?: Join[];
   segments?: import("./segments.ts").Segment[];
+  default_time_dimension?: string;
 }
 
 // Metrics

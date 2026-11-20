@@ -1,6 +1,7 @@
 // Metric semantics (spec: Metric semantics): a model's segments have unique names and filters
-// checked as a measure filter is, a measure names only segments its model declares, and a golden's
-// request names only segments that exist.
+// checked as a measure filter is, a measure names only segments its model declares, a golden's
+// request names only segments that exist, and a default_time_dimension names a time dimension of
+// its model.
 import { parseRequestField } from "../refs.ts";
 import { modelSegments, segmentNames } from "../segments.ts";
 import { readsText, sqlTextProblem } from "../sql-text.ts";
@@ -29,6 +30,16 @@ export default function metric(ctx: RuleContext): void {
         if (problem) ctx.error(file, `${path}.filter`, problem, "expr.not_one_expression");
         else ctx.checkSqlRefs(file, `${path}.filter`, seg.filter, model, "measure filter");
       });
+      const defaults: [string, unknown][] = [["default_time_dimension", model.default_time_dimension]];
+      (Array.isArray(model.measures) ? model.measures : []).forEach((m, i) => defaults.push([`measures[${i}].default_time_dimension`, m.default_time_dimension]));
+      for (const [path, name] of defaults) {
+        if (typeof name !== "string") continue;
+        const dim = (Array.isArray(model.dimensions) ? model.dimensions : []).find((d) => d.name === name);
+        const times = (Array.isArray(model.dimensions) ? model.dimensions : []).filter((d) => d.type === "time").map((d) => d.name);
+        const fix = times.length ? `name one of its time dimensions (${times.join(", ")})` : "add a time dimension to the model first";
+        if (!dim) ctx.error(file, path, `names ${name}, which is not a dimension of model ${model.model}; ${fix}, or remove the key`, "metric.default_time_unknown");
+        else if (dim.type !== "time") ctx.error(file, path, `names ${name}, a ${dim.type} dimension; a default time dimension is type: time, so ${fix}, or remove the key`, "metric.default_time_not_time");
+      }
       const declared = new Set(modelSegments(model).map((s) => s.name));
       (Array.isArray(model.measures) ? model.measures : []).forEach((m, i) => {
         segmentNames(m).forEach((name, k) => {

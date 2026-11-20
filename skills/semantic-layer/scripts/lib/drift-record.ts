@@ -92,7 +92,8 @@ function latestYes(replies: LedgerReply[], target: string): string | null {
 
 // The dimensions and measures of a source's models as they now stand, by approve target. A model or
 // field that cannot be read as a mapping with a name is left out. A ledger that cannot be read
-// counts as having no yes.
+// counts as having no yes. The hashes here are private to the drift record (both sides of its comparison
+// come from this function), so a week start is not passed: they are not compared with an approved_hash.
 export function fieldsNow(root: string, source: string, models: readonly Model[], dialect: Dialect | undefined): Map<string, FieldNow> {
   const named = models.filter((m) => m && typeof m === "object" && typeof m.model === "string");
   const byName = new Map(named.map((m) => [m.model, m]));

@@ -46,6 +46,7 @@ import { type Condition, evaluateCondition, parseCondition } from "./conditions.
 import { matchesDotted, validatePattern } from "./patterns.ts";
 import { listSourceNames, loadSource, paths } from "./project.ts";
 import { parseRequestField } from "./refs.ts";
+import { sourceWeekStart, type WeekDay } from "./compiler/calendar.ts";
 import type { AccessMode, Dialect, JoinKey, Metric, Model, QueryRequest } from "./types.ts";
 import { DIALECTS, PROTECTED_TAGS, TO_ONE_RELATIONSHIPS } from "./types.ts";
 import { sqlNames } from "./validate.ts";
@@ -266,6 +267,8 @@ export interface AccessLayer {
   skipped?: SkippedEntry[];
   // Each source's dialect, used to read row filter SQL; a source without one is read generically.
   dialects?: Record<string, Dialect>;
+  // The day each source's weeks start, when it is not Monday (sourceWeekStart), for approval hashes.
+  week_starts?: Record<string, WeekDay>;
   // The sources the project lists; each is reported, even with no models or metrics.
   sources?: string[];
   // false skips the approved_hash comparison, so no item is treated as changed or missing: set by
@@ -547,11 +550,15 @@ export function loadAccessLayer(root: string): AccessLayer {
   const skipped: SkippedEntry[] = [];
   const models: Model[] = [];
   const dialects: Record<string, Dialect> = {};
+  const weekStarts: Record<string, WeekDay> = {};
   const sources = listSourceNames(root);
   for (const source of sources) {
     try {
-      const d = loadSource(root, source).dialect;
+      const config = loadSource(root, source);
+      const d = config.dialect;
       if ((DIALECTS as readonly string[]).includes(d)) dialects[source] = d;
+      const w = sourceWeekStart(config);
+      if (w) weekStarts[source] = w;
     } catch {
       // A source file that cannot be read leaves its row filter SQL read generically.
     }
@@ -591,7 +598,7 @@ export function loadAccessLayer(root: string): AccessLayer {
       access = undefined;
     }
   }
-  return { models, metrics, access, access_present: accessPresent, skipped, dialects, sources };
+  return { models, metrics, access, access_present: accessPresent, skipped, dialects, ...(Object.keys(weekStarts).length ? { week_starts: weekStarts } : {}), sources };
 }
 
 // --- evaluation ----------------------------------------------------------------------------
@@ -898,7 +905,7 @@ function unapprovedApprovals(layer: AccessLayer): { items: Map<unknown, "changed
   }
   const entries = itemApprovals(
     listApprovals({
-      models: layer.models.map((m) => ({ source: m.source, model: m, lookup: (name: string) => bySource.get(m.source)?.get(name), dialect: layer.dialects?.[m.source] })),
+      models: layer.models.map((m) => ({ source: m.source, model: m, lookup: (name: string) => bySource.get(m.source)?.get(name), dialect: layer.dialects?.[m.source], weekStart: layer.week_starts?.[m.source] })),
       metrics: layer.metrics,
       access: layer.access_present ? layer.access : undefined,
     }),
