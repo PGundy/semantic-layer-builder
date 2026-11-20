@@ -5,7 +5,8 @@
 import { type JoinFinding, nounForms } from "./joins.ts";
 import { plainText } from "./output.ts";
 import type { ThroughEvidence } from "./sql/through-check.ts";
-import type { Join, JoinKey } from "./types.ts";
+import { parseRequestField } from "./refs.ts";
+import type { Join, JoinKey, Model, QueryRequest } from "./types.ts";
 
 const flat = (v: unknown) => plainText(String(v)).replace(/\s+/g, " ").trim();
 const num = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -114,4 +115,18 @@ export function throughFindings(from: string, j: Join, ev: ThroughEvidence): Joi
     out.push({ level: "warn", message: `${num(ev.rows_without_fact)} ${bridge} rows name no ${fact} row and ${num(ev.rows_without_target)} name no ${target} row; ask the owner whether ${bridge} keeps rows the other tables have lost.` });
   if (ev.duplicate_rows) out.push({ level: "info", message: `${num(ev.duplicate_rows)} ${bridge} rows repeat a pair; the dedupe rule decides how they count.` });
   return out;
+}
+
+// A golden's request grouped by a field of a bridge join's target, in words: for each bridge join of the
+// request's model to a model it groups by, the join and what its dedupe rule does to the figures.
+export function goldenBridgeWords(request: Pick<QueryRequest, "measures" | "dimensions">, lookup: (model: string) => Model | undefined): string[] {
+  const model = (ref: unknown) => (typeof ref === "string" ? parseRequestField(ref)?.model : undefined);
+  const measures = Array.isArray(request.measures) ? request.measures : [];
+  const base = measures.map(model).find((m) => m !== undefined);
+  const from = base ? lookup(base) : undefined;
+  if (!from) return [];
+  const grouped = new Set((Array.isArray(request.dimensions) ? request.dimensions : []).map(model));
+  return (Array.isArray(from.joins) ? from.joins : [])
+    .filter((j) => j?.through && grouped.has(j.to))
+    .map((j) => `- Grouped through the bridge join ${flat(from.model)}.${flat(j.name)}: ${dedupeWords(from.model, j).join(" ")}`);
 }

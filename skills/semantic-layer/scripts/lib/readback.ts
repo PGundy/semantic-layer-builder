@@ -24,7 +24,7 @@ import type { Dialect, FigureEvidence, Golden, Join, Metric, Model, PendingReadb
 import { DIALECTS, NAME_PATTERN, PROTECTED_TAGS } from "./types.ts";
 import { conditionWords, parseCondition } from "./conditions.ts";
 import { readYamlIfExists } from "./yaml.ts";
-import { bridgeDefinition, bridgeSql, throughCurrent, throughLines } from "./readback-bridge.ts";
+import { bridgeDefinition, bridgeSql, goldenBridgeWords, throughCurrent, throughLines } from "./readback-bridge.ts";
 
 export const PENDING_DIR = join(".semlayer", "pending");
 // A readback's file, or the marker semlayer readback --discard leaves in its place so its id is never issued again.
@@ -807,7 +807,7 @@ function rowsFrom(g: Golden, run: GoldenRun): string {
   return "Its SQL returns now";
 }
 
-function renderGolden(g: Golden, run: GoldenRun): string[] {
+function renderGolden(g: Golden, run: GoldenRun, bridges: string[] = []): string[] {
   const user = isObj(g.user) && Object.keys(g.user).length ? ` with user attributes ${flat(JSON.stringify(g.user))}` : "";
   const role = typeof g.role === "string" ? `role ${g.role}` : "no role of its own (access.yaml's default role, or the default audience)";
   const n = run.rows.length;
@@ -819,6 +819,7 @@ function renderGolden(g: Golden, run: GoldenRun): string[] {
     `golden:${g.name} (golden)`,
     ...quoted("", "question, from the YAML", String(g.question ?? "")),
     ...requestWords(g),
+    ...bridges,
     `- Runs as ${role}${user}.`,
     ...(typeof g.reference === "string" && g.reference.trim()
       ? quoted("", "figure the owner trusts (reference), from the YAML", g.reference)
@@ -896,7 +897,8 @@ export function renderReadbacks(
         if (!g) throw unknown(ref, `there is no goldens/${t.name}.yaml`);
         const run = goldens.get(t.name);
         if (!run) throw new UserError(`${ref} is read back with the rows its request compiles to: run semlayer readback --targets ${ref}.`);
-        const text = renderGolden(g, run).join("\n");
+        const source = isObj(g.request) && typeof g.request.source === "string" ? g.request.source : undefined;
+        const text = renderGolden(g, run, source ? goldenBridgeWords(g.request, info(source).lookup) : []).join("\n");
         return { target: ref, text, content_hash: goldenHash(g as unknown as Obj, run.rows, run.tolerance) };
       }
       case "access": {
