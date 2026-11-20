@@ -18,9 +18,11 @@ import { EvalError, NotRun, type StopReason } from "./runner/types.ts";
 
 // One fixture, two personas.
 export const SMOKE_SCENARIOS = ["acme-structured", "acme-terse"] as const;
-// The PostgreSQL scenario joins the subset when its URL variable is set; otherwise the smoke says it
+// The PostgreSQL scenarios join the subset when their URL variable is set; otherwise the smoke says each
 // was not run, compares nothing for it and keeps its baseline entry as it is.
 export const PG_SMOKE_SCENARIO = "acme-pg-structured";
+export const PG_NOISY_SCENARIO = "acme-noisy-200";
+export const PG_SMOKE_SCENARIOS = [PG_SMOKE_SCENARIO, PG_NOISY_SCENARIO] as const;
 // Graders that measure and never fail: recorded in the baseline's `effort`, never compared.
 export const REPORT_ONLY_GRADERS = new Set(["effort"]);
 // The effort metrics the baseline records: every one but the per-item and per-role token figures,
@@ -307,7 +309,7 @@ export async function main(argv: string[], io: SmokeIO): Promise<number> {
     const run = io.runOne ?? runOne;
     const observed: Observed[] = [];
     const notRun: { scenario: string; why: string }[] = [];
-    for (const name of [...SMOKE_SCENARIOS, PG_SMOKE_SCENARIO]) {
+    for (const name of [...SMOKE_SCENARIOS, ...PG_SMOKE_SCENARIOS]) {
       const o: Observed = { scenario: name, runs: [] };
       try {
         for (let i = 0; i < runs; i++) {

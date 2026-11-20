@@ -99,6 +99,7 @@
     {
       "text": "Approved all eight on your yes. To check the numbers, I wrote two draft goldens and ran them:\n\n1. revenue_2025: revenue in 2025, test accounts left out: $301,050.82.\n2. order_count_2025: orders counted in 2025: 2,239.\n\nDo both match your own reports? If they do, how much may they drift between runs before I flag it? I suggest 0.\n\nStop here or continue?",
       "write": {
+        "answers/approve-1.json": "{\n  \"by\": \"Dana Ruiz\",\n  \"answers\": [\n    {\n      \"items\": [\n        1,\n        2,\n        3,\n        4,\n        5,\n        6,\n        7,\n        8\n      ],\n      \"verdict\": \"yes\",\n      \"text\": \"Yes, all eight match how we count orders and who the test accounts are. Approve them.\"\n    }\n  ]\n}\n",
         "edits/interview-2.json": "{\n  \"edits\": [\n    [\n      \"goldens\",\n      \"new\",\n      \"--name\",\n      \"revenue_2025\",\n      \"--question\",\n      \"What was revenue in 2025?\",\n      \"--request\",\n      \"{\\\"source\\\": \\\"warehouse\\\", \\\"measures\\\": [\\\"orders.revenue\\\"], \\\"filters\\\": [{\\\"field\\\": \\\"orders.order_date\\\", \\\"op\\\": \\\"gte\\\", \\\"value\\\": \\\"2025-01-01\\\"}, {\\\"field\\\": \\\"orders.order_date\\\", \\\"op\\\": \\\"lt\\\", \\\"value\\\": \\\"2026-01-01\\\"}]}\"\n    ],\n    [\n      \"goldens\",\n      \"new\",\n      \"--name\",\n      \"order_count_2025\",\n      \"--question\",\n      \"How many orders were there in 2025?\",\n      \"--request\",\n      \"{\\\"source\\\": \\\"warehouse\\\", \\\"measures\\\": [\\\"orders.order_count\\\"], \\\"filters\\\": [{\\\"field\\\": \\\"orders.order_date\\\", \\\"op\\\": \\\"gte\\\", \\\"value\\\": \\\"2025-01-01\\\"}, {\\\"field\\\": \\\"orders.order_date\\\", \\\"op\\\": \\\"lt\\\", \\\"value\\\": \\\"2026-01-01\\\"}]}\"\n    ],\n    [\n      \"set\",\n      \"golden:revenue_2025\",\n      \"reference\",\n      \"To compare with Dana Ruiz's revenue report for 2025: completed and shipped orders, test accounts left out, in US dollars.\"\n    ],\n    [\n      \"set\",\n      \"golden:order_count_2025\",\n      \"reference\",\n      \"To compare with Dana Ruiz's order count for 2025, by the same rules as revenue.\"\n    ]\n  ]\n}\n"
       },
       "semlayer": [
@@ -106,112 +107,9 @@
           "reply",
           "--readback",
           "rb_0001",
-          "--item",
-          "1",
-          "--text",
-          "Yes, all eight match how we count orders and who the test accounts are. Approve them.",
-          "--verdict",
-          "yes",
-          "--by",
-          "Dana Ruiz"
-        ],
-        [
-          "reply",
-          "--readback",
-          "rb_0001",
-          "--item",
-          "2",
-          "--text",
-          "Yes, all eight match how we count orders and who the test accounts are. Approve them.",
-          "--verdict",
-          "yes",
-          "--by",
-          "Dana Ruiz"
-        ],
-        [
-          "reply",
-          "--readback",
-          "rb_0001",
-          "--item",
-          "3",
-          "--text",
-          "Yes, all eight match how we count orders and who the test accounts are. Approve them.",
-          "--verdict",
-          "yes",
-          "--by",
-          "Dana Ruiz"
-        ],
-        [
-          "reply",
-          "--readback",
-          "rb_0001",
-          "--item",
-          "4",
-          "--text",
-          "Yes, all eight match how we count orders and who the test accounts are. Approve them.",
-          "--verdict",
-          "yes",
-          "--by",
-          "Dana Ruiz"
-        ],
-        [
-          "reply",
-          "--readback",
-          "rb_0001",
-          "--item",
-          "5",
-          "--text",
-          "Yes, all eight match how we count orders and who the test accounts are. Approve them.",
-          "--verdict",
-          "yes",
-          "--by",
-          "Dana Ruiz"
-        ],
-        [
-          "reply",
-          "--readback",
-          "rb_0001",
-          "--item",
-          "6",
-          "--text",
-          "Yes, all eight match how we count orders and who the test accounts are. Approve them.",
-          "--verdict",
-          "yes",
-          "--by",
-          "Dana Ruiz"
-        ],
-        [
-          "reply",
-          "--readback",
-          "rb_0001",
-          "--item",
-          "7",
-          "--text",
-          "Yes, all eight match how we count orders and who the test accounts are. Approve them.",
-          "--verdict",
-          "yes",
-          "--by",
-          "Dana Ruiz"
-        ],
-        [
-          "reply",
-          "--readback",
-          "rb_0001",
-          "--item",
-          "8",
-          "--text",
-          "Yes, all eight match how we count orders and who the test accounts are. Approve them.",
-          "--verdict",
-          "yes",
-          "--by",
-          "Dana Ruiz"
-        ],
-        [
-          "approve",
-          "--readback",
-          "rb_0001",
-          "--by",
-          "Dana Ruiz"
+          "--answers",
+          "answers/approve-1.json",
+          "--approve"
         ],
         [
           "apply",
@@ -252,47 +150,9 @@
           "reply",
           "--readback",
           "rb_0002",
-          "--item",
-          "1",
-          "--text",
-          "Yes, both are right: $301,050.82 of revenue from 2,239 orders in 2025, with a tolerance of 0. Approve them.",
-          "--verdict",
-          "yes",
-          "--by",
-          "Dana Ruiz"
-        ],
-        [
-          "reply",
-          "--readback",
-          "rb_0002",
-          "--item",
-          "2",
-          "--text",
-          "Yes, both are right: $301,050.82 of revenue from 2,239 orders in 2025, with a tolerance of 0. Approve them.",
-          "--verdict",
-          "yes",
-          "--by",
-          "Dana Ruiz"
-        ],
-        [
-          "goldens",
-          "confirm",
-          "--name",
-          "revenue_2025",
-          "--by",
-          "Dana Ruiz",
-          "--tolerance",
-          "0"
-        ],
-        [
-          "goldens",
-          "confirm",
-          "--name",
-          "order_count_2025",
-          "--by",
-          "Dana Ruiz",
-          "--tolerance",
-          "0"
+          "--answers",
+          "answers/approve-2.json",
+          "--approve"
         ],
         [
           "goldens",
@@ -304,7 +164,10 @@
         [
           "status"
         ]
-      ]
+      ],
+      "write": {
+        "answers/approve-2.json": "{\n  \"by\": \"Dana Ruiz\",\n  \"answers\": [\n    {\n      \"items\": [\n        1,\n        2\n      ],\n      \"verdict\": \"yes\",\n      \"text\": \"Yes, both are right: $301,050.82 of revenue from 2,239 orders in 2025, with a tolerance of 0. Approve them.\"\n    }\n  ]\n}\n"
+      }
     }
   ],
   "owner": [

@@ -21,7 +21,7 @@
         "not": { "anyOf": [{ "required": ["views"] }, { "required": ["database"] }] }
       },
       "else": {
-        "not": { "anyOf": [{ "required": ["schema"] }, { "required": ["url_env"] }] },
+        "not": { "anyOf": [{ "required": ["schema"] }, { "required": ["url_env"] }, { "required": ["tables"] }, { "required": ["decoys"] }] },
         "if": { "properties": { "path": { "const": "connection" } } },
         "then": { "anyOf": [{ "required": ["views"] }, { "required": ["database"] }] },
         "else": { "required": ["views"], "not": { "required": ["database"] } }
@@ -44,6 +44,18 @@
           "type": "string",
           "pattern": "^[A-Z][A-Z0-9_]*$",
           "description": "postgres only: the name of the environment variable holding the connection URL of an administrator who may create and drop schemas, such as PG_URL. The scenario is not run when it is unset. Only the name is ever written."
+        },
+        "tables": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "description": "postgres only: the fixture's warehouse tables to load, with their data, instead of all of them."
+        },
+        "decoys": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*(/[a-z0-9_-][a-z0-9_.-]*)*\\.sql$",
+          "description": "postgres only: a SQL script, relative to the repository's fixtures/ directory, run in the run's schema after the tables are loaded, such as noisy/decoys.sql, whose empty look-alike tables the scope has to leave out."
         },
         "views": {
           "type": "object",

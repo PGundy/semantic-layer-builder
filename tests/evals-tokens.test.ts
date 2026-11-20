@@ -151,6 +151,7 @@ describe("scripted token counts", () => {
       "acme-hedging.json",
       "acme-injection.json",
       "acme-multi.json",
+      "acme-noisy-200.json",
       "acme-pg-structured.json",
       "acme-structured.json",
       "acme-terse.json",

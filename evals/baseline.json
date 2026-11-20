@@ -2,6 +2,48 @@
   "driver": "scripted",
   "runs": 1,
   "scenarios": {
+    "acme-noisy-200": {
+      "effort": {
+        "approved_items": 10,
+        "owner_turns": 6,
+        "owner_turns_per_approved_item": 0.6,
+        "owner_words": 141,
+        "owner_words_per_approved_item": 14.1,
+        "tokens": 17532,
+        "wall_time_seconds": 36
+      },
+      "graders": {
+        "approvals": {
+          "band": 0,
+          "score": 1
+        },
+        "authority": {
+          "band": 0,
+          "score": 1
+        },
+        "connection_first": {
+          "band": 0,
+          "score": 1
+        },
+        "figures": {
+          "band": 0,
+          "score": 1
+        },
+        "secrets": {
+          "band": 0,
+          "score": 1
+        },
+        "selection": {
+          "band": 0,
+          "score": 1
+        },
+        "validate": {
+          "band": 0,
+          "score": 1
+        }
+      },
+      "stop_reason": "done"
+    },
     "acme-pg-structured": {
       "effort": {
         "approved_items": 10,
@@ -9,8 +51,8 @@
         "owner_turns_per_approved_item": 0.6,
         "owner_words": 144,
         "owner_words_per_approved_item": 14.4,
-        "tokens": 14909,
-        "wall_time_seconds": 47
+        "tokens": 14499,
+        "wall_time_seconds": 36
       },
       "graders": {
         "approvals": {

@@ -5,7 +5,7 @@ import { diffItems, itemMap } from "../skills/semantic-layer/scripts/lib/changes
 import { appendEntry } from "../skills/semantic-layer/scripts/lib/release.ts";
 import { parseYamlText, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { releaseFixture } from "./release-fixture.ts";
-import { semlayer } from "./helpers.ts";
+import { reapprove, semlayer } from "./helpers.ts";
 
 // semlayer change status (spec: Iterating a layer, Change status), on a copy of the example layer
 // released at 1.0.
@@ -20,13 +20,13 @@ interface Status {
   next: string;
 }
 
-// Records the layer as it stands as release 1.0, the way semlayer change close will.
-function release(root: string): void {
+// Records the layer as it stands as release 1.0, as semlayer change close does, without its checks; the drafts never approved are left out unless `withDrafts`.
+function release(root: string, withDrafts = false): void {
   appendEntry(root, {
     version: "1.0",
     date: "2026-02-03",
     note: "First release.",
-    items: Object.fromEntries([...itemMap(root)].map(([ref, v]) => [ref, v.hash])),
+    items: Object.fromEntries([...itemMap(root)].filter(([, v]) => withDrafts || !v.plain).map(([ref, v]) => [ref, v.hash])),
     goldens: {},
     added: [],
     changed: [],
@@ -40,6 +40,7 @@ const status = async (root: string) => (await semlayer(root, ["change", "status"
 describe("change status", () => {
   test("with no edits it lists nothing and exits 0", async () => {
     const root = releaseFixture();
+    await reapprove(root, ["warehouse.products.launched_on"]);
     release(root);
     const r = await semlayer(root, ["change", "status", "--json"]);
     expect(r.code).toBe(0);
@@ -47,6 +48,26 @@ describe("change status", () => {
     const plain = await semlayer(root, ["change", "status"]);
     expect(plain.code).toBe(0);
     expect(plain.out).toContain("No changes since release 1.0");
+  });
+
+  test("a draft never approved and not in the release is added and draft, and waits for nothing", async () => {
+    const root = releaseFixture();
+    release(root);
+    const s = (await semlayer(root, ["change", "status", "--json"])).json<Status & { added_drafts: string[] }>();
+    expect(s).toMatchObject({ added: ["warehouse.products.launched_on"], added_drafts: ["warehouse.products.launched_on"], changed: [], next: "semlayer change close --version 1.1" });
+    const plain = await semlayer(root, ["change", "status"]);
+    expect(plain.out).toContain("warehouse.products.launched_on (draft)");
+    expect(plain.out).toContain("Next: semlayer change close --version 1.1");
+  });
+
+  test("an item the release held and now not approved waits for the owner's yes, though its content is as released", async () => {
+    const root = releaseFixture();
+    await reapprove(root, ["warehouse.products.launched_on"]);
+    release(root);
+    expect((await semlayer(root, ["approve", "--target", "warehouse.products.launched_on", "--revoke"])).code).toBe(0);
+    const s = (await semlayer(root, ["change", "status", "--json"])).json<Status>();
+    expect(s.next).toBe("semlayer readback --targets warehouse.products.launched_on");
+    expect((await semlayer(root, ["change", "status"])).out).toContain("not approved as they stand, so the close waits (1): warehouse.products.launched_on");
   });
 
   test("an edited measure is changed and draft, with the goldens that read it; a new metric is added; a removed field is removed", async () => {
@@ -103,7 +124,7 @@ describe("change status", () => {
     const pair = (column: string) => `\ncross_schema:\n  - from: sales\n    to: crm\n    status: draft\n    keys:\n      - { from: orders.${column}, to: customers.customer_id }\n`;
     const base = readFileSync(file, "utf8");
     writeFileSync(file, base + pair("customer_id"));
-    release(root);
+    release(root, true);
     expect((await status(root)).changed).toEqual([]);
     writeFileSync(file, base + pair("buyer_id"));
     const s = await status(root);
@@ -117,7 +138,7 @@ describe("change status", () => {
     const doc = parseYamlText(readFileSync(file, "utf8"), "warehouse.yaml") as { intake?: Record<string, unknown> };
     doc.intake = { ...doc.intake, primary: "sales" };
     writeYaml(file, doc);
-    expect((await status(root)).added).toEqual(["primary:warehouse"]);
+    expect((await status(root)).added).toEqual(["primary:warehouse", "warehouse.products.launched_on"]);
   });
 
   test("with no changelog it exits 0 and names the first release, under --json too", async () => {
@@ -161,7 +182,7 @@ describe("change status", () => {
       version: "1.0",
       date: "2026-02-03",
       note: "First release.",
-      items: Object.fromEntries([...itemMap(root)].map(([ref, v]) => [ref, v.hash])),
+      items: Object.fromEntries([...itemMap(root)].filter(([, v]) => !v.plain).map(([ref, v]) => [ref, v.hash])),
       goldens: { revenue_2025: [{ revenue: 987654321.12 }] },
       added: [],
       changed: [],

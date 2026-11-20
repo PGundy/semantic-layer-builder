@@ -21,19 +21,42 @@ export interface ItemDiff {
   removed: string[];
 }
 
+// An item's content hash and approval state. `approved` is true when its approval matches its content.
+// `plain` is true for a draft that carries no trace of an approval (never approved, or revoked).
+export interface ItemState {
+  hash: string;
+  approved: boolean;
+  plain: boolean;
+}
+
+// Whether a release leaves the item out instead of waiting for it: it is a plain draft and the last
+// release (its `items`, none before the first) holds no entry for it. Every other item that is not approved
+// as it stands (edited since its approval, approved without a hash, a draft that carries an approval's
+// trace, or a draft the last release held) blocks the close.
+export function leftOut(ref: string, v: ItemState, baseline: Record<string, string>): boolean {
+  return !v.approved && v.plain && !Object.hasOwn(baseline, ref);
+}
+
+// Whether semlayer next lets the close go ahead without the item: the close leaves it out (leftOut) and it was
+// already a draft when the round started, so the owner deferred it. `atStart` is the round's drafts_at_start,
+// or null when no round is open. A draft created in the round is read back before the close is offered.
+export function deferredAtStart(ref: string, v: ItemState, baseline: Record<string, string>, atStart: string[] | null): boolean {
+  return leftOut(ref, v, baseline) && (atStart === null || atStart.includes(ref));
+}
+
 // Ref to content hash and approval state of every item now: models, fields, joins, metrics, access,
 // schema pairs (schema-pair:<source>:<from>:<to>) and each source's primary schema
 // (primary:<source>, when intake.primary is set, hashed over its name). Goldens are left out; a changelog records their rows.
-export function itemMap(root: string): Map<string, { hash: string; approved: boolean }> {
-  const out = new Map<string, { hash: string; approved: boolean }>();
+export function itemMap(root: string): Map<string, ItemState> {
+  const out = new Map<string, ItemState>();
   for (const [ref, t] of statusDetail(root).targets) {
     if (ref.startsWith("golden:")) continue;
-    out.set(ref, { hash: t.hash, approved: t.state === "current" || t.state === "unhashed" });
+    out.set(ref, { hash: t.hash, approved: t.state === "current" || t.state === "unhashed", plain: t.state === "draft" && !t.stamped });
   }
   for (const name of listSourceNames(root)) {
     const explicit = loadSource(root, name).intake?.primary;
     const primary = typeof explicit === "string" ? explicit.trim() : "";
-    if (primary) out.set(`primary:${name}`, { hash: `sha256:${createHash("sha256").update(JSON.stringify({ kind: "primary", source: name, schema: primary })).digest("hex")}`, approved: true });
+    if (primary) out.set(`primary:${name}`, { hash: `sha256:${createHash("sha256").update(JSON.stringify({ kind: "primary", source: name, schema: primary })).digest("hex")}`, approved: true, plain: false });
   }
   return out;
 }

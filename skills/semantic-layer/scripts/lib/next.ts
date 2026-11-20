@@ -3,11 +3,12 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { approvalLacks, type Lack, lacksFile, lacksNote } from "./approve-checks.ts";
-import { releaseLead } from "./change-record.ts";
+import { loadChange, releaseLead } from "./change-record.ts";
 import { inTurnApply } from "./edit.ts";
 import { type Env, resolveConnection } from "./env-file.ts";
 import { intakeMode } from "./intake.ts";
 import { latestReply, openAccessChanges } from "./ledger.ts";
+import { deferredAtStart } from "./changeset.ts";
 import { loadChangelog } from "./release.ts";
 import { plainText } from "./output.ts";
 import { PLAN_ID_PATTERN, planStatus, loadStoredPlan } from "./plan.ts";
@@ -87,7 +88,7 @@ function fromAction(a: StepAction | NextStepAction, phase: string, why: string, 
 
 const REPLY = (id: string) => `semlayer reply --readback ${id} --item <n> --text "<owner's words>" --verdict yes|no|change --by "<owner>"`;
 const EDITS =
-  "a typed edit (semlayer set, semlayer tag, semlayer ignore-column, semlayer question add, semlayer add-field, semlayer remove-field, semlayer add-metric, semlayer remove-metric, semlayer add-join, semlayer add-bridge, semlayer remove-join or semlayer rename), " +
+  "a typed edit (semlayer set, semlayer tag, semlayer ignore-column, semlayer question add, semlayer add-field, semlayer remove-field, semlayer add-metric, semlayer remove-metric, semlayer add-join, semlayer add-bridge, semlayer remove-join, semlayer add-segment, semlayer remove-segment or semlayer rename), " +
   "every edit of the owner's turn as one entry of one semlayer apply --file -";
 // Who sees an item is decided once, in the access phase, so a change to it never holds the item.
 const ABOUT_ACCESS = "--verdict change --about access";
@@ -432,15 +433,16 @@ function fromStatus(root: string, d: StatusDetail): NextAction {
 }
 
 // Phase change: while a change round is open and every earlier phase is complete, the next step per
-// item the round left to read back (added or changed since the last release, and not approved), up to
-// BACKFILL_BATCH in one readback, then the close with a version the owner chooses. semlayer change close
-// is the last step of a round; its action is ask_owner, the kind for a command that waits on an
-// answer, so the step does not claim the command runs before the owner has named a version.
+// item the round left to read back (not approved as it stands, except a draft the owner deferred: one never approved
+// and not in the last release that was already a draft when the round started, which the close leaves out), up to
+// BACKFILL_BATCH in one readback, then the close, semlayer change close, with the next minor above the
+// release as the version; the owner chooses the version, so why says to ask them before running it.
 function changeAction(root: string, d: StatusDetail, step: ProjectStatus["next_step"], blocked_on: string | null): NextAction {
   const last = loadChangelog(root).log?.entries.at(-1);
   const baseline = last?.items ?? {};
+  const atStart = loadChange(root).change?.drafts_at_start ?? [];
   const pending = [...d.targets]
-    .filter(([ref, t]) => !ref.startsWith("golden:") && t.state !== "current" && t.state !== "unhashed" && baseline[ref] !== t.hash)
+    .filter(([ref, t]) => !ref.startsWith("golden:") && t.state !== "current" && t.state !== "unhashed" && !deferredAtStart(ref, { hash: t.hash, approved: false, plain: t.state === "draft" && !t.stamped }, baseline, atStart))
     .map(([ref]) => ref)
     .sort();
   if (pending.length) {
@@ -455,16 +457,18 @@ function changeAction(root: string, d: StatusDetail, step: ProjectStatus["next_s
   }
   const [major, minor] = (last?.version ?? "1.-1").split(".").map(Number) as [number, number];
   const suggested = `${major}.${minor + 1}`;
-  const ask =
-    `The change is ready to release${last ? `; the layer is at ${last.version}` : ""}. Which version should it be? I suggest ${suggested}` +
-    `${last ? ` (a large change could be ${major + 1}.0)` : ""}; say if you prefer another.`;
+  const left = [...d.targets].filter(([ref, t]) => !ref.startsWith("golden:") && deferredAtStart(ref, { hash: t.hash, approved: false, plain: t.state === "draft" && !t.stamped }, baseline, atStart)).map(([ref]) => ref).sort();
+  const leftText = left.length
+    ? ` Drafts the owner deferred, which the release leaves out (${left.length}): ${left.slice(0, BACKFILL_BATCH).join(", ")}${left.length > BACKFILL_BATCH ? ", and more" : ""}; name them to the owner, who can approve any of them first to have it in this release.`
+    : "";
   return fromAction(
-    act("change", ["close", "--version", "<version>"], "ask_owner"),
+    act("change", ["close", "--version", suggested]),
     "change",
-    `${step.message} Every item the round changed is approved. The last step closes the round with a version the owner chooses: semlayer change close --version <version> ` +
-      "records the release and its changelog entry. That command is not available in this version of semlayer yet, so tell the owner the change is ready and the version you suggest, and stop there.",
+    `${step.message} Every item the round added or changed is approved; a draft the owner deferred before the round stays out of the release, and the summary to the owner names it. The last step closes the round as a release with the version the owner chooses: ` +
+      `ask them first ("The change is ready to release${last ? `; the layer is at ${last.version}` : ""}. Which version should it be? I suggest ${suggested}` +
+      `${last ? ` (a large change could be ${major + 1}.0)` : ""}; say if you prefer another."), then run semlayer change close --version <their version>. ` +
+      "It records the release in changelog.yaml and sets layer_version, or refuses, naming each item, error or moved golden that must be settled first." + leftText,
     blocked_on,
-    ask,
   );
 }
 

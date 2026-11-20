@@ -2,6 +2,11 @@ import type { DocRule } from "./index.ts";
 
 // The metric-semantics rules the docs keep (workstream C): one phrase per rule.
 export const RULES: DocRule[] = [
+  ["spec.md", "a replaced segment sends an approved measure back, by name", "it is listed as changed since its approval, by name, in the command's output and `reapprove`"],
+  ["spec.md", "a removed segment is refused while named", "`remove-segment` refuses while a measure or a golden names the segment"],
+  ["spec.md", "the model readback lists its segments and their measures", "the readback of a model lists its segments, each with its conditions in words and the measures that name it"],
+  ["phases/metrics.md", "the metrics card asks which rows a segment keeps", "Which orders count as sales, and which figures does that apply to?"],
+  ["phases/metrics.md", "the metrics card names the segment commands", "`semlayer add-segment --source <s> --model <m> --name sales --filter"],
   ["spec.md", "weeks start on Monday unless the source sets another day", "A source's weeks start on Monday unless its file sets another day"],
   ["spec.md", "the week start takes the seven day names only", "`calendar.week_start` takes the seven day names in lower case and nothing else"],
   ["spec.md", "unset or monday compiles as before", "Unset, or `monday`, it compiles to `cast(date_trunc('week', <expr>) as date)` as before"],

@@ -6,12 +6,13 @@ import { join } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import type { ValidateFunction } from "ajv/dist/2020.js";
 import { UserError } from "./errors.ts";
-import type { Changelog, ChangelogEntry } from "./release-types.ts";
+import { valuesEqual } from "./goldens.ts";
+import type { Changelog, ChangelogEntry, GoldenMoved } from "./release-types.ts";
 import { SCHEMAS_DIR } from "./schema.ts";
 import { parseYamlText, writeYaml } from "./yaml.ts";
 
 export const CHANGELOG_FILE = "changelog.yaml";
-export const VERSION_PATTERN = /^(\d+)\.(\d+)$/;
+export const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 let validator: ValidateFunction | undefined;
 
@@ -75,4 +76,30 @@ export function appendEntry(root: string, entry: ChangelogEntry): void {
   const problem = check(next);
   if (problem) throw new UserError(`The changelog entry is not valid: ${problem}.`);
   writeYaml(join(root, CHANGELOG_FILE), next);
+}
+
+type Row = Record<string, unknown>;
+
+// The cell counts of a golden whose recorded rows differ between two releases (goldens_moved):
+// cells before, cells after, and cells that differ. Rows pair by their values in the grouping
+// columns when the caller passes any (an unordered golden's), else by position; a row with no partner counts every cell as
+// changed. Cells compare as goldens compare values, at tolerance 0: the rows are what confirm recorded.
+export function movedCells(before: Row[], after: Row[], grouping: string[]): Omit<GoldenMoved, "golden"> {
+  const cells = (rows: Row[]) => rows.reduce((n, r) => n + Object.keys(r).length, 0);
+  const lower = (r: Row) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k.toLowerCase(), v]));
+  const keys = grouping.map((c) => c.toLowerCase());
+  const keyOf = (r: Row, i: number) => (keys.length ? JSON.stringify(keys.map((k) => r[k] ?? null)) : String(i));
+  const was = new Map(before.map((r, i) => [keyOf(lower(r), i), lower(r)]));
+  let changed = 0;
+  const paired = new Set<string>();
+  after.forEach((raw, i) => {
+    const r = lower(raw);
+    const key = keyOf(r, i);
+    const old = paired.has(key) ? undefined : was.get(key);
+    paired.add(key);
+    const columns = new Set([...Object.keys(r), ...Object.keys(old ?? {})]);
+    for (const c of columns) if (!old || !(c in old) || !(c in r) || !valuesEqual(old[c], r[c], 0)) changed++;
+  });
+  for (const [key, r] of was) if (!paired.has(key)) changed += Object.keys(r).length;
+  return { before: cells(before), after: cells(after), changed };
 }
