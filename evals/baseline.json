@@ -36,6 +36,10 @@
         "selection": {
           "band": 0,
           "score": 1
+        },
+        "validate": {
+          "band": 0,
+          "score": 1
         }
       },
       "stop_reason": "done"
@@ -72,6 +76,10 @@
           "score": 1
         },
         "selection": {
+          "band": 0,
+          "score": 1
+        },
+        "validate": {
           "band": 0,
           "score": 1
         }
