@@ -6,7 +6,7 @@ import { quoteIdent } from "./dialect.ts";
 import { findTable, qualifiedName, toSpecName } from "./naming.ts";
 import { summarizeTable } from "./profile.ts";
 import { classifyTable } from "./rank.ts";
-import { crossesSchema, referencedSchema } from "./schema-scope.ts";
+import { type CrossSchemaPair, crossesSchema, findPair, referencedSchema } from "./schema-scope.ts";
 import { nearUnique, PII_NAME, sensitivityOf } from "./sensitivity.ts";
 import { incomingKeyColumns, referencedColumns, sqlIdentifiers, unreferencedColumns } from "./snapshot-diff.ts";
 import type {
@@ -29,6 +29,8 @@ export interface DraftOptions {
   stripPrefixes: string[];
   // Tables a join may target: in scope or already modeled.
   knownTables: SnapshotTable[];
+  // The source's declared schema pairs: a key into a schema the owner declined joining asks nothing.
+  crossSchema?: readonly CrossSchemaPair[];
 }
 
 export interface DraftResult {
@@ -736,10 +738,18 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
     const targetName = qualifiedName({ schema: fk.references.schema ?? table.schema, name: fk.references.table });
     // A key into another schema is a question for the owner, never a drafted join (spec: Schema scope).
     if (crossesSchema(table, fk)) {
+      const fromSchema = table.schema ?? "no schema";
+      const toSchema = referencedSchema(table, fk) ?? "no schema";
+      if (findPair(ctx.opts.crossSchema ?? [], fromSchema, toSchema)?.status === "declined") continue;
       const by = fk.constraint ? `the foreign key ${fk.constraint}` : "a foreign key whose name the snapshot does not record";
+      const record = fk.constraint
+        ? `--constraint ${fk.constraint}`
+        : `--keys ${fk.columns.map((c, i) => `${table.name}.${c}=${fk.references.table}.${fk.references.columns[i] ?? c}`).join(",")}`;
+      const pair = `semlayer add-cross-schema --source ${ctx.opts.source} --from ${fromSchema} --to ${toSchema}`;
       ask(
-        `${fk.columns.join(", ")} references ${targetName} through ${by}, across schemas: ${q} is in ${table.schema ?? "no schema"} and ${fk.references.table} in ${referencedSchema(table, fk) ?? "no schema"}. ` +
-          `A join across schemas is drafted only after you say which schemas the layer joins. Do your questions need ${targetName}?`,
+        `${fk.columns.join(", ")} references ${targetName} through ${by}, across schemas: ${q} is in ${fromSchema} and ${fk.references.table} in ${toSchema}. ` +
+          `A join across schemas is drafted only after you say which schemas the layer joins. Do your questions need ${targetName}? ` +
+          `If yes, record the pair with ${pair} ${record}; if no, with ${pair} --decline --reply "<the owner's words>".`,
         fk.columns,
       );
       continue;

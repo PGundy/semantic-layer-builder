@@ -128,6 +128,7 @@ describe("both scripted scenarios grade clean", () => {
         ["approvals", 1, true],
         ["connection_first", 1, true],
         ["authority", 1, true],
+        ["validate", 1, true],
         ["effort", null, true],
       ]);
       expect(written).toMatchObject({ run_id: `${name}-20260101T000000000Z`, scenario: name, passed: true, score: 1 });
@@ -701,7 +702,7 @@ describe("the grade command", () => {
     const out: string[] = [];
     expect(await gradeMain(["--run", dir], { out: (t) => out.push(t), err: (t) => out.push(t) })).toBe(1);
     const text = out.join("\n");
-    expect(text).toContain("Grades for acme-structured-20260101T000000000Z: failed, score 0.67.");
+    expect(text).toContain("Grades for acme-structured-20260101T000000000Z: failed, score 0.75.");
     expect(text).toContain("selection         0.00   FAIL");
     expect(text).toContain("figures           -      not graded");
     expect(text).toContain("effort            -      measured");
@@ -743,8 +744,9 @@ describe("the grade command", () => {
     expect(grader(r, "selection").passed).toBe(true);
     // The secrets grader finds the planted email and password in the file, without quoting them.
     expect(grader(r, "secrets").details).toHaveLength(2);
-    // Effort's null is not in the mean: figures 0, secrets 0, selection 1, connection_first 1.
-    expect(r.score).toBe(0.5);
+    // Effort's null is not in the mean: figures 0, secrets 0, selection 1, connection_first 1, validate 0 (the broken file is an error).
+    expect(grader(r, "validate").score).toBe(0);
+    expect(r.score).toBe(0.4);
   });
 
   test("a failure reason keeps its first line, relative paths, and no credential or protected value", () => {
