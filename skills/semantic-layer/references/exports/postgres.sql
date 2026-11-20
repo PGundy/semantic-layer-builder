@@ -43,6 +43,8 @@ with rel as (
   cross join (select current_setting('server_version_num')::int >= 140000 as known_empty) v
   where c.relkind in ('r', 'p', 'v', 'm', 'f')
     and not c.relispartition
+    -- Relations the role cannot read are left out, as live introspection leaves them out.
+    and has_any_column_privilege(c.oid, 'SELECT')
     and n.nspname not in ('pg_catalog', 'information_schema')
     and n.nspname !~ '^pg_toast'
     and n.nspname !~ '^pg_temp'
@@ -64,7 +66,7 @@ fk as (
   join pg_namespace rn on rn.oid = rc.relnamespace
   join pg_attribute ra on ra.attrelid = con.confrelid and ra.attnum = k.ref_attnum
   -- conparentid = 0 skips the copies a foreign key to a partitioned table keeps for each partition.
-  where con.contype = 'f' and con.conparentid = 0
+  where con.contype = 'f' and con.conparentid = 0 and has_any_column_privilege(rc.oid, 'SELECT')
 )
 select
   r.table_schema as table_schema,
