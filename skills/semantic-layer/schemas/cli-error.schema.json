@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "semlayer --json error",
+  "description": "The one object a semlayer command prints on stdout under --json when it refuses (exit 1) or fails in the tool itself (exit 2), beside its plain line on stderr. The MCP server returns the same object as structuredContent of a failed tool call.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["error", "code"],
+  "properties": {
+    "error": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The message, as the stderr line prints it after \"semlayer <command>: \". Its words may change between releases."
+    },
+    "code": {
+      "type": "string",
+      "pattern": "^([a-z][a-z_]*|[a-z_]+\\.[a-z0-9_]+)$",
+      "description": "Stable across releases. A bare word (user_error, usage, internal, no_layer, ...) for a refusal that is not a validate issue; family.name, registered in scripts/lib/issue-codes/, for one that is."
+    },
+    "next": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The command that fixes or explains the refusal, where there is one."
+    }
+  }
+}

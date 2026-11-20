@@ -145,6 +145,8 @@ function namedFile(env: Env, lookup: EnvLookup): string | null {
     throw new UserError(
       `${flag !== undefined ? "--env-file" : "SEMLAYER_ENV_FILE"} names ${path}, which is not a file. Give the path of the env file that holds the connection variables, ` +
         "or leave it out to read the .env beside the semantic root, then run the same command again.",
+      undefined,
+      "source.connection_missing",
     );
   }
   return path;

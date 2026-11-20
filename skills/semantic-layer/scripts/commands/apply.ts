@@ -56,6 +56,7 @@ interface Failure {
   text: string;
   alone?: string;
   next?: string;
+  code?: string;
 }
 
 // One refusal for every refused entry, nothing written. An entry that names what an earlier refused
@@ -72,7 +73,7 @@ function refusal(refused: Failure[]): UserError {
     if (f.words) made.push({ i: f.i, names: creates(f.words) });
   }
   const one = own[0]!;
-  if (own.length === 1 && !after.size && one.alone) return new UserError(one.alone, one.next);
+  if (own.length === 1 && !after.size && one.alone) return new UserError(one.alone, one.next, one.code);
   const lines = own.map((f) => f.text);
   let skipped = 0;
   for (const [i, later] of after) {
@@ -80,7 +81,10 @@ function refusal(refused: Failure[]): UserError {
     lines.push(`Entr${later.length === 1 ? "y" : "ies"} ${later.map((n) => n + 1).join(", ")} ${later.length === 1 ? "was" : "were"} not checked: ${later.length === 1 ? "it reads" : "they read"} what entry ${i + 1} would have created.`);
   }
   const counted = `${own.length === 1 ? "An entry is" : `${own.length} entries are`} refused${skipped ? ` and ${skipped} not checked` : ""}`;
-  return new UserError(`${counted}, so nothing was written:\n${lines.join("\n")}\nRemove or fix each entry named and run semlayer apply again.`);
+  // One code when every refused entry carries the same one, else the bare word batch_refused.
+  const codes = new Set(own.map((f) => f.code ?? "user_error"));
+  const code = codes.size === 1 ? [...codes][0]! : "batch_refused";
+  return new UserError(`${counted}, so nothing was written:\n${lines.join("\n")}\nRemove or fix each entry named and run semlayer apply again.`, undefined, code);
 }
 
 // The names a typed edit would create, as later entries name them.
@@ -188,6 +192,7 @@ const spec: CommandSpec = {
           refused.push({
             i,
             words: e.words,
+            code: err.code,
             text: `Entry ${i + 1} (${shown(e.words)}): ${text}`,
             ...(err instanceof ValueRefusal ? {} : { alone: `Entry ${i + 1} (${shown(e.words)}) failed, so nothing was written: ${err.message}\nFix entry ${i + 1} and run semlayer apply again.`, next: err.next }),
           });
