@@ -1,0 +1,46 @@
+model: orders
+source: shop
+table: public.orders
+primary_key:
+  - order_id
+grain: One row per orders.
+status: approved
+approved_by: Dana
+approved_at: 2026-01-10
+dimensions:
+  - name: order_id
+    expr: order_id
+    type: number
+    status: approved
+    approved_by: Dana
+    approved_at: 2026-01-10
+  - name: customer_name
+    expr: customer_name
+    type: string
+    status: approved
+    approved_by: Dana
+    approved_at: 2026-01-10
+measures:
+  - name: revenue
+    agg: sum
+    expr: amount_cents
+    description: Order value.
+    status: approved
+    approved_by: Dana
+    approved_at: 2026-01-10
+joins:
+  - name: tag
+    to: tags
+    keys:
+      - from: order_id
+        to: order_id
+    relationship: one_to_many
+    origin: owner
+    description: Tags an order carries.
+    through:
+      model: order_tags
+      keys:
+        - from: tag_id
+          to: tag_id
+      dedupe: distinct_pairs
+    status: draft

@@ -201,13 +201,18 @@ export class JoinPlan {
     } else {
       const fanning = routes(() => true);
       const many = fanning.length ? fanning[0]!.find((j) => !toOne(j)) : undefined;
+      const via = many && fanning[0]!.indexOf(many) ? `${fanning[0]![0]!.to}.${many.name}` : `${base.model}.${many?.name}`;
       this.cx.add(
         "no_join_path",
-        many
+        many?.through
+          ? `${lead} reaches only through the bridge join ${via} (by way of ${many.through.model}), which the compiler does not follow yet`
+          : many
           ? `${lead} reaches only through join ${fanning[0]!.indexOf(many) ? `${fanning[0]![0]!.to}.${many.name}` : `${base.model}.${many.name}`}, which is ${many.relationship}: it would repeat rows of ${base.model} and multiply its measures (fan-out)`
           : `${lead} reaches through no many_to_one or one_to_one join within two hops`,
         ref,
-        many
+        many?.through
+          ? `Ask the owner for a view with one row per ${base.model} row that holds the field, model it, and run semlayer sql again; requests grouped by a bridge dimension are not supported yet.`
+          : many
           ? `Ask the owner for a view with one row per ${base.model} row that holds the field, model it, and run semlayer sql again.`
           : `Add a many_to_one or one_to_one join from ${base.model} toward ${target.model} (semlayer check-join measures it), or ask the owner for a view; then run semlayer sql again.`,
       );
