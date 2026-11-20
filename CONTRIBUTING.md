@@ -27,6 +27,10 @@ The repository has one `package.json`, at the root, and one `bun.lock` beside it
 - `tests/`: the test suites; `tests/skill-docs.test.ts` checks the docs against the CLI.
 - `fixtures/acme/`: the synthetic Acme dataset (`bun run fixtures` regenerates it); `examples/`: layers built from it.
 
+## Where new code goes
+
+New validation goes in its own file, `skills/semantic-layer/scripts/lib/validate-rules/<topic>.ts`, not in `lib/validate.ts`. The file's default export is a function that takes the `RuleContext` of `lib/validate-rules/index.ts` (a view of the loaded files, read-only by type, that a rule never changes; the lookups `snapshotTable`, `identRules`, `checkSqlRefs` and `joinPaths`; and the calls `error` and `warn`). `lib/validate-rules/index.ts` finds every file in the directory without an edit elsewhere, and `validateProject` runs them in file-name order after its own checks and lists their issues after its own. A new type lives beside the code that owns it; an existing type in `lib/types.ts` gets at most a one-line field.
+
 ## Tests
 
 ```sh
