@@ -4,6 +4,7 @@ import { UserError } from "./errors.ts";
 import { PROTECTED_VALUE } from "./output.ts";
 import { loadSnapshot, loadSource } from "./project.ts";
 import { findField, parseRequestField } from "./refs.ts";
+import { findSegment, segmentNames } from "./segments.ts";
 import { assertReadOnly, tokenize } from "./sql-guard.ts";
 import type { Dialect, Golden, Metric, Model, QueryPlan, ResultRows, SourceConfig } from "./types.ts";
 import { NAME_PATTERN } from "./types.ts";
@@ -556,26 +557,32 @@ function readableModel(m: unknown): m is Model {
   );
 }
 
-// The draft dimensions, measures and metrics a golden's request uses, as approve
-// targets (source.model.field, metric:<name>), in the order the request names them.
-// A metric used by the request also contributes the draft measures it combines.
-// References that resolve to nothing, and models or metrics too malformed to read, are
-// left to semlayer validate.
-export function goldenDraftFields(golden: Golden, models: Model[], metrics: Metric[]): string[] {
+// Every dimension, measure and metric a golden's request reads, as approve targets
+// (source.model.field, metric:<name>) with the item's status, in the order the request names them.
+// A metric used by the request also contributes the measures it combines. With `segments`, a
+// request field that names a segment of a model (model.segment) also reads each measure of that
+// model which lists the segment. References that resolve to nothing, and models or metrics too
+// malformed to read, are left out for semlayer validate.
+export function goldenReads(golden: Golden, models: Model[], metrics: Metric[], segments = false): { ref: string; status: unknown }[] {
   const request = golden.request;
   if (!request || typeof request !== "object") return [];
   const usableModels = (Array.isArray(models) ? models : []).filter(readableModel);
   const usableMetrics = (Array.isArray(metrics) ? metrics : []).filter((m): m is Metric => !!m && typeof m === "object");
   const source = request.source;
-  const out = new Set<string>();
+  const out = new Map<string, unknown>();
   const field = (ref: string): void => {
     const parsed = parseRequestField(ref);
     if (!parsed) return;
     const model = usableModels.find((m) => m.model === parsed.model && m.source === source);
     if (!model) return;
     const match = findField(model, parsed.field);
-    if (!match || match.kind === "join") return;
-    if (match.item.status !== "approved") out.add(`${source}.${model.model}.${parsed.field}`);
+    if (!match) {
+      if (segments && findSegment(model, parsed.field))
+        for (const x of model.measures ?? []) if (segmentNames(x).includes(parsed.field)) out.set(`${source}.${model.model}.${x.name}`, x.status);
+      return;
+    }
+    if (match.kind === "join") return;
+    out.set(`${source}.${model.model}.${parsed.field}`, match.item.status);
   };
   const ref = (r: unknown): void => {
     if (typeof r !== "string") return;
@@ -583,7 +590,7 @@ export function goldenDraftFields(golden: Golden, models: Model[], metrics: Metr
     if (!NAME_PATTERN.test(r)) return;
     const metric = usableMetrics.find((m) => m.name === r && (m.source ?? source) === source);
     if (!metric) return;
-    if (metric.status !== "approved") out.add(`metric:${metric.name}`);
+    out.set(`metric:${metric.name}`, metric.status);
     for (const measure of metricMeasures(metric)) field(measure);
   };
   const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
@@ -591,7 +598,15 @@ export function goldenDraftFields(golden: Golden, models: Model[], metrics: Metr
   for (const d of list(request.dimensions)) ref(d);
   for (const f of list(request.filters)) ref((f as { field?: unknown } | null)?.field);
   for (const o of list(request.order_by)) ref((o as { field?: unknown } | null)?.field);
-  return [...out];
+  return [...out].map(([r, status]) => ({ ref: r, status }));
+}
+
+// The draft dimensions, measures and metrics a golden's request uses (goldenReads whose status is
+// not approved), as approve targets, in the order the request names them.
+export function goldenDraftFields(golden: Golden, models: Model[], metrics: Metric[]): string[] {
+  return goldenReads(golden, models, metrics)
+    .filter((r) => r.status !== "approved")
+    .map((r) => r.ref);
 }
 
 // The column names of a result, in the order the first row that holds each one gives.
