@@ -1698,7 +1698,9 @@ With `--json`, every refusal and every error in the tool itself also prints one 
 - `source.*`, `intake.*` and `env.*`: a source's connection, scope and snapshot, its intake block, and env files. `source.connection_missing`, `source.pooler_startup_parameter` and `source.ssl_root_cert_unreadable` come from refusals (see below), not from `semlayer validate`.
 - `scope.*`: declared schema pairs, their keys, and the primary schema.
 - `file.*`, `ledger.*`, `ref.*`, `expr.*`, `model.*`, `field.*`, `time.*`, `ignore.*`, `approval.*`, `access.*` and `golden.*`: the checks of a layer's own files, a file's name, place and parse, the ledger, a name that resolves to nothing or is taken, SQL text and join references, a model's table and joins, fields, time dimensions and zones, `ignored_columns`, approvals and their hashes, access, and goldens. The model, field, join or filter an issue is about is in its path, not in its code.
-- `metric.*`, `join.*` and `release.*` are reserved for later families.
+- `metric.*`: segments, the default time dimension, semi-additive measures and a golden's trailing window, and the refusals `semlayer sql` gives a request that misuses them (`metric.segments_on_metric`, `metric.default_time_missing`, `metric.semi_additive_mixed`).
+- `join.*`: bridge joins, their dedupe rule and their evidence, and the refusals `semlayer sql` gives a multi-fact request that names segments or a request grouped through a bridge it cannot share a figure over.
+- `release.*`: retyped columns in the drift record, `changelog.yaml` and `layer_version`, and the refusals of `semlayer change start` and `semlayer change close`.
 
 `next` is set on `approval.hash_changed` (`semlayer readback --targets <ref>`), `approval.no_ledger_yes` (the `semlayer readback --targets` the message names) and `approval.stamp_hashes` (`semlayer approve --stamp-hashes`). The warnings `time.zone_carries_own`, `expr.divides_by_literal` and `ignore.column_read` can never be right, so a typed edit that adds one is refused (see Typed edits). A rule file under `scripts/lib/validate-rules/` passes a registered code as the last argument of every `error` and `warn` call.
 
