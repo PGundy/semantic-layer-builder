@@ -32,6 +32,7 @@ const DOCS = [
   "SKILL.md",
   ...CARDS,
   "references/intake.md",
+  "references/other-dialects.md",
   "references/scoping.md",
   "references/interview-guide.md",
   "references/joins.md",
@@ -741,8 +742,9 @@ describe("schema exports", () => {
     expect(section).toContain("semlayer import --source warehouse --file schema.csv");
   });
 
-  test("the intake card names every export dialect and the file it prints", () => {
-    const skill = read("references/phases/intake.md").replace(/\s+/g, " ");
+  // The intake card offers postgres and duckdb only; the full list moved with the other dialects.
+  test("other-dialects.md names every export dialect and the file it prints", () => {
+    const skill = read("references/other-dialects.md").replace(/\s+/g, " ");
     expect(skill).toContain(`(${EXPORT_DIALECTS.join(", ")}; \`references/exports/<d>.sql\`)`);
   });
 

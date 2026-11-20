@@ -5,7 +5,7 @@ Every later phase reads `snapshots/<source>.json`. There are four ways to fill i
 | Path | When | Commands |
 |---|---|---|
 | Live | duckdb or postgres, and the CLI can reach it | `semlayer introspect`, `semlayer profile`, `semlayer check-join` run their queries |
-| Agent's own SQL tool | snowflake, bigquery, databricks, or any source the CLI cannot reach but you can query | same commands with `--emit-sql`, then `--results <file>` |
+| Agent's own SQL tool | snowflake, bigquery, databricks, or any source the CLI cannot reach but you can query; not supported for new work (`other-dialects.md`) | same commands with `--emit-sql`, then `--results <file>` |
 | Schema export | no query access yet, but the owner can run one read-only query, on any of eight databases | `semlayer export-sql`, then `semlayer import` |
 | Other shared context | the owner can share a dbt project, DDL or an older export | `semlayer import` |
 | Manual | none of the above fits | you write the snapshot JSON by hand |
@@ -34,7 +34,7 @@ semlayer setup --source warehouse --dialect postgres --export schema.csv --reaso
 - Without `--env` or `--export` (for duckdb, `--database` or `--view`) it refuses and explains why a connection is better. `--export` without `--reason` records an empty reason and warns; on a rerun it keeps the reason already recorded.
 - Run it again with the same arguments and nothing changes; with new ones it updates the source and reports the schemas and patterns added and removed. Leaving out a group of flags (`--schemas`; `--include`, `--exclude` and `--tables-file`) leaves that part of the source as it is. A scope change alone does not read the catalog again.
 - Its next action for a connection source with in-scope tables not yet profiled is `semlayer profile --source <s>`; `semlayer baseline` follows once they are.
-- Snowflake, BigQuery and Databricks: the CLI does not connect, so the next action is `semlayer introspect --source <s> --emit-sql` (The query-plan protocol).
+- Snowflake, BigQuery and Databricks: the CLI does not connect, so the next action is `semlayer introspect --source <s> --emit-sql` (`other-dialects.md`, The query-plan protocol).
 - When a connection becomes available for an export source, the same command with the connection upgrades it (below).
 
 ### Upgrade from an export to a connection
@@ -140,87 +140,11 @@ semlayer tables --source warehouse
 
 Do this in the first turn of a new project, right after `semlayer init` and `semlayer add-source` and before asking any scoping question (`phases/intake.md`, First turn): a later turn resumes only from what is written under the semantic root.
 
-## The query-plan protocol
-
-Use this whenever the CLI cannot run the queries itself. The same steps work for `introspect`, `profile` and `check-join`.
-
-1. **Emit the plan.** The command prints a JSON plan and stops:
-
-   ```
-   semlayer introspect --source wh --emit-sql > <scratch>/introspect-plan.json
-   ```
-
-   ```json
-   { "command": "introspect", "source": "wh", "dialect": "snowflake",
-     "queries": [{ "id": "columns", "purpose": "Columns and types", "sql": "select ..." }] }
-   ```
-
-   Keep scratch files outside the semantic root: results can hold sample values from the owner's data.
-
-2. **Run each query** exactly as written, read-only, with whatever tool reaches the source: an MCP warehouse connector, `snowsql`, `bq`, `psql`, the Databricks SQL tool. Run them in order; each is independent. Snowflake and Databricks introspection reads the unqualified `information_schema`, so run the plan in a session whose current database (Snowflake: `USE DATABASE <db>`, or `snowsql -d <db>`) or catalog (Databricks: `USE CATALOG <c>`) is the one this source models.
-
-3. **Save the results** as one JSON object mapping each query `id` to its array of row objects:
-
-   ```json
-   {
-     "tables": [
-       { "table_schema": "ANALYTICS", "table_name": "FCT_ORDERS", "table_kind": "table", "row_count": 10000, "description": null }
-     ],
-     "columns": [
-       { "table_schema": "ANALYTICS", "table_name": "FCT_ORDERS", "column_name": "STATUS", "data_type": "TEXT" }
-     ]
-   }
-   ```
-
-   Copy the ids, and the output column names, from the plan you emitted: they differ by command and dialect (a Postgres introspect plan also has `primary_keys` and `foreign_keys`). Every id in the plan needs an entry, even if it returned no rows (`[]`). Column names may be in any case; the CLI lowercases them. If your tool returns a header plus arrays of values, turn each row into an object keyed by column name. Keep values as the tool returned them.
-
-4. **Finish the command** with the same flags plus the results file:
-
-   ```
-   semlayer introspect --source wh --results <scratch>/introspect-results.json
-   ```
-
-**Resuming a plan one result at a time.** `--emit-sql` also stores the plan under the semantic root and prints its `plan_id` and each query's `max_rows`. Instead of one results file, store each query's rows as you get them, a JSON array of row objects, then finish with `--plan`:
-
-```
-semlayer results add --plan <plan_id> --query columns --file <scratch>/columns.json
-semlayer results status --plan <plan_id>
-semlayer introspect --source wh --plan <plan_id>
-```
-
-`semlayer results status` lists what remains and, once every result is in, prints the command that finishes. Run each query with a row limit of its `max_rows`: a result of exactly that many rows is refused as possibly cut off. The stored plans and results live in `.semlayer/plans/`, which is gitignored; `semlayer profile --plan` removes its plan once the snapshot is written, and an abandoned profile plan is deleted by hand (`.semlayer/plans/<plan_id>.json` and `.semlayer/plans/<plan_id>/`). A golden result with a protected column is not stored: finish that golden with `--results <file>`. The finish command leaves out `--root`; add it back if you passed one. A plan that no longer matches what the command would run (the snapshot or flags changed) is refused: emit a new one.
-
-If a query fails because of a dialect detail (a function name, quoting, permissions on one schema), fix only that query, keep its `id` and the names of its output columns, and tell the owner what you changed. If the owner's user cannot read some schema, scope it out rather than guess.
-
-Profiles and join checks produce one query per table or join. For a large source, profile in batches (`semlayer profile --source wh --tables a,b,c --emit-sql`) so each results file stays small. A profile results file can hold raw sample values; the snapshot keeps none for a protected column: only its null fraction and distinct count, and a `min` and `max` only for a number or a date (`spec.md`, Profiles of protected columns). The plan does not select the top values of a column protected by its tag or name, so those never pass through your tool; a column that only its profile shows to be protected (near-unique text) is stripped after the results come back. Delete the results file once the command has finished, and never copy its values into the snapshot or any other file under the semantic root. A column tagged after it was profiled is redacted with `semlayer profile --source <s> --redact`, which queries nothing.
-
 ## Dialect notes
 
 ### Time zones, every dialect
 
 The CLI runs every query with the session time zone UTC, so a time grain over a timestamp-with-time-zone column (`timestamptz` in Postgres, `TIMESTAMPTZ` in DuckDB, `TIMESTAMP_TZ` and `TIMESTAMP_LTZ` in Snowflake, `TIMESTAMP` in BigQuery and Databricks) buckets in UTC, and goldens are recorded that way. When you run a plan with your own tool, set the session to UTC first: Snowflake `alter session set timezone = 'UTC'`, Databricks `SET TIME ZONE 'UTC'`; BigQuery truncates in UTC unless a function is given a zone. A column without a time zone (`timestamp` in Postgres and DuckDB, `TIMESTAMP_NTZ` in Snowflake and Databricks, `DATETIME` in BigQuery) holds wall-clock readings: the session zone does not move them, so they bucket in whatever zone they were recorded in. The interview asks which zone "a day" means for every time dimension and, for a column without a time zone, which zone its values were recorded in, kept as the dimension's `time_zone`; the conversion differs by type and dialect, and the one-step `at time zone` form is wrong on a column without one (`interview-guide.md`, Time zones per type and dialect).
-
-### Snowflake
-
-- Run queries with a Snowflake MCP connector or `snowsql -c <connection> -q "<sql>" -o output_format=json -o friendly=false -o timing=false`.
-- Unquoted identifiers are stored uppercase. Use names exactly as `semlayer tables` prints them in scope patterns; matching is case-insensitive anyway.
-- A warehouse must be running and queries cost credits. Set `profile.sample_rows` (for example `100000`) in the source file before profiling large tables (a hand write: `SKILL.md`, Hand edits); the plan then uses `sample (n rows)`, and a table's top-value queries read one sample.
-- Ask which database to model; one source per database keeps names short.
-
-### BigQuery
-
-- Run queries with a BigQuery MCP connector or `bq query --use_legacy_sql=false --format=json --max_rows=100000 '<sql>'`. Use `bq query --dry_run` to see bytes scanned before a costly profile.
-- Datasets play the role of schemas. Name the datasets to read with `semlayer introspect --source bq --schemas analytics,marts --emit-sql`; without `--schemas`, introspect reads the source's `intake.schemas`, or when that lists none, the datasets named in its `scope.include` patterns (such as `analytics.*`) and its `scope.tables_file` entries. Ask the owner which datasets matter before the first introspect: a project can hold hundreds.
-- Datasets passed together in `--schemas` must be in the same location; introspect datasets from other regions in separate runs.
-- BigQuery bills by bytes scanned, and `limit` does not reduce that. `semlayer profile` on a BigQuery source prints a cost warning before the plan: dry-run each query (`bq query --dry_run --use_legacy_sql=false '<sql>'`) and tell the owner the bytes before running any. With `profile.sample_rows` the plan samples with `TABLESAMPLE SYSTEM (p PERCENT)`, the percentage computed from the table's row estimate, and every column's top values come from one query over that sample, so a table costs a few scans rather than one per column. Profile only the in-scope tables, one batch at a time, and prefer partitioned tables' recent partitions when the owner agrees.
-- `bq --format=json` returns numbers as strings; save them as returned.
-
-### Databricks
-
-- Run queries with the Databricks SQL tool or MCP connector against a SQL warehouse, or `databricks api post /api/2.0/sql/statements` with a `warehouse_id`.
-- Unity Catalog names are `catalog.schema.table`. Ask which catalog to model; one source per catalog is simplest.
-- A stopped SQL warehouse takes a minute to start; run the first query and wait before assuming a failure.
-- Set `profile.sample_rows` for large Delta tables; the plan uses `tablesample (n rows)`.
 
 ### Postgres
 
@@ -261,7 +185,7 @@ semlayer import --source warehouse --file schema.csv
 semlayer baseline --source warehouse
 ```
 
-`semlayer add-source` takes the dialects the CLI writes SQL for: duckdb, postgres, snowflake, bigquery and databricks. A Redshift, MySQL or SQL Server database has no dialect of its own in the CLI: register it as `postgres` and say so in the source's `description`. Redshift speaks the Postgres protocol, so the layer's SQL mostly runs there; check `--emit-sql` queries for a Postgres feature Redshift lacks. For MySQL and SQL Server `postgres` is only a stand-in, and the supported scope is the export and the baseline conversation: the import and `semlayer baseline` work as for any export. Everything the layer then writes (drafted measure expressions, filters, time grains, compiled SQL, golden SQL) is Postgres SQL (`date_trunc`, double-quoted identifiers, `filter (where ...)`): it must be checked by hand, and no tool, chat or BI tool may run it as is against that database. Tell the owner so before drafting, write it in the source's `description` and as an open question in each model of that source, and list it in the handoff under Cross-source metrics and engineering asks. Profiles, join checks and goldens there run only through `--emit-sql`, each query adapted to their database by hand (The query-plan protocol). A schema export carries structure only (tables, columns, types, comments, keys, row estimates), so the baseline's guesses come from names and declared keys until something is profiled.
+`semlayer add-source` takes the dialects the CLI writes SQL for: duckdb, postgres, snowflake, bigquery and databricks. A Redshift, MySQL or SQL Server database has no dialect of its own in the CLI: register it as `postgres` and say so in the source's `description`. Redshift speaks the Postgres protocol, so the layer's SQL mostly runs there; check `--emit-sql` queries for a Postgres feature Redshift lacks. For MySQL and SQL Server `postgres` is only a stand-in, and the supported scope is the export and the baseline conversation: the import and `semlayer baseline` work as for any export. Everything the layer then writes (drafted measure expressions, filters, time grains, compiled SQL, golden SQL) is Postgres SQL (`date_trunc`, double-quoted identifiers, `filter (where ...)`): it must be checked by hand, and no tool, chat or BI tool may run it as is against that database. Tell the owner so before drafting, write it in the source's `description` and as an open question in each model of that source, and list it in the handoff under Cross-source metrics and engineering asks. Profiles, join checks and goldens there run only through `--emit-sql`, each query adapted to their database by hand (`other-dialects.md`, The query-plan protocol). A schema export carries structure only (tables, columns, types, comments, keys, row estimates), so the baseline's guesses come from names and declared keys until something is profiled.
 
 An older export of `information_schema.columns` still imports: a CSV with a header row or a JSON array of row objects, header names case-insensitive, with at least `table_schema`, `table_name`, `table_type`, `column_name`, `ordinal_position`, `data_type`, `is_nullable`, and a description column where the dialect has one; add `table_catalog` when it spans several databases or catalogs, and `row_count` where the dialect has one. Without the key columns of the contract it imports with no primary or foreign keys. If the import reports a missing column, adjust the query's aliases.
 

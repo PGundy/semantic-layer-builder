@@ -18,10 +18,6 @@ export const RULES: DocRule[] = [
   // Scope, profiles, new columns, pair tables.
   ["intake.md", "introspect's next hint", "`semlayer status` while approved models have left scope; else `semlayer profile --source <s>` while some in-scope table is not fully profiled; else `semlayer validate` when a modeled table changed; else `semlayer draft --source <s> --tables <t>` for tables new in scope with no model; else `semlayer status`"],
   ["intake.md", "profile state", "`profile_state` in `--json`"],
-  // Profile privacy.
-  ["intake.md", "protected top values are not selected", "The plan does not select the top values of a column protected by its tag or name"],
-  ["intake.md", "profile results files are deleted", "Delete the results file once the command has finished"],
-  ["intake.md", "redact queries nothing", "`semlayer profile --source <s> --redact`, which queries nothing"],
   // Schema exports and the baseline.
   ["intake.md", "every path ends in the baseline", "run `semlayer baseline --source <s>` next and open the conversation with it"],
   ["intake.md", "import detects the format", "`semlayer import` detects the format from the file"],
@@ -47,9 +43,6 @@ export const RULES: DocRule[] = [
   ["intake.md", "a DDL import reads no data", "creates the columns of a `CREATE TABLE ... AS` or a view without reading any data"],
   // Time zones per type and dialect.
   ["intake.md", "naive timestamps bucket in their recorded zone", "the session zone does not move them"],
-  // Heuristics.
-  ["intake.md", "BigQuery profiles warn about cost", "prints a cost warning before the plan"],
-  ["intake.md", "BigQuery samples by percent", "`TABLESAMPLE SYSTEM (p PERCENT)`"],
   // connection.views holds one table expression, so a rule needing an aggregate goes to engineering.
   ["intake.md", "connection.views holds no aggregate", "`connection.views` never holds a rule the model YAML cannot express"],
   ["intake.md", "an aggregate needs the owner's engineers on every dialect", "On every dialect it needs a table or view the owner's engineers create"],
