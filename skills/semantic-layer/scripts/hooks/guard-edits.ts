@@ -4,7 +4,7 @@
 // semantic root (a directory holding semantic.yaml) it exits 2, with the reason and the command to
 // use on stderr, when the call would add, change or remove an approval field, change what an
 // approved item's content hash covers, change a confirmed golden's recorded rows, or write
-// .semlayer/ledger.jsonl, .semlayer/pending/ or changelog.yaml by hand. Before those checks, a call from one of the plugin's
+// .semlayer/ledger.jsonl, .semlayer/pending/, .semlayer/change.json or changelog.yaml by hand. Before those checks, a call from one of the plugin's
 // role agents (spec: Agent roles) is held to what lib/roles.ts lets that role run and edit.
 // It also refuses a read or a search of the env file that holds a connection's secret (Read, Grep
 // and Bash), and it runs the before half of the answer ledger's before-and-after comparison (integrity.ts).
@@ -47,6 +47,9 @@ const LEDGER =
 const CHANGELOG =
   "is append-only and records item hashes and golden rows that later releases compare against, so it is written only by semlayer change close; " +
   "a hand edit would rewrite what a release says the layer held. Restore it from version control if it was changed.";
+const CHANGE =
+  "is the open change round: it is written only by semlayer change start, which records who asked and when, and removed by semlayer change close, " +
+  "so a hand edit would change what the round says it started from. Run semlayer change status to see the round.";
 const MAX_LINES = 5;
 const TYPED = "semlayer set, semlayer tag, semlayer ignore-column, semlayer question add, semlayer add-field, semlayer remove-field, semlayer add-metric, semlayer remove-metric, semlayer add-join, semlayer remove-join or semlayer rename";
 
@@ -57,7 +60,7 @@ function canonical(v: unknown): string {
   return JSON.stringify(v) ?? "null";
 }
 
-type Area = "ledger" | "changelog" | "layer" | "source" | "dir";
+type Area = "ledger" | "changelog" | "change" | "layer" | "source" | "dir";
 
 // Which guarded part of the root a path is: the ledger and pending readbacks, a layer YAML file
 // (models/, goldens/, metrics.yaml, access.yaml), a source file (sources/<s>.yaml, whose schema pairs
@@ -67,6 +70,7 @@ function areaOf(root: string, abs: string): { area: Area; rel: string } | undefi
   if (rel.startsWith("../") || rel === ".." || isAbsolute(rel)) return undefined;
   if (rel === ".semlayer" || rel === ".semlayer/ledger.jsonl" || rel === ".semlayer/pending" || rel.startsWith(".semlayer/pending/")) return { area: "ledger", rel };
   if (rel === "changelog.yaml") return { area: "changelog", rel };
+  if (rel === ".semlayer/change.json") return { area: "change", rel };
   if (rel === "" || rel === "models" || rel === "goldens") return { area: "dir", rel };
   if (rel === "metrics.yaml" || rel === "access.yaml") return { area: "layer", rel };
   if (/^sources\/[^/]+\.ya?ml$/.test(rel)) return { area: "source", rel };
@@ -419,6 +423,7 @@ function fileCall(tool: string, input: Obj, cwd: string): Verdict {
   const head = `semantic-layer: refused ${tool} on ${g.rel} in the semantic layer at ${g.root}:`;
   if (g.area === "ledger") return refuse([head, `- ${g.rel} ${LEDGER}`]);
   if (g.area === "changelog") return refuse([head, `- ${g.rel} ${CHANGELOG}`]);
+  if (g.area === "change") return refuse([head, `- ${g.rel} ${CHANGE}`]);
   if (tool === "NotebookEdit") return refuse([head, `- ${g.rel} is not a notebook; change it with a typed edit (${TYPED}).`]);
   // From here the file is inside a semantic root: input that cannot be read is refused.
   try {
@@ -489,7 +494,9 @@ function bashCall(input: Obj, cwd: string): Verdict {
           ? `- it writes ${where} in ${g.root} (${w.how}); ${g.rel} ${LEDGER}`
           : g.area === "changelog"
             ? `- it writes ${where} in ${g.root} (${w.how}); ${g.rel} ${CHANGELOG}`
-            : `- it writes ${where} in ${g.root} (${w.how}). A shell write cannot be checked against approvals: change YAML with a typed edit (${TYPED}), or edit a draft with the Edit tool, which this hook checks. Approvals come only from semlayer approve and semlayer goldens confirm on the owner's recorded yes.`,
+            : g.area === "change"
+              ? `- it writes ${where} in ${g.root} (${w.how}); ${g.rel} ${CHANGE}`
+              : `- it writes ${where} in ${g.root} (${w.how}). A shell write cannot be checked against approvals: change YAML with a typed edit (${TYPED}), or edit a draft with the Edit tool, which this hook checks. Approvals come only from semlayer approve and semlayer goldens confirm on the owner's recorded yes.`,
       );
     }
   }

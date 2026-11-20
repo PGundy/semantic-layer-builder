@@ -745,7 +745,9 @@ describe("status owner gates and golden coverage", () => {
     expect(s.next_step.message).toBe(
       "Every phase the CLI can measure is complete. Rerun semlayer validate after any change. " +
         "Name in the handoff the draft metric(s) draft_one; draft golden(s) g5, unnamed; draft field(s) wh.orders.total. " +
-        "Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.",
+        "Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved." +
+        " The layer has no release yet: once the owner agrees it is finished, record it as release 1.0 with semlayer change close --version 1.0, " +
+        "which saves the items and the golden figures as they stand so later changes can be compared with them.",
     );
     const human = await semlayer(t.root, ["status"]);
     expect(human.out).toContain("draft metrics: draft_one");
@@ -788,7 +790,9 @@ describe("status owner gates and golden coverage", () => {
     expect(s.draft_goldens).toEqual([]);
     expect(s.next_step.message).toBe(
       "Every phase the CLI can measure is complete. Rerun semlayer validate after any change. " +
-        "Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.",
+        "Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved." +
+        " The layer has no release yet: once the owner agrees it is finished, record it as release 1.0 with semlayer change close --version 1.0, " +
+        "which saves the items and the golden figures as they stand so later changes can be compared with them.",
     );
   });
 

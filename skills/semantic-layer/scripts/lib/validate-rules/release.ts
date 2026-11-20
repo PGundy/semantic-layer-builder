@@ -1,10 +1,14 @@
 // The layer version and its changelog (spec: Iterating a layer, The changelog): changelog.yaml reads
 // as a changelog, and layer_version in semantic.yaml is the version of its last entry. A layer with
-// neither has never been released and gets no message.
+// neither has never been released and gets no message. The open change round, .semlayer/change.json,
+// reads as one (spec: Iterating a layer, The change round).
+import { CHANGE_FILE, loadChange } from "../change-record.ts";
 import { CHANGELOG_FILE, loadChangelog } from "../release.ts";
 import type { RuleContext } from "./index.ts";
 
 export default function release(ctx: RuleContext): void {
+  const open = loadChange(ctx.root);
+  if (open.problem) ctx.error(CHANGE_FILE, "", `${CHANGE_FILE} is malformed: ${open.problem}. Delete the file to leave the round, or restore it from version control`, "release.change_malformed", "semlayer validate");
   const { log, problem } = loadChangelog(ctx.root);
   if (problem) {
     ctx.error(CHANGELOG_FILE, "", `${CHANGELOG_FILE} is malformed: ${problem}. Restore it from version control; the file is append-only and semlayer change close adds to it`, "release.changelog_malformed", "semlayer validate");
