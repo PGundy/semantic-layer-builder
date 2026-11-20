@@ -95,15 +95,24 @@ where constraint_type = 'FOREIGN KEY' and ${userObject("table_name")}`,
 }
 
 // Postgres: pg_catalog, so row estimates, comments and composite key order are exact.
+// The schema filter and the relation kinds of the Postgres queries; lib/sql/unreadable.ts shares them.
+export function postgresSchemaFilter(ns: string, schemas: string[]): string {
+  return [
+    `${ns}.nspname not in ('pg_catalog', 'information_schema')`,
+    `${ns}.nspname !~ '^pg_toast'`,
+    `${ns}.nspname !~ '^pg_temp'`,
+    ...(schemas.length ? [`${ns}.nspname in (${literalList(schemas)})`] : []),
+  ].join("\n  and ");
+}
+export const POSTGRES_RELATION = `c.relkind in ('r', 'p', 'v', 'm', 'f') and not c.relispartition`;
+// The one privilege test, as the role report in lib/adapters/postgres.ts reads it: a grant on any one column counts.
+export const POSTGRES_READABLE = (rel: string) => `has_any_column_privilege(${rel}.oid, 'SELECT')`;
+
 function postgresQueries(schemas: string[]): PlannedQuery[] {
-  const where = (ns: string) =>
-    [
-      `${ns}.nspname not in ('pg_catalog', 'information_schema')`,
-      `${ns}.nspname !~ '^pg_toast'`,
-      `${ns}.nspname !~ '^pg_temp'`,
-      ...(schemas.length ? [`${ns}.nspname in (${literalList(schemas)})`] : []),
-    ].join("\n  and ");
-  const relation = `c.relkind in ('r', 'p', 'v', 'm', 'f') and not c.relispartition`;
+  const where = (ns: string) => postgresSchemaFilter(ns, schemas);
+  const relation = POSTGRES_RELATION;
+  // Relations the role cannot read are left out of every query; lib/sql/unreadable.ts names them.
+  const readable = POSTGRES_READABLE("c");
   return [
     query(
       "tables",
@@ -124,6 +133,7 @@ join pg_namespace n on n.oid = c.relnamespace
 -- From PostgreSQL 14 a table never analyzed has reltuples = -1, so 0 means analyzed and empty; before 14 both read 0.
 cross join (select current_setting('server_version_num')::int >= 140000 as known_empty) v
 where ${relation}
+  and ${readable}
   and ${where("n")}
 order by 1, 2`,
     ),
@@ -137,6 +147,7 @@ join pg_class c on c.oid = a.attrelid
 join pg_namespace n on n.oid = c.relnamespace
 where a.attnum > 0 and not a.attisdropped
   and ${relation}
+  and ${readable}
   and ${where("n")}
 order by 1, 2, a.attnum`,
     ),
@@ -149,6 +160,7 @@ join pg_namespace n on n.oid = c.relnamespace
 cross join lateral unnest(con.conkey) with ordinality as k(attnum, ord)
 join pg_attribute a on a.attrelid = c.oid and a.attnum = k.attnum
 where con.contype = 'p' and not c.relispartition
+  and ${readable}
   and ${where("n")}
 order by 1, 2, 4`,
     ),
@@ -165,6 +177,8 @@ cross join lateral unnest(con.conkey, con.confkey) with ordinality as k(attnum, 
 join pg_attribute a on a.attrelid = c.oid and a.attnum = k.attnum
 join pg_attribute ra on ra.attrelid = rc.oid and ra.attnum = k.ref_attnum
 where con.contype = 'f' and not c.relispartition and con.conparentid = 0
+  and ${readable}
+  and ${POSTGRES_READABLE("rc")}
   and ${where("n")}
 order by 2, 3, 1, 8`,
     ),
