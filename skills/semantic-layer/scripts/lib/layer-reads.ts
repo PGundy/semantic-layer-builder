@@ -4,6 +4,7 @@
 // a column is in ignored_columns, and semlayer status and semlayer draft --new-columns leave it alone.
 import { columnRefs } from "./compiler/qualify.ts";
 import { loadAccess } from "./project.ts";
+import { segmentFilters, segmentNames } from "./segments.ts";
 import type { Join, Model } from "./types.ts";
 
 // One column the layer reads, the model whose table holds it, and what reads it.
@@ -35,6 +36,10 @@ function texts(m: Model): [string, string][] {
   for (const x of list(m.measures)) {
     if (typeof x?.expr === "string") out.push([`measure ${m.model}.${x.name}`, x.expr]);
     if (typeof x?.filter === "string") out.push([`the filter of measure ${m.model}.${x.name}`, x.filter]);
+    segmentNames(x).forEach((n, i) => {
+      const f = segmentFilters(x, m)[i];
+      if (typeof f === "string") out.push([`the segment ${n} of measure ${m.model}.${x.name}`, f]);
+    });
   }
   return out;
 }

@@ -114,6 +114,35 @@
       "items": {
         "$ref": "#/$defs/join"
       }
+    },
+    "segments": {
+      "type": "array",
+      "description": "Named SQL predicates of this model that a measure names in its segments, or a request in its segments as model.segment (spec.md, Metric semantics).",
+      "items": {
+        "type": "object",
+        "description": "A segment.",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "filter"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "description": "Segment name, unique among the model's segments."
+          },
+          "filter": {
+            "type": "string",
+            "minLength": 1,
+            "description": "SQL predicate, written and checked as a measure filter is: this table's columns and join references through this model's to-one joins, one expression, no subquery (spec.md, Expression text)."
+          },
+          "description": {
+            "type": "string",
+            "description": "What the segment keeps, in the owner's words."
+          }
+        }
+      }
     }
   },
   "allOf": [
@@ -324,6 +353,15 @@
           },
           "uniqueItems": true,
           "description": "Tags that access rules read. pii and sensitive are protected: the field is hidden from everyone but the roles that grant the tag in allow.tags. public records that the owner confirmed everyone may see it although it looks sensitive; it never overrides pii or sensitive."
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "uniqueItems": true,
+          "description": "Names of segments of this model whose filters narrow the measure, ANDed with its filter. Their filter texts are part of the measure's approval hash."
         },
         "status": {
           "enum": [

@@ -3,6 +3,7 @@
 // so an edit made after the owner's sign-off is caught instead of silently changing a figure.
 import { createHash } from "node:crypto";
 import type { Dialect, Model } from "./types.ts";
+import { segmentFilters, segmentNames } from "./segments.ts";
 import { sqlNames } from "./sql-names.ts";
 
 // Keys of an item that record its approval rather than its content.
@@ -110,8 +111,9 @@ function fieldIdentity(item: Obj, scope: HashScope): Obj {
 // The semantic content each kind of item is hashed over:
 // - a dimension: its identity (source, model, name and the model's table), expr, type, time_grains,
 //   time_zone, synonyms, tags and the joins its expr reads;
-// - a measure: its identity, expr, filter, agg, format, currency, synonyms, tags and the joins its
-//   expr and filter read;
+// - a measure: its identity, expr, filter, agg, format, currency, synonyms, tags, the filter texts of
+//   the segments it names (left out when it names none, so its hash is as before segments) and the
+//   joins its expr, filter and segments read;
 // - a join: its identity, to, keys, relationship and type;
 // - a model: its source and name, table, grain, primary_key and tags;
 // - a metric: name, source, type, numerator, denominator, expr, format, currency, synonyms and tags;
@@ -134,7 +136,9 @@ function itemContent(kind: ItemKind, item: Obj, scope: HashScope): Obj {
         tags: set(item.tags),
         joins: model ? readJoins(model, [item.expr], lookup, dialect) : [],
       };
-    case "measure":
+    case "measure": {
+      // Each named segment's filter as the model declares it now, null for one it does not declare.
+      const segments = segmentNames(item).length ? segmentFilters(item, model).map((f) => (f === undefined ? null : text(f))) : undefined;
       return {
         kind,
         ...fieldIdentity(item, scope),
@@ -145,8 +149,10 @@ function itemContent(kind: ItemKind, item: Obj, scope: HashScope): Obj {
         currency: text(item.currency),
         synonyms: set(item.synonyms),
         tags: set(item.tags),
-        joins: model ? readJoins(model, [item.expr, item.filter], lookup, dialect) : [],
+        ...(segments ? { segments: set(segments) } : {}),
+        joins: model ? readJoins(model, [item.expr, item.filter, ...(segments ?? [])], lookup, dialect) : [],
       };
+    }
     case "join":
       return { kind, ...fieldIdentity(item, scope), ...joinContent(item) };
     case "model":

@@ -23,6 +23,7 @@ import { intakeIssues, intakeMode, upgradeCommand } from "./intake.ts";
 import { countedReplies, currentYes } from "./ledger.ts";
 import { layerReads, sourceRowFilters } from "./layer-reads.ts";
 import { findTable } from "./naming.ts";
+import { segmentFilters } from "./segments.ts";
 import { parseYaml } from "./yaml.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
 import { isHashedValue, protectedColumns } from "./profile.ts";
@@ -1543,7 +1544,7 @@ export class Validator {
     if (measure && (measure.agg === "count" || measure.agg === "count_distinct")) return null;
     if (table && typeof item.expr === "string") {
       const one: Model = { ...m, primary_key: undefined, joins: joinsOnly, dimensions: [], measures: [] };
-      if (measure) one.measures = [{ ...measure, filter: undefined }];
+      if (measure) one.measures = [{ ...measure, filter: undefined, segments: undefined }];
       else one.dimensions = [item as Dimension];
       for (const name of referencedColumns(one, table, rules.dialect)) {
         const col = table.columns.find((c) => c.name === name);
@@ -1900,7 +1901,7 @@ export class Validator {
     const add = (name: string) => {
       if (!out.has(name.toLowerCase())) out.set(name.toLowerCase(), name);
     };
-    for (const sql of [measure.expr, measure.filter]) {
+    for (const sql of [measure.expr, measure.filter, ...segmentFilters(measure, model)]) {
       if (typeof sql !== "string") continue;
       for (const b of bareNames(sql, rules.dialect)) {
         if (cols ? resolveColumn(b.v, b.quoted, cols, rules) !== false : b.quoted || !SQL_WORDS.has(b.v.toLowerCase())) add(b.v);
@@ -2068,7 +2069,7 @@ export class Validator {
         const ref = `${source}.${l.stem}.${item.name}`;
         if (table?.columns.length) {
           const one: Model = { ...m, primary_key: undefined, joins: joinsOnly, dimensions: [], measures: [] };
-          if (kind === "measure") one.measures = [{ ...(item as Measure), filter: undefined }];
+          if (kind === "measure") one.measures = [{ ...(item as Measure), filter: undefined, segments: undefined }];
           else one.dimensions = [item as Dimension];
           for (const column of referencedColumns(one, table, rules.dialect)) add(source, m.table, column, ref, tag, inherited, m.primary_key);
         }

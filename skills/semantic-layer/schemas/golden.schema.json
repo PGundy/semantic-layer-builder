@@ -99,6 +99,15 @@
           "type": "integer",
           "minimum": 1,
           "description": "Row limit."
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+          },
+          "uniqueItems": true,
+          "description": "model.segment: segments of the model of the request's fields, applied in WHERE. Not with a metric."
         }
       }
     },
