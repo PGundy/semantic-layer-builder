@@ -14,13 +14,13 @@ import { releaseFixture } from "./release-fixture.ts";
 
 const START = ["change", "start", "--note", "Add a revenue per item figure", "--by", "Sam"];
 
-// Records the layer as it stands as release 1.0, the way semlayer change close will.
+// Records the layer as it stands as release 1.0, as semlayer change close does, without its checks and without the drafts never approved.
 function release(root: string): void {
   appendEntry(root, {
     version: "1.0",
     date: "2026-02-03",
     note: "First release.",
-    items: Object.fromEntries([...itemMap(root)].map(([ref, v]) => [ref, v.hash])),
+    items: Object.fromEntries([...itemMap(root)].filter(([, v]) => !v.plain).map(([ref, v]) => [ref, v.hash])),
     goldens: {},
     added: [],
     changed: [],
@@ -34,6 +34,7 @@ const next = async (root: string) => (await semlayer(root, ["next", "--json"])).
 const status = async (root: string) => (await semlayer(root, ["status", "--json"])).json<ProjectStatus>();
 const mentions = (text: string, phrase: string) => text.split(phrase).length - 1;
 const changeFile = (root: string) => join(root, ".semlayer", "change.json");
+const changeRecord = (root: string) => JSON.parse(readFileSync(changeFile(root), "utf8")) as { drafts_at_start?: string[] };
 
 describe("change start", () => {
   test("is refused without a note or a name, with a code and the command to run", async () => {
@@ -72,7 +73,7 @@ describe("change start", () => {
     const r = await semlayer(root, [...START, "--json"]);
     expect(r.code).toBe(0);
     expect(r.json()).toMatchObject({ started: true, note: "Add a revenue per item figure", started_by: "Sam", started_at: FIXED_NOW, from_version: "1.0", next: "semlayer next" });
-    expect(JSON.parse(readFileSync(changeFile(root), "utf8"))).toEqual({ version: 1, note: "Add a revenue per item figure", started_by: "Sam", started_at: FIXED_NOW, from_version: "1.0" });
+    expect(JSON.parse(readFileSync(changeFile(root), "utf8"))).toEqual({ version: 1, note: "Add a revenue per item figure", started_by: "Sam", started_at: FIXED_NOW, from_version: "1.0", drafts_at_start: ["warehouse.products.launched_on"] });
     const plain = await semlayer(root, ["change", "status"]);
     expect(plain.code).toBe(0);
   });
@@ -109,11 +110,12 @@ describe("phase change", () => {
     const after = await next(root);
     expect(after.phase).toBe("change");
     expect(after.why).not.toContain("semlayer change start");
-    // The round has nothing pending, so the last step closes it, asking the owner for the version.
-    expect(after.kind).toBe("ask_owner");
-    expect(after.action).toEqual({ command: "change", args: ["close", "--version", "<version>"], kind: "ask_owner" });
-    expect(after.ask_owner?.text).toContain("I suggest 1.1");
-    expect(after.why).toContain("not available in this version of semlayer yet");
+    // The round has nothing pending, so the last step closes it, with the version the owner chooses.
+    expect(after.kind).toBe("run");
+    expect(after.action).toEqual({ command: "change", args: ["close", "--version", "1.1"], kind: "run" });
+    expect(after.run?.command).toBe("semlayer change close --version 1.1");
+    expect(after.why).toContain("I suggest 1.1");
+    expect(after.why).not.toContain("not available");
   });
 
   test("a layer with no release is led to the first release, not to change start", async () => {
@@ -133,7 +135,7 @@ describe("phase change", () => {
     await semlayer(root, START);
     const s = await status(root);
     expect(s.layer_version).toBe("1.0");
-    expect(s.change).toEqual({ version: 1, note: "Add a revenue per item figure", started_by: "Sam", started_at: FIXED_NOW, from_version: "1.0" });
+    expect(s.change).toEqual({ version: 1, note: "Add a revenue per item figure", started_by: "Sam", started_at: FIXED_NOW, from_version: "1.0", drafts_at_start: ["warehouse.products.launched_on"] });
     expect(s.next_step.phase).toBe("change");
   });
 
@@ -158,6 +160,31 @@ describe("phase change", () => {
     await semlayer(root, ["add-metric", "--name", "revenue_per_item", "--type", "ratio", "--numerator", "orders.revenue", "--denominator", "orders.order_count", "--description", "Revenue per order."]);
     const a = await next(root);
     expect(a).toMatchObject({ phase: "metrics", action: { command: "readback", args: ["--targets", "metric:revenue_per_item"] } });
+    expect(a.why).toContain("wait for the owner's yes");
+  });
+
+  test("a draft present before the round is deferred: next offers the close, and the close lists it as left out", async () => {
+    const root = releaseFixture();
+    release(root);
+    expect((await semlayer(root, START)).code).toBe(0);
+    expect(changeRecord(root).drafts_at_start).toEqual(["warehouse.products.launched_on"]);
+    const a = await next(root);
+    expect(a.action).toEqual({ command: "change", args: ["close", "--version", "1.1"], kind: "run" });
+    expect(a.why).toContain("Drafts the owner deferred, which the release leaves out (1): warehouse.products.launched_on");
+    expect(a.why).not.toContain("wait for the owner's yes");
+    const c = await semlayer(root, ["change", "close", "--version", "1.1", "--json"]);
+    expect(c.code).toBe(0);
+    expect(c.json<{ drafts_left_out: string[] }>().drafts_left_out).toEqual(["warehouse.products.launched_on"]);
+  });
+
+  test("an approved item the round revoked is read back before the close, even in the metrics phase's words", async () => {
+    const root = releaseFixture();
+    release(root);
+    await semlayer(root, START);
+    expect((await semlayer(root, ["approve", "--target", "warehouse.orders.revenue", "--revoke"])).code).toBe(0);
+    const a = await next(root);
+    expect(a.phase).toBe("change");
+    expect(a.action).toMatchObject({ command: "readback", args: ["--targets", "warehouse.orders.revenue"] });
     expect(a.why).toContain("wait for the owner's yes");
   });
 

@@ -3,7 +3,7 @@
 // neither has never been released and gets no message. The open change round, .semlayer/change.json,
 // reads as one (spec: Iterating a layer, The change round).
 import { CHANGE_FILE, loadChange } from "../change-record.ts";
-import { CHANGELOG_FILE, loadChangelog } from "../release.ts";
+import { CHANGELOG_FILE, compareVersions, loadChangelog, VERSION_PATTERN } from "../release.ts";
 import type { RuleContext } from "./index.ts";
 
 export default function release(ctx: RuleContext): void {
@@ -22,7 +22,10 @@ export default function release(ctx: RuleContext): void {
       "semantic.yaml",
       "layer_version",
       last
-        ? `layer_version is ${version ?? "not set"} but the last release in ${CHANGELOG_FILE} is ${last.version}; set layer_version to ${last.version}, or restore ${CHANGELOG_FILE} if an entry was lost`
+        ? `layer_version is ${version ?? "not set"} but the last release in ${CHANGELOG_FILE} is ${last.version}; ` +
+            (typeof version === "string" && VERSION_PATTERN.test(version) && compareVersions(version, last.version) > 0
+              ? `if semlayer change close --version ${version} stopped before recording its entry, run it again to finish the release; else set layer_version to ${last.version}`
+              : `set layer_version to ${last.version}, or restore ${CHANGELOG_FILE} if an entry was lost`)
         : `layer_version is ${version} but there is no ${CHANGELOG_FILE}; restore it from version control, or remove layer_version if no release was recorded`,
       "release.version_mismatch",
       "semlayer validate",

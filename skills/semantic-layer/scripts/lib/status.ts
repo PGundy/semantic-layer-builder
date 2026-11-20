@@ -1393,6 +1393,13 @@ function rowFilterJoinsWithoutGoldens(
 export interface TargetState {
   hash: string;
   state: Integrity;
+  // Whether the item carries an approval's trace now (approved_by, approved_at, approved_hash, or
+  // access.yaml's last_approved). A draft with none was never approved, or its approval was revoked.
+  stamped: boolean;
+}
+
+function stamped(e: ApprovalEntry): boolean {
+  return ["approved_by", "approved_at", "approved_hash", "last_approved"].some((k) => e.item[k] !== undefined && e.item[k] !== null);
 }
 
 // The status with what semlayer next reads beside it: every approve target of the project by ref, and the
@@ -1460,10 +1467,10 @@ export function statusDetail(root: string, only?: string): StatusDetail {
   const replies = ledger.replies;
   const targets = new Map<string, TargetState>();
   for (const e of [...reports.flatMap((r) => r.approvals), ...allMetricEntries, ...accessEntries]) {
-    if (!targets.has(e.ref)) targets.set(e.ref, { hash: e.hash, state: integrity(e, projectHashed) });
+    if (!targets.has(e.ref)) targets.set(e.ref, { hash: e.hash, state: integrity(e, projectHashed), stamped: stamped(e) });
   }
-  for (const e of pairApprovals) targets.set(e.ref, { hash: e.hash, state: integrity(e, true) });
-  for (const g of listApprovals({ goldens: loadedGoldens })) if (g.kind === "golden" && g.complete && g.status === "approved") targets.set(g.ref, { hash: g.hash, state: "current" });
+  for (const e of pairApprovals) targets.set(e.ref, { hash: e.hash, state: integrity(e, true), stamped: stamped(e) });
+  for (const g of listApprovals({ goldens: loadedGoldens })) if (g.kind === "golden" && g.complete && g.status === "approved") targets.set(g.ref, { hash: g.hash, state: "current", stamped: true });
   const withoutYes = (refs: string[]) =>
     refs.filter((ref) => {
       const t = targets.get(ref);
