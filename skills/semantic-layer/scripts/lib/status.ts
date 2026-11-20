@@ -51,6 +51,7 @@ import {
 } from "./snapshot-diff.ts";
 import { intakeMode, upgradeCommand } from "./intake.ts";
 import { effectiveScope } from "./table-list.ts";
+import { type SchemaQuestion, schemaQuestion, schemaQuestionArgs } from "./schema-scope.ts";
 import { DIALECTS, TO_ONE_RELATIONSHIPS } from "./types.ts";
 import type { AccessMode, Approval, Dialect, Golden, IntakeMode, LedgerReply, Metric, Model, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
 
@@ -424,6 +425,8 @@ interface SourceReport {
   status: SourceStatus;
   drift: Drift;
   approvals: ApprovalEntry[];
+  // The schema question while it is open (spec: Schema scope, The schema question).
+  schemaQuestion?: SchemaQuestion;
 }
 
 // The approve targets of the entries in the given integrity state.
@@ -619,7 +622,9 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
     left_scope_with_models: approvedModelsOn(stillOut, tables, models),
     next_batch: nextBatch,
   };
-  return { status, drift, approvals: modelApprovals(name, config, models) };
+  const scopedSet = new Set(scoped);
+  const question = snapshot ? schemaQuestion(config, snapshot, (t) => scopedSet.has(t)) : undefined;
+  return { status, drift, approvals: modelApprovals(name, config, models), ...(question ? { schemaQuestion: question } : {}) };
 }
 
 // The data-dependent steps of an export source, each waiting on a connection.
@@ -738,6 +743,8 @@ interface StepContext {
   // The typed edits (the words after "semlayer") that declare the roles and user attributes the goldens
   // name, which access.yaml must define once it exists.
   goldenAccessEdits: string[][];
+  // The open schema question per source (spec: Schema scope, The schema question).
+  schemaQuestions: Map<string, SchemaQuestion>;
 }
 
 const OPEN_BASELINE = "everyone sees every approved model, field and metric except those tagged pii or sensitive";
@@ -862,6 +869,36 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         "--write; remove an exclude that matches it with --remove), or restore the pattern or the intake.schemas entry that selected it; " +
         `otherwise revoke it with semlayer approve --target ${s}.<model> --revoke, or remove its model file.`,
       action: act("scope", ["--source", s, ...tablesArgs(tables)]),
+    };
+  }
+
+  // Step schema_scope (G3): once a snapshot holds tables of more than one schema, the owner says
+  // which schema the layer reads (intake.primary) and answers each foreign key between it and
+  // another schema read with an approved or a declined pair, before the focus question and draft.
+  const asked = sources.find((s) => ctx.schemaQuestions.has(s.source));
+  if (asked) {
+    const q = ctx.schemaQuestions.get(asked.source)!;
+    const a = schemaQuestionArgs(q);
+    if (a.command === "readback") {
+      return {
+        phase: "scope",
+        source: asked.source,
+        message:
+          `Source "${asked.source}" has a schema pair the owner asked for, recorded as a draft. Read it back to the owner and approve it only on their yes: ` +
+          `semlayer approve --target ${a.args[1]!}; the pair stays a draft until then.`,
+        action: act(a.command, a.args, a.kind),
+      };
+    }
+    const keys = q.keys.map((k) => `${k.table} (${k.columns.join(", ")}) -> ${k.references}${k.constraint === null ? "" : `, foreign key ${k.constraint}`}`);
+    return {
+      phase: "scope",
+      source: asked.source,
+      message:
+        `Source "${asked.source}" reads more than one schema (${q.schemas.join(", ")}), ` +
+        (q.primary_set ? `and the catalog records ${keys.length} foreign key(s) between ${q.primary} and another schema that no schema pair answers: ${preview(keys)}. ` : "and names no primary schema. ") +
+        `A first layer reads one schema and joins within it. Ask the owner whether ${q.primary} is enough, then record the answer with semlayer setup --primary, ` +
+        "semlayer add-cross-schema (keys for a yes, --decline for a no) and the pair's readback; semlayer next lists the commands for each answer.",
+      action: act(a.command, a.args, a.kind),
     };
   }
 
@@ -1459,6 +1496,7 @@ export function statusDetail(root: string, only?: string): StatusDetail {
       return ready ? act("approve", ["--target", ready]) : act("readback", ["--targets", refs.join(",")]);
     },
     goldenAccessEdits: goldenAccessEdits(loadedGoldens),
+    schemaQuestions: new Map(reports.flatMap((r) => (r.schemaQuestion ? [[r.status.source, r.schemaQuestion] as const] : []))),
     goldenSources: new Map(
       loadedGoldens.flatMap(({ path, golden }) => {
         const g: Record<string, unknown> = isRecord(golden) ? golden : {};
