@@ -11,6 +11,9 @@ import { emitPlan, executePlanPartial, resultsInput } from "../lib/plan.ts";
 import { listModels, loadModel, loadSnapshot, loadSource, paths } from "../lib/project.ts";
 import { type CrossSchemaPair, crossSchemaLevel, crossSchemaPairs, schemaJoin, undeclaredPairError } from "../lib/schema-scope.ts";
 import { joinCheckPlan, joinQueryId, type JoinCheck, type TableRef } from "../lib/sql/join-check.ts";
+import { throughCheckQuery, throughEvidence, throughQueryId, type ThroughCheck } from "../lib/sql/through-check.ts";
+import { throughFindings, throughLines, throughSentence } from "../lib/readback-bridge.ts";
+import { joinLegs } from "../lib/through.ts";
 import { NAME_PATTERN, type Join, type JoinEvidence, type JoinKey, type Model, type Snapshot } from "../lib/types.ts";
 import { updateYaml } from "../lib/yaml.ts";
 
@@ -19,6 +22,8 @@ interface Target {
   model: Model;
   join: Join;
   check: JoinCheck;
+  // A bridge join's second query: its check measures the hop from the model to the bridge.
+  through?: ThroughCheck;
 }
 
 export interface CheckJoinResult {
@@ -47,7 +52,7 @@ function requireName(flag: string, value: string | undefined): string | undefine
 }
 
 // The physical table a model reads, taken from the snapshot when there is one.
-function resolveTable(snapshot: Snapshot | null, model: Model, keyColumns: string[], role: string): { ref: TableRef; columns: string[] } {
+function resolveTable(snapshot: Snapshot | null, model: Model, keyColumns: string[], role: string, code?: string, source?: string): { ref: TableRef; columns: string[] } {
   if (!model.table) throw new UserError(`Model "${model.model}" has no table.`);
   if (!snapshot) return { ref: splitQualified(model.table), columns: keyColumns };
   const table = findTable(snapshot.tables, model.table);
@@ -64,6 +69,8 @@ function resolveTable(snapshot: Snapshot | null, model: Model, keyColumns: strin
       throw new UserError(
         `The ${role} key column "${c}" is not a column of ${model.table} (model "${model.model}"). ` +
           `Columns: ${table.columns.map((col) => col.name).join(", ")}.`,
+        code && `semlayer tables --source ${source}`,
+        code,
       );
     }
     return found.name;
@@ -83,25 +90,53 @@ function buildTarget(ctx: CommandContext, source: string, snapshot: Snapshot | n
   if (!existsSync(paths(ctx.root).model(source, join.to))) {
     throw new UserError(`${where} points to "${join.to}", which is not a model in source "${source}".`);
   }
-  const right = loadModel(ctx.root, source, join.to).model;
+  const target = loadModel(ctx.root, source, join.to).model;
   const keys = join.keys ?? [];
   if (!keys.length || keys.some((k) => !k || typeof k.from !== "string" || typeof k.to !== "string")) {
     throw new UserError(`${where} needs keys, each with "from" and "to" columns.`);
   }
-  const left = resolveTable(snapshot, model, keys.map((k) => k.from), "left");
-  const rightTable = resolveTable(snapshot, right, keys.map((k) => k.to), "right");
+  // A bridge join's keys pair the model with the bridge, so its first hop is measured against the bridge.
+  const t = join.through;
+  const viaName = t === undefined ? undefined : typeof t?.model === "string" && NAME_PATTERN.test(t.model) ? t.model : "";
+  if (viaName !== undefined && (!viaName || viaName === model.model || viaName === join.to || !existsSync(paths(ctx.root).model(source, viaName))))
+    throw new UserError(
+      `${where} goes through "${String(t?.model)}", which is not a third model in source "${source}", so there is no bridge to measure. Nothing was written. Fix the join with semlayer remove-join and semlayer add-bridge.`,
+      "semlayer status",
+      "join.through_bridge_unknown",
+    );
+  const throughKeys = t?.keys ?? [];
+  if (t && (!Array.isArray(throughKeys) || !throughKeys.length || throughKeys.some((k) => !k || typeof k.from !== "string" || typeof k.to !== "string")))
+    throw new UserError(`${where} needs through.keys, each with "from" and "to" columns. Nothing was written.`, "semlayer add-bridge --help", "join.through_columns_missing");
+  const via = viaName ? loadModel(ctx.root, source, viaName).model : undefined;
+  const right = via ?? target;
+  const code = via ? "join.through_columns_missing" : undefined;
+  const left = resolveTable(snapshot, model, keys.map((k) => k.from), "left", code, source);
+  const rightTable = resolveTable(snapshot, right, keys.map((k) => k.to), via ? "bridge" : "right", code, source);
   // A join across schemas is measured only when an approved pair declares its keys, or while an
-  // approved join's grace lasts (spec: Schema scope).
-  const shape = schemaJoin(snapshot, model.table, right.table, keys);
-  if (shape && crossSchemaLevel(pairs, shape, join.status) === "error")
-    throw undeclaredPairError(where, source, shape, pairs, `run semlayer check-join --source ${source} --model ${model.model} --join ${join.name} again`);
+  // approved join's grace lasts (spec: Schema scope); each hop of a bridge join is a join of its own.
+  const tables = new Map([model, target, ...(via ? [via] : [])].map((m) => [m.model, m.table]));
+  for (const leg of joinLegs(model, { to: join.to, keys, through: via ? { ...t!, model: via.model } : undefined })) {
+    const shape = schemaJoin(snapshot, tables.get(leg.from)!, tables.get(leg.to)!, leg.keys);
+    const what = via ? `${where} (${leg.from} to ${leg.to})` : where;
+    if (shape && crossSchemaLevel(pairs, shape, join.status) === "error")
+      throw undeclaredPairError(what, source, shape, pairs, `run semlayer check-join --source ${source} --model ${model.model} --join ${join.name} again`);
+  }
   const resolvedKeys: JoinKey[] = keys.map((_, i) => ({ from: left.columns[i]!, to: rightTable.columns[i]! }));
-  return {
-    path,
-    model,
-    join,
-    check: { id: `${model.model}.${join.name}`, left: left.ref, right: rightTable.ref, keys: resolvedKeys },
-  };
+  const id = `${model.model}.${join.name}`;
+  let through: ThroughCheck | undefined;
+  if (via) {
+    const bridgeSide = resolveTable(snapshot, via, throughKeys.map((k) => k.from), "bridge", code, source);
+    const targetSide = resolveTable(snapshot, target, throughKeys.map((k) => k.to), "target", code, source);
+    through = {
+      id,
+      fact: left.ref,
+      bridge: rightTable.ref,
+      target: targetSide.ref,
+      keys: resolvedKeys,
+      throughKeys: throughKeys.map((_, i) => ({ from: bridgeSide.columns[i]!, to: targetSide.columns[i]! })),
+    };
+  }
+  return { path, model, join, check: { id, left: left.ref, right: rightTable.ref, keys: resolvedKeys }, ...(through ? { through } : {}) };
 }
 
 // The joins to check. With --all, a join that cannot be resolved (its target model is not
@@ -162,22 +197,23 @@ function humanReport(r: CheckJoinResult, target: Target, measuredEvidence: JoinE
   const e = measuredEvidence;
   const yaml = target.join.relationship ?? "none";
   const lines = [
-    `${r.model}.${r.join} -> ${target.join.to}  (YAML says ${yaml}, ${r.evidence ? `data says ${e.suggested_relationship}` : "not measured"})`,
+    `${r.model}.${r.join} -> ${target.join.to}${target.through ? ` through ${String(target.join.through!.model)}` : ""}  (YAML says ${yaml}, ${r.evidence ? `data says ${e.suggested_relationship}` : "not measured"})`,
     `  ${r.sentence}`,
     `  left rows ${e.left_rows}, matched ${e.matched_rows} (${pct(e.matched_rows, e.left_rows)}), unmatched ${e.left_rows - e.matched_rows}, null keys ${e.left_null_keys}, right rows ${e.right_rows}` +
       (r.evidence
         ? `, right key unique ${e.right_key_unique ? "yes" : "no"}, left key unique ${e.left_key_unique ? "yes" : "no"}, max fan-out ${e.max_fanout}`
         : ""),
   ];
+  if (r.evidence?.through) lines.push(...throughLines(target.model.model, target.join, r.evidence.through).map((l) => `  ${l}`));
   for (const f of r.findings) lines.push(`  ${f.level}: ${f.message}`);
   return lines.join("\n");
 }
 
 // The names a database message about these joins may quote: their tables and key columns, lowercased.
 function knownNames(targets: Target[]): Set<string> {
-  const names = targets.flatMap(({ check }) => [
-    ...[check.left, check.right].flatMap((r) => [r.schema ?? "", r.name, r.schema ? `${r.schema}.${r.name}` : r.name]),
-    ...check.keys.flatMap((k) => [k.from, k.to]),
+  const names = targets.flatMap(({ check, through }) => [
+    ...[check.left, check.right, ...(through ? [through.target] : [])].flatMap((r) => [r.schema ?? "", r.name, r.schema ? `${r.schema}.${r.name}` : r.name]),
+    ...[...check.keys, ...(through?.throughKeys ?? [])].flatMap((k) => [k.from, k.to]),
   ]);
   return new Set(names.map((n) => n.toLowerCase()));
 }
@@ -209,6 +245,7 @@ const spec: CommandSpec = {
     const skippedLines = skipped.map((s) => `${s.model}.${s.join}: skipped: ${s.reason}`);
 
     const plan = joinCheckPlan(source, targets.map((t) => t.check));
+    plan.queries.push(...targets.flatMap((t) => (t.through ? [throughCheckQuery(source.dialect, t.through)] : [])));
     const input = resultsInput(ctx, values);
     if (bool(values, "emit-sql")) {
       ctx.out(formatJson(emitPlan(ctx, plan, { name: "check-join", values, keepsPartial: true })));
@@ -230,7 +267,7 @@ const spec: CommandSpec = {
     });
     const refused: SkippedJoin[] = [];
     const answered = targets.filter((t) => {
-      const reason = failed[joinQueryId(t.model.model, t.join.name)];
+      const reason = failed[joinQueryId(t.model.model, t.join.name)] ?? (t.through ? failed[throughQueryId(t.model.model, t.join.name)] : undefined);
       if (reason !== undefined) refused.push({ model: t.model.model, join: t.join.name, reason });
       return reason === undefined;
     });
@@ -244,15 +281,28 @@ const spec: CommandSpec = {
       const id = joinQueryId(t.model.model, t.join.name);
       const row = results[id]?.[0];
       if (!row) throw new UserError(`No result row for "${id}".`);
+      const bridgeId = throughQueryId(t.model.model, t.join.name);
       try {
-        return evaluateJoin(row, t.join.relationship, {
+        const out = evaluateJoin(row, t.join.relationship, {
           left: t.model.model,
-          // A self-join names its other side by the join, e.g. "manager".
-          right: t.join.to === t.model.model ? t.join.name : t.join.to,
+          // A self-join names its other side by the join, e.g. "manager"; a bridge join's first hop, the bridge.
+          right: t.through ? String(t.join.through!.model) : t.join.to === t.model.model ? t.join.name : t.join.to,
           checkedAt,
           to: t.join.to,
           keys: t.join.keys,
         });
+        if (!t.through || !out.measured) return out;
+        const bridgeRow = results[bridgeId]?.[0];
+        if (!bridgeRow) throw new UserError(`No result row for "${bridgeId}".`);
+        const through = throughEvidence(bridgeRow, String(t.join.through!.model), t.join.through!.keys);
+        // The first hop fans out by design: the bridge's own findings and sentence replace those of a plain join.
+        const plain = out.findings.filter((f) => !f.message.startsWith("Match rate is ") && !f.message.includes("so this join fans out"));
+        return {
+          ...out,
+          evidence: { ...out.evidence, through },
+          findings: [...plain, ...throughFindings(t.model.model, t.join, through)],
+          sentence: throughSentence(t.model.model, t.join, through),
+        };
       } catch (err) {
         if (err instanceof UserError) throw new UserError(`${id}: ${err.message}`);
         throw err;

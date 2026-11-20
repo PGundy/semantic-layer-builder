@@ -21,6 +21,7 @@ import type { Dialect, FigureEvidence, Golden, Join, Metric, Model, PendingReadb
 import { DIALECTS, NAME_PATTERN, PROTECTED_TAGS } from "./types.ts";
 import { conditionWords, parseCondition } from "./conditions.ts";
 import { readYamlIfExists } from "./yaml.ts";
+import { bridgeDefinition, bridgeSql, throughCurrent, throughLines } from "./readback-bridge.ts";
 
 export const PENDING_DIR = join(".semlayer", "pending");
 // A readback's file, or the marker semlayer readback --discard leaves in its place so its id is never issued again.
@@ -509,15 +510,19 @@ function renderField(ref: string, source: string, model: Model, e: ApprovalEntry
   const out = [`${ref} (${e.kind})`];
   if (e.kind === "join") {
     const j = f as unknown as Join;
-    // A bridge join's readback must show its bridge and how a figure is shared across it, which this
-    // text does not hold, so it is refused rather than read back as a plain join; without a readback
-    // there is no owner yes, and the join stays a draft.
-    if (j.through)
-      throw new UserError(
-        `Cannot read ${ref} back yet: it is a bridge join through ${String(j.through.model)}, and a readback does not yet show a bridge or its dedupe rule, so the owner would say yes to a link they were not shown. Nothing was written, and the join stays a draft.`,
-        undefined,
-        "readback_blocked",
-      );
+    // A bridge join reads back its bridge, both key pairs, the dedupe rule and the bridge's counts
+    // (lib/readback-bridge.ts); semlayer readback's gate refuses one with no rule or no bridge evidence.
+    if (j.through) {
+      const via = String(j.through.model);
+      const tb = j.evidence?.through;
+      const measured = tb
+        ? [...throughLines(model.model, j, tb).map((l) => `- ${l}`), `- Checked ${j.evidence!.checked_at}.`, ...(throughCurrent(j, tb) ? [] : [`- This evidence measured another bridge or other keys; rerun semlayer check-join --source ${source} --model ${model.model} --join ${j.name}.`])]
+        : [`- No bridge evidence yet: run semlayer check-join --source ${source} --model ${model.model} --join ${j.name}.`];
+      return {
+        lines: [...out, ...description(j, null, ""), ...bridgeDefinition(model.model, j).map((l) => `- ${l}`), WHO, MEASURED, ...measured, ...technical([bridgeSql(model.model, j)])],
+        who: [`${source}.${model.model}`, `${source}.${via}`, `${source}.${j.to}`],
+      };
+    }
     out.push(...description(j, null, ""), `- Links ${joinWords(model.model, j)}.`, WHO);
     const who = [`${source}.${model.model}`, `${source}.${j.to}`];
     const sql = technical([joinSql(model.model, j)]);
