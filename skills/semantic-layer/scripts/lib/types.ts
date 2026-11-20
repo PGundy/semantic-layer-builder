@@ -206,6 +206,8 @@ export interface Measure extends Approval {
   // Names of segments of the model whose filters narrow this measure, ANDed with filter (lib/segments.ts).
   segments?: string[];
   default_time_dimension?: string;
+  // A time dimension of the model the measure is not added up across, and which value it keeps (lib/compiler/semi-additive.ts).
+  non_additive_dimension?: { name: string; window: "last" | "first" };
 }
 
 export interface JoinKey {

@@ -10,6 +10,11 @@ export const RULES: DocRule[] = [
   ["spec.md", "a default time dimension is a time dimension of its model", "names a `type: time` dimension of the same model"],
   ["spec.md", "the bare grain reads the first measure's default", "is the default time dimension of the request's first measure at that grain"],
   ["spec.md", "no default is refused with its code", "is refused as `metric.default_time_missing`"],
+  ["spec.md", "a balance is not added up across time", "A balance is not added up across time"],
+  ["spec.md", "row filters apply before a balance row is kept", "gets the last balance of the rows they may see"],
+  ["spec.md", "a mixed balance request is refused with its code", "is refused as `metric.semi_additive_mixed`"],
+  ["spec.md", "the readback figure uses the balance rule", "are computed by the same rule, over the kept rows"],
+  ["phases/metrics.md", "the metrics card asks whether a figure is a level", "Is this the amount at the end of each period, or at its start?"],
   ["phases/metrics.md", "the metrics card asks the week start and the date", "Which day does your week start on, and which date is each of these figures counted by"],
   ["phases/metrics.md", "the week start is written by setup", "--week-start <day>"],
 ];

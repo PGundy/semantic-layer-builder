@@ -95,7 +95,16 @@ function measurePlan(layer: AccessLayer, source: SourceConfig, root: string, mod
   const base = layer.models.find((m) => m.source === source.source && m.model === model)!;
   const m = list<Measure>(base.measures).find((x) => x.name === measure)!;
   const rows = freeName(base);
-  const count = { name: rows, agg: "count", status: "approved", ...(m.filter !== undefined ? { filter: m.filter } : {}), ...(m.segments ? { segments: m.segments } : {}) };
+  // The count reads the rows the measure reads: for a semi-additive measure, the row it keeps per
+  // entity (compiler/semi-additive.ts), so both come from one subquery.
+  const count = {
+    name: rows,
+    agg: "count",
+    status: "approved",
+    ...(m.filter !== undefined ? { filter: m.filter } : {}),
+    ...(m.segments ? { segments: m.segments } : {}),
+    ...(m.non_additive_dimension ? { non_additive_dimension: m.non_additive_dimension } : {}),
+  };
   const copy = { ...layer, models: layer.models.map((x) => (x === base ? ({ ...x, measures: [...list(x.measures), count] } as unknown as Model) : x)) };
   const c = compileLayer({ layer: copy, source, request: { source: source.source, measures: [`${model}.${measure}`, `${model}.${rows}`] }, root, snapshot: null });
   if (!c.ok) return { why: c.reason };

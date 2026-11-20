@@ -23,6 +23,7 @@ import { measureFilter, unknownSegments } from "./segments.ts";
 import { findSegment, segmentNames } from "../segments.ts";
 import { type AppliedRows, rowsPredicate } from "./rowfilters.ts";
 import { resolveDefaultTime, sourceWeekStart } from "./calendar.ts";
+import { semiAdditive, semiAdditiveRequest } from "./semi-additive.ts";
 import { aggregate, COMPILER_DIALECTS, embed, grained, Params, predicate } from "./sql.ts";
 
 export type { CompileWarning, PlannedJoin } from "./joins.ts";
@@ -42,7 +43,8 @@ export type RefusalCode =
   | "scope.cross_schema_undeclared"
   | "metric.segments_on_metric"
   | "metric.default_time_missing"
-  | "join.multi_fact_segments";
+  | "join.multi_fact_segments"
+  | "metric.semi_additive_mixed";
 
 export interface Refusal {
   code: RefusalCode;
@@ -318,6 +320,8 @@ function compileLayerInner(input: CompileInput): CompileResult {
       add("invalid_layer", `${f.ref} needs an agg, and an expr unless it is a count; run semlayer validate`, f.ref);
   }
   if (refusals.length) return refuse(source.source, refusals);
+  const semi = semiAdditiveRequest(base, [...selected, ...filterFields.filter((f): f is Field => f?.kind === "measure")], add);
+  if (refusals.length) return refuse(source.source, refusals);
 
   // A query that reads only the base table keeps its exprs as written; one with joins qualifies
   // every column with its table's alias. The fields are in reading order (the columns, then WHERE
@@ -374,8 +378,29 @@ function compileLayerInner(input: CompileInput): CompileResult {
   const clause = (kind: Field["kind"]) =>
     filters.flatMap((f, i) => (filterFields[i]!.kind === kind ? [predicate(sqlOf(filterFields[i]!), f.op as FilterOp, f.value, params)] : []));
   const where = [...(baseFilter ? [baseFilter] : []), ...segmentWhere, ...clause("dimension")];
+  // A semi-additive request reads its base through a subquery that keeps one row per entity and
+  // group (semi-additive.ts); its dimensions and measures then read that subquery's columns.
+  let from: string[] | undefined;
+  if (semi) {
+    const values = semi.measures.map((f) => ((f.item as Measure).expr === undefined ? undefined : embed(plan.sql((f.item as Measure).expr!, plan.base, f.ref))));
+    const filter = semi.filter === undefined ? [] : [`(${embed(plan.sql(semi.filter, plan.base, semi.measures[0]!.ref))})`];
+    const s = semiAdditive({
+      dialect,
+      keys: semi.keys.map((k) => plan.sql(k, plan.base, semi.measures[0]!.ref)),
+      groups: dims.map((d) => sqlOf(d)),
+      values,
+      order: embed(plan.sql(semi.dimension.expr, plan.base, semi.measures[0]!.ref)),
+      window: semi.window,
+      from: plan.from(),
+      where: [...where, ...filter],
+    });
+    from = s.from;
+    where.length = 0;
+    dims.forEach((d, i) => done.set(d.ref, s.group(i)));
+    semi.measures.forEach((f, i) => done.set(f.ref, aggregate(dialect, (f.item as Measure).agg, s.value(i), undefined)));
+  }
   const having = clause("measure");
-  const lines = ["select", columns.map((c) => `  ${sqlOf(c.field)} as ${quoteIdent(dialect, c.name)}`).join(",\n"), ...plan.from()];
+  const lines = ["select", columns.map((c) => `  ${sqlOf(c.field)} as ${quoteIdent(dialect, c.name)}`).join(",\n"), ...(from ?? plan.from())];
   if (where.length) lines.push(`where ${where.join("\n  and ")}`);
   if (dims.length) lines.push(`group by ${dims.map((_, i) => i + 1).join(", ")}`);
   if (having.length) lines.push(`having ${having.join("\n  and ")}`);

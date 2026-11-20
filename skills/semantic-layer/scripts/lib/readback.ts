@@ -15,6 +15,7 @@ import { protectedColumns } from "./profile.ts";
 import { listModels, loadAccess, loadFile, loadMetrics, loadSnapshot, paths } from "./project.ts";
 import { parseTarget } from "./refs.ts";
 import { sourceWeekStart, type WeekDay } from "./compiler/calendar.ts";
+import { entityKeys, nonAdditiveDimension } from "./compiler/semi-additive.ts";
 import { andPredicates, findSegment, segmentNames } from "./segments.ts";
 import { referencedColumns } from "./snapshot-diff.ts";
 import { sqlNames } from "./sql-names.ts";
@@ -510,6 +511,7 @@ function joinSql(from: string, j: Join): string {
 }
 
 const BARE = /^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$/i;
+const SEMI_AGG_WORDS: Record<string, string> = { sum: "adds those up", avg: "averages those", min: "takes the smallest of those", max: "takes the largest of those" };
 
 function renderField(ref: string, source: string, model: Model, e: ApprovalEntry, info: SourceInfo, figure: FigureEvidence | undefined): Rendered {
   const f = e.item as Obj;
@@ -573,11 +575,24 @@ function renderField(ref: string, source: string, model: Model, e: ApprovalEntry
     }
     if (clauses.length) out.push("- It counts only rows where:", ...clauses.map((c, i) => `  ${i + 1}. ${c}`));
     else out.push("- It counts every row.");
+    // A semi-additive measure: the owner approves which row of each period counts.
+    const nad = nonAdditiveDimension(f);
+    let kept: string | undefined;
+    if (nad) {
+      const dim = (model.dimensions ?? []).find((d) => d.name === nad.name);
+      const keys = dim ? entityKeys(model, dim) : undefined;
+      const each = keys?.length ? ` for each ${keys.join(" and ")}` : "";
+      const then = SEMI_AGG_WORDS[String(f.agg)] ?? `takes the ${String(f.agg)} of those`;
+      out.push(
+        `- Not added up across time: in each period it keeps the ${nad.window} value along ${model.model}.${nad.name}${each} (the ${nad.window === "last" ? "latest" : "earliest"} one when no period is asked for), then ${then}.`,
+      );
+      kept = `over the rows of distinct on (${[...(keys ?? []), "<period>"].join(", ")}) order by ${String(dim?.expr ?? nad.name)} ${nad.window === "last" ? "desc" : "asc"}`;
+    }
     const fmt = typeof f.format === "string" ? f.format : "not set";
     out.push(`- Format: ${fmt}${typeof f.currency === "string" ? `, in ${f.currency}` : ""}.`);
     if (typeof f.default_time_dimension === "string") out.push(`- Measured over ${model.model}.${f.default_time_dimension} by default.`);
     const where = andPredicates([f.filter, ...named.map((seg) => seg.filter)].filter((t): t is string => typeof t === "string"));
-    sql.push(`${String(f.agg)}(${f.expr === undefined ? "*" : String(f.expr)})${where === undefined ? "" : ` where ${where}`}`);
+    sql.push(`${String(f.agg)}(${f.expr === undefined ? "*" : String(f.expr)})${where === undefined ? "" : ` where ${where}`}${kept ? ` ${kept}` : ""}`);
   }
   const hops = new Map<string, Join & { from: string }>();
   for (const r of reads) {
