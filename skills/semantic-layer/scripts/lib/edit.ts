@@ -939,8 +939,9 @@ export function pathText(path: (string | number)[]): string {
 }
 
 // Every place outside the target's own name that names it: join references in model exprs and
-// filters (through the model's own join or a join to the target's model), metric measure
-// references, golden requests, and access.yaml restriction targets, deny.fields and row filters.
+// filters (through the model's own join or a join to the target's model), a dimension's use as a
+// measure's non_additive_dimension, metric measure references, golden requests, and access.yaml
+// restriction targets, deny.fields and row filters.
 // `conflicts` lists the access patterns that would make a list of access.yaml cover the new name
 // differently from the old one, which a rename would silently change. With no new name, `to` equals `from`.
 export function referenceSites(root: string, target: RefTarget, newName = target.name): { sites: RefSite[]; conflicts: string[] } {
@@ -984,6 +985,18 @@ export function referenceSites(root: string, target: RefTarget, newName = target
         sql(file, ["measures", i, "filter"], name, obj(x).filter);
       });
     }
+  }
+  // A model's or a measure's default_time_dimension and a measure's non_additive_dimension name a
+  // time dimension of the measure's own model.
+  if (field?.kind === "dimension") {
+    const m = models.get(field.model);
+    const file = paths(root).model(field.source, field.model);
+    if (obj(m).default_time_dimension === field.name) add(file, ["default_time_dimension"], field.name, newName);
+    arr(m?.measures).forEach((x, i) => {
+      if (obj(x).default_time_dimension === field.name) add(file, ["measures", i, "default_time_dimension"], field.name, newName);
+      const nad = obj(obj(x).non_additive_dimension);
+      if (nad.name === field.name) add(file, ["measures", i, "non_additive_dimension", "name"], nad.name, newName);
+    });
   }
   if (field?.kind === "measure") {
     const file = paths(root).metrics;

@@ -126,9 +126,10 @@ semlayer status
 2. **Focus.** Past 12 tables, you choose which matter, with patterns such as `fct_*` or `*_archive`; nobody describes 20 tables at once.
 3. **Profile and draft.** Row counts, null rates, top values and candidate keys, then a draft model per table with its dimensions, measures, joins, PII tags and open questions.
 4. **Interview.** A few tables at a time, most important first; each item read back and approved only on your yes. An approval records a hash, so `semlayer validate` reports an approved item that changed afterwards.
-5. **Joins.** Match rate, key uniqueness and double counting measured before you sign a join off.
-6. **Metrics and access.** Ratio and derived metrics, and who may see what: open by default with personal and sensitive data hidden, roles from user attributes, restrictions, and row filters that can follow a reporting hierarchy. `semlayer access` shows what any user would see.
-7. **Goldens.** Questions you already know the answer to, written in the layer's own terms; the reference compiler turns the YAML into SQL for it, as the role and user the golden runs as. `semlayer goldens check` compiles every approved golden from the current YAML and runs it again, so a change to the data, or an approved edit that moves a figure, fails the goldens that use it.
+5. **Joins.** Match rate, key uniqueness and double counting measured before you sign a join off. A many-valued attribute, such as the tags of an order, joins through a bridge table with the rule you choose for sharing a figure among its values, so a total is never multiplied by accident.
+6. **Metrics and access.** Ratio and derived metrics; segments, a condition such as "completed orders" that a table names once and its measures reuse; the date each figure is measured over by default and the day a week starts; balances that keep each period's last value instead of adding the days up; and who may see what: open by default with personal and sensitive data hidden, roles from user attributes, restrictions, and row filters that can follow a reporting hierarchy. `semlayer access` shows what any user would see.
+7. **Goldens.** Questions you already know the answer to, written in the layer's own terms; the reference compiler turns the YAML into SQL for it, as the role and user the golden runs as. `semlayer goldens check` compiles every approved golden from the current YAML and runs it again, so a change to the data, or an approved edit that moves a figure, fails the goldens that use it. A request may combine measures of several tables, such as orders and refunds by month, and on Postgres it can add a running total, a comparison with the prior period and a year earlier, or the last n days against the n days before and a year earlier (see Figures over time).
+8. **Changes.** A finished layer is released as 1.0 and then changed in rounds, each closed as a new version with a changelog entry that names what changed and which goldens' figures moved (see Changing a finished layer).
 
 The files:
 
@@ -141,6 +142,7 @@ semantic/
   metrics.yaml                  ratio and derived metrics
   access.yaml                   roles, allowed models, denials, row filters
   goldens/<name>.yaml           confirmed questions, their requests and expected rows
+  changelog.yaml                releases: each version's approved items and golden rows
 ```
 
 A measure, as the owner approved it:
@@ -213,6 +215,41 @@ Postgres 13 to 17 is supported, and CI runs the live tests on each of those majo
 Joins live within one source. A question that spans sources becomes an open question, because joining across engines needs a federating engine of its own.
 
 A first layer stays within one schema of its source. `semlayer setup --primary <schema>` names it, and `semlayer next` asks the owner when the database has more than one. A join leaves the primary schema only on a schema pair the owner approved: `semlayer add-cross-schema` records the pair with the keys that connect the two schemas, and `semlayer approve --target schema-pair:<source>:<from>:<to>` approves it on the owner's recorded yes.
+
+## Figures over time
+
+On Postgres, a request asks for any approved measure or ratio metric over time, and adds no definition to approve: the golden that records it holds the owner's yes to its figures. The owner's question "revenue in the last 30 days against the prior 30 days and a year ago", on a layer over the Chinook sample database in [`fixtures/chinook/`](fixtures/chinook/), is this request:
+
+```json
+{
+  "source": "chinook",
+  "measures": ["invoice.revenue"],
+  "window": { "dimension": "invoice.invoice_date", "days": 30, "as_of": "2025-12-22" },
+  "compare": { "with": ["prior", "year_ago"] }
+}
+```
+
+```sh
+semlayer sql --source chinook --request request.json   # the SQL, the three date ranges in words, never run
+semlayer goldens new --name revenue_30_days --question "Revenue in the last 30 days against the prior 30 days and a year ago" --request request.json
+```
+
+It returns one row with the columns `revenue`, `revenue_prior`, `revenue_prior_change`, `revenue_prior_pct`, `revenue_year_ago`, `revenue_year_ago_change` and `revenue_year_ago_pct`: here 38.62 for 2025-11-23 to 2025-12-22, against 49.62 for the 30 days before and 37.62 for the same dates a year earlier. A `_pct` column is a fraction (-0.2217 for a fall of 22.17%), blank when the earlier figure is 0. With no `as_of`, `semlayer sql` runs the window as of today's date in UTC and says so; `semlayer goldens new` writes that date into the golden, so a golden always states its date and `semlayer goldens check` never reads the clock.
+
+By month instead of by days, `"running": {"over": "invoice.invoice_date:month"}` adds `revenue_running` (with `"periods": 3`, `revenue_trailing_3`), and `"compare": {"over": "invoice.invoice_date:month", "with": ["prior", "year_ago"]}` adds the month before and the same month a year earlier, each with its `_change` and `_pct`. `over` names one of the request's dimensions in full.
+
+## Changing a finished layer
+
+When the owner agrees the first build is finished, the agent records it as release 1.0, and each later change is a round of its own:
+
+```sh
+semlayer change close --version 1.0      # the first release: every approved item's hash and every golden's rows
+semlayer change start --note "Add the refund rate" --by "Dana Ruiz"
+semlayer change status                   # items added, changed and removed since the release, and the goldens that read them
+semlayer change close --version 1.1      # refused, naming each, while a changed item waits for the owner's yes or a golden's figures moved unconfirmed
+```
+
+Only the items the round touches are read back. `layer_version` in `semantic.yaml` and `changelog.yaml` beside it record each release; a draft the owner deferred is left out of a release and named. After a schema change, `semlayer introspect` keeps `.semlayer/drift.json`, the record of the tables and columns that changed, and `semlayer validate` warns `release.column_retyped` on each approved field that reads a retyped column until it is read back and approved again.
 
 ## Example
 

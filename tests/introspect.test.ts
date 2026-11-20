@@ -7,6 +7,7 @@ import { rowCountNote } from "../skills/semantic-layer/scripts/commands/introspe
 import { type CredentialSlot, hasCredential } from "../skills/semantic-layer/scripts/lib/credentials.ts";
 import { buildSnapshot, nullable } from "../skills/semantic-layer/scripts/lib/introspect.ts";
 import { introspectionPlan, schemaMatcher } from "../skills/semantic-layer/scripts/lib/sql/introspection.ts";
+import { unreadableLine } from "../skills/semantic-layer/scripts/lib/sql/unreadable.ts";
 import type { QueryPlan, Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { duckdbSource, FIXED_NOW, initProject, PG_URL, semlayer, tempRoot } from "./helpers.ts";
@@ -984,5 +985,31 @@ describe("add-source", () => {
     const r = await semlayer(t.root, ["add-source", "--name", "x", "--dialect", "duckdb"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("semlayer init");
+  });
+});
+
+describe("the skipped-relations line", () => {
+  const relations = (n: number) => Array.from({ length: n }, (_, i) => ({ schema: "acme", name: `t${String(i + 1).padStart(2, "0")}` }));
+
+  test("three relations are all named", () => {
+    const line = unreadableLine(relations(3), "wh")!;
+    expect(line).toContain("Skipped 3 relations this role cannot read: acme.t01, acme.t02, acme.t03.");
+    expect(line).not.toContain("more");
+  });
+
+  test("25 relations name the first 10, then how many more, and say where the full list is", () => {
+    const line = unreadableLine(relations(25), "wh")!;
+    expect(line).toContain("Skipped 25 relations this role cannot read: acme.t01, ");
+    expect(line).toContain("acme.t10 and 15 more");
+    expect(line).not.toContain("acme.t11");
+    expect(line).toContain("--json");
+    expect(line).toContain("skipped_unreadable");
+    expect(line.length).toBeLessThan(600);
+  });
+
+  test("exactly 10 relations are all named", () => {
+    const line = unreadableLine(relations(10), "wh")!;
+    expect(line).toContain("acme.t10.");
+    expect(line).not.toContain("more");
   });
 });
