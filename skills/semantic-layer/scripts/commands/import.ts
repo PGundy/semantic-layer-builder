@@ -1,7 +1,9 @@
-import { existsSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
+import { projectEntries } from "./baseline.ts";
+import { type DbtEdits, toEdits } from "../lib/dbt-edits.ts";
 import { UserError } from "../lib/errors.ts";
 import { patternFlags } from "../lib/export-filters.ts";
 import { droppedText, dropOtherSchemas, insideRoot, intakeMode, intakeSchemas, schemaListText } from "../lib/intake.ts";
@@ -10,8 +12,10 @@ import { IMPORT_FORMATS, type ImportFormat, importSnapshot } from "../lib/import
 import { qualifiedName } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
 import { filterInScope, unmatchedPatterns } from "../lib/patterns.ts";
-import { listModels, loadProject, loadSnapshot, loadSource, projectSettings, saveSnapshot } from "../lib/project.ts";
+import { listModels, loadMetrics, loadProject, loadSnapshot, loadSource, projectSettings, saveSnapshot } from "../lib/project.ts";
 import { changeLines, diffSnapshots, modeledTables, recordScope, scopeLines, selectionMatcher, tablesFlag } from "../lib/snapshot-diff.ts";
+import { shellQuote } from "../lib/ledger.ts";
+import { writeFileAtomic } from "../lib/lock.ts";
 import { effectiveScope } from "../lib/table-list.ts";
 import { RUNNABLE_DIALECTS, type Snapshot, type SnapshotTable, type SourceConfig } from "../lib/types.ts";
 
@@ -73,11 +77,58 @@ function importFile(root: string, cwd: string, source: SourceConfig, given: stri
   return file;
 }
 
+// Where --emit writes: the path given, resolved from the working directory as --file is (and as
+// semlayer apply --file reads it), and it must lie inside the semantic root, also through a link in
+// an existing parent, as baseline --out must. Refused: a path outside the root, one of the project's own
+// files or directories, a link, a directory, a missing parent and an existing file, so a layer file or an
+// earlier edits file is never replaced.
+function emitPath(root: string, cwd: string, given: string): string {
+  if (!given.trim()) throw new UserError("--emit needs a file path, such as --emit edits.json.");
+  const base = resolve(root);
+  const target = resolve(cwd, given);
+  const rel = relative(base, target);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+    throw new UserError(`--emit ${given} is outside the semantic root ${root}; give a path inside it, such as --emit edits.json.`);
+  }
+  const parent = dirname(target);
+  if (!existsSync(parent)) throw new UserError(`The folder ${parent} does not exist; create it or give another path with --emit.`);
+  const realRoot = realpathSync(base);
+  const realRel = relative(realRoot, realpathSync(parent));
+  if (realRel.startsWith("..") || isAbsolute(realRel)) {
+    throw new UserError(`--emit ${given} leads outside the semantic root ${root} through a link; give a path inside it.`);
+  }
+  const own = projectEntries(base);
+  const norm = join(realRel, basename(target)).split(sep).join("/").toLowerCase();
+  if (own.files.includes(norm)) throw new UserError(`--emit ${given} is one of the project's own files; give another path, such as --emit edits.json.`);
+  const dir0 = [...own.dirs, ".semlayer"].find((d) => norm === d || norm.startsWith(`${d}/`));
+  if (dir0) throw new UserError(`--emit ${given} is inside the project's ${dir0}/ directory, which semlayer manages; give another path, such as --emit edits.json.`);
+  const stat = lstatSync(target, { throwIfNoEntry: false });
+  if (stat?.isSymbolicLink()) throw new UserError(`${given} is a symbolic link; give a plain file path with --emit.`);
+  if (stat?.isDirectory()) throw new UserError(`${given} is a directory; give a file path with --emit, such as --emit edits.json.`);
+  if (stat) throw new UserError(`${given} already exists, so it is not overwritten. Remove it or give another path with --emit.`);
+  return target;
+}
+
+const argText = (p: string): string => (/^[A-Za-z0-9_./-]+$/.test(p) ? p : shellQuote(p));
+
+function emitLines(source: string, shown: string, e: DbtEdits, written: boolean): string[] {
+  const n = (kind: string) => e.items.filter((i) => i.kind === kind).length;
+  const lines = [
+    written
+      ? `Wrote ${e.edits.length} edit${e.edits.length === 1 ? "" : "s"} to ${shown} (${n("dimension")} dimensions, ${n("measure")} measures, ${n("join")} joins, ${n("metric")} metrics), each a draft described as from the dbt manifest. Nothing in the layer changed.`
+      : "Nothing to emit: every item is already in the layer or was skipped, so no edits file was written.",
+  ];
+  if (e.skipped.length) lines.push("Not emitted, with the reason:", ...e.skipped.map((x) => `  - ${x.kind} ${x.name}: ${x.reason}`));
+  for (const u of e.undrafted) lines.push(`Not drafted yet: semantic model ${u.model} (table ${u.table}); run \`${u.command}\` first, then import again.`);
+  if (written) lines.push(`Next: \`semlayer apply --file ${argText(shown)}\`, then semlayer validate and semlayer status (every item is a draft until the owner says yes on a readback).`);
+  return lines;
+}
+
 const spec: CommandSpec = {
   summary: "Build the snapshot from a schema export, a dbt manifest or DDL.",
   usage:
     "import --source <source> [--file <path>] [--format information_schema|dbt_manifest|ddl] [--catalog <catalog.json>]\n" +
-    "       [--include <pattern>]... [--exclude <pattern>]... [--semantic]\n\n" +
+    "       [--include <pattern>]... [--exclude <pattern>]... [--semantic [--emit <file>]]\n\n" +
     "  --file is optional for an export source whose intake.export.file names the export (read from the semantic root).\n" +
     "  When the source file's intake.schemas lists schemas, only their tables are kept; the rest are dropped and counted.\n\n" +
     "  --format is read from the file when left out: a .sql file is ddl, a JSON object with nodes is dbt_manifest,\n" +
@@ -93,7 +144,11 @@ const spec: CommandSpec = {
     "                      such as the patterns semlayer export-sql lists for its query to leave to semlayer import;\n" +
     "                      they apply to the tables intake.schemas keeps.\n\n" +
     "  --semantic          with a dbt manifest, also report its semantic models and metrics: counts, join candidates and what\n" +
-    "                      was skipped, with a reason for each. It reads only; no layer file is written.",
+    "                      was skipped, with a reason for each. It reads only; no layer file is written.\n\n" +
+    "  --emit <file>       with --semantic, also write the manifest's dimensions, measures, joins and metrics as typed edits for\n" +
+    "                      models already drafted, ready for semlayer apply --file <file>. Every edit is a draft described as from\n" +
+    "                      the dbt manifest; a join is inferred. Names already in the layer are left as they are and listed, as is each\n" +
+    "                      item that could not be mapped. The file is a new path inside the semantic root, never an existing file or one of the project's own files or directories.",
   options: {
     source: { type: "string" },
     format: { type: "string" },
@@ -102,6 +157,7 @@ const spec: CommandSpec = {
     include: { type: "string", multiple: true },
     exclude: { type: "string", multiple: true },
     semantic: { type: "boolean" },
+    emit: { type: "string" },
   },
   writes: "whole",
   async run({ values }, ctx) {
@@ -126,6 +182,9 @@ const spec: CommandSpec = {
     const exclude = patternFlags(values, "exclude");
 
     const wantSemantic = values.semantic === true;
+    const emitArg = str(values, "emit");
+    if (emitArg !== undefined && !wantSemantic) throw new UserError("--emit goes with --semantic: run semlayer import --source <s> --file <manifest> --semantic --emit edits.json.");
+    const emitTo = emitArg === undefined ? undefined : emitPath(ctx.root, ctx.cwd, emitArg);
     const { snapshot, warnings, format: used, detected, semantic } = await importSnapshot(
       source,
       format as ImportFormat | undefined,
@@ -186,6 +245,12 @@ const spec: CommandSpec = {
     }
     saveSnapshot(ctx.root, snapshot);
     const outside = semantic ? placeDbtSemantic(semantic, snapshot.tables, left.removed) : [];
+    let emitted: DbtEdits | undefined;
+    if (semantic && emitTo) {
+      const models = listModels(ctx.root, source.source).map((l) => l.model);
+      emitted = toEdits(semantic, { source, snapshot, models, metricNames: (loadMetrics(ctx.root).metrics ?? []).map((m) => String(m?.name)), outside });
+      if (emitted.edits.length) writeFileAtomic(emitTo, `${JSON.stringify({ edits: emitted.edits }, null, 2)}\n`, { exclusive: true });
+    }
 
     const columns = snapshot.tables.reduce((n, t) => n + t.columns.length, 0);
     const primaryKeys = snapshot.tables.filter((t) => (t.primary_key ?? []).length).length;
@@ -218,6 +283,19 @@ const spec: CommandSpec = {
           next,
           ...(filters ? { filters } : {}),
           ...(semantic ? { semantic: semanticJson(semantic, outside) } : {}),
+          ...(emitted
+            ? {
+                emit: {
+                  file: emitArg,
+                  written: emitted.edits.length > 0,
+                  edits: emitted.edits.length,
+                  items: emitted.items,
+                  skipped: emitted.skipped,
+                  undrafted: emitted.undrafted,
+                  next: emitted.edits.length ? `semlayer apply --file ${argText(emitArg!)}` : next,
+                },
+              }
+            : {}),
         }),
       );
       return 0;
@@ -232,14 +310,17 @@ const spec: CommandSpec = {
       );
     }
     if (semantic) lines.push(...semanticLines(semantic, outside));
+    if (emitted) lines.push(...emitLines(source.source, emitArg!, emitted, emitted.edits.length > 0));
     if (warnings.length) lines.push("Warnings:", ...warnings.map((w) => `  - ${w}`));
     const modeled = diff ? modeledTables(snapshot, loadModels, scope) : undefined;
     lines.push(...changeLines(diff, source.source, modeled), ...scopeLines(scopeChanges, source.source, diff?.tables_removed));
-    lines.push(
-      inScope > focus_threshold
-        ? `Next: ${inScope} tables are in scope, more than the focus threshold of ${focus_threshold}. Run \`${next}\` and choose which tables to focus on.`
-        : `Next: \`${next}\`.`,
-    );
+    if (!emitted?.edits.length) {
+      lines.push(
+        inScope > focus_threshold
+          ? `Next: ${inScope} tables are in scope, more than the focus threshold of ${focus_threshold}. Run \`${next}\` and choose which tables to focus on.`
+          : `Next: \`${next}\`.`,
+      );
+    }
     ctx.out(lines.join("\n"));
     return 0;
   },
