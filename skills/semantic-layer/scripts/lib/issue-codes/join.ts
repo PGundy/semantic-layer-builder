@@ -1,8 +1,39 @@
-// Codes of the bridge-join checks (lib/validate-rules/join.ts) and the compiler's refusals of segments in a
-// multi-fact request and of what a bridge join cannot share (spec: Bridges and multi-fact requests).
+// Codes of the bridge-join and conformed-dimension checks (lib/validate-rules/join.ts) and the compiler's
+// refusals of segments in a multi-fact request, of conformed time dimensions in two time zones and of
+// what a bridge join cannot share (spec: Bridges and multi-fact requests).
 import type { CodeFamily } from "./index.ts";
 
 const codes: CodeFamily = {
+  "join.conformed_ambiguous": {
+    level: "error",
+    meaning: "Two dimensions of one model conform to the same dimension, so a request grouped by it could group that model by either.",
+    next: "semlayer set",
+  },
+  "join.conformed_chain": {
+    level: "error",
+    meaning: "A dimension conforms to a dimension that itself conforms to another; conforms_to is one hop and is never followed further.",
+    next: "semlayer conform",
+  },
+  "join.conformed_cross_schema": {
+    level: "error",
+    meaning: "A dimension conforms to a dimension of a model in another schema, and no approved schema pair joins the two schemas.",
+    next: "semlayer add-cross-schema",
+  },
+  "join.conformed_target_unknown": {
+    level: "error",
+    meaning: "A dimension's conforms_to names no dimension of another model of its source.",
+    next: "semlayer conform",
+  },
+  "join.conformed_time_zone": {
+    level: "warning",
+    meaning: "Two conformed time dimensions record different time zones, so a day of one is not a day of the other; semlayer sql refuses to combine them.",
+    next: "semlayer set",
+  },
+  "join.conformed_type_mismatch": {
+    level: "error",
+    meaning: "A dimension conforms to one of another type, or to a time dimension with no time grain in common, so the two cannot group as one column.",
+    next: "semlayer conform",
+  },
   "join.multi_fact_segments": {
     level: "error",
     meaning: "A request whose measures come from several models names segments; a request's segments narrow the one model of its measures, so semlayer sql refuses it.",

@@ -2,16 +2,22 @@
 // of the source, its key and weight columns are columns of the tables in the snapshot, the weight is
 // numeric and goes with dedupe weight, and an approved bridge join has a dedupe rule; a bridge whose
 // evidence shows rows of the model with no bridge row is a warning. The schema-pair rule for the join's
-// two hops is in scope.ts.
+// two hops is in scope.ts. A dimension's conforms_to names a dimension of another model of the source,
+// of the same type (a time dimension with a grain in common), that conforms to nothing itself, and that
+// no other dimension of its model conforms to; the two models' schemas obey the schema-pair rule, and
+// two time zones are a warning (lib/conformed.ts).
 import { classifyType, isNumeric } from "../column-types.ts";
+import { conformedSchemas, conformTarget, zoneClash } from "../conformed.ts";
+import { crossSchemaPairs } from "../schema-scope.ts";
 import { itemHash } from "../approval-hash.ts";
 import { throughCurrent, throughLines, unbridgedWarning } from "../readback-bridge.ts";
-import type { Join, SnapshotTable } from "../types.ts";
+import { type Dimension, type Join, type Model, type SnapshotTable, TIME_GRAINS } from "../types.ts";
 import type { RuleContext } from "./index.ts";
 
 const hasColumn = (table: SnapshotTable, name: string) => table.columns.some((c) => c.name === name || c.name.toLowerCase() === name.toLowerCase());
 
 export default function join(ctx: RuleContext): void {
+  conformed(ctx);
   for (const [source, models] of ctx.models) {
     for (const m of models.values()) {
       const model = m.data;
@@ -81,6 +87,80 @@ export default function join(ctx: RuleContext): void {
           ctx.error(m.file, `${at}.weight`, `${ref} names a weight column but its dedupe rule is ${t.dedupe ?? "not set"}; a weight goes only with dedupe weight`, "join.through_weight_invalid");
         else if (weightColumn && !isNumeric(classifyType(String(weightColumn.type))))
           ctx.error(m.file, `${at}.weight`, `the weight column ${weightColumn.name} of ${bridge.model} is ${weightColumn.type}, not a number, so it cannot share a figure`, "join.through_weight_invalid");
+      });
+    }
+  }
+}
+
+const grainsOf = (d: Dimension): readonly string[] => (Array.isArray(d.time_grains) ? d.time_grains : TIME_GRAINS);
+
+function conformed(ctx: RuleContext): void {
+  for (const [source, models] of ctx.models) {
+    const pairs = crossSchemaPairs(ctx.sources.get(source)?.data ?? {});
+    const snapshot = ctx.snapshots.get(source);
+    for (const m of models.values()) {
+      const model = m.data;
+      if (!Array.isArray(model.dimensions)) continue;
+      model.dimensions.forEach((d, i) => {
+        if (typeof d?.conforms_to !== "string") return;
+        const path = `dimensions[${i}].conforms_to`;
+        const ref = `${source}.${model.model}.${d.name}`;
+        const remove = `semlayer set ${ref} conforms_to --unset`;
+        const t = conformTarget(d);
+        const other = t && t.model !== model.model ? (models.get(t.model)?.data as Model | undefined) : undefined;
+        const target = other?.dimensions?.find((x) => x?.name === t!.name);
+        if (!target) {
+          ctx.error(
+            m.file,
+            path,
+            `${ref} conforms to ${d.conforms_to}, which is not a dimension of another model of source ${source}; name one as <model>.<dimension> with semlayer conform --source ${source} --dimension ${model.model}.${d.name} --to <model>.<dimension>, or remove it with ${remove}`,
+            "join.conformed_target_unknown",
+          );
+          return;
+        }
+        const named = `${t!.model}.${t!.name}`;
+        if (d.type !== target.type || (d.type === "time" && !grainsOf(d).some((g) => grainsOf(target).includes(g))))
+          ctx.error(
+            m.file,
+            path,
+            d.type !== target.type
+              ? `${ref} is a ${d.type} dimension and conforms to ${named}, a ${target.type} one, so the two cannot group as one column; conform it to a ${d.type} dimension, or remove it with ${remove}`
+              : `${ref} conforms to ${named}, but they have no time grain in common (${grainsOf(d).join(", ")} against ${grainsOf(target).join(", ")}); add a common grain with semlayer set ${ref} time_grains, or remove it with ${remove}`,
+            "join.conformed_type_mismatch",
+          );
+        if (conformTarget(target))
+          ctx.error(
+            m.file,
+            path,
+            `${ref} conforms to ${named}, which itself conforms to ${target.conforms_to}; conforms_to is one hop: conform ${model.model}.${d.name} to the dimension both mean, or remove it with ${remove}`,
+            "join.conformed_chain",
+          );
+        const twin = model.dimensions!.slice(0, i).find((x) => typeof x?.conforms_to === "string" && x.conforms_to.trim() === d.conforms_to!.trim());
+        if (twin)
+          ctx.error(
+            m.file,
+            path,
+            `${ref} and ${source}.${model.model}.${twin.name} both conform to ${named}, so a request grouped by it could group ${model.model} by either; keep one and remove the other with ${remove}`,
+            "join.conformed_ambiguous",
+          );
+        const zones = zoneClash(d, target);
+        if (zones)
+          ctx.warn(
+            m.file,
+            path,
+            `${ref} is stored in time zone ${zones[0]} and ${named} in ${zones[1]}, so a day of one is not a day of the other; semlayer sql refuses a request that combines them. ` +
+              `Make both count days in one zone and record it with semlayer set, or remove conforms_to with ${remove}`,
+            "join.conformed_time_zone",
+          );
+        const schemas = snapshot?.valid ? conformedSchemas(snapshot.data, pairs, model, other!) : undefined;
+        if (schemas)
+          ctx.error(
+            m.file,
+            path,
+            `${ref} conforms to ${named}, but ${model.model} is in schema ${schemas[0]} and ${t!.model} in ${schemas[1]}, and no approved schema pair joins them; ask the owner whether the layer joins these schemas ` +
+              `(semlayer add-cross-schema --source ${source} --from ${schemas[0]} --to ${schemas[1]} --keys <table>.<column>=<table>.<column>, then read it back and approve it on their yes), or remove it with ${remove}`,
+            "join.conformed_cross_schema",
+          );
       });
     }
   }

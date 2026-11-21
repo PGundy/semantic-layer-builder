@@ -222,6 +222,11 @@
           "pattern": "^[A-Za-z][A-Za-z0-9_+\\-]*(/[A-Za-z0-9_+\\-]+)*$",
           "description": "Only on type time: the IANA zone (America/New_York, UTC) the dimension's values are stored in, for a timestamp without a time zone. A timestamp with a time zone carries its own. semlayer validate errors on a zone it does not know."
         },
+        "conforms_to": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
+          "description": "<model>.<dimension> of another model of the same source that means the same thing (spec.md, Bridges and multi-fact requests): a request over both models groups this model by this dimension where it names the other, and the other's where it names this one. One hop: the target conforms to nothing itself. Written by semlayer conform; part of the approval hash."
+        },
         "description": {
           "type": "string",
           "description": "What the dimension means."

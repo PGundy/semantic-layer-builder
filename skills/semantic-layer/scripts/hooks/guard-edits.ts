@@ -51,7 +51,7 @@ const CHANGE =
   "is the open change round: it is written only by semlayer change start, which records who asked and when, and removed by semlayer change close, " +
   "so a hand edit would change what the round says it started from. Run semlayer change status to see the round.";
 const MAX_LINES = 5;
-const TYPED = "semlayer set, semlayer tag, semlayer ignore-column, semlayer question add, semlayer add-field, semlayer remove-field, semlayer add-metric, semlayer remove-metric, semlayer add-join, semlayer remove-join, semlayer add-segment, semlayer remove-segment or semlayer rename";
+const TYPED = "semlayer set, semlayer tag, semlayer ignore-column, semlayer question add, semlayer add-field, semlayer remove-field, semlayer add-metric, semlayer remove-metric, semlayer add-join, semlayer remove-join, semlayer add-segment, semlayer remove-segment, semlayer conform or semlayer rename";
 
 // A stable JSON text: object keys sorted.
 function canonical(v: unknown): string {
