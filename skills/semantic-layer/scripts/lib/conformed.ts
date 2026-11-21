@@ -51,6 +51,18 @@ export function zoneClash(a: Dimension, b: Dimension): [string, string] | undefi
   return a.time_zone === b.time_zone ? undefined : [a.time_zone, b.time_zone];
 }
 
+// Two conformed time dimensions of which exactly one declares a time_zone and that zone is not UTC: an unset
+// zone counts days in UTC (spec: Time zones), so the pair buckets one side in the declared zone and the other in
+// UTC. Returns the zone and which dimension has none; undefined for any other pair, UTC against unset included.
+export function zoneOneSided(a: Dimension, b: Dimension): { zone: string; unset: "a" | "b" } | undefined {
+  if (a.type !== "time" || b.type !== "time") return undefined;
+  const set = (d: Dimension) => (typeof d.time_zone === "string" && d.time_zone !== "" ? d.time_zone : undefined);
+  const [x, y] = [set(a), set(b)];
+  if (!!x === !!y) return undefined;
+  const zone = (x ?? y)!;
+  return zone === "UTC" ? undefined : { zone, unset: x ? "b" : "a" };
+}
+
 // The schemas of two models' tables when they differ and no approved schema pair joins them.
 export function conformedSchemas(snapshot: Pick<Snapshot, "tables"> | null | undefined, pairs: readonly CrossSchemaPair[], a: Model, b: Model): [string, string] | undefined {
   if (!snapshot || !Array.isArray(snapshot.tables)) return undefined;

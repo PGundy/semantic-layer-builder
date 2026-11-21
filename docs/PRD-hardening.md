@@ -214,10 +214,10 @@ Decided by the owner after this plan:
 - Every item: a description is inside the approval hash, so editing an approved item's description, other than its spacing, needs the owner's yes again; an item approved before that counts as approved, with a warning, until `semlayer approve --stamp-hashes --confirm-unchanged` records its hash with its description.
 - `semlayer import` records the drift record when it replaces a snapshot, comparing types by family, and a plain import on a source whose snapshot came from the database is refused unless `--replace-snapshot` says the replacement is meant.
 - Every item: an approval counts only while the owner's recorded yes, or their confirmation of it as it stood (`semlayer approve --confirm-existing`), backs it in the committed ledger, and `semlayer approve --revoke` records the withdrawal of both there; a stamp with neither is a draft for every tool and an error in `semlayer validate`, and a project with no ledger keeps its approvals with one warning until the owner confirms them.
+- A draft never approved is left out of a release and named; the close is not refused for it.
+- A changelog entry copies each golden's rows as the golden file stores them, protected values included.
+- A golden the latest release left out as unconfirmed, still a draft with the request it had then, is deferred by the owner: `semlayer next` rests at its done step instead of asking for it again, naming the deferred goldens and how many goldens the layer confirms against the release before; `semlayer status` and its `--json` (`deferred_goldens`) show the same. A role with no confirmed golden and a draft golden the release did not defer still hold the verify phase, and a layer with no release applies the minimum of confirmed goldens as for a first build.
+- Two conformed time dimensions of which one declares a `time_zone` other than UTC and the other none draw a `semlayer validate` warning (`join.conformed_time_zone_unset`), since an unset zone counts days in UTC.
+- A request that groups by both dimensions of a conformed pair is refused as `join.conformed_both_sides`, naming the request without the second one.
 
-Open questions for the owner, put on pull requests and not yet decided:
-
-- H: a draft never approved is left out of a release and named, as built, or the close is refused instead.
-- H: a changelog entry copies the golden rows, protected values included.
-- H: after a close that left goldens unconfirmed, `semlayer next` returns to the verify step, and there is no way to record that the owner deferred them.
-- D: on conformed dimensions, a single declared time zone is not compared with an unset one, and grouping by both sides of a conformed pair has no next command.
+No question for the owner is open.

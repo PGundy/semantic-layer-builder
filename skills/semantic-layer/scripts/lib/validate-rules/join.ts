@@ -7,7 +7,7 @@
 // no other dimension of its model conforms to; the two models' schemas obey the schema-pair rule, and
 // two time zones are a warning (lib/conformed.ts).
 import { classifyType, isNumeric } from "../column-types.ts";
-import { conformedSchemas, conformTarget, zoneClash } from "../conformed.ts";
+import { conformedSchemas, conformTarget, zoneClash, zoneOneSided } from "../conformed.ts";
 import { crossSchemaPairs } from "../schema-scope.ts";
 import { itemHashes } from "../approval-hash.ts";
 import { throughCurrent, throughLines, unbridgedWarning } from "../readback-bridge.ts";
@@ -154,6 +154,17 @@ function conformed(ctx: RuleContext): void {
               `Make both count days in one zone and record it with semlayer set, or remove conforms_to with ${remove}`,
             "join.conformed_time_zone",
           );
+        const one = zoneOneSided(d, target);
+        if (one) {
+          const [bare, zoned] = one.unset === "a" ? [ref, `${source}.${named}`] : [`${source}.${named}`, ref];
+          ctx.warn(
+            m.file,
+            path,
+            `${ref} and ${source}.${named} are conformed, but ${zoned} counts days in ${one.zone} and ${bare} declares no time_zone, so it counts days in UTC and a request by day can put one moment on two different days. ` +
+              `Ask the owner which zone ${bare} is in, record it with semlayer set ${bare} time_zone <zone>, then read it back with semlayer readback --targets ${bare}`,
+            "join.conformed_time_zone_unset",
+          );
+        }
         const schemas = snapshot?.valid ? conformedSchemas(snapshot.data, pairs, model, other!) : undefined;
         if (schemas)
           ctx.error(

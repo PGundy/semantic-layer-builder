@@ -146,6 +146,36 @@ export function compileParts(p: PartsRequest): CompileResult {
     );
     return undefined;
   };
+  // Grouping by both dimensions of a conformed pair at one grain asks for one column twice: keep the first.
+  // The request is refused here, before a part is built, only when this check found such a pair.
+  const refusedBefore = refusals.length;
+  if (parts.length > 1)
+    dimensions.forEach((later, j) => {
+      const b = parseRequestField(later);
+      const i = dimensions.findIndex((first, k) => {
+        const a = k < j ? parseRequestField(first) : undefined;
+        if (!a || !b || a.model === b.model || (a.grain ?? "") !== (b.grain ?? "")) return false;
+        return conformedPeers(models, a.model, a.field, b.model).some((x) => x.dimension.name === b.field && approved(x.carrier.model, x.carrier.name));
+      });
+      if (i < 0) return;
+      // The corrected request is the user's own (window and comparison stay), when it lists both dimensions.
+      const asked = input.original as QueryRequest | undefined;
+      const from = asked?.dimensions?.includes(dimensions[i]!) && asked.dimensions.includes(later) ? asked : request;
+      const keep = dimensions[i]!;
+      const order = (from.order_by ?? []).map((o) => (o.field === later ? { ...o, field: keep } : o));
+      const fixed = {
+        ...from,
+        dimensions: (from.dimensions ?? []).filter((d) => d !== later),
+        ...(order.length ? { order_by: order.filter((o, k) => order.findIndex((x) => x.field === o.field) === k) } : {}),
+      };
+      add(
+        "join.conformed_both_sides",
+        `the request groups by ${dimensions[i]} and by ${later}, which are declared the same dimension, so grouping by one of them is enough and the two would be one column twice`,
+        later,
+        `Keep ${dimensions[i]} and drop ${later}; run semlayer sql --request '${JSON.stringify(fixed).replace(/'/g, "'\\''")}'`,
+      );
+    });
+  if (refusals.length > refusedBefore) return refuse();
   // The name each grouping column has in the result: the name the request gives the dimension.
   const dimNames = dimensions.map((d) => {
     const p = parseRequestField(d);

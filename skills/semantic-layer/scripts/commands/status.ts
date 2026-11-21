@@ -93,6 +93,10 @@ function render(st: ProjectStatus): string {
   if (st.draft_metrics.length) lines.push(`draft metrics: ${st.draft_metrics.join(", ")}`);
   if (st.no_metrics) lines.push(noMetricsLine(st.no_metrics));
   if (st.draft_goldens.length) lines.push(`draft goldens: ${st.draft_goldens.join(", ")}`);
+  if (st.deferred_goldens) {
+    const d = st.deferred_goldens;
+    lines.push(`deferred by the owner at release ${d.release}: ${preview(d.goldens, 8)}; ${d.confirmed} golden(s) confirmed against ${d.confirmed_before} before the release (semlayer readback --targets golden:${d.goldens[0]} when the owner can check one)`);
+  }
   if (st.roles_without_goldens.length) lines.push(`roles without an approved golden: ${st.roles_without_goldens.join(", ")}`);
   if (st.row_filter_joins_without_goldens.length) {
     lines.push(`row-filtered joins without an approved golden as the role: ${rowFilterJoinItems(st.row_filter_joins_without_goldens).join(", ")}`);

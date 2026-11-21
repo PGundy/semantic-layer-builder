@@ -189,6 +189,85 @@ describe("renamed dimensions group on one name", () => {
   });
 });
 
+describe("a time zone declared on one side only", () => {
+  const unset = (root: string) => validateProject(root).filter((i) => i.code === "join.conformed_time_zone_unset");
+
+  test("one side America/New_York and the other unset warns, naming both and the command; equal, both unset and UTC against unset are silent", async () => {
+    const { root } = await shop();
+    expect(unset(root)).toEqual([]);
+    edit(root, "orders", (m) => void (dim(m, "order_date").time_zone = "America/New_York"));
+    const w = unset(root);
+    expect(w.map((i) => [i.level, i.file, i.path])).toEqual([["warning", "models/shop/refunds.yaml", "dimensions[0].conforms_to"]]);
+    expect(w[0]!.message).toContain("shop.refunds.refunded_on and shop.orders.order_date are conformed");
+    expect(w[0]!.message).toContain("shop.orders.order_date counts days in America/New_York and shop.refunds.refunded_on declares no time_zone");
+    expect(w[0]!.message).toContain("semlayer set shop.refunds.refunded_on time_zone <zone>");
+    // The other way round names the other side as the one without a zone.
+    edit(root, "orders", (m) => void delete dim(m, "order_date").time_zone);
+    edit(root, "refunds", (m) => void (dim(m, "refunded_on").time_zone = "America/New_York"));
+    expect(unset(root)[0]!.message).toContain("semlayer set shop.orders.order_date time_zone <zone>");
+    // Both set and equal, or an unset zone against UTC (an unset zone counts days in UTC), is silent.
+    edit(root, "orders", (m) => void (dim(m, "order_date").time_zone = "America/New_York"));
+    expect(unset(root)).toEqual([]);
+    edit(root, "orders", (m) => void (dim(m, "order_date").time_zone = "UTC"));
+    edit(root, "refunds", (m) => void delete dim(m, "refunded_on").time_zone);
+    expect(unset(root)).toEqual([]);
+  });
+});
+
+describe("grouping by both sides of a conformed pair", () => {
+  const BOTH = req({ measures: ["orders.amount", "refunds.refunded"], dimensions: ["orders.order_date:month", "refunds.refunded_on:month"], order_by: [{ field: "refunds.refunded_on:month" }] });
+
+  test("is refused with join.conformed_both_sides and the request to send instead; one grouped and the other filtered still compiles as before", async () => {
+    const { root } = await shop();
+    const r = refused(compileRequest(root, BOTH));
+    expect(r.refusals.map((x) => [x.code, x.ref])).toEqual([["join.conformed_both_sides", "refunds.refunded_on:month"]]);
+    const fixed = { ...BOTH, dimensions: ["orders.order_date:month"], order_by: [{ field: "orders.order_date:month" }] };
+    expect(r.refusals[0]!.next).toBe(`Keep orders.order_date:month and drop refunds.refunded_on:month; run semlayer sql --request '${JSON.stringify(fixed)}'`);
+    // The request it names compiles.
+    expect(compileRequest(root, fixed as QueryRequest).ok).toBe(true);
+    // Under --json: one refusal with its code and the next step.
+    const j = await semlayer(root, ["sql", "--request", JSON.stringify(BOTH), "--json"]);
+    expect(j.code).toBe(1);
+    const out = j.json<{ ok: boolean; refusals: { code: string }[]; next: string }>();
+    expect(out.ok).toBe(false);
+    expect(out.refusals.map((x) => x.code)).toEqual(["join.conformed_both_sides"]);
+    expect(out.next).toContain("semlayer sql --request");
+    // A grouping by one and a filter on the other is legitimate.
+    const f = compileRequest(root, { ...BY_MONTH, filters: [{ field: "refunds.refunded_on", op: "gte", value: "2025-01-01" }] });
+    expect(f.ok).toBe(true);
+    // Its SQL is the one the request compiled to before: the filter binds once in each part.
+    const fsql = compiled(f);
+    expect(fsql.params).toEqual(["2025-01-01", "2025-01-01"]);
+    expect(fsql.columns.map((c) => c.name)).toEqual(["order_date_month", "amount", "refunded"]);
+    // The suggested order_by holds the kept field once.
+    const twice = refused(compileRequest(root, { ...BOTH, order_by: [{ field: "orders.order_date:month" }, { field: "refunds.refunded_on:month" }] }));
+    expect(twice.refusals[0]!.next).toContain(`"order_by":[{"field":"orders.order_date:month"}]`);
+    // Different grains are two columns, not one twice.
+    expect(compileRequest(root, { ...BOTH, dimensions: ["orders.order_date:month", "refunds.refunded_on:year"], order_by: [] }).ok).toBe(true);
+  });
+});
+
+describe("the corrected request of a both-sides refusal", () => {
+  test("keeps the window and the comparison the user asked for", async () => {
+    // A window and a comparison compile for a postgres source; nothing here connects to it.
+    const t = tempRoot();
+    cleanup = t.cleanup;
+    await initProject(t.root);
+    const root = t.root;
+    writeYaml(join(root, "sources", "shop.yaml"), { source: "shop", dialect: "postgres", connection: { env: "PG_URL" } });
+    for (const m of layer("public")) writeYaml(join(root, "models", "shop", `${m.model}.yaml`), m);
+    const base = { ...BY_MONTH, dimensions: ["orders.order_date:month", "refunds.refunded_on:month"], order_by: [] };
+    const withWindow = { ...base, window: { dimension: "orders.order_date", days: 30, as_of: "2025-04-30" } } as QueryRequest;
+    const w = refused(compileRequest(root, withWindow));
+    expect(w.refusals.map((x) => x.code)).toEqual(["join.conformed_both_sides"]);
+    expect(w.refusals[0]!.next).toContain(`"window":{"dimension":"orders.order_date","days":30,"as_of":"2025-04-30"}`);
+    expect(w.refusals[0]!.next).not.toContain(`"filters"`);
+    const withCompare = { ...base, dimensions: ["orders.order_date:month", "orders.ship_region", "refunds.region_code"], compare: { over: "orders.order_date:month", with: ["prior"] } } as QueryRequest;
+    const c = refused(compileRequest(root, withCompare));
+    expect(c.refusals[0]!.next).toContain(`"compare":{"over":"orders.order_date:month","with":["prior"]}`);
+  });
+});
+
 describe("access through a conformed dimension", () => {
   test("a role that may not see the conformed dimension is refused it, and a row filter on refunds limits the refunds part", async () => {
     const { root, file } = await shop();

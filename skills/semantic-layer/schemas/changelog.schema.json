@@ -54,7 +54,12 @@
           "goldens_unconfirmed": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "Goldens the last entry recorded that are drafts at this release (returned to draft with semlayer goldens unconfirm, their figures not confirmed as they stand), so this entry leaves them out. Absent when there are none."
+            "description": "Goldens that are drafts at this release (returned to draft with semlayer goldens unconfirm, their figures not confirmed as they stand): ones the last entry recorded, and ones the last entry left out that are still drafts with the same request. This entry leaves them out. Absent when there are none."
+          },
+          "goldens_unconfirmed_requests": {
+            "type": "object",
+            "description": "Golden name to the hash of its request, for each golden of goldens_unconfirmed, so a draft with the same request later reads as deferred by the owner at this release and one whose request changed does not. Absent when there are none.",
+            "additionalProperties": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
           },
           "goldens_removed": {
             "type": "array",

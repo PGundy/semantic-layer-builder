@@ -47,6 +47,7 @@ export type RefusalCode =
   | "metric.default_time_missing"
   | "join.multi_fact_segments"
   | "join.conformed_time_zone"
+  | "join.conformed_both_sides"
   | "metric.semi_additive_mixed"
   | "join.through_second_path"
   | "join.through_filter_ungrouped"
@@ -105,6 +106,9 @@ export interface CompileInput {
   source: SourceConfig;
   snapshot?: Snapshot | null;
   request: unknown;
+  // The request as the user sent it, set by compileLayer when a window, comparison or running total compiles
+  // an inner request; a refusal that suggests a corrected request builds it from this one.
+  original?: unknown;
   user?: AccessUser;
   // The semantic root, which a duckdb source's view files resolve from for the read-only check.
   root?: string;
@@ -138,7 +142,7 @@ export function layerPairs(input: Pick<CompileInput, "layer" | "source">): Cross
 
 // Compiles a request against an already loaded layer.
 export function compileLayer(input: CompileInput): CompileResult {
-  const r = compileLayerInner(input);
+  const r = compileLayerInner(input.original === undefined ? { ...input, original: input.request } : input);
   if (!r.ok) return r;
   // A compiled query carries the warnings of the joins it adds, a metric's parts' joins included.
   const warnings = joinWarnings(

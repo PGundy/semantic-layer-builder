@@ -26,6 +26,10 @@ export interface ChangelogEntry {
   goldens_moved: GoldenMoved[];
   // Goldens the last entry recorded that are drafts now (semlayer goldens unconfirm), left out of this one; absent when none.
   goldens_unconfirmed?: string[];
+  // Golden name to the hash of its request (approval-hash.ts requestHash), for each golden of goldens_unconfirmed that
+  // has a file; absent when none. The request the owner deferred: semlayer status reads a golden as deferred
+  // while it is a draft with this request.
+  goldens_unconfirmed_requests?: Record<string, string>;
   // Goldens the last entry recorded whose file is gone (semlayer goldens remove), left out of this one; absent when none.
   goldens_removed?: string[];
 }
