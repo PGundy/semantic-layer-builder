@@ -940,7 +940,7 @@ export function pathText(path: (string | number)[]): string {
 
 // Every place outside the target's own name that names it: join references in model exprs and
 // filters (through the model's own join or a join to the target's model), a dimension's use as a
-// measure's non_additive_dimension, metric measure references, golden requests, and access.yaml
+// measure's non_additive_dimension or another model's dimension's conforms_to, metric measure references, golden requests, and access.yaml
 // restriction targets, deny.fields and row filters.
 // `conflicts` lists the access patterns that would make a list of access.yaml cover the new name
 // differently from the old one, which a rename would silently change. With no new name, `to` equals `from`.
@@ -997,6 +997,12 @@ export function referenceSites(root: string, target: RefTarget, newName = target
       const nad = obj(obj(x).non_additive_dimension);
       if (nad.name === field.name) add(file, ["measures", i, "non_additive_dimension", "name"], nad.name, newName);
     });
+    // A dimension of another model that conforms to it names it as <model>.<dimension>.
+    for (const [name, other] of models)
+      arr(other.dimensions).forEach((d, i) => {
+        const c = obj(d).conforms_to;
+        if (name !== field.model && typeof c === "string" && c.trim() === `${field.model}.${field.name}`) add(paths(root).model(field.source, name), ["dimensions", i, "conforms_to"], c, `${field.model}.${newName}`);
+      });
   }
   if (field?.kind === "measure") {
     const file = paths(root).metrics;

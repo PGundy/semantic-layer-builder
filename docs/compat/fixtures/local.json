@@ -1,0 +1,16 @@
+{
+  "fixture": 1,
+  "provider": "local",
+  "server_version": "16.15",
+  "server_version_num": 160015,
+  "tls": false,
+  "tls_protocol": null,
+  "pooled": "unknown",
+  "read_only_role": true,
+  "catalog": {
+    "tables": 2,
+    "views": 1,
+    "columns": 7,
+    "foreign_keys": 1
+  }
+}

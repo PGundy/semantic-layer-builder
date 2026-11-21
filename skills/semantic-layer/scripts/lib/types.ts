@@ -187,6 +187,8 @@ export interface Dimension extends Approval {
   time_grains?: TimeGrain[];
   // The IANA zone a time dimension's naive timestamps are stored in, such as America/New_York.
   time_zone?: string;
+  // <model>.<dimension> of another model of the source that means the same thing (lib/conformed.ts).
+  conforms_to?: string;
   description?: string;
   synonyms?: string[];
   tags?: string[];

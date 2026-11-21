@@ -321,7 +321,7 @@ describe("metric refusals", () => {
         ref: "orders.status",
         message:
           "the request groups by orders.status, but its measures come from orders and visits, each aggregated on its own model, so each of them needs to reach orders through one path of to-one joins or have a dimension named status; visits has neither",
-        next: "Add a many_to_one join from visits toward orders (semlayer check-join measures it), or a dimension status to visits that gives the same value, approve it after its readback, and run semlayer sql again; or leave orders.status out of the request.",
+        next: "Add a many_to_one join from visits toward orders (semlayer check-join measures it), or a dimension status to visits that gives the same value, approve it after its readback, and run semlayer sql again; or declare that a dimension of visits is the same as orders.status with semlayer conform; or leave orders.status out of the request.",
       },
     ]);
     const f = refused(compileRequest(root, req({ measures: ["conversion"], filters: [{ field: "orders.created", op: "gte", value: "2025-01-01" }] })));
