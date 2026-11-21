@@ -6,7 +6,7 @@ import { goldenHash } from "../skills/semantic-layer/scripts/lib/approval-hash.t
 import { PROTECTED_VALUE } from "../skills/semantic-layer/scripts/lib/output.ts";
 import type { Golden, PendingReadback } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { confirmWithYes, duckdbSource, initProject, semlayer, tempRoot } from "./helpers.ts";
+import { confirmExisting, confirmWithYes, duckdbSource, initProject, semlayer, tempRoot } from "./helpers.ts";
 
 // Invariant 5 for goldens: semlayer goldens confirm records rows only on the owner's recorded yes to the
 // golden with exactly those rows and that tolerance (semlayer readback --targets golden:<name>, semlayer reply).
@@ -346,8 +346,8 @@ describe("semlayer validate and goldens confirmed without a yes", () => {
     const t = await setup();
     await confirmWithYes(t.root, ["--name", NAME, "--tolerance", "0"]);
     expect(await warningsAbout(t.root)).toEqual([]);
-    // A golden confirmed before the rule: its yes is gone from the ledger.
-    writeFileSync(ledger(t.root), "");
+    // A golden confirmed before the rule: its yes is gone from the ledger, which holds other answers.
+    writeFileSync(ledger(t.root), `${JSON.stringify({ at: "2026-01-15T12:00:00.000Z", by: "Dana", id: "ans_0001", kind: "question", question: "q?", target: "access", text: "a" })}\n`);
     const w = await warningsAbout(t.root);
     expect(w).toHaveLength(1);
     expect(w[0]!.level).toBe("warning");
@@ -390,6 +390,8 @@ describe("semlayer goldens confirm on the compiled path", () => {
     const t = await setup();
     writeYaml(join(t.root, "models", "wh", "orders.yaml"), orders());
     writeFileSync(t.goldenPath, GOLDEN_YAML.replace(/sql: \|\n(  .*\n)+/, extra));
+    // The model is approved by hand: the owner confirms it as it stands, so the ledger backs it.
+    await confirmExisting(t.root);
     return t;
   }
 

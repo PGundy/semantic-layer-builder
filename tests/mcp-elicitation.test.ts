@@ -103,7 +103,8 @@ async function acme(elicitation: boolean | Msg = true, extra: string[] = []) {
   await client.init(elicitation);
   const ledger = join(t.root, ".semlayer", "ledger.jsonl");
   const model = join(t.root, "models", "warehouse", "products.yaml");
-  const lines = () => (existsSync(ledger) ? readFileSync(ledger, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Msg) : []);
+  // The lines a test recorded: the example's own confirm line left out.
+  const lines = () => (existsSync(ledger) ? readFileSync(ledger, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Msg) : []).filter((l) => l.kind !== "confirm");
   const status = () => readYaml<{ dimensions: Msg[] }>(model).dimensions.find((d) => d.name === "launched_on")!;
   const pending = (id: string) => JSON.parse(readFileSync(join(t.root, ".semlayer", "pending", `${id}.json`), "utf8")) as PendingReadback;
   return { ...t, client, ledger, model, lines, status, pending };
@@ -131,7 +132,7 @@ describe("approve with a client that declares elicitation", () => {
       content_hash: rb.items[0]!.content_hash,
       // The item has a description, so its readback also records its hash without it.
       definition_hash: rb.items[0]!.definition_hash,
-      id: "ans_0001",
+      id: "ans_0002",
       item: 1,
       kind: "reply",
       readback_id: "rb_0001",
@@ -142,7 +143,7 @@ describe("approve with a client that declares elicitation", () => {
     expect(a.status()).toMatchObject({ status: "approved", approved_by: "Dana Ruiz", approved_at: FIXED_NOW.slice(0, 10), approved_hash: rb.items[0]!.content_hash });
     // The approve's own JSON comes first; the owner's answer is the last item.
     expect(JSON.parse(texts(r)[0]!).changed).toEqual([{ target: TARGET, from: "draft", to: "approved" }]);
-    expect(ownerAnswer(r).owner_answer).toEqual({ asked: "elicitation", action: "accept", verdict: "yes", by: "Dana Ruiz", readback_id: "rb_0001", recorded: ["ans_0001"] });
+    expect(ownerAnswer(r).owner_answer).toEqual({ asked: "elicitation", action: "accept", verdict: "yes", by: "Dana Ruiz", readback_id: "rb_0001", recorded: ["ans_0002"] });
   });
 
   test("an accept with no comment records yes as the owner's words", async () => {
@@ -169,7 +170,7 @@ describe("approve with a client that declares elicitation", () => {
     expect(a.lines().map((l) => l.by)).toEqual(["Dana Ruiz"]);
     expect(a.status().status).toBe("draft");
     const { owner_answer, message } = ownerAnswer(r);
-    expect(owner_answer).toMatchObject({ verdict: "yes", by: "Dana Ruiz", recorded: ["ans_0001"] });
+    expect(owner_answer).toMatchObject({ verdict: "yes", by: "Dana Ruiz", recorded: ["ans_0002"] });
     expect(message).toContain("but semlayer approve refused (its output is above), so nothing was approved. Next:");
     expect(message).toContain("leave by out), then call semlayer_approve again.");
   });
@@ -199,7 +200,7 @@ describe("approve with a client that declares elicitation", () => {
       expect(message).toContain("nothing was recorded and nothing was approved");
       expect(message).toContain("Next: call semlayer_approve again");
     }
-    expect(existsSync(a.ledger)).toBe(false);
+    expect(a.lines()).toEqual([]);
     expect(readFileSync(a.model, "utf8")).toBe(before);
   });
 
@@ -208,7 +209,7 @@ describe("approve with a client that declares elicitation", () => {
     const before = readFileSync(a.model, "utf8");
     a.client.script = accept({ verdict: "change", by: "Dana Ruiz", comment: "It is the first order date, not the launch." });
     const r = await a.client.call("semlayer_approve", { target: TARGET });
-    expect(ownerAnswer(r).message).toContain("answered change; recorded ans_0001 in .semlayer/ledger.jsonl and nothing was approved. Next: make the change");
+    expect(ownerAnswer(r).message).toContain("answered change; recorded ans_0002 in .semlayer/ledger.jsonl and nothing was approved. Next: make the change");
     a.client.script = accept({ verdict: "no", by: "Dana Ruiz" });
     await a.client.call("semlayer_approve", { target: TARGET });
     expect(a.lines().map((l) => [l.verdict, l.text, l.by])).toEqual([
@@ -226,7 +227,7 @@ describe("approve with a client that declares elicitation", () => {
       expect(r.result.isError).toBe(true);
       expect(ownerAnswer(r).message).toContain("nothing was recorded and nothing was approved");
     }
-    expect(existsSync(a.ledger)).toBe(false);
+    expect(a.lines()).toEqual([]);
     expect(a.status().status).toBe("draft");
   });
 
@@ -285,7 +286,7 @@ describe("the request and its response", () => {
     expect(a.client.fromServer.find((m) => m.method === "notifications/cancelled")?.params).toMatchObject({ requestId: id });
     a.client.send({ jsonrpc: "2.0", id, result: { action: "accept", content: { verdict: "yes", by: "Dana Ruiz" } } });
     expect((await a.client.request("ping")).result).toEqual({});
-    expect(existsSync(a.ledger)).toBe(false);
+    expect(a.lines()).toEqual([]);
     expect(a.status().status).toBe("draft");
   });
 
@@ -301,7 +302,7 @@ describe("the request and its response", () => {
     await asked;
     a.client.proc.stdin.end();
     expect(await Promise.race([a.client.proc.exited, Bun.sleep(8000).then(() => "hung")])).toBe(0);
-    expect(existsSync(a.ledger)).toBe(false);
+    expect(a.lines()).toEqual([]);
     expect(a.status().status).toBe("draft");
   });
 
@@ -330,7 +331,7 @@ describe("the request and its response", () => {
     const r = await a.client.call("semlayer_approve", { target: TARGET });
     expect(r.result.isError).toBe(true);
     expect(ownerAnswer(r).message).toContain("The client could not ask the owner (Method not found); nothing was recorded");
-    expect(existsSync(a.ledger)).toBe(false);
+    expect(a.lines()).toEqual([]);
   });
 
   test("the server keeps answering while the owner thinks; responses are matched by id", async () => {
@@ -365,7 +366,7 @@ describe("reply with verdict yes", () => {
     a.client.script = () => ({ result: { action: "decline" } });
     const declined = await a.client.call("semlayer_reply", { readback: rb.readback_id, item: "1", text: "The owner said yes", verdict: " YES ", by: "Dana Ruiz" });
     expect(ownerAnswer(declined).message).toContain("nothing was recorded and no yes was recorded");
-    expect(existsSync(a.ledger)).toBe(false);
+    expect(a.lines()).toEqual([]);
     expect(a.client.elicited[0]!.params.message).toBe(rb.items[0]!.text);
     a.client.script = accept({ verdict: "change", by: "Lee Owner", comment: "Call it first sold on." });
     const changed = await a.client.call("semlayer_reply", { readback: rb.readback_id, item: "1", text: "yes", verdict: "yes", by: "Dana Ruiz" });
@@ -389,7 +390,7 @@ describe("reply with verdict yes", () => {
     expect(texts(await a.client.call("semlayer_reply", { readback: "rb_0099", item: "1", text: "yes", verdict: "yes", by: "D" }))[0]).toContain('There is no readback "rb_0099"');
     expect(texts(await a.client.call("semlayer_reply", { readback: rb.readback_id, item: "7", text: "yes", verdict: "yes", by: "D" }))[0]).toContain("has no item");
     expect(a.client.elicited).toHaveLength(0);
-    expect(existsSync(a.ledger)).toBe(false);
+    expect(a.lines()).toEqual([]);
   });
 });
 

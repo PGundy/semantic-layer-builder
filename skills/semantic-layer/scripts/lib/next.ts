@@ -7,7 +7,7 @@ import { loadChange, releaseLead } from "./change-record.ts";
 import { inTurnApply } from "./edit.ts";
 import { type Env, resolveConnection } from "./env-file.ts";
 import { intakeMode } from "./intake.ts";
-import { currentYes, latestReply, openAccessChanges } from "./ledger.ts";
+import { currentYes, latestReply, openAccessChanges, readApprovalLedger } from "./ledger.ts";
 import { changeSince, deferredAtStart } from "./changeset.ts";
 import { loadChangelog } from "./release.ts";
 import { plainText } from "./output.ts";
@@ -134,7 +134,7 @@ function withGoldenPlan(root: string, name: string, command: string, args: strin
 
 // The phase an approve target belongs to.
 function targetPhase(st: ProjectStatus, ref: string): string {
-  if (st.changed_since_approval.includes(ref) || st.hash_missing.includes(ref)) return "reapprove";
+  if (st.changed_since_approval.includes(ref) || st.hash_missing.includes(ref) || st.stamped_without_yes.includes(ref)) return "reapprove";
   if (st.approved_without_yes.includes(ref)) return "done";
   if (ref.startsWith("golden:")) return "verify";
   if (ref.startsWith("metric:")) return "metrics";
@@ -385,6 +385,17 @@ function fromStatus(root: string, d: StatusDetail): NextAction {
   if (step.phase !== "done") return fromAction(step.action, step.phase, step.message, blocked_on);
   // A golden's hash as it stands comes from rows only a run gives, so any verdict to it while its file exists counts.
   const refs = st.approved_without_yes.filter((ref) => !answered(d.replies, ref, hashNow(root, d.targets, ref, latestReply(d.replies, ref)?.content_hash ?? "")));
+  if (refs.length && !readApprovalLedger(root).present) {
+    // No ledger yet: the first answer recorded would end the rule that lets these approvals count, so the
+    // owner confirms them as they stand before anything is read back.
+    return fromAction(
+      act("approve", ["--confirm-existing", "--by", "<owner>", "--reply", "<owner's words>"], "ask_owner"),
+      "done",
+      `Every phase is done, but ${refs.length} approved item(s) have no recorded owner yes (approved before semlayer approve required one, or the ledger is missing: if this is a clone, restore .semlayer/ledger.jsonl from version control). ` +
+        "They count as approved until the first answer is recorded. Ask the owner whether they stand as they are, and if so record it in their words before any readback.",
+      blocked_on,
+    );
+  }
   if (refs.length) {
     const items = refs.filter((r) => !r.startsWith("golden:"));
     const batch = items.length ? items.slice(0, BACKFILL_BATCH) : refs.slice(0, 1);
@@ -593,6 +604,7 @@ function inApply(a: NextAction): NextAction {
 function lacking(root: string, a: NextAction): NextAction {
   const command = a.action.command;
   if (!((a.kind === "run" && command === "readback") || command === "approve")) return a;
+  if (a.action.args.includes("--confirm-existing")) return a;
   // A semlayer approve the gate would refuse (a yes recorded before the item lacked something) gets the same apply.
   const rb = command === "approve" ? flagValue(a.action as StepAction, "--readback") : undefined;
   const refs = rb

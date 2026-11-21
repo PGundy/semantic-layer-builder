@@ -501,6 +501,22 @@ describe("schema pairs", () => {
     expect((await scopeIssues(root)).map((i) => i.code)).toEqual(["scope.cross_schema_undeclared"]);
   });
 
+  test("a pair stamped with a correct hash and no recorded yes is a draft to the join commands and validate", async () => {
+    const root = await crossJoin();
+    expect((await addPair(root)).code).toBe(0);
+    expect((await approveWithYes(root, ["--target", PAIR])).code).toBe(0);
+    expect((await semlayer(root, ["approve", "--target", PAIR, "--revoke"])).code).toBe(0);
+    // The ledger exists and holds the earlier yes to a pair that is now a draft; stamp it again by hand.
+    writeFileSync(sourceFile(root), readFileSync(sourceFile(root), "utf8").replace("        constraint: orders_customer_fk\n", "        constraint: orders_customer_fk\n      - from: orders.region_id\n        to: regions.region_id\n"));
+    const pair = pairsOf(root)![0]!;
+    const hash = itemHash("schema-pair", pair as unknown as Record<string, unknown>);
+    writeFileSync(sourceFile(root), readFileSync(sourceFile(root), "utf8").replace("status: draft", `status: approved\n    approved_by: Dana\n    approved_at: 2026-01-15\n    approved_hash: ${hash}`));
+    const issues = (await semlayer(root, ["validate", "--json"])).json<{ issues: { code: string }[] }>().issues;
+    expect(issues.some((i) => i.code === "approval.no_recorded_yes")).toBe(true);
+    const add = await semlayer(root, ["add-join", "--source", "warehouse", "--model", "orders", "--to", "customers", "--keys", "customer_id=customer_id", "--name", "customer2"]);
+    expect(add.err).toContain("no approved schema pair declares these keys");
+  });
+
   test("revoke makes an approved pair a draft and clears its stamp; a declined pair and --stamp-hashes are refused", async () => {
     const root = await project();
     expect((await addPair(root)).code).toBe(0);
@@ -576,10 +592,18 @@ describe("schema pairs", () => {
     const root = await project();
     expect((await addPair(root)).code).toBe(0);
     writeFileSync(sourceFile(root), hashedStamp(root));
-    const codes = (await semlayer(root, ["validate", "--json"])).json<{ issues: { code: string }[] }>().issues.map((i) => i.code);
-    expect(codes).toContain("approval.no_ledger_yes");
-    const status = (await semlayer(root, ["status", "--json"])).json<{ approved_without_yes: string[] }>();
+    const codes = async () => (await semlayer(root, ["validate", "--json"])).json<{ issues: { code: string; level: string }[] }>().issues.map((i) => `${i.level} ${i.code}`);
+    // With no ledger at all, it counts under the rule for approvals given before the ledger, and the project is told once.
+    expect(await codes()).toContain("warning approval.no_ledger");
+    const status = (await semlayer(root, ["status", "--json"])).json<{ approved_without_yes: string[]; stamped_without_yes: string[] }>();
     expect(status.approved_without_yes).toContain(PAIR);
+    // Once the ledger holds any answer, a stamp no yes backs is a draft, and an error.
+    mkdirSync(join(root, ".semlayer"), { recursive: true });
+    writeFileSync(join(root, ".semlayer", "ledger.jsonl"), `${JSON.stringify({ at: "2026-01-15T12:00:00.000Z", by: "Dana", id: "ans_0001", kind: "question", question: "q?", target: "access", text: "a" })}\n`);
+    expect(await codes()).toContain("error approval.no_recorded_yes");
+    const after = (await semlayer(root, ["status", "--json"])).json<{ approved_without_yes: string[]; stamped_without_yes: string[] }>();
+    expect(after.stamped_without_yes).toContain(PAIR);
+    expect(after.approved_without_yes).not.toContain(PAIR);
   });
 
   test("a pair approved with the owner's yes is clean, and status lists it once its keys are edited by hand", async () => {

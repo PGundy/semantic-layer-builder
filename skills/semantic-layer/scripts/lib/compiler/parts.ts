@@ -14,7 +14,7 @@ import { evaluateLayer } from "../access.ts";
 import { conformedPeers, conformedSchemas, zoneClash } from "../conformed.ts";
 import { quoteIdent } from "../dialect.ts";
 import { parseRequestField } from "../refs.ts";
-import { crossSchemaPairs } from "../schema-scope.ts";
+import { backedPairs } from "../schema-scope.ts";
 import { globInsideViews } from "../source-safety.ts";
 import { assertReadOnly } from "../sql-guard.ts";
 import type { FilterOp, Measure, Metric, QueryRequest, RequestFilter } from "../types.ts";
@@ -117,7 +117,7 @@ export function compileParts(p: PartsRequest): CompileResult {
         );
         return undefined;
       }
-      const schemas = conformedSchemas(input.snapshot, crossSchemaPairs(source), modelOf(p.model)!, modelOf(model)!);
+      const schemas = conformedSchemas(input.snapshot, backedPairs(source, input.layer.compare_hashes === false ? undefined : input.layer.ledger), modelOf(p.model)!, modelOf(model)!);
       if (schemas) {
         add(
           "scope.cross_schema_undeclared",

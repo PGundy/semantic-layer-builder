@@ -213,6 +213,7 @@ Decided by the owner after this plan:
 
 - Every item: a description is inside the approval hash, so editing an approved item's description, other than its spacing, needs the owner's yes again; an item approved before that counts as approved, with a warning, until `semlayer approve --stamp-hashes --confirm-unchanged` records its hash with its description.
 - `semlayer import` records the drift record when it replaces a snapshot, comparing types by family, and a plain import on a source whose snapshot came from the database is refused unless `--replace-snapshot` says the replacement is meant.
+- Every item: an approval counts only while the owner's recorded yes, or their confirmation of it as it stood (`semlayer approve --confirm-existing`), backs it in the committed ledger; a stamp with neither is a draft for every tool and an error in `semlayer validate`, and a project with no ledger keeps its approvals with one warning until the owner confirms them.
 
 Open questions for the owner, put on pull requests and not yet decided:
 
@@ -220,4 +221,3 @@ Open questions for the owner, put on pull requests and not yet decided:
 - H: a changelog entry copies the golden rows, protected values included.
 - H: after a close that left goldens unconfirmed, `semlayer next` returns to the verify step, and there is no way to record that the owner deferred them.
 - D: on conformed dimensions, a single declared time zone is not compared with an unset one, and grouping by both sides of a conformed pair has no next command.
-- G: an approval stamp hashed correctly but written by a whole-file shell write with no recorded yes is flagged afterwards and still counts as approved, for every kind of item.

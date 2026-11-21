@@ -9,7 +9,7 @@ import { SQL } from "bun";
 import { compareRows, compileGolden, groupingColumns, valuesEqual } from "../skills/semantic-layer/scripts/lib/goldens.ts";
 import type { Golden, Model } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, confirmWithYes, duckdbSource, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, confirmExisting, confirmWithYes, duckdbSource, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -391,6 +391,7 @@ async function project(table: string, golden: Record<string, unknown> = GOLDEN):
 async function onDuckdb(golden?: Record<string, unknown>): Promise<Warehouse> {
   const t = await project("main.sales", golden);
   await duckdbSource(t.root, t.dir, "wh", [`create table sales ${SALES_COLUMNS}`, `insert into sales values ${SALES_ROWS}`]);
+  await confirmExisting(t.root);
   return {
     root: t.root,
     env: {},
@@ -417,6 +418,7 @@ async function onPostgres(): Promise<Warehouse> {
   await db.unsafe(`insert into ${schema}.sales values ${SALES_ROWS}`);
   const t = await project(`${schema}.sales`);
   writeYaml(join(t.root, "sources", "wh.yaml"), { source: "wh", dialect: "postgres", connection: { env: "PG_URL" } });
+  await confirmExisting(t.root);
   return {
     root: t.root,
     env: { PG_URL: PG_URL! },
@@ -551,6 +553,7 @@ describe("a golden checked by its cross_check_sql alone", () => {
       cross_check_sql: "select fiscal_year, sum(amount) as revenue, sum(units) as units from analytics.sales group by 1",
     });
     writeYaml(join(t.root, "sources", "wh.yaml"), { source: "wh", dialect: "snowflake", connection: { env: "WH_URL" } });
+    await confirmExisting(t.root);
     const file = join(t.dir, "results.json");
     const results = (rows: unknown[]) => writeFileSync(file, JSON.stringify({ "golden:sales_by_year:cross_check": rows }));
     const check = async () => {

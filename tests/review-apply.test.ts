@@ -32,7 +32,12 @@ const mdPath = (root: string) => join(root, ".semlayer", "reviews", "rb_0001.md"
 const jsonPath = (root: string) => join(root, ".semlayer", "reviews", "rb_0001.json");
 const readJsonForm = (root: string) => JSON.parse(readFileSync(jsonPath(root), "utf8")) as ReviewForm;
 const writeJsonForm = (root: string, form: ReviewForm) => writeFileSync(jsonPath(root), `${JSON.stringify(form, null, 2)}\n`);
-const ledger = (root: string) => (existsSync(join(root, ".semlayer", "ledger.jsonl")) ? readFileSync(join(root, ".semlayer", "ledger.jsonl"), "utf8") : "");
+// The lines a test recorded: the example's ledger (its one confirm line, ans_0001) left out, so they start at ans_0002.
+const EXAMPLE_LEDGER = readFileSync(join(ACME, ".semlayer", "ledger.jsonl"), "utf8");
+const ledger = (root: string) => {
+  const text = existsSync(join(root, ".semlayer", "ledger.jsonl")) ? readFileSync(join(root, ".semlayer", "ledger.jsonl"), "utf8") : "";
+  return text.startsWith(EXAMPLE_LEDGER) ? text.slice(EXAMPLE_LEDGER.length) : text;
+};
 const entries = (root: string) => ledger(root).split("\n").filter(Boolean).map((l) => JSON.parse(l) as LedgerEntry);
 const apply = (root: string, file: string, ...more: string[]) => semlayer(root, ["review", "apply", file, "--by", OWNER, ...more]);
 const accessText = (root: string) => readFileSync(join(root, "access.yaml"), "utf8");
@@ -58,16 +63,16 @@ describe("semlayer review apply records a filled form", () => {
     const [i1, i2] = pending.items;
     expect(ledger(root)).toBe(
       [
-        { at: FIXED_NOW, by: OWNER, content_hash: i1!.content_hash, definition_hash: i1!.definition_hash, id: "ans_0001", item: 1, kind: "reply", readback_id: "rb_0001", target: i1!.target, text: "Yes, that is right.", verdict: "yes" },
-        { at: FIXED_NOW, by: OWNER, content_hash: i2!.content_hash, definition_hash: i2!.definition_hash, id: "ans_0002", item: 2, kind: "reply", readback_id: "rb_0001", target: i2!.target, text: "Call it AOV, not average order value.", verdict: "change" },
-        { at: FIXED_NOW, by: OWNER, id: "ans_0003", kind: "question", question: ACCESS_QUESTION, target: "access", text: "No, totals only." },
+        { at: FIXED_NOW, by: OWNER, content_hash: i1!.content_hash, definition_hash: i1!.definition_hash, id: "ans_0002", item: 1, kind: "reply", readback_id: "rb_0001", target: i1!.target, text: "Yes, that is right.", verdict: "yes" },
+        { at: FIXED_NOW, by: OWNER, content_hash: i2!.content_hash, definition_hash: i2!.definition_hash, id: "ans_0003", item: 2, kind: "reply", readback_id: "rb_0001", target: i2!.target, text: "Call it AOV, not average order value.", verdict: "change" },
+        { at: FIXED_NOW, by: OWNER, id: "ans_0004", kind: "question", question: ACCESS_QUESTION, target: "access", text: "No, totals only." },
       ]
         .map((e) => `${JSON.stringify(e)}\n`)
         .join(""),
     );
     expect(accessText(root)).not.toContain(ACCESS_QUESTION);
-    expect(r.out).toContain("Recorded in .semlayer/ledger.jsonl:\n  - ans_0001: item 1 (warehouse.customers.email), verdict yes");
-    expect(r.out).toContain("ans_0003: resolved the open question of access: Should finance see refunds by region?");
+    expect(r.out).toContain("Recorded in .semlayer/ledger.jsonl:\n  - ans_0002: item 1 (warehouse.customers.email), verdict yes");
+    expect(r.out).toContain("ans_0004: resolved the open question of access: Should finance see refunds by region?");
     expect(r.out).toContain("Still needs an answer:\n  - item 3 (access)");
     expect(r.out).toContain("approves nothing");
     expect(r.out).toContain(`semlayer approve --target warehouse.customers.email --by "${OWNER}"`);
@@ -81,7 +86,9 @@ describe("semlayer review apply records a filled form", () => {
     expect((await semlayer(twin.root, ["question", "resolve", "access", "--match", ACCESS_QUESTION, "--text", "No, totals only.", "--by", OWNER])).code).toBe(0);
     expect(ledger(twin.root)).toBe(ledger(root));
     expect(accessText(twin.root)).toBe(accessText(root));
-    expect((await semlayer(root, ["validate"])).code).toBe(0);
+    // The owner's change to the approved metric is their latest word on it, so no yes backs it now.
+    const errors = (await semlayer(root, ["validate", "--json"])).json<{ issues: { level: string; code: string; message: string }[] }>().issues.filter((i) => i.level === "error");
+    expect(errors.map((i) => [i.code, i.message.split(" ")[0]])).toEqual([["approval.no_recorded_yes", "metric:average_order_value"]]);
   });
 
   test("JSON: a verdict with no words records the verdict as the words, and words with no verdict record verdict null", async () => {
@@ -207,8 +214,8 @@ describe("semlayer review apply is idempotent", () => {
     expect(accessText(root)).toBe(acc);
     const out = r.json<{ recorded: unknown[]; already_recorded: { id: string }[]; questions_already_resolved: { id: string }[]; questions_not_found: unknown[] }>();
     expect(out.recorded).toEqual([]);
-    expect(out.already_recorded.map((x) => x.id)).toEqual(["ans_0001", "ans_0002"]);
-    expect(out.questions_already_resolved.map((x) => x.id)).toEqual(["ans_0003"]);
+    expect(out.already_recorded.map((x) => x.id)).toEqual(["ans_0002", "ans_0003"]);
+    expect(out.questions_already_resolved.map((x) => x.id)).toEqual(["ans_0004"]);
     expect(out.questions_not_found).toEqual([]);
     const text = await apply(root, mdPath(root));
     expect(text.out).toContain("Already recorded, so not recorded again:");
@@ -289,7 +296,7 @@ describe("semlayer review apply refuses the whole form", () => {
       expect(() => applyReview(root, form, OWNER, FIXED_NOW, failing)).toThrow(/disk full\nNothing was recorded/);
       expect(calls).toBe(3);
       expect(ledger(root)).toBe(led);
-      expect(existsSync(join(root, ".semlayer", "ledger.jsonl"))).toBe(earlier);
+      expect(existsSync(join(root, ".semlayer", "ledger.jsonl"))).toBe(true);
       expect(accessText(root)).toBe(acc);
       expect(accessText(root)).toContain(ACCESS_QUESTION);
     }
@@ -363,7 +370,7 @@ describe("semlayer review apply edges", () => {
     writeFileSync(file, JSON.stringify(form));
     expect((await apply(root, file)).code).toBe(0);
     const r = await apply(root, file, "--json");
-    expect(r.json<{ questions_already_resolved: { id: string }[] }>().questions_already_resolved.map((q) => q.id)).toEqual(["ans_0001"]);
+    expect(r.json<{ questions_already_resolved: { id: string }[] }>().questions_already_resolved.map((q) => q.id)).toEqual(["ans_0002"]);
     expect(entries(root).length).toBe(1);
     expect(accessText(root)).not.toContain(ACCESS_QUESTION);
   });
@@ -374,7 +381,7 @@ describe("semlayer review apply edges", () => {
     openLedger(root).append({ kind: "question", target: "access", question: ACCESS_QUESTION, text: "No, totals only.", by: OWNER, at: FIXED_NOW });
     const r = await apply(root, mdPath(root), "--json");
     expect(r.code).toBe(0);
-    expect(r.json<{ questions_already_resolved: { id: string }[] }>().questions_already_resolved.map((q) => q.id)).toEqual(["ans_0001"]);
+    expect(r.json<{ questions_already_resolved: { id: string }[] }>().questions_already_resolved.map((q) => q.id)).toEqual(["ans_0002"]);
     expect(entries(root).filter((e) => e.kind === "question").length).toBe(1);
     expect(accessText(root)).not.toContain(ACCESS_QUESTION);
   });
@@ -432,6 +439,7 @@ describe("semlayer review apply edges", () => {
     form.questions[0]!.answer = "Totals only.";
     writeJsonForm(root, form);
     writeFileSync(join(dir, "elsewhere.jsonl"), "");
+    rmSync(join(root, ".semlayer", "ledger.jsonl"));
     symlinkSync(join(dir, "elsewhere.jsonl"), join(root, ".semlayer", "ledger.jsonl"));
     const before = accessText(root);
     expect((await apply(root, jsonPath(root))).code).not.toBe(0);

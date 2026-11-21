@@ -14,9 +14,9 @@ import {
   metricMeasureRefs,
 } from "./access.ts";
 import { canRun } from "./adapters/index.ts";
-import { type ApprovalEntry, approvalYes, holdsHashes, type Integrity, integrity, itemApprovals, listApprovals, pairEntries } from "./approval-hash.ts";
+import { type ApprovalEntry, backed, holdsHashes, integrity, itemApprovals, listApprovals, pairEntries, type Standing, standing } from "./approval-hash.ts";
 import { type ChangeRecord, loadChange, releaseLead } from "./change-record.ts";
-import { currentYes, ledgerState } from "./ledger.ts";
+import { currentYes, ledgerState, readApprovalLedger } from "./ledger.ts";
 import { accessRowFilters, layerReads } from "./layer-reads.ts";
 import { findTable, qualifiedName } from "./naming.ts";
 import { plainText } from "./output.ts";
@@ -304,10 +304,15 @@ export interface ProjectStatus {
   // Approved items without an approved_hash while other items record one: the hash may have been
   // removed, so each is read back and approved again. Empty while no item records a hash.
   hash_missing: string[];
-  // Approved items and goldens whose owner's latest reply in the ledger is not a yes to them as they
-  // stand (approved before semlayer approve required one), as approve targets and golden:<name>. They stay
-  // approved and never hold a phase open; semlayer next reads them back once every phase is done.
+  // Approved items and goldens no recorded yes or confirmation of the owner backs that still count:
+  // every approval of a project with no ledger (the rule for approvals given before it), and confirmed
+  // goldens, as approve targets and golden:<name>. They stay approved and never hold a phase open;
+  // semlayer next reads them back once every phase is done.
   approved_without_yes: string[];
+  // Approved models, fields, joins, metrics, schema pairs and access.yaml whose file says approved but
+  // that no recorded yes of the owner backs while the project has a ledger (approval-hash.ts standing
+  // "unbacked"): each counts as a draft, and the reapprove phase reads it back.
+  stamped_without_yes: string[];
   // Items of the pending readbacks that wait for the owner's answer, as semlayer next asks them: one a
   // later readback of the same target settled on a recorded reply is not counted.
   pending_readback_items: number;
@@ -860,13 +865,18 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch" | "laye
 
   // An approved item edited after its sign-off changes a figure nobody confirmed, so it is read back
   // before anything else moves.
-  if (status.changed_since_approval.length || status.hash_missing.length) {
+  if (status.changed_since_approval.length || status.hash_missing.length || status.stamped_without_yes.length) {
     const changed = status.changed_since_approval;
     const missing = status.hash_missing;
+    const stamped = status.stamped_without_yes;
     const parts = [
       changed.length ? `${changed.length} approved item(s) changed since they were approved: ${preview(changed)}.` : "",
       missing.length
         ? `${missing.length} approved item(s) have no approved_hash while other approved items carry one, so it may have been removed: ${preview(missing)}.`
+        : "",
+      stamped.length
+        ? `${stamped.length} item(s) say they are approved, but no recorded yes from the owner stands behind them: ${preview(stamped)}; ` +
+          "approvals the owner gave before semlayer recorded their yes they can instead confirm as they stand with semlayer approve --confirm-existing."
         : "",
     ].filter(Boolean);
     return {
@@ -874,7 +884,8 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch" | "laye
       message:
         `${parts.join(" ")} Read each back to the owner as it now stands and approve it again only after they confirm, or restore ` +
         "the approved definition; semlayer validate names each one. Until then tools treat each one as a draft (semlayer access lists them).",
-      action: ctx.signOff([...changed, ...missing]),
+      // Items stamped without a yes are read back eight at a time, as semlayer next backfills.
+      action: ctx.signOff([...changed, ...missing, ...stamped.slice(0, 8)]),
     };
   }
 
@@ -1418,7 +1429,7 @@ export interface TargetState {
   definition?: string;
   // The item's approved_at, when it is text.
   approvedAt?: string;
-  state: Integrity;
+  state: Standing;
   // Whether the item carries an approval's trace now (approved_by, approved_at, approved_hash, or
   // access.yaml's last_approved). A draft with none was never approved, or its approval was revoked.
   stamped: boolean;
@@ -1491,16 +1502,20 @@ export function statusDetail(root: string, only?: string): StatusDetail {
   const goldenRoles = new Set(approvedGoldens.flatMap((g) => goldenRunsAs(goldenLayer, g)));
   const ledger = ledgerState(root);
   const replies = ledger.replies;
+  // The one reading of the ledger every approval below is checked against (approval-hash.ts standing).
+  const answers = readApprovalLedger(root);
   const targets = new Map<string, TargetState>();
   for (const e of [...reports.flatMap((r) => r.approvals), ...allMetricEntries, ...accessEntries]) {
-    if (!targets.has(e.ref)) targets.set(e.ref, { hash: e.hash, ...(e.definitionHash !== e.hash ? { definition: e.definitionHash } : {}), ...(typeof e.item.approved_at === "string" ? { approvedAt: e.item.approved_at } : {}), state: integrity(e, projectHashed), stamped: stamped(e) });
+    if (!targets.has(e.ref)) targets.set(e.ref, { hash: e.hash, ...(e.definitionHash !== e.hash ? { definition: e.definitionHash } : {}), ...(typeof e.item.approved_at === "string" ? { approvedAt: e.item.approved_at } : {}), state: standing(e, projectHashed, answers), stamped: stamped(e) });
   }
-  for (const e of pairApprovals) targets.set(e.ref, { hash: e.hash, state: integrity(e, true), stamped: stamped(e) });
+  for (const e of pairApprovals) targets.set(e.ref, { hash: e.hash, state: standing(e, true, answers), stamped: stamped(e) });
   for (const g of listApprovals({ goldens: loadedGoldens })) if (g.kind === "golden" && g.complete && g.status === "approved") targets.set(g.ref, { hash: g.hash, state: "current", stamped: true });
+  // Approvals that count with nothing in the ledger behind them: all of them while there is no ledger.
   const withoutYes = (refs: string[]) =>
     refs.filter((ref) => {
       const t = targets.get(ref);
-      return !!t && (t.state === "current" || t.state === "unhashed") && !approvalYes(replies, { ref, hash: t.hash, definitionHash: t.definition ?? t.hash });
+      if (!t || (t.state !== "current" && t.state !== "unhashed")) return false;
+      return !answers.present || !backed(answers, { ref, hash: t.hash, definitionHash: t.definition ?? t.hash });
     });
 
   const base = {
@@ -1524,6 +1539,7 @@ export function statusDetail(root: string, only?: string): StatusDetail {
     hash_missing: [...refsIn(approvals, "missing", projectHashed), ...refsIn(pairApprovals, "missing", true)],
     pending_readback_items: openReadbacks(root, targets, replies).reduce((n, r) => n + r.open.length, 0),
     approved_without_yes: withoutYes([...approvals.map((e) => e.ref), ...pairApprovals.map((e) => e.ref), ...approvedGoldens.map((g) => `golden:${g.name}`)]),
+    stamped_without_yes: [...approvals, ...pairApprovals].filter((e) => targets.get(e.ref)?.state === "unbacked").map((e) => e.ref),
     goldens: count(goldens),
     draft_goldens: draftGoldenNames(loadedGoldens),
     roles_without_goldens: roleNames(access).filter((r) => !goldenRoles.has(r)),

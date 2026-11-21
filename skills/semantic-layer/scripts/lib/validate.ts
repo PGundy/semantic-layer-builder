@@ -4,7 +4,8 @@ import { basename, dirname, join, relative } from "node:path";
 import { type AccessLayer, type AccessVisibility, checkRequest, evaluateLayer, metricMeasureRefs } from "./access.ts";
 import {
   type ApprovalEntry,
-  approvalYes,
+  type ApprovalLedger,
+  backed,
   changedMessage,
   describedLater,
   describedLaterMessage,
@@ -14,7 +15,11 @@ import {
   itemApprovals,
   listApprovals,
   missingMessage,
+  NO_LEDGER_MESSAGE,
+  pairEntries,
   pathText,
+  standing,
+  unbackedMessage,
   UNHASHED_MESSAGE,
 } from "./approval-hash.ts";
 import { classifyType, isNumeric, isTemporal } from "./column-types.ts";
@@ -25,7 +30,7 @@ import { quoteIdent } from "./dialect.ts";
 import { type Env, envFilesInRoot, rootEnvFile, trackedEnvFiles } from "./env-file.ts";
 import { UserError } from "./errors.ts";
 import { intakeIssues, intakeMode, upgradeCommand } from "./intake.ts";
-import { countedReplies, currentYes, readPending } from "./ledger.ts";
+import { approvalLedger, CONFIRM_EXISTING, countedReplies, currentYes, readPending } from "./ledger.ts";
 import { layerReads, sourceRowFilters } from "./layer-reads.ts";
 import { findTable } from "./naming.ts";
 import { segmentFilters } from "./segments.ts";
@@ -915,36 +920,62 @@ export class Validator {
   repliesCache?: LedgerReply[];
   replies(): LedgerReply[] {
     if (this.repliesCache) return this.repliesCache;
-    const abs = join(this.root, ".semlayer", "ledger.jsonl");
-    const text = this.overrides?.get(abs) ?? (existsSync(abs) && statSync(abs).isFile() ? readFileSync(abs, "utf8") : "");
-    this.repliesCache = countedReplies(text).replies;
+    this.repliesCache = countedReplies(this.ledgerText() ?? "").replies;
     return this.repliesCache;
   }
 
-  // Errors on an approved item whose content no longer matches its approved_hash. Warns once per file
+  // The ledger's text as an edit would leave it, or undefined when there is none or it is not a file.
+  ledgerText(): string | undefined {
+    const abs = join(this.root, ".semlayer", "ledger.jsonl");
+    return this.overrides?.get(abs) ?? (existsSync(abs) && statSync(abs).isFile() ? readFileSync(abs, "utf8") : undefined);
+  }
+
+  // The ledger as approvals read it (approval-hash.ts standing), read once. A ledger path that is not
+  // a plain file counts as a ledger that backs nothing.
+  approvalLedgerCache?: ApprovalLedger;
+  approvalLedger(): ApprovalLedger {
+    const abs = join(this.root, ".semlayer", "ledger.jsonl");
+    const notFile = !this.overrides?.has(abs) && existsSync(abs) && !statSync(abs).isFile();
+    this.approvalLedgerCache ??= notFile ? { present: true, latest: new Map(), unreadable: true } : approvalLedger(this.ledgerText());
+    return this.approvalLedgerCache;
+  }
+
+  // Approved items and goldens seen while the project has no ledger, for the one finding that says so.
+  unledgered = 0;
+
+  // Errors on an approved item whose content no longer matches its approved_hash, and on one that no
+  // recorded yes of the owner backs (approval-hash.ts standing "unbacked"). Warns once per file
   // when approved items carry no hash and no item of the project records one (approved before
   // content hashes), and on each approved item without a hash once other items record one, since
-  // its hash may have been removed. Warns once per file, too, on approved items whose owner's latest
-  // reply in the ledger is not a yes to them as they stand (approved before semlayer approve required one),
-  // and on approved items whose approved_hash covers their definition but not their description.
+  // its hash may have been removed. Warns once per file, too, on approved items whose approved_hash
+  // covers their definition but not their description. In a project with no ledger, the approved
+  // items are counted for the one finding checkNoLedger reports.
   checkApprovals(file: string, entries: ApprovalEntry[]): void {
     let unhashed = 0;
-    const unanswered: string[] = [];
     const uncovered: string[] = [];
     const hashed = this.projectHashed();
+    const ledger = this.approvalLedger();
     for (const e of entries) {
-      const state = integrity(e, hashed);
+      const state = standing(e, hashed, ledger);
+      if (state === "unbacked" && !ledger.unreadable) this.error(file, pathText(e.path), unbackedMessage(e), "approval.no_recorded_yes", `semlayer readback --targets ${e.ref}`);
       if (state === "changed")
         this.error(file, pathText(e.path), changedMessage(e, descriptionOnly(this.replies(), e)), "approval.hash_changed", `semlayer readback --targets ${e.ref}`);
       else if (state === "missing") this.warn(file, pathText(e.path), missingMessage(e), "approval.hash_missing");
       else if (state === "unhashed") unhashed++;
-      if (describedLater(e)) uncovered.push(e.ref);
-      if (state !== "draft" && state !== "changed" && !approvalYes(this.replies(), e)) unanswered.push(e.ref);
+      if (describedLater(e) && state !== "unbacked") uncovered.push(e.ref);
+      if (!ledger.present && state !== "draft") this.unledgered++;
     }
     if (unhashed)
       this.warn(file, "", `${unhashed} approved item${unhashed === 1 ? " was" : "s were"} ${UNHASHED_MESSAGE}`, "approval.stamp_hashes", "semlayer approve --stamp-hashes");
     if (uncovered.length) this.warn(file, "", describedLaterMessage(uncovered), "approval.description_uncovered", "semlayer approve --stamp-hashes --confirm-unchanged");
-    if (unanswered.length) this.warn(file, "", unansweredMessage(unanswered), "approval.no_ledger_yes", `semlayer readback --targets ${unanswered.slice(0, 3).join(",")}`);
+  }
+
+  // The one finding for a project with approvals and no answer ledger (approval-hash.ts backed): its
+  // approvals count under the rule for approvals given before the ledger, until the owner confirms them.
+  checkNoLedger(): void {
+    if (this.approvalLedger().present) return;
+    for (const [name, l] of this.sources) if (pairEntries(name, l.data).some((e) => e.item.status === "approved")) this.unledgered++;
+    if (this.unledgered) this.warn(".semlayer/ledger.jsonl", "", `${this.unledgered} approved item${this.unledgered === 1 ? "" : "s"}: ${NO_LEDGER_MESSAGE}`, "approval.no_ledger", CONFIRM_EXISTING);
   }
 
   // A time dimension's time_zone: an IANA zone, and only for values stored without a zone. When the
@@ -1741,7 +1772,8 @@ export class Validator {
           if (!attrs.has(key)) this.error(f, `user.${key}`, `"${key}" is not a declared user attribute`, "ref.unknown_attribute");
       }
       if (g.status === "approved" && !g.expected?.rows.length) this.error(f, "expected.rows", "an approved golden needs at least one expected row", "golden.no_expected_rows");
-      else if (g.status === "approved" && !currentYes(this.replies(), `golden:${g.name}`, listApprovals({ goldens: [{ golden: g }] })[0]!.hash))
+      else if (g.status === "approved" && !this.approvalLedger().present) this.unledgered++;
+      else if (g.status === "approved" && !backed(this.approvalLedger(), listApprovals({ goldens: [{ golden: g }] })[0]!))
         this.warn(f, "", unconfirmedGoldenMessage(g.name), "golden.no_ledger_yes");
       const crossKey = crossCheckKey(g);
       if (typeof g.sql === "string" && typeof g.cross_check_sql === "string")
@@ -2132,6 +2164,7 @@ export class Validator {
     this.checkPersonalValues();
     this.checkProtectedProfiles();
     this.checkGoldens();
+    this.checkNoLedger();
     return this.issues;
   }
 
@@ -2152,6 +2185,7 @@ export class Validator {
       checkSqlRefs: (file, path, sql, model, role) => this.checkSqlRefs(file, path, sql, model, role),
       joinPaths: (source, from, to, maxHops) => this.joinPaths(source, from, to, maxHops),
       hasYes: (ref, hash) => !!currentYes(this.replies(), ref, hash),
+      approvalLedger: () => this.approvalLedger(),
       yesReadbackText: (ref, hash) => {
         const r = currentYes(this.replies(), ref, hash);
         if (!r) return undefined;
@@ -2312,19 +2346,6 @@ function describeKeys(keys: JoinKey[]): string {
 
 function qualified(t: SnapshotTable): string {
   return t.schema ? `${t.schema}.${t.name}` : t.name;
-}
-
-// The once-per-file warning on approved items without a matching owner yes in the ledger, naming
-// the first few and the readback that records a yes for them.
-export function unansweredMessage(refs: string[]): string {
-  const n = refs.length;
-  const shown = refs.slice(0, 3);
-  const more = n > shown.length ? ` and ${n - shown.length} more` : "";
-  return (
-    `${n} approved item${n === 1 ? " has" : "s have"} no recorded owner yes in .semlayer/ledger.jsonl that matches ${n === 1 ? "it" : "them"} as ${n === 1 ? "it stands" : "they stand"} ` +
-    `(approved before semlayer approve required one): ${shown.join(", ")}${more}; ${n === 1 ? "it stays" : "they stay"} approved. To record a yes, ` +
-    `read ${n === 1 ? "it" : "them"} back with semlayer readback --targets ${shown.join(",")}, then record the owner's answer with semlayer reply`
-  );
 }
 
 // The warning on a confirmed golden whose owner's latest reply in the ledger is not a yes to it as it

@@ -13,7 +13,8 @@ import { protectedColumns, redactSnapshot } from "../lib/profile.ts";
 import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot, saveSnapshot } from "../lib/project.ts";
 import { effectiveScope } from "../lib/table-list.ts";
 import { rankTables } from "../lib/rank.ts";
-import { crossSchemaFks, crossSchemaPairs, explicitPrimary, findPair, keepsToPrimary, pairAnswered, pairApproved, schemaQuestion, schemasRead, splitKeyEnd } from "../lib/schema-scope.ts";
+import { readApprovalLedger } from "../lib/ledger.ts";
+import { backedPairs, crossSchemaFks, crossSchemaPairs, explicitPrimary, findPair, keepsToPrimary, pairAnswered, pairApproved, schemaQuestion, schemasRead, splitKeyEnd } from "../lib/schema-scope.ts";
 import type { Model, Scope, Snapshot, SnapshotTable, SourceConfig } from "../lib/types.ts";
 import { updateYaml, writeYaml } from "../lib/yaml.ts";
 import { sourceFlag } from "./tables.ts";
@@ -299,7 +300,9 @@ const spec: CommandSpec = {
   async run({ values }, ctx) {
     const project = loadProject(ctx.root);
     const sourceName = sourceFlag(values, project);
-    const source = loadSource(ctx.root, sourceName);
+    // Its schema pairs as tools read them: an approved pair no recorded yes backs is a draft (schema-scope.ts backedPairs).
+    const loaded = loadSource(ctx.root, sourceName);
+    const source: SourceConfig = { ...loaded, cross_schema: backedPairs(loaded, readApprovalLedger(ctx.root)) };
     const scope = effectiveScope(ctx.root, source);
     const snapshot = requireSnapshot(ctx.root, sourceName);
     const primary = primaryForDraft(source, snapshot, (t) => inScope(scope, t));

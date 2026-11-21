@@ -703,12 +703,12 @@ const NOT_PLUGIN_BARE = (why: string) =>
 // What follows the list of files, by what the call ran besides the program that may have forged the change.
 const RAN_SEMLAYER =
   "- This call also ran semlayer, whose writes cannot be told from the other program's: what semlayer wrote to the ledger was removed with the rest, and a layer file it edited was not put back. " +
-  `Run the semlayer command again ${ON_ITS_OWN}, then semlayer validate. semlayer reply, semlayer question resolve and semlayer review apply record an owner's answer; ` +
+  `Run the semlayer command again ${ON_ITS_OWN}, then semlayer validate. semlayer reply, semlayer question resolve, semlayer review apply and semlayer approve --confirm-existing record an owner's answer; ` +
   "if an open question was resolved, it is now gone from its file without its answer, so add it again first with semlayer question add.";
 const RAN_GIT =
   "- This call also ran git. If its pull or merge brought ledger lines in, they were removed with the rest: get them back with git checkout -- <file> for each file listed above, " +
   "run in the semantic root on its own. Run it only after such a pull or merge, since it replaces the file with the committed one.";
-const ALONE = `- semlayer reply, semlayer question resolve and semlayer review apply record an owner's answer. If one of them made that change (run through a script or a variable), run it again ${ON_ITS_OWN}.`;
+const ALONE = `- semlayer reply, semlayer question resolve, semlayer review apply and semlayer approve --confirm-existing record an owner's answer. If one of them made that change (run through a script or a variable), run it again ${ON_ITS_OWN}.`;
 const EARLIER = "This was found before the current call";
 
 function listed(diffs: Diff[], word: (d: Diff) => string): string[] {

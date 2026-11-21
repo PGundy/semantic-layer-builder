@@ -16,7 +16,7 @@ import { sqlTextProblem, type TextRole } from "../sql-text.ts";
 import type { Dimension, FilterOp, Measure, Model, QueryRequest, Snapshot, SourceConfig, TimeGrain } from "../types.ts";
 import { AGGREGATIONS, NAME_PATTERN, TIME_GRAINS } from "../types.ts";
 import { schemaIssues } from "../schema.ts";
-import { crossSchemaPairs } from "../schema-scope.ts";
+import { backedPairs, type CrossSchemaPair } from "../schema-scope.ts";
 import { type CompileWarning, type Instance, JoinPlan, joinWarnings, type PlannedJoin, readsJoin } from "./joins.ts";
 import { compileMetrics } from "./metrics.ts";
 import { measureFilter, unknownSegments } from "./segments.ts";
@@ -131,13 +131,18 @@ function refuse(source: string, refusals: Refusal[]): Refused {
   return { ok: false, source, reason: refusals.map((r) => r.message).join("; "), refusals };
 }
 
+// The source's schema pairs as the compiler reads them (schema-scope.ts backedPairs).
+export function layerPairs(input: Pick<CompileInput, "layer" | "source">): CrossSchemaPair[] {
+  return backedPairs(input.source, input.layer.compare_hashes === false ? undefined : input.layer.ledger);
+}
+
 // Compiles a request against an already loaded layer.
 export function compileLayer(input: CompileInput): CompileResult {
   const r = compileLayerInner(input);
   if (!r.ok) return r;
   // A compiled query carries the warnings of the joins it adds, a metric's parts' joins included.
   const warnings = joinWarnings(
-    { source: input.source.source, models: input.layer.models.filter((m) => m.source === input.source.source), snapshot: input.snapshot, pairs: crossSchemaPairs(input.source), joinStatus: input.joinStatus },
+    { source: input.source.source, models: input.layer.models.filter((m) => m.source === input.source.source), snapshot: input.snapshot, pairs: layerPairs(input), joinStatus: input.joinStatus },
     r.joins,
   );
   return warnings.length ? { ...r, warnings } : r;
@@ -168,7 +173,7 @@ function compileLayerInner(input: CompileInput): CompileResult {
   for (const r of vis.unknown_roles) add("unknown_role", `role ${r} is not a role in access.yaml`);
   for (const p of checkRequest(vis, request).problems) add("not_visible", p.message, p.ref, undefined, { reasons: p.reasons, ...(p.awaits ? { awaits: p.awaits } : {}) });
 
-  const pairs = crossSchemaPairs(source);
+  const pairs = layerPairs(input);
   // A request's segments narrow a plain request; a metric's parts are compiled without them.
   const named = request.segments ?? [];
   const metricNamed = [...(request.measures ?? []), ...(request.dimensions ?? []), ...(request.filters ?? []).map((f) => f.field), ...(request.order_by ?? []).map((o) => o.field)].find(

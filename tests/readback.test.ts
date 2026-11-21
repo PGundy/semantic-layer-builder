@@ -269,7 +269,7 @@ describe("the pending store", () => {
     expect((await semlayer(root, ["readback", "--targets", "golden:nope"])).err).toContain('No golden "nope"');
     expect((await semlayer(root, ["readback", "--targets", "warehouse.orders", "--tolerance", "0"])).err).toContain("--tolerance applies only to golden:<name> targets");
     expect((await semlayer(root, ["readback"])).err).toContain("--targets is required");
-    expect(existsSync(join(root, ".semlayer"))).toBe(false);
+    expect(existsSync(join(root, ".semlayer", "pending"))).toBe(false);
   });
 
   test("it writes only .semlayer/pending inside the semantic root and leaves every other file as it was", async () => {
@@ -439,7 +439,7 @@ describe("edge cases", () => {
     writeFileSync(join(dir, "outside", "evil.yaml"), "model: evil\ntable: x\ndimensions: []\nmeasures: []\n");
     const r = await semlayer(root, ["readback", "--targets", "../../outside.evil", "--json"]);
     expect(r.code).toBe(1);
-    expect(existsSync(join(root, ".semlayer"))).toBe(false);
+    expect(existsSync(join(root, ".semlayer", "pending"))).toBe(false);
   });
 
   test("a grain drafted from a table comment is quoted as data text (invariant 4)", async () => {

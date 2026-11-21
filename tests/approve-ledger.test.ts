@@ -344,50 +344,55 @@ describe("revoke and stamp-hashes need no ledger", () => {
   });
 });
 
-describe("validate warns on approvals without a matching yes", () => {
-  const WARNING = "no recorded owner yes in .semlayer/ledger.jsonl";
+describe("validate on approvals the ledger does not back", () => {
+  const about = (root: string) => validateProject(root).filter((i) => i.code === "approval.no_ledger" || i.code === "approval.no_recorded_yes");
 
-  test("one summary warning per file, with the count, the first items and their readback; none once each has a yes", async () => {
+  test("no ledger: one warning for the project, naming the owner's confirmation; with a ledger, an error on each item no yes backs", async () => {
     const root = await project();
     // Approved by hand, as before semlayer approve required a yes: the model and its three fields.
     writeFileSync(join(root, ORDERS_FILE), ORDERS.replace(/^( *)status: draft(.*)$/gm, "$1status: approved$2\n$1approved_by: Dana\n$1approved_at: 2026-01-02"));
     expect(orders(root).status).toBe("approved");
-    const ours = () => validateProject(root).filter((i) => i.message.includes(WARNING));
-    expect(ours()).toEqual([
+    expect(about(root)).toEqual([
       {
         level: "warning",
-        file: ORDERS_FILE,
+        file: LEDGER,
         path: "",
-        code: "approval.no_ledger_yes",
-        next: "semlayer readback --targets wh.orders,wh.orders.order_status,wh.orders.revenue",
+        code: "approval.no_ledger",
+        next: 'semlayer approve --confirm-existing --by "<owner>" --reply "<owner\'s words>"',
         message:
-          "4 approved items have no recorded owner yes in .semlayer/ledger.jsonl that matches them as they stand (approved before semlayer approve required one): " +
-          "wh.orders, wh.orders.order_status, wh.orders.revenue and 1 more; they stay approved. To record a yes, read them back with " +
-          "semlayer readback --targets wh.orders,wh.orders.order_status,wh.orders.revenue, then record the owner's answer with semlayer reply",
+          "4 approved items: the project has approved items but no answer ledger (.semlayer/ledger.jsonl), so no recorded yes from the owner stands behind them. " +
+          "They count as approved under the rule for approvals given before the ledger, but the first answer recorded in a new ledger ends that rule for them: have the owner confirm them first. If this is a clone, restore the ledger from version control " +
+          "(it is committed with the layer). Otherwise have the owner confirm them as they stand, in their name and words, before recording any other answer: " +
+          'semlayer approve --confirm-existing --by "<owner>" --reply "<owner\'s words>"',
       },
     ]);
-    // A warning, not an error.
-    expect((await semlayer(root, ["validate"])).out).toContain(`warning 4 approved items have ${WARNING}`);
+    // Once the ledger exists, only a yes or the owner's confirmation backs an approval.
     await recordReply(root, ["wh.orders", "wh.orders.order_status", "wh.orders.revenue"]);
-    expect(ours()[0]!.message).toContain("1 approved item has no recorded owner yes in .semlayer/ledger.jsonl that matches it as it stands (approved before semlayer approve required one): wh.orders.order_count; it stays approved. To record a yes, read it back with semlayer readback --targets wh.orders.order_count");
+    expect(about(root).map((i) => [i.level, i.code, i.path, i.next])).toEqual([["error", "approval.no_recorded_yes", "measures[1]", "semlayer readback --targets wh.orders.order_count"]]);
+    expect(about(root)[0]!.message).toBe(
+      "wh.orders.order_count says it is approved by Dana, but no recorded yes from the owner in .semlayer/ledger.jsonl stands behind it as it stands, so every tool treats it as a draft. " +
+        "Read it back and approve it on the owner's yes (semlayer readback --targets wh.orders.order_count, read it to the owner, " +
+        'semlayer reply --readback <id> --item <n> --text "<owner\'s words>" --verdict yes --by "<owner>", then semlayer approve --target wh.orders.order_count), ' +
+        "or return it to draft (semlayer approve --revoke --target wh.orders.order_count). " +
+        "If the owner approved it before semlayer recorded their yes, they can instead confirm such approvals as they stand, in their name and words: " +
+        'semlayer approve --confirm-existing --by "<owner>" --reply "<owner\'s words>"',
+    );
     await recordReply(root, "wh.orders.order_count");
-    expect(ours()).toEqual([]);
-    // A later no brings the warning back.
+    expect(about(root)).toEqual([]);
+    // A later no takes the yes away.
     await recordReply(root, "wh.orders.revenue", { verdict: "no" });
-    expect(ours()[0]!.message).toStartWith("1 approved item has");
+    expect(about(root).map((i) => i.message.split(" ")[0])).toEqual(["wh.orders.revenue"]);
   });
 
-  test("an approval made by semlayer approve on a yes draws no warning", async () => {
+  test("an approval made by semlayer approve on a yes draws nothing", async () => {
     const root = await project();
     await recordReply(root, "access");
     expect((await approve(root, ["--target", "access"])).code).toBe(0);
-    expect(validateProject(root).filter((i) => i.message.includes(WARNING))).toEqual([]);
+    expect(about(root)).toEqual([]);
   });
 
-  test("examples/acme gets at most one such warning per file", () => {
-    const issues = validateProject(join(import.meta.dir, "..", "examples", "acme", "semantic")).filter((i) => i.message.includes(WARNING));
-    expect(issues.length).toBeGreaterThan(0);
-    expect(new Set(issues.map((i) => i.file)).size).toBe(issues.length);
-    expect(issues.every((i) => i.level === "warning")).toBe(true);
+  test("examples/acme: its ledger backs every approval, so validate reports none", () => {
+    expect(about(join(import.meta.dir, "..", "examples", "acme", "semantic"))).toEqual([]);
   });
 });
+

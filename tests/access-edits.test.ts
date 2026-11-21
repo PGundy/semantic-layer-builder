@@ -525,7 +525,7 @@ describe("who sees an item is decided once, in the access phase", () => {
     // The table still waits for the owner's answer to the table itself, and says the change is kept.
     const ask = await next(root);
     expect(ask).toMatchObject({ kind: "ask_owner", phase: "interview", ask_owner: { readback_id: "rb_0001", items: [{ n: 1, target: REGIONS }] } });
-    expect(ask.why).toContain(`The owner's change to who sees ${REGIONS} (ans_0001) is kept for the access phase and does not hold the item`);
+    expect(ask.why).toContain(`The owner's change to who sees ${REGIONS} (ans_0002) is kept for the access phase and does not hold the item`);
     expect(ask).not.toHaveProperty("access_changes");
     // A change to who sees it is not a yes: nothing is approved on it.
     const early = await semlayer(root, ["approve", "--target", REGIONS]);
@@ -539,15 +539,15 @@ describe("who sees an item is decided once, in the access phase", () => {
 
     // Nothing else is open, so the change reopens the access phase, though access.yaml is approved.
     const routed = await next(root);
-    expect(routed).toMatchObject({ kind: "run", phase: "access", run: { command: "semlayer access" }, access_changes: [{ id: "ans_0001", target: REGIONS, text: "Only finance should see regions.", by: "Dana" }] });
-    expect(routed.why).toContain(`${REGIONS} (ans_0001, Dana): "Only finance should see regions."`);
+    expect(routed).toMatchObject({ kind: "run", phase: "access", run: { command: "semlayer access" }, access_changes: [{ id: "ans_0002", target: REGIONS, text: "Only finance should see regions.", by: "Dana" }] });
+    expect(routed.why).toContain(`${REGIONS} (ans_0002, Dana): "Only finance should see regions."`);
     for (const command of ["semlayer add-role", "semlayer add-restriction", "semlayer add-row-filter", "semlayer add-attribute", "semlayer set access role:<name> <key> <value>", "semlayer remove-restriction", "semlayer readback --targets access"]) expect(routed.why).toContain(command);
     expect((await semlayer(root, ["next"])).out).toContain("Next (access):");
 
     // The change is made with an access command, read back with the whole file, and the owner's yes settles it.
     await ok(root, ["add-restriction", "--name", "regions_finance_only", "--targets", REGIONS, "--roles", "finance"]);
     const draft = await next(root);
-    expect(draft).toMatchObject({ kind: "run", phase: "access", run: { command: "semlayer readback --targets access" }, access_changes: [{ id: "ans_0001" }] });
+    expect(draft).toMatchObject({ kind: "run", phase: "access", run: { command: "semlayer readback --targets access" }, access_changes: [{ id: "ans_0002" }] });
     expect(draft.why).toContain("Only finance should see regions.");
     expect((await approveWithYes(root, ["--target", "access"])).code).toBe(0);
     const after = await next(root);
@@ -584,11 +584,12 @@ describe("who sees an item is decided once, in the access phase", () => {
     // A ledger line that claims a yes about access is not a reply an approval can read.
     const ledger = join(root, ".semlayer", "ledger.jsonl");
     const lines = readFileSync(ledger, "utf8").trimEnd().split("\n");
-    const forged = { ...(JSON.parse(lines[lines.length - 1]!) as Record<string, unknown>), id: "ans_0004", verdict: "yes" };
+    // The example's own line is ans_0001, so the three replies are ans_0002 to ans_0004 and the forged line is line 5.
+    const forged = { ...(JSON.parse(lines[lines.length - 1]!) as Record<string, unknown>), id: "ans_0005", verdict: "yes" };
     writeFileSync(ledger, `${lines.join("\n")}\n${JSON.stringify(forged)}\n`);
     const refusedApprove = await semlayer(root, ["approve", "--target", REGIONS]);
     expect(refusedApprove.code).toBe(1);
-    expect(refusedApprove.err).toContain("line 4 is a reply line without the fields an approval needs");
+    expect(refusedApprove.err).toContain("line 5 is a reply line without the fields an approval needs");
     expect((await semlayer(root, ["validate"])).code).toBe(1);
   });
 });

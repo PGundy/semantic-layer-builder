@@ -9,7 +9,8 @@ import { findTable, splitQualified } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
 import { emitPlan, executePlanPartial, resultsInput } from "../lib/plan.ts";
 import { listModels, loadModel, loadSnapshot, loadSource, paths } from "../lib/project.ts";
-import { type CrossSchemaPair, crossSchemaLevel, crossSchemaPairs, schemaJoin, undeclaredPairError } from "../lib/schema-scope.ts";
+import { type CrossSchemaPair, backedPairs, crossSchemaLevel, schemaJoin, undeclaredPairError } from "../lib/schema-scope.ts";
+import { readApprovalLedger } from "../lib/ledger.ts";
 import { joinCheckPlan, joinQueryId, type JoinCheck, type TableRef } from "../lib/sql/join-check.ts";
 import { throughCheckQuery, throughEvidence, throughQueryId, type ThroughCheck } from "../lib/sql/through-check.ts";
 import { throughFindings, throughLines, throughSentence } from "../lib/readback-bridge.ts";
@@ -241,7 +242,7 @@ const spec: CommandSpec = {
     const joinName = requireName("join", str(values, "join"));
     const source = loadSource(ctx.root, sourceName);
     const snapshot = loadSnapshot(ctx.root, sourceName);
-    const { targets, skipped } = selectTargets(ctx, sourceName, snapshot, crossSchemaPairs(source), modelName, joinName, bool(values, "all"));
+    const { targets, skipped } = selectTargets(ctx, sourceName, snapshot, backedPairs(source, readApprovalLedger(ctx.root)), modelName, joinName, bool(values, "all"));
     const skippedLines = skipped.map((s) => `${s.model}.${s.join}: skipped: ${s.reason}`);
 
     const plan = joinCheckPlan(source, targets.map((t) => t.check));
