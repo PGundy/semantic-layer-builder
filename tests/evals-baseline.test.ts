@@ -404,7 +404,7 @@ describe("--update-baseline", () => {
     };
     expect(await main(["--update-baseline", "--driver", "sdk"], f.io)).toBe(2);
     expect(ran).toEqual([]);
-    expect(f.err.at(-1)).toContain("--update-baseline --driver sdk --baseline evals/baseline.sdk.json");
+    expect(f.err.at(-1)).toContain("--update-baseline --driver sdk --runs 5 --baseline evals/baseline.sdk.json");
     // Named explicitly, the file is replaced.
     const file = join(tempDir(), "baseline.json");
     writeFileSync(file, readFileSync(BASELINE_FILE));
