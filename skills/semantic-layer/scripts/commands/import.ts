@@ -83,12 +83,14 @@ function importFile(root: string, cwd: string, source: SourceConfig, given: stri
 // files or directories, a link, a directory, a missing parent and an existing file, so a layer file or an
 // earlier edits file is never replaced.
 function emitPath(root: string, cwd: string, given: string): string {
-  if (!given.trim()) throw new UserError("--emit needs a file path, such as --emit edits.json.");
   const base = resolve(root);
+  // A path that works from the working directory, for the messages: the semantic root is often a folder below it.
+  const example = `--emit ${relative(resolve(cwd), join(base, "edits.json")) || "edits.json"}`;
+  if (!given.trim()) throw new UserError(`--emit needs a file path, such as ${example}.`);
   const target = resolve(cwd, given);
   const rel = relative(base, target);
   if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
-    throw new UserError(`--emit ${given} is outside the semantic root ${root}; give a path inside it, such as --emit edits.json.`);
+    throw new UserError(`--emit ${given} is outside the semantic root ${root}; give a path inside it, such as ${example}.`);
   }
   const parent = dirname(target);
   if (!existsSync(parent)) throw new UserError(`The folder ${parent} does not exist; create it or give another path with --emit.`);
@@ -99,12 +101,12 @@ function emitPath(root: string, cwd: string, given: string): string {
   }
   const own = projectEntries(base);
   const norm = join(realRel, basename(target)).split(sep).join("/").toLowerCase();
-  if (own.files.includes(norm)) throw new UserError(`--emit ${given} is one of the project's own files; give another path, such as --emit edits.json.`);
+  if (own.files.includes(norm)) throw new UserError(`--emit ${given} is one of the project's own files; give another path, such as ${example}.`);
   const dir0 = [...own.dirs, ".semlayer"].find((d) => norm === d || norm.startsWith(`${d}/`));
-  if (dir0) throw new UserError(`--emit ${given} is inside the project's ${dir0}/ directory, which semlayer manages; give another path, such as --emit edits.json.`);
+  if (dir0) throw new UserError(`--emit ${given} is inside the project's ${dir0}/ directory, which semlayer manages; give another path, such as ${example}.`);
   const stat = lstatSync(target, { throwIfNoEntry: false });
   if (stat?.isSymbolicLink()) throw new UserError(`${given} is a symbolic link; give a plain file path with --emit.`);
-  if (stat?.isDirectory()) throw new UserError(`${given} is a directory; give a file path with --emit, such as --emit edits.json.`);
+  if (stat?.isDirectory()) throw new UserError(`${given} is a directory; give a file path with --emit, such as ${example}.`);
   if (stat) throw new UserError(`${given} already exists, so it is not overwritten. Remove it or give another path with --emit.`);
   return target;
 }
@@ -144,7 +146,9 @@ const spec: CommandSpec = {
     "                      such as the patterns semlayer export-sql lists for its query to leave to semlayer import;\n" +
     "                      they apply to the tables intake.schemas keeps.\n\n" +
     "  --semantic          with a dbt manifest, also report its semantic models and metrics: counts, join candidates and what\n" +
-    "                      was skipped, with a reason for each. It reads only; no layer file is written.\n\n" +
+    "                      was skipped, with a reason for each. It reads only; no layer file is written. When the source's snapshot\n" +
+    "                      was taken from the database, that snapshot is kept (not replaced by the manifest's) and the models are\n" +
+    "                      placed against its tables.\n\n" +
     "  --emit <file>       with --semantic, also write the manifest's dimensions, measures, joins and metrics as typed edits for\n" +
     "                      models already drafted, ready for semlayer apply --file <file>. Every edit is a draft described as from\n" +
     "                      the dbt manifest; a join is inferred. Names already in the layer are left as they are and listed, as is each\n" +
@@ -191,19 +195,23 @@ const spec: CommandSpec = {
       { file, catalog, semantic: wantSemantic },
       ctx.now().toISOString(),
     );
-    if (!snapshot.tables.length) {
+    // With --semantic, a snapshot taken from the database is kept: the manifest is read for its semantic
+    // models and metrics, and they are placed against the tables the database really has.
+    const previous = loadSnapshot(ctx.root, source.source);
+    const keep = wantSemantic && previous?.method === "live" ? previous : null;
+    if (!keep && !snapshot.tables.length) {
       throw new UserError(`No tables found in ${shown}.${warnings.length ? ` ${warnings.join(" ")}` : ""}`);
     }
     // intake.schemas first, then --include and --exclude, before the snapshot is compared or saved.
     const kept = intakeSchemas(source);
     const left = dropOtherSchemas(source, snapshot, kept);
-    if (!snapshot.tables.length) {
+    if (!keep && !snapshot.tables.length) {
       throw new UserError(
         `None of the ${left.tables} tables in ${shown} is in intake.schemas (${kept.join(", ")}); the file holds ${schemaListText(left.schemas)}. ` +
           `Export the listed schemas, or fix intake.schemas in sources/${source.source}.yaml and run semlayer validate, then rerun semlayer import --source ${source.source}.`,
       );
     }
-    if (left.tables) {
+    if (left.tables && !keep) {
       warnings.push(
         `Dropped ${droppedText(left)} not in intake.schemas: ${schemaListText(left.schemas)}. ` +
           `To keep them, add the schema to intake.schemas in sources/${source.source}.yaml, run semlayer validate and rerun semlayer import --source ${source.source}.`,
@@ -214,7 +222,9 @@ const spec: CommandSpec = {
     // Tables dropped here are counted in their own line, not again as lost from the previous snapshot.
     const counted = new Set(left.removed.map((t) => qualifiedName(t).toLowerCase()));
     let filters: { include: string[]; exclude: string[]; kept: number; dropped: number } | null = null;
-    if (include.length || exclude.length) {
+    if (keep && (include.length || exclude.length)) {
+      warnings.push("--include and --exclude were not applied: no snapshot was written, so there is nothing to narrow. Narrow the scope with semlayer scope instead.");
+    } else if (include.length || exclude.length) {
       const selection = { include, exclude };
       const read = snapshot.tables.length;
       for (const p of unmatchedPatterns(selection, snapshot.tables)) warnings.push(`Pattern "${p}" matches no table in ${shown}${within}.`);
@@ -230,12 +240,11 @@ const spec: CommandSpec = {
       }
       filters = { include, exclude, kept: snapshot.tables.length, dropped: read - snapshot.tables.length };
     }
-    const previous = loadSnapshot(ctx.root, source.source);
-    const diff = previous ? diffSnapshots(previous, snapshot) : null;
+    const diff = previous && !keep ? diffSnapshots(previous, snapshot) : null;
     const loadModels = () => listModels(ctx.root, source.source).map((l) => l.model);
     const scopeChanges = recordScope(previous, snapshot, selectionMatcher(source, scope), loadModels);
     const changes = diff && scopeChanges ? { ...diff, ...scopeChanges } : null;
-    const { kept: profiles, dropped: missing } = carryOver(snapshot, previous);
+    const { kept: profiles, dropped: missing } = keep ? { kept: 0, dropped: [] } : carryOver(snapshot, previous);
     const dropped = missing.map((t) => qualifiedName(t)).filter((q) => !counted.has(q.toLowerCase()));
     if (profiles) warnings.push(`Kept the profiles of ${profiles} unchanged column${profiles === 1 ? "" : "s"} from the previous snapshot.`);
     if (dropped.length) {
@@ -243,37 +252,41 @@ const spec: CommandSpec = {
         `${dropped.length} table${dropped.length === 1 ? " in the previous snapshot is" : "s in the previous snapshot are"} not in this import and ${dropped.length === 1 ? "was" : "were"} dropped: ${dropped.slice(0, 5).join(", ")}${dropped.length > 5 ? ", ..." : ""}.`,
       );
     }
-    saveSnapshot(ctx.root, snapshot);
-    const outside = semantic ? placeDbtSemantic(semantic, snapshot.tables, left.removed) : [];
+    if (!keep) saveSnapshot(ctx.root, snapshot);
+    // The snapshot the layer reads: the one kept, else the one just written.
+    const current = keep ?? snapshot;
+    const outside = semantic ? placeDbtSemantic(semantic, current.tables, left.removed) : [];
     let emitted: DbtEdits | undefined;
     if (semantic && emitTo) {
       const models = listModels(ctx.root, source.source).map((l) => l.model);
-      emitted = toEdits(semantic, { source, snapshot, models, metricNames: (loadMetrics(ctx.root).metrics ?? []).map((m) => String(m?.name)), outside });
+      emitted = toEdits(semantic, { source, snapshot: current, models, metricNames: (loadMetrics(ctx.root).metrics ?? []).map((m) => String(m?.name)), outside });
       if (emitted.edits.length) writeFileAtomic(emitTo, `${JSON.stringify({ edits: emitted.edits }, null, 2)}\n`, { exclusive: true });
     }
 
-    const columns = snapshot.tables.reduce((n, t) => n + t.columns.length, 0);
-    const primaryKeys = snapshot.tables.filter((t) => (t.primary_key ?? []).length).length;
-    const foreignKeys = snapshot.tables.reduce((n, t) => n + (t.foreign_keys ?? []).length, 0);
-    const inScope = filterInScope(scope, snapshot.tables).length;
+    const columns = current.tables.reduce((n, t) => n + t.columns.length, 0);
+    const primaryKeys = current.tables.filter((t) => (t.primary_key ?? []).length).length;
+    const foreignKeys = current.tables.reduce((n, t) => n + (t.foreign_keys ?? []).length, 0);
+    const inScope = filterInScope(scope, current.tables).length;
     const { focus_threshold } = projectSettings(project);
     const next =
       inScope > focus_threshold
         ? `semlayer tables --source ${source.source} --groups`
-        : snapshot.scope_state?.left_scope.length
+        : current.scope_state?.left_scope.length
           ? "semlayer status"
           : RUNNABLE_DIALECTS.includes(source.dialect)
             ? `semlayer profile --source ${source.source}`
-            : `semlayer draft --source ${source.source}${tablesFlag(snapshot.scope_state?.new_in_scope ?? [])}`;
+            : `semlayer draft --source ${source.source}${tablesFlag(current.scope_state?.new_in_scope ?? [])}`;
 
     if (ctx.json) {
       ctx.out(
         formatJson({
           source: source.source,
-          method: snapshot.method,
+          method: current.method,
           format: used,
           format_detected: detected,
-          tables: snapshot.tables.length,
+          // With the snapshot kept, method, tables, columns and the key counts describe the kept snapshot.
+          ...(keep ? { snapshot_kept: true } : {}),
+          tables: current.tables.length,
           columns,
           primary_keys: primaryKeys,
           foreign_keys: foreignKeys,
@@ -300,10 +313,14 @@ const spec: CommandSpec = {
       );
       return 0;
     }
-    const lines = [
-      `Imported ${snapshot.tables.length} table${snapshot.tables.length === 1 ? "" : "s"} and ${columns} column${columns === 1 ? "" : "s"} ` +
-        `(${primaryKeys} with a primary key, ${foreignKeys} foreign key${foreignKeys === 1 ? "" : "s"}) from ${used}${detected ? " (read from the file)" : ""} into snapshots/${source.source}.json.`,
-    ];
+    const lines = keep
+      ? [
+          `Kept the snapshot from the database (snapshots/${source.source}.json: ${keep.tables.length} table${keep.tables.length === 1 ? "" : "s"}, ${primaryKeys} with a primary key, ${foreignKeys} foreign key${foreignKeys === 1 ? "" : "s"}); only the manifest's semantic models and metrics were read.`,
+        ]
+      : [
+          `Imported ${snapshot.tables.length} table${snapshot.tables.length === 1 ? "" : "s"} and ${columns} column${columns === 1 ? "" : "s"} ` +
+            `(${primaryKeys} with a primary key, ${foreignKeys} foreign key${foreignKeys === 1 ? "" : "s"}) from ${used}${detected ? " (read from the file)" : ""} into snapshots/${source.source}.json.`,
+        ];
     if (filters) {
       lines.push(
         `Kept the ${filters.kept} table${filters.kept === 1 ? "" : "s"} matching --include and --exclude; dropped ${filters.dropped} other${filters.dropped === 1 ? "" : "s"} ${left.tables ? "of the tables intake.schemas keeps" : "from the file"}.`,
@@ -313,7 +330,7 @@ const spec: CommandSpec = {
     if (emitted) lines.push(...emitLines(source.source, emitArg!, emitted, emitted.edits.length > 0));
     if (warnings.length) lines.push("Warnings:", ...warnings.map((w) => `  - ${w}`));
     const modeled = diff ? modeledTables(snapshot, loadModels, scope) : undefined;
-    lines.push(...changeLines(diff, source.source, modeled), ...scopeLines(scopeChanges, source.source, diff?.tables_removed));
+    if (!keep) lines.push(...changeLines(diff, source.source, modeled), ...scopeLines(scopeChanges, source.source, diff?.tables_removed));
     if (!emitted?.edits.length) {
       lines.push(
         inScope > focus_threshold
