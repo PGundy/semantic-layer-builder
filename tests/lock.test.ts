@@ -138,6 +138,13 @@ function description(field: { file: string; kind: "dimensions" | "measures"; nam
   return readYaml<Model>(field.file)[field.kind]!.find((x) => x.name === field.name)!.description;
 }
 
+// semlayer validate on a layer whose approved fields `edited` had their descriptions changed: the only
+// errors are those fields' changed approvals, since a description is part of what the owner approves.
+async function validExceptEdited(root: string, edited: string[]): Promise<void> {
+  const { issues } = (await semlayer(root, ["validate", "--json"])).json<{ issues: { level: string; code: string; message: string }[] }>();
+  for (const i of issues.filter((x) => x.level === "error")) expect({ code: i.code, edited: edited.includes(i.message.split(" ")[0]!) }).toEqual({ code: "approval.hash_changed", edited: true });
+}
+
 // The parallel tests are about every edit landing, so a slow machine gets a long wait for its turn.
 const PATIENT = { SEMLAYER_LOCK_WAIT_MS: "120000" };
 
@@ -154,7 +161,7 @@ describe("acceptance: parallel writers (real processes)", () => {
       for (const r of runs) expect({ code: r.code, err: r.err }).toEqual({ code: 0, err: "" });
       fields.forEach((f, i) => expect(description(f)).toBe(`Parallel edit ${i}.`));
       expect(existsSync(lockFile(root))).toBe(false);
-      expect((await semlayer(root, ["validate"])).code).toBe(0);
+      await validExceptEdited(root, fields.map((f) => f.ref));
     },
     120_000,
   );
@@ -661,7 +668,7 @@ describe("whole-file writes", () => {
     expect(readFileSync(victim, "utf8")).toBe("outside the root\n");
     expect(readdirSync(outside)).toEqual(["victim.txt"]);
     expect(Object.keys(tree(root)).filter((f) => f.endsWith(".semlayer-tmp"))).toEqual([]);
-    expect((await semlayer(root, ["validate"])).code).toBe(0);
+    await validExceptEdited(root, ["warehouse.orders.order_count"]);
   });
 
   test(
@@ -696,7 +703,7 @@ describe("whole-file writes", () => {
       expect(existsSync(temp)).toBe(false);
       expect(readdirSync(join(root, "models", "warehouse")).filter((f) => f.startsWith("."))).toEqual([]);
       expect(readdirSync(join(root, ".semlayer"))).toEqual([]);
-      expect((await semlayer(root, ["validate"])).code).toBe(0);
+      await validExceptEdited(root, ["warehouse.orders.revenue"]);
     },
     60_000,
   );

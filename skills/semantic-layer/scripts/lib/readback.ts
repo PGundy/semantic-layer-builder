@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type AccessLayer, type AccessVisibility, evaluateLayer, loadAccessLayer } from "./access.ts";
-import { type ApprovalEntry, goldenHash, itemApprovals, listApprovals, pairEntries } from "./approval-hash.ts";
+import { type ApprovalEntry, descriptionOnly, goldenHash, itemApprovals, listApprovals, pairEntries } from "./approval-hash.ts";
 import { conformedWords } from "./conformed.ts";
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
@@ -21,7 +21,8 @@ import { andPredicates, findSegment, modelSegments, segmentNames } from "./segme
 import { referencedColumns } from "./snapshot-diff.ts";
 import { sqlNames } from "./sql-names.ts";
 import { timeShapeWords } from "./time-request-words.ts";
-import type { Dialect, FigureEvidence, Golden, Join, Metric, Model, PendingReadback, ResultRows, Snapshot, SnapshotTable } from "./types.ts";
+import type { Dialect, FigureEvidence, Golden, Join, LedgerReply, Metric, Model, PendingReadback, ResultRows, Snapshot, SnapshotTable } from "./types.ts";
+import { ledgerState } from "./ledger.ts";
 import { DIALECTS, NAME_PATTERN, PROTECTED_TAGS } from "./types.ts";
 import { conditionWords, parseCondition } from "./conditions.ts";
 import { readYamlIfExists } from "./yaml.ts";
@@ -898,7 +899,7 @@ export function renderReadbacks(
   refs: string[],
   goldens: ReadonlyMap<string, GoldenRun> = new Map(),
   figures: ReadonlyMap<string, FigureEvidence> = new Map(),
-): { target: string; text: string; content_hash: string }[] {
+): { target: string; text: string; content_hash: string; definition_hash?: string }[] {
   const infos = new Map<string, SourceInfo>();
   const info = (s: string) => infos.get(s) ?? infos.set(s, sourceInfo(root, s)).get(s)!;
   let evaluated: ReturnType<Audiences> | undefined;
@@ -906,6 +907,8 @@ export function renderReadbacks(
   const unknown = (ref: string, why: string) =>
     new UserError(`Unknown target "${ref}": ${why}. Run semlayer status to see the models, fields, metrics and goldens; targets are source.model, source.model.field, metric:<name>, golden:<name>, access or schema-pair:<source>:<from>:<to>.`);
   const blocks = new Map<string, number>();
+  let read: LedgerReply[] | undefined;
+  const replies = () => (read ??= ledgerState(root).replies);
   return [...new Set(refs)].map((ref, index) => {
     const t = parseTarget(ref);
     let r: Rendered;
@@ -964,6 +967,8 @@ export function renderReadbacks(
     if (earlier === undefined && who.length) blocks.set(key, index + 1);
     const block = earlier === undefined ? who : [`Who sees it once approved: the same as item ${earlier}.`];
     const lines = r.lines.flatMap((l) => (l === WHO ? block : [l]));
-    return { target: ref, text: lines.join("\n"), content_hash: entry.hash };
+    // An approved item whose description alone changed since the owner's yes: its figures are untouched.
+    if (descriptionOnly(replies(), entry)) lines.splice(1, 0, "- Since the owner's yes, only its description changed: its definition, and so its figures, are as they approved.");
+    return { target: ref, text: lines.join("\n"), content_hash: entry.hash, ...(entry.definitionHash !== entry.hash ? { definition_hash: entry.definitionHash } : {}) };
   });
 }

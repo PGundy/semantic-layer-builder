@@ -18,7 +18,7 @@ Start the round before the first edit, not after, so `semlayer change status` co
 
 Make the edits the request needs and nothing else. The interview is not redone: do not reopen a table, a decision or a question the owner has recorded, and do not tidy a description or add a field the owner did not ask for, even when you see a better one. Write an idea for later as an open question (`semlayer question add`) and tell the owner in one line. Use the typed edits (`semlayer add-metric`, `semlayer add-field`, `semlayer set`, `semlayer apply` for a turn's edits together) and never write approval fields: the phase cards of each item hold which command it uses.
 
-A changed approved item goes back to draft, and stays draft until the owner's recorded yes to it as it now stands (`semlayer readback --targets <ref>`, the owner's answer with `semlayer reply`, then `semlayer approve --target <ref>`). An edit never carries the old approval over. If `semlayer next` names `reapprove`, the metrics card or any phase before this one, take that step first: the round is back in this phase once they are complete.
+A changed approved item goes back to draft, and stays draft until the owner's recorded yes to it as it now stands; a reworded description is a change too, since the owner approved what the item says it means (`semlayer readback --targets <ref>`, the owner's answer with `semlayer reply`, then `semlayer approve --target <ref>`). An edit never carries the old approval over. If `semlayer next` names `reapprove`, the metrics card or any phase before this one, take that step first: the round is back in this phase once they are complete.
 
 ## Reading back what moved
 

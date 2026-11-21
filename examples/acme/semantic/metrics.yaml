@@ -13,7 +13,7 @@ metrics:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:1231e360fd6c820a0f5acb2004518a1ffd49f681feef24cf2ac6425f2d139eee
+    approved_hash: sha256:fbcdc051d52eb1b4d820f3af5902b13ad307ee31c6f50532efc5028325db201e
   - name: net_revenue
     source: warehouse
     type: derived
@@ -31,4 +31,4 @@ metrics:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:a03b15c02661488cd5f85aee2bc8a5c171e6c3d3c828ad638e7a0d4d95e3cc47
+    approved_hash: sha256:d30ffe9a7028aa471fc1ab12e11eb37650a8910de3728b4b32eabbbbabd1c4be

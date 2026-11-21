@@ -94,6 +94,8 @@ function latestYes(replies: LedgerReply[], target: string): string | null {
 // field that cannot be read as a mapping with a name is left out. A ledger that cannot be read
 // counts as having no yes. The hashes here are private to the drift record (both sides of its comparison
 // come from this function), so a week start is not passed: they are not compared with an approved_hash.
+// Each is the field's definition hash, its description left out: a retyped column concerns what the
+// field reads, and a record written before descriptions were part of an approval holds these hashes.
 export function fieldsNow(root: string, source: string, models: readonly Model[], dialect: Dialect | undefined): Map<string, FieldNow> {
   const named = models.filter((m) => m && typeof m === "object" && typeof m.model === "string");
   const byName = new Map(named.map((m) => [m.model, m]));
@@ -102,7 +104,7 @@ export function fieldsNow(root: string, source: string, models: readonly Model[]
   for (const m of named) {
     for (const e of modelEntries(source, m, (n) => byName.get(n), dialect)) {
       if (e.kind !== "dimension" && e.kind !== "measure") continue;
-      out.set(e.ref, { hash: e.hash, approved: e.item.status === "approved", yes: latestYes(replies, e.ref), model: m.model, path: e.path });
+      out.set(e.ref, { hash: e.definitionHash, approved: e.item.status === "approved", yes: latestYes(replies, e.ref), model: m.model, path: e.path });
     }
   }
   return out;

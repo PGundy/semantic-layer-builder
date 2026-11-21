@@ -7,7 +7,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, unlinkS
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import type { LastApproval } from "./access.ts";
-import { type ApprovalEntry, carriesHash, itemApprovals, type LayerModel, listApprovals, UNHASHED_MESSAGE } from "./approval-hash.ts";
+import { type ApprovalEntry, carriesHash, editKeepsApproval, itemApprovals, type LayerModel, listApprovals, matchesRecorded, UNHASHED_MESSAGE } from "./approval-hash.ts";
 import { sourceWeekStart, type WeekDay } from "./compiler/calendar.ts";
 import { columnRefs } from "./compiler/qualify.ts";
 import { resolveRef } from "./layer-reads.ts";
@@ -188,8 +188,8 @@ function projectEntries(root: string, overrides: ReadonlyMap<string, string>, re
   return itemApprovals(listApprovals({ models: layer, metrics: metrics?.metrics, access: read(paths(root).access) }));
 }
 
-// The approved items whose content an edit changes, unless it restores the content their
-// approved_hash records: each now needs a readback and a new approval. `renamed` maps an item's
+// The approved items whose content an edit changes, description included, unless it restores the
+// content their approved_hash records: each now needs a readback and a new approval. `renamed` maps an item's
 // ref after the edit to its ref before, for an item the edit renames.
 function changedApprovals(root: string, after: ReadonlyMap<string, string>, renamed?: ReadonlyMap<string, string>, removed?: ReadonlySet<string>): string[] {
   const was = new Map(projectEntries(root, new Map()).map((e) => [e.ref, e]));
@@ -197,7 +197,7 @@ function changedApprovals(root: string, after: ReadonlyMap<string, string>, rena
   for (const e of projectEntries(root, after, removed)) {
     const old = was.get(renamed?.get(e.ref) ?? e.ref);
     if (!old || old.hash === e.hash || e.item.status !== "approved") continue;
-    if (!carriesHash(e.item) || String(e.item.approved_hash).trim() !== e.hash) out.push(e.ref);
+    if (!carriesHash(e.item) || !editKeepsApproval(old, e)) out.push(e.ref);
   }
   return out.sort();
 }
@@ -619,7 +619,7 @@ function stillChanged(root: string, refs: Iterable<string>): string[] {
   const wanted = new Set(refs);
   if (!wanted.size) return [];
   return projectEntries(root, new Map())
-    .filter((e) => wanted.has(e.ref) && e.item.status === "approved" && (!carriesHash(e.item) || String(e.item.approved_hash).trim() !== e.hash))
+    .filter((e) => wanted.has(e.ref) && e.item.status === "approved" && !matchesRecorded(e))
     .map((e) => e.ref)
     .sort();
 }

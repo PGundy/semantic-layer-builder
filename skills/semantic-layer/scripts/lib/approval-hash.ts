@@ -3,7 +3,7 @@
 // so an edit made after the owner's sign-off is caught instead of silently changing a figure.
 import { createHash } from "node:crypto";
 import type { WeekDay } from "./compiler/calendar.ts";
-import type { Dialect, Model } from "./types.ts";
+import type { Dialect, LedgerReply, Model } from "./types.ts";
 import { segmentFilters, segmentNames } from "./segments.ts";
 import { sqlNames } from "./sql-names.ts";
 
@@ -23,6 +23,15 @@ function objects(v: unknown): Obj[] {
 // A string trimmed with its line endings made LF; anything else as it is.
 function text(v: unknown): unknown {
   return typeof v === "string" ? v.replace(/\r\n?/g, "\n").trim() : v;
+}
+
+// A description as hashed: trimmed, with every run of whitespace (line breaks included) made one
+// space, so reflowing a block scalar or changing its indentation changes nothing. Undefined for an
+// unset or empty one, so an item without a description hashes as it did before descriptions counted.
+function prose(v: unknown): string | undefined {
+  if (typeof v !== "string") return undefined;
+  const t = v.replace(/\s+/g, " ").trim();
+  return t === "" ? undefined : t;
 }
 
 // A plain code-point comparison, the same on every machine and locale.
@@ -147,8 +156,12 @@ function nonAdditiveContent(nad: unknown, model: Obj | undefined): Obj {
 // - access.yaml: the whole file but its approval and open_questions (top level and per role);
 // - a schema pair (an entry of cross_schema in sources/<s>.yaml): its from, to and keys, each key
 //   with its from, to and constraint.
-// Descriptions are not part of it: editing one changes no figure.
-function itemContent(kind: ItemKind, item: Obj, scope: HashScope): Obj {
+// Each kind that has a description (a dimension, measure, join, model and metric) also hashes it, as
+// prose() normalises it, since a description is what a reader learns a figure means and the readback
+// shows it to the owner. It is left out when unset or empty, so an item without one keeps the hash it
+// had before descriptions counted. definitionContent is the content without the description: the
+// earlier scheme, whose hashes items approved before descriptions counted still record (see integrity).
+function definitionContent(kind: ItemKind, item: Obj, scope: HashScope): Obj {
   const { model, lookup = () => undefined, dialect } = scope;
   switch (kind) {
     case "dimension":
@@ -230,8 +243,18 @@ function itemContent(kind: ItemKind, item: Obj, scope: HashScope): Obj {
   }
 }
 
+// An item's hash and its definition hash (the hash without its description), computed from one
+// reading of its content. The two are equal for an item without a description and for access.yaml
+// and schema pairs, which have none of their own.
+export function itemHashes(kind: ItemKind, item: Obj, scope: HashScope = {}): { hash: string; definitionHash: string } {
+  const content = definitionContent(kind, item, scope);
+  const definitionHash = digest(content);
+  const description = kind === "access" || kind === "schema-pair" ? undefined : prose(item.description);
+  return { hash: description === undefined ? definitionHash : digest({ ...content, description }), definitionHash };
+}
+
 export function itemHash(kind: ItemKind, item: Obj, scope: HashScope = {}): string {
-  return digest(itemContent(kind, item, scope));
+  return itemHashes(kind, item, scope).hash;
 }
 
 // A golden target's content hash (golden:<name>): what the owner says yes to before semlayer goldens
@@ -268,6 +291,8 @@ export interface ApprovalEntry {
   item: Obj;
   // The hash of the item as it now stands.
   hash: string;
+  // The hash of the item without its description (itemHashes).
+  definitionHash: string;
 }
 
 // The model and each of its dimensions, measures and joins. `lookup` finds another model of the same
@@ -275,7 +300,7 @@ export interface ApprovalEntry {
 export function modelEntries(source: string, model: Model, lookup: (name: string) => Model | undefined, dialect?: Dialect, weekStart?: WeekDay): ApprovalEntry[] {
   const m = model as unknown as Obj;
   const base = `${source}.${String(m.model)}`;
-  const out: ApprovalEntry[] = [{ kind: "model", ref: base, path: [], item: m, hash: itemHash("model", m, { source }) }];
+  const out: ApprovalEntry[] = [{ kind: "model", ref: base, path: [], item: m, ...itemHashes("model", m, { source }) }];
   const sections = [
     ["dimensions", "dimension"],
     ["measures", "measure"],
@@ -285,7 +310,7 @@ export function modelEntries(source: string, model: Model, lookup: (name: string
     const list = Array.isArray(m[section]) ? (m[section] as unknown[]) : [];
     list.forEach((x, i) => {
       if (!isObject(x) || typeof x.name !== "string") return;
-      out.push({ kind, ref: `${base}.${x.name}`, path: [section, i], item: x, hash: itemHash(kind, x, { source, model: m, lookup, dialect, weekStart }) });
+      out.push({ kind, ref: `${base}.${x.name}`, path: [section, i], item: x, ...itemHashes(kind, x, { source, model: m, lookup, dialect, weekStart }) });
     });
   }
   return out;
@@ -294,12 +319,12 @@ export function modelEntries(source: string, model: Model, lookup: (name: string
 export function metricEntries(metrics: unknown): ApprovalEntry[] {
   const list = Array.isArray(metrics) ? metrics : [];
   return list.flatMap((x, i) =>
-    isObject(x) && typeof x.name === "string" ? [{ kind: "metric" as const, ref: `metric:${x.name}`, path: ["metrics", i], item: x, hash: itemHash("metric", x) }] : [],
+    isObject(x) && typeof x.name === "string" ? [{ kind: "metric" as const, ref: `metric:${x.name}`, path: ["metrics", i], item: x, ...itemHashes("metric", x) }] : [],
   );
 }
 
 export function accessEntry(access: unknown): ApprovalEntry | undefined {
-  return isObject(access) ? { kind: "access", ref: "access", path: [], item: access, hash: itemHash("access", access) } : undefined;
+  return isObject(access) ? { kind: "access", ref: "access", path: [], item: access, ...itemHashes("access", access) } : undefined;
 }
 
 // The schema pairs of a source's cross_schema, each as schema-pair:<source>:<from>:<to>.
@@ -307,7 +332,7 @@ export function pairEntries(source: string, config: unknown): ApprovalEntry[] {
   const list = isObject(config) && Array.isArray(config.cross_schema) ? (config.cross_schema as unknown[]) : [];
   return list.flatMap((x, i) =>
     isObject(x) && typeof x.from === "string" && typeof x.to === "string"
-      ? [{ kind: "schema-pair" as const, ref: `schema-pair:${source}:${x.from}:${x.to}`, path: ["cross_schema", i], item: x, hash: itemHash("schema-pair", x) }]
+      ? [{ kind: "schema-pair" as const, ref: `schema-pair:${source}:${x.from}:${x.to}`, path: ["cross_schema", i], item: x, ...itemHashes("schema-pair", x) }]
       : [],
   );
 }
@@ -360,6 +385,7 @@ export interface GoldenApproval extends Recorded {
   path: (string | number)[];
   item: Obj;
   hash: string;
+  definitionHash: string;
   complete: boolean;
 }
 
@@ -387,12 +413,14 @@ export function listApprovals(layer: ApprovalLayer): Approval[] {
     const expected = isObject(g.expected) ? g.expected : {};
     const rows = Array.isArray(expected.rows) ? expected.rows : undefined;
     const tolerance = (expected.tolerance ?? DEFAULT_TOLERANCE) as number;
+    const hash = goldenHash(g, rows ?? [], tolerance);
     out.push({
       kind: "golden",
       ref: `golden:${g.name}`,
       path: [],
       item: g,
-      hash: goldenHash(g, rows ?? [], tolerance),
+      hash,
+      definitionHash: hash,
       complete: typeof g.name === "string" && rows !== undefined,
       ...recorded(g, file),
     });
@@ -419,13 +447,74 @@ export function holdsHashes(entries: ApprovalEntry[]): boolean {
 // Where an approval stands: draft (not approved), current (its hash matches), changed (its hash
 // does not), unhashed (no hash, in a project where no item records one: approved before content
 // hashes were recorded) or missing (no hash, while other items of the project record one, so the
-// hash may have been removed).
+// hash may have been removed). An approved_hash equal to the definition hash rather than the hash is
+// current too: it was recorded before descriptions counted (describedLater says so), and the
+// definition it covers is what the owner approved. Two different canonical contents giving one
+// SHA-256 is a collision, so a hash recorded under one scheme never equals the other scheme's hash of
+// different content. An item without a description hashes the same under both and is simply current.
 export type Integrity = "draft" | "current" | "changed" | "unhashed" | "missing";
 
 export function integrity(e: ApprovalEntry, projectHashed = false): Integrity {
   if (e.item.status !== "approved") return "draft";
   if (!carriesHash(e.item)) return projectHashed ? "missing" : "unhashed";
-  return String(e.item.approved_hash).trim() === e.hash ? "current" : "changed";
+  return matchesRecorded(e) ? "current" : "changed";
+}
+
+function recordedHash(e: ApprovalEntry): string {
+  return carriesHash(e.item) ? String(e.item.approved_hash).trim() : "";
+}
+
+// Whether an item's approved_hash is its hash, or its definition hash (recorded before descriptions counted).
+export function matchesRecorded(e: ApprovalEntry): boolean {
+  const h = recordedHash(e);
+  return h !== "" && (h === e.hash || h === e.definitionHash);
+}
+
+// Whether an approved item's approved_hash covers its definition but not its description: approved
+// before descriptions were part of an approval (or, read the same way, approved without a description
+// and given one since). It counts as approved; semlayer approve --stamp-hashes --confirm-unchanged
+// records its hash as it stands, description included, once the owner has read the description.
+export function describedLater(e: ApprovalEntry): boolean {
+  const h = recordedHash(e);
+  return e.item.status === "approved" && h !== "" && h !== e.hash && h === e.definitionHash;
+}
+
+// Whether an edit leaves the approval `after` records standing: only when its approved_hash matches the
+// item's full content as it now stands (an edit that restores the approved content included). Any other
+// change to the content, a reworded or newly added description of an item approved before descriptions
+// counted included, needs a new yes.
+export function editKeepsApproval(_before: { hash: string }, after: ApprovalEntry): boolean {
+  const h = recordedHash(after);
+  return h !== "" && h === after.hash;
+}
+
+// The owner's yes an approval rests on: their latest reply to the item, when it is a yes to the item's
+// hash, or a yes recorded before descriptions counted, whose readback hashed the definition only.
+export function approvalYes(replies: LedgerReply[], e: { ref: string; hash: string; definitionHash: string }): LedgerReply | undefined {
+  const r = latestOwnReply(replies, e.ref);
+  return r && r.verdict === "yes" && (r.content_hash === e.hash || r.content_hash === e.definitionHash) ? r : undefined;
+}
+
+// The latest reply to a target that is not about who sees it (ledger.ts latestReply, read here
+// without the ledger's file access).
+function latestOwnReply(replies: LedgerReply[], target: string): LedgerReply | undefined {
+  for (let i = replies.length - 1; i >= 0; i--) if (replies[i]!.target === target && replies[i]!.about === undefined) return replies[i];
+  return undefined;
+}
+
+// The definition hash of the content a reply's readback held: the one it recorded, or for a readback
+// of an item without a description, or from before descriptions counted, its content hash.
+export function replyDefinition(r: LedgerReply): string {
+  return r.definition_hash ?? r.content_hash;
+}
+
+// Whether an approved item that changed since its approval changed in its description only: the
+// owner's latest yes to it was to the definition it has now. Only then can the readback and
+// semlayer validate say its figures are untouched; the old text is not kept, so it is not shown.
+export function descriptionOnly(replies: LedgerReply[], e: ApprovalEntry): boolean {
+  if (e.item.status !== "approved" || matchesRecorded(e) || !carriesHash(e.item)) return false;
+  const r = latestOwnReply(replies, e.ref);
+  return !!r && r.verdict === "yes" && replyDefinition(r) === e.definitionHash;
 }
 
 // A path as semlayer validate writes one: measures[2], metrics[0], or "" for the file itself.
@@ -435,15 +524,31 @@ export function pathText(path: (string | number)[]): string {
   return out;
 }
 
-// The message for an approved item whose content no longer matches its hash.
-export function changedMessage(e: ApprovalEntry): string {
+// The message for an approved item whose content no longer matches its hash. `onlyDescription`
+// (descriptionOnly) says its definition is the one the owner said yes to.
+export function changedMessage(e: ApprovalEntry, onlyDescription = false): string {
   const by = typeof e.item.approved_by === "string" ? ` by ${e.item.approved_by}` : "";
   const at = typeof e.item.approved_at === "string" ? ` on ${e.item.approved_at}` : "";
   const reads = e.kind === "dimension" || e.kind === "measure" ? ", or a join it reads through," : "";
+  const what = onlyDescription
+    ? "only its description changed: its definition is the one the owner said yes to, so its figures are untouched, but what it says it means no longer matches approved_hash. "
+    : `its definition${reads} or its description no longer matches approved_hash. `;
   return (
-    `${e.ref} changed since it was approved${by}${at}: its definition${reads} no longer matches approved_hash. ` +
+    `${e.ref} changed since it was approved${by}${at}: ${what}` +
     `Read it back to the owner as it now stands and approve it again only after they confirm (semlayer approve --target ${e.ref} --by "<owner>"), ` +
-    "or restore the approved definition"
+    `or restore the approved ${onlyDescription ? "description" : "definition"}`
+  );
+}
+
+// The message for approved items whose approved_hash covers their definition but not their
+// description (describedLater), listing up to five.
+export function describedLaterMessage(refs: string[]): string {
+  const n = refs.length;
+  const list = refs.slice(0, 5).join(", ") + (n > 5 ? ` and ${n - 5} more` : "");
+  return (
+    `${n} approved item${n === 1 ? " has an approved_hash" : "s have approved_hash"} that covers the definition but not the description (${list}): ` +
+    "approved before descriptions were part of an approval, or given a description since being approved without one. They still count as approved. " +
+    "Check in version control that none changed since approved_at, have the owner read each description, then run semlayer approve --stamp-hashes --confirm-unchanged"
   );
 }
 

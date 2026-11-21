@@ -15,6 +15,9 @@ export interface ChangelogEntry {
   note: string;
   // Approve target to content hash.
   items: Record<string, string>;
+  // Approve target to its hash without its description, for each item of items that has one. Absent
+  // in an entry recorded before descriptions were part of an approval, whose items hold those hashes.
+  definitions?: Record<string, string>;
   // Golden name to its recorded rows.
   goldens: Record<string, Record<string, unknown>[]>;
   added: string[];

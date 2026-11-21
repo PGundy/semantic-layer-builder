@@ -7,12 +7,14 @@ import { goldenReads } from "./goldens.ts";
 import { listGoldens, listModels, listSourceNames, loadMetrics, loadSource } from "./project.ts";
 import { statusDetail } from "./status.ts";
 
-// A changed item: its ref, whether it is approved at its new content or waits on an approval, and
-// the approved goldens whose request reads it.
+// A changed item: its ref, whether it is approved at its new content or waits on an approval, the
+// approved goldens whose request reads it, and description_only when its definition is the one the
+// release recorded and only its description changed.
 export interface ChangedItem {
   ref: string;
   state: "approved" | "draft";
   affected_goldens: string[];
+  description_only?: true;
 }
 
 export interface ItemDiff {
@@ -23,10 +25,15 @@ export interface ItemDiff {
 
 // An item's content hash and approval state. `approved` is true when its approval matches its content.
 // `plain` is true for a draft that carries no trace of an approval (never approved, or revoked).
+// `definition` is its hash without its description, when that differs from hash; `changed` is true
+// for an approved item whose content no longer matches its approval.
 export interface ItemState {
   hash: string;
+  definition?: string;
+  approvedAt?: string;
   approved: boolean;
   plain: boolean;
+  changed?: boolean;
 }
 
 // Whether a release leaves the item out instead of waiting for it: it is a plain draft and the last
@@ -62,7 +69,14 @@ export function itemMap(root: string): Map<string, ItemState> {
   const out = new Map<string, ItemState>();
   for (const [ref, t] of statusDetail(root).targets) {
     if (ref.startsWith("golden:")) continue;
-    out.set(ref, { hash: t.hash, approved: t.state === "current" || t.state === "unhashed", plain: t.state === "draft" && !t.stamped });
+    out.set(ref, {
+      hash: t.hash,
+      ...(t.definition ? { definition: t.definition } : {}),
+      ...(t.approvedAt ? { approvedAt: t.approvedAt } : {}),
+      approved: t.state === "current" || t.state === "unhashed",
+      plain: t.state === "draft" && !t.stamped,
+      ...(t.state === "changed" ? { changed: true } : {}),
+    });
   }
   for (const name of listSourceNames(root)) {
     const explicit = loadSource(root, name).intake?.primary;
@@ -98,16 +112,45 @@ export function affectedGoldens(root: string, refs: string[]): Map<string, strin
 }
 
 // What changed between a changelog entry's items and the items now. The lists are sorted.
-export function diffItems(baseline: Record<string, string>, now: Map<string, { hash: string; approved: boolean }>, goldens: Map<string, string[]> = new Map()): ItemDiff {
+// `definitions` is the entry's: each described item's hash without its description. An entry without
+// it was recorded before descriptions counted, so its hashes are definition hashes: an item whose
+// definition hash matches is listed, description only, when its approval no longer matches it (a
+// description edit after its hash was brought forward, or approved again on a day after
+// `releaseDate`), and otherwise not, so bringing hashes forward lists nothing. With it, an item whose definition is the released one is description only.
+export function diffItems(
+  baseline: Record<string, string>,
+  now: Map<string, Omit<ItemState, "plain">>,
+  goldens: Map<string, string[]> = new Map(),
+  definitions?: Record<string, string>,
+  releaseDate?: string,
+): ItemDiff {
   const added = [...now.keys()].filter((r) => !(r in baseline)).sort();
   const removed = Object.keys(baseline).filter((r) => !now.has(r)).sort();
-  const changed = [...now].filter(([r, v]) => r in baseline && baseline[r] !== v.hash).map(([r, v]) => ({ ref: r, state: v.approved ? ("approved" as const) : ("draft" as const), affected_goldens: goldens.get(r) ?? [] }));
+  const changed: ChangedItem[] = [];
+  for (const [r, v] of now) {
+    const b = baseline[r];
+    if (b === undefined || b === v.hash) continue;
+    const definition = v.definition ?? v.hash;
+    const released = definitions ? (definitions[r] ?? b) : b;
+    // A described item approved again after the release (its approved_at is a later day) had its
+    // description reworded, since a stamp keeps approved_at; an edit approved on the release's own day
+    // is not told apart from the stamp.
+    const approvedSince = !definitions && v.definition !== undefined && releaseDate !== undefined && (v.approvedAt ?? "").slice(0, 10) > releaseDate;
+    if (!definitions && released === definition && !v.changed && !approvedSince) continue;
+    const onlyDescription = released === definition;
+    changed.push({ ref: r, state: v.approved ? "approved" : "draft", affected_goldens: goldens.get(r) ?? [], ...(onlyDescription ? { description_only: true as const } : {}) });
+  }
   return { added, changed: changed.sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0)), removed };
 }
 
-// The diff of the layer against the last release in the changelog, or null without one.
-export function changeSince(root: string, items: Record<string, string>): ItemDiff {
+// The diff of the layer against a release in the changelog: its items and its definitions.
+export function changeSince(root: string, items: Record<string, string>, definitions?: Record<string, string>, releaseDate?: string): ItemDiff {
   const now = itemMap(root);
-  const first = diffItems(items, now);
-  return diffItems(items, now, affectedGoldens(root, first.changed.map((c) => c.ref)));
+  const first = diffItems(items, now, new Map(), definitions, releaseDate);
+  return diffItems(items, now, affectedGoldens(root, first.changed.map((c) => c.ref)), definitions, releaseDate);
+}
+
+// The definition hash of each described item of `items` (itemMap), as a changelog entry records them.
+export function itemDefinitions(items: Map<string, ItemState>): Record<string, string> {
+  return Object.fromEntries([...items].filter(([, v]) => v.definition).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([ref, v]) => [ref, v.definition!]));
 }

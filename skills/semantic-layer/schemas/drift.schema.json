@@ -84,7 +84,7 @@
                     "required": ["ref", "hash", "yes"],
                     "properties": {
                       "ref": { "type": "string", "description": "The field's approve target, source.model.field." },
-                      "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "The field's content hash when the change was found." },
+                      "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "The field's content hash without its description when the change was found." },
                       "yes": {
                         "type": ["string", "null"],
                         "pattern": "^ans_[0-9]{4,}$",

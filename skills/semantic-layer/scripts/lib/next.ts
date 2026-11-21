@@ -431,7 +431,7 @@ function changeAction(root: string, d: StatusDetail, step: ProjectStatus["next_s
   }
   // Goldens that read a changed item and rest on a yes older than the change: the close reruns them, so the
   // step names them and the check to run first; one whose figures did not move needs no new yes.
-  const unsettled = last ? unsettledGoldens(root, d, last.items) : [];
+  const unsettled = last ? unsettledGoldens(root, d, last.items, last.definitions, last.date) : [];
   const shown = unsettled.slice(0, BACKFILL_BATCH);
   const goldensText = unsettled.length
     ? ` Before asking for the version, run semlayer goldens check: ${unsettled.length} confirmed golden(s) read an item the round changed and have not been confirmed since (${shown.join(", ")}${unsettled.length > shown.length ? ", and more" : ""}). ` +
@@ -460,10 +460,10 @@ function changeAction(root: string, d: StatusDetail, step: ProjectStatus["next_s
 // rise in the order they were recorded, so a golden's yes (to it as it stands) newer than the item's settles it.
 // A golden returned to draft is settled: the release leaves it out. A golden semlayer can never run here (an
 // export source, a dialect it does not connect to, no connection named) is left out, as the close lists it as not rerun.
-function unsettledGoldens(root: string, d: StatusDetail, items: Record<string, string>): string[] {
+function unsettledGoldens(root: string, d: StatusDetail, items: Record<string, string>, definitions?: Record<string, string>, releaseDate?: string): string[] {
   const seq = (r: LedgerReply | undefined) => (r ? Number(/(\d+)$/.exec(r.id)?.[1] ?? 0) : 0);
   const out = new Set<string>();
-  for (const c of changeSince(root, items).changed) {
+  for (const c of changeSince(root, items, definitions, releaseDate).changed) {
     const itemYes = seq(currentYes(d.replies, c.ref, d.targets.get(c.ref)?.hash ?? ""));
     for (const g of c.affected_goldens) {
       const t = d.targets.get(`golden:${g}`);

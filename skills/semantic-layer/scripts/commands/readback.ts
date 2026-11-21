@@ -104,7 +104,7 @@ const spec: CommandSpec = {
       items: rendered.map((r, i) => {
         const run = r.target.startsWith("golden:") ? goldens.get(r.target.slice(7)) : undefined;
         const evidence = figures.get(r.target);
-        return { n: i + 1, target: r.target, kind: "approve" as const, text: r.text, content_hash: r.content_hash, ...(run ? { tolerance: run.tolerance } : {}), ...(run && rowsFrom ? { rows_from: rowsFrom.trim() } : {}), ...(evidence ? { evidence } : {}) };
+        return { n: i + 1, target: r.target, kind: "approve" as const, text: r.text, content_hash: r.content_hash, ...(r.definition_hash ? { definition_hash: r.definition_hash } : {}), ...(run ? { tolerance: run.tolerance } : {}), ...(run && rowsFrom ? { rows_from: rowsFrom.trim() } : {}), ...(evidence ? { evidence } : {}) };
       }),
     };
     const path = writePending(ctx.root, pending);

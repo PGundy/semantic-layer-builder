@@ -4,7 +4,7 @@ table: acme.fct_orders
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-26
-approved_hash: sha256:64784e89bffb9973e2cafd70b0027e8b65c1d55fa3ac1fd6d20608769b4b620d
+approved_hash: sha256:3415705a271509e61d44d252f7f32a90cc528292b294d89aeac122dcbd37a396
 description: >-
   Orders from the storefront, one row per order. Amounts in integer cents; every order is priced and charged in USD.
   A sale is an order with status completed or shipped; cancelled orders were never charged and refunded orders were
@@ -34,7 +34,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:90b9cacbacbd4784164bb840cbd37aa3be6f9ceda099eca82007a4245db52304
+    approved_hash: sha256:b566ab7930aaeb006d4811d0f1c9f861b5ee04db39d82a79e12aa220b6cec8d0
   - name: status
     expr: status
     type: string
@@ -45,7 +45,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:ba0d81e365565a776b751051db02d3d8262126d6009ce70e6608e05275853290
+    approved_hash: sha256:9d733557bf4902a808124b30fa432952c089ddf6b75af64d38149580630bd556
   - name: ship_region
     expr: ship_region
     type: string
@@ -57,7 +57,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:b53043ca96e95fd2188d10ef9f53042fa998282c5cb04cf7e1f9df9b9337fca8
+    approved_hash: sha256:eaa38ac8b004b0cf3b8f2f41d5365e979dba6a20cf2d31c531decf7c85c01567
   - name: ship_region_name
     expr: ship_to_region.region_name
     type: string
@@ -68,7 +68,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:43144b7ec4dbe1d61e6d9f72f02eca671ad31e0ded763b5d5ca45a8596a6b13d
+    approved_hash: sha256:51022030ffcf541c1867b0ab8af66e472c5853285994e2798e329082025b5175
   - name: sales_rep_id
     expr: sales_rep_id
     type: number
@@ -80,7 +80,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
-    approved_hash: sha256:3879407904860bca131855e9efd9ca9f7f81826fabb194de00594bfa96f27ad0
+    approved_hash: sha256:9b36a5840cc5506bb02b0ea222b843aa6449873d709ca705324fb6a27b23ad55
 measures:
   - name: order_count
     agg: count
@@ -95,7 +95,7 @@ measures:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:29c1e8d0035f5945df5a6fece2c5fd5b457ae1cce949276a104b5f720a904f7c
+    approved_hash: sha256:57ad632f65c3c6a5875c736417f6d8f2825f2e4a5b532779005551132b506f07
   - name: revenue
     expr: amount_cents / 100.0
     agg: sum
@@ -111,7 +111,7 @@ measures:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:f1f11e0edc5941e0b100e49cb3a3f8fd9947f70045b51eaf084b1e89edd240d9
+    approved_hash: sha256:3c9f54569949618bf42719d6370692a2190dbf61f86371917b1ee128e8619986
   - name: discount
     expr: discount_cents / 100.0
     agg: sum
@@ -127,7 +127,7 @@ measures:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
-    approved_hash: sha256:ea8c2206fc531d6b03eccf758fb01a86f1505036d9c9bbcf4387e1699332cee2
+    approved_hash: sha256:8d91bab57c469e88f6c7a106054d3c548c9190f0a1a1e589f9661d3642fcbfb5
 joins:
   - name: customer
     to: customers
@@ -144,7 +144,7 @@ joins:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:74f977016f974685e0e9f4f898816e02226d96c0dad9980aef6053e813a1a180
+    approved_hash: sha256:07354e296479d86c5bebe331c818406fce3cfbb25a1810545188f72106a6cdfd
     evidence:
       checked_at: 2026-10-26T08:56:43.946Z
       left_rows: 5000
@@ -168,7 +168,7 @@ joins:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:35b2b5250ca83d5f26d3e118afdb8e3abb6e3c89e1a93a38d800d11601e474d9
+    approved_hash: sha256:1fb1c658f286da8d110c46fb99ad312b5b854f2354e6700755b90e851a2c11c2
     evidence:
       checked_at: 2026-10-26T09:17:52.838Z
       left_rows: 5000
@@ -195,7 +195,7 @@ joins:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:3d60d5ca5948036c79a2d64ddcec9acbf64441273068ef8aa058de831b07eb2f
+    approved_hash: sha256:0f4c7630b5c19f6c9f29d0cfe59055bdc2d0013bb4715657440243f5977efcb7
     evidence:
       checked_at: 2026-10-26T10:43:47.169Z
       to: test_accounts
@@ -225,7 +225,7 @@ joins:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
-    approved_hash: sha256:9be4ac86a6fb7dbcb316c417014531699fd707ad7ad16901cbe091a4bc2e0a48
+    approved_hash: sha256:28097d37fa8b7d1a64c1bac6e1912af736d2b20e0563d1f8943ebf064741d995
     evidence:
       checked_at: 2026-10-27T05:34:56.582Z
       to: sales_reps

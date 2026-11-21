@@ -13,7 +13,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { type ApprovalEntry, carriesHash, itemApprovals, listApprovals } from "../lib/approval-hash.ts";
+import { type ApprovalEntry, carriesHash, editKeepsApproval, itemApprovals, listApprovals, matchesRecorded } from "../lib/approval-hash.ts";
 import { sourceWeekStart, type WeekDay } from "../lib/compiler/calendar.ts";
 import { applyFileRefusals, commandList, DENIED_FLAGS, roleOf, semlayerRefusal, type Role } from "../lib/roles.ts";
 import { DIALECTS, type Dialect, type Model } from "../lib/types.ts";
@@ -160,7 +160,7 @@ function contentViolations(before: ApprovalEntry[], after: ApprovalEntry[], what
     if (b.item.status !== "approved") continue;
     const a = now.get(b.ref);
     if (!a) out.push({ ref: b.ref, what: "removed" });
-    else if (a.hash !== b.hash && !(carriesHash(a.item) && String(a.item.approved_hash).trim() === a.hash)) out.push({ ref: b.ref, what });
+    else if (a.hash !== b.hash && !editKeepsApproval(b, a)) out.push({ ref: b.ref, what });
   }
   return out;
 }
@@ -234,7 +234,7 @@ function repairProblem(root: string, kind: FileKind, before: string, after: stri
   for (const e of [...own, ...others]) {
     if (e.item.status !== "approved") continue;
     const h = carriesHash(e.item) ? String(e.item.approved_hash).trim() : "";
-    if (h !== e.hash || (own.includes(e) && !before.includes(h))) return `approved ${e.ref} would not match the approved_hash it recorded`;
+    if (!matchesRecorded(e) || (own.includes(e) && !before.includes(h))) return `approved ${e.ref} would not match the approved_hash it recorded`;
   }
   const fields: [string, RegExp][] = [...MARK_KEYS.map((k): [string, RegExp] => [k, new RegExp(`\\b${k}\\b`, "g")]), ["status: approved", new RegExp(STATUS_TEXT.source, "g")]];
   for (const [label, re] of fields) if ((after.match(re)?.length ?? 0) > (before.match(re)?.length ?? 0)) return `it would add an approval field (${label})`;
@@ -331,7 +331,7 @@ function message(v: Violation): string {
         );
       return (
         `${v.ref} is approved, and this edit changes what the owner approved. Use a typed edit (${TYPED}), which routes it back to the owner ` +
-        `for re-approval, or make it a draft first with semlayer approve --target ${v.ref} --revoke. Descriptions and open questions are outside the approval and may be edited directly.`
+        `for re-approval, or make it a draft first with semlayer approve --target ${v.ref} --revoke. Open questions are outside the approval and may be edited directly; a description is part of it.`
       );
   }
 }

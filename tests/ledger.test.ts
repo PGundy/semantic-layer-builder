@@ -51,6 +51,8 @@ describe("semlayer reply", () => {
     const root = acme();
     const rb = await readback(root, "warehouse.orders.revenue,warehouse.products,warehouse.orders");
     const [h1, h2, h3] = rb.items.map((i) => i.content_hash);
+    // Each of these items has a description, so the readback also records its hash without it.
+    const [d1, d2, d3] = rb.items.map((i) => i.definition_hash);
 
     const yes = await reply(root, ["--readback", "rb_0001", "--item", "1", "--text", "Yes, that's right.", "--verdict", "yes", "--by", "Dana Ruiz"]);
     expect(yes.code).toBe(0);
@@ -70,14 +72,15 @@ describe("semlayer reply", () => {
     expect(none.out).toContain("The reply has no verdict, so no approval can use it.");
     expect(none.out).toContain('semlayer reply --readback rb_0001 --item 1 --text "<owner\'s words>" --verdict yes|no|change --by "Dana Ruiz"');
 
-    const line = (id: string, item: number, target: string, hash: string, text: string, verdict: string | null) =>
-      JSON.stringify({ at: FIXED_NOW, by: "Dana Ruiz", content_hash: hash, id, item, kind: "reply", readback_id: "rb_0001", target, text, verdict });
+    const line = (id: string, item: number, target: string, hash: string, definition: string, text: string, verdict: string | null) =>
+      JSON.stringify({ at: FIXED_NOW, by: "Dana Ruiz", content_hash: hash, definition_hash: definition, id, item, kind: "reply", readback_id: "rb_0001", target, text, verdict });
+    expect([d1, d2, d3].every((d, i) => typeof d === "string" && d !== [h1, h2, h3][i])).toBe(true);
     expect(ledgerText(root)).toBe(
       [
-        line("ans_0001", 1, "warehouse.orders.revenue", h1!, "Yes, that's right.", "yes"),
-        line("ans_0002", 2, "warehouse.products", h2!, "No, products is the catalogue only.", "no"),
-        line("ans_0003", 3, "warehouse.orders", h3!, "Change the grain wording.", "change"),
-        line("ans_0004", 1, "warehouse.orders.revenue", h1!, "I think so, let me check with Sam.", null),
+        line("ans_0001", 1, "warehouse.orders.revenue", h1!, d1!, "Yes, that's right.", "yes"),
+        line("ans_0002", 2, "warehouse.products", h2!, d2!, "No, products is the catalogue only.", "no"),
+        line("ans_0003", 3, "warehouse.orders", h3!, d3!, "Change the grain wording.", "change"),
+        line("ans_0004", 1, "warehouse.orders.revenue", h1!, d1!, "I think so, let me check with Sam.", null),
       ].join("\n") + "\n",
     );
     expect(ledgerText(root).startsWith(first)).toBe(true);

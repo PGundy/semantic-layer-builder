@@ -14,7 +14,7 @@ import {
   metricMeasureRefs,
 } from "./access.ts";
 import { canRun } from "./adapters/index.ts";
-import { type ApprovalEntry, holdsHashes, type Integrity, integrity, itemApprovals, listApprovals, pairEntries } from "./approval-hash.ts";
+import { type ApprovalEntry, approvalYes, holdsHashes, type Integrity, integrity, itemApprovals, listApprovals, pairEntries } from "./approval-hash.ts";
 import { type ChangeRecord, loadChange, releaseLead } from "./change-record.ts";
 import { currentYes, ledgerState } from "./ledger.ts";
 import { accessRowFilters, layerReads } from "./layer-reads.ts";
@@ -1414,6 +1414,10 @@ function rowFilterJoinsWithoutGoldens(
 // only once approved, hashed over its recorded rows and tolerance.
 export interface TargetState {
   hash: string;
+  // The hash without the item's description, when it differs from hash (approval-hash.ts itemHashes).
+  definition?: string;
+  // The item's approved_at, when it is text.
+  approvedAt?: string;
   state: Integrity;
   // Whether the item carries an approval's trace now (approved_by, approved_at, approved_hash, or
   // access.yaml's last_approved). A draft with none was never approved, or its approval was revoked.
@@ -1489,14 +1493,14 @@ export function statusDetail(root: string, only?: string): StatusDetail {
   const replies = ledger.replies;
   const targets = new Map<string, TargetState>();
   for (const e of [...reports.flatMap((r) => r.approvals), ...allMetricEntries, ...accessEntries]) {
-    if (!targets.has(e.ref)) targets.set(e.ref, { hash: e.hash, state: integrity(e, projectHashed), stamped: stamped(e) });
+    if (!targets.has(e.ref)) targets.set(e.ref, { hash: e.hash, ...(e.definitionHash !== e.hash ? { definition: e.definitionHash } : {}), ...(typeof e.item.approved_at === "string" ? { approvedAt: e.item.approved_at } : {}), state: integrity(e, projectHashed), stamped: stamped(e) });
   }
   for (const e of pairApprovals) targets.set(e.ref, { hash: e.hash, state: integrity(e, true), stamped: stamped(e) });
   for (const g of listApprovals({ goldens: loadedGoldens })) if (g.kind === "golden" && g.complete && g.status === "approved") targets.set(g.ref, { hash: g.hash, state: "current", stamped: true });
   const withoutYes = (refs: string[]) =>
     refs.filter((ref) => {
       const t = targets.get(ref);
-      return !!t && (t.state === "current" || t.state === "unhashed") && !currentYes(replies, ref, t.hash);
+      return !!t && (t.state === "current" || t.state === "unhashed") && !approvalYes(replies, { ref, hash: t.hash, definitionHash: t.definition ?? t.hash });
     });
 
   const base = {

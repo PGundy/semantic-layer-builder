@@ -4,7 +4,11 @@ import { basename, dirname, join, relative } from "node:path";
 import { type AccessLayer, type AccessVisibility, checkRequest, evaluateLayer, metricMeasureRefs } from "./access.ts";
 import {
   type ApprovalEntry,
+  approvalYes,
   changedMessage,
+  describedLater,
+  describedLaterMessage,
+  descriptionOnly,
   holdsHashes,
   integrity,
   itemApprovals,
@@ -921,20 +925,25 @@ export class Validator {
   // when approved items carry no hash and no item of the project records one (approved before
   // content hashes), and on each approved item without a hash once other items record one, since
   // its hash may have been removed. Warns once per file, too, on approved items whose owner's latest
-  // reply in the ledger is not a yes to them as they stand (approved before semlayer approve required one).
+  // reply in the ledger is not a yes to them as they stand (approved before semlayer approve required one),
+  // and on approved items whose approved_hash covers their definition but not their description.
   checkApprovals(file: string, entries: ApprovalEntry[]): void {
     let unhashed = 0;
     const unanswered: string[] = [];
+    const uncovered: string[] = [];
     const hashed = this.projectHashed();
     for (const e of entries) {
       const state = integrity(e, hashed);
-      if (state === "changed") this.error(file, pathText(e.path), changedMessage(e), "approval.hash_changed", `semlayer readback --targets ${e.ref}`);
+      if (state === "changed")
+        this.error(file, pathText(e.path), changedMessage(e, descriptionOnly(this.replies(), e)), "approval.hash_changed", `semlayer readback --targets ${e.ref}`);
       else if (state === "missing") this.warn(file, pathText(e.path), missingMessage(e), "approval.hash_missing");
       else if (state === "unhashed") unhashed++;
-      if (state !== "draft" && state !== "changed" && !currentYes(this.replies(), e.ref, e.hash)) unanswered.push(e.ref);
+      if (describedLater(e)) uncovered.push(e.ref);
+      if (state !== "draft" && state !== "changed" && !approvalYes(this.replies(), e)) unanswered.push(e.ref);
     }
     if (unhashed)
       this.warn(file, "", `${unhashed} approved item${unhashed === 1 ? " was" : "s were"} ${UNHASHED_MESSAGE}`, "approval.stamp_hashes", "semlayer approve --stamp-hashes");
+    if (uncovered.length) this.warn(file, "", describedLaterMessage(uncovered), "approval.description_uncovered", "semlayer approve --stamp-hashes --confirm-unchanged");
     if (unanswered.length) this.warn(file, "", unansweredMessage(unanswered), "approval.no_ledger_yes", `semlayer readback --targets ${unanswered.slice(0, 3).join(",")}`);
   }
 

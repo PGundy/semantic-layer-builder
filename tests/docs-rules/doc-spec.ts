@@ -5,5 +5,9 @@ export const RULES: DocRule[] = [
   // The SELECT-only role.
   ["spec.md", "reply --approve queries before it takes the lock", "`goldens confirm`, `reply --approve`, which confirms goldens, `setup`"],
   ["spec.md", "commands that take no lock include the role SQL and demo", "`setup --print-role-sql`. `demo` makes a new root and takes no lock on the current one."],
+  // Descriptions inside the approval hash.
+  ["spec.md", "a description is part of an approval", "the `description` of a dimension, measure, join, model or metric (left out when unset or empty, so an item without one hashes as before descriptions counted)"],
+  ["spec.md", "reflowing a description is no change", "every run of whitespace, line breaks included, is one space, so reflowing a block scalar or changing its indentation changes nothing"],
+  ["spec.md", "approvals from before descriptions counted still count", "It counts as approved: the evaluator, the compiler and the golden checks treat it as current"],
   ["spec.md", "BigQuery datasets are identifiers", "BigQuery: each dataset as a backtick-quoted identifier in its per-dataset block, and a name holding a backtick is refused"],
 ];
