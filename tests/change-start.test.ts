@@ -105,7 +105,10 @@ describe("phase change", () => {
     expect(before.phase).toBe("done");
     expect(mentions(before.why, "semlayer change start")).toBe(1);
     expect(before.why).toContain("release 1.0");
+    // The coverage checklist is ticked before the first release's handoff, not again after it.
+    expect(before.why).not.toContain("coverage checklist");
     expect((await status(root)).next_step.message).toContain("semlayer change start");
+    expect((await status(root)).next_step.message).not.toContain("coverage checklist");
     expect((await semlayer(root, START)).code).toBe(0);
     const after = await next(root);
     expect(after.phase).toBe("change");
@@ -125,6 +128,7 @@ describe("phase change", () => {
     expect(a.why).toContain("semlayer change close --version 1.0");
     expect(a.why).not.toContain("semlayer change start");
     expect((await status(root)).next_step.message).toContain("record it as release 1.0");
+    expect((await status(root)).next_step.message).toContain("Before the handoff, tick the coverage checklist");
   });
 
   test("status --json shows the layer version and the open round", async () => {

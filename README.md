@@ -55,7 +55,7 @@ Optional: Claude Code asks before each `semlayer` command it has not been allowe
 
 The tool never adds it for you. Claude Code's [permissions documentation](https://code.claude.com/docs/en/permissions) says each part of a command joined by `&&`, `;` or `|` must be allowed on its own; it does not say how a command that passes its input on standard input through a heredoc is matched, and that is not tested here, so such a command may still ask.
 
-When something is off, type `/semlayer doctor`, or ask Claude to run `semlayer doctor`: one line per check (Bun, the packages, each connection by name, the role, git, the command on `PATH`), the fix for each that is not ok, and the next step.
+When something is off, type `/semlayer doctor`, or ask Claude to run `semlayer doctor`: one line per check (Bun, the packages, each connection by name, the role, git, the command on `PATH`), the fix for each that is not ok, and the next step. On Postgres it also prints each connection's server version, whether the session is encrypted and a labelled guess whether a pooler is in the way.
 
 ## What a session looks like
 
@@ -126,9 +126,9 @@ semlayer status
 2. **Focus.** Past 12 tables, you choose which matter, with patterns such as `fct_*` or `*_archive`; nobody describes 20 tables at once.
 3. **Profile and draft.** Row counts, null rates, top values and candidate keys, then a draft model per table with its dimensions, measures, joins, PII tags and open questions.
 4. **Interview.** A few tables at a time, most important first; each item read back and approved only on your yes. An approval records a hash, so `semlayer validate` reports an approved item that changed afterwards.
-5. **Joins.** Match rate, key uniqueness and double counting measured before you sign a join off. A many-valued attribute, such as the tags of an order, joins through a bridge table with the rule you choose for sharing a figure among its values, so a total is never multiplied by accident.
-6. **Metrics and access.** Ratio and derived metrics; segments, a condition such as "completed orders" that a table names once and its measures reuse; the date each figure is measured over by default and the day a week starts; balances that keep each period's last value instead of adding the days up; and who may see what: open by default with personal and sensitive data hidden, roles from user attributes, restrictions, and row filters that can follow a reporting hierarchy. `semlayer access` shows what any user would see.
-7. **Goldens.** Questions you already know the answer to, written in the layer's own terms; the reference compiler turns the YAML into SQL for it, as the role and user the golden runs as. `semlayer goldens check` compiles every approved golden from the current YAML and runs it again, so a change to the data, or an approved edit that moves a figure, fails the goldens that use it. A request may combine measures of several tables, such as orders and refunds by month, and on Postgres it can add a running total, a comparison with the prior period and a year earlier, or the last n days against the n days before and a year earlier (see Figures over time).
+5. **Joins.** Match rate, key uniqueness and double counting measured before you sign a join off. A many-valued attribute, such as the tags of an order, joins through a bridge table with the rule you choose for sharing a figure among its values, so a total is never multiplied by accident. A table that only links two others is drafted as such a bridge join, with the sharing rule left for you to choose.
+6. **Metrics and access.** Ratio and derived metrics; segments, a condition such as "completed orders" that a table names once and its measures reuse; the date each figure is measured over by default and the day a week starts; balances that keep each period's last value instead of adding the days up; and who may see what: open by default with personal and sensitive data hidden, roles from user attributes, restrictions, and row filters that can follow a reporting hierarchy. `semlayer access` shows what any user would see. When you report no metrics, the agent records your answer (`semlayer add-metric --none`) and goes on.
+7. **Goldens.** Questions you already know the answer to, written in the layer's own terms; the reference compiler turns the YAML into SQL for it, as the role and user the golden runs as. `semlayer goldens check` compiles every approved golden from the current YAML and runs it again, so a change to the data, or an approved edit that moves a figure, fails the goldens that use it. `semlayer goldens unconfirm` returns a golden whose figure you no longer trust to draft, and `semlayer goldens remove` deletes a draft. A request may combine measures of several tables, such as orders and refunds by month, also when each table has its own date once you declare the two dates the same (`semlayer conform`), and on Postgres it can add a running total, a comparison with the prior period and a year earlier, or the last n days against the n days before and a year earlier (see Figures over time).
 8. **Changes.** A finished layer is released as 1.0 and then changed in rounds, each closed as a new version with a changelog entry that names what changed and which goldens' figures moved (see Changing a finished layer).
 
 The files:
@@ -210,11 +210,23 @@ A client configured by JSON takes `{"command": "bun", "args": ["<path to>/skills
 
 Postgres is the database a layer is built on; DuckDB is for the demo, sample data and files. The code for Snowflake, BigQuery, Databricks, Redshift, MySQL and SQL Server is kept but not supported for new work, and [`other-dialects.md`](skills/semantic-layer/references/other-dialects.md) describes it.
 
-Postgres 13 to 17 is supported, and CI runs the live tests on each of those majors. A connection through PgBouncer in transaction mode works, and so does TLS with a CA file: `sslmode=verify-full` with `sslrootcert=<path>` in the URL, or `<PREFIX>SSLROOTCERT` for a connection given in parts. A role with SELECT on only some tables works: `semlayer introspect` reads the tables the role can read and prints the ones it skipped.
+Postgres 13 to 17 is supported, and CI runs the live tests on each of those majors. A connection through PgBouncer in transaction mode works, and so does TLS with a CA file: `sslmode=verify-full` with `sslrootcert=<path>` in the URL, or `<PREFIX>SSLROOTCERT` for a connection given in parts. A role with SELECT on only some tables works: `semlayer introspect` reads the tables the role can read and prints the ones it skipped. [`docs/compat/postgres.md`](docs/compat/postgres.md) says what is proven where, and how to record a result on your managed provider that is safe to commit (`scripts/compat-provider.sh`).
 
 Joins live within one source. A question that spans sources becomes an open question, because joining across engines needs a federating engine of its own.
 
 A first layer stays within one schema of its source. `semlayer setup --primary <schema>` names it, and `semlayer next` asks the owner when the database has more than one. A join leaves the primary schema only on a schema pair the owner approved: `semlayer add-cross-schema` records the pair with the keys that connect the two schemas, and `semlayer approve --target schema-pair:<source>:<from>:<to>` approves it on the owner's recorded yes.
+
+## From a dbt project
+
+A dbt manifest with semantic models and metrics gives the interview a head start:
+
+```sh
+semlayer import --source warehouse --file target/manifest.json --semantic                                # its semantic models and metrics, and what was skipped and why
+semlayer import --source warehouse --file target/manifest.json --semantic --emit semantic/dbt-edits.json  # also writes them as typed edits for the models already drafted
+semlayer apply --file semantic/dbt-edits.json
+```
+
+Every item it adds is a draft, read back and approved on your yes like any other. On a source whose snapshot was read from the database, the snapshot is kept and the manifest's models are placed against its tables.
 
 ## Figures over time
 
@@ -249,7 +261,7 @@ semlayer change status                   # items added, changed and removed sinc
 semlayer change close --version 1.1      # refused, naming each, while a changed item waits for the owner's yes or a golden's figures moved unconfirmed
 ```
 
-Only the items the round touches are read back. `layer_version` in `semantic.yaml` and `changelog.yaml` beside it record each release; a draft the owner deferred is left out of a release and named. After a schema change, `semlayer introspect` keeps `.semlayer/drift.json`, the record of the tables and columns that changed, and `semlayer validate` warns `release.column_retyped` on each approved field that reads a retyped column until it is read back and approved again.
+Only the items the round touches are read back. A golden the last release held that is a draft now (`semlayer goldens unconfirm`) is left out of the next release and named. `layer_version` in `semantic.yaml` and `changelog.yaml` beside it record each release; a draft the owner deferred is left out of a release and named. After a schema change, `semlayer introspect` keeps `.semlayer/drift.json`, the record of the tables and columns that changed, and `semlayer validate` warns `release.column_retyped` on each approved field that reads a retyped column until it is read back and approved again.
 
 ## Example
 
@@ -263,6 +275,8 @@ bash scripts/verify.sh               # typecheck, tests (starts a private local 
 bun test tests/scope.test.ts         # one suite
 eval "$(bash scripts/pg-local.sh)"   # a local Postgres for the live tests, no Docker; stop it with --stop
 ```
+
+The scripted eval smoke runs in CI with no model. A live run with a model, `bun run eval:smoke -- --driver sdk --gate`, and the weekly `eval-live` workflow compare it with a recorded baseline; both stay off until the owner adds the key and the baseline, as [`evals/README.md`](evals/README.md) describes.
 
 All test and fixture data is synthetic. [`CONTRIBUTING.md`](CONTRIBUTING.md) covers setup, the live Postgres tests and the checks a change must pass. The skill's procedure starts at [`SKILL.md`](skills/semantic-layer/SKILL.md), a short router that maps each phase `semlayer next` names to one phase card under [`references/phases/`](skills/semantic-layer/references/phases/).
 

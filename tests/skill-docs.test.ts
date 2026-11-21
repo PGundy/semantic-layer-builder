@@ -223,7 +223,7 @@ describe("the router and its phase cards", () => {
     for (const c of CARDS) expect(`${c}: ${read(c).split("\n").length < 150}`).toBe(`${c}: true`);
   });
 
-  // docs/PLAN-v1x.md W0.2: SKILL.md stays at 110 lines or fewer, its line budgets (B 1, H 2) included, under the cap of 120.
+  // SKILL.md stays at 110 lines or fewer, under the cap of 120, so a change that needs a line has room.
   test("SKILL.md is at most 110 lines and keeps every numbered principle, numbered in order", () => {
     expect(skill.trimEnd().split("\n").length).toBeLessThanOrEqual(110);
     const section = skill.slice(skill.indexOf("## Principles"), skill.indexOf("\n## ", skill.indexOf("## Principles") + 3));

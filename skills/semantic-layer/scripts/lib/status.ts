@@ -770,6 +770,8 @@ interface StepContext {
   schemaQuestions: Map<string, SchemaQuestion>;
   // The sentence the done step ends with: how a finished layer is released, or changed once released.
   lead: string;
+  // Whether a release is recorded (semantic.yaml's layer_version is set).
+  released: boolean;
 }
 
 const OPEN_BASELINE = "everyone sees every approved model, field and metric except those tagged pii or sensitive";
@@ -1226,7 +1228,9 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch" | "laye
     message:
       "Every phase the CLI can measure is complete. Rerun semlayer validate after any change." +
       (left.length ? ` Name in the handoff the ${left.join("; ")}.` : "") +
-      " Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved." +
+      (ctx.released
+        ? ""
+        : " Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.") +
       (ctx.lead ? ` ${ctx.lead}` : ""),
     action: act("validate", [], "done"),
   };
@@ -1536,6 +1540,7 @@ export function statusDetail(root: string, only?: string): StatusDetail {
     goldenAccessEdits: goldenAccessEdits(loadedGoldens),
     schemaQuestions: new Map(reports.flatMap((r) => (r.schemaQuestion ? [[r.status.source, r.schemaQuestion] as const] : []))),
     lead: releaseLead(root),
+    released: typeof project.layer_version === "string" && project.layer_version !== "",
     goldenSources: new Map(
       loadedGoldens.flatMap(({ path, golden }) => {
         const g: Record<string, unknown> = isRecord(golden) ? golden : {};

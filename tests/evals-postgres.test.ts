@@ -12,7 +12,7 @@ import { type Driver, EvalError, NotRun, type Scenario } from "../evals/runner/t
 import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { approveWithYes, assertLocalPg, PG_URL, semlayer, tempDir, uniqueSchema } from "./helpers.ts";
 
-// A scenario that names a PostgreSQL source (docs/PLAN-v1x.md, A3a): the runner loads the fixture into
+// A scenario that names a PostgreSQL source: the runner loads the fixture into
 // a schema of its own, runs the commands and the figures grader on it, and drops the schema.
 
 const START = "2026-01-01T00:00:00.000Z";
@@ -286,7 +286,7 @@ describe("the figures grader on a postgres source", () => {
   });
 });
 
-// The Acme warehouse on PostgreSQL, scripted (docs/PLAN-v1x.md, A3b): the layer is built the way the skill
+// The Acme warehouse on PostgreSQL, scripted: the layer is built the way the skill
 // is told to on a connection-first PostgreSQL source, inside one schema.
 describe("the acme-pg-structured scenario", () => {
   const file = join(REPO_ROOT, "evals", "scenarios", "acme-pg-structured.json");

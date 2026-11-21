@@ -4,7 +4,7 @@
 // Runs the smoke subset, grades each run and compares every grader's score with evals/baseline.json
 // (docs/PRD.md FR-6.4); a PostgreSQL scenario whose URL variable is unset is reported "not run".
 // Exit codes: 0 when no score fell below its baseline by more than its band (always with --report-only or --update-baseline), 1 on a regression, 2 when the smoke could not run.
-// --gate (docs/PLAN-v1x.md A5) is the pass/fail form for live runs: with --driver sdk it compares with evals/baseline.sdk.json and checks the key, the package and the baseline before anything is created.
+// --gate (evals/README.md, The live gate) is the pass/fail form for live runs: with --driver sdk it compares with evals/baseline.sdk.json and checks the key, the package and the baseline before anything is created.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";

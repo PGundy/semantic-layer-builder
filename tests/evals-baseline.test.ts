@@ -247,7 +247,7 @@ describe("regressions", () => {
 });
 
 // The PostgreSQL scenarios join the smoke only where PG_URL is set; the committed baseline holds their entries
-// either way and the smoke passes either way (docs/PLAN-v1x.md, A3b and A4).
+// either way and the smoke passes either way.
 describe("the PostgreSQL scenarios in the smoke", () => {
   // An io whose PostgreSQL scenario is not run, as the runner reports it without the URL.
   function withoutUrl() {
