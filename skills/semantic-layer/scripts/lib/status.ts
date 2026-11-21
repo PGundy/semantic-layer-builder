@@ -14,7 +14,7 @@ import {
   metricMeasureRefs,
 } from "./access.ts";
 import { canRun } from "./adapters/index.ts";
-import { type ApprovalEntry, backed, holdsHashes, integrity, itemApprovals, listApprovals, pairEntries, type Standing, standing } from "./approval-hash.ts";
+import { type ApprovalEntry, backed, confirmable, holdsHashes, integrity, itemApprovals, listApprovals, pairEntries, type Standing, standing } from "./approval-hash.ts";
 import { type ChangeRecord, loadChange, releaseLead } from "./change-record.ts";
 import { currentYes, ledgerState, readApprovalLedger } from "./ledger.ts";
 import { accessRowFilters, layerReads } from "./layer-reads.ts";
@@ -766,6 +766,8 @@ interface StepContext {
   // The command that signs off the targets: semlayer approve of the first one the owner's latest reply in
   // the ledger is a yes to as it stands, else semlayer readback of them all.
   signOff: (refs: string[]) => StepAction;
+  // Whether semlayer approve --confirm-existing would take one of the items stamped without a yes.
+  confirmExisting: boolean;
   // For each golden of the reported goldens by name, the source its request names.
   goldenSources: Map<string, string | undefined>;
   // The typed edits (the words after "semlayer") that declare the roles and user attributes the goldens
@@ -875,8 +877,8 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch" | "laye
         ? `${missing.length} approved item(s) have no approved_hash while other approved items carry one, so it may have been removed: ${preview(missing)}.`
         : "",
       stamped.length
-        ? `${stamped.length} item(s) say they are approved, but no recorded yes from the owner stands behind them: ${preview(stamped)}; ` +
-          "approvals the owner gave before semlayer recorded their yes they can instead confirm as they stand with semlayer approve --confirm-existing."
+        ? `${stamped.length} item(s) say they are approved, but no recorded yes from the owner stands behind them: ${preview(stamped)}` +
+          (ctx.confirmExisting ? "; approvals the owner gave before semlayer recorded their yes they can instead confirm as they stand with semlayer approve --confirm-existing." : ".")
         : "",
     ].filter(Boolean);
     return {
@@ -1547,6 +1549,7 @@ export function statusDetail(root: string, only?: string): StatusDetail {
   };
   let found = nextStep(base, names.length, {
     drift,
+    confirmExisting: base.stamped_without_yes.some((ref) => confirmable(answers, ref)),
     accessReadable: accessState === "missing" || (!!access && typeof access === "object" && !Array.isArray(access)),
     accessProblem: accessProblem(audience),
     accessQuestions: accessQuestionTexts,

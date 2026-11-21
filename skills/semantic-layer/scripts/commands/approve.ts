@@ -396,11 +396,6 @@ function confirmExisting(ctx: CommandContext, values: OptionValues): number {
     if (bool(values, flag)) throw new UserError(`--confirm-existing takes no --${flag}. Nothing was recorded.`);
   const by = ownerText(oneLine(str(values, "by") ?? "")).text;
   const words = ownerText(str(values, "reply") ?? "");
-  if (!by || !words.text)
-    throw new UserError(
-      'semlayer approve --confirm-existing records the owner\'s confirmation of approvals given before the ledger recorded their yes, so it needs the owner\'s name and words: ' +
-        'semlayer approve --confirm-existing --by "<owner>" --reply "<owner\'s words>". Run it only after the owner, shown the list semlayer validate gives, says these approvals stand as they are. Nothing was recorded.',
-    );
   const answers = readApprovalLedger(ctx.root);
   // The confirmation is given once, for approvals older than the ledger: a stamp written after it
   // needs a readback and the owner's yes, so a second confirmation is refused, and an item the
@@ -421,6 +416,12 @@ function confirmExisting(ctx: CommandContext, values: OptionValues): number {
     else ctx.out("Every approval already has the owner's recorded yes or confirmation behind it; nothing was recorded. Next: semlayer validate.");
     return 0;
   }
+  if (!by || !words.text)
+    throw new UserError(
+      'semlayer approve --confirm-existing records the owner\'s confirmation of approvals given before the ledger recorded their yes, so it needs the owner\'s name and words: ' +
+        'semlayer approve --confirm-existing --by "<owner>" --reply "<owner\'s words>". ' +
+        `It would confirm ${targets.length} approval(s) as they stand: ${targets.map((t) => t.target).join(", ")}. Run it only after the owner, shown that list, says these approvals stand as they are. Nothing was recorded.`,
+    );
   const line = openLedger(ctx.root).appendConfirm({ kind: "confirm", targets, text: words.text, by, at: ctx.now().toISOString() });
   const refs = targets.map((t) => t.target);
   if (ctx.json) {
@@ -434,6 +435,13 @@ function confirmExisting(ctx: CommandContext, values: OptionValues): number {
       " Next: semlayer validate.",
   );
   return 0;
+}
+
+// Whether the ledger's latest answer to a target is one an approval could rest on: the owner's yes or
+// their confirmation.
+function standsIn(ledger: ReturnType<typeof readApprovalLedger>, ref: string): boolean {
+  const last = ledger.latest.get(ref);
+  return !!last && ("confirmed" in last || ("reply" in last && last.reply.verdict === "yes"));
 }
 
 // Up to ten refs, then how many more.
@@ -679,6 +687,8 @@ const spec: CommandSpec = {
     const warnings: { target: string; text: string }[] = [];
     // Items already in the requested state, reported when nothing changes.
     let skipped = 0;
+    // Every item a revoke covers, a draft included, with its hash: the ledger's answer to each is withdrawn.
+    const covered: { target: string; content_hash: string }[] = [];
     // A schema pair is new with content hashes, so one approved without a hash is approved again.
     const hashed = !revoke && (target.kind === "schema-pair" || projectHashed(ctx.root));
     let read: LedgerReply[] | undefined;
@@ -688,6 +698,7 @@ const spec: CommandSpec = {
     const isSettled = (targetRef: string, item: Approval, h: Hashes) =>
       settled(item, mode, h.hash, hashed, h.definitionHash, () => !!currentYes(replies(), targetRef, h.hash), () => backed((answers ??= readApprovalLedger(ctx.root)), { ref: targetRef, ...h }));
     const consider = (targetRef: string, path: (string | number)[], item: Approval, h: Hashes, keepLast = false): boolean => {
+      if (mode.revoke) covered.push({ target: targetRef, content_hash: h.hash });
       if (isSettled(targetRef, item, h)) {
         skipped++;
         return false;
@@ -879,6 +890,17 @@ const spec: CommandSpec = {
       throw new UserError(`Cannot approve ${ref}; nothing was approved:\n${refusedText()}`, undefined, unanswered.length ? "approval.no_ledger_yes" : "by_mismatch");
     }
 
+    // A revoke withdraws the owner's yes or confirmation the ledger holds for each item it covers, so a
+    // stamp put back by a file write is unbacked and approving again takes a new readback and yes. The
+    // line is written before the file: were the file write to fail, the item would read as unbacked.
+    // A project with no ledger gets none: its approvals count under the rule for those older than it.
+    let withdrawn: { id: string; targets: string[] } | undefined;
+    if (revoke) {
+      const held = readApprovalLedger(ctx.root);
+      const targets = held.present && !held.unreadable ? covered.filter((t) => standsIn(held, t.target)) : [];
+      if (targets.length) withdrawn = { id: openLedger(ctx.root).appendRevoke({ kind: "revoke", targets, at: ctx.now().toISOString() }).id, targets: targets.map((t) => t.target) };
+    }
+
     // The approval a revoke of access.yaml set aside in last_approved.
     let keptApproval: LastApproval | undefined;
     if (ready.length) {
@@ -897,6 +919,7 @@ const spec: CommandSpec = {
           changed,
           warnings: warned,
           ...(keptApproval ? { last_approved: keptApproval } : {}),
+          ...(withdrawn ? { withdrawn: withdrawn.targets, ledger: withdrawn.id } : {}),
           ...(refused.length ? { refused: refused.map((r) => ({ target: r.target, reason: r.reason, next: nextFor(r) })) } : {}),
         }),
       );
@@ -913,6 +936,10 @@ const spec: CommandSpec = {
       else lines.push(`Approved ${e.target} (${e.from} -> approved) ${how}.`);
     }
     if (changed.length && skipped) lines.push(`${skipped} item(s) were already ${revoke ? "drafts" : "approved"}.`);
+    if (withdrawn)
+      lines.push(
+        `Recorded ${withdrawn.id} in ${LEDGER_FILE}: the owner's recorded yes to ${previewRefs(withdrawn.targets)} no longer stands, so approving ${withdrawn.targets.length === 1 ? "it" : "any of them"} again takes a new readback and the owner's yes.`,
+      );
     if (keptApproval) {
       lines.push(
         `access.yaml keeps that approval in last_approved: the version approved by ${keptApproval.by} on ${keptApproval.at} ` +

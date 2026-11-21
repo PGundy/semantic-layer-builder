@@ -957,7 +957,7 @@ export class Validator {
     const ledger = this.approvalLedger();
     for (const e of entries) {
       const state = standing(e, hashed, ledger);
-      if (state === "unbacked" && !ledger.unreadable) this.error(file, pathText(e.path), unbackedMessage(e), "approval.no_recorded_yes", `semlayer readback --targets ${e.ref}`);
+      if (state === "unbacked" && !ledger.unreadable) this.error(file, pathText(e.path), unbackedMessage(e, ledger), "approval.no_recorded_yes", `semlayer readback --targets ${e.ref}`);
       if (state === "changed")
         this.error(file, pathText(e.path), changedMessage(e, descriptionOnly(this.replies(), e)), "approval.hash_changed", `semlayer readback --targets ${e.ref}`);
       else if (state === "missing") this.warn(file, pathText(e.path), missingMessage(e), "approval.hash_missing");

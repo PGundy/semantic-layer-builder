@@ -81,7 +81,7 @@ export default function scope(ctx: RuleContext): void {
     // A pair marked approved whose keys changed since, or that records no hash, counts as a draft.
     for (const e of pairEntries(name, source)) {
       const state = standing(e, true, ctx.approvalLedger());
-      if (state === "unbacked") ctx.error(file, pathText(e.path), unbackedMessage(e), "approval.no_recorded_yes", `semlayer readback --targets ${e.ref}`);
+      if (state === "unbacked") ctx.error(file, pathText(e.path), unbackedMessage(e, ctx.approvalLedger()), "approval.no_recorded_yes", `semlayer readback --targets ${e.ref}`);
       if (state === "changed") ctx.error(file, pathText(e.path), changedMessage(e), "approval.hash_changed", `semlayer readback --targets ${e.ref}`);
       else if (state === "missing")
         ctx.warn(

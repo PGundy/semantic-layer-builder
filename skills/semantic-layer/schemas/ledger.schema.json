@@ -1,17 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": ".semlayer/ledger.jsonl (one line)",
-  "description": "One line of the answer ledger, appended by semlayer reply (kind reply: the owner's answer to an item of a readback), semlayer question resolve (kind question: the owner's answer to an open question), semlayer review apply (either kind, from a filled review form) or semlayer approve --confirm-existing (kind confirm: the owner's confirmation, as they stand, of approvals no recorded yes backed). It holds the owner's words, never data values.",
+  "description": "One line of the answer ledger, appended by semlayer reply (kind reply: the owner's answer to an item of a readback), semlayer question resolve (kind question: the owner's answer to an open question), semlayer review apply (either kind, from a filled review form) semlayer approve --confirm-existing (kind confirm: the owner's confirmation, as they stand, of approvals no recorded yes backed) or semlayer approve --revoke (kind revoke: the items whose recorded answers a revoke withdrew). It holds the owner's words, never data values.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "kind", "text", "by", "at"],
+  "required": ["id", "kind", "at"],
   "properties": {
     "id": {
       "type": "string",
       "pattern": "^ans_[0-9]{4,}$",
       "description": "ans_ and at least four digits, one more than the line before: ans_0001, ans_0002, ..."
     },
-    "kind": { "enum": ["reply", "question", "confirm"], "description": "reply: an answer to a readback item; question: an answer to an open question; confirm: the owner's confirmation of earlier approvals as they stood." },
+    "kind": { "enum": ["reply", "question", "confirm", "revoke"], "description": "reply: an answer to a readback item; question: an answer to an open question; confirm: the owner's confirmation of earlier approvals as they stood; revoke: a revoke of items the ledger held a yes or a confirmation for." },
     "readback_id": { "type": "string", "pattern": "^rb_[0-9]{4,}$", "description": "kind reply: the readback in .semlayer/pending/ the owner answered." },
     "item": { "type": "integer", "minimum": 1, "description": "kind reply: the item number in that readback." },
     "target": {
@@ -32,7 +32,7 @@
     "targets": {
       "type": "array",
       "minItems": 1,
-      "description": "kind confirm: each approve target (golden:<name> for a golden) the owner confirmed, with its content hash then.",
+      "description": "kind confirm: each approve target (golden:<name> for a golden) the owner confirmed, with its content hash then. kind revoke: each approve target whose recorded answers the revoke withdrew, with its content hash then.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -53,15 +53,19 @@
   "allOf": [
     {
       "if": { "properties": { "kind": { "const": "reply" } }, "required": ["kind"] },
-      "then": { "required": ["target", "readback_id", "item", "content_hash", "verdict"], "properties": { "question": false, "targets": false } }
+      "then": { "required": ["target", "text", "by", "readback_id", "item", "content_hash", "verdict"], "properties": { "question": false, "targets": false } }
     },
     {
       "if": { "properties": { "kind": { "const": "question" } }, "required": ["kind"] },
-      "then": { "required": ["target", "question"], "properties": { "readback_id": false, "item": false, "content_hash": false, "definition_hash": false, "verdict": false, "about": false, "targets": false } }
+      "then": { "required": ["target", "text", "by", "question"], "properties": { "readback_id": false, "item": false, "content_hash": false, "definition_hash": false, "verdict": false, "about": false, "targets": false } }
     },
     {
       "if": { "properties": { "kind": { "const": "confirm" } }, "required": ["kind"] },
-      "then": { "required": ["targets"], "properties": { "target": false, "readback_id": false, "item": false, "content_hash": false, "definition_hash": false, "verdict": false, "about": false, "question": false } }
+      "then": { "required": ["targets", "text", "by"], "properties": { "target": false, "readback_id": false, "item": false, "content_hash": false, "definition_hash": false, "verdict": false, "about": false, "question": false } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "revoke" } }, "required": ["kind"] },
+      "then": { "required": ["targets"], "properties": { "target": false, "readback_id": false, "item": false, "content_hash": false, "definition_hash": false, "verdict": false, "about": false, "question": false, "text": false, "by": false } }
     },
     {
       "if": { "required": ["about"] },

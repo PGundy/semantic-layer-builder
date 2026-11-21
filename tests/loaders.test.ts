@@ -559,7 +559,7 @@ describe("semlayer readback of a target whose file is malformed", () => {
     const approve = await semlayer(root, ["approve", "--target", "warehouse.products.launched_on", "--by", "Dana Ruiz", "--json"]);
     expect(approve.code).toBe(1);
     expect(approve.json<{ error: string; next: string }>()).toMatchObject({ code: "user_error", next: "semlayer validate" });
-    expect(approve.json<{ error: string }>().error).toStartWith(".semlayer/ledger.jsonl cannot be read: line 1 is not a reply, question or confirm line");
+    expect(approve.json<{ error: string }>().error).toStartWith(".semlayer/ledger.jsonl cannot be read: line 1 is not a reply, question, confirm or revoke line");
     expect(readFileSync(join(root, ".semlayer", "ledger.jsonl"), "utf8")).toBe("[1, 2]\nnull\n");
   });
 });

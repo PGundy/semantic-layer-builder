@@ -10,7 +10,7 @@ import { writeFileAtomic } from "./lock.ts";
 import { plainText } from "./output.ts";
 import { PENDING_DIR } from "./readback.ts";
 import type { ApprovalLedger } from "./approval-hash.ts";
-import type { LedgerConfirm, LedgerEntry, LedgerQuestion, LedgerReply, PendingReadback } from "./types.ts";
+import type { LedgerConfirm, LedgerEntry, LedgerQuestion, LedgerReply, LedgerRevoke, PendingReadback } from "./types.ts";
 import { schemaIssues } from "./schema.ts";
 
 export const LEDGER_FILE = ".semlayer/ledger.jsonl";
@@ -42,7 +42,7 @@ export function readPending(root: string, id: string): PendingReadback {
 }
 
 // One ledger line: the entry with its keys sorted, so the same answer always writes the same bytes.
-export function ledgerLine(entry: LedgerEntry | LedgerConfirm): string {
+export function ledgerLine(entry: LedgerEntry | LedgerConfirm | LedgerRevoke): string {
   const obj = entry as unknown as Record<string, unknown>;
   return `${JSON.stringify(Object.fromEntries(Object.keys(obj).sort().map((k) => [k, obj[k]])))}\n`;
 }
@@ -70,6 +70,8 @@ export interface LedgerAppender {
   appendAll(entries: NewLedgerEntry[]): LedgerEntry[];
   // Appends the owner's confirmation of earlier approvals (semlayer approve --confirm-existing) under that id.
   appendConfirm(entry: Omit<LedgerConfirm, "id">): LedgerConfirm;
+  // Appends a revoke of items the ledger held an answer for (semlayer approve --revoke) under that id.
+  appendRevoke(entry: Omit<LedgerRevoke, "id">): LedgerRevoke;
 }
 
 // Checks that the ledger can take a line (inside the root, a file whose every line is a JSON object
@@ -99,7 +101,7 @@ export function openLedger(root: string): LedgerAppender {
     });
   }
   const idAt = (k: number) => `ans_${String(max + 1 + k).padStart(4, "0")}`;
-  const write = <T extends LedgerEntry | LedgerConfirm>(entries: Omit<T, "id">[]): T[] => {
+  const write = <T extends LedgerEntry | LedgerConfirm | LedgerRevoke>(entries: Omit<T, "id">[]): T[] => {
     const full = entries.map((entry, k) => ({ ...entry, id: idAt(k) }) as T);
     mkdirSync(dirname(file), { recursive: true });
     // The ledger with the new lines replaces the file in one rename, so a cut-off write leaves it
@@ -115,6 +117,7 @@ export function openLedger(root: string): LedgerAppender {
     append: (entry) => write<LedgerEntry>([entry])[0]!,
     appendAll: (entries) => (entries.length ? write<LedgerEntry>(entries) : []),
     appendConfirm: (entry) => write<LedgerConfirm>([entry])[0]!,
+    appendRevoke: (entry) => write<LedgerRevoke>([entry])[0]!,
   };
 }
 
@@ -154,9 +157,36 @@ function isConfirm(data: unknown): data is LedgerConfirm {
     d.by.trim() !== "" &&
     typeof d.at === "string" &&
     d.at.trim() !== "" &&
-    Array.isArray(d.targets) &&
-    d.targets.every((t) => typeof t === "object" && t !== null && typeof (t as { target?: unknown }).target === "string" && typeof (t as { content_hash?: unknown }).content_hash === "string")
+    hashedTargets(d.targets)
   );
+}
+
+// A revoke line: kind revoke, a non-empty at, and each target with its hash.
+function isRevoke(data: unknown): data is LedgerRevoke {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return false;
+  const d = data as Record<string, unknown>;
+  return d.kind === "revoke" && typeof d.id === "string" && typeof d.at === "string" && d.at.trim() !== "" && hashedTargets(d.targets);
+}
+
+function hashedTargets(targets: unknown): boolean {
+  return Array.isArray(targets) && targets.every((t) => typeof t === "object" && t !== null && typeof (t as { target?: unknown }).target === "string" && typeof (t as { content_hash?: unknown }).content_hash === "string");
+}
+
+// The answers that still stand once a revoke of `targets` is read: the replies to each target's
+// content and its place in a confirmation are withdrawn, so its latest answer is none. With
+// access.yaml, the changes to who sees an item that its withdrawn yes had settled go with it: the
+// file is read back whole before it is approved again.
+function withdraw(answers: LedgerAnswer[], targets: Set<string>): LedgerAnswer[] {
+  let settled = -1;
+  if (targets.has("access"))
+    answers.forEach((a, i) => {
+      if (a.kind === "reply" && a.target === "access" && a.about === undefined && a.verdict === "yes") settled = i;
+    });
+  return answers.flatMap((a, i): LedgerAnswer[] => {
+    if (a.kind === "reply") return (a.about === undefined ? targets.has(a.target) : i < settled) ? [] : [a];
+    if (a.kind === "confirm") return [{ ...a, targets: a.targets.filter((t) => !targets.has(t.target)) }];
+    return [a];
+  });
 }
 
 // The kind: reply lines of ledger text, in file order. Strict, as semlayer approve reads it, a line that is
@@ -167,13 +197,17 @@ export function ledgerReplies(text: string, strict = false): LedgerReply[] {
   return ledgerAnswers(text, strict).filter((e): e is LedgerReply => e.kind === "reply");
 }
 
-// The kind: reply and kind: confirm lines of ledger text, in file order, read as ledgerReplies reads them.
-export function ledgerAnswers(text: string, strict = false): (LedgerReply | LedgerConfirm)[] {
+export type LedgerAnswer = LedgerReply | LedgerConfirm | LedgerRevoke;
+
+// The kind: reply, kind: confirm and kind: revoke lines of ledger text, in file order, read as
+// ledgerReplies reads them. The answers a revoke withdraws (withdraw) are left out, so no reader
+// counts a yes given before its item was revoked.
+export function ledgerAnswers(text: string, strict = false): LedgerAnswer[] {
   const fail = (why: string) => {
     throw new UserError(`${LEDGER_FILE} cannot be read: ${why}, so no approval can rely on it; nothing was approved. ${RESTORE[0]!.toUpperCase()}${RESTORE.slice(1)}.`, "semlayer validate");
   };
   if (strict && text && !text.endsWith("\n")) fail("its last line has no line break (an append was cut off)");
-  const out: (LedgerReply | LedgerConfirm)[] = [];
+  let out: LedgerAnswer[] = [];
   text.split("\n").forEach((line, i) => {
     if (!line.trim()) return;
     let data: unknown;
@@ -184,10 +218,12 @@ export function ledgerAnswers(text: string, strict = false): (LedgerReply | Ledg
       return;
     }
     const kind = typeof data === "object" && data !== null ? (data as { kind?: unknown }).kind : undefined;
-    if (isReply(data) || isConfirm(data)) out.push(data);
+    if (isRevoke(data)) out = [...withdraw(out, new Set(data.targets.map((t) => t.target))), data];
+    else if (isReply(data) || isConfirm(data)) out.push(data);
+    else if (strict && kind === "revoke") fail(`line ${i + 1} is a revoke line without the fields an approval needs (a non-empty at, and targets each with a target and a content_hash)`);
     else if (strict && kind === "confirm") fail(`line ${i + 1} is a confirm line without the fields an approval needs (a non-empty by and at, and targets each with a target and a content_hash)`);
     else if (strict && kind === "reply") fail(`line ${i + 1} is a reply line without the fields an approval needs (a non-empty by and at, a target, a content_hash, a verdict; about only as access on a change)`);
-    else if (strict && kind !== "question") fail(`line ${i + 1} is not a reply, question or confirm line`);
+    else if (strict && kind !== "question") fail(`line ${i + 1} is not a reply, question, confirm or revoke line`);
   });
   return out;
 }
@@ -254,7 +290,7 @@ export function currentYes(replies: LedgerReply[], target: string, hash: string)
 export function approvalLedger(text: string | undefined): ApprovalLedger {
   const latest: ApprovalLedger["latest"] = new Map();
   if (text === undefined || text.trim() === "") return { present: false, latest };
-  let answers: (LedgerReply | LedgerConfirm)[] = [];
+  let answers: LedgerAnswer[] = [];
   let unreadable = false;
   try {
     answers = ledgerAnswers(text, true);
@@ -266,6 +302,7 @@ export function approvalLedger(text: string | undefined): ApprovalLedger {
   for (const a of answers) {
     if (a.kind === "confirm") confirmedBefore = true;
     if (a.kind === "confirm") for (const t of a.targets) latest.set(t.target, { confirmed: t.content_hash });
+    else if (a.kind === "revoke") for (const t of a.targets) latest.set(t.target, { revoked: true });
     else if (a.about === undefined) latest.set(a.target, { reply: a });
   }
   return { present: true, latest, ...(unreadable ? { unreadable } : {}), ...(confirmedBefore ? { confirmedBefore } : {}) };

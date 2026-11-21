@@ -164,8 +164,8 @@ describe("semlayer next through the phases", () => {
     await reply(root, rb.readback_id, 2, "yes");
     const a = await next(root);
     expect(a).toMatchObject({ kind: "run", phase: "interview", run: { command: `semlayer approve --target ${ORDERS}.revenue` }, blocked_on: "open_questions" });
-    // The example's own line is ans_0001.
-    expect(a.why).toContain("ans_0002");
+    // The example's own line is ans_0001 and the revoke is ans_0002.
+    expect(a.why).toContain("ans_0003");
     const st = await status(root);
     expect(st.next_step).toMatchObject({ phase: "interview", command: `semlayer approve --target ${ORDERS}.revenue`, after_owner_yes: true });
     expect((await semlayer(root, ["status"])).out).toContain(`meanwhile, only after the owner says yes to its readback: semlayer approve --target ${ORDERS}.revenue`);
