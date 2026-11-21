@@ -21,6 +21,7 @@ import {
   twoDecimalType,
   type ColumnCurrency,
 } from "./draft.ts";
+import { BRIDGE_SUFFIX } from "./draft-bridge.ts";
 import { UserError } from "./errors.ts";
 import { findTable, qualifiedName, toSpecName } from "./naming.ts";
 import { inScope, matchesPattern, validatePattern } from "./patterns.ts";
@@ -221,7 +222,6 @@ const ENTITY_PREFIXES = ["fct_", "fact_", "dim_", "stg_", "staging_", "raw_", "s
 
 const EVENT_TOKENS = ["event", "events", "log", "logs", "clicks", "pageviews", "sessions", "activity", "activities", "audit", "tracks", "impressions", "visits", "telemetry"];
 const EVENT_COLUMN = /^(event|event_name|event_type|action|activity|verb)$/;
-const BRIDGE_SUFFIX = /_(map|mapping|link|links|xref|bridge|closure|assignments?)$/;
 const SNAPSHOT_SUFFIX = /_(history|snapshots?|scd|versions)$/;
 const HISTORY_COLUMN = /^(valid_from|valid_to|valid_until|effective_from|effective_to|effective_start|effective_end|dbt_valid_from|dbt_valid_to|is_current|is_latest|current_flag|expired_at|superseded_at)$/;
 const SNAPSHOT_DATE_COLUMN = /^(snapshot_date|snapshot_at|snapshot_day|as_of_date|as_of)$/;
