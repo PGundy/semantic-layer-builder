@@ -499,12 +499,13 @@ function yesBacks(r: LedgerReply, e: { hash: string; definitionHash: string }): 
 
 // The answer ledger as approvals read it, built once per command (ledger.ts approvalLedger):
 // whether the project has one at all, and per target its latest answer about its content: the
-// owner's reply (one about who sees it is skipped) or their confirmation of it as it stood
-// (semlayer approve --confirm-existing), at the hash it had then. A ledger that cannot be read
-// is present with no answers, so nothing rests on it.
+// owner's reply (one about who sees it is skipped), their confirmation of it as it stood
+// (semlayer approve --confirm-existing), at the hash it had then, or a revoke of it (semlayer approve
+// --revoke), which backs nothing. A ledger that cannot be read is present with no answers, so
+// nothing rests on it.
 export interface ApprovalLedger {
   present: boolean;
-  latest: Map<string, { reply: LedgerReply } | { confirmed: string }>;
+  latest: Map<string, { reply: LedgerReply } | { confirmed: string } | { revoked: true }>;
   // The ledger cannot be read: validate reports it once (ledger.invalid_json) and backs nothing, so no
   // finding per item repeats it.
   unreadable?: boolean;
@@ -519,7 +520,7 @@ export interface ApprovalLedger {
 export function backed(ledger: ApprovalLedger, e: { ref: string; hash: string; definitionHash: string }): boolean {
   if (!ledger.present) return true;
   const last = ledger.latest.get(e.ref);
-  if (!last) return false;
+  if (!last || "revoked" in last) return false;
   return "confirmed" in last ? last.confirmed === e.hash : yesBacks(last.reply, e);
 }
 
@@ -535,16 +536,25 @@ export function standing(e: ApprovalEntry, projectHashed: boolean, ledger?: Appr
   return state;
 }
 
-// The message for an item whose file says approved but that no recorded yes backs.
-export function unbackedMessage(e: { ref: string; item: Obj }): string {
+// Whether semlayer approve --confirm-existing would take an unbacked item: the confirmation is given
+// once, for items the ledger holds no answer for.
+export function confirmable(ledger: ApprovalLedger, ref: string): boolean {
+  return !ledger.confirmedBefore && !ledger.latest.has(ref);
+}
+
+// The message for an item whose file says approved but that no recorded yes backs. The owner's
+// confirmation is named only where it would take the item (confirmable).
+export function unbackedMessage(e: { ref: string; item: Obj }, ledger: ApprovalLedger): string {
   const by = typeof e.item.approved_by === "string" ? ` by ${e.item.approved_by}` : "";
   return (
     `${e.ref} says it is approved${by}, but no recorded yes from the owner in .semlayer/ledger.jsonl stands behind it as it stands, ` +
     "so every tool treats it as a draft. Read it back and approve it on the owner's yes " +
     `(semlayer readback --targets ${e.ref}, read it to the owner, semlayer reply --readback <id> --item <n> --text "<owner's words>" --verdict yes --by "<owner>", ` +
-    `then semlayer approve --target ${e.ref}), or return it to draft (semlayer approve --revoke --target ${e.ref}). ` +
-    "If the owner approved it before semlayer recorded their yes, they can instead confirm such approvals as they stand, in their name and words: " +
-    'semlayer approve --confirm-existing --by "<owner>" --reply "<owner\'s words>"'
+    `then semlayer approve --target ${e.ref}), or return it to draft (semlayer approve --revoke --target ${e.ref}).` +
+    (confirmable(ledger, e.ref)
+      ? " If the owner approved it before semlayer recorded their yes, they can instead confirm such approvals as they stand, in their name and words: " +
+        'semlayer approve --confirm-existing --by "<owner>" --reply "<owner\'s words>"'
+      : "")
   );
 }
 

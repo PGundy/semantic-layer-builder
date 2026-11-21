@@ -103,8 +103,8 @@ async function acme(elicitation: boolean | Msg = true, extra: string[] = []) {
   await client.init(elicitation);
   const ledger = join(t.root, ".semlayer", "ledger.jsonl");
   const model = join(t.root, "models", "warehouse", "products.yaml");
-  // The lines a test recorded: the example's own confirm line left out.
-  const lines = () => (existsSync(ledger) ? readFileSync(ledger, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Msg) : []).filter((l) => l.kind !== "confirm");
+  // The lines a test recorded: the example's own confirm line and any revoke line left out.
+  const lines = () => (existsSync(ledger) ? readFileSync(ledger, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Msg) : []).filter((l) => l.kind !== "confirm" && l.kind !== "revoke");
   const status = () => readYaml<{ dimensions: Msg[] }>(model).dimensions.find((d) => d.name === "launched_on")!;
   const pending = (id: string) => JSON.parse(readFileSync(join(t.root, ".semlayer", "pending", `${id}.json`), "utf8")) as PendingReadback;
   return { ...t, client, ledger, model, lines, status, pending };

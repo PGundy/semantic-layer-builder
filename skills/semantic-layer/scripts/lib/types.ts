@@ -546,4 +546,14 @@ export interface LedgerConfirm {
   at: string;
 }
 
+// A revoke (semlayer approve --revoke) of items the ledger held a yes or a confirmation for, each at the
+// content hash it had then. It holds no owner words: it withdraws the answers given to each target
+// so far, so approving one again takes a new readback and yes.
+export interface LedgerRevoke {
+  id: string;
+  kind: "revoke";
+  targets: { target: string; content_hash: string }[];
+  at: string;
+}
+
 export type LedgerEntry = LedgerReply | LedgerQuestion;

@@ -213,7 +213,7 @@ Decided by the owner after this plan:
 
 - Every item: a description is inside the approval hash, so editing an approved item's description, other than its spacing, needs the owner's yes again; an item approved before that counts as approved, with a warning, until `semlayer approve --stamp-hashes --confirm-unchanged` records its hash with its description.
 - `semlayer import` records the drift record when it replaces a snapshot, comparing types by family, and a plain import on a source whose snapshot came from the database is refused unless `--replace-snapshot` says the replacement is meant.
-- Every item: an approval counts only while the owner's recorded yes, or their confirmation of it as it stood (`semlayer approve --confirm-existing`), backs it in the committed ledger; a stamp with neither is a draft for every tool and an error in `semlayer validate`, and a project with no ledger keeps its approvals with one warning until the owner confirms them.
+- Every item: an approval counts only while the owner's recorded yes, or their confirmation of it as it stood (`semlayer approve --confirm-existing`), backs it in the committed ledger, and `semlayer approve --revoke` records the withdrawal of both there; a stamp with neither is a draft for every tool and an error in `semlayer validate`, and a project with no ledger keeps its approvals with one warning until the owner confirms them.
 
 Open questions for the owner, put on pull requests and not yet decided:
 
