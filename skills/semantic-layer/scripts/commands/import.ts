@@ -2,6 +2,7 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
+import { writeDrift } from "../lib/drift-record.ts";
 import { projectEntries } from "./baseline.ts";
 import { type DbtEdits, toEdits } from "../lib/dbt-edits.ts";
 import { UserError } from "../lib/errors.ts";
@@ -130,7 +131,7 @@ const spec: CommandSpec = {
   summary: "Build the snapshot from a schema export, a dbt manifest or DDL.",
   usage:
     "import --source <source> [--file <path>] [--format information_schema|dbt_manifest|ddl] [--catalog <catalog.json>]\n" +
-    "       [--include <pattern>]... [--exclude <pattern>]... [--semantic [--emit <file>]]\n\n" +
+    "       [--include <pattern>]... [--exclude <pattern>]... [--semantic [--emit <file>]] [--replace-snapshot]\n\n" +
     "  --file is optional for an export source whose intake.export.file names the export (read from the semantic root).\n" +
     "  When the source file's intake.schemas lists schemas, only their tables are kept; the rest are dropped and counted.\n\n" +
     "  --format is read from the file when left out: a .sql file is ddl, a JSON object with nodes is dbt_manifest,\n" +
@@ -149,6 +150,10 @@ const spec: CommandSpec = {
     "                      was skipped, with a reason for each. It reads only; no layer file is written. When the source's snapshot\n" +
     "                      was taken from the database, that snapshot is kept (not replaced by the manifest's) and the models are\n" +
     "                      placed against its tables.\n\n" +
+    "  --replace-snapshot  a source whose snapshot was taken from the database (semlayer introspect) is not replaced by a file's: a plain\n" +
+    "                      import is refused, writing nothing, because the file usually holds fewer keys and less exact types. Pass this when\n" +
+    "                      the file really is meant to replace it. A source with no snapshot, an export source and a snapshot made from a\n" +
+    "                      file are imported as before. A replaced snapshot is recorded in .semlayer/drift.json as semlayer introspect does.\n\n" +
     "  --emit <file>       with --semantic, also write the manifest's dimensions, measures, joins and metrics as typed edits for\n" +
     "                      models already drafted, ready for semlayer apply --file <file>. Every edit is a draft described as from\n" +
     "                      the dbt manifest; a join is inferred. Names already in the layer are left as they are and listed, as is each\n" +
@@ -161,6 +166,7 @@ const spec: CommandSpec = {
     include: { type: "string", multiple: true },
     exclude: { type: "string", multiple: true },
     semantic: { type: "boolean" },
+    "replace-snapshot": { type: "boolean" },
     emit: { type: "string" },
   },
   writes: "whole",
@@ -222,6 +228,9 @@ const spec: CommandSpec = {
     // Tables dropped here are counted in their own line, not again as lost from the previous snapshot.
     const counted = new Set(left.removed.map((t) => qualifiedName(t).toLowerCase()));
     let filters: { include: string[]; exclude: string[]; kept: number; dropped: number } | null = null;
+    if (keep && values["replace-snapshot"] === true) {
+      warnings.push("--replace-snapshot was not used: --semantic keeps the snapshot from the database. Rerun without --semantic to replace it with the file's.");
+    }
     if (keep && (include.length || exclude.length)) {
       warnings.push("--include and --exclude were not applied: no snapshot was written, so there is nothing to narrow. Narrow the scope with semlayer scope instead.");
     } else if (include.length || exclude.length) {
@@ -240,7 +249,23 @@ const spec: CommandSpec = {
       }
       filters = { include, exclude, kept: snapshot.tables.length, dropped: read - snapshot.tables.length };
     }
-    const diff = previous && !keep ? diffSnapshots(previous, snapshot) : null;
+    // A database snapshot holds keys, exact types and row estimates a file usually lacks: replacing it is deliberate.
+    if (!keep && previous?.method === "live" && intakeMode(source) !== "export" && values["replace-snapshot"] !== true) {
+      const keys = (s: Snapshot) => ({ pk: s.tables.filter((t) => (t.primary_key ?? []).length).length, fk: s.tables.reduce((n, t) => n + (t.foreign_keys ?? []).length, 0) });
+      const had = keys(previous);
+      const has = keys(snapshot);
+      const s = source.source;
+      throw new UserError(
+        `Nothing was written: the snapshot of "${s}" was read from the database (${previous.tables.length} tables, ${had.pk} with a primary key, ${had.fk} foreign keys) and ${shown} would replace it ` +
+          `(${snapshot.tables.length} tables, ${has.pk} with a primary key, ${has.fk} foreign keys); drafts, join checks and validation read those keys and exact types. ` +
+          `To refresh from the database run \`semlayer introspect --source ${s}\`; ` +
+          `${used === "dbt_manifest" ? "to read only the manifest's semantic models and metrics and keep the snapshot, rerun the same command with --semantic; " : ""}` +
+          `if the file is meant to replace the snapshot, rerun the same command with --replace-snapshot.`,
+        `semlayer introspect --source ${s}`,
+        "snapshot_from_database",
+      );
+    }
+    const diff = previous && !keep ? diffSnapshots(previous, snapshot, { byFamily: previous.method !== snapshot.method }) : null;
     const loadModels = () => listModels(ctx.root, source.source).map((l) => l.model);
     const scopeChanges = recordScope(previous, snapshot, selectionMatcher(source, scope), loadModels);
     const changes = diff && scopeChanges ? { ...diff, ...scopeChanges } : null;
@@ -252,6 +277,8 @@ const spec: CommandSpec = {
         `${dropped.length} table${dropped.length === 1 ? " in the previous snapshot is" : "s in the previous snapshot are"} not in this import and ${dropped.length === 1 ? "was" : "were"} dropped: ${dropped.slice(0, 5).join(", ")}${dropped.length > 5 ? ", ..." : ""}.`,
       );
     }
+    // The drift record is written first, so a refusal there leaves the snapshot as it was.
+    if (diff) writeDrift(ctx.root, { source: source.source, dialect: source.dialect, snapshot, diff, at: ctx.now().toISOString(), unreadable: [], methods: { from: previous!.method, to: snapshot.method }, models: loadModels });
     if (!keep) saveSnapshot(ctx.root, snapshot);
     // The snapshot the layer reads: the one kept, else the one just written.
     const current = keep ?? snapshot;

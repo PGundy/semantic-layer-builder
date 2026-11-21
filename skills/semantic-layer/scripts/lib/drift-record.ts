@@ -1,5 +1,5 @@
 // The drift record, .semlayer/drift.json under the semantic root (spec: Iterating a layer, The drift
-// record). semlayer introspect keeps in it, per source, the last change it found against the previous
+// record). semlayer introspect keeps in it (semlayer import writes it too, for a snapshot replaced from a file), per source, the last change it found against the previous
 // snapshot and the retyped columns an approved field reads, each with the field's hash and the owner's
 // latest yes to it when the change was found. A retyped column stays open for a field until the field
 // is edited (its hash changes) or approved again (a newer yes); semlayer validate warns
@@ -42,6 +42,9 @@ export interface SourceDrift {
   // The last introspect that found a change, and that change.
   at: string;
   diff: SnapshotDiff;
+  // Where the snapshot before and after that change came from (the snapshots' `method`), so a reader can
+  // tell a schema change from a change of source. Absent in a record written before it was kept.
+  methods?: { from: string; to: string };
   // The tables of diff.tables_removed that the database still holds but the role cannot read.
   unreadable?: string[];
   // Retyped columns an approved field still reads as it was approved, by table and column.
@@ -158,6 +161,8 @@ export interface DriftInput {
   at: string;
   // The relations, schema.name, the role cannot read.
   unreadable: string[];
+  // The snapshot methods before and after, when the run knows them.
+  methods?: { from: string; to: string };
   // The source's models; a function that throws (a model file that does not parse) counts as none.
   models: () => readonly Model[];
 }
@@ -198,6 +203,7 @@ export function nextEntry(previous: SourceDrift | undefined, input: DriftInput, 
     source: input.source,
     at: changed ? input.at : previous!.at,
     diff: changed ? input.diff : previous!.diff,
+    ...((changed ? input.methods : previous!.methods) ? { methods: changed ? input.methods : previous!.methods } : {}),
     ...(unreadable.length ? { unreadable } : {}),
     retyped,
   };
@@ -208,7 +214,7 @@ function assertInside(root: string): void {
   const dir = join(root, ".semlayer");
   if (!lstatSync(dir, { throwIfNoEntry: false })) return;
   const why = `Refusing to write ${DRIFT_FILE}: .semlayer`;
-  const fix = "Nothing was written, the snapshot included. Replace the link with a directory inside the semantic root and rerun semlayer introspect.";
+  const fix = "Nothing was written, the snapshot included. Replace the link with a directory inside the semantic root and rerun the command.";
   if (!existsSync(dir)) throw new UserError(`${why} is a symbolic link to nothing. ${fix}`);
   const r = realpathSync(root);
   const p = realpathSync(dir);

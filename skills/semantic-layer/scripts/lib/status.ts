@@ -824,7 +824,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch" | "laye
       source: s,
       message:
         `The snapshot of "${s}" holds no tables. Check that the connection or the imported file covers the schemas the owner means, ` +
-        `then introspect again or import with semlayer import --source ${s}.`,
+        `then introspect again, or import a file with semlayer import --source ${s} --file <file>${empty.runnable ? " --replace-snapshot" : ""}.`,
       action: act("introspect", ["--source", s, ...(empty.runnable ? [] : ["--emit-sql"])]),
     };
   }
