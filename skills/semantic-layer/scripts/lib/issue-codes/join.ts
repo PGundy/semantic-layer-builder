@@ -35,8 +35,8 @@ const codes: CodeFamily = {
   },
   "join.through_facts_unbridged": {
     level: "warning",
-    meaning: "The bridge evidence of a bridge join shows rows of the model with no bridge row, so a figure grouped by the target shows them under an empty value or leaves them out.",
-    next: "semlayer check-join",
+    meaning: "The bridge evidence of a bridge join shows rows of the model with no bridge row, so a figure grouped by the target shows them under an empty value or leaves them out, and the join is not approved on a readback that stated that count.",
+    next: "semlayer readback",
   },
   "join.through_filter_ungrouped": {
     level: "error",

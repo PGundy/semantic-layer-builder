@@ -357,6 +357,19 @@ describe("the texts behind the walkthrough's mistakes", () => {
     expect(help.out).not.toContain("A list is written a,b.");
   });
 
+  test("the model-level filter refusal says the entries add to a measure's filter and names replace and segment", async () => {
+    const r = await semlayer(root, ["set", "warehouse.refunds", "filter", "reason <> 'test'"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("ADD the rule to each measure's existing filter");
+    expect(r.err).toContain("a rule that is new");
+    expect(r.err).toContain('semlayer set <source>.<model>.<measure> filter "<the whole new rule>"');
+    expect(r.err).toContain('semlayer add-segment --source <source> --model <model> --name <segment> --filter "<rule>"');
+    expect(r.err).toContain("segments '[<segment>]'");
+    expect(r.err.length).toBeLessThan(1700);
+    const j = await semlayer(root, ["set", "warehouse.refunds", "filter", "reason <> 'test'", "--json"]);
+    expect(j.code).toBe(1);
+  });
+
   test("a model-level filter is refused with the one semlayer apply that puts the rule on each measure", async () => {
     const r = await semlayer(root, ["set", "warehouse.refunds", "filter", "reason <> 'test'"]);
     expect(r.code).toBe(1);
