@@ -6,6 +6,7 @@ import { readDbtSemantic } from "../skills/semantic-layer/scripts/lib/importers/
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { Model } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { approveWithYes, duckdbSource, initProject, semlayer, tempDir, tempRoot } from "./helpers.ts";
+import { runCli } from "../skills/semantic-layer/scripts/lib/cli.ts";
 
 const RAW = readFileSync(join(import.meta.dir, "fixtures", "imports", "dbt", "manifest-semantic.json"), "utf8");
 // The fixture's tables in schema main, where a DuckDB file keeps them.
@@ -397,5 +398,125 @@ describe("manifest text is data", () => {
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
     expect(JSON.stringify(sem)).toBe(frozen);
     expect(a.edits.length).toBeGreaterThan(5);
+  });
+});
+
+describe("--emit from the project folder, with the semantic root one folder below", () => {
+  // The CLI as a person runs it: the working directory is the project folder, the root is ./semantic.
+  const fromProject = async (p: Project, to: string) => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await runCli(["import", "--source", "acme", "--file", p.manifest, "--semantic", "--emit", to, "--root", p.root], {
+      cwd: p.dir,
+      env: { SEMLAYER_NOW: "2026-01-15T12:00:00Z" },
+      out: (t) => out.push(t),
+      err: (t) => err.push(t),
+    });
+    return { code, out: out.join("\n"), err: err.join("\n") };
+  };
+
+  test("a refused path names one that works from that folder, and that path is then written", async () => {
+    const p = await project();
+    const refused = await fromProject(p, "edits.json");
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain("is outside the semantic root");
+    expect(refused.err).toContain("such as --emit semantic/edits.json.");
+    expect(existsSync(join(p.dir, "edits.json"))).toBe(false);
+    const written = await fromProject(p, "semantic/edits.json");
+    expect(written.err).toBe("");
+    expect(written.code).toBe(0);
+    expect(edits(p).length).toBeGreaterThan(0);
+  });
+});
+
+
+describe("import --semantic keeps a snapshot taken from the database", () => {
+  const snapFile = (p: Project) => join(p.root, "snapshots", "acme.json");
+  const introspect = async (p: Project) => {
+    const r = await semlayer(p.root, ["introspect", "--source", "acme"]);
+    expect(r.code).toBe(0);
+    return readFileSync(snapFile(p), "utf8");
+  };
+
+  test("the snapshot stays byte for byte, the kept line replaces the imported line, and status still says live", async () => {
+    const p = await project();
+    const before = await introspect(p);
+    expect(JSON.parse(before).method).toBe("live");
+    const r = await semlayer(p.root, ["import", "--source", "acme", "--file", p.manifest, "--semantic"]);
+    expect(r.code).toBe(0);
+    expect(readFileSync(snapFile(p), "utf8")).toBe(before);
+    expect(r.out).toContain("Kept the snapshot from the database (snapshots/acme.json: 2 tables");
+    expect(r.out).toContain("only the manifest's semantic models and metrics were read.");
+    expect(r.out).not.toMatch(/Imported \d+ tables? and/);
+    expect(r.out).not.toContain("into snapshots/");
+    expect(r.out).not.toContain("Changes since the previous snapshot");
+    expect(r.out).toContain("Read 3 semantic models");
+    const s = await semlayer(p.root, ["status"]);
+    expect(s.out).toContain("snapshot: live");
+    expect(s.out).not.toContain("snapshot: dbt_manifest");
+  });
+
+  test("a model whose table the database lacks is judged against the kept snapshot", async () => {
+    const p = await project({ mutate: (m) => { m.semantic_models["semantic_model.acme_demo.customers"].node_relation.relation_name = '"acme"."main"."gone"'; m.semantic_models["semantic_model.acme_demo.customers"].node_relation.alias = "gone"; } });
+    await introspect(p);
+    const r = (await semlayer(p.root, ["import", "--source", "acme", "--file", p.manifest, "--semantic", "--json"])).json<{ semantic: { outside: { name: string; reason: string }[] } }>();
+    const gone = r.semantic.outside.find((x) => x.name === "customers");
+    expect(gone?.reason).toContain("main.gone is not in the imported snapshot");
+  });
+
+  test("with --emit: the edits are written, apply adds the drafts, validate has no errors, the snapshot is unchanged", async () => {
+    const p = await project();
+    const before = await introspect(p);
+    const r = await importEmit(p);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Kept the snapshot from the database");
+    expect(edits(p).length).toBeGreaterThan(0);
+    expect(readFileSync(snapFile(p), "utf8")).toBe(before);
+    expect((await semlayer(p.root, ["apply", "--file", "edits.json"])).code).toBe(0);
+    const v = await semlayer(p.root, ["validate", "--json"]);
+    expect(v.code).toBe(0);
+    expect(model(p, "orders").measures.length).toBeGreaterThan(0);
+    expect(readFileSync(snapFile(p), "utf8")).toBe(before);
+  });
+
+  test("a source with no snapshot builds one from the manifest, and without --semantic the introspected snapshot is replaced", async () => {
+    const none = await project();
+    expect(existsSync(snapFile(none))).toBe(false);
+    const r = await semlayer(none.root, ["import", "--source", "acme", "--file", none.manifest, "--semantic"]);
+    expect(r.out).toMatch(/Imported 3 tables and \d+ columns .* into snapshots\/acme\.json\./);
+    expect(r.out).not.toContain("Kept the snapshot");
+    expect(JSON.parse(readFileSync(snapFile(none), "utf8")).method).toBe("dbt_manifest");
+    // A snapshot that came from a file is replaced too.
+    const again = await semlayer(none.root, ["import", "--source", "acme", "--file", none.manifest, "--semantic"]);
+    expect(again.out).toMatch(/Imported 3 tables/);
+
+    const live = await project();
+    const before = await introspect(live);
+    const plain = await semlayer(live.root, ["import", "--source", "acme", "--file", live.manifest]);
+    expect(plain.out).toMatch(/Imported 3 tables and \d+ columns .* into snapshots\/acme\.json\./);
+    expect(readFileSync(snapFile(live), "utf8")).not.toBe(before);
+    expect(JSON.parse(readFileSync(snapFile(live), "utf8")).method).toBe("dbt_manifest");
+  });
+
+  test("--json holds snapshot_kept, the kept snapshot's counts, and no secret or outside path", async () => {
+    const p = await project();
+    await introspect(p);
+    const r = await semlayer(p.root, ["import", "--source", "acme", "--file", p.manifest, "--semantic", "--json"]);
+    expect(r.code).toBe(0);
+    const j = r.json<Record<string, any>>();
+    expect(j.snapshot_kept).toBe(true);
+    expect(j.method).toBe("live");
+    expect(j.tables).toBe(2);
+    expect(j.columns).toBeGreaterThan(0);
+    expect(j.dropped).toEqual({ tables: 0, schemas: [] });
+    expect(j.changes).toBeNull();
+    expect(j.semantic.counts.semantic_models).toBe(3);
+    for (const k of ["source", "format", "format_detected", "primary_keys", "foreign_keys", "warnings", "next"]) expect(j).toHaveProperty(k);
+    expect(r.out).not.toContain(p.dir);
+    expect(r.out).not.toMatch(/password|secret|token/i);
+    // Not kept: the field is absent.
+    const none = await project();
+    const n = (await semlayer(none.root, ["import", "--source", "acme", "--file", none.manifest, "--semantic", "--json"])).json<Record<string, unknown>>();
+    expect(n).not.toHaveProperty("snapshot_kept");
   });
 });
