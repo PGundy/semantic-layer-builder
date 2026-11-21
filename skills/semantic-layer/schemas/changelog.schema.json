@@ -45,6 +45,16 @@
                 "changed": { "type": "integer", "minimum": 0, "description": "Cells that differ." }
               }
             }
+          },
+          "goldens_unconfirmed": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Goldens the last entry recorded that are drafts at this release (returned to draft with semlayer goldens unconfirm, their figures not confirmed as they stand), so this entry leaves them out. Absent when there are none."
+          },
+          "goldens_removed": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Goldens the last entry recorded whose file is gone at this release (semlayer goldens remove), so this entry leaves them out. Absent when there are none."
           }
         }
       }

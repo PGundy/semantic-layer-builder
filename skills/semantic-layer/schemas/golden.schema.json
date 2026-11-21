@@ -240,6 +240,11 @@
       "description": "ISO date of confirmation. Required when approved.",
       "format": "date"
     },
+    "unconfirmed_yes": {
+      "type": "string",
+      "pattern": "^ans_[0-9]{4,}$",
+      "description": "Written by semlayer goldens unconfirm: the id of the owner's latest reply to the golden when it was returned to draft, a yes to figures it may no longer have, on which semlayer next offers no confirm. Removed by semlayer goldens confirm."
+    },
     "confirmed_as": {
       "type": "object",
       "description": "The role and user the golden ran as when it was confirmed, written by semlayer goldens confirm; semlayer validate warns when role or user now differ.",

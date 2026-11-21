@@ -37,6 +37,17 @@ export function leftOut(ref: string, v: ItemState, baseline: Record<string, stri
   return !v.approved && v.plain && !Object.hasOwn(baseline, ref);
 }
 
+// The goldens a release leaves out though the last one recorded them (its `goldens`, none before the first),
+// as leftOut leaves out a draft item: `unconfirmed` holds those whose file holds a draft golden now (returned
+// to draft with semlayer goldens unconfirm, its new figures not yet confirmed), `removed` those whose file is gone.
+// A golden confirmed now is in the release; one the last release did not record is not named. Sorted.
+export function goldensLeftOut(root: string, recorded: Record<string, unknown>): { unconfirmed: string[]; removed: string[] } {
+  const now = new Map<string, unknown>();
+  for (const { golden: g } of listGoldens(root)) if (g && typeof g === "object" && typeof g.name === "string") now.set(g.name, g.status);
+  const names = Object.keys(recorded).sort();
+  return { unconfirmed: names.filter((n) => now.has(n) && now.get(n) !== "approved"), removed: names.filter((n) => !now.has(n)) };
+}
+
 // Whether semlayer next lets the close go ahead without the item: the close leaves it out (leftOut) and it was
 // already a draft when the round started, so the owner deferred it. `atStart` is the round's drafts_at_start,
 // or null when no round is open. A draft created in the round is read back before the close is offered.

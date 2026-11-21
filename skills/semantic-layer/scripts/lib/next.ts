@@ -1,24 +1,24 @@
 // The one next action of the skill (semlayer next): semlayer status's next step, read together with the answer
 // ledger, the pending readbacks and the stored query plans. It reads files only and writes nothing.
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { approvalLacks, type Lack, lacksFile, lacksNote } from "./approve-checks.ts";
 import { loadChange, releaseLead } from "./change-record.ts";
 import { inTurnApply } from "./edit.ts";
 import { type Env, resolveConnection } from "./env-file.ts";
 import { intakeMode } from "./intake.ts";
-import { latestReply, openAccessChanges } from "./ledger.ts";
-import { deferredAtStart } from "./changeset.ts";
+import { currentYes, latestReply, openAccessChanges } from "./ledger.ts";
+import { changeSince, deferredAtStart } from "./changeset.ts";
 import { loadChangelog } from "./release.ts";
 import { plainText } from "./output.ts";
 import { PLAN_ID_PATTERN, planStatus, loadStoredPlan } from "./plan.ts";
 import { loadSnapshot, loadSource, paths } from "./project.ts";
 import { PENDING_DIR } from "./readback.ts";
+import { answered, hashNow, openReadbacks, pendingReadbacks } from "./readback-open.ts";
 import { APPLY_COMMANDS } from "./roles.ts";
 import { act, actionText, flagValue, liveRunnable, type ProjectStatus, type StatusDetail, type StepAction, statusDetail } from "./status.ts";
-import type { Golden, LedgerReply, PendingReadback, ReadbackItem, SourceConfig } from "./types.ts";
+import type { Golden, LedgerReply, ReadbackItem, SourceConfig } from "./types.ts";
 import { inScope } from "./patterns.ts";
-import { schemaIssues } from "./schema.ts";
 import { effectiveScope } from "./table-list.ts";
 import { type SchemaAnswer, type SchemaQuestion, schemaAnswers, schemaQuestion, schemaQuestionArgs, schemaQuestionText } from "./schema-scope.ts";
 import { readYaml } from "./yaml.ts";
@@ -96,27 +96,20 @@ const ACCESS_EDITS =
   "semlayer add-role, semlayer add-restriction, semlayer add-row-filter, semlayer add-attribute, semlayer set access role:<name> <key> <value> (also restriction:<name>, attribute:<name>, mode, default_role), " +
   "semlayer tag <ref> pii|sensitive, or semlayer remove-role, semlayer remove-restriction, semlayer remove-row-filter, semlayer remove-attribute";
 
-// A target's content hash as it now stands, or null when it no longer exists. A golden's hash covers
-// rows only a run gives, so while its file exists the hash a readback stored stands, as semlayer reply reads it.
-function hashNow(root: string, d: StatusDetail, target: string, stored: string): string | null {
-  const golden = /^golden:([a-z][a-z0-9_]*)$/.exec(target)?.[1];
-  if (golden) return existsSync(paths(root).golden(golden)) ? stored : null;
-  return d.targets.get(target)?.hash ?? null;
-}
-
-// Whether the owner's latest reply to the target, in any readback, gave a verdict on it with this
-// content hash. A later reply without a verdict, or one to other content, leaves the target open: the
-// one rule approval, the declined check, the open items and the done readbacks all read.
-function answered(replies: LedgerReply[], target: string, hash: string | null): boolean {
-  const r = latestReply(replies, target);
-  return !!r && r.verdict !== null && r.content_hash === hash;
-}
-
 // A golden's source config, or undefined when the golden names none or it cannot be read.
 function goldenSource(root: string, name: string): SourceConfig | undefined {
   try {
     const source = readYaml<Golden>(paths(root).golden(name)).request?.source;
     return source ? loadSource(root, source) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// The owner's reply a golden returned to draft set aside (semlayer goldens unconfirm writes its id), on which no confirm is offered.
+function unconfirmedYes(root: string, name: string): string | undefined {
+  try {
+    return readYaml<Golden>(paths(root).golden(name)).unconfirmed_yes;
   } catch {
     return undefined;
   }
@@ -162,7 +155,7 @@ function approvalReady(root: string, d: StatusDetail): NextAction | undefined {
     const t = d.targets.get(target);
     const golden = target.startsWith("golden:") ? target.slice(7) : undefined;
     if (golden !== undefined) {
-      if (!existsSync(paths(root).golden(golden)) || t?.hash === r.content_hash) continue;
+      if (!existsSync(paths(root).golden(golden)) || t?.hash === r.content_hash || unconfirmedYes(root, golden) === r.id) continue;
       // An export source's golden confirm refuses (Decision D2): the yes stays in the ledger for after
       // the upgrade, and semlayer status's connect step names that upgrade.
       const source = goldenSource(root, golden);
@@ -208,24 +201,6 @@ function approvalReady(root: string, d: StatusDetail): NextAction | undefined {
   return undefined;
 }
 
-// The readbacks in .semlayer/pending/, oldest first; a file that is not a valid readback is skipped (semlayer validate reports it).
-function pendingReadbacks(root: string): PendingReadback[] {
-  const dir = join(root, PENDING_DIR);
-  if (!existsSync(dir)) return [];
-  const ids = readdirSync(dir)
-    .map((f) => /^(rb_(\d{4,}))\.json$/.exec(f))
-    .filter((m): m is RegExpExecArray => !!m)
-    .sort((a, b) => Number(a[2]) - Number(b[2]));
-  return ids.flatMap((m) => {
-    try {
-      const data = JSON.parse(readFileSync(join(dir, m[0]), "utf8")) as PendingReadback;
-      return schemaIssues("pending", data, m[0]).length || data.readback_id !== m[1] ? [] : [data];
-    } catch {
-      return [];
-    }
-  });
-}
-
 // Owner text quoted as data in a why: plain, on one line, cut at 200 characters.
 function quoted(text: string): string {
   const t = plainText(text).replace(/\s+/g, " ").trim();
@@ -244,9 +219,8 @@ function declinedReply(d: StatusDetail, target: string, hash: string | null): Le
 
 // The oldest readback with items the owner has not answered, each still as it was read back.
 function askOwner(root: string, d: StatusDetail): NextAction | undefined {
-  for (const p of pendingReadbacks(root)) {
-    const current = p.items.filter((i) => hashNow(root, d, i.target, i.content_hash) === i.content_hash);
-    const open = current.filter((i) => !answered(d.replies, i.target, i.content_hash));
+  // An item a newer readback of the same target settled on the owner's recorded reply is not asked again.
+  for (const { readback: p, current, open } of openReadbacks(root, d.targets, d.replies)) {
     if (!open.length) continue;
     const text = open.map((i) => `${i.n}. ${plainText(i.text).split("\n").join("\n   ")}`).join("\n\n");
     // An item whose who-sees the owner asked to change still waits for a yes to the item itself.
@@ -410,7 +384,7 @@ function fromStatus(root: string, d: StatusDetail): NextAction {
   if (step.phase === "change") return changeAction(root, d, step, blocked_on);
   if (step.phase !== "done") return fromAction(step.action, step.phase, step.message, blocked_on);
   // A golden's hash as it stands comes from rows only a run gives, so any verdict to it while its file exists counts.
-  const refs = st.approved_without_yes.filter((ref) => !answered(d.replies, ref, hashNow(root, d, ref, latestReply(d.replies, ref)?.content_hash ?? "")));
+  const refs = st.approved_without_yes.filter((ref) => !answered(d.replies, ref, hashNow(root, d.targets, ref, latestReply(d.replies, ref)?.content_hash ?? "")));
   if (refs.length) {
     const items = refs.filter((r) => !r.startsWith("golden:"));
     const batch = items.length ? items.slice(0, BACKFILL_BATCH) : refs.slice(0, 1);
@@ -455,6 +429,15 @@ function changeAction(root: string, d: StatusDetail, step: ProjectStatus["next_s
       blocked_on,
     );
   }
+  // Goldens that read a changed item and rest on a yes older than the change: the close reruns them, so the
+  // step names them and the check to run first; one whose figures did not move needs no new yes.
+  const unsettled = last ? unsettledGoldens(root, d, last.items) : [];
+  const shown = unsettled.slice(0, BACKFILL_BATCH);
+  const goldensText = unsettled.length
+    ? ` Before asking for the version, run semlayer goldens check: ${unsettled.length} confirmed golden(s) read an item the round changed and have not been confirmed since (${shown.join(", ")}${unsettled.length > shown.length ? ", and more" : ""}). ` +
+      "One that passes needs nothing. One whose figures moved is settled by the owner's yes to the new rows (semlayer readback --targets golden:<g>, showing the old and the new figures, then semlayer goldens confirm --name <g>) or, " +
+      "when the owner cannot check the new figures now, by semlayer goldens unconfirm --name <g>, which returns it to draft so the release leaves it out. The close refuses while one that moved is still confirmed on the old figures."
+    : "";
   const [major, minor] = (last?.version ?? "1.-1").split(".").map(Number) as [number, number];
   const suggested = `${major}.${minor + 1}`;
   const left = [...d.targets].filter(([ref, t]) => !ref.startsWith("golden:") && deferredAtStart(ref, { hash: t.hash, approved: false, plain: t.state === "draft" && !t.stamped }, baseline, atStart)).map(([ref]) => ref).sort();
@@ -467,9 +450,30 @@ function changeAction(root: string, d: StatusDetail, step: ProjectStatus["next_s
     `${step.message} Every item the round added or changed is approved; a draft the owner deferred before the round stays out of the release, and the summary to the owner names it. The last step closes the round as a release with the version the owner chooses: ` +
       `ask them first ("The change is ready to release${last ? `; the layer is at ${last.version}` : ""}. Which version should it be? I suggest ${suggested}` +
       `${last ? ` (a large change could be ${major + 1}.0)` : ""}; say if you prefer another."), then run semlayer change close --version <their version>. ` +
-      "It records the release in changelog.yaml and sets layer_version, or refuses, naming each item, error or moved golden that must be settled first." + leftText,
+      "It records the release in changelog.yaml and sets layer_version, or refuses, naming each item, error or moved golden that must be settled first." + leftText + goldensText,
     blocked_on,
   );
+}
+
+// The confirmed goldens that read an item changed since the last release (its `affected_goldens`) and rest on
+// no owner yes given after the yes to that item, sorted. Read from the ledger only, with no query: the reply ids
+// rise in the order they were recorded, so a golden's yes (to it as it stands) newer than the item's settles it.
+// A golden returned to draft is settled: the release leaves it out. A golden semlayer can never run here (an
+// export source, a dialect it does not connect to, no connection named) is left out, as the close lists it as not rerun.
+function unsettledGoldens(root: string, d: StatusDetail, items: Record<string, string>): string[] {
+  const seq = (r: LedgerReply | undefined) => (r ? Number(/(\d+)$/.exec(r.id)?.[1] ?? 0) : 0);
+  const out = new Set<string>();
+  for (const c of changeSince(root, items).changed) {
+    const itemYes = seq(currentYes(d.replies, c.ref, d.targets.get(c.ref)?.hash ?? ""));
+    for (const g of c.affected_goldens) {
+      const t = d.targets.get(`golden:${g}`);
+      const source = goldenSource(root, g);
+      if (!t || !source || !liveRunnable(source)) continue;
+      const own = seq(currentYes(d.replies, `golden:${g}`, t.hash));
+      if (!own || own <= itemYes) out.add(g);
+    }
+  }
+  return [...out].sort();
 }
 
 // The schema question of semlayer status's scope step, when that is the step: ask_owner with the

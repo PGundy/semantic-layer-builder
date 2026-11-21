@@ -7,7 +7,7 @@ import { readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import type { AccessFile, Golden, MetricsFile, Model, Project, Snapshot, SnapshotTable, SourceConfig } from "../types.ts";
-import type { IdentRules, JoinRef, Reporting, SqlRole } from "../validate.ts";
+import type { IdentRules, Issue, JoinRef, Reporting, SqlRole } from "../validate.ts";
 
 // A file the Validator has read: its path relative to the semantic root, its stem, its parsed data
 // and whether it passed its JSON Schema.
@@ -31,6 +31,8 @@ export interface RuleContext extends Reporting {
   readonly metrics: LoadedFile<MetricsFile> | undefined;
   readonly access: LoadedFile<AccessFile> | undefined;
   readonly goldens: readonly LoadedFile<Golden>[];
+  // The issues reported so far: lib/validate.ts's checks, then the rule modules before this one.
+  readonly issues: readonly Issue[];
   // The snapshot table of a source by name; snapshot is false when the source has no usable snapshot.
   snapshotTable(source: string, table: string): { snapshot: boolean; table?: SnapshotTable };
   // How the source's SQL resolves an identifier against its snapshot's column names.

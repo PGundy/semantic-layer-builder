@@ -1,6 +1,7 @@
 import type { CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
 import { DEMO_NOTE, isDemo } from "../lib/demo.ts";
+import { noMetricsLine } from "../lib/no-metrics.ts";
 import { formatJson } from "../lib/output.ts";
 import { computeStatus, MIN_APPROVED_GOLDENS, preview, rowFilterJoinItems, type ApprovalCount, type ProjectStatus, type SourceStatus } from "../lib/status.ts";
 
@@ -88,6 +89,7 @@ function render(st: ProjectStatus): string {
   if (st.hash_missing.length) lines.push(`approved without approved_hash while others carry one: ${preview(st.hash_missing, 8)}`);
   if (st.approved_without_yes.length) lines.push(`approved without a recorded owner yes (they stay approved): ${preview(st.approved_without_yes, 8)}`);
   if (st.draft_metrics.length) lines.push(`draft metrics: ${st.draft_metrics.join(", ")}`);
+  if (st.no_metrics) lines.push(noMetricsLine(st.no_metrics));
   if (st.draft_goldens.length) lines.push(`draft goldens: ${st.draft_goldens.join(", ")}`);
   if (st.roles_without_goldens.length) lines.push(`roles without an approved golden: ${st.roles_without_goldens.join(", ")}`);
   if (st.row_filter_joins_without_goldens.length) {

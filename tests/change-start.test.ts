@@ -204,9 +204,12 @@ describe("phase change", () => {
     const id = rb.json<{ readback_id: string }>().readback_id;
     for (const n of [1, 2]) expect((await semlayer(root, ["reply", "--readback", id, "--item", String(n), "--text", "yes", "--verdict", "yes", "--by", "Sam"])).code).toBe(0);
     for (const t of ["warehouse.orders.revenue", "metric:revenue_per_item"]) expect((await semlayer(root, ["approve", "--target", t])).code).toBe(0);
+    // Every item is approved: the close is offered, and its why names the confirmed goldens that read revenue.
     const a = await next(root);
     expect(a.phase).toBe("change");
     expect(a.action.command).toBe("change");
+    expect(a.why).toContain("run semlayer goldens check");
+    expect(a.why).toContain("semlayer readback --targets golden:<g>");
     const st = (await semlayer(root, ["change", "status", "--json"])).json<{ added: string[]; changed: { ref: string; state: string }[] }>();
     expect(st.added).toContain("metric:revenue_per_item");
     expect(st.changed.map((c) => `${c.ref} ${c.state}`)).toContain("warehouse.orders.revenue approved");

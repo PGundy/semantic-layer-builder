@@ -39,12 +39,13 @@ import { listGoldens, loadAccess, loadFile, loadMetrics, loadSource, paths, stem
 import type { Golden, GoldenRunAs, LedgerReply, Metric, Model, PlanResults, QueryPlan, ResultRows, SourceConfig } from "../lib/types.ts";
 import { NAME_PATTERN } from "../lib/types.ts";
 import { schemaIssues } from "../lib/schema.ts";
+import { removeGolden, unconfirmGolden } from "../lib/golden-edits.ts";
 import { parseYamlText, readJson, readYaml, updateYaml, writeYaml } from "../lib/yaml.ts";
 
 export const MAX_CONFIRM_ROWS = 200;
 export { DEFAULT_TOLERANCE };
 
-const SUBCOMMANDS = ["run", "confirm", "check", "new"] as const;
+const SUBCOMMANDS = ["run", "confirm", "check", "new", "unconfirm", "remove"] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
 
 export interface GoldenCheck {
@@ -505,6 +506,12 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
   }
   // Without --tolerance, the tolerance the owner's latest reply heard in its readback.
   const reply = latestReply(readReplies(ctx.root), `golden:${golden.name}`);
+  if (reply && golden.unconfirmed_yes === reply.id) {
+    throw new UserError(
+      `Cannot confirm golden:${golden.name}: the owner's yes ${reply.id} is the one semlayer goldens unconfirm set aside; nothing was recorded. ` +
+        `Next: ${confirmSteps(golden.name, passedFlags(values))}.`,
+    );
+  }
   const heard = parsed.from === "flag" ? undefined : readbackTolerance(ctx.root, reply);
   const { tolerance, from: toleranceFrom } = heard === undefined || heard === parsed.tolerance ? parsed : { tolerance: heard, from: "readback" as const };
   const { rows, mask: runMask } = await runGolden(ctx, golden, source, input, tolerance);
@@ -554,6 +561,7 @@ async function confirmCommand(ctx: CommandContext, values: OptionValues): Promis
     doc.set("confirmed_by", yes.by);
     doc.set("confirmed_at", confirmedAt);
     doc.set("confirmed_as", doc.createNode(confirmedAs));
+    doc.delete("unconfirmed_yes");
   });
   unlock();
   const columns = resultColumns(rows);
@@ -870,6 +878,17 @@ async function newCommand(ctx: CommandContext, values: OptionValues): Promise<nu
     );
   }
   const compiled = compileGolden(ctx.root, golden);
+  // A refusal about the request's own shape is not fixed by approving anything, so nothing is written; one that
+  // waits on a draft or not-yet-approved item writes the draft, which compiles once the item is approved.
+  const shape = compiled.ok ? [] : compiled.refusals.filter((r) => r.code === "invalid_request");
+  if (shape.length) {
+    const fix = shape.find((r) => r.next)?.next ?? "Fix the request and run semlayer goldens new again; semlayer sql --request '<json>' shows the SQL once it compiles";
+    throw new UserError(
+      plainText(`The request does not compile, so nothing was written: ${shape.map((r) => r.message).join("; ")}. ${fix.replace(/\.$/, "")}.`),
+      shape.find((r) => r.next)?.next ?? "semlayer goldens new",
+      "golden.request_invalid",
+    );
+  }
   batchWrite(path);
   writeYaml(path, golden);
   const next =
@@ -986,17 +1005,20 @@ export async function confirmReadback(ctx: CommandContext, values: OptionValues,
 }
 
 const spec: CommandSpec = {
-  summary: "Compile and run a golden's request, record its rows on the owner's recorded yes, recheck approved goldens, or write a draft golden.",
+  summary: "Compile and run a golden's request, record its rows on the owner's recorded yes, recheck approved goldens, write a draft golden, return a confirmed one to draft, or remove a draft.",
   usage:
     "goldens run --name <g> | goldens confirm --name <g> [--by <name>] [--tolerance <t>] [--force] | goldens confirm --readback <readback_id> [--by <name>] [--force] | " +
     "goldens check [--name <g>] [--source <s>]   (each takes --emit-sql, --results <file>, --plan <plan_id> and --show-protected; values of protected " +
     "columns show as [protected] unless --show-protected) | " +
-    'goldens new --name <g> --question "<question>" --request <json|file> [--source <s>] [--role <role>] [--user <json>]\n\n' +
+    'goldens new --name <g> --question "<question>" --request <json|file> [--source <s>] [--role <role>] [--user <json>] | ' +
+    'goldens unconfirm --name <g> [--reason "<why>"] | goldens remove --name <g>\n\n' +
     "confirm records the rows the request compiles to now only when the owner's latest reply to golden:<g> in .semlayer/ledger.jsonl\n" +
     "is a yes to the golden with these rows and this tolerance (semlayer readback --targets golden:<g>, then semlayer reply --verdict yes);\n" +
     "confirmed_by and confirmed_at come from that reply, and --by, when given, must name the same owner.\n" +
     "confirm --readback confirms each golden of that readback as --name would, at the tolerance read back, and lists every\n" +
     "other with why (a change, a no, no reply, changed since the yes); it exits 1 only when a golden the owner said yes to was not confirmed.\n" +
+    "unconfirm returns a confirmed golden to draft (its recorded rows and confirmation removed, its tolerance kept) and needs no owner's yes,\n" +
+    "as it only lowers trust; remove deletes a draft golden's file (a confirmed one is unconfirmed first).\n" +
     "The tolerance is relative and applies to figures with decimals: the columns a golden is grouped by and whole numbers\n" +
     "(counts, years) always compare exactly, and a failed check says so on the line.\n\n" +
     "new --request is JSON (or a file holding it), fields named relative to its source:\n" +
@@ -1028,9 +1050,10 @@ const spec: CommandSpec = {
     role: { type: "string" },
     user: { type: "string" },
     readback: { type: "string", mcp: "omit" },
+    reason: { type: "string" },
   },
   positionals: true,
-  writes: ({ values, positionals }) => (positionals[0] === "new" || values["emit-sql"] ? "whole" : positionals[0] === "confirm" ? "late" : false),
+  writes: ({ values, positionals }) => (["new", "unconfirm", "remove"].includes(positionals[0] ?? "") || values["emit-sql"] ? "whole" : positionals[0] === "confirm" ? "late" : false),
   async run({ values, positionals }, ctx) {
     const [sub, ...rest] = positionals;
     if (!sub || !(SUBCOMMANDS as readonly string[]).includes(sub)) {
@@ -1040,6 +1063,7 @@ const spec: CommandSpec = {
     const rb = str(values, "readback");
     if (rb !== undefined && sub !== "confirm") throw new UserError(`--readback goes with semlayer goldens confirm only (semlayer goldens confirm --readback <readback_id>), not semlayer goldens ${sub}.`);
     if (rb !== undefined) return confirmReadback(ctx, values, rb);
+    if (str(values, "reason") !== undefined && sub !== "unconfirm") throw new UserError(`--reason goes with semlayer goldens unconfirm only, not semlayer goldens ${sub}.`, `semlayer goldens ${sub}`);
     switch (sub as Subcommand) {
       case "run":
         return runCommand(ctx, values);
@@ -1049,6 +1073,10 @@ const spec: CommandSpec = {
         return checkCommand(ctx, values);
       case "new":
         return newCommand(ctx, values);
+      case "unconfirm":
+        return unconfirmGolden(ctx, str(values, "name"), str(values, "reason"));
+      case "remove":
+        return removeGolden(ctx, str(values, "name"));
     }
   },
 };
