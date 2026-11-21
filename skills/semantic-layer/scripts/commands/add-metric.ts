@@ -1,10 +1,12 @@
 import { existsSync } from "node:fs";
 import { isSeq, type YAMLMap, type YAMLSeq } from "yaml";
-import type { CommandSpec } from "../lib/command.ts";
-import { str } from "../lib/command.ts";
+import type { CommandContext, CommandSpec, OptionValues } from "../lib/command.ts";
+import { bool, str, today } from "../lib/command.ts";
 import { parseFormula } from "../lib/compiler/metrics.ts";
 import { APPROVAL_FIELDS, commitEdits, inTurnApply, itemMap, oneLine, parseValue, reapproveLines, relFile, schemaProperties } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
+import { ownerText } from "../lib/ledger.ts";
+import { NO_METRICS_COMMAND, type NoMetrics } from "../lib/no-metrics.ts";
 import { formatJson } from "../lib/output.ts";
 import { listModels, listSourceNames, loadMetrics, loadProject, paths } from "../lib/project.ts";
 import { NAME_PATTERN } from "../lib/types.ts";
@@ -15,13 +17,16 @@ const PLACEHOLDER = /\{\s*([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)\s*\}/g;
 const NEW_FILE = "metrics: []\n";
 
 const spec: CommandSpec = {
-  summary: "Add a draft ratio or derived metric to metrics.yaml, checked as semlayer validate and the compiler read it.",
+  summary: "Add a draft ratio or derived metric to metrics.yaml, checked as semlayer validate and the compiler read it, or record that the owner reports none.",
   usage:
     "add-metric --name <n> --type ratio|derived [--source <s>] [--numerator <model.measure> --denominator <model.measure>] [--expr <e>] " +
-    "[--format number|integer|currency|percent] [--currency <code>] [--description <text>] [--set key=value]...\n\n" +
+    "[--format number|integer|currency|percent] [--currency <code>] [--description <text>] [--set key=value]...\n" +
+    'add-metric --none --by "<owner>" --text "<owner\'s words>"\n\n' +
     "A ratio divides --numerator by --denominator, each a measure as model.measure: --numerator orders.revenue --denominator orders.order_count.\n" +
     'A derived metric\'s --expr combines measures in braces with + - * / and numbers: --expr "{orders.revenue} - {refunds.refund_amount}".\n' +
-    "--set writes any other key of the metric (--set synonyms=\"[aov]\"). The metric is a draft; an approved metric uses approved measures only.",
+    "--set writes any other key of the metric (--set synonyms=\"[aov]\"). The metric is a draft; an approved metric uses approved measures only.\n" +
+    "--none records the owner's answer that they report no metrics for now, with their name (--by) and words (--text), in metrics.yaml's\n" +
+    "no_metrics; semlayer next then goes past the metrics phase while metrics.yaml lists no metric. A metric added later is read back as any other.",
   options: {
     name: { type: "string" },
     type: { type: "string" },
@@ -33,11 +38,17 @@ const spec: CommandSpec = {
     currency: { type: "string" },
     description: { type: "string" },
     set: { type: "string", multiple: true },
+    none: { type: "boolean" },
+    by: { type: "string" },
+    text: { type: "string" },
   },
   positionals: false,
   writes: "whole",
   async run({ values }, ctx) {
     const project = loadProject(ctx.root);
+    if (bool(values, "none")) return recordNone(values, ctx);
+    if (str(values, "by") !== undefined || str(values, "text") !== undefined)
+      throw new UserError(`--by and --text go with --none only, which records the owner's answer that they report no metrics: ${NO_METRICS_COMMAND}. Nothing was written.`);
     const name = str(values, "name")?.trim();
     const type = str(values, "type")?.trim();
     if (!name || !type) {
@@ -151,3 +162,53 @@ const spec: CommandSpec = {
   },
 };
 export default spec;
+
+// semlayer add-metric --none: the owner's answer that they report no metrics for now, in their name and words.
+function recordNone(values: OptionValues, ctx: CommandContext): number {
+  const other = ["name", "type", "source", "numerator", "denominator", "expr", "format", "currency", "description", "set"].find((k) => values[k] !== undefined);
+  if (other) throw new UserError(`--none records that the owner reports no metrics and takes no --${other}: run ${NO_METRICS_COMMAND} on its own. Nothing was written.`);
+  const words = (k: string) => {
+    const raw = str(values, k);
+    return raw === undefined ? "" : oneLine(ownerText(raw).text);
+  };
+  const by = words("by");
+  const text = words("text");
+  if (!by || !text) {
+    const missing = [!by ? "--by with the owner's name" : "", !text ? "--text with the owner's words" : ""].filter(Boolean).join(" and ");
+    throw new UserError(
+      `--none records the owner's answer, so it needs ${missing}, such as --by "Dana" --text "Revenue and invoice count are all I need". Nothing was written. Ask the owner, then run ${NO_METRICS_COMMAND}.`,
+      NO_METRICS_COMMAND,
+      "owner_words_missing",
+    );
+  }
+  const listed = (loadMetrics(ctx.root).metrics ?? []).flatMap((m) => (m && typeof m.name === "string" ? [m.name] : m ? ["<unnamed>"] : []));
+  if (listed.length)
+    throw new UserError(
+      `metrics.yaml already lists ${listed.length === 1 ? "the metric" : "the metrics"} ${listed.join(", ")}, so a none for now would not apply. Nothing was written. ` +
+        `Read ${listed.length === 1 ? "it" : "them"} back to the owner as semlayer next names, or, if the owner wants none of them, remove each with semlayer remove-metric <name> first.`,
+    );
+  const record: NoMetrics = { by, text, at: today(ctx) };
+  const file = paths(ctx.root).metrics;
+  const create = existsSync(file) ? undefined : new Map([[file, NEW_FILE]]);
+  const outcome = commitEdits(
+    ctx.root,
+    [{ file, edit: (doc) => void itemMap(doc, []).set("no_metrics", doc.createNode(record)) }],
+    "record no metrics for now",
+    undefined,
+    undefined,
+    { create },
+  );
+  const rel = relFile(ctx.root, file);
+  if (ctx.json) {
+    ctx.out(formatJson({ changed: outcome.changed, file: rel, no_metrics: record, created: !!create, next: "semlayer next" }));
+    return 0;
+  }
+  ctx.out(
+    [
+      `Recorded in ${rel} that the owner reports no metrics for now, said by ${by} on ${record.at}. The metrics phase is closed while metrics.yaml lists no metric; ` +
+        "a metric added later with semlayer add-metric is read back and approved as any other.",
+      "Next: semlayer next.",
+    ].join("\n"),
+  );
+  return 0;
+}

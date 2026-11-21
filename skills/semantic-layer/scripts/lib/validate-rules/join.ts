@@ -4,7 +4,8 @@
 // evidence shows rows of the model with no bridge row is a warning. The schema-pair rule for the join's
 // two hops is in scope.ts.
 import { classifyType, isNumeric } from "../column-types.ts";
-import { unbridgedText } from "../readback-bridge.ts";
+import { itemHash } from "../approval-hash.ts";
+import { throughCurrent, throughLines, unbridgedWarning } from "../readback-bridge.ts";
 import type { Join, SnapshotTable } from "../types.ts";
 import type { RuleContext } from "./index.ts";
 
@@ -66,8 +67,14 @@ export default function join(ctx: RuleContext): void {
           );
         const weightColumn = typeof t.weight === "string" ? bridgeTable?.columns.find((c) => c.name.toLowerCase() === t.weight!.toLowerCase()) : undefined;
         const ev = j.evidence?.through;
-        if (ev && typeof ev === "object" && typeof ev.facts_unbridged === "number" && ev.facts_unbridged > 0)
-          ctx.warn(m.file, `joins[${i}].evidence.through.facts_unbridged`, unbridgedText(model.model, j as Join, ev), "join.through_facts_unbridged");
+        // The evidence is outside the approval hash, so an approved join is settled only when its approval is
+        // current and the readback the owner said yes to stated the count that is stored now.
+        if (ev && typeof ev === "object" && typeof ev.facts_unbridged === "number" && ev.facts_unbridged > 0) {
+          const hash = itemHash("join", j as unknown as Record<string, unknown>, { source, model: model as unknown as Record<string, unknown> });
+          const seen = j.status === "approved" && j.approved_hash === hash ? ctx.yesReadbackText(ref, hash) : undefined;
+          const settled = !!seen && throughCurrent(j as Join, ev) && seen.includes(throughLines(model.model, j as Join, ev)[0]!);
+          if (!settled) ctx.warn(m.file, `joins[${i}].evidence.through.facts_unbridged`, unbridgedWarning(model.model, ref, j as Join, ev), "join.through_facts_unbridged");
+        }
         if (t.dedupe === "weight" && t.weight === undefined)
           ctx.error(m.file, `${at}.weight`, `${ref} shares by weight but names no weight column of ${bridge.model}; add the join again with semlayer add-bridge --dedupe weight --weight <column>`, "join.through_weight_invalid");
         else if (t.weight !== undefined && t.dedupe !== "weight")

@@ -123,6 +123,9 @@ export function applyEntryRefusal(entry: unknown, role?: Role): string | undefin
   if (own) return `passes ${own.split("=")[0]}, which semlayer apply gives every entry itself; remove it from the entry.`;
   if ((OWNER_COMMANDS as readonly string[]).some((c) => c === name || c === full) || full === "question resolve")
     return `is semlayer ${full}, which records the owner's answer or approval: semlayer apply never does that, so run it on its own, after the owner's yes.`;
+  // add-metric --none records the owner's answer that they report no metrics, as add-cross-schema --decline records a no.
+  if (name === "add-metric" && entry.some((w: string) => w === "--none" || w.startsWith("--none=")))
+    return "is semlayer add-metric --none, which records the owner's answer that they report no metrics: semlayer apply never does that, so run it on its own, in the owner's name and words.";
   if (!(APPLY_COMMANDS as readonly string[]).some((c) => c === name || c === full))
     return `is semlayer ${full}, which is not a typed edit (it reads a database, records an answer or does more than change layer files): run it on its own. semlayer apply runs ${APPLY_COMMANDS.map((c) => `semlayer ${c}`).join(", ")}.`;
   const why = role ? semlayerRefusal(role, entry as string[]) : undefined;
@@ -160,6 +163,8 @@ export function commandList(role: Role): string {
 // Why `role` may not run semlayer with these arguments (the words after semlayer.ts), or undefined when it may.
 export function semlayerRefusal(role: Role, args: readonly string[]): string | undefined {
   const [name, sub] = args;
+  // semlayer, semlayer --help and semlayer -h print the command list, as semlayer help does.
+  if ((name === undefined || ((name === "--help" || name === "-h") && args.length === 1)) && semlayerRefusal(role, ["help"]) === undefined) return undefined;
   if (!name || name.startsWith("-")) return `it runs semlayer without a command first; the ${role.title.toLowerCase()} may run ${commandList(role)}.`;
   const flag = args.find((a) => DENIED_FLAGS.some((f) => a === f || a.startsWith(`${f}=`)));
   if (flag) return `it passes ${flag.split("=")[0]} to semlayer ${name}; protected values are for the owner to print by hand, so no agent passes it. Run the command without it.`;

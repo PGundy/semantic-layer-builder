@@ -20,6 +20,8 @@ import { currentYes, ledgerState } from "./ledger.ts";
 import { accessRowFilters, layerReads } from "./layer-reads.ts";
 import { findTable, qualifiedName } from "./naming.ts";
 import { plainText } from "./output.ts";
+import { openReadbacks } from "./readback-open.ts";
+import { NO_METRICS_COMMAND, noMetrics, type NoMetricsStatus } from "./no-metrics.ts";
 import { inScope } from "./patterns.ts";
 import { parseRequestField } from "./refs.ts";
 import {
@@ -278,6 +280,8 @@ export interface ProjectStatus {
   metrics: ApprovalCount;
   // Names of the metrics in metrics.yaml that are not approved.
   draft_metrics: string[];
+  // The owner's answer that they report no metrics for now (metrics.yaml's no_metrics), or null.
+  no_metrics: NoMetricsStatus | null;
   // open_questions counts access.yaml's top-level and per-role open questions. mode is access.yaml's
   // mode as the access evaluator reads it (open without access.yaml), and default_audience what a
   // user with no attributes and no assigned roles sees of the reported sources.
@@ -304,6 +308,9 @@ export interface ProjectStatus {
   // stand (approved before semlayer approve required one), as approve targets and golden:<name>. They stay
   // approved and never hold a phase open; semlayer next reads them back once every phase is done.
   approved_without_yes: string[];
+  // Items of the pending readbacks that wait for the owner's answer, as semlayer next asks them: one a
+  // later readback of the same target settled on a recorded reply is not counted.
+  pending_readback_items: number;
   goldens: ApprovalCount;
   // Names of the goldens that are not approved; a golden without a string name goes by its file name.
   draft_goldens: string[];
@@ -372,6 +379,14 @@ function count(items: (Approval | undefined)[]): ApprovalCount {
     else out.draft++;
   }
   return out;
+}
+
+// The owner's none for now, applying while metrics.yaml lists no metric that count() counts.
+function noMetricsStatus(file: unknown, metrics: Metric[]): NoMetricsStatus | null {
+  const n = noMetrics(file);
+  if (!n) return null;
+  const listed = count(metrics);
+  return { ...n, applies: listed.approved + listed.draft === 0 };
 }
 
 // Names of the metrics that are not approved, matching what count() counts as draft: every entry
@@ -1028,13 +1043,15 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch" | "laye
   }
 
   const measures = sources.reduce((n, s) => n + s.measures.approved + s.measures.draft, 0);
-  if (measures > 0 && status.metrics.approved === 0) {
+  // The owner's recorded none for now closes the phase while metrics.yaml lists no metric.
+  if (measures > 0 && status.metrics.approved === 0 && !status.no_metrics?.applies) {
     return {
       phase: "metrics",
       message:
         status.metrics.draft > 0
           ? `${status.metrics.draft} metric(s) in metrics.yaml are drafts. Read them back to the owner and approve what they confirm.`
-          : "No metrics yet. Ask the owner which ratios and derived figures they report, and add each as a draft with semlayer add-metric (semlayer add-metric --help lists its flags).",
+          : "No metrics yet. Ask the owner which ratios and derived figures they report, and add each as a draft with semlayer add-metric (semlayer add-metric --help lists its flags); " +
+            `or, if the owner reports none, record that in their words with ${NO_METRICS_COMMAND} (on its own, not in semlayer apply).`,
       action:
         status.metrics.draft === 0
           ? act("add-metric", ["--name", "<metric>", "--type", "ratio|derived"], "ask_owner")
@@ -1196,6 +1213,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch" | "laye
   // the handoff names each one.
   const fields = sources.flatMap((s) => s.draft_fields.map((f) => `${s.source}.${f}`));
   const left = [
+    status.no_metrics?.applies ? `owner's answer of no metrics for now (said by ${plainText(status.no_metrics.by)} on ${status.no_metrics.at})` : "",
     status.draft_metrics.length ? `draft metric(s) ${status.draft_metrics.join(", ")}` : "",
     status.draft_goldens.length ? `draft golden(s) ${status.draft_goldens.join(", ")}` : "",
     fields.length ? `draft field(s) ${fields.join(", ")}` : "",
@@ -1483,6 +1501,7 @@ export function statusDetail(root: string, only?: string): StatusDetail {
     sources,
     metrics: count(metrics),
     draft_metrics: draftMetricNames(metrics),
+    no_metrics: noMetricsStatus(metricsFile, metrics),
     access: {
       state: accessState,
       roles: Array.isArray(access?.roles) ? access.roles.length : 0,
@@ -1495,6 +1514,7 @@ export function statusDetail(root: string, only?: string): StatusDetail {
     open_questions: sources.reduce((n, s) => n + s.open_questions, accessQuestions),
     changed_since_approval: [...refsIn(approvals, "changed", projectHashed), ...refsIn(pairApprovals, "changed", true)],
     hash_missing: [...refsIn(approvals, "missing", projectHashed), ...refsIn(pairApprovals, "missing", true)],
+    pending_readback_items: openReadbacks(root, targets, replies).reduce((n, r) => n + r.open.length, 0),
     approved_without_yes: withoutYes([...approvals.map((e) => e.ref), ...pairApprovals.map((e) => e.ref), ...approvedGoldens.map((g) => `golden:${g.name}`)]),
     goldens: count(goldens),
     draft_goldens: draftGoldenNames(loadedGoldens),
