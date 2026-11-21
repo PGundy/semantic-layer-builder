@@ -77,7 +77,7 @@ describe("paths and commands in the documents", () => {
     for (const f of DOCS) {
       for (const m of read(f).matchAll(/`([^`\s]+)`/g)) {
         const p = m[1]!.replace(/[.,;:]$/, "");
-        if (!roots.test(p) || /[<>*${}]/.test(p) || p === "evals/runs/") continue;
+        if (!roots.test(p) || /[<>*${}]/.test(p) || p === "evals/runs/" || p === "evals/baseline.sdk.json") continue; // the second is recorded by the owner from live runs, so it may not exist yet
         if (!existsSync(join(REPO, p)) && !existsSync(join(REPO, dirname(f), p))) missing.push(`${f}: ${p}`);
       }
     }

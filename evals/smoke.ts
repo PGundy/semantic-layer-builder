@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 // bun evals/smoke.ts [--report-only] [--update-baseline] [--baseline <file>] [--out <dir>]
-//   [--driver scripted|sdk] [--runs <n>] [--model <id>]
+//   [--driver scripted|sdk] [--runs <n>] [--model <id>] [--gate]
 // Runs the smoke subset, grades each run and compares every grader's score with evals/baseline.json
 // (docs/PRD.md FR-6.4); a PostgreSQL scenario whose URL variable is unset is reported "not run".
 // Exit codes: 0 when no score fell below its baseline by more than its band (always with --report-only or --update-baseline), 1 on a regression, 2 when the smoke could not run.
+// --gate (docs/PLAN-v1x.md A5) is the pass/fail form for live runs: with --driver sdk it compares with evals/baseline.sdk.json and checks the key, the package and the baseline before anything is created.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -11,7 +12,7 @@ import { parseArgs } from "node:util";
 import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import type { GradeReport } from "./graders/types.ts";
 import { scriptedDriver } from "./runner/drivers/scripted.ts";
-import { sdkDriver } from "./runner/drivers/sdk.ts";
+import { sdkDriver, sdkPreflight } from "./runner/drivers/sdk.ts";
 import { loadScenario, loadScript, REPO_ROOT, scenarioPath, stableJson } from "./runner/files.ts";
 import { runScenario, steppingClock } from "./runner/runner.ts";
 import { EvalError, NotRun, type StopReason } from "./runner/types.ts";
@@ -31,11 +32,13 @@ export const recordedEffort = (metric: string) => metric === "tokens" || !metric
 // How far above the baseline's `effort.tokens` a run's total may go before the smoke warns.
 export const TOKEN_WARN_SHARE = 0.1;
 export const BASELINE_FILE = join(REPO_ROOT, "evals", "baseline.json");
+// The live (sdk) driver's baseline, which --gate reads by default.
+export const SDK_BASELINE_FILE = join(REPO_ROOT, "evals", "baseline.sdk.json");
 // The scripted driver's clock starts here on every run, so its runs and the baseline are reproducible.
 export const SMOKE_START = "2026-01-01T00:00:00Z";
 
 export const USAGE =
-  "Usage: bun evals/smoke.ts [--report-only] [--update-baseline] [--baseline <file>] [--out <dir>] [--driver scripted|sdk] [--runs <n>] [--model <id>]";
+  "Usage: bun evals/smoke.ts [--report-only] [--update-baseline] [--baseline <file>] [--out <dir>] [--driver scripted|sdk] [--runs <n>] [--model <id>] [--gate]";
 
 export interface BaselineGrader {
   score: number | null;
@@ -166,6 +169,14 @@ export function compare(baseline: Baseline, observed: Observed[]): Row[] {
   return rows;
 }
 
+// The lines a gate prints for its regressions: the scenario and grader, the score, the baseline and the
+// band, so a failing live run says what fell and by how much.
+export function gateLines(rows: Row[]): string[] {
+  return rows
+    .filter((r) => r.status === "REGRESSION")
+    .map((r) => `Gate: ${r.scenario} / ${r.grader}: score ${r.score}, baseline ${r.baseline}, band ${r.band}${r.why ? ` (${r.why})` : ""}.`);
+}
+
 // The baseline without the named scenarios, for a comparison that leaves them out.
 function withoutScenarios(b: Baseline, names: Set<string>): Baseline {
   return { ...b, scenarios: Object.fromEntries(Object.entries(b.scenarios).filter(([n]) => !names.has(n))) };
@@ -248,6 +259,8 @@ export interface SmokeIO {
   env: Record<string, string | undefined>;
   // Replaced in tests to feed synthetic grades.
   runOne?: typeof runOne;
+  // Replaced in tests for the --gate check that the sdk package can be imported.
+  importer?: (name: string) => Promise<unknown>;
 }
 
 export async function main(argv: string[], io: SmokeIO): Promise<number> {
@@ -263,6 +276,7 @@ export async function main(argv: string[], io: SmokeIO): Promise<number> {
         driver: { type: "string" },
         runs: { type: "string" },
         model: { type: "string" },
+        gate: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
       strict: true,
@@ -275,17 +289,27 @@ export async function main(argv: string[], io: SmokeIO): Promise<number> {
     if (driver !== "scripted" && driver !== "sdk") throw new EvalError(`--driver is scripted or sdk, not "${driver}".`);
     const runs = values.runs === undefined ? 1 : Number(values.runs);
     if (!Number.isInteger(runs) || runs < 1) throw new EvalError(`--runs takes a whole number of 1 or more, not "${values.runs}".`);
-    const file = resolve(values.baseline ?? BASELINE_FILE);
+    const gate = values.gate === true;
+    if (gate && (values["update-baseline"] || values["report-only"])) {
+      throw new EvalError("--gate fails on a regression, so it cannot go with --report-only or --update-baseline. Use one of them alone, or drop --gate.");
+    }
+    // --gate with the scripted driver is the default comparison under another name; with sdk it reads its own baseline.
+    // Only a live gate prints its own lines and prefix; a scripted run prints what it prints without --gate.
+    const live = gate && driver === "sdk";
+    const gateFile = live && values.baseline === undefined;
+    const file = resolve(values.baseline ?? (gateFile ? SDK_BASELINE_FILE : BASELINE_FILE));
     const rel = shownPath(file);
     const update = values["update-baseline"] === true;
     // The command that records this baseline again, built from the flags given.
+    // A live baseline is recorded from 5 runs, whatever number the gate itself plays.
+    const recordRuns = live ? 5 : runs;
     const recordWith = [
       RECORD_COMMAND,
       ...(driver !== "scripted" ? [`--driver ${driver}`] : []),
-      ...(runs > 1 ? [`--runs ${runs}`] : []),
-      ...(values.baseline !== undefined ? [`--baseline ${rel}`] : []),
+      ...(recordRuns > 1 ? [`--runs ${recordRuns}`] : []),
+      ...(values.baseline !== undefined || gateFile ? [`--baseline ${rel}`] : []),
     ].join(" ");
-    const ownFile = `${RECORD_COMMAND} --driver ${driver} --baseline evals/baseline.${driver}.json`;
+    const ownFile = `${RECORD_COMMAND} --driver ${driver}${driver === "sdk" ? " --runs 5" : ""} --baseline evals/baseline.${driver}.json`;
     let baseline: Baseline | undefined;
     if (!update) {
       baseline = loadBaseline(file, recordWith);
@@ -303,6 +327,9 @@ export async function main(argv: string[], io: SmokeIO): Promise<number> {
         baseline = prev;
       }
     }
+
+    // A live gate stops here, before a run directory exists or a driver is built, when the key or the package is missing.
+    if (live) await sdkPreflight({ env: io.env, importer: io.importer });
 
     // Runs go to --out, kept, or to a temporary directory removed afterwards; never to the repository.
     const outRoot = values.out ? resolve(values.out) : (tempDir = mkdtempSync(join(tmpdir(), "semlayer-smoke-")));
@@ -353,7 +380,8 @@ export async function main(argv: string[], io: SmokeIO): Promise<number> {
     }
     const kept = values.out ? ` The runs are in ${shownPath(outRoot)}.` : "";
     if (regressions.length) {
-      io.out(`Smoke: ${regressions.length} regression(s) against ${rel}.${kept}`);
+      if (live) gateLines(rows).forEach((l) => io.out(l));
+      io.out(`${live ? "Gate" : "Smoke"}: ${regressions.length} regression(s) against ${rel}.${kept}`);
       io.out(
         `Next: rerun with --out <dir> to keep the runs, and read each run's grades.json and transcript.jsonl; ` +
           `if the drop is intended, record it with ${recordWith} and say why in the pull request.`,
@@ -365,7 +393,7 @@ export async function main(argv: string[], io: SmokeIO): Promise<number> {
       return 1;
     }
     const stale = rows.some((r) => r.status === "improved" || r.status === "new" || r.status === "not run");
-    io.out(`Smoke: no regression against ${rel}.${kept}`);
+    io.out(`${live ? "Gate" : "Smoke"}: no regression against ${rel}.${kept}`);
     io.out(stale ? `Next: the baseline is out of date (a score rose, a grader is new or a scenario is no longer run); record it with ${recordWith}.` : "Next: nothing to do for the evals.");
     return 0;
   } catch (e) {
