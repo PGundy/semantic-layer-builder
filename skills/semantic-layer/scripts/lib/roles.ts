@@ -102,11 +102,12 @@ export const ROLES: Record<RoleName, Role> = {
 };
 
 // The typed edits semlayer apply runs as its entries: each changes layer files only, through lib/edit.ts
-// (semlayer goldens new writes a draft golden and compiles its request, querying nothing).
+// (semlayer goldens new writes a draft golden and compiles its request, querying nothing; goldens unconfirm and
+// goldens remove only lower a golden's trust).
 export const APPLY_COMMANDS = [
   "set", "add-field", "remove-field", "rename", "tag", "ignore-column", "question add", "add-metric", "remove-metric", "add-join", "add-bridge", "remove-join", "add-segment", "remove-segment",
   "add-role", "remove-role", "add-restriction", "remove-restriction", "add-row-filter", "remove-row-filter", "add-attribute", "remove-attribute",
-  "goldens new",
+  "goldens new", "goldens unconfirm", "goldens remove",
 ] as const;
 // The flags semlayer apply gives every entry itself, which an entry does not pass.
 const APPLY_OWN_FLAGS = ["--root", "--env-file", "--json", "--help", "-h"];

@@ -1,7 +1,7 @@
 import { canRun, openAdapter } from "../lib/adapters/index.ts";
 import { type CommandContext, type CommandSpec, str } from "../lib/command.ts";
 import { CHANGE_FILE, loadChange, readChange, removeChange, writeChange } from "../lib/change-record.ts";
-import { affectedGoldens, changeSince, type ItemDiff, deferredAtStart, itemMap, leftOut } from "../lib/changeset.ts";
+import { affectedGoldens, changeSince, type ItemDiff, deferredAtStart, goldensLeftOut, itemMap, leftOut } from "../lib/changeset.ts";
 import { type DriftRecord, readDrift } from "../lib/drift-record.ts";
 import { resolveConnection } from "../lib/env-file.ts";
 import { UserError } from "../lib/errors.ts";
@@ -246,7 +246,9 @@ async function closeCommand(ctx: CommandContext, version: string | undefined): P
     });
     if (!cmp.ok)
       blockers.push({
-        why: `golden ${name}'s figures moved from its recorded rows (expected is recorded, got is now): ${cmp.diffs.join(" ")} Show the owner the old and the new figures; only their yes to the new rows, recorded with semlayer goldens confirm --name ${name}, settles it.`,
+        why:
+          `golden ${name}'s figures moved from its recorded rows (expected is recorded, got is now): ${cmp.diffs.join(" ")} Show the owner the old and the new figures; their yes to the new rows, recorded with semlayer goldens confirm --name ${name}, settles it. ` +
+          `If the owner cannot check the new figures now, semlayer goldens unconfirm --name ${name} returns it to draft and this release leaves it out.`,
         next: `semlayer readback --targets golden:${name}`,
       });
   }
@@ -257,7 +259,7 @@ async function closeCommand(ctx: CommandContext, version: string | undefined): P
     for (const [ref, names] of readers)
       for (const name of names)
         blockers.push({
-          why: `golden ${name} is confirmed and reads ${ref}, a draft the release would leave out, so its recorded rows would rest on an item the owner has not approved. Read ${ref} back for the owner's yes, or return the golden to draft.`,
+          why: `golden ${name} is confirmed and reads ${ref}, a draft the release would leave out, so its recorded rows would rest on an item the owner has not approved. Read ${ref} back for the owner's yes, or return the golden to draft with semlayer goldens unconfirm --name ${name}.`,
           next: `semlayer readback --targets ${ref}`,
         });
   }
@@ -283,6 +285,8 @@ async function closeCommand(ctx: CommandContext, version: string | undefined): P
     const cells = movedCells(before, rows, (g.request.order_by ?? []).length ? [] : groupingColumns(compileGolden(ctx.root, g)));
     if (cells.changed) moved.push({ golden: name, ...cells });
   }
+  // A golden the last release recorded that is a draft now, or gone, is left out of this one and named.
+  const outGoldens = goldensLeftOut(ctx.root, last?.goldens ?? {});
   const entry: ChangelogEntry = {
     version: v,
     date: ctx.now().toISOString().slice(0, 10),
@@ -293,6 +297,8 @@ async function closeCommand(ctx: CommandContext, version: string | undefined): P
     changed: diff.changed.map((c) => c.ref),
     removed: diff.removed,
     goldens_moved: moved,
+    ...(outGoldens.unconfirmed.length ? { goldens_unconfirmed: outGoldens.unconfirmed } : {}),
+    ...(outGoldens.removed.length ? { goldens_removed: outGoldens.removed } : {}),
   };
   // semantic.yaml first, then the changelog, then the round's file: a stop after the first write leaves
   // layer_version above the last entry (semlayer validate: release.version_mismatch), and the same close run
@@ -303,7 +309,7 @@ async function closeCommand(ctx: CommandContext, version: string | undefined): P
 
   const next = START;
   if (ctx.json) {
-    ctx.out(formatJson({ closed: true, version: v, date: entry.date, note: entry.note, file: CHANGELOG_FILE, items: items.size, added: entry.added, changed: entry.changed, removed: entry.removed, goldens_moved: moved, not_rerun: notRerun, drafts_left_out: draftsLeftOut, layer_version: v, next }));
+    ctx.out(formatJson({ closed: true, version: v, date: entry.date, note: entry.note, file: CHANGELOG_FILE, items: items.size, added: entry.added, changed: entry.changed, removed: entry.removed, goldens_moved: moved, goldens_unconfirmed: outGoldens.unconfirmed, goldens_removed: outGoldens.removed, not_rerun: notRerun, drafts_left_out: draftsLeftOut, layer_version: v, next }));
     return 0;
   }
   const list = (xs: string[]) => (xs.length ? `${xs.length} (${xs.join(", ")})` : "none");
@@ -317,6 +323,11 @@ async function closeCommand(ctx: CommandContext, version: string | undefined): P
     );
   } else lines.push(`It holds the ${plural(items.size, "item")} and the recorded rows of ${plural(Object.keys(recordedRows).length, "approved golden")} as they stand; later releases are compared with them.`);
   if (skipped) lines.push(skipped);
+  if (outGoldens.unconfirmed.length)
+    lines.push(
+      `Goldens left out (${outGoldens.unconfirmed.length}): ${outGoldens.unconfirmed.join(", ")}. Release ${last!.version} held them; they are drafts now (returned to draft with semlayer goldens unconfirm: the owner has not confirmed their figures as they stand) and join a later release once the owner confirms them.`,
+    );
+  if (outGoldens.removed.length) lines.push(`Goldens removed (${outGoldens.removed.length}): ${outGoldens.removed.join(", ")}. Release ${last!.version} held them; their files are gone.`);
   if (draftsLeftOut.length) lines.push(`Drafts left out (${draftsLeftOut.length}): ${draftsLeftOut.join(", ")}. They are not part of this release and join a later one once the owner approves them.`);
   lines.push(`layer_version in semantic.yaml is now ${v}${round ? ", and the change round is closed" : ""}.`, `Next: when the owner asks for another change, ${next}.`);
   ctx.out(plainText(lines.join("\n")));

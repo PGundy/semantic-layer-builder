@@ -41,7 +41,7 @@ const DOCS = [
   "references/baseline.md",
 ];
 const GLOBAL_FLAGS = new Set(["root", "env-file", "json", "help"]);
-const GOLDENS_SUBCOMMANDS = new Set(["run", "confirm", "check", "new"]);
+const GOLDENS_SUBCOMMANDS = new Set(["run", "confirm", "check", "new", "unconfirm", "remove"]);
 
 function read(doc: string): string {
   return readFileSync(join(SKILL_DIR, doc), "utf8");

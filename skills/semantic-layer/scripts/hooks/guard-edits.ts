@@ -290,7 +290,7 @@ function message(v: Violation): string {
       if (g !== undefined)
         return (
           `this edit changes the confirmation fields of ${v.ref} (${v.keys!.join(", ")}). Only semlayer goldens confirm writes them, on the owner's recorded yes: ` +
-          `semlayer readback --targets ${v.ref}, ${REPLY}, then semlayer goldens confirm --name ${g}.`
+          `semlayer readback --targets ${v.ref}, ${REPLY}, then semlayer goldens confirm --name ${g}. To make it a draft, run semlayer goldens unconfirm --name ${g}.`
         );
       return (
         `this edit changes the approval fields of ${v.ref} (${v.keys!.join(", ")}). Only semlayer approve writes them, on the owner's recorded yes: ` +
@@ -299,11 +299,13 @@ function message(v: Violation): string {
     case "expected":
       return (
         `${v.ref} is confirmed, and its expected rows and tolerance are what the owner said yes to. Only semlayer goldens confirm records them: ` +
-        `semlayer readback --targets ${v.ref} [--tolerance <t>], ${REPLY}, then semlayer goldens confirm --name ${g}.`
+        `semlayer readback --targets ${v.ref} [--tolerance <t>], ${REPLY}, then semlayer goldens confirm --name ${g}. ` +
+        `If the owner cannot check its figures now, semlayer goldens unconfirm --name ${g} returns it to draft.`
       );
     case "removed": {
       const head = `this edit removes or renames approved ${v.ref}.`;
       if (v.ref.startsWith("schema-pair:")) return `${head} ${pairChange(v.ref)}`;
+      if (g !== undefined) return `${head} Return it to draft with semlayer goldens unconfirm --name ${g}, then remove it with semlayer goldens remove --name ${g}.`;
       const revoke = `make it a draft first with semlayer approve --target ${v.ref} --revoke`;
       if (!v.ref.includes(":") && v.ref.split(".").length === 3) return `${head} Rename it with semlayer rename ${v.ref} <new_name> or remove it with semlayer remove-field ${v.ref}, or ${revoke}.`;
       if (v.ref.startsWith("metric:")) return `${head} Rename it with semlayer rename ${v.ref} <new_name> or remove it with semlayer remove-metric ${v.ref.slice(7)} --force (on the owner's yes), or ${revoke}.`;

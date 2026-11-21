@@ -591,7 +591,13 @@ const CASES: Case[] = [
     edit: (d) => ((d.request.measures = ["customers.customer_count"]), (d.request.dimensions = []), (d.request.filters = [{ field: "orders.order_count", op: "gt", value: 1 }])),
     expect: ["error", GOLDEN3, "request.filters[0].field", "model orders is not reachable from customers, the model of the request's first measure,"],
   },
-  { name: "golden filter on a reachable model's measure", file: GOLDEN3, edit: (d) => (d.request.filters = [{ field: "customers.customer_count", op: "gt", value: 1 }]), expect: [] },
+  // validate's field checks allow it, but the compiler filters only on the base model's measures, so the draft does not compile.
+  {
+    name: "golden filter on a reachable model's measure",
+    file: GOLDEN3,
+    edit: (d) => (d.request.filters = [{ field: "customers.customer_count", op: "gt", value: 1 }]),
+    expect: ["warning", GOLDEN3, "request", "does not compile: filters[0] names customers.customer_count, a measure of model customers; a request filters only on measures of orders"],
+  },
   {
     name: "golden with no measures names its first dimension as the base",
     file: GOLDEN3,

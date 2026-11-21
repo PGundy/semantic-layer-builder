@@ -21,6 +21,10 @@ export interface ChangelogEntry {
   changed: string[];
   removed: string[];
   goldens_moved: GoldenMoved[];
+  // Goldens the last entry recorded that are drafts now (semlayer goldens unconfirm), left out of this one; absent when none.
+  goldens_unconfirmed?: string[];
+  // Goldens the last entry recorded whose file is gone (semlayer goldens remove), left out of this one; absent when none.
+  goldens_removed?: string[];
 }
 
 export interface Changelog {
