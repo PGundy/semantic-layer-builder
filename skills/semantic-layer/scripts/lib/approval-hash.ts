@@ -159,6 +159,8 @@ function itemContent(kind: ItemKind, item: Obj, scope: HashScope): Obj {
         type: item.type,
         time_grains: set(item.time_grains),
         time_zone: text(item.time_zone),
+        // The owner's statement that it is the same as another model's dimension; left out when unset.
+        ...(item.conforms_to !== undefined ? { conforms_to: text(item.conforms_to) } : {}),
         synonyms: set(item.synonyms),
         tags: set(item.tags),
         joins: model ? readJoins(model, [item.expr], lookup, dialect) : [],

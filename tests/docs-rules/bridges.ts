@@ -24,6 +24,12 @@ export const RULES: DocRule[] = [
   ["spec.md", "a hidden part refuses the whole request", "refuses the whole request as `not_visible`, never a partial answer"],
   ["spec.md", "a multi-fact request takes no request segments", "a multi-fact request that names segments is refused, `join.multi_fact_segments`"],
   ["spec.md", "the grain shorthand reads the first measure", "A bare `:grain` field reads the default time dimension of the request's first measure, as in any request"],
+  ["spec.md", "conforms_to holds both ways and goes one hop", "It is written on one of the two and holds both ways, and it is one hop"],
+  ["spec.md", "the combined column takes the request's name", "The combined column takes the name the request gives the dimension"],
+  ["spec.md", "a conformed dimension applies once approved", "The compiler uses it once the dimension that carries it is approved and unchanged since"],
+  ["spec.md", "conforms_to is in the dimension's approval hash", "its `conforms_to` (left out when unset)"],
+  ["spec.md", "two time zones are refused, not guessed", "the compiler refuses to combine them, `join.conformed_time_zone`, naming both zones"],
+  ["phases/metrics.md", "the owner declares renamed dimensions the same", "`semlayer conform --source <s> --dimension refunds.refunded_on --to orders.order_date`"],
   ["phases/joins.md", "the bridge interview asks for the dedupe rule", "ask the owner how a figure is shared among one row's values"],
   ["phases/joins.md", "the bridge readback is refused without the rule or the evidence", "`semlayer readback` refuses a bridge join without the rule or without that evidence"],
 ];

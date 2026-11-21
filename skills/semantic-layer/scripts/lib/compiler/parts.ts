@@ -10,8 +10,11 @@
 // and the callbacks for what only the metrics code knows: metricOf finds a metric by its request name
 // and metricSql renders its formula over the CTE columns it is given. It returns the compiled result,
 // or the request's refusals when a part, a dimension or the order cannot be built.
+import { evaluateLayer } from "../access.ts";
+import { conformedPeers, conformedSchemas, zoneClash } from "../conformed.ts";
 import { quoteIdent } from "../dialect.ts";
 import { parseRequestField } from "../refs.ts";
+import { crossSchemaPairs } from "../schema-scope.ts";
 import { globInsideViews } from "../source-safety.ts";
 import { assertReadOnly } from "../sql-guard.ts";
 import type { FilterOp, Measure, Metric, QueryRequest, RequestFilter } from "../types.ts";
@@ -69,8 +72,10 @@ export function compileParts(p: PartsRequest): CompileResult {
 
   // Each part groups by the request's dimensions as the request names them when its model is the
   // dimension's model or reaches it through one to-one path, so every part groups by the same
-  // column. A part's model that reaches it by no path, or by several, groups by its own dimension of
-  // the same name.
+  // column. A part's model with an approved dimension conformed with it (conforms_to, either way;
+  // lib/conformed.ts) groups by that dimension instead, the owner's statement that it is the same; one
+  // that reaches it by no path, or by several, groups by its own dimension of the same name. Every
+  // part's column takes the name the request gives the dimension.
   const parts = [...needs.keys()];
   const base = parts[0]!;
   const across = parts.join(" and ");
@@ -84,18 +89,68 @@ export function compileParts(p: PartsRequest): CompileResult {
     const plan = new JoinPlan({ source: source.source, dialect, models, snapshot: input.snapshot, base: a, qualified: true, add: fail });
     return plan.requestPath(b, to) !== undefined && !failed;
   };
+  // A conformed dimension applies once the dimension that carries it is approved and unchanged since.
+  let vis: ReturnType<typeof evaluateLayer> | undefined;
+  const approved = (model: string, name: string) => {
+    vis ??= evaluateLayer(input.layer, input.user ?? {});
+    const fields = vis.sources.find((s) => s.source === source.source)?.models.find((m) => m.model === model)?.fields ?? [];
+    return fields.some((f) => f.kind === "dimension" && f.name === name && f.status === "approved");
+  };
   const mapped = (ref: string, model: string, what: string): string | undefined => {
     const p = parseRequestField(ref);
-    if (!p || parts.length === 1 || model === p.model || reaches(model, p.model)) return ref;
-    if ((modelOf(model)?.dimensions ?? []).some((d) => d.name === p.field)) return `${model}.${p.field}${p.grain ? `:${p.grain}` : ""}`;
+    if (!p || parts.length === 1 || model === p.model) return ref;
+    const grain = p.grain ? `:${p.grain}` : "";
+    if (reaches(model, p.model)) return ref;
+    const peers = conformedPeers(models, p.model, p.field, model);
+    const live = peers.filter((x) => approved(x.carrier.model, x.carrier.name));
+    if (live.length === 1) {
+      const peer = live[0]!.dimension;
+      const named = `${model}.${peer.name}`;
+      const target = (modelOf(p.model)?.dimensions ?? []).find((d) => d.name === p.field);
+      const zones = target && zoneClash(target, peer);
+      if (zones) {
+        add(
+          "join.conformed_time_zone",
+          `${what} ${ref}, which ${named} is declared the same as, but ${p.model}.${p.field} is stored in time zone ${zones[0]} and ${named} in ${zones[1]}, so a day of one is not a day of the other and their periods cannot be combined`,
+          ref,
+          `Ask for the measures of ${model} by ${named}${grain} in a request of their own, or make both dimensions count days in one zone and record it, and run semlayer sql again.`,
+        );
+        return undefined;
+      }
+      const schemas = conformedSchemas(input.snapshot, crossSchemaPairs(source), modelOf(p.model)!, modelOf(model)!);
+      if (schemas) {
+        add(
+          "scope.cross_schema_undeclared",
+          `${what} ${ref}, which ${named} is declared the same as, but ${p.model} and ${model} are in schemas ${schemas[0]} and ${schemas[1]}, and no approved schema pair joins them`,
+          ref,
+          `Record the pair with semlayer add-cross-schema --source ${source.source} --from ${schemas[0]} --to ${schemas[1]} --keys <table>.<column>=<table>.<column>, read it back and approve it on the owner's yes, and run semlayer sql again.`,
+        );
+        return undefined;
+      }
+      return `${named}${grain}`;
+    }
+    if (live.length > 1) {
+      add("invalid_layer", `${what} ${ref}, and ${live.map((x) => `${model}.${x.dimension.name}`).join(" and ")} are each declared the same as it; run semlayer validate`, ref);
+      return undefined;
+    }
+    if ((modelOf(model)?.dimensions ?? []).some((d) => d.name === p.field)) return `${model}.${p.field}${grain}`;
+    const waiting = peers.map((x) => `${source.source}.${x.carrier.model}.${x.carrier.name}`);
     add(
       "no_shared_dimension",
       `${what} ${ref}, but its measures come from ${across}, each aggregated on its own model, so each of them needs to reach ${p.model} through one path of to-one joins or have a dimension named ${p.field}; ${model} has neither`,
       ref,
-      `Add a many_to_one join from ${model} toward ${p.model} (semlayer check-join measures it), or a dimension ${p.field} to ${model} that gives the same value, approve it after its readback, and run semlayer sql again; or leave ${ref} out of the request.`,
+      waiting.length
+        ? `${waiting.join(" and ")} declares conforms_to between ${model} and ${p.model} but awaits approval: read it back with semlayer readback --targets ${waiting.join(",")} and approve it on the owner's yes, then run semlayer sql again.`
+        : `Add a many_to_one join from ${model} toward ${p.model} (semlayer check-join measures it), or a dimension ${p.field} to ${model} that gives the same value, approve it after its readback, and run semlayer sql again; ` +
+            `or declare that a dimension of ${model} is the same as ${p.model}.${p.field} with semlayer conform; or leave ${ref} out of the request.`,
     );
     return undefined;
   };
+  // The name each grouping column has in the result: the name the request gives the dimension.
+  const dimNames = dimensions.map((d) => {
+    const p = parseRequestField(d);
+    return p ? (p.grain ? `${p.field}_${p.grain}` : p.field) : d;
+  });
 
   const q = (s: string) => quoteIdent(dialect, s);
   const cte = (model: string) => q(`${model} measures`);
@@ -103,7 +158,6 @@ export function compileParts(p: PartsRequest): CompileResult {
   const joins: PlannedJoin[] = [];
   const rowFilters: AppliedRows[] = [];
   const bodies: string[] = [];
-  let dimNames: string[] = [];
   for (const model of parts) {
     const dims = dimensions.map((d) => mapped(d, model, "the request groups by"));
     const where = inner.map((f) => ({ ...f, field: mapped(f.field, model, `a filter of the request is on`) }));
@@ -128,8 +182,10 @@ export function compileParts(p: PartsRequest): CompileResult {
     params.values.push(...r.params);
     joins.push(...r.joins.map((x) => ({ ...x, part: model })));
     rowFilters.push(...r.row_filters.map((x) => ({ ...x, part: model })));
-    bodies.push(`${cte(model)} as (\n${r.sql}\n)`);
-    if (model === base) dimNames = r.columns.slice(0, dimensions.length).map((c) => c.name);
+    // A part grouped by a conformed dimension names its column as the request does.
+    const names = r.columns.map((c, i) => (i < dimensions.length ? dimNames[i]! : c.name));
+    const renamed = names.some((n, i) => n !== r.columns[i]!.name);
+    bodies.push(`${cte(model)}${renamed ? ` (${names.map(q).join(", ")})` : ""} as (\n${r.sql}\n)`);
   }
   if (refusals.length) return refuse();
 

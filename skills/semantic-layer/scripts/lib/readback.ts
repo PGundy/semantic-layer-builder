@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type AccessLayer, type AccessVisibility, evaluateLayer, loadAccessLayer } from "./access.ts";
 import { type ApprovalEntry, goldenHash, itemApprovals, listApprovals, pairEntries } from "./approval-hash.ts";
+import { conformedWords } from "./conformed.ts";
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { findTable, qualifiedName } from "./naming.ts";
@@ -579,6 +580,7 @@ function renderField(ref: string, source: string, model: Model, e: ApprovalEntry
     if (!bare) sql.push(String(f.expr));
     if (strs(f.time_grains).length) out.push(`- Time grains: ${strs(f.time_grains).join(", ")}.`);
     if (typeof f.time_zone === "string") out.push(`- Stored in time zone ${f.time_zone}.`);
+    if (typeof f.conforms_to === "string") out.push(`- ${conformedWords(model.model, f.conforms_to)}`);
     // A week grain on a source whose weeks do not start on Monday: the owner approves the weeks they get.
     if (info.weekStart && f.type === "time" && (!Array.isArray(f.time_grains) || f.time_grains.includes("week")))
       out.push(`- A week starts on ${info.weekStart[0]!.toUpperCase()}${info.weekStart.slice(1)} (calendar.week_start of source ${source}).`);

@@ -8,6 +8,7 @@
 //   window over the periods. A filter on the `over` dimension at its grain then picks the periods
 //   shown, after the totals, so it never moves where a total starts.
 // spine() is exported for the other time views, which build on the same filled periods.
+import { sameDimension } from "../conformed.ts";
 import { quoteIdent } from "../dialect.ts";
 import { grainShorthand, parseRequestField } from "../refs.ts";
 import { globInsideViews } from "../source-safety.ts";
@@ -85,8 +86,9 @@ export interface ViewPlan {
 const isMetric = (input: CompileInput, ref: string) => NAME_PATTERN.test(ref) && input.layer.metrics.some((m) => m.name === ref && (m.source ?? input.source.source) === input.source.source);
 
 // The checks every view over a time dimension shares: `over` names one of the request's dimensions
-// in full, model.field:grain; no other dimension is that field at another grain; no filter is on a
-// measure or metric; a filter on the over field is at its grain. undefined when `over` is not
+// in full, model.field:grain; no other dimension is that field, or one conformed with it, at another
+// grain; no filter is on a measure or metric; a filter on the over field (or one conformed with it) is
+// at its grain. undefined when `over` is not
 // model.field:grain (the refusal is added).
 export function viewPlan(input: CompileInput, request: QueryRequest, overRef: string, w: ViewWords, add: (message: string, ref?: string) => void): ViewPlan | undefined {
   const models = input.layer.models.filter((m) => m.source === input.source.source);
@@ -107,7 +109,7 @@ export function viewPlan(input: CompileInput, request: QueryRequest, overRef: st
   if (at < 0) add(`${w.key}.over is ${overRef}, which is not one of the request's dimensions; add ${overRef} to dimensions, or name one of them in ${w.key}.over`, overRef);
   dimensions.forEach((d, i) => {
     const p = parseRequestField(d);
-    if (i !== at && p && `${p.model}.${p.field}` === over.field)
+    if (i !== at && p && sameDimension(models, `${p.model}.${p.field}`, over.field))
       add(`dimensions[${i}] is ${d}, the same field as ${w.key}.over at another grain; the periods of ${w.noun} would mix the two grains: drop ${d}, or ask for it in its own request without ${w.key}`, d);
   });
   // A filter on the over dimension at its grain picks the periods shown; at no grain or another
@@ -119,7 +121,7 @@ export function viewPlan(input: CompileInput, request: QueryRequest, overRef: st
     const isMeasure = isMetric(input, f.field) || (p && !p.grain && models.some((m) => m.model === p.model && m.measures.some((x) => x.name === p.field)));
     if (isMeasure)
       return void add(`filters[${i}] is on ${f.field}, a measure; ${w.measureFilter}: ask without ${w.key} to filter on ${f.field}, or filter the ${over.grain}s on ${overRef}`, f.field);
-    if (!p || `${p.model}.${p.field}` !== over.field) return void inner.push(f);
+    if (!p || !sameDimension(models, `${p.model}.${p.field}`, over.field)) return void inner.push(f);
     if (p.grain === over.grain) return void outer.push(f);
     add(
       `filters[${i}] is on ${f.field}, ${p.grain ? `at grain ${p.grain}` : "with no grain"}; ${w.noun} by ${over.grain} filters ${over.field} at its grain, which picks the ${over.grain}s shown: write the field as ${overRef}`,
