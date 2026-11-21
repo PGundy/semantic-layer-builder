@@ -14,8 +14,9 @@ import {
   metricMeasureRefs,
 } from "./access.ts";
 import { canRun } from "./adapters/index.ts";
-import { type ApprovalEntry, backed, confirmable, holdsHashes, integrity, itemApprovals, listApprovals, pairEntries, type Standing, standing } from "./approval-hash.ts";
+import { type ApprovalEntry, backed, requestHash, confirmable, holdsHashes, integrity, itemApprovals, listApprovals, pairEntries, type Standing, standing } from "./approval-hash.ts";
 import { type ChangeRecord, loadChange, releaseLead } from "./change-record.ts";
+import { loadChangelog } from "./release.ts";
 import { currentYes, ledgerState, readApprovalLedger } from "./ledger.ts";
 import { accessRowFilters, layerReads } from "./layer-reads.ts";
 import { findTable, qualifiedName } from "./naming.ts";
@@ -319,6 +320,10 @@ export interface ProjectStatus {
   goldens: ApprovalCount;
   // Names of the goldens that are not approved; a golden without a string name goes by its file name.
   draft_goldens: string[];
+  // The goldens the latest release left out as unconfirmed that are still drafts with the request they had then:
+  // the owner deferred them at that release (spec: Iterating a layer, Deferred goldens). Null when there are none.
+  // confirmed is the goldens confirmed now, confirmed_before those the release before it recorded.
+  deferred_goldens: DeferredGoldens | null;
   // Roles in access.yaml that no approved golden uses. A golden without a role key uses
   // access.yaml's default_role.
   roles_without_goldens: string[];
@@ -331,6 +336,13 @@ export interface ProjectStatus {
   // the open change round (.semlayer/change.json), or null (spec: Iterating a layer, The change round).
   layer_version: string | null;
   change: ChangeRecord | null;
+}
+
+export interface DeferredGoldens {
+  release: string;
+  goldens: string[];
+  confirmed: number;
+  confirmed_before: number;
 }
 
 // A model a role sees that reaches the role's row-filtered model through to-one joins, with no
@@ -414,6 +426,30 @@ function draftGoldenNames(goldens: LoadedGolden[]): string[] {
     if (g.status === "approved") return [];
     return [typeof g.name === "string" && g.name !== "" ? g.name : stem(basename(path))];
   });
+}
+
+// The goldens the latest release deferred (changelog entry goldens_unconfirmed_requests) that are still drafts
+// with the request they had then, or null: with no release recorded, an unreadable changelog, a release the
+// layer has moved past, or none left.
+function deferredGoldens(root: string, layerVersion: unknown, loaded: LoadedGolden[]): DeferredGoldens | null {
+  if (typeof layerVersion !== "string" || layerVersion === "") return null;
+  const { log } = loadChangelog(root);
+  const last = log?.entries.at(-1);
+  const recorded = last?.goldens_unconfirmed_requests;
+  if (!last || last.version !== layerVersion || !recorded) return null;
+  const names = loaded
+    .flatMap(({ golden }) => (isRecord(golden) && typeof golden.name === "string" && golden.status !== "approved" && recorded[golden.name] === requestHash(golden.request) ? [golden.name] : []))
+    .sort();
+  if (!names.length) return null;
+  // What the release before it had: the goldens it recorded and those it left out.
+  const before = log!.entries.at(-2);
+  const had = (e: typeof last) => Object.keys(e.goldens).length + (e.goldens_unconfirmed ?? []).filter((n) => !(n in e.goldens)).length;
+  return {
+    release: last.version,
+    goldens: names,
+    confirmed: loaded.filter(({ golden }) => isRecord(golden) && golden.status === "approved").length,
+    confirmed_before: before ? had(before) : had(last),
+  };
 }
 
 // The draft metrics that can be read back as metric:<name>; a name semlayer approve cannot target is left
@@ -780,6 +816,9 @@ interface StepContext {
   // Whether a release is recorded (semantic.yaml's layer_version is set).
   released: boolean;
 }
+
+// The most deferred goldens the done step names.
+const DEFERRED_SHOWN = 8;
 
 const OPEN_BASELINE = "everyone sees every approved model, field and metric except those tagged pii or sensitive";
 const EXCEPTIONS_QUESTION = "is there anything some people should not see?";
@@ -1181,10 +1220,15 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch" | "laye
   if (exported && sources.every((s) => s.intake_mode === "export")) return connectStep(exported);
 
   const uncovered = status.roles_without_goldens;
+  const deferred = status.deferred_goldens;
+  const deferredSet = new Set(deferred?.goldens ?? []);
+  const notDeferred = status.draft_goldens.filter((n) => !deferredSet.has(n));
+  // Goldens the owner deferred at the release do not hold a released layer in the verify phase on their own.
+  const deferredOnly = !!deferred && ctx.released && notDeferred.length === 0 && status.goldens.approved + deferred.goldens.length >= MIN_APPROVED_GOLDENS;
   const roleNote = uncovered.length ? ` Roles without an approved golden: ${uncovered.join(", ")}.` : "";
-  if (status.goldens.approved < MIN_APPROVED_GOLDENS) {
+  if (status.goldens.approved < MIN_APPROVED_GOLDENS && !deferredOnly) {
     const counts = goldenCounts(status.goldens);
-    const draft = status.draft_goldens.find((n) => /^[a-z][a-z0-9_]*$/.test(n));
+    const draft = notDeferred.find((n) => /^[a-z][a-z0-9_]*$/.test(n));
     if (draft) {
       // A golden on a source semlayer cannot run is read back from a plan of its rows.
       const src = ctx.goldenSources.get(draft);
@@ -1230,7 +1274,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch" | "laye
   const left = [
     status.no_metrics?.applies ? `owner's answer of no metrics for now (said by ${plainText(status.no_metrics.by)} on ${status.no_metrics.at})` : "",
     status.draft_metrics.length ? `draft metric(s) ${status.draft_metrics.join(", ")}` : "",
-    status.draft_goldens.length ? `draft golden(s) ${status.draft_goldens.join(", ")}` : "",
+    notDeferred.length ? `draft golden(s) ${notDeferred.join(", ")}` : "",
     fields.length ? `draft field(s) ${fields.join(", ")}` : "",
     status.row_filter_joins_without_goldens.length
       ? `models that reach a row-filtered model through joins with no approved golden as the role: ${rowFilterJoinItems(status.row_filter_joins_without_goldens).join(", ")}`
@@ -1241,6 +1285,10 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch" | "laye
     message:
       "Every phase the CLI can measure is complete. Rerun semlayer validate after any change." +
       (left.length ? ` Name in the handoff the ${left.join("; ")}.` : "") +
+      (deferred
+        ? ` The owner deferred ${deferred.goldens.length} golden(s) at release ${deferred.release}: ${deferred.goldens.slice(0, DEFERRED_SHOWN).join(", ")}${deferred.goldens.length > DEFERRED_SHOWN ? `, and ${deferred.goldens.length - DEFERRED_SHOWN} more` : ""}; ` +
+          `the layer confirms ${deferred.confirmed} golden(s) against ${deferred.confirmed_before} before it. When the owner can check one: semlayer readback --targets golden:${deferred.goldens[0]}.`
+        : "") +
       (ctx.released
         ? ""
         : " Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.") +
@@ -1544,6 +1592,7 @@ export function statusDetail(root: string, only?: string): StatusDetail {
     stamped_without_yes: [...approvals, ...pairApprovals].filter((e) => targets.get(e.ref)?.state === "unbacked").map((e) => e.ref),
     goldens: count(goldens),
     draft_goldens: draftGoldenNames(loadedGoldens),
+    deferred_goldens: deferredGoldens(root, project.layer_version, loadedGoldens),
     roles_without_goldens: roleNames(access).filter((r) => !goldenRoles.has(r)),
     row_filter_joins_without_goldens: rowFilterJoinsWithoutGoldens(goldenLayer, access, new Set(sources.map((s) => s.source)), approvedGoldens),
   };

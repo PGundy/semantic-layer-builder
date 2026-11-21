@@ -288,8 +288,9 @@ async function closeCommand(ctx: CommandContext, version: string | undefined): P
     const cells = movedCells(before, rows, (g.request.order_by ?? []).length ? [] : groupingColumns(compileGolden(ctx.root, g)));
     if (cells.changed) moved.push({ golden: name, ...cells });
   }
-  // A golden the last release recorded that is a draft now, or gone, is left out of this one and named.
-  const outGoldens = goldensLeftOut(ctx.root, last?.goldens ?? {});
+  // A golden the last release recorded that is a draft now, or gone, is left out of this one and named; so is one
+  // the last release left out that is still a draft with the same request.
+  const outGoldens = goldensLeftOut(ctx.root, last?.goldens ?? {}, last?.goldens_unconfirmed_requests ?? {});
   const entry: ChangelogEntry = {
     version: v,
     date: ctx.now().toISOString().slice(0, 10),
@@ -301,7 +302,7 @@ async function closeCommand(ctx: CommandContext, version: string | undefined): P
     changed: diff.changed.map((c) => c.ref),
     removed: diff.removed,
     goldens_moved: moved,
-    ...(outGoldens.unconfirmed.length ? { goldens_unconfirmed: outGoldens.unconfirmed } : {}),
+    ...(outGoldens.unconfirmed.length ? { goldens_unconfirmed: outGoldens.unconfirmed, goldens_unconfirmed_requests: outGoldens.requests } : {}),
     ...(outGoldens.removed.length ? { goldens_removed: outGoldens.removed } : {}),
   };
   // semantic.yaml first, then the changelog, then the round's file: a stop after the first write leaves

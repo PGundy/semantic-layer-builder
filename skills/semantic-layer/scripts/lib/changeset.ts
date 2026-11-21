@@ -3,6 +3,7 @@
 // changed item. Hashes come from statusDetail, the ones semlayer approve uses, so a change to what a
 // hash covers needs no edit here. Names, refs and hashes only: no data value.
 import { createHash } from "node:crypto";
+import { requestHash } from "./approval-hash.ts";
 import { goldenReads } from "./goldens.ts";
 import { listGoldens, listModels, listSourceNames, loadMetrics, loadSource } from "./project.ts";
 import { statusDetail } from "./status.ts";
@@ -48,11 +49,22 @@ export function leftOut(ref: string, v: ItemState, baseline: Record<string, stri
 // as leftOut leaves out a draft item: `unconfirmed` holds those whose file holds a draft golden now (returned
 // to draft with semlayer goldens unconfirm, its new figures not yet confirmed), `removed` those whose file is gone.
 // A golden confirmed now is in the release; one the last release did not record is not named. Sorted.
-export function goldensLeftOut(root: string, recorded: Record<string, unknown>): { unconfirmed: string[]; removed: string[] } {
+// `requests` holds the request hash of each unconfirmed one (a deferred golden is read by it, see status.ts).
+// `deferred` is the last entry's own record of the goldens it left out (name to request hash): one still a draft
+// with that request stays unconfirmed, so the owner's deferral carries into the next release.
+export function goldensLeftOut(root: string, recorded: Record<string, unknown>, deferred: Record<string, string> = {}): { unconfirmed: string[]; removed: string[]; requests: Record<string, string> } {
   const now = new Map<string, unknown>();
-  for (const { golden: g } of listGoldens(root)) if (g && typeof g === "object" && typeof g.name === "string") now.set(g.name, g.status);
+  const requests: Record<string, string> = {};
+  for (const { golden: g } of listGoldens(root)) {
+    if (g && typeof g === "object" && typeof g.name === "string") {
+      now.set(g.name, g.status);
+      requests[g.name] = requestHash(g.request);
+    }
+  }
   const names = Object.keys(recorded).sort();
-  return { unconfirmed: names.filter((n) => now.has(n) && now.get(n) !== "approved"), removed: names.filter((n) => !now.has(n)) };
+  const carried = Object.keys(deferred).filter((n) => !(n in recorded) && now.has(n) && now.get(n) !== "approved" && requests[n] === deferred[n]);
+  const unconfirmed = [...names.filter((n) => now.has(n) && now.get(n) !== "approved"), ...carried].sort();
+  return { unconfirmed, removed: names.filter((n) => !now.has(n)), requests: Object.fromEntries(unconfirmed.map((n) => [n, requests[n]!])) };
 }
 
 // Whether semlayer next lets the close go ahead without the item: the close leaves it out (leftOut) and it was

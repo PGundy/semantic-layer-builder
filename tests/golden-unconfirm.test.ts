@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { checkToolUse } from "../skills/semantic-layer/scripts/hooks/guard-edits.ts";
 import type { NextAction } from "../skills/semantic-layer/scripts/lib/next.ts";
@@ -156,9 +156,9 @@ describe("the walkthrough's round: one moved golden confirmed again, two unconfi
     await ok(root, ["change", "close", "--version", "1.2"]);
     const third = readChangelog(root)!.entries[2]!;
     expect(third.goldens.spend_by_channel_2025).toEqual(golden(root, "spend_by_channel_2025").expected!.rows);
-    // Release 1.1 did not hold the other, so 1.2 neither holds it nor names it again.
+    // Release 1.1 did not hold the other and it is still a draft with its request, so 1.2 leaves it out and names it again.
     expect(third.goldens.spend_h1_2025).toBeUndefined();
-    expect(third.goldens_unconfirmed).toBeUndefined();
+    expect(third.goldens_unconfirmed).toEqual(["spend_h1_2025"]);
     // Confirmed again on a new yes, it no longer names the one set aside.
     await confirm(root, "spend_h1_2025");
     expect("unconfirmed_yes" in golden(root, "spend_h1_2025")).toBe(false);
@@ -241,5 +241,105 @@ describe("the guard hook", () => {
     );
     expect(v.allow).toBe(false);
     expect(v.message).toContain("semlayer goldens unconfirm --name spend_2025");
+  });
+});
+
+describe("goldens the owner deferred at a release", () => {
+  const status = async (root: string) =>
+    (await semlayer(root, ["status", "--json"])).json<{ goldens: { approved: number; draft: number }; deferred_goldens: { release: string; goldens: string[]; confirmed: number; confirmed_before: number } | null }>();
+
+  // Returns confirmed goldens to draft, the fixture's other ones first, until `keep` remain confirmed.
+  async function leaveConfirmed(root: string, keep: string[], reason?: string): Promise<void> {
+    for (const f of readdirSync(join(root, "goldens"))) {
+      const name = f.replace(/\.yaml$/, "");
+      if (!keep.includes(name) && golden(root, name).status === "approved") await ok(root, ["goldens", "unconfirm", "--name", name, ...(reason ? ["--reason", reason] : [])]);
+    }
+  }
+
+  // The round of the walkthrough: the owner re-confirms spend_2025 and cannot check the rest from memory,
+  // so the layer closes at release 1.1 with four confirmed goldens, fewer than the verify phase's minimum.
+  async function closedWithDeferred(): Promise<string> {
+    const root = await roundMovingSpend();
+    // The fixture's own draft was never confirmed, so the release does not defer it.
+    await ok(root, ["goldens", "remove", "--name", "new_customers_2025"]);
+    await confirm(root, "spend_2025");
+    // One golden per role stays, so no role is left without one.
+    await leaveConfirmed(root, ["spend_2025", "net_revenue_2025", "finance_net_revenue_2025", "sales_head_301_2025"], "can't check that one from memory");
+    await ok(root, ["change", "close", "--version", "1.1"]);
+    return root;
+  }
+
+  test("next rests at done and names them, status lists them, and the verify step is not returned", async () => {
+    const root = await closedWithDeferred();
+    const before = await status(root);
+    expect(before.goldens.approved).toBeLessThan(5);
+    const n = await next(root);
+    expect(`${n.phase}: ${n.why}`).toStartWith("done");
+    expect(n.action.command).not.toBe("goldens");
+    expect(n.action.command).not.toBe("readback");
+    expect(n.why).toMatch(/The owner deferred \d+ golden\(s\) at release 1\.1: \w+/);
+    expect(n.why).toContain("semlayer readback --targets golden:");
+    expect(n.why).toMatch(/confirms \d+ golden\(s\) against \d+ before it/);
+    expect(n.why).not.toContain("the verify phase needs");
+    const st = await status(root);
+    expect(st.deferred_goldens).toMatchObject({ release: "1.1", confirmed: before.goldens.approved });
+    expect(st.deferred_goldens!.goldens).toEqual(expect.arrayContaining(["spend_by_channel_2025", "spend_h1_2025"]));
+    expect(st.deferred_goldens!.confirmed_before).toBeGreaterThan(st.deferred_goldens!.confirmed);
+    const text = (await semlayer(root, ["status"])).out;
+    expect(text).toContain("deferred by the owner at release 1.1: ");
+    // A new change round keeps the deferral.
+    await ok(root, ["change", "start", "--note", "Another change", "--by", "Dana Ruiz"]);
+    expect((await status(root)).deferred_goldens!.goldens).toEqual(expect.arrayContaining(["spend_by_channel_2025", "spend_h1_2025"]));
+  });
+
+  test("a second release with no edits carries the deferral forward, and a golden confirmed in between leaves it", async () => {
+    const root = await closedWithDeferred();
+    const first = (await status(root)).deferred_goldens!;
+    await ok(root, ["change", "start", "--note", "Another change", "--by", "Dana Ruiz"]);
+    await ok(root, ["change", "close", "--version", "1.2"]);
+    const n = await next(root);
+    expect(n.phase).toBe("done");
+    expect(n.action.command).not.toBe("readback");
+    const st = (await status(root)).deferred_goldens!;
+    expect(st).toMatchObject({ release: "1.2", goldens: first.goldens, confirmed: first.confirmed, confirmed_before: first.confirmed_before });
+    // Past the eighth name the message counts the rest.
+    expect(n.why).toMatch(/, and \d+ more; /);
+    // The owner confirms one on a recorded yes: the next release holds it and no longer defers it.
+    await confirm(root, "spend_h1_2025");
+    await ok(root, ["change", "start", "--note", "Third", "--by", "Dana Ruiz"]);
+    await ok(root, ["change", "close", "--version", "1.3"]);
+    const after = (await status(root)).deferred_goldens!;
+    expect(after.release).toBe("1.3");
+    expect(after.goldens).not.toContain("spend_h1_2025");
+    expect(after.goldens.length).toBe(first.goldens.length - 1);
+  });
+
+  test("a new draft golden, or one whose request changed since the release, is still asked for", async () => {
+    const root = await closedWithDeferred();
+    await ok(root, ["goldens", "new", "--name", "spend_q1_2025", "--question", "What was marketing spend in the first quarter of 2025?", "--request", JSON.stringify({ ...H1, filters: [{ field: "marketing_spend.spend_date", op: "lt", value: "2025-04-01" }] })]);
+    const n = await next(root);
+    expect(n.phase).toBe("verify");
+    expect(n.action).toEqual({ command: "readback", args: ["--targets", "golden:spend_q1_2025"], kind: "run" });
+    // The deferred ones are still listed; a changed request takes one out of them.
+    expect((await status(root)).deferred_goldens!.goldens).toEqual(expect.arrayContaining(["spend_by_channel_2025", "spend_h1_2025"]));
+    const path = join(root, "goldens", "spend_h1_2025.yaml");
+    writeFileSync(path, readFileSync(path, "utf8").replace("2025-07-01", "2025-08-01"));
+    const left = (await status(root)).deferred_goldens!.goldens;
+    expect(left).toContain("spend_by_channel_2025");
+    expect(left).not.toContain("spend_h1_2025");
+  });
+
+  test("a layer with no release still returns the verify step below the minimum", async () => {
+    const root = releaseFixture();
+    await ok(root, ["goldens", "remove", "--name", "new_customers_2025"]);
+    const names = readdirSync(join(root, "goldens")).map((f) => f.replace(/\.yaml$/, ""));
+    await leaveConfirmed(root, names.filter((n) => golden(root, n).status === "approved").slice(0, 3));
+    for (const n of names.slice(-2)) if (golden(root, n).status === "approved") await ok(root, ["goldens", "unconfirm", "--name", n]);
+    rmSync(join(root, "changelog.yaml"), { force: true });
+    const s = await status(root);
+    expect(s.deferred_goldens).toBeNull();
+    expect(s.goldens.approved).toBe(3);
+    expect(s.goldens.draft).toBeGreaterThanOrEqual(2);
+    expect((await next(root)).phase).toBe("verify");
   });
 });

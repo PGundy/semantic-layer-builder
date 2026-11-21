@@ -280,6 +280,12 @@ export function goldenHash(golden: Obj, rows: unknown[], tolerance: number): str
   });
 }
 
+// The hash of a golden's request alone, which a release records for a golden it leaves out as unconfirmed
+// so a later reading can tell the golden the owner deferred from a new one under the same name.
+export function requestHash(request: unknown): string {
+  return digest({ kind: "golden_request", request });
+}
+
 // One item that carries an approval, located in its file.
 export interface ApprovalEntry {
   kind: ItemKind;

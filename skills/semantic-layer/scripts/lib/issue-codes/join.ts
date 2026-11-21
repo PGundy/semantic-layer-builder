@@ -9,6 +9,11 @@ const codes: CodeFamily = {
     meaning: "Two dimensions of one model conform to the same dimension, so a request grouped by it could group that model by either.",
     next: "semlayer set",
   },
+  "join.conformed_both_sides": {
+    level: "error",
+    meaning: "A request groups by both dimensions of a conformed pair at one grain; they are declared the same, so one of them is enough, and semlayer sql refuses it naming the request to send instead.",
+    next: "semlayer sql",
+  },
   "join.conformed_chain": {
     level: "error",
     meaning: "A dimension conforms to a dimension that itself conforms to another; conforms_to is one hop and is never followed further.",
@@ -27,6 +32,11 @@ const codes: CodeFamily = {
   "join.conformed_time_zone": {
     level: "warning",
     meaning: "Two conformed time dimensions record different time zones, so a day of one is not a day of the other; semlayer sql refuses to combine them.",
+    next: "semlayer set",
+  },
+  "join.conformed_time_zone_unset": {
+    level: "warning",
+    meaning: "Two conformed time dimensions, one declaring a time zone other than UTC and the other none (so it counts days in UTC), so a day of one is not a day of the other.",
     next: "semlayer set",
   },
   "join.conformed_type_mismatch": {
