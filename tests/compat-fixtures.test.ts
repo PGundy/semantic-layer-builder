@@ -144,7 +144,7 @@ describe("a run against the local PostgreSQL", () => {
 });
 
 describe("a SELECT-only role on a synthetic schema", () => {
-  test.skipIf(!PG_URL)("gives exact counts, read_only_role true, and none of the role, password or names", async () => {
+  test.skipIf(!PG_URL)("gives exact counts, read_only_role as the server's version allows, and none of the role, password or names", async () => {
     const admin = new SQL(PG_URL!);
     const u = new URL(PG_URL!);
     const fx = tempDir();
@@ -165,7 +165,9 @@ describe("a SELECT-only role on a synthetic schema", () => {
       const text = readFileSync(out, "utf8");
       const f = JSON.parse(text);
       expect(f.catalog).toEqual({ tables: 2, views: 1, columns: 7, foreign_keys: 1 });
-      expect(f.read_only_role).toBe(true);
+      // Before PostgreSQL 15 every role may create tables in the public schema, so a role granted only SELECT
+      // is not read-only there until that default is revoked; the fixture says so rather than claim it.
+      expect(f.read_only_role).toBe(f.server_version_num >= 150000);
       for (const s of ["zzv_reader_77", "zzv_Secret_pw_91", "zzv_shop", "customer", "orders"]) {
         expect(text).not.toContain(s);
         expect(said.join("\n")).not.toContain(s);
