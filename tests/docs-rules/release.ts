@@ -3,7 +3,7 @@ import type { DocRule } from "./index.ts";
 // The rules of iterating a layer (workstream H) the docs keep: one phrase per rule.
 export const RULES: DocRule[] = [
   ["spec.md", "introspect keeps a drift record", "`semlayer introspect` keeps `.semlayer/drift.json`"],
-  ["spec.md", "a retype stays open until the field is edited or approved again", "until the field is edited (its content hash changes) or approved again (a newer yes from the owner in the ledger)"],
+  ["spec.md", "a retype stays open until the field is edited or approved again", "until the field is edited (its content hash without its description changes) or approved again (a newer yes from the owner in the ledger)"],
   ["spec.md", "an unreadable table is told apart from a dropped one", "`unreadable` names those of them the database still holds but the role cannot read"],
   ["spec.md", "the record holds no value", "never a data value"],
   ["spec.md", "a failed introspect leaves the record", "A failed introspect leaves the record as it was"],
@@ -26,6 +26,8 @@ export const RULES: DocRule[] = [
   ["phases/change.md", "change only what was asked", "Make the edits the request needs and nothing else"],
   ["phases/change.md", "read back only items that changed", "Read back only the items that changed or were added, never the whole layer"],
   ["phases/change.md", "a changed approved item is a draft until the owner's yes", "A changed approved item goes back to draft, and stays draft until the owner's recorded yes"],
+  ["phases/change.md", "a reworded description is a change", "a reworded description is a change too, since the owner approved what the item says it means"],
+  ["spec.md", "change status marks a description-only change", "`description_only: true` when its definition is the one the entry recorded and only its description changed"],
   ["phases/change.md", "the first release comes before any round", "A layer is released once, then changed in rounds"],
   ["phases/change.md", "start the round before the first edit", "Start the round before the first edit"],
   // Closing a round (H4).

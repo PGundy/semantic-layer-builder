@@ -24,6 +24,11 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "description": "kind reply: the target's content hash stored in the readback item when it was read back."
     },
+    "definition_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "kind reply, an item with a description: the readback item's definition_hash, its content hash without the description."
+    },
     "question": { "type": "string", "minLength": 1, "description": "kind question: the open question as the file held it." },
     "text": { "type": "string", "minLength": 1, "description": "The owner's words, with credentials redacted and control characters removed." },
     "verdict": { "enum": ["yes", "no", "change", null], "description": "kind reply: yes, no or change, or null when the words were recorded without one." },
@@ -38,7 +43,7 @@
     },
     {
       "if": { "properties": { "kind": { "const": "question" } }, "required": ["kind"] },
-      "then": { "required": ["question"], "properties": { "readback_id": false, "item": false, "content_hash": false, "verdict": false, "about": false } }
+      "then": { "required": ["question"], "properties": { "readback_id": false, "item": false, "content_hash": false, "definition_hash": false, "verdict": false, "about": false } }
     },
     {
       "if": { "required": ["about"] },

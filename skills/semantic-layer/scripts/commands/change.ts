@@ -1,7 +1,7 @@
 import { canRun, openAdapter } from "../lib/adapters/index.ts";
 import { type CommandContext, type CommandSpec, str } from "../lib/command.ts";
 import { CHANGE_FILE, loadChange, readChange, removeChange, writeChange } from "../lib/change-record.ts";
-import { affectedGoldens, changeSince, type ItemDiff, deferredAtStart, goldensLeftOut, itemMap, leftOut } from "../lib/changeset.ts";
+import { affectedGoldens, changeSince, type ItemDiff, deferredAtStart, goldensLeftOut, itemDefinitions, itemMap, leftOut } from "../lib/changeset.ts";
 import { type DriftRecord, readDrift } from "../lib/drift-record.ts";
 import { resolveConnection } from "../lib/env-file.ts";
 import { UserError } from "../lib/errors.ts";
@@ -55,7 +55,7 @@ function statusCommand(root: string, ctx: { json: boolean; out: (t: string) => v
     return 0;
   }
   const last = log.entries[log.entries.length - 1]!;
-  const diff: ItemDiff = changeSince(root, last.items);
+  const diff: ItemDiff = changeSince(root, last.items, last.definitions, last.date);
   // An added item that is a draft is not approved. The close leaves a plain one (never approved, not in the
   // last release) out, so only an item the close would refuse waits for the owner's yes.
   const now = itemMap(root);
@@ -73,7 +73,10 @@ function statusCommand(root: string, ctx: { json: boolean; out: (t: string) => v
   if (diff.added.length) lines.push(`  added (${diff.added.length}): ${diff.added.map((r) => (addedDrafts.includes(r) ? `${r} (draft)` : r)).join(", ")}`);
   if (diff.changed.length) {
     lines.push(`  changed (${diff.changed.length}):`);
-    for (const c of diff.changed) lines.push(`    ${c.ref}: ${c.state === "draft" ? "draft, waits for the owner's yes" : "approved again"}${c.affected_goldens.length ? `; read by goldens ${c.affected_goldens.join(", ")}` : ""}`);
+    for (const c of diff.changed)
+      lines.push(
+        `    ${c.ref}: ${c.description_only ? "description only, its definition and figures as released; " : ""}${c.state === "draft" ? "draft, waits for the owner's yes" : "approved again"}${c.affected_goldens.length ? `; read by goldens ${c.affected_goldens.join(", ")}` : ""}`,
+      );
   }
   if (diff.removed.length) lines.push(`  removed (${diff.removed.length}): ${diff.removed.join(", ")}`);
   const held = waiting.filter((r) => !diff.added.includes(r) && !diff.changed.some((c) => c.ref === r));
@@ -216,7 +219,7 @@ async function closeCommand(ctx: CommandContext, version: string | undefined): P
 
   const goldens = new Map<string, Golden>();
   for (const { golden: g } of listGoldens(ctx.root)) if (g && typeof g === "object" && g.status === "approved" && typeof g.name === "string") goldens.set(g.name, g);
-  const diff: ItemDiff = last ? changeSince(ctx.root, last.items) : { added: [], changed: [], removed: [] };
+  const diff: ItemDiff = last ? changeSince(ctx.root, last.items, last.definitions, last.date) : { added: [], changed: [], removed: [] };
   const affected = [...new Set(diff.changed.flatMap((c) => c.affected_goldens))].sort();
   const notRerun: NotRerun[] = [];
   const reach = new Map<string, string | null>();
@@ -292,6 +295,7 @@ async function closeCommand(ctx: CommandContext, version: string | undefined): P
     date: ctx.now().toISOString().slice(0, 10),
     note: round?.note ?? "First release.",
     items: Object.fromEntries([...items].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([ref, x]) => [ref, x.hash])),
+    definitions: itemDefinitions(items),
     goldens: recordedRows,
     added: diff.added.filter((r) => items.has(r)),
     changed: diff.changed.map((c) => c.ref),

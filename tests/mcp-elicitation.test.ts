@@ -129,6 +129,8 @@ describe("approve with a client that declares elicitation", () => {
       at: FIXED_NOW,
       by: "Dana Ruiz",
       content_hash: rb.items[0]!.content_hash,
+      // The item has a description, so its readback also records its hash without it.
+      definition_hash: rb.items[0]!.definition_hash,
       id: "ans_0001",
       item: 1,
       kind: "reply",

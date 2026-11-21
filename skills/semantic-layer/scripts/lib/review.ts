@@ -500,7 +500,7 @@ export function applyReview(root: string, form: ReviewForm, by: string, at: stri
     else if (currentHash(root, p.target, p.content_hash) !== p.content_hash) out.refused.push({ ...note, reason: `${p.target} changed since the form was exported, so the owner answered text that no longer holds` });
     else {
       out.redacted ||= answer.redacted;
-      replies.push({ kind: "reply", readback_id: id, item: p.n, target: p.target, content_hash: p.content_hash, text, verdict: it.verdict, by, at });
+      replies.push({ kind: "reply", readback_id: id, item: p.n, target: p.target, content_hash: p.content_hash, ...(p.definition_hash ? { definition_hash: p.definition_hash } : {}), text, verdict: it.verdict, by, at });
     }
   }
   // An item or an open question the form leaves out (deleted by the owner, or added since export)

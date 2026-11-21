@@ -66,6 +66,11 @@ const codes: CodeFamily = {
   },
   "approval.hash_missing": { level: "warning", meaning: "An approved item has no approved_hash while other approved items carry one." },
   "approval.stamp_hashes": { level: "warning", meaning: "Approved items were approved before content hashes and carry none.", next: "semlayer approve --stamp-hashes" },
+  "approval.description_uncovered": {
+    level: "warning",
+    meaning: "Approved items record an approved_hash that covers their definition but not their description: approved before descriptions were part of an approval.",
+    next: "semlayer approve --stamp-hashes --confirm-unchanged",
+  },
   "approval.no_ledger_yes": {
     level: "warning",
     meaning: "Approved items have no recorded owner yes in the ledger that matches them as they stand.",

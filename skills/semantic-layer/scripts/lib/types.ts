@@ -456,6 +456,8 @@ export interface ReadbackItem {
   text: string;
   // The target's content hash when it was read back: what semlayer approve records as approved_hash.
   content_hash: string;
+  // An item with a description: its hash without the description (approval-hash.ts itemHashes).
+  definition_hash?: string;
   // A golden:<name> item only: the tolerance it was read back with, which semlayer goldens confirm records.
   tolerance?: number;
   // A golden:<name> item read back from stored rows: the --results <file> or --plan <plan_id> it took.
@@ -509,6 +511,8 @@ export interface LedgerReply {
   target: string;
   // The target's content hash when it was read back, copied from the pending readback.
   content_hash: string;
+  // Copied from the pending readback when it holds one: the hash without the item's description.
+  definition_hash?: string;
   text: string;
   verdict: ReplyVerdict | null;
   // "access" on a change to who sees the item (semlayer reply --about access): it is settled in the access

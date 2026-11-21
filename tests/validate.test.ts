@@ -2346,7 +2346,7 @@ describe("approval hashes", () => {
     const issues = validateProject(root);
     expect(atIssues(issues, CHANGED)).toEqual([["error", ORDERS, "measures[0]"]]);
     expect(issues.find((i) => i.message.includes(CHANGED))!.message).toBe(
-      "warehouse.orders.revenue changed since it was approved by Dana Ruiz on 2026-01-15: its definition, or a join it reads through, no longer matches approved_hash. " +
+      "warehouse.orders.revenue changed since it was approved by Dana Ruiz on 2026-01-15: its definition, or a join it reads through, or its description no longer matches approved_hash. " +
         'Read it back to the owner as it now stands and approve it again only after they confirm (semlayer approve --target warehouse.orders.revenue --by "<owner>"), ' +
         "or restore the approved definition",
     );
@@ -2364,7 +2364,7 @@ describe("approval hashes", () => {
     ]);
   });
 
-  test("model, metric and access changes are errors; descriptions, open questions and formatting are not", () => {
+  test("model, metric, access and description changes are errors; open questions and formatting are not", () => {
     const root = copyFixture();
     mutate(root, ORDERS, (d) => (d.grain = "One row per order line."));
     mutate(root, "metrics.yaml", (d) => (d.metrics[0].denominator = "orders.revenue"));
@@ -2373,10 +2373,20 @@ describe("approval hashes", () => {
       ["error", "metrics.yaml", "metrics[0]"],
     ]);
 
-    const quiet = copyFixture();
-    mutate(quiet, ORDERS, (d) => {
+    const described = copyFixture();
+    mutate(described, ORDERS, (d) => {
       d.description = "Orders, reworded.";
       d.measures[0].description = "Reworded.";
+    });
+    expect(atIssues(validateProject(described), CHANGED)).toEqual([
+      ["error", ORDERS, ""],
+      ["error", ORDERS, "measures[0]"],
+    ]);
+
+    const quiet = copyFixture();
+    mutate(quiet, ORDERS, (d) => {
+      // A description reflowed over lines, with its spacing changed, says the same.
+      d.description = `  ${String(d.description).split(" ").join("\n   ")}\n`;
       d.measures[0].synonyms = [" sales "];
       d.measures[0].filter = `  ${d.measures[0].filter}\n`;
       d.open_questions = ["A new question."];

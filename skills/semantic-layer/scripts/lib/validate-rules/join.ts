@@ -9,7 +9,7 @@
 import { classifyType, isNumeric } from "../column-types.ts";
 import { conformedSchemas, conformTarget, zoneClash } from "../conformed.ts";
 import { crossSchemaPairs } from "../schema-scope.ts";
-import { itemHash } from "../approval-hash.ts";
+import { itemHashes } from "../approval-hash.ts";
 import { throughCurrent, throughLines, unbridgedWarning } from "../readback-bridge.ts";
 import { type Dimension, type Join, type Model, type SnapshotTable, TIME_GRAINS } from "../types.ts";
 import type { RuleContext } from "./index.ts";
@@ -76,8 +76,10 @@ export default function join(ctx: RuleContext): void {
         // The evidence is outside the approval hash, so an approved join is settled only when its approval is
         // current and the readback the owner said yes to stated the count that is stored now.
         if (ev && typeof ev === "object" && typeof ev.facts_unbridged === "number" && ev.facts_unbridged > 0) {
-          const hash = itemHash("join", j as unknown as Record<string, unknown>, { source, model: model as unknown as Record<string, unknown> });
-          const seen = j.status === "approved" && j.approved_hash === hash ? ctx.yesReadbackText(ref, hash) : undefined;
+          const h = itemHashes("join", j as unknown as Record<string, unknown>, { source, model: model as unknown as Record<string, unknown> });
+          // The hash the approval records: the join's, or its definition's when approved before descriptions counted.
+          const hash = j.approved_hash === h.hash || j.approved_hash === h.definitionHash ? j.approved_hash : undefined;
+          const seen = j.status === "approved" && hash ? ctx.yesReadbackText(ref, hash) : undefined;
           const settled = !!seen && throughCurrent(j as Join, ev) && seen.includes(throughLines(model.model, j as Join, ev)[0]!);
           if (!settled) ctx.warn(m.file, `joins[${i}].evidence.through.facts_unbridged`, unbridgedWarning(model.model, ref, j as Join, ev), "join.through_facts_unbridged");
         }

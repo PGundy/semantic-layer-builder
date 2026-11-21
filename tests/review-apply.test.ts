@@ -58,8 +58,8 @@ describe("semlayer review apply records a filled form", () => {
     const [i1, i2] = pending.items;
     expect(ledger(root)).toBe(
       [
-        { at: FIXED_NOW, by: OWNER, content_hash: i1!.content_hash, id: "ans_0001", item: 1, kind: "reply", readback_id: "rb_0001", target: i1!.target, text: "Yes, that is right.", verdict: "yes" },
-        { at: FIXED_NOW, by: OWNER, content_hash: i2!.content_hash, id: "ans_0002", item: 2, kind: "reply", readback_id: "rb_0001", target: i2!.target, text: "Call it AOV, not average order value.", verdict: "change" },
+        { at: FIXED_NOW, by: OWNER, content_hash: i1!.content_hash, definition_hash: i1!.definition_hash, id: "ans_0001", item: 1, kind: "reply", readback_id: "rb_0001", target: i1!.target, text: "Yes, that is right.", verdict: "yes" },
+        { at: FIXED_NOW, by: OWNER, content_hash: i2!.content_hash, definition_hash: i2!.definition_hash, id: "ans_0002", item: 2, kind: "reply", readback_id: "rb_0001", target: i2!.target, text: "Call it AOV, not average order value.", verdict: "change" },
         { at: FIXED_NOW, by: OWNER, id: "ans_0003", kind: "question", question: ACCESS_QUESTION, target: "access", text: "No, totals only." },
       ]
         .map((e) => `${JSON.stringify(e)}\n`)

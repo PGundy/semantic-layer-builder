@@ -4,7 +4,7 @@ table: main.marketing_spend
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-26
-approved_hash: sha256:e7c222cdf728ecbd41f24d3fce02725bb8e248f8c79845e7f79baac4d3ce3caf
+approved_hash: sha256:bb46206c905b0142455d77e7d6028281740acd2e90c3fd0b70724439d590142b
 description: >-
   Daily marketing spend per paid channel, one row per day per channel: 3,655 rows, 731 days (1 Jan 2024 to 31 Dec 2025)
   times 5 channels (affiliate, display, email, paid_search, paid_social), every channel present on every day. Amounts
@@ -33,7 +33,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:02f07f4691a177642dcc1c2be47a41025892e20dd85a46ebea929ce42b4c9e50
+    approved_hash: sha256:57a822ac57e027eb42b10b3a7193220560b2317ff583a24614b7f2aa1f414096
   - name: channel
     expr: channel
     type: string
@@ -44,7 +44,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:da47cb4655abe11ee4a3a12435f3d37ea8f65e955d73d7678f58a604eed0c868
+    approved_hash: sha256:3ef34fe3808af08f2586dd42ab7c0c8ae27d01114158a02c5c1852c6c49c14ff
 measures:
   - name: spend
     expr: spend_cents * 0.01
@@ -59,4 +59,4 @@ measures:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:941c9f582a68d3e913db4636b172b29e7052764a04442ad71a7ac403e7583291
+    approved_hash: sha256:530bfbbce5c09de309aa59db9fd87b4573caedab2585c32b815a9ec122d8f772

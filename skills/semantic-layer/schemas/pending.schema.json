@@ -37,6 +37,11 @@
             "pattern": "^sha256:[0-9a-f]{64}$",
             "description": "The target's content hash when it was read back, the value semlayer approve records as approved_hash; for a golden, the hash of the golden with the rows and tolerance read back."
           },
+          "definition_hash": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "description": "An item with a description only: its content hash without the description, which tells semlayer validate, semlayer readback and semlayer change status that a later edit changed the description alone."
+          },
           "tolerance": {
             "type": "number",
             "minimum": 0,

@@ -174,7 +174,7 @@ Run the section 2 walkthrough with a fresh agent. Each failure of an exit condit
 | ID | Decision |
 |---|---|
 | HD1 | The hook's existing Bash checks stay. The before-and-after comparison is added beside them: it closes the forged-yes route, and the existing checks still give the early, plain refusals that name the right `semlayer` command. |
-| HD2 | Descriptions stay outside the approval hash. Adding them would void every recorded approval, and a description does not change a figure. The readback shows the description so the owner's yes is given with it in view. |
+| HD2 | Replaced by the decided line in section 6: a description is inside the approval hash. The readback shows the description so the owner's yes is given with it in view. |
 | HD3 | A process variable wins over any env file, as with every dotenv tool. |
 | HD4 | Postgres parts are named by a prefix on the source, so two sources can each have their own. `PG` gives the standard libpq names. |
 | HD5 | No new runtime dependency. The env file reader and the lock are written here. |
@@ -209,6 +209,10 @@ The plan that followed, a first PostgreSQL layer and then fast iteration, ran in
 - H. Iterating a layer from 1 to 1.x: `semlayer change close --version 1.0` records a finished layer, and a round (`semlayer change start`, `status`, `close`) ends in a new version and a `changelog.yaml` entry that names what changed and which goldens' figures moved, while `semlayer introspect` keeps the drift record; changes between two versions for consumers, semver rules, and deprecation and rename aliases are left, and a migration framework, branches inside the tool and version-aware compilation are not planned.
 - Follow-ups from the milestone walkthroughs: `semlayer add-metric --none` records an owner's answer of no metrics, `semlayer goldens unconfirm` and `semlayer goldens remove` lower a golden's trust or delete a draft and a round names each, `semlayer goldens new` and `semlayer validate` refuse a request that cannot compile, and refusals and warnings name their fix (a model-level filter, an unbridged fact join, a key that is not unique, an `--emit` path).
 
+Decided by the owner after this plan:
+
+- Every item: a description is inside the approval hash, so editing an approved item's description, other than its spacing, needs the owner's yes again; an item approved before that counts as approved, with a warning, until `semlayer approve --stamp-hashes --confirm-unchanged` records its hash with its description.
+
 Open questions for the owner, put on pull requests and not yet decided:
 
 - H: a draft never approved is left out of a release and named, as built, or the close is refused instead.
@@ -218,4 +222,3 @@ Open questions for the owner, put on pull requests and not yet decided:
 - E: a plain `semlayer import` on a source whose snapshot came from the database replaces that snapshot.
 - D: on conformed dimensions, a single declared time zone is not compared with an unset one, and grouping by both sides of a conformed pair has no next command.
 - G: an approval stamp hashed correctly but written by a whole-file shell write with no recorded yes is flagged afterwards and still counts as approved, for every kind of item.
-- Every item: a description is outside the approval hash, so an approved item's description can be edited without a new yes.

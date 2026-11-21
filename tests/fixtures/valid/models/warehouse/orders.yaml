@@ -4,7 +4,7 @@ table: public.fct_orders
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-01-15
-approved_hash: sha256:65b61915efa994a2f4e8fdb8e9d5e220a8a99cf570c76e65461fa802e7adfd77
+approved_hash: sha256:62d32576d9b3b224011839c18b7081b9518fbaa7cf501e499466c5edd3068d01
 description: Customer orders, one row per order.
 grain: One row per order.
 primary_key: [order_id]
@@ -18,7 +18,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-01-15
-    approved_hash: sha256:32200472001eed7ea9713bbaa9fbe67c67cbb8f7cbb9ec4a7ac70b861e0876ea
+    approved_hash: sha256:da4f577fbe093eab49afce0e35ef7cf10ab02649c2cb5d2e0b3c1fac82a161cb
   - name: status
     expr: status
     type: string
@@ -46,7 +46,7 @@ measures:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-01-15
-    approved_hash: sha256:987595bbef1661660400a30945dccd2ce7fffc584bbf374933e52786ccf36a85
+    approved_hash: sha256:5fc701e30d133aa9d96fb5c0d6fbae04a135bd39df55ec1d5526692529938439
   - name: order_count
     agg: count
     format: integer
@@ -54,7 +54,7 @@ measures:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-01-15
-    approved_hash: sha256:6690403fcc95db7f1de19f92ebff72b039b45d88f53cffbb843e318c5d7c0f8b
+    approved_hash: sha256:74add0e89306d471b29ba5374a55825d7b444b73b81a1618cc89a822d9207a18
 joins:
   - name: customer
     to: customers
@@ -67,7 +67,7 @@ joins:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-01-15
-    approved_hash: sha256:96cd14263bf8ed85b004b16ef7cbfa5197da6ca327cc5e6581fc19152081c06f
+    approved_hash: sha256:7d56e76693d381406b860830a70ea99f4a42cbe62c5b76034a30bc5f308c76ae
     evidence:
       checked_at: 2026-01-15T12:10:00.000Z
       to: customers

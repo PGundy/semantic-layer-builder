@@ -23,6 +23,11 @@
             "description": "Approve target to content hash, for every item of the layer at the release.",
             "additionalProperties": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
           },
+          "definitions": {
+            "type": "object",
+            "description": "Approve target to the item's hash without its description, for each item of items that has a description, so semlayer change status can tell a description-only change. Absent in an entry recorded before descriptions were part of an approval, whose items hold those hashes.",
+            "additionalProperties": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+          },
           "goldens": {
             "type": "object",
             "description": "Golden name to the rows recorded for it at the release, as the golden file stores them (a protected column's values included, as the golden holds them).",
