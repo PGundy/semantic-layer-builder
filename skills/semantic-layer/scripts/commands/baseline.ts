@@ -19,7 +19,7 @@ function inside(root: string, path: string): boolean {
 }
 
 // The project's own files and directories, relative to the semantic root: --out never writes there.
-function projectEntries(root: string): { files: string[]; dirs: string[] } {
+export function projectEntries(root: string): { files: string[]; dirs: string[] } {
   const p = paths(root);
   return {
     files: [p.project, p.metrics, p.access].map((f) => relative(root, f).toLowerCase()),
