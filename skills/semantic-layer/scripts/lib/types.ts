@@ -415,6 +415,7 @@ export interface Golden {
   confirmed_at?: string;
   // The role and user the golden ran as when semlayer goldens confirm recorded its rows.
   confirmed_as?: GoldenRunAs;
+  unconfirmed_yes?: string; // The owner's reply semlayer goldens unconfirm set aside, on which semlayer next offers no confirm.
 }
 
 export interface GoldenRunAs {

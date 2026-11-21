@@ -105,5 +105,10 @@ const codes: CodeFamily = {
   "golden.field_hidden": { level: "error", meaning: "An approved golden's request names a field or metric the user it runs as may not see." },
   "golden.field_hidden_draft": { level: "warning", meaning: "A draft golden's request names a field or metric the user it runs as may not see." },
   "golden.run_as_changed": { level: "warning", meaning: "A golden now runs as another role or user than it was confirmed as." },
+  "golden.request_invalid": { level: "error", meaning: "semlayer goldens new refuses a request the compiler refuses for its own shape, writing nothing." },
+  "golden.draft_request_invalid": { level: "warning", meaning: "A draft golden's request does not compile for a reason in the request itself.", next: "semlayer goldens remove --name <g>" },
+  "golden.unknown": { level: "error", meaning: "semlayer goldens unconfirm or remove names no golden file.", next: "semlayer status" },
+  "golden.not_confirmed": { level: "error", meaning: "semlayer goldens unconfirm names a golden that is already a draft." },
+  "golden.confirmed": { level: "error", meaning: "semlayer goldens remove names a confirmed golden, which is returned to draft first.", next: "semlayer goldens unconfirm --name <g>" },
 };
 export default codes;

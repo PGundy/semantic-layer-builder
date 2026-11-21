@@ -2133,6 +2133,7 @@ export class Validator {
       metrics: this.metrics,
       access: this.access,
       goldens: this.goldens,
+      issues: this.issues,
       snapshotTable: (source, table) => this.snapshotTable(source, table),
       identRules: (source) => this.identRules(source),
       checkSqlRefs: (file, path, sql, model, role) => this.checkSqlRefs(file, path, sql, model, role),
