@@ -46,6 +46,7 @@ export type RefusalCode =
   | "metric.segments_on_metric"
   | "metric.default_time_missing"
   | "join.multi_fact_segments"
+  | "join.conformed_time_zone"
   | "metric.semi_additive_mixed"
   | "join.through_second_path"
   | "join.through_filter_ungrouped"

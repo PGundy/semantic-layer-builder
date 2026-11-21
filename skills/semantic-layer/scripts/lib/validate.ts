@@ -16,6 +16,7 @@ import {
 import { classifyType, isNumeric, isTemporal } from "./column-types.ts";
 import { type Condition, conditionAttributes, type Literal, parseCondition } from "./conditions.ts";
 import { type CredentialSlot, credentialHint, hasCredential } from "./credentials.ts";
+import { conformedPeers } from "./conformed.ts";
 import { quoteIdent } from "./dialect.ts";
 import { type Env, envFilesInRoot, rootEnvFile, trackedEnvFiles } from "./env-file.ts";
 import { UserError } from "./errors.ts";
@@ -1783,12 +1784,15 @@ export class Validator {
         // A dimension, grouped by or filtered on, and a filtered measure must be reachable from the base.
         const isDim = !!this.dimension(req.source, parsed.model, parsed.field);
         if (!isDim && !(kind === "filter" && this.measure(req.source, parsed.model, parsed.field))) return;
-        const pathIssue = base && this.model(req.source, base.model) ? this.pathProblem(req.source, base.model, base.why, parsed.model) : null;
+        // In a request over several models, each part may group by a dimension conformed with it (lib/conformed.ts).
+        const models = [...(this.models.get(req.source)?.values() ?? [])].map((x) => x.data);
+        const conformed = (m: string) => isDim && conformedPeers(models, parsed.model, parsed.field, m).length > 0;
+        const pathIssue = base && this.model(req.source, base.model) && !(spanning.length && conformed(base.model)) ? this.pathProblem(req.source, base.model, base.why, parsed.model) : null;
         if (pathIssue) this.error(f, path, pathIssue, "golden.field_unreachable");
         if (kind !== "dimension") return;
         for (const { what, models } of spanning) {
-          // A model reaches the dimension through one shortest to-one path, or has its own of the same name.
-          const missing = models.filter((m) => !this.dimension(req.source, m, parsed.field) && this.pathProblem(req.source, m, "", parsed.model));
+          // A model reaches the dimension through one shortest to-one path, or has its own of the same name or conformed with it.
+          const missing = models.filter((m) => !this.dimension(req.source, m, parsed.field) && !conformed(m) && this.pathProblem(req.source, m, "", parsed.model));
           if (missing.length)
             this.error(
               f,

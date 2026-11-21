@@ -88,7 +88,7 @@ function fromAction(a: StepAction | NextStepAction, phase: string, why: string, 
 
 const REPLY = (id: string) => `semlayer reply --readback ${id} --item <n> --text "<owner's words>" --verdict yes|no|change --by "<owner>"`;
 const EDITS =
-  "a typed edit (semlayer set, semlayer tag, semlayer ignore-column, semlayer question add, semlayer add-field, semlayer remove-field, semlayer add-metric, semlayer remove-metric, semlayer add-join, semlayer add-bridge, semlayer remove-join, semlayer add-segment, semlayer remove-segment or semlayer rename), " +
+  "a typed edit (semlayer set, semlayer tag, semlayer ignore-column, semlayer question add, semlayer add-field, semlayer remove-field, semlayer add-metric, semlayer remove-metric, semlayer add-join, semlayer add-bridge, semlayer remove-join, semlayer add-segment, semlayer remove-segment, semlayer conform or semlayer rename), " +
   "every edit of the owner's turn as one entry of one semlayer apply --file -";
 // Who sees an item is decided once, in the access phase, so a change to it never holds the item.
 const ABOUT_ACCESS = "--verdict change --about access";
