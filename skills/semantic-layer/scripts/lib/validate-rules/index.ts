@@ -4,6 +4,7 @@
 // order after every check of lib/validate.ts, so adding a rule file needs no edit to a shared file.
 // Loading on first use rather than at import lets a rule module import helpers from lib/validate.ts.
 import { readdirSync } from "node:fs";
+import type { ApprovalLedger } from "../approval-hash.ts";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import type { AccessFile, Golden, MetricsFile, Model, Project, Snapshot, SnapshotTable, SourceConfig } from "../types.ts";
@@ -44,6 +45,8 @@ export interface RuleContext extends Reporting {
   joinPaths(source: string, from: string, to: string, maxHops?: number): string[][];
   // Whether the owner's latest reply in the ledger for a target is a yes to this hash of it.
   hasYes(ref: string, hash: string): boolean;
+  // The answer ledger as approvals read it (approval-hash.ts standing, backed), read once.
+  approvalLedger(): ApprovalLedger;
   // The text of the readback item the owner's latest yes to this hash of a target answered, as the
   // readback kept it in .semlayer/pending; undefined when there is no such yes or the file is gone.
   yesReadbackText(ref: string, hash: string): string | undefined;

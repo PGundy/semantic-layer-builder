@@ -15,10 +15,10 @@ const VALID = join(import.meta.dir, "fixtures", "valid");
 // lookups, logs each call to the file PROBE_LOG names, and warns once.
 function probe(name: string): string {
   return `import { appendFileSync } from "node:fs";
-import { unansweredMessage } from "../validate.ts";
+import { unconfirmedGoldenMessage } from "../validate.ts";
 import type { RuleContext } from "./index.ts";
 
-const helper = typeof unansweredMessage === "function";
+const helper = typeof unconfirmedGoldenMessage === "function";
 
 export default function (ctx: RuleContext): void {
   appendFileSync(process.env.PROBE_LOG!, "${name}\\n");

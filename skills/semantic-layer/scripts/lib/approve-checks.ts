@@ -105,6 +105,7 @@ const APPROVAL_OWN = [
   "approved_hash is missing",
   UNHASHED_MESSAGE,
   "no recorded owner yes in",
+  "no recorded yes from the owner",
   "is required on an approved",
   "is approved without evidence",
   "an approved metric may use only approved measures",

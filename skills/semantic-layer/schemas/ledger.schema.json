@@ -1,17 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": ".semlayer/ledger.jsonl (one line)",
-  "description": "One line of the answer ledger, appended by semlayer reply (kind reply: the owner's answer to an item of a readback), semlayer question resolve (kind question: the owner's answer to an open question) or semlayer review apply (either kind, from a filled review form). It holds the owner's words, never data values.",
+  "description": "One line of the answer ledger, appended by semlayer reply (kind reply: the owner's answer to an item of a readback), semlayer question resolve (kind question: the owner's answer to an open question), semlayer review apply (either kind, from a filled review form) or semlayer approve --confirm-existing (kind confirm: the owner's confirmation, as they stand, of approvals no recorded yes backed). It holds the owner's words, never data values.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "kind", "target", "text", "by", "at"],
+  "required": ["id", "kind", "text", "by", "at"],
   "properties": {
     "id": {
       "type": "string",
       "pattern": "^ans_[0-9]{4,}$",
       "description": "ans_ and at least four digits, one more than the line before: ans_0001, ans_0002, ..."
     },
-    "kind": { "enum": ["reply", "question"], "description": "reply: an answer to a readback item; question: an answer to an open question." },
+    "kind": { "enum": ["reply", "question", "confirm"], "description": "reply: an answer to a readback item; question: an answer to an open question; confirm: the owner's confirmation of earlier approvals as they stood." },
     "readback_id": { "type": "string", "pattern": "^rb_[0-9]{4,}$", "description": "kind reply: the readback in .semlayer/pending/ the owner answered." },
     "item": { "type": "integer", "minimum": 1, "description": "kind reply: the item number in that readback." },
     "target": {
@@ -27,7 +27,21 @@
     "definition_hash": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$",
-      "description": "kind reply, an item with a description: the readback item's definition_hash, its content hash without the description."
+      "description": "kind reply, every item but a golden: the readback item's definition_hash, its content hash without the description (equal to content_hash when the item has none)."
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "description": "kind confirm: each approve target (golden:<name> for a golden) the owner confirmed, with its content hash then.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target", "content_hash"],
+        "properties": {
+          "target": { "type": "string", "minLength": 1 },
+          "content_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+        }
+      }
     },
     "question": { "type": "string", "minLength": 1, "description": "kind question: the open question as the file held it." },
     "text": { "type": "string", "minLength": 1, "description": "The owner's words, with credentials redacted and control characters removed." },
@@ -39,11 +53,15 @@
   "allOf": [
     {
       "if": { "properties": { "kind": { "const": "reply" } }, "required": ["kind"] },
-      "then": { "required": ["readback_id", "item", "content_hash", "verdict"], "properties": { "question": false } }
+      "then": { "required": ["target", "readback_id", "item", "content_hash", "verdict"], "properties": { "question": false, "targets": false } }
     },
     {
       "if": { "properties": { "kind": { "const": "question" } }, "required": ["kind"] },
-      "then": { "required": ["question"], "properties": { "readback_id": false, "item": false, "content_hash": false, "definition_hash": false, "verdict": false, "about": false } }
+      "then": { "required": ["target", "question"], "properties": { "readback_id": false, "item": false, "content_hash": false, "definition_hash": false, "verdict": false, "about": false, "targets": false } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "confirm" } }, "required": ["kind"] },
+      "then": { "required": ["targets"], "properties": { "target": false, "readback_id": false, "item": false, "content_hash": false, "definition_hash": false, "verdict": false, "about": false, "question": false } }
     },
     {
       "if": { "required": ["about"] },

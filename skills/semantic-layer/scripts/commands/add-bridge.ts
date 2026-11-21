@@ -8,7 +8,8 @@ import { findTable } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
 import { listModels, loadProject, loadSnapshot, loadSource } from "../lib/project.ts";
 import { findField } from "../lib/refs.ts";
-import { crossSchemaLevel, crossSchemaPairs, schemaJoin, undeclaredPairError } from "../lib/schema-scope.ts";
+import { backedPairs, crossSchemaLevel, schemaJoin, undeclaredPairError } from "../lib/schema-scope.ts";
+import { readApprovalLedger } from "../lib/ledger.ts";
 import { DEDUPE_RULES, type Dedupe, joinLegs, type Through } from "../lib/through.ts";
 import { type Model, NAME_PATTERN } from "../lib/types.ts";
 
@@ -135,7 +136,7 @@ const spec: CommandSpec = {
     // Each hop is a join: one across schemas needs an approved pair that declares its keys (spec: Schema scope).
     const through: Through = { model: via, keys: throughKeys, ...(dedupe ? { dedupe: dedupe as Dedupe } : {}), ...(weightColumn ? { weight: weightColumn } : {}) };
     const sourceConfig = loadSource(ctx.root, source);
-    const schemaPairs = crossSchemaPairs(sourceConfig);
+    const schemaPairs = backedPairs(sourceConfig, readApprovalLedger(ctx.root));
     for (const leg of joinLegs(model, { to, keys, through })) {
       const from = models.find((m) => m.model === leg.from)!;
       const far = models.find((m) => m.model === leg.to)!;

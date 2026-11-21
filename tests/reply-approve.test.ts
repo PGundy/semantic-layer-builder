@@ -55,7 +55,8 @@ function twin(from: string): string {
 }
 
 const ledger = (at: string) => (existsSync(join(at, ".semlayer", "ledger.jsonl")) ? readFileSync(join(at, ".semlayer", "ledger.jsonl"), "utf8") : "");
-const lines = (at: string) => ledger(at).split("\n").filter(Boolean).map((l) => JSON.parse(l) as LedgerReply);
+// The reply lines: the example's own confirm line (ans_0001) left out.
+const lines = (at: string) => ledger(at).split("\n").filter(Boolean).map((l) => JSON.parse(l) as LedgerReply).filter((l) => (l.kind as string) !== "confirm");
 
 // Makes the models drafts and reads them back; returns the readback id and its items.
 async function readBack(at: string, models: string[]): Promise<{ id: string; items: { n: number; target: string }[] }> {
@@ -95,7 +96,7 @@ describe("semlayer reply --answers --approve is semlayer reply --answers then th
     expect(files(root)).toEqual(files(other));
     expect(lines(root)).toHaveLength(items.length);
     // The output is the reply's, then semlayer approve --readback's own report, then what is left to do.
-    expect(one.out).toContain(`Recorded ans_0001 to ans_000${items.length} in .semlayer/ledger.jsonl`);
+    expect(one.out).toContain(`Recorded ans_0002 to ans_000${items.length + 1} in .semlayer/ledger.jsonl`);
     expect(one.out).toContain(`Approved ${items.length - 2} of the ${items.length} items of ${id} answered now, each on the owner's own yes to it as it stands:`);
     expect(one.out).toContain(`  - ${items[1]!.target} (item 2): the owner's latest reply (ans_`);
     expect(one.out).toContain(`Next: make the changes the owner asked for to ${items[1]!.target}, ${items[2]!.target} with one semlayer apply --file -, then semlayer readback --targets ${items[1]!.target},${items[2]!.target}.`);

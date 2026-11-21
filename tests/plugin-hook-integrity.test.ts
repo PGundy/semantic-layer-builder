@@ -236,7 +236,7 @@ describe("a change to the ledger that semlayer did not make", () => {
     expect(out.message).toContain(UNDONE);
     expect(out.message).toContain("- This call also ran semlayer");
     expect(out.message).toContain("a layer file it edited was not put back");
-    expect(out.message).toContain("semlayer reply, semlayer question resolve and semlayer review apply record an owner's answer");
+    expect(out.message).toContain("semlayer reply, semlayer question resolve, semlayer review apply and semlayer approve --confirm-existing record an owner's answer");
     expect(out.message).toContain("add it again first with semlayer question add");
     expect(out.message).not.toContain("also ran git");
     // The answer is gone and so is the question; the report's steps record it again.
@@ -264,7 +264,7 @@ describe("a change to the ledger that semlayer did not make", () => {
       const plain = around(p, command, () => appendFileSync(p.ledger, "forged\n"));
       expect(plain.message).toContain(UNDONE);
       expect(plain.message).not.toContain("This call also ran");
-      expect(plain.message).toContain("- semlayer reply, semlayer question resolve and semlayer review apply record an owner's answer. If one of them made that change (run through a script or a variable), run it again on its own");
+      expect(plain.message).toContain("- semlayer reply, semlayer question resolve, semlayer review apply and semlayer approve --confirm-existing record an owner's answer. If one of them made that change (run through a script or a variable), run it again on its own");
     }
     expect(read(p.ledger)).toBe(ledger);
     // The call that was never checked carries the same advice to the next before-call.

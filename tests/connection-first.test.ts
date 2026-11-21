@@ -15,7 +15,7 @@ import type { NextAction } from "../skills/semantic-layer/scripts/lib/next.ts";
 import type { ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
 import type { Model, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, PG_URL, semlayer, serverVersionNum, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, confirmExisting, PG_URL, semlayer, serverVersionNum, tempRoot, uniqueSchema } from "./helpers.ts";
 
 const EXPORT_CSV = join(import.meta.dir, "..", "examples", "acme-export", "schema.csv");
 const GOLDEN_DIR = join(import.meta.dir, "fixtures", "role-sql");
@@ -251,6 +251,8 @@ describe("an export source waits on a connection (the Acme export)", () => {
       request: { source: "warehouse", measures: [`fct_orders.${measure}`] },
       status: "draft",
     });
+    // The owner confirms the approvals written by hand above, so the ledger backs them.
+    await confirmExisting(root, "Test Owner");
     const plan = (await semlayer(root, ["goldens", "run", "--name", "orders_total", "--emit-sql", "--json"])).json<{ plan_id: string; queries: { id: string }[] }>();
     const rows = join(root, "rows.json");
     writeFileSync(rows, JSON.stringify([{ [measure]: 5 }]));

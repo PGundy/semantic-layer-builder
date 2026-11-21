@@ -108,9 +108,10 @@ describe("HR-12: semlayer next never names a step that cannot run", () => {
     // A later line approve refuses the whole ledger over: none of its yeses count in status or next.
     appendFileSync(join(root, ".semlayer", "ledger.jsonl"), '{"kind":"reply","target":"warehouse.orders"}\n');
     expect((await semlayer(root, ["approve", "--target", ORDERS])).code).toBe(1);
+    // A ledger approve refuses backs nothing: every approval reads as stamped without a yes.
     const st = await status(root);
-    expect(st.next_step.command).toBe(`semlayer readback --targets ${ORDERS}`);
-    expect(st.approved_without_yes).toContain(`${ORDERS}.revenue`);
+    expect(st.next_step.phase).toBe("reapprove");
+    expect(st.stamped_without_yes).toContain(`${ORDERS}.revenue`);
     const a = await next(root);
     expect(a).toMatchObject({ kind: "run", run: { command: "semlayer validate" } });
     expect(a.why).toContain("cannot be read");
@@ -287,7 +288,7 @@ describe("HR-12: semlayer next never names a step that cannot run", () => {
     const a = await next(root);
     expect(a.kind).toBe("ask_owner");
     expect(a.ask_owner!.items.map((i) => i.n)).toEqual([2]);
-    expect(a.why).toContain(`item 1 (${ORDERS}.revenue, ans_0001, Dana said change): "Revenue should leave out refunds."`);
+    expect(a.why).toContain(`item 1 (${ORDERS}.revenue, ans_0002, Dana said change): "Revenue should leave out refunds."`);
   });
 
   test("a golden on a source semlayer cannot run goes plan, readback from the plan, confirm with the plan, never a placeholder", async () => {
@@ -391,7 +392,7 @@ describe("HR-12: semlayer next never names a step that cannot run", () => {
     await ok(root, ["reply", "--readback", rb.readback_id, "--item", "1", "--text", "Sales reps should not see this table.", "--verdict", "change", "--by", "Dana"]);
     let a = await next(root);
     expect(a).toMatchObject({ kind: "ask_owner", phase: "interview", action: { command: "set", args: [ORDERS, "<key>", "<value>"], kind: "ask_owner" } });
-    expect(a.why).toContain(`${ORDERS} (ans_0001, Dana said change): "Sales reps should not see this table."`);
+    expect(a.why).toContain(`${ORDERS} (ans_0002, Dana said change): "Sales reps should not see this table."`);
     expect(a.why).toContain("a typed edit (semlayer set");
     expect(a.why).toContain(`semlayer reply --readback ${rb.readback_id} --item 1 --text "<owner's words>" --verdict change --about access`);
     expect(a.ask_owner!.text).toContain('"Sales reps should not see this table."');

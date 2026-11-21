@@ -9,7 +9,7 @@ import { type ProtectedNames, PROTECTED_VALUE, protectedNames, sqlMask } from ".
 import { loadSource } from "../skills/semantic-layer/scripts/lib/project.ts";
 import type { Golden } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, confirmWithYes, duckdbSource, initProject, PG_URL, semlayer, serverVersionNum, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, confirmExisting, confirmWithYes, duckdbSource, initProject, PG_URL, semlayer, serverVersionNum, tempRoot, uniqueSchema } from "./helpers.ts";
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 
@@ -68,6 +68,7 @@ async function duckdbProject(): Promise<Project> {
   const p: Project = { dialect: "duckdb", root: t.root, env: {}, t: (name) => name };
   expect((await semlayer(p.root, ["introspect", "--source", "wh"])).code).toBe(0);
   writeModels(p);
+  await confirmExisting(p.root);
   return p;
 }
 
@@ -124,6 +125,7 @@ async function postgresProject(): Promise<Project> {
   const p: Project = { dialect: "postgres", root: t.root, env: { MASK_PG_URL: PG_URL }, t: (name) => `${PG_SCHEMA}.${name}` };
   expect((await semlayer(p.root, ["introspect", "--source", "wh", "--schemas", PG_SCHEMA], p.env)).code).toBe(0);
   writeModels(p);
+  await confirmExisting(p.root);
   return p;
 }
 

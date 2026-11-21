@@ -2,7 +2,7 @@
 // declared foreign keys that leave a table's own schema.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { itemHash } from "./approval-hash.ts";
+import { type ApprovalLedger, backed, itemHash, pairEntries } from "./approval-hash.ts";
 import { UserError } from "./errors.ts";
 import { intakeSchemas } from "./intake.ts";
 import { findTable } from "./naming.ts";
@@ -112,6 +112,16 @@ export function crossSchemaPairs(source: Pick<SourceConfig, "cross_schema">): Cr
   const raw: unknown = source.cross_schema;
   if (!Array.isArray(raw)) return [];
   return raw.filter((p): p is CrossSchemaPair => !!p && typeof p === "object" && typeof p.from === "string" && typeof p.to === "string");
+}
+
+// The source's pairs as tools that use them read them: an approved pair that no recorded yes of the
+// owner backs (approval-hash.ts backed) is a draft, as every other approved item is. Without a
+// ledger reading, the pairs as written.
+export function backedPairs(source: Pick<SourceConfig, "source" | "cross_schema">, ledger: ApprovalLedger | undefined): CrossSchemaPair[] {
+  const pairs = crossSchemaPairs(source);
+  if (!ledger) return pairs;
+  const entries = pairEntries(source.source, { cross_schema: pairs });
+  return pairs.map((p, i) => (p.status === "approved" && !backed(ledger, entries[i]!) ? { ...p, status: "draft" } : p));
 }
 
 // The pair between two schemas, declared either way; the first when several are.

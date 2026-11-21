@@ -76,6 +76,16 @@ const codes: CodeFamily = {
     meaning: "Approved items have no recorded owner yes in the ledger that matches them as they stand.",
     next: "semlayer readback --targets <ref>,...",
   },
+  "approval.no_recorded_yes": {
+    level: "error",
+    meaning: "An item says it is approved, but no recorded yes from the owner (or their confirmation of it as it stood) stands behind it, so it counts as a draft.",
+    next: "semlayer readback --targets <ref>",
+  },
+  "approval.no_ledger": {
+    level: "warning",
+    meaning: "The project has approved items and no answer ledger; they count under the rule for approvals given before the ledger until the owner confirms them.",
+    next: 'semlayer approve --confirm-existing --by "<owner>" --reply "<owner\'s words>"',
+  },
   "access.closed_no_roles": { level: "warning", meaning: "access.yaml is in closed mode with no roles, so no one sees anything." },
   "access.allow_models_required": { level: "error", meaning: "A role in closed mode has no allow.models." },
   "access.allow_models_unused": { level: "warning", meaning: "A role's allow.models has no effect in open mode." },

@@ -534,4 +534,16 @@ export interface LedgerQuestion {
   at: string;
 }
 
+// The owner's confirmation of approvals given before the ledger recorded their yes (semlayer approve
+// --confirm-existing): each approved item, and each confirmed golden, that no recorded yes backed,
+// at the content hash it had when the owner confirmed it as it stood.
+export interface LedgerConfirm {
+  id: string;
+  kind: "confirm";
+  targets: { target: string; content_hash: string }[];
+  text: string;
+  by: string;
+  at: string;
+}
+
 export type LedgerEntry = LedgerReply | LedgerQuestion;

@@ -11,7 +11,7 @@ import type { ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.
 import type { Golden, LedgerEntry, Snapshot } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { duckdbSource, initProject, semlayer, tempDir, tempRoot } from "./helpers.ts";
+import { confirmExisting, duckdbSource, initProject, semlayer, tempDir, tempRoot } from "./helpers.ts";
 
 // semlayer next (FR-3.1), walked through copies of the Acme example layer. All data is synthetic.
 
@@ -20,10 +20,13 @@ const ORDERS = "warehouse.orders";
 
 // A copy of the Acme example layer, with its connection variable set (to a synthetic URL nothing
 // connects to) in the .env beside the root, as the owner would have it.
-function acme(): string {
+// A copy of the example; `ledger` false leaves out its ledger, as a project approved before semlayer
+// recorded the owner's yes.
+function acme(ledger = true): string {
   const dir = tempDir();
   const root = join(dir, "semantic");
   cpSync(ACME, root, { recursive: true });
+  if (!ledger) rmSync(join(root, ".semlayer"), { recursive: true });
   writeFileSync(join(dir, ".env"), "WAREHOUSE_URL=postgres://reader:synthetic@localhost:5432/acme\n");
   return root;
 }
@@ -161,7 +164,8 @@ describe("semlayer next through the phases", () => {
     await reply(root, rb.readback_id, 2, "yes");
     const a = await next(root);
     expect(a).toMatchObject({ kind: "run", phase: "interview", run: { command: `semlayer approve --target ${ORDERS}.revenue` }, blocked_on: "open_questions" });
-    expect(a.why).toContain("ans_0001");
+    // The example's own line is ans_0001.
+    expect(a.why).toContain("ans_0002");
     const st = await status(root);
     expect(st.next_step).toMatchObject({ phase: "interview", command: `semlayer approve --target ${ORDERS}.revenue`, after_owner_yes: true });
     expect((await semlayer(root, ["status"])).out).toContain(`meanwhile, only after the owner says yes to its readback: semlayer approve --target ${ORDERS}.revenue`);
@@ -273,12 +277,13 @@ describe("semlayer next through the phases", () => {
   });
 
   test("done once every approved item has a recorded answer; until then the done phase reads them back", async () => {
-    const root = acme();
+    const root = acme(false);
     const st = await status(root);
     expect(st.next_step.phase).toBe("done");
     expect(st.approved_without_yes.length).toBeGreaterThan(20);
     let a = await next(root);
-    expect(a).toMatchObject({ kind: "run", phase: "done", run: { command: `semlayer readback --targets ${st.approved_without_yes.slice(0, 8).join(",")}` } });
+    // No ledger: the first answer recorded would end the rule that lets these approvals count, so the owner's confirmation comes first.
+    expect(a).toMatchObject({ kind: "ask_owner", phase: "done", action: { command: "approve", args: ["--confirm-existing", "--by", "<owner>", "--reply", "<owner's words>"] } });
     expect(a.why).toContain(`${st.approved_without_yes.length} approved item(s) have no recorded owner yes`);
 
     // The owner's yes to each, as a readback hashes it (a golden over its recorded rows).
@@ -296,7 +301,7 @@ describe("semlayer next through the phases", () => {
     ].map((x, i) => ledgerLine({ id: `ans_${String(i + 1).padStart(4, "0")}`, kind: "reply", ...x, text: "Yes.", verdict: "yes", by: "Dana", at: "2026-01-15T12:00:00.000Z" } as LedgerEntry));
     mkdirSync(join(root, ".semlayer"), { recursive: true });
     appendFileSync(join(root, ".semlayer", "ledger.jsonl"), lines.join(""));
-    expect(validateProject(root).filter((i) => i.message.includes("no recorded owner yes"))).toEqual([]);
+    expect(validateProject(root).filter((i) => ["approval.no_ledger", "approval.no_recorded_yes", "golden.no_ledger_yes"].includes(i.code))).toEqual([]);
     expect((await status(root)).approved_without_yes).toEqual([]);
 
     a = await next(root);
@@ -306,7 +311,7 @@ describe("semlayer next through the phases", () => {
 
 describe("semlayer status sign-off steps and approved_without_yes", () => {
   test("approved_without_yes lists approved items and goldens without a matching yes, in JSON and plain output", async () => {
-    const root = acme();
+    const root = acme(false);
     const st = await status(root);
     expect(st.approved_without_yes).toContain(ORDERS);
     expect(st.approved_without_yes).toContain(`${ORDERS}.revenue`);
@@ -318,32 +323,34 @@ describe("semlayer status sign-off steps and approved_without_yes", () => {
     expect(st.next_step.phase).toBe("done");
     expect((await semlayer(root, ["status"])).out).toContain(`approved without a recorded owner yes (they stay approved): ${st.approved_without_yes.slice(0, 8).join(", ")} and`);
 
-    // A yes to an item as it stands takes it off the list; a no does not.
+    // Once the ledger holds an answer, an approval counts only with a yes behind it: a yes to an item as it
+    // stands backs it; every other item, one answered no included, is stamped without a yes and reads as a draft.
     const rb = JSON.parse(await ok(root, ["readback", "--targets", `${ORDERS}.revenue,${ORDERS}.discount`, "--json"])) as { readback_id: string };
     await reply(root, rb.readback_id, 1, "yes");
     await reply(root, rb.readback_id, 2, "no");
     const after = await status(root);
-    expect(after.approved_without_yes).not.toContain(`${ORDERS}.revenue`);
-    expect(after.approved_without_yes).toContain(`${ORDERS}.discount`);
-    // An item changed since its approval is listed in changed_since_approval instead.
+    expect(after.approved_without_yes.filter((r) => !r.startsWith("golden:"))).toEqual([]);
+    expect(after.stamped_without_yes).not.toContain(`${ORDERS}.revenue`);
+    expect(after.stamped_without_yes).toContain(`${ORDERS}.discount`);
+    expect(after.stamped_without_yes).toContain(ORDERS);
+    // An item changed since its approval is listed in changed_since_approval instead, and read back first.
     await ok(root, ["set", `${ORDERS}.order_count`, "filter", "status in ('completed', 'shipped')"]);
     const changed = await status(root);
     expect(changed.changed_since_approval).toContain(`${ORDERS}.order_count`);
-    expect(changed.approved_without_yes).not.toContain(`${ORDERS}.order_count`);
-    expect(changed.next_step).toMatchObject({ phase: "reapprove", command: `semlayer readback --targets ${ORDERS}.order_count`, after_owner_yes: false });
+    expect(changed.stamped_without_yes).not.toContain(`${ORDERS}.order_count`);
+    expect(changed.next_step).toMatchObject({ phase: "reapprove", after_owner_yes: false });
+    expect(changed.next_step.command).toStartWith(`semlayer readback --targets ${ORDERS}.order_count,`);
+    expect(changed.next_step.command.split(",")).toHaveLength(9);
   });
 
-  test("the done phase leaves out items already answered, and an answered no never holds done", async () => {
-    const root = acme();
-    const st = await status(root);
-    const first = st.approved_without_yes.slice(0, 8);
-    const rb = JSON.parse(await ok(root, ["readback", "--targets", first.join(","), "--json"])) as { readback_id: string; items: { n: number }[] };
-    // Pending and unanswered: the owner is asked.
-    expect((await next(root)).kind).toBe("ask_owner");
-    for (const item of rb.items) await reply(root, rb.readback_id, item.n, "no");
-    const a = await next(root);
-    expect(a.run!.command).toBe(`semlayer readback --targets ${st.approved_without_yes.slice(8, 16).join(",")}`);
-    expect((await status(root)).next_step.phase).toBe("done");
+  test("a project with no ledger: the done phase asks for the owner's confirmation, which backs them all", async () => {
+    const root = acme(false);
+    expect(await next(root)).toMatchObject({ kind: "ask_owner", phase: "done", action: { command: "approve", args: ["--confirm-existing", "--by", "<owner>", "--reply", "<owner's words>"] } });
+    await confirmExisting(root, "Dana Ruiz");
+    const after = await status(root);
+    expect(after.approved_without_yes).toEqual([]);
+    expect(after.stamped_without_yes).toEqual([]);
+    expect((await next(root)).kind).toBe("done");
   });
 
   test("a reapprove step names semlayer approve once the owner's yes to the item as it stands is recorded", async () => {
@@ -402,9 +409,10 @@ describe("following semlayer next makes progress", () => {
     const outside = join(root, "..", "outside-semlayer");
     renameSync(join(root, ".semlayer"), outside);
     symlinkSync(outside, join(root, ".semlayer"));
+    // A ledger approve refuses backs nothing: every approval reads as stamped without a yes.
     const st = await status(root);
-    expect(st.next_step.command).toBe(`semlayer readback --targets ${ORDERS}`);
-    expect(st.approved_without_yes).toContain(`${ORDERS}.revenue`);
+    expect(st.next_step.phase).toBe("reapprove");
+    expect(st.stamped_without_yes).toContain(`${ORDERS}.revenue`);
     expect((await semlayer(root, ["next", "--json"])).json<NextAction>().run?.command ?? "").not.toContain("semlayer approve");
   });
 
@@ -428,18 +436,17 @@ describe("following semlayer next makes progress", () => {
   });
 
   test("the done phase reads goldens back last, one per readback; an item missing its hash is not listed", async () => {
-    const root = acme();
+    const root = acme(false);
     const st = await status(root);
-    const items = st.approved_without_yes.filter((r) => !r.startsWith("golden:"));
-    const lines = items.map((target, i) =>
-      ledgerLine({ id: `ans_${String(i + 1).padStart(4, "0")}`, kind: "reply", readback_id: "rb_0001", item: i + 1, target, content_hash: `sha256:${"0".repeat(64)}`, text: "No.", verdict: "no", by: "Dana", at: "2026-01-15T12:00:00.000Z" } as LedgerEntry),
-    );
-    // A no at another hash leaves the items unanswered as they stand; at their own hash it answers them.
-    mkdirSync(join(root, ".semlayer"), { recursive: true });
-    writeFileSync(join(root, ".semlayer", "ledger.jsonl"), lines.join(""));
+    expect((await next(root)).kind).toBe("ask_owner");
+    // Once the ledger holds an answer (here a yes to one item), the items are read back first, eight at a time.
+    const answered = st.approved_without_yes.find((r) => r.startsWith("metric:"))!;
+    const one = JSON.parse(await ok(root, ["readback", "--targets", answered, "--json"])) as { readback_id: string };
+    await reply(root, one.readback_id, 1, "yes");
+    const items = st.approved_without_yes.filter((r) => !r.startsWith("golden:") && r !== answered);
     expect((await next(root)).run!.command).toBe(`semlayer readback --targets ${items.slice(0, 8).join(",")}`);
     const rb = JSON.parse(await ok(root, ["readback", "--targets", items.join(","), "--json"])) as { readback_id: string; items: { n: number }[] };
-    for (const item of rb.items) await reply(root, rb.readback_id, item.n, "no");
+    for (const item of rb.items) await reply(root, rb.readback_id, item.n, "yes");
     const goldens = st.approved_without_yes.filter((r) => r.startsWith("golden:"));
     expect(goldens.length).toBeGreaterThan(1);
     expect(await next(root)).toMatchObject({ kind: "run", phase: "done", run: { command: `semlayer readback --targets ${goldens[0]}` } });

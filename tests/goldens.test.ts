@@ -6,7 +6,7 @@ import { goldenHash } from "../skills/semantic-layer/scripts/lib/approval-hash.t
 import { compareRows, currencyColumns, displayRows, goldenDraftFields, goldenPlan, twoDecimals } from "../skills/semantic-layer/scripts/lib/goldens.ts";
 import type { Golden, Metric, Model, QueryPlan } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { confirmWithYes, duckdbSource, initProject, semlayer, tempRoot } from "./helpers.ts";
+import { confirmExisting, confirmWithYes, duckdbSource, initProject, semlayer, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -319,7 +319,8 @@ const approvedOrders = (): Model => ({ ...ordersModel("approved"), ...APPROVED }
 const ACCESS = { status: "approved", approved_by: "Dana", approved_at: "2026-01-15", mode: "open", roles: [{ name: "analyst", description: "Analysts." }] };
 
 // A project with the orders table, a golden on it and, unless `layer` is false, an approved orders
-// model and access.yaml, so the golden's request compiles.
+// model and access.yaml, written by hand and confirmed by the owner as they stand, so the golden's
+// request compiles.
 async function setup(goldenYaml = GOLDEN_YAML, statements = ORDERS, layer = true) {
   const t = tempRoot();
   cleanup = t.cleanup;
@@ -331,6 +332,7 @@ async function setup(goldenYaml = GOLDEN_YAML, statements = ORDERS, layer = true
   }
   const goldenPath = join(t.root, "goldens", "revenue_by_region.yaml");
   writeFileSync(goldenPath, goldenYaml);
+  if (layer) await confirmExisting(t.root);
   return { ...t, goldenPath };
 }
 
@@ -800,6 +802,7 @@ describe("goldens CLI on a snowflake source", () => {
     writeYaml(join(t.root, "access.yaml"), ACCESS);
     const goldenPath = join(t.root, "goldens", "revenue_by_region.yaml");
     writeFileSync(goldenPath, GOLDEN_YAML);
+    await confirmExisting(t.root);
 
     const live = await semlayer(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
     expect(live.code).toBe(1);

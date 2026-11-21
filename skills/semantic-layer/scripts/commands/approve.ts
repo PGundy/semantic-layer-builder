@@ -2,14 +2,15 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import type { LastApproval } from "../lib/access.ts";
-import { type ApprovalEntry, carriesHash, describedLater, holdsHashes, integrity, itemApprovals, itemHashes, type LayerModel, listApprovals } from "../lib/approval-hash.ts";
+import { type ApprovalEntry, backed, carriesHash, describedLater, holdsHashes, integrity, itemApprovals, itemHashes, type LayerModel, listApprovals } from "../lib/approval-hash.ts";
 import type { CommandSpec } from "../lib/command.ts";
 import { sourceWeekStart, type WeekDay } from "../lib/compiler/calendar.ts";
 import { approvedIssues, describedProblem, metricProblems, modelProblems } from "../lib/approve-checks.ts";
 import { bool, list, str, type CommandContext, type OptionValues } from "../lib/command.ts";
-import { locate } from "../lib/edit.ts";
+import { locate, oneLine } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
-import { currentYes, LEDGER_FILE, latestReply, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
+import { currentYes, LEDGER_FILE, latestReply, openLedger, ownerText, readApprovalLedger, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
+import { statusDetail } from "../lib/status.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadAccess, loadMetrics, loadModel, loadProject, paths } from "../lib/project.ts";
 import { findField, parseTarget, type Target } from "../lib/refs.ts";
@@ -64,12 +65,14 @@ function statusOf(item: Approval): Status {
 // was recorded stands (semlayer approve --stamp-hashes records its hash), and so does one whose hash
 // covers its definition only (`definition`), unless the owner's latest reply is a yes to it as it now
 // stands, description included (`yesNow`): it is then approved again with its full hash.
-function settled(item: Approval, mode: Mode, hash: string, projectHashed: boolean, definition: string, yesNow: () => boolean): boolean {
+// An approved item that no recorded yes of the owner backs (`backedNow`, approval-hash.ts backed) is
+// not settled either: it is approved only on the owner's yes, as a draft is.
+function settled(item: Approval, mode: Mode, hash: string, projectHashed: boolean, definition: string, yesNow: () => boolean, backedNow: () => boolean): boolean {
   if (mode.revoke)
     return item.status !== "approved" && item.approved_by === undefined && item.approved_at === undefined && item.approved_hash === undefined;
   const recorded = typeof item.approved_hash === "string" && item.approved_hash.trim() ? item.approved_hash.trim() : undefined;
   const hashOk = recorded === undefined ? !projectHashed : recorded === hash || (recorded === definition && !yesNow());
-  return item.status === "approved" && !!item.approved_by && !!item.approved_at && hashOk;
+  return item.status === "approved" && !!item.approved_by && !!item.approved_at && hashOk && backedNow();
 }
 
 // The dialect a source file names, for reading join references the way the source writes SQL.
@@ -380,6 +383,59 @@ function stampHashes(root: string, target: Target | undefined, confirmUnchanged:
   return out;
 }
 
+// semlayer approve --confirm-existing: the owner's confirmation, in their name and words, of every approved
+// item, schema pair and confirmed golden that no recorded yes or earlier confirmation backs, as each
+// stands, recorded as one kind: confirm line of the ledger (who, when, which targets at which hashes).
+// It changes no YAML: from that line on, each counts as approved at the hash it was confirmed at, and
+// an item stamped or edited afterwards needs a readback and yes as any other.
+function confirmExisting(ctx: CommandContext, values: OptionValues): number {
+  for (const flag of ["target", "readback", "date"] as const)
+    if (values[flag] !== undefined && !(Array.isArray(values[flag]) && !values[flag].length))
+      throw new UserError(`--confirm-existing confirms every approval no recorded yes backs, so it takes no --${flag}. Nothing was recorded.`);
+  for (const flag of ["revoke", "recursive", "stamp-hashes", "confirm-unchanged"] as const)
+    if (bool(values, flag)) throw new UserError(`--confirm-existing takes no --${flag}. Nothing was recorded.`);
+  const by = ownerText(oneLine(str(values, "by") ?? "")).text;
+  const words = ownerText(str(values, "reply") ?? "");
+  if (!by || !words.text)
+    throw new UserError(
+      'semlayer approve --confirm-existing records the owner\'s confirmation of approvals given before the ledger recorded their yes, so it needs the owner\'s name and words: ' +
+        'semlayer approve --confirm-existing --by "<owner>" --reply "<owner\'s words>". Run it only after the owner, shown the list semlayer validate gives, says these approvals stand as they are. Nothing was recorded.',
+    );
+  const answers = readApprovalLedger(ctx.root);
+  // The confirmation is given once, for approvals older than the ledger: a stamp written after it
+  // needs a readback and the owner's yes, so a second confirmation is refused, and an item the
+  // ledger holds an answer for is left out.
+  if (answers.confirmedBefore)
+    throw new UserError(
+      "The owner has already confirmed the approvals given before the ledger, so --confirm-existing is not run again: an approval stamped since then needs a readback and the owner's yes. " +
+        "List them with semlayer validate, then semlayer readback --targets <ref>, or return one to draft with semlayer approve --revoke --target <ref>. Nothing was recorded.",
+    );
+  const targets: { target: string; content_hash: string }[] = [];
+  for (const [ref, t] of statusDetail(ctx.root).targets) {
+    if (t.state !== "current" && t.state !== "unhashed" && t.state !== "unbacked") continue;
+    if (answers.present && (answers.latest.has(ref) || backed(answers, { ref, hash: t.hash, definitionHash: t.definition ?? t.hash }))) continue;
+    targets.push({ target: ref, content_hash: t.hash });
+  }
+  if (!targets.length) {
+    if (ctx.json) ctx.out(formatJson({ confirmed: [] }));
+    else ctx.out("Every approval already has the owner's recorded yes or confirmation behind it; nothing was recorded. Next: semlayer validate.");
+    return 0;
+  }
+  const line = openLedger(ctx.root).appendConfirm({ kind: "confirm", targets, text: words.text, by, at: ctx.now().toISOString() });
+  const refs = targets.map((t) => t.target);
+  if (ctx.json) {
+    ctx.out(formatJson({ confirmed: refs, ledger: line.id, by }));
+    return 0;
+  }
+  ctx.out(
+    `Recorded ${line.id} in ${LEDGER_FILE}: ${by} confirms ${refs.length} approval(s) as they stand: ${previewRefs(refs)}. ` +
+      "They count as approved from now on; an item edited or stamped after this needs a readback and the owner's yes." +
+      (words.redacted ? " The owner's words held what looks like a credential; it was stored as [redacted]. Ask the owner to change that credential." : "") +
+      " Next: semlayer validate.",
+  );
+  return 0;
+}
+
 // Up to ten refs, then how many more.
 function previewRefs(refs: string[]): string {
   return refs.slice(0, 10).join(", ") + (refs.length > 10 ? ` and ${refs.length - 10} more` : "");
@@ -520,7 +576,8 @@ const spec: CommandSpec = {
     "       approve --readback <readback_id> [--by <name>]\n" +
     "       approve --target <ref> --target <ref> ... [--by <name>]\n" +
     "       approve --target <ref> --revoke [--recursive]\n" +
-    "       approve --stamp-hashes [--target <ref>] [--confirm-unchanged]\n\n" +
+    "       approve --stamp-hashes [--target <ref>] [--confirm-unchanged]\n" +
+    '       approve --confirm-existing --by <owner> --reply "<owner\'s words>"\n\n' +
     "Approves an item only when the owner's latest reply to it in .semlayer/ledger.jsonl is a yes to it as it\n" +
     "now stands (semlayer readback, then semlayer reply --verdict yes); approved_by and approved_at come from that\n" +
     "reply, and --by, when given, must name the same owner. --date is no longer taken.\n" +
@@ -530,7 +587,10 @@ const spec: CommandSpec = {
     "one of them was not; items the owner did not say yes to are listed and do not fail it.\n" +
     "An approval covers the item's description too, so editing a description needs a new readback and yes.\n" +
     "--stamp-hashes records approved_hash on approved items without one, and with --confirm-unchanged brings\n" +
-    "forward items whose hash covers their definition but not their description, recording it as they stand.",
+    "forward items whose hash covers their definition but not their description, recording it as they stand.\n" +
+    "An approval counts only while the owner's recorded yes stands behind it; a stamp written without one is a\n" +
+    "draft for every tool. --confirm-existing records, in the owner's name and words, their confirmation of the\n" +
+    "approvals no recorded yes backs (given before the ledger), as they stand; run it only on the owner's say-so.",
   options: {
     target: { type: "string", multiple: true, mcp: "single" },
     readback: { type: "string", mcp: "omit" },
@@ -540,10 +600,15 @@ const spec: CommandSpec = {
     date: { type: "string" },
     "stamp-hashes": { type: "boolean" },
     "confirm-unchanged": { type: "boolean" },
+    // The owner's confirmation is given in the terminal, in their words: the MCP tool does not take it.
+    "confirm-existing": { type: "boolean", mcp: "omit" },
+    reply: { type: "string", mcp: "omit" },
   },
   writes: "whole",
   async run({ values }, ctx) {
     loadProject(ctx.root);
+    if (bool(values, "confirm-existing")) return confirmExisting(ctx, values);
+    if (str(values, "reply") !== undefined) throw new UserError("--reply applies only to semlayer approve --confirm-existing; record an answer to a readback with semlayer reply.");
     if (bool(values, "stamp-hashes")) {
       for (const flag of ["by", "date"] as const)
         if (str(values, flag) !== undefined) throw new UserError(`--stamp-hashes keeps each item's approved_by and approved_at, so it takes no --${flag}.`);
@@ -618,9 +683,10 @@ const spec: CommandSpec = {
     const hashed = !revoke && (target.kind === "schema-pair" || projectHashed(ctx.root));
     let read: LedgerReply[] | undefined;
     const replies = () => (read ??= readReplies(ctx.root));
-    // The ledger is read only for an item whose hash covers its definition only.
+    let answers: ReturnType<typeof readApprovalLedger> | undefined;
+    // The ledger is read only for an item whose hash covers its definition only, or that is approved.
     const isSettled = (targetRef: string, item: Approval, h: Hashes) =>
-      settled(item, mode, h.hash, hashed, h.definitionHash, () => !!currentYes(replies(), targetRef, h.hash));
+      settled(item, mode, h.hash, hashed, h.definitionHash, () => !!currentYes(replies(), targetRef, h.hash), () => backed((answers ??= readApprovalLedger(ctx.root)), { ref: targetRef, ...h }));
     const consider = (targetRef: string, path: (string | number)[], item: Approval, h: Hashes, keepLast = false): boolean => {
       if (isSettled(targetRef, item, h)) {
         skipped++;

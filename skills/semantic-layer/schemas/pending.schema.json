@@ -40,7 +40,7 @@
           "definition_hash": {
             "type": "string",
             "pattern": "^sha256:[0-9a-f]{64}$",
-            "description": "An item with a description only: its content hash without the description, which tells semlayer validate, semlayer readback and semlayer change status that a later edit changed the description alone."
+            "description": "Every item but a golden: its content hash without the description (equal to content_hash when the item has none), which tells semlayer validate, semlayer readback and semlayer change status that a later edit changed the description alone."
           },
           "tolerance": {
             "type": "number",

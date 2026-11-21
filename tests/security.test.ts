@@ -22,7 +22,7 @@ import {
 import { assertReadOnly, tokenize } from "../skills/semantic-layer/scripts/lib/sql-guard.ts";
 import type { Model, QueryPlan, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, confirmWithYes, duckdbSource, initProject, isLocalPg, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, confirmExisting, confirmWithYes, duckdbSource, initProject, isLocalPg, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -429,6 +429,7 @@ describe("protected values and terminal output", () => {
       "name: by_email\nquestion: Orders by email\nrequest:\n  source: wh\n  measures: [customers.n]\n  dimensions: [customers.email, customers.city]\n" +
         "sql: select email, city, count(*) as n from customers group by email, city\nstatus: draft\n",
     );
+    await confirmExisting(t.root);
     const run = await semlayer(t.root, ["goldens", "run", "--name", "by_email"]);
     expect(run.code).toBe(0);
     expect(run.out).toContain(PROTECTED_VALUE);

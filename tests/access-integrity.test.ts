@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type AccessVisibility, checkRequest, evaluateAccess, evaluateLayer, loadAccessLayer, lookup } from "../skills/semantic-layer/scripts/lib/access.ts";
 import { compileRequest, type Refused } from "../skills/semantic-layer/scripts/lib/compiler/index.ts";
@@ -195,6 +195,8 @@ describe("approved items that changed since approval", () => {
   });
 
   test("an approved item in a project approved before content hashes keeps applying as approved", () => {
+    // Such a project predates the ledger too: no line records a hash to compare.
+    rmSync(join(root, ".semlayer"), { recursive: true });
     for (const f of readdirSync(root, { recursive: true, withFileTypes: true })) {
       if (!f.isFile() || !f.name.endsWith(".yaml")) continue;
       const p = join(f.parentPath, f.name);

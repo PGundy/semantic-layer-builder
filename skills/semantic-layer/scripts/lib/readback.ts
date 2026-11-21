@@ -969,6 +969,8 @@ export function renderReadbacks(
     const lines = r.lines.flatMap((l) => (l === WHO ? block : [l]));
     // An approved item whose description alone changed since the owner's yes: its figures are untouched.
     if (descriptionOnly(replies(), entry)) lines.splice(1, 0, "- Since the owner's yes, only its description changed: its definition, and so its figures, are as they approved.");
-    return { target: ref, text: lines.join("\n"), content_hash: entry.hash, ...(entry.definitionHash !== entry.hash ? { definition_hash: entry.definitionHash } : {}) };
+    // definition_hash on every item, equal to content_hash for one without a description, marks the
+    // readback as one that hashed the description: a yes to it backs that text only (approval-hash.ts yesBacks).
+    return { target: ref, text: lines.join("\n"), content_hash: entry.hash, definition_hash: entry.definitionHash };
   });
 }

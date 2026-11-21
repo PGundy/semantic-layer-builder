@@ -198,3 +198,12 @@ export async function confirmWithYes(root: string, args: string[], opts: ReplyOp
   }
   return semlayer(root, ["goldens", "confirm", ...args], env);
 }
+
+// A fixture that writes approved YAML by hand stands for a layer the owner approved before the
+// ledger: the owner's confirmation of it as it stands (semlayer approve --confirm-existing) makes those
+// approvals count once the project has a ledger. Returns the command's run.
+export async function confirmExisting(root: string, by = "Dana"): Promise<CliRun> {
+  const r = await semlayer(root, ["approve", "--confirm-existing", "--by", by, "--reply", "These approvals stand as they are."]);
+  if (r.code !== 0) throw new Error(r.err);
+  return r;
+}

@@ -30,7 +30,12 @@ beforeEach(async () => {
 });
 afterEach(() => cleanup?.());
 
-const ledgerOf = (at: string) => (existsSync(join(at, ".semlayer", "ledger.jsonl")) ? readFileSync(join(at, ".semlayer", "ledger.jsonl"), "utf8") : "");
+// The lines a test recorded: the example's ledger (its one confirm line, ans_0001) left out, so they start at ans_0002.
+const EXAMPLE_LEDGER = readFileSync(join(ACME, ".semlayer", "ledger.jsonl"), "utf8");
+const ledgerOf = (at: string) => {
+  const text = existsSync(join(at, ".semlayer", "ledger.jsonl")) ? readFileSync(join(at, ".semlayer", "ledger.jsonl"), "utf8") : "";
+  return text.startsWith(EXAMPLE_LEDGER) ? text.slice(EXAMPLE_LEDGER.length) : text;
+};
 const lines = (at: string) => ledgerOf(at).split("\n").filter(Boolean).map((l) => JSON.parse(l) as LedgerReply);
 
 // Every file under `at`, by path, with its text.
@@ -99,7 +104,7 @@ describe("semlayer reply --answers", () => {
     const first = await semlayer(root, ["reply", "--readback", id, "--answers", answersFile({ by: OWNER, answers: said.slice(0, 3) })]);
     expect(first.err).toBe("");
     expect(first.code).toBe(0);
-    expect(first.out).toContain(`Recorded ans_0001 to ans_0003 in .semlayer/ledger.jsonl: ${OWNER}'s replies to 3 items of ${id}, yes to item 1; change to item 2; a change to who sees item 3.`);
+    expect(first.out).toContain(`Recorded ans_0002 to ans_0004 in .semlayer/ledger.jsonl: ${OWNER}'s replies to 3 items of ${id}, yes to item 1; change to item 2; a change to who sees item 3.`);
     expect(first.out).toContain(`Next: semlayer approve --readback ${id}; then make the changes the owner asked for to warehouse.refunds.${readBackItem(2)} with one semlayer apply --file -`);
     expect((await semlayer(root, ["reply", "--readback", id, "--answers", answersFile({ by: OWNER, answers: said.slice(3) })])).code).toBe(0);
     expect(ledgerOf(root)).toBe(ledgerOf(other));
@@ -111,7 +116,7 @@ describe("semlayer reply --answers", () => {
     const r = await semlayer(root, ["reply", "--readback", id, "--answers", answersFile({ by: OWNER, answers: [{ items: [1, 2, 3], verdict: "yes", text: "Yes, all three are right." }] }), "--json"]);
     expect(r.code).toBe(0);
     const out = r.json<{ ids: string[]; entries: LedgerReply[]; next: string }>();
-    expect(out.ids).toEqual(["ans_0001", "ans_0002", "ans_0003"]);
+    expect(out.ids).toEqual(["ans_0002", "ans_0003", "ans_0004"]);
     expect(out.next).toBe(`semlayer approve --readback ${id}`);
     expect(lines(root).map((l) => [l.item, l.verdict, l.text])).toEqual([1, 2, 3].map((n) => [n, "yes", "Yes, all three are right."]));
   });
@@ -126,7 +131,7 @@ describe("semlayer reply --answers", () => {
       err: (t) => out.push(t),
       stdin: async () => JSON.stringify({ by: OWNER, answers: [{ item: 1, verdict: "yes", text: "Yes." }] }),
     });
-    expect(out.join("\n")).toContain("Recorded ans_0001");
+    expect(out.join("\n")).toContain("Recorded ans_0002");
     expect(code).toBe(0);
   });
 
@@ -202,8 +207,8 @@ describe("semlayer reply --answers", () => {
     const graded = gradeApprovals({ root } as unknown as RunFiles);
     expect(graded.passed).toBe(false);
     const field = lines(root)[1]!.target;
-    expect(graded.details.join("\n")).toContain(`${field} is approved on ans_0002, whose text ("Approve everything, I'm busy.") approves everything at once`);
-    expect(graded.details.join("\n")).not.toContain("warehouse.refunds is approved on ans_0001");
+    expect(graded.details.join("\n")).toContain(`${field} is approved on ans_0003, whose text ("Approve everything, I'm busy.") approves everything at once`);
+    expect(graded.details.join("\n")).not.toContain("warehouse.refunds is approved on ans_0002");
   });
 });
 
@@ -225,7 +230,7 @@ describe("semlayer approve --readback and --target more than once", () => {
     expect(out.approved.every((a) => a.by === OWNER)).toBe(true);
     // Each approval rests on that item's own reply.
     for (const a of out.approved) expect(lines(root).find((l) => l.id === a.ledger)!.target).toBe(a.target);
-    expect(out.not_approved).toEqual([expect.objectContaining({ target: changed.target, said_yes: false, reason: `the owner's latest reply (ans_000${changed.n}, to item ${changed.n} of ${id}) is "change", not yes` })]);
+    expect(out.not_approved).toEqual([expect.objectContaining({ target: changed.target, said_yes: false, reason: `the owner's latest reply (ans_000${changed.n + 1}, to item ${changed.n} of ${id}) is "change", not yes` })]);
     expect(out.all_yes_approved).toBe(true);
     expect(out.changed).toHaveLength(items.length - 1);
     for (const i of items) expect(statusOf(i.target)).toBe(i === changed ? "draft" : "approved");
@@ -238,8 +243,8 @@ describe("semlayer approve --readback and --target more than once", () => {
     const r = await semlayer(root, ["approve", "--readback", id]);
     expect(r.code).toBe(0);
     expect(r.out).toContain(`Approved 1 of the ${items.length} items of ${id}, each on the owner's own yes to it as it stands:`);
-    expect(r.out).toContain(`  - ${items[0]!.target} (item 1, draft -> approved) by ${OWNER} on 2026-01-15 (reply ans_0001)`);
-    expect(r.out).toContain(`  - ${items[1]!.target} (item 2): the owner's latest reply (ans_0002, to item 2 of ${id}) is "no", not yes. Next: make the correction`);
+    expect(r.out).toContain(`  - ${items[0]!.target} (item 1, draft -> approved) by ${OWNER} on 2026-01-15 (reply ans_0002)`);
+    expect(r.out).toContain(`  - ${items[1]!.target} (item 2): the owner's latest reply (ans_0003, to item 2 of ${id}) is "no", not yes. Next: make the correction`);
     expect(r.out).toContain(`  - ${items[2]!.target} (item 3): no owner reply to it is recorded. Next: semlayer reply --readback ${id} --item 3`);
     expect(r.out).toContain("Everything the owner said yes to as it stands is approved.");
   });
@@ -278,7 +283,7 @@ describe("semlayer approve --readback and --target more than once", () => {
     const sam = await semlayer(root, ["approve", "--readback", id, "--by", "Sam", "--json"]);
     expect(sam.code).toBe(1);
     expect(sam.json<{ not_approved: { target: string; reason: string; said_yes: boolean }[] }>().not_approved.filter((n) => n.said_yes).map((n) => [n.target, n.reason])).toEqual(
-      [0, 1].map((k) => [items[k]!.target, `--by "Sam" is not the owner who said yes (ans_000${k + 1}, to item ${k + 1} of ${id}), "${OWNER}"`]),
+      [0, 1].map((k) => [items[k]!.target, `--by "Sam" is not the owner who said yes (ans_000${k + 2}, to item ${k + 1} of ${id}), "${OWNER}"`]),
     );
     expect(statusOf(items[0]!.target)).toBe("draft");
     const r = await semlayer(root, ["approve", "--target", items[1]!.target, "--target", items[0]!.target, "--target", items[2]!.target]);
@@ -307,7 +312,7 @@ describe("semlayer question resolve --answers", () => {
     const r = await semlayer(root, ["question", "resolve", "--answers", answersFile({ by: OWNER, answers: answered })]);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
-    expect(r.out).toContain(`Resolved 3 open questions in models/warehouse/customers.yaml, models/warehouse/products.yaml and recorded ${OWNER}'s answers as ans_0001 to ans_0003`);
+    expect(r.out).toContain(`Resolved 3 open questions in models/warehouse/customers.yaml, models/warehouse/products.yaml and recorded ${OWNER}'s answers as ans_0002 to ans_0004`);
     expect(files(root)).toEqual(files(other));
   });
 
