@@ -56,6 +56,8 @@ describe("a by-tag golden on postgres", () => {
     await run(["draft", "--source", "warehouse", "--tables", `${schema}.orders,${schema}.tags,${schema}.order_tags`]);
     // The draft's guessed joins from order_tags leave the layer, which reads the bridge only through orders.tag.
     for (const name of ["order", "tag"]) await run(["remove-join", "--source", "warehouse", "--model", "order_tags", "--name", name]);
+    // The draft also proposed orders.tag with no dedupe rule; it is replaced by the join add-bridge writes with the owner's rule.
+    await run(["remove-join", "--source", "warehouse", "--model", "orders", "--name", "tag"]);
     await run([
       "add-bridge", "--source", "warehouse", "--model", "orders", "--name", "tag", "--to", "tags", "--through", "order_tags",
       "--keys", "order_id=order_id", "--through-keys", "tag_id=tag_id", "--dedupe", "distinct_pairs",

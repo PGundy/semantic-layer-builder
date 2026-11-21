@@ -2,6 +2,7 @@
 // dimensions, measures, pii and sensitive tags, the columns left out and the open questions the
 // owner must answer. Every item is written as draft; nothing here guesses meaning beyond the rules.
 import { classifyType, isNumeric } from "./column-types.ts";
+import { proposeBridge } from "./draft-bridge.ts";
 import { quoteIdent } from "./dialect.ts";
 import { findTable, qualifiedName, toSpecName } from "./naming.ts";
 import { summarizeTable } from "./profile.ts";
@@ -1265,6 +1266,22 @@ export function draftModels(snapshot: Snapshot, tables: SnapshotTable[], existin
     drafted.push({ model: draftOne(ctx, t, planned, notes).model, table: t });
   }
   const all = [...existing, ...drafted.map((d) => d.model)];
+  // A drafted link table also proposes the bridge join between the models it links.
+  const draftedNames = new Set(drafted.map((d) => d.model.model));
+  const bridgeContext = {
+    snapshot,
+    models: all,
+    drafted: draftedNames,
+    pairs: opts.crossSchema ?? [],
+    measureLike: (column: string) => numericRule(toSpecName(column)) !== null,
+  };
+  for (const { model, table } of drafted) {
+    const proposal = proposeBridge(model, table, bridgeContext);
+    if (!proposal) continue;
+    const fact = drafted.find((d) => d.model.model === proposal.model)!.model;
+    fact.joins = [...(fact.joins ?? []), proposal.join];
+    fact.open_questions = [...(fact.open_questions ?? []), proposal.question];
+  }
   const models = drafted.map(({ model, table }) => {
     const ignored = unreferencedColumns(model, table, snapshot.dialect, incomingKeyColumns(model, all)).map((c) => c.name);
     return withIgnored(model, ignored);
