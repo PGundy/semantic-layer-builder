@@ -1,6 +1,6 @@
 name: eval-live
 
-# The live smoke (docs/PLAN-v1x.md, A5): the two lake scenarios played by a model through the Claude
+# The live smoke (evals/README.md, The live gate): the two lake scenarios played by a model through the Claude
 # Agent SDK and compared with evals/baseline.sdk.json by `eval:smoke --driver sdk --gate`. It costs
 # money and varies from run to run, so it never blocks a merge: it is not a required check, ci.yml does
 # not depend on it, and it runs only on a weekly schedule, by hand, or when a maintainer puts the

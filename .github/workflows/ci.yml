@@ -60,7 +60,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run eval:smoke
 
-  # The live Postgres tests on every supported server version (docs/PLAN-v1x.md, F1). The script starts
+  # The live Postgres tests on every supported server version, 13 to 17. The script starts
   # each server in Docker on the runner, so the job needs no service container and no secret.
   compat:
     name: compat (postgres ${{ matrix.pg }})
@@ -77,7 +77,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bash scripts/compat-pg.sh ${{ matrix.pg }}
 
-  # The pooled and TLS connection tests (docs/PLAN-v1x.md, F3): the script starts postgres:16, PgBouncer
+  # The pooled and TLS connection tests: the script starts postgres:16, PgBouncer
   # in transaction mode in front of it, and a TLS-only postgres:16 with a certificate it makes for the
   # run, all in Docker on the runner, so the job needs no service container and no secret.
   compat-network:

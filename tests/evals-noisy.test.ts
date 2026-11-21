@@ -9,7 +9,7 @@ import { DECOY_COUNT, decoyDdl, decoyTables, REAL_TABLES, SEED } from "../fixtur
 import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import { assertLocalPg, PG_URL, tempDir } from "./helpers.ts";
 
-// The 200-table scenario (docs/PLAN-v1x.md, A4): three Acme tables with data and 197 empty decoys in one
+// The 200-table scenario: three Acme tables with data and 197 empty decoys in one
 // PostgreSQL schema, and a selection grade that names a decoy a scope keeps.
 
 const START = "2026-01-01T00:00:00.000Z";
