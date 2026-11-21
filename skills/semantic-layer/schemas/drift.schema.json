@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": ".semlayer/drift.json",
-  "description": "The drift record semlayer introspect keeps: per source, the last change it found against the previous snapshot and the retyped columns an approved field still reads as it was approved. Committed; holds table, column and type names, never a data value, URL or credential.",
+  "description": "The drift record semlayer introspect and semlayer import keep: per source, the last change it found against the previous snapshot and the retyped columns an approved field still reads as it was approved. Committed; holds table, column and type names, never a data value, URL or credential.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "sources"],
@@ -56,6 +56,13 @@
                 }
               }
             }
+          },
+          "methods": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["from", "to"],
+            "description": "The method of the snapshot before and after that change (live, information_schema, dbt_manifest, ddl, manual): a change of source is not a change of the database.",
+            "properties": { "from": { "type": "string" }, "to": { "type": "string" } }
           },
           "unreadable": {
             "type": "array",

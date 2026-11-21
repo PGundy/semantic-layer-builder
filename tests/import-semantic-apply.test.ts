@@ -479,7 +479,7 @@ describe("import --semantic keeps a snapshot taken from the database", () => {
     expect(readFileSync(snapFile(p), "utf8")).toBe(before);
   });
 
-  test("a source with no snapshot builds one from the manifest, and without --semantic the introspected snapshot is replaced", async () => {
+  test("a source with no snapshot builds one from the manifest, and without --semantic the introspected snapshot is replaced only with --replace-snapshot", async () => {
     const none = await project();
     expect(existsSync(snapFile(none))).toBe(false);
     const r = await semlayer(none.root, ["import", "--source", "acme", "--file", none.manifest, "--semantic"]);
@@ -492,7 +492,11 @@ describe("import --semantic keeps a snapshot taken from the database", () => {
 
     const live = await project();
     const before = await introspect(live);
-    const plain = await semlayer(live.root, ["import", "--source", "acme", "--file", live.manifest]);
+    // A plain import over the database snapshot is refused; the flag says the replacement is meant.
+    const refused = await semlayer(live.root, ["import", "--source", "acme", "--file", live.manifest]);
+    expect(refused.code).toBe(1);
+    expect(readFileSync(snapFile(live), "utf8")).toBe(before);
+    const plain = await semlayer(live.root, ["import", "--source", "acme", "--file", live.manifest, "--replace-snapshot"]);
     expect(plain.out).toMatch(/Imported 3 tables and \d+ columns .* into snapshots\/acme\.json\./);
     expect(readFileSync(snapFile(live), "utf8")).not.toBe(before);
     expect(JSON.parse(readFileSync(snapFile(live), "utf8")).method).toBe("dbt_manifest");

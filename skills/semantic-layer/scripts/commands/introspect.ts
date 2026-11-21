@@ -213,11 +213,11 @@ const spec: CommandSpec = {
     }
     const loadModels = () => listModels(ctx.root, source.source).map((l) => l.model);
     const scopeChanges = recordScope(previous, snapshot, selectionMatcher(source, scope), loadModels);
-    const diff = previous ? diffSnapshots(previous, snapshot) : null;
+    const diff = previous ? diffSnapshots(previous, snapshot, { byFamily: previous.method !== snapshot.method }) : null;
     // The drift record is written first, so a refusal there leaves the snapshot as it was.
     if (diff) {
       const unreadableNames = unreadable.map((r) => `${r.schema}.${r.name}`);
-      writeDrift(ctx.root, { source: source.source, dialect: source.dialect, snapshot, diff, at: ctx.now().toISOString(), unreadable: unreadableNames, models: loadModels });
+      writeDrift(ctx.root, { source: source.source, dialect: source.dialect, snapshot, diff, at: ctx.now().toISOString(), unreadable: unreadableNames, methods: { from: previous!.method, to: snapshot.method }, models: loadModels });
     }
     saveSnapshot(ctx.root, snapshot);
     unlock();

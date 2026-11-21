@@ -1040,7 +1040,8 @@ describe("semlayer import", () => {
       ],
     };
     writeJson(join(t.root, "snapshots", "shop.json"), previous);
-    const r = await semlayer(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql")]);
+    // The previous snapshot is a database read, so the replacement is asked for.
+    const r = await semlayer(t.root, ["import", "--source", "shop", "--format", "ddl", "--file", fixture("ddl_mysql.sql"), "--replace-snapshot"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("Imported 4 tables");
     expect(r.out).toContain("Skipped CREATE VIEW shop.legacy_returns");
