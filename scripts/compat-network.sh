@@ -9,7 +9,7 @@
 #   - postgres:16-alpine that takes TCP connections over TLS only, with a server certificate for
 #     127.0.0.1 signed by a CA made for this run (SEMLAYER_TEST_TLS_URL, the CA file in
 #     SEMLAYER_TEST_TLS_CA), on COMPAT_NET_PORT + 2.
-# It runs tests/compat/pooler.test.ts and tests/compat/tls.test.ts, then removes the containers and
+# It runs tests/compat/pooler.test.ts, tests/compat/tls.test.ts and tests/compat/provider-facts.test.ts, then removes the containers and
 # their volumes, the network and the directory that held the CA, the certificate and its key.
 # Nothing it makes is kept.
 #
@@ -92,4 +92,4 @@ export SEMLAYER_TEST_TLS_CA="$CERTS/ca.crt"
 
 echo "compat-network: postgres:16 on 127.0.0.1:$PORT, PgBouncer (transaction mode) on $((PORT + 1)), TLS-only postgres:16 on $((PORT + 2))"
 # The servers share this machine's cores with the tests: allow each test and hook 30 seconds.
-bun test --timeout 30000 tests/compat/pooler.test.ts tests/compat/tls.test.ts
+bun test --timeout 30000 tests/compat/pooler.test.ts tests/compat/tls.test.ts tests/compat/provider-facts.test.ts

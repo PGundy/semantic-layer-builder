@@ -8,6 +8,7 @@ import { nextAction } from "../lib/next.ts";
 import { formatJson } from "../lib/output.ts";
 import { bareSemlayer, PLUGIN_BIN_DIR, PLUGIN_ROOT } from "../lib/plugin-bin.ts";
 import { listSourceNames, loadProject, loadSource, paths } from "../lib/project.ts";
+import { connectionFacts, factLines, type ConnectionFacts } from "../lib/provider-facts.ts";
 import { roleNote } from "../lib/role-sql.ts";
 import { actionText, type StepAction } from "../lib/status.ts";
 import type { SourceConfig } from "../lib/types.ts";
@@ -30,6 +31,11 @@ interface Check {
   // The tool cannot run until this is fixed: semlayer doctor exits 1.
   blocking?: boolean;
 }
+
+// What a Postgres connection reported about its server (lib/provider-facts.ts), by source.
+type SourceFacts = ConnectionFacts & { source: string };
+
+const UNKNOWN_FACTS: ConnectionFacts = { server_version: null, server_version_num: null, tls: "unknown", tls_protocol: null, pooled: "unknown" };
 
 const MARK: Record<Status, string> = { ok: "[ok]  ", warn: "[warn]", fail: "[fail]", skip: "[--]  " };
 const quote = (p: string) => `'${p.replaceAll("'", "'\\''")}'`;
@@ -79,7 +85,7 @@ async function runtimeChecks(): Promise<Check[]> {
 }
 
 // Opens the source's connection read-only and runs one trivial query, with short timeouts.
-async function connect(ctx: CommandContext, source: SourceConfig): Promise<{ adapter?: Adapter; error?: string }> {
+async function connect(ctx: CommandContext, source: SourceConfig): Promise<{ adapter?: Adapter; error?: string; deadline?: number }> {
   const env = commandEnv(ctx.env, {});
   const set = Number(env.SEMLAYER_STATEMENT_TIMEOUT_MS);
   env.SEMLAYER_STATEMENT_TIMEOUT_MS = String(Number.isInteger(set) && set > 0 ? Math.min(set, STATEMENT_MS) : STATEMENT_MS);
@@ -88,10 +94,11 @@ async function connect(ctx: CommandContext, source: SourceConfig): Promise<{ ada
     timer = setTimeout(() => reject(new Error(`no answer within ${CONNECT_MS / 1000} seconds`)), CONNECT_MS);
   });
   let adapter: Adapter | undefined;
+  const deadline = Date.now() + CONNECT_MS;
   try {
     adapter = await Promise.race([openAdapter(ctx.root, source, env, { warn: () => {} }), timeout]);
     await Promise.race([adapter.query("select 1 as ok"), timeout]);
-    return { adapter };
+    return { adapter, deadline };
   } catch (e) {
     await adapter?.close().catch(() => {});
     return { error: (e as Error).message };
@@ -100,7 +107,7 @@ async function connect(ctx: CommandContext, source: SourceConfig): Promise<{ ada
   }
 }
 
-async function sourceChecks(ctx: CommandContext, name: string, usedFiles: Set<string>): Promise<Check[]> {
+async function sourceChecks(ctx: CommandContext, name: string, usedFiles: Set<string>, facts: SourceFacts[]): Promise<Check[]> {
   let source: SourceConfig;
   try {
     source = loadSource(ctx.root, name);
@@ -128,13 +135,24 @@ async function sourceChecks(ctx: CommandContext, name: string, usedFiles: Set<st
   }
   if (res.from?.kind === "env_file" && res.from.path) usedFiles.add(res.from.path);
   out.push({ check, status: "ok", text: source.dialect === "duckdb" ? `Source "${name}" is a DuckDB source and needs no connection variable.` : `Source "${name}" reads ${res.described}.` });
-  const { adapter, error } = await connect(ctx, source);
+  const { adapter, error, deadline } = await connect(ctx, source);
   if (!adapter) {
     out.push({ check: `query ${name}`, status: "fail", text: `Source "${name}": the connection does not work: ${error}`, fix: `fix what the message names, then semlayer doctor` });
     return out;
   }
   out.push({ check: `query ${name}`, status: "ok", text: `Source "${name}" answered a read-only query.` });
   const report = adapter.roleReport;
+  if (adapter.dialect === "postgres") {
+    // The facts share the 15 seconds of the connection; past them they stay unknown and the run goes on.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<ConnectionFacts>((resolve) => {
+      timer = setTimeout(() => resolve(UNKNOWN_FACTS), Math.max(0, (deadline ?? Date.now()) - Date.now()));
+    });
+    const f = await Promise.race([connectionFacts(adapter), late]).finally(() => clearTimeout(timer));
+    facts.push({ source: name, ...f });
+    const [server, pooled] = factLines(name, f);
+    out.push({ check: `server ${name}`, status: "ok", text: server! }, { check: `pooler ${name}`, status: "ok", text: pooled! });
+  }
   await adapter.close().catch(() => {});
   if (report) {
     out.push(
@@ -177,6 +195,12 @@ export const PERMISSION_FILES = [
 ];
 const permissionLine = `To stop Claude Code asking before each semlayer command, you may add the rule ${PERMISSION_RULE} under permissions.allow in ${PERMISSION_FILES.map((f) => `${f.file} (${f.scope})`).join(", ").replace(/, ([^,]*)$/, " or $1")}; semlayer never adds it.`;
 
+// The first answering postgres source's facts as top-level keys; null for each when there is none.
+function topFacts(facts: SourceFacts[]) {
+  const f = facts[0];
+  return { server_version: f?.server_version ?? null, server_version_num: f?.server_version_num ?? null, tls: f?.tls ?? null, tls_protocol: f?.tls_protocol ?? null, pooled: f?.pooled ?? null };
+}
+
 const spec: CommandSpec = {
   summary: "Check that semlayer can run here: Bun, packages, the project, each connection and its role, git, the command on PATH, and the next step.",
   usage:
@@ -184,11 +208,15 @@ const spec: CommandSpec = {
     "Read-only. One line per check with a mark ([ok], [warn], [fail], [--]); each line that is not ok names its fix.\n" +
     "Connections are named by variable and file, never by value; each runs one read-only query with a short timeout.\n" +
     "Exits 1 only when Bun or the packages stop semlayer from running. --json: { ok, checks: [{ check, status, text, fix? }],\n" +
-    "shell_line, permission_rule: { rule, files: [{ file, scope }] }, next }.",
+    "shell_line, permission_rule: { rule, files: [{ file, scope }] }, next, server_version, server_version_num, tls, tls_protocol, pooled,\n" +
+    "connections: [{ source, server_version, server_version_num, tls, tls_protocol, pooled }] }. On postgres each connection also prints its server version,\n" +
+    "whether it is encrypted (read from the server) and a labelled guess whether a pooler is in the way; the top-level keys repeat the first postgres\n" +
+    "source that answered and are null when none did (a DuckDB source has none).",
   options: {},
   writes: false,
   async run(_input, ctx) {
     const checks = await runtimeChecks();
+    const facts: SourceFacts[] = [];
     const runs = !checks.some((c) => c.blocking);
     const has = existsSync(paths(ctx.root).project);
     if (!has) checks.push({ check: "project", status: "skip", text: `No semantic layer at ${ctx.root} yet.`, fix: "the Next line below (semlayer next)" });
@@ -202,7 +230,7 @@ const spec: CommandSpec = {
       if (project !== undefined) {
         checks.push({ check: "project", status: "ok", text: `Semantic layer ${project} at ${ctx.root}.` });
         const used = new Set<string>();
-        if (runs) for (const name of listSourceNames(ctx.root)) checks.push(...(await sourceChecks(ctx, name, used)));
+        if (runs) for (const name of listSourceNames(ctx.root)) checks.push(...(await sourceChecks(ctx, name, used, facts)));
         checks.push(...gitChecks(ctx, used));
       }
     }
@@ -217,7 +245,7 @@ const spec: CommandSpec = {
       checks.push({ check: "next", status: "fail", text: `semlayer next cannot say the next step: ${(e as Error).message}` });
     }
     const ok = runs;
-    if (ctx.json) ctx.out(formatJson({ ok, checks: checks.map(({ blocking: _b, ...c }) => c), shell_line: shellLine, permission_rule: { rule: PERMISSION_RULE, files: PERMISSION_FILES }, next }));
+    if (ctx.json) ctx.out(formatJson({ ok, checks: checks.map(({ blocking: _b, ...c }) => c), shell_line: shellLine, permission_rule: { rule: PERMISSION_RULE, files: PERMISSION_FILES }, next, ...topFacts(facts), connections: facts }));
     else {
       const lines = checks.map((c) => `${MARK[c.status]} ${c.text}${c.fix ? `\n       Fix: ${c.fix}` : ""}`);
       // An installed plugin lives in a folder named for its version, so the line goes stale on an update.
