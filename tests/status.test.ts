@@ -5,7 +5,7 @@ import { needsOwnerYes, type ProjectStatus } from "../skills/semantic-layer/scri
 import { validateProject } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import type { Model, Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readJson, readYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { approveWithYes, FIXED_NOW, semlayer, tempRoot } from "./helpers.ts";
+import { approveWithYes, confirmExisting, FIXED_NOW, semlayer, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
@@ -745,7 +745,9 @@ describe("status owner gates and golden coverage", () => {
     expect(s.next_step.message).toBe(
       "Every phase the CLI can measure is complete. Rerun semlayer validate after any change. " +
         "Name in the handoff the draft metric(s) draft_one; draft golden(s) g5, unnamed; draft field(s) wh.orders.total. " +
-        "Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.",
+        "Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved." +
+        " The layer has no release yet: once the owner agrees it is finished, record it as release 1.0 with semlayer change close --version 1.0, " +
+        "which saves the items and the golden figures as they stand so later changes can be compared with them.",
     );
     const human = await semlayer(t.root, ["status"]);
     expect(human.out).toContain("draft metrics: draft_one");
@@ -788,7 +790,9 @@ describe("status owner gates and golden coverage", () => {
     expect(s.draft_goldens).toEqual([]);
     expect(s.next_step.message).toBe(
       "Every phase the CLI can measure is complete. Rerun semlayer validate after any change. " +
-        "Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.",
+        "Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved." +
+        " The layer has no release yet: once the owner agrees it is finished, record it as release 1.0 with semlayer change close --version 1.0, " +
+        "which saves the items and the golden figures as they stand so later changes can be compared with them.",
     );
   });
 
@@ -1549,6 +1553,8 @@ describe("status reapprove phase", () => {
     expect((await semlayer(t.root, ["status", "--json"])).json<ProjectStatus>().next_step.phase).toBe("interview");
     // Stamped first: once an item records a hash, --stamp-hashes refuses the approved items without one.
     expect((await semlayer(t.root, ["approve", "--stamp-hashes"])).code).toBe(0);
+    // The owner confirms the approvals the fixture wrote by hand, so the ledger backs them.
+    await confirmExisting(t.root);
     expect((await approveWithYes(t.root, ["--target", "wh.orders.total", "--by", "Dana"])).code).toBe(0);
     // The analytics review's experiment: the approved measure now sums a thousand times the amount.
     editModel(t.root, "orders", (m) => (m.measures[0]!.expr = "amount * 1000"));

@@ -99,6 +99,90 @@
           "type": "integer",
           "minimum": 1,
           "description": "Row limit."
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+          },
+          "uniqueItems": true,
+          "description": "model.segment: segments of the model of the request's fields, applied in WHERE. Not with a metric."
+        },
+        "running": {
+          "type": "object",
+          "description": "A running total of each measure over one of the request's time dimensions, or with periods the total of the last n periods. PostgreSQL sources only.",
+          "additionalProperties": false,
+          "required": [
+            "over"
+          ],
+          "properties": {
+            "over": {
+              "type": "string",
+              "pattern": "^([a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*)?:[a-z]+$",
+              "description": "model.field:grain, one of the request's dimensions written in full; the :grain shorthand is refused here."
+            },
+            "periods": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 120,
+              "description": "The number of periods a trailing total adds up, the current one included."
+            }
+          }
+        },
+        "compare": {
+          "type": "object",
+          "description": "Each measure beside its value in the period before (prior) and the same period a year earlier (year_ago), with the change and the change as a fraction of the earlier value, over one of the request's time dimensions. PostgreSQL sources only.",
+          "additionalProperties": false,
+          "required": [
+            "with"
+          ],
+          "properties": {
+            "over": {
+              "type": "string",
+              "pattern": "^([a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*)?:[a-z]+$",
+              "description": "model.field:grain, one of the request's dimensions written in full; the :grain shorthand is refused here."
+            },
+            "with": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "prior",
+                  "year_ago"
+                ]
+              },
+              "description": "prior: the period before; year_ago: the same period a year earlier (day, month, quarter or year grain)."
+            }
+          }
+        },
+        "window": {
+          "type": "object",
+          "description": "Each measure over the last days days as of as_of, both included, by a time dimension; with compare (with only, no over) beside the days before it and the same dates a year earlier. PostgreSQL sources only.",
+          "additionalProperties": false,
+          "required": [
+            "dimension",
+            "days"
+          ],
+          "properties": {
+            "dimension": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
+              "description": "model.field, a time dimension that allows the day grain, with no grain: a day is a day of its expr."
+            },
+            "days": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 366,
+              "description": "The number of days in the window, as_of included."
+            },
+            "as_of": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+              "description": "YYYY-MM-DD, the last day of the window. A golden states it; semlayer sql fills a missing one with the clock's date in UTC and says so."
+            }
+          }
         }
       }
     },
@@ -155,6 +239,11 @@
       "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
       "description": "ISO date of confirmation. Required when approved.",
       "format": "date"
+    },
+    "unconfirmed_yes": {
+      "type": "string",
+      "pattern": "^ans_[0-9]{4,}$",
+      "description": "Written by semlayer goldens unconfirm: the id of the owner's latest reply to the golden when it was returned to draft, a yes to figures it may no longer have, on which semlayer next offers no confirm. Removed by semlayer goldens confirm."
     },
     "confirmed_as": {
       "type": "object",

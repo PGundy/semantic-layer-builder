@@ -4,7 +4,7 @@ table: acme.dim_products
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-26
-approved_hash: sha256:9fb254e12fe5ed909888f15934190a6e14169e06834ceec552e61ccfa6c93105
+approved_hash: sha256:46ea92e610faa91779b523c9adf1bb3a00aef7cdbf264d87ddd0d8b8b3a41c20
 description: >-
   Product catalogue, one row per product: 60 products, each with its own product_id and sku, in 5 categories of 12.
   "By product" groups by product_id or sku, never by product_name, because 5 names appear on more than one product.
@@ -27,7 +27,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
-    approved_hash: sha256:b7cce3410deb1d77fca842dd8e245f3fbb7f266611b8699e1bb855529011a1f9
+    approved_hash: sha256:72c2cc405829118252665048d1362695c9313dfacd3afd23a2e43e8f01174ecc
   - name: product_name
     expr: product_name
     type: string
@@ -37,7 +37,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:83849996fc6f5b66ad2c2b662d3c23359b1e123c5d2806bbd173e15694ccff8b
+    approved_hash: sha256:123b6c8c28820a403c00c3fd0090af89ff056f74cecf5a31e4e8a281ab995c17
   - name: category
     expr: category
     type: string
@@ -45,7 +45,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:228e562b1185c89d3a97ec152e649c7c22151109bda448c5134002f017679065
+    approved_hash: sha256:9dd3c6e38d34221c9a47752f4330cba1f2972bde8354025b97f7282c49d572d1
   - name: is_active
     expr: is_active
     type: boolean
@@ -55,7 +55,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:81dc0b56c836c9ff4c6e71ba13ef6265870b2dc8e508e2d943828721dce6fe56
+    approved_hash: sha256:abf127a4fb990bfb68142648bef1f1613598bdc3f961540b6c4d998b9a0dfce5
   - name: launched_on
     expr: launched_on
     type: time
@@ -79,5 +79,5 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:c6e723ba138f7af18e1348dfbde6411b238290f7489c1f524f648fecf7247d0b
+    approved_hash: sha256:4ff555141ac1aa0159a4df133065038badca4034c8a153460b6d58ee2574c212
 measures: []

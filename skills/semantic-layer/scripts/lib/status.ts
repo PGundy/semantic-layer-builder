@@ -14,10 +14,15 @@ import {
   metricMeasureRefs,
 } from "./access.ts";
 import { canRun } from "./adapters/index.ts";
-import { type ApprovalEntry, holdsHashes, type Integrity, integrity, itemApprovals, listApprovals } from "./approval-hash.ts";
-import { currentYes, ledgerState } from "./ledger.ts";
+import { type ApprovalEntry, backed, requestHash, confirmable, holdsHashes, integrity, itemApprovals, listApprovals, pairEntries, type Standing, standing } from "./approval-hash.ts";
+import { type ChangeRecord, loadChange, releaseLead } from "./change-record.ts";
+import { loadChangelog } from "./release.ts";
+import { currentYes, ledgerState, readApprovalLedger } from "./ledger.ts";
 import { accessRowFilters, layerReads } from "./layer-reads.ts";
 import { findTable, qualifiedName } from "./naming.ts";
+import { plainText } from "./output.ts";
+import { openReadbacks } from "./readback-open.ts";
+import { NO_METRICS_COMMAND, noMetrics, type NoMetricsStatus } from "./no-metrics.ts";
 import { inScope } from "./patterns.ts";
 import { parseRequestField } from "./refs.ts";
 import {
@@ -51,7 +56,9 @@ import {
 } from "./snapshot-diff.ts";
 import { intakeMode, upgradeCommand } from "./intake.ts";
 import { effectiveScope } from "./table-list.ts";
+import { type SchemaQuestion, schemaQuestion, schemaQuestionArgs } from "./schema-scope.ts";
 import { DIALECTS, TO_ONE_RELATIONSHIPS } from "./types.ts";
+import { sourceWeekStart } from "./compiler/calendar.ts";
 import type { AccessMode, Approval, Dialect, Golden, IntakeMode, LedgerReply, Metric, Model, SnapshotMethod, SnapshotTable, SourceConfig } from "./types.ts";
 
 // Golden count below which the verify phase stays open.
@@ -190,6 +197,7 @@ export type Phase =
   | "access"
   | "verify"
   | "connect"
+  | "change"
   | "done";
 
 // What a step does, as data: the semlayer command (a key of commands/index.ts), its arguments as semlayer would
@@ -273,6 +281,8 @@ export interface ProjectStatus {
   metrics: ApprovalCount;
   // Names of the metrics in metrics.yaml that are not approved.
   draft_metrics: string[];
+  // The owner's answer that they report no metrics for now (metrics.yaml's no_metrics), or null.
+  no_metrics: NoMetricsStatus | null;
   // open_questions counts access.yaml's top-level and per-role open questions. mode is access.yaml's
   // mode as the access evaluator reads it (open without access.yaml), and default_audience what a
   // user with no attributes and no assigned roles sees of the reported sources.
@@ -295,13 +305,25 @@ export interface ProjectStatus {
   // Approved items without an approved_hash while other items record one: the hash may have been
   // removed, so each is read back and approved again. Empty while no item records a hash.
   hash_missing: string[];
-  // Approved items and goldens whose owner's latest reply in the ledger is not a yes to them as they
-  // stand (approved before semlayer approve required one), as approve targets and golden:<name>. They stay
-  // approved and never hold a phase open; semlayer next reads them back once every phase is done.
+  // Approved items and goldens no recorded yes or confirmation of the owner backs that still count:
+  // every approval of a project with no ledger (the rule for approvals given before it), and confirmed
+  // goldens, as approve targets and golden:<name>. They stay approved and never hold a phase open;
+  // semlayer next reads them back once every phase is done.
   approved_without_yes: string[];
+  // Approved models, fields, joins, metrics, schema pairs and access.yaml whose file says approved but
+  // that no recorded yes of the owner backs while the project has a ledger (approval-hash.ts standing
+  // "unbacked"): each counts as a draft, and the reapprove phase reads it back.
+  stamped_without_yes: string[];
+  // Items of the pending readbacks that wait for the owner's answer, as semlayer next asks them: one a
+  // later readback of the same target settled on a recorded reply is not counted.
+  pending_readback_items: number;
   goldens: ApprovalCount;
   // Names of the goldens that are not approved; a golden without a string name goes by its file name.
   draft_goldens: string[];
+  // The goldens the latest release left out as unconfirmed that are still drafts with the request they had then:
+  // the owner deferred them at that release (spec: Iterating a layer, Deferred goldens). Null when there are none.
+  // confirmed is the goldens confirmed now, confirmed_before those the release before it recorded.
+  deferred_goldens: DeferredGoldens | null;
   // Roles in access.yaml that no approved golden uses. A golden without a role key uses
   // access.yaml's default_role.
   roles_without_goldens: string[];
@@ -310,6 +332,17 @@ export interface ProjectStatus {
   row_filter_joins_without_goldens: RowFilterJoinWithoutGolden[];
   next_batch: { source: string; tables: BatchEntry[] } | null;
   next_step: NextStep;
+  // The version last released (semantic.yaml's layer_version), or null before the first release, and
+  // the open change round (.semlayer/change.json), or null (spec: Iterating a layer, The change round).
+  layer_version: string | null;
+  change: ChangeRecord | null;
+}
+
+export interface DeferredGoldens {
+  release: string;
+  goldens: string[];
+  confirmed: number;
+  confirmed_before: number;
 }
 
 // A model a role sees that reaches the role's row-filtered model through to-one joins, with no
@@ -365,6 +398,14 @@ function count(items: (Approval | undefined)[]): ApprovalCount {
   return out;
 }
 
+// The owner's none for now, applying while metrics.yaml lists no metric that count() counts.
+function noMetricsStatus(file: unknown, metrics: Metric[]): NoMetricsStatus | null {
+  const n = noMetrics(file);
+  if (!n) return null;
+  const listed = count(metrics);
+  return { ...n, applies: listed.approved + listed.draft === 0 };
+}
+
 // Names of the metrics that are not approved, matching what count() counts as draft: every entry
 // but an empty one. An entry without a string name goes by its place in the list, as metrics[1].
 function draftMetricNames(metrics: unknown[]): string[] {
@@ -385,6 +426,30 @@ function draftGoldenNames(goldens: LoadedGolden[]): string[] {
     if (g.status === "approved") return [];
     return [typeof g.name === "string" && g.name !== "" ? g.name : stem(basename(path))];
   });
+}
+
+// The goldens the latest release deferred (changelog entry goldens_unconfirmed_requests) that are still drafts
+// with the request they had then, or null: with no release recorded, an unreadable changelog, a release the
+// layer has moved past, or none left.
+function deferredGoldens(root: string, layerVersion: unknown, loaded: LoadedGolden[]): DeferredGoldens | null {
+  if (typeof layerVersion !== "string" || layerVersion === "") return null;
+  const { log } = loadChangelog(root);
+  const last = log?.entries.at(-1);
+  const recorded = last?.goldens_unconfirmed_requests;
+  if (!last || last.version !== layerVersion || !recorded) return null;
+  const names = loaded
+    .flatMap(({ golden }) => (isRecord(golden) && typeof golden.name === "string" && golden.status !== "approved" && recorded[golden.name] === requestHash(golden.request) ? [golden.name] : []))
+    .sort();
+  if (!names.length) return null;
+  // What the release before it had: the goldens it recorded and those it left out.
+  const before = log!.entries.at(-2);
+  const had = (e: typeof last) => Object.keys(e.goldens).length + (e.goldens_unconfirmed ?? []).filter((n) => !(n in e.goldens)).length;
+  return {
+    release: last.version,
+    goldens: names,
+    confirmed: loaded.filter(({ golden }) => isRecord(golden) && golden.status === "approved").length,
+    confirmed_before: before ? had(before) : had(last),
+  };
 }
 
 // The draft metrics that can be read back as metric:<name>; a name semlayer approve cannot target is left
@@ -424,6 +489,8 @@ interface SourceReport {
   status: SourceStatus;
   drift: Drift;
   approvals: ApprovalEntry[];
+  // The schema question while it is open (spec: Schema scope, The schema question).
+  schemaQuestion?: SchemaQuestion;
 }
 
 // The approve targets of the entries in the given integrity state.
@@ -436,7 +503,7 @@ function refsIn(entries: ApprovalEntry[], state: "changed" | "missing", projectH
 function modelApprovals(source: string, config: SourceConfig, models: LoadedModel["model"][]): ApprovalEntry[] {
   const byName = new Map(models.filter((m) => isRecord(m) && typeof m.model === "string").map((m) => [m.model, m]));
   const dialect = typeof config.dialect === "string" && (DIALECTS as readonly string[]).includes(config.dialect) ? config.dialect : undefined;
-  return itemApprovals(listApprovals({ models: [...byName.values()].map((m) => ({ source, model: m, lookup: (name: string) => byName.get(name), dialect })) }));
+  return itemApprovals(listApprovals({ models: [...byName.values()].map((m) => ({ source, model: m, lookup: (name: string) => byName.get(name), dialect, weekStart: sourceWeekStart(config) })) }));
 }
 
 // The rule semlayer validate applies to an expr that is one column: a bare identifier that is not a SQL
@@ -619,7 +686,9 @@ function sourceStatus(root: string, name: string, settings: ProjectStatus["setti
     left_scope_with_models: approvedModelsOn(stillOut, tables, models),
     next_batch: nextBatch,
   };
-  return { status, drift, approvals: modelApprovals(name, config, models) };
+  const scopedSet = new Set(scoped);
+  const question = snapshot ? schemaQuestion(config, snapshot, (t) => scopedSet.has(t)) : undefined;
+  return { status, drift, approvals: modelApprovals(name, config, models), ...(question ? { schemaQuestion: question } : {}) };
 }
 
 // The data-dependent steps of an export source, each waiting on a connection.
@@ -733,17 +802,28 @@ interface StepContext {
   // The command that signs off the targets: semlayer approve of the first one the owner's latest reply in
   // the ledger is a yes to as it stands, else semlayer readback of them all.
   signOff: (refs: string[]) => StepAction;
+  // Whether semlayer approve --confirm-existing would take one of the items stamped without a yes.
+  confirmExisting: boolean;
   // For each golden of the reported goldens by name, the source its request names.
   goldenSources: Map<string, string | undefined>;
   // The typed edits (the words after "semlayer") that declare the roles and user attributes the goldens
   // name, which access.yaml must define once it exists.
   goldenAccessEdits: string[][];
+  // The open schema question per source (spec: Schema scope, The schema question).
+  schemaQuestions: Map<string, SchemaQuestion>;
+  // The sentence the done step ends with: how a finished layer is released, or changed once released.
+  lead: string;
+  // Whether a release is recorded (semantic.yaml's layer_version is set).
+  released: boolean;
 }
+
+// The most deferred goldens the done step names.
+const DEFERRED_SHOWN = 8;
 
 const OPEN_BASELINE = "everyone sees every approved model, field and metric except those tagged pii or sensitive";
 const EXCEPTIONS_QUESTION = "is there anything some people should not see?";
 
-function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSources: number, ctx: StepContext): Step {
+function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch" | "layer_version" | "change">, allSources: number, ctx: StepContext): Step {
   const { sources } = status;
   if (allSources === 0) {
     return {
@@ -790,7 +870,7 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       source: s,
       message:
         `The snapshot of "${s}" holds no tables. Check that the connection or the imported file covers the schemas the owner means, ` +
-        `then introspect again or import with semlayer import --source ${s}.`,
+        `then introspect again, or import a file with semlayer import --source ${s} --file <file>${empty.runnable ? " --replace-snapshot" : ""}.`,
       action: act("introspect", ["--source", s, ...(empty.runnable ? [] : ["--emit-sql"])]),
     };
   }
@@ -826,13 +906,18 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
 
   // An approved item edited after its sign-off changes a figure nobody confirmed, so it is read back
   // before anything else moves.
-  if (status.changed_since_approval.length || status.hash_missing.length) {
+  if (status.changed_since_approval.length || status.hash_missing.length || status.stamped_without_yes.length) {
     const changed = status.changed_since_approval;
     const missing = status.hash_missing;
+    const stamped = status.stamped_without_yes;
     const parts = [
       changed.length ? `${changed.length} approved item(s) changed since they were approved: ${preview(changed)}.` : "",
       missing.length
         ? `${missing.length} approved item(s) have no approved_hash while other approved items carry one, so it may have been removed: ${preview(missing)}.`
+        : "",
+      stamped.length
+        ? `${stamped.length} item(s) say they are approved, but no recorded yes from the owner stands behind them: ${preview(stamped)}` +
+          (ctx.confirmExisting ? "; approvals the owner gave before semlayer recorded their yes they can instead confirm as they stand with semlayer approve --confirm-existing." : ".")
         : "",
     ].filter(Boolean);
     return {
@@ -840,7 +925,8 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
       message:
         `${parts.join(" ")} Read each back to the owner as it now stands and approve it again only after they confirm, or restore ` +
         "the approved definition; semlayer validate names each one. Until then tools treat each one as a draft (semlayer access lists them).",
-      action: ctx.signOff([...changed, ...missing]),
+      // Items stamped without a yes are read back eight at a time, as semlayer next backfills.
+      action: ctx.signOff([...changed, ...missing, ...stamped.slice(0, 8)]),
     };
   }
 
@@ -862,6 +948,36 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
         "--write; remove an exclude that matches it with --remove), or restore the pattern or the intake.schemas entry that selected it; " +
         `otherwise revoke it with semlayer approve --target ${s}.<model> --revoke, or remove its model file.`,
       action: act("scope", ["--source", s, ...tablesArgs(tables)]),
+    };
+  }
+
+  // Step schema_scope (G3): once a snapshot holds tables of more than one schema, the owner says
+  // which schema the layer reads (intake.primary) and answers each foreign key between it and
+  // another schema read with an approved or a declined pair, before the focus question and draft.
+  const asked = sources.find((s) => ctx.schemaQuestions.has(s.source));
+  if (asked) {
+    const q = ctx.schemaQuestions.get(asked.source)!;
+    const a = schemaQuestionArgs(q);
+    if (a.command === "readback") {
+      return {
+        phase: "scope",
+        source: asked.source,
+        message:
+          `Source "${asked.source}" has a schema pair the owner asked for, recorded as a draft. Read it back to the owner and approve it only on their yes: ` +
+          `semlayer approve --target ${a.args[1]!}; the pair stays a draft until then.`,
+        action: act(a.command, a.args, a.kind),
+      };
+    }
+    const keys = q.keys.map((k) => `${k.table} (${k.columns.join(", ")}) -> ${k.references}${k.constraint === null ? "" : `, foreign key ${k.constraint}`}`);
+    return {
+      phase: "scope",
+      source: asked.source,
+      message:
+        `Source "${asked.source}" reads more than one schema (${q.schemas.join(", ")}), ` +
+        (q.primary_set ? `and the catalog records ${keys.length} foreign key(s) between ${q.primary} and another schema that no schema pair answers: ${preview(keys)}. ` : "and names no primary schema. ") +
+        `A first layer reads one schema and joins within it. Ask the owner whether ${q.primary} is enough, then record the answer with semlayer setup --primary, ` +
+        "semlayer add-cross-schema (keys for a yes, --decline for a no) and the pair's readback; semlayer next lists the commands for each answer.",
+      action: act(a.command, a.args, a.kind),
     };
   }
 
@@ -981,13 +1097,15 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
   }
 
   const measures = sources.reduce((n, s) => n + s.measures.approved + s.measures.draft, 0);
-  if (measures > 0 && status.metrics.approved === 0) {
+  // The owner's recorded none for now closes the phase while metrics.yaml lists no metric.
+  if (measures > 0 && status.metrics.approved === 0 && !status.no_metrics?.applies) {
     return {
       phase: "metrics",
       message:
         status.metrics.draft > 0
           ? `${status.metrics.draft} metric(s) in metrics.yaml are drafts. Read them back to the owner and approve what they confirm.`
-          : "No metrics yet. Ask the owner which ratios and derived figures they report, and add each as a draft with semlayer add-metric (semlayer add-metric --help lists its flags).",
+          : "No metrics yet. Ask the owner which ratios and derived figures they report, and add each as a draft with semlayer add-metric (semlayer add-metric --help lists its flags); " +
+            `or, if the owner reports none, record that in their words with ${NO_METRICS_COMMAND} (on its own, not in semlayer apply).`,
       action:
         status.metrics.draft === 0
           ? act("add-metric", ["--name", "<metric>", "--type", "ratio|derived"], "ask_owner")
@@ -1102,10 +1220,15 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
   if (exported && sources.every((s) => s.intake_mode === "export")) return connectStep(exported);
 
   const uncovered = status.roles_without_goldens;
+  const deferred = status.deferred_goldens;
+  const deferredSet = new Set(deferred?.goldens ?? []);
+  const notDeferred = status.draft_goldens.filter((n) => !deferredSet.has(n));
+  // Goldens the owner deferred at the release do not hold a released layer in the verify phase on their own.
+  const deferredOnly = !!deferred && ctx.released && notDeferred.length === 0 && status.goldens.approved + deferred.goldens.length >= MIN_APPROVED_GOLDENS;
   const roleNote = uncovered.length ? ` Roles without an approved golden: ${uncovered.join(", ")}.` : "";
-  if (status.goldens.approved < MIN_APPROVED_GOLDENS) {
+  if (status.goldens.approved < MIN_APPROVED_GOLDENS && !deferredOnly) {
     const counts = goldenCounts(status.goldens);
-    const draft = status.draft_goldens.find((n) => /^[a-z][a-z0-9_]*$/.test(n));
+    const draft = notDeferred.find((n) => /^[a-z][a-z0-9_]*$/.test(n));
     if (draft) {
       // A golden on a source semlayer cannot run is read back from a plan of its rows.
       const src = ctx.goldenSources.get(draft);
@@ -1149,8 +1272,9 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
   // the handoff names each one.
   const fields = sources.flatMap((s) => s.draft_fields.map((f) => `${s.source}.${f}`));
   const left = [
+    status.no_metrics?.applies ? `owner's answer of no metrics for now (said by ${plainText(status.no_metrics.by)} on ${status.no_metrics.at})` : "",
     status.draft_metrics.length ? `draft metric(s) ${status.draft_metrics.join(", ")}` : "",
-    status.draft_goldens.length ? `draft golden(s) ${status.draft_goldens.join(", ")}` : "",
+    notDeferred.length ? `draft golden(s) ${notDeferred.join(", ")}` : "",
     fields.length ? `draft field(s) ${fields.join(", ")}` : "",
     status.row_filter_joins_without_goldens.length
       ? `models that reach a row-filtered model through joins with no approved golden as the role: ${rowFilterJoinItems(status.row_filter_joins_without_goldens).join(", ")}`
@@ -1161,7 +1285,14 @@ function nextStep(status: Omit<ProjectStatus, "next_step" | "next_batch">, allSo
     message:
       "Every phase the CLI can measure is complete. Rerun semlayer validate after any change." +
       (left.length ? ` Name in the handoff the ${left.join("; ")}.` : "") +
-      " Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.",
+      (deferred
+        ? ` The owner deferred ${deferred.goldens.length} golden(s) at release ${deferred.release}: ${deferred.goldens.slice(0, DEFERRED_SHOWN).join(", ")}${deferred.goldens.length > DEFERRED_SHOWN ? `, and ${deferred.goldens.length - DEFERRED_SHOWN} more` : ""}; ` +
+          `the layer confirms ${deferred.confirmed} golden(s) against ${deferred.confirmed_before} before it. When the owner can check one: semlayer readback --targets golden:${deferred.goldens[0]}.`
+        : "") +
+      (ctx.released
+        ? ""
+        : " Before the handoff, tick the coverage checklist in the handoff card, references/phases/handoff.md; every figure the owner gave needs a golden, draft or approved.") +
+      (ctx.lead ? ` ${ctx.lead}` : ""),
     action: act("validate", [], "done"),
   };
 }
@@ -1344,7 +1475,18 @@ function rowFilterJoinsWithoutGoldens(
 // only once approved, hashed over its recorded rows and tolerance.
 export interface TargetState {
   hash: string;
-  state: Integrity;
+  // The hash without the item's description, when it differs from hash (approval-hash.ts itemHashes).
+  definition?: string;
+  // The item's approved_at, when it is text.
+  approvedAt?: string;
+  state: Standing;
+  // Whether the item carries an approval's trace now (approved_by, approved_at, approved_hash, or
+  // access.yaml's last_approved). A draft with none was never approved, or its approval was revoked.
+  stamped: boolean;
+}
+
+function stamped(e: ApprovalEntry): boolean {
+  return ["approved_by", "approved_at", "approved_hash", "last_approved"].some((k) => e.item[k] !== undefined && e.item[k] !== null);
 }
 
 // The status with what semlayer next reads beside it: every approve target of the project by ref, and the
@@ -1385,6 +1527,9 @@ export function statusDetail(root: string, only?: string): StatusDetail {
     ...allMetricEntries.filter((e) => typeof e.item.source === "string" && reported.has(e.item.source)),
     ...accessEntries,
   ];
+  // The schema pairs of the reported sources: a stamped pair counts only with a matching hash, so
+  // they are read as hashed whatever the rest of the project records.
+  const pairApprovals = reports.flatMap((r) => pairEntries(r.status.source, loadSource(root, r.status.source)));
   // Whether any of them, or any metric, records an approved_hash.
   const projectHashed = holdsHashes([...reports.flatMap((r) => r.approvals), ...allMetricEntries, ...accessEntries]);
   // A file that holds only comments parses to null but still exists: a draft with no roles.
@@ -1407,15 +1552,20 @@ export function statusDetail(root: string, only?: string): StatusDetail {
   const goldenRoles = new Set(approvedGoldens.flatMap((g) => goldenRunsAs(goldenLayer, g)));
   const ledger = ledgerState(root);
   const replies = ledger.replies;
+  // The one reading of the ledger every approval below is checked against (approval-hash.ts standing).
+  const answers = readApprovalLedger(root);
   const targets = new Map<string, TargetState>();
   for (const e of [...reports.flatMap((r) => r.approvals), ...allMetricEntries, ...accessEntries]) {
-    if (!targets.has(e.ref)) targets.set(e.ref, { hash: e.hash, state: integrity(e, projectHashed) });
+    if (!targets.has(e.ref)) targets.set(e.ref, { hash: e.hash, ...(e.definitionHash !== e.hash ? { definition: e.definitionHash } : {}), ...(typeof e.item.approved_at === "string" ? { approvedAt: e.item.approved_at } : {}), state: standing(e, projectHashed, answers), stamped: stamped(e) });
   }
-  for (const g of listApprovals({ goldens: loadedGoldens })) if (g.kind === "golden" && g.complete && g.status === "approved") targets.set(g.ref, { hash: g.hash, state: "current" });
+  for (const e of pairApprovals) targets.set(e.ref, { hash: e.hash, state: standing(e, true, answers), stamped: stamped(e) });
+  for (const g of listApprovals({ goldens: loadedGoldens })) if (g.kind === "golden" && g.complete && g.status === "approved") targets.set(g.ref, { hash: g.hash, state: "current", stamped: true });
+  // Approvals that count with nothing in the ledger behind them: all of them while there is no ledger.
   const withoutYes = (refs: string[]) =>
     refs.filter((ref) => {
       const t = targets.get(ref);
-      return !!t && (t.state === "current" || t.state === "unhashed") && !currentYes(replies, ref, t.hash);
+      if (!t || (t.state !== "current" && t.state !== "unhashed")) return false;
+      return !answers.present || !backed(answers, { ref, hash: t.hash, definitionHash: t.definition ?? t.hash });
     });
 
   const base = {
@@ -1424,6 +1574,7 @@ export function statusDetail(root: string, only?: string): StatusDetail {
     sources,
     metrics: count(metrics),
     draft_metrics: draftMetricNames(metrics),
+    no_metrics: noMetricsStatus(metricsFile, metrics),
     access: {
       state: accessState,
       roles: Array.isArray(access?.roles) ? access.roles.length : 0,
@@ -1434,16 +1585,20 @@ export function statusDetail(root: string, only?: string): StatusDetail {
       ...(lastApproved ? { last_approved: lastApproved } : {}),
     },
     open_questions: sources.reduce((n, s) => n + s.open_questions, accessQuestions),
-    changed_since_approval: refsIn(approvals, "changed", projectHashed),
-    hash_missing: refsIn(approvals, "missing", projectHashed),
-    approved_without_yes: withoutYes([...approvals.map((e) => e.ref), ...approvedGoldens.map((g) => `golden:${g.name}`)]),
+    changed_since_approval: [...refsIn(approvals, "changed", projectHashed), ...refsIn(pairApprovals, "changed", true)],
+    hash_missing: [...refsIn(approvals, "missing", projectHashed), ...refsIn(pairApprovals, "missing", true)],
+    pending_readback_items: openReadbacks(root, targets, replies).reduce((n, r) => n + r.open.length, 0),
+    approved_without_yes: withoutYes([...approvals.map((e) => e.ref), ...pairApprovals.map((e) => e.ref), ...approvedGoldens.map((g) => `golden:${g.name}`)]),
+    stamped_without_yes: [...approvals, ...pairApprovals].filter((e) => targets.get(e.ref)?.state === "unbacked").map((e) => e.ref),
     goldens: count(goldens),
     draft_goldens: draftGoldenNames(loadedGoldens),
+    deferred_goldens: deferredGoldens(root, project.layer_version, loadedGoldens),
     roles_without_goldens: roleNames(access).filter((r) => !goldenRoles.has(r)),
     row_filter_joins_without_goldens: rowFilterJoinsWithoutGoldens(goldenLayer, access, new Set(sources.map((s) => s.source)), approvedGoldens),
   };
-  const found = nextStep(base, names.length, {
+  let found = nextStep(base, names.length, {
     drift,
+    confirmExisting: base.stamped_without_yes.some((ref) => confirmable(answers, ref)),
     accessReadable: accessState === "missing" || (!!access && typeof access === "object" && !Array.isArray(access)),
     accessProblem: accessProblem(audience),
     accessQuestions: accessQuestionTexts,
@@ -1455,6 +1610,9 @@ export function statusDetail(root: string, only?: string): StatusDetail {
       return ready ? act("approve", ["--target", ready]) : act("readback", ["--targets", refs.join(",")]);
     },
     goldenAccessEdits: goldenAccessEdits(loadedGoldens),
+    schemaQuestions: new Map(reports.flatMap((r) => (r.schemaQuestion ? [[r.status.source, r.schemaQuestion] as const] : []))),
+    lead: releaseLead(root),
+    released: typeof project.layer_version === "string" && project.layer_version !== "",
     goldenSources: new Map(
       loadedGoldens.flatMap(({ path, golden }) => {
         const g: Record<string, unknown> = isRecord(golden) ? golden : {};
@@ -1464,6 +1622,19 @@ export function statusDetail(root: string, only?: string): StatusDetail {
       }),
     ),
   });
+  // Phase `change` (spec: Iterating a layer, The change round): while a change round is open, a layer with
+  // every other phase complete is in it; any phase before `done` keeps its own steps, so a round that
+  // added a metric goes through the metrics phase first. lib/next.ts names the step per pending item.
+  const change = loadChange(root).change;
+  if (found.phase === "done" && change)
+    found = {
+      ...found,
+      phase: "change",
+      message:
+        `A change round is open since ${change.started_at.slice(0, 10)}, started by ${plainText(change.started_by)} from release ${change.from_version}: "${plainText(change.note)}". ` +
+        "Make only the edits the owner asked for, read back each item that changed and record the owner's yes, then close the round.",
+      action: act("change", ["status"]),
+    };
   // Open questions in any file, access.yaml or a model, wait on the owner whatever the step: the step
   // can be taken meanwhile.
   if (!found.blocked_on && base.open_questions > 0) found.blocked_on = "open_questions";
@@ -1476,6 +1647,8 @@ export function statusDetail(root: string, only?: string): StatusDetail {
     ...base,
     next_batch: batchSource ? { source: batchSource.source, tables: batchSource.next_batch } : null,
     next_step: step,
+    layer_version: project.layer_version ?? null,
+    change,
   };
   return { status, targets, replies, ledger_problem: ledger.problem };
 }

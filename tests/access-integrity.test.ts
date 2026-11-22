@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type AccessVisibility, checkRequest, evaluateAccess, evaluateLayer, loadAccessLayer, lookup } from "../skills/semantic-layer/scripts/lib/access.ts";
 import { compileRequest, type Refused } from "../skills/semantic-layer/scripts/lib/compiler/index.ts";
@@ -124,7 +124,7 @@ describe("approved items that changed since approval", () => {
   });
 
   test("removing pii from an approved field by hand does not show its values to the default audience", async () => {
-    edit(CUSTOMERS, "    tags:\n      - pii\n    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n    approved_hash: sha256:1993", "    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n    approved_hash: sha256:1993");
+    edit(CUSTOMERS, "    tags:\n      - pii\n    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n    approved_hash: sha256:8f0d", "    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n    approved_hash: sha256:8f0d");
     const v = evaluateAccess(root);
     expect(v.changed_since_approval).toEqual(["warehouse.customers.email"]);
     expect(field(v, "warehouse.customers.email")).toMatchObject({ tags: [], visible: false, reasons: ["draft"], changed_since_approval: true });
@@ -165,7 +165,7 @@ describe("approved items that changed since approval", () => {
 
   test("an approved item whose hash was removed in a project with hashes is a draft too", async () => {
     // Removing the pii tag and the hash together does not show the field's values to the default audience.
-    edit(CUSTOMERS, "    tags:\n      - pii\n    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n    approved_hash: sha256:19938e900fededa45d2c3cbadd6ca781076770267087b36fc0a6d646fe925b26\n", "    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n");
+    edit(CUSTOMERS, "    tags:\n      - pii\n    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n    approved_hash: sha256:8f0d7f864635bb07ef88b21db7c09d3701c0bf47e918f3e8d40e985f26b61a4d\n", "    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n");
     const v = evaluateAccess(root);
     expect(v.changed_since_approval).toEqual([]);
     expect(v.hash_missing).toEqual(["warehouse.customers.email"]);
@@ -195,6 +195,8 @@ describe("approved items that changed since approval", () => {
   });
 
   test("an approved item in a project approved before content hashes keeps applying as approved", () => {
+    // Such a project predates the ledger too: no line records a hash to compare.
+    rmSync(join(root, ".semlayer"), { recursive: true });
     for (const f of readdirSync(root, { recursive: true, withFileTypes: true })) {
       if (!f.isFile() || !f.name.endsWith(".yaml")) continue;
       const p = join(f.parentPath, f.name);
@@ -211,7 +213,7 @@ describe("approved items that changed since approval", () => {
   });
 
   test("a changed approved field keeps its sensitivity warning in semlayer validate", async () => {
-    edit(CUSTOMERS, "    tags:\n      - pii\n    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n    approved_hash: sha256:1993", "    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n    approved_hash: sha256:1993");
+    edit(CUSTOMERS, "    tags:\n      - pii\n    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n    approved_hash: sha256:8f0d", "    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n    approved_hash: sha256:8f0d");
     const res = await semlayer(root, ["validate", "--json"]);
     expect(res.code).toBe(1);
     const { issues } = res.json<{ issues: { level: string; message: string }[] }>();
@@ -220,11 +222,16 @@ describe("approved items that changed since approval", () => {
   });
 
   test("layout-only edits are not changes; a draft with a stale hash is a plain draft; hashes can be left uncompared", () => {
-    edit(CUSTOMERS, "The customer's phone number.", "The phone number of the customer.");
+    // Spacing inside a description is layout; its words are part of the approval.
+    edit(CUSTOMERS, "The customer's phone number.", "The customer's   phone number.");
     writeFileSync(join(root, ORDERS), text(ORDERS).replace(/\n/g, "\r\n"));
     expect(evaluateAccess(root).changed_since_approval).toEqual([]);
+    edit(CUSTOMERS, "The customer's   phone number.", "The phone number of the customer.");
+    expect(evaluateAccess(root).changed_since_approval).toEqual(["warehouse.customers.phone"]);
+    expect(field(evaluateAccess(root), "warehouse.customers.phone")).toMatchObject({ visible: false, status: "draft", changed_since_approval: true });
 
     cpSync(join(ACME, ORDERS), join(root, ORDERS));
+    cpSync(join(ACME, CUSTOMERS), join(root, CUSTOMERS));
     editItem(CUSTOMERS, "phone", "expr: phone", "expr: email");
     const layer = loadAccessLayer(root);
     expect(evaluateLayer(layer).changed_since_approval).toEqual(["warehouse.customers.phone"]);

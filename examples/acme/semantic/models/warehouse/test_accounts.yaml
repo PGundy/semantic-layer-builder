@@ -4,7 +4,7 @@ table: acme.dim_customers
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-26
-approved_hash: sha256:7077d3a07810b700034c3417749bd18397ef539a8df55ba06bc57f550e75ca14
+approved_hash: sha256:05d6c02100f9b2f5a058914a3653c9d7e5169c81c38344504b0e5994fe3465ec
 description: >-
   Helper for the test-account rule, one row per customer in dim_customers (the same table as customers). It holds only
   the customer id and whether the customer is a test account: true when QA set is_test_account or the email ends in
@@ -30,7 +30,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:421990a19c2b9cdebdf968ff69c977d83a6407f1dd53c8cddeaf19396608f715
+    approved_hash: sha256:b37a2bde48b91f0dac44277bcf8f3a700a8779ffe46a2d39e50bac1ebac46c6a
   - name: is_test_account
     expr: is_test_account or email like '%@example-test.com'
     type: boolean
@@ -43,6 +43,6 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-27
-    approved_hash: sha256:38f166d1a48782c827e2c728e10b62ab4578eb0813e5e2b11abce314fcd1be97
+    approved_hash: sha256:5ea830b09cc96d917bd176f3d49a3e44f6e1e438ff92ccaf3d029fd03a2c775a
 measures: []
 joins: []

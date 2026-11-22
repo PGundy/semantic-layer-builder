@@ -5,25 +5,31 @@ import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { REPO_ROOT } from "../evals/runner/files.ts";
 import type { GradeReport } from "../evals/graders/types.ts";
-import type { StopReason } from "../evals/runner/types.ts";
+import { NotRun, type StopReason } from "../evals/runner/types.ts";
 import {
   aggregate,
   BASELINE_FILE,
+  baselineText,
   buildBaseline,
   compare,
   main,
+  recordedEffort,
   shownPath,
+  PG_NOISY_SCENARIO,
+  PG_SMOKE_SCENARIO,
+  PG_SMOKE_SCENARIOS,
   SMOKE_SCENARIOS,
   type Baseline,
   type Observed,
   type RunOneOptions,
   type SmokeIO,
 } from "../evals/smoke.ts";
-import { tempDir } from "./helpers.ts";
+import { assertLocalPg, PG_URL, tempDir } from "./helpers.ts";
 
 // The smoke run and evals/baseline.json (FR-6.4, D6): the committed baseline passes, a lowered score
 // is a regression with exit 1, --report-only exits 0, --update-baseline writes the same bytes every
-// time, the baseline matches its schema, and the CI job is non-blocking and uses no secret.
+// time, the baseline matches its schema, and the CI job blocks a merge and uses no secret. Token
+// counts are computed at replay: the baseline keeps only effort.tokens, and a rise only warns.
 
 
 const committed = () => JSON.parse(readFileSync(BASELINE_FILE, "utf8")) as Baseline;
@@ -76,14 +82,14 @@ describe("the committed baseline", () => {
   test("matches its schema and covers the smoke subset", () => {
     const b = committed();
     expect(evalSchemaIssues("eval-baseline", b, "evals/baseline.json")).toEqual([]);
-    expect(Object.keys(b.scenarios).sort()).toEqual([...SMOKE_SCENARIOS].sort());
+    expect(Object.keys(b.scenarios).sort()).toEqual([...SMOKE_SCENARIOS, ...PG_SMOKE_SCENARIOS].sort());
     expect(b.driver).toBe("scripted");
     for (const s of Object.values(b.scenarios)) {
       expect(s.stop_reason).toBe("done");
       // The scripted driver is deterministic, so every band is 0; effort is not a compared grader.
       for (const g of Object.values(s.graders)) expect(g.band).toBe(0);
       expect(s.graders.effort).toBeUndefined();
-      expect(Object.keys(s.graders).sort()).toEqual(["approvals", "authority", "connection_first", "figures", "secrets", "selection"]);
+      expect(Object.keys(s.graders).sort()).toEqual(["approvals", "authority", "connection_first", "figures", "secrets", "selection", "validate"]);
       expect(s.effort.tokens).toBeGreaterThan(0);
       expect(s.graders.figures!.score).toBe(1);
       expect(s.graders.approvals!.score).toBe(1);
@@ -110,7 +116,7 @@ describe("the committed baseline", () => {
     expect(text.split("\n")[0]).toMatch(/^scenario\s+grader\s+baseline\s+score\s+band\s+status$/);
     for (const s of SMOKE_SCENARIOS) {
       // The scripted runs reach approvals and goldens, so every grader is scored, and scores 1.
-      for (const g of ["figures", "secrets", "selection", "approvals", "connection_first", "authority"]) expect(tableRow(text, s, g)).toMatch(/\s1\s+1\s+0\s+ok$/);
+      for (const g of ["figures", "secrets", "selection", "approvals", "connection_first", "authority", "validate"]) expect(tableRow(text, s, g)).toMatch(/\s1\s+1\s+0\s+ok$/);
     }
     expect(text).not.toContain("REGRESSION");
     expect(text).toContain("Effort (report only; it never fails the smoke):");
@@ -147,11 +153,33 @@ describe("regressions", () => {
     expect(t).toContain("Smoke: 3 regression(s)");
   });
 
-  test("effort metrics never fail the smoke, however far they move", async () => {
+  test("effort metrics never fail the smoke, however far they move; a token rise over 10% warns", async () => {
+    const was = committed().scenarios["acme-terse"]!.effort.tokens!;
     const f = fakeIO({ "acme-terse": report("acme-terse", {}, [], { tokens: 999999, owner_turns: 40 }) });
     expect(await main([], f.io)).toBe(0);
-    expect(f.text()).toContain("tokens 999999 (baseline 10354)");
+    expect(f.text()).toContain(`tokens 999999 (baseline ${was})`);
+    expect(f.text()).toContain(`Warning: acme-terse used 999999 tokens, ${Math.round((999999 / was - 1) * 100)}% above the baseline's ${was} (more than 10%).`);
+    expect(f.text()).toContain("if the rise is intended, record it with bun run eval:smoke -- --update-baseline.");
+    expect(f.text()).not.toContain("Warning: acme-structured");
     expect(f.text()).not.toContain("REGRESSION");
+  });
+
+  test("a token total up to 10% above the baseline does not warn, and one just past it does", async () => {
+    const was = committed().scenarios["acme-terse"]!.effort.tokens!;
+    const within = fakeIO({ "acme-terse": report("acme-terse", {}, [], { tokens: Math.floor(was * 1.1) }) });
+    expect(await main([], within.io)).toBe(0);
+    expect(within.text()).not.toContain("Warning:");
+    const past = fakeIO({ "acme-terse": report("acme-terse", {}, [], { tokens: Math.floor(was * 1.1) + 1 }) });
+    expect(await main([], past.io)).toBe(0);
+    expect(past.text()).toContain("Warning: acme-terse used");
+  });
+
+  test("the baseline keeps effort.tokens and no other token figure", () => {
+    for (const s of Object.values(committed().scenarios)) {
+      expect(Object.keys(s.effort).filter((k) => k.includes("tokens"))).toEqual(["tokens"]);
+    }
+    const built = buildBaseline([{ scenario: "acme-terse", runs: [{ report: report("acme-terse", {}, [], { tokens_per_approved_item: 5, interviewer_tokens: 7 }), stop_reason: "done" }] }], "scripted", 1);
+    expect(Object.keys(built.scenarios["acme-terse"]!.effort).filter((k) => k.includes("tokens"))).toEqual(["tokens"]);
   });
 
   test("a score within the band is ok; below it, a regression; above it, improved", () => {
@@ -198,6 +226,11 @@ describe("regressions", () => {
     expect(f.text()).toContain(`record it with bun run eval:smoke -- --update-baseline --baseline ${shownPath(file)} and say why`);
   });
 
+  test("the baseline records no token figure but the run's total", () => {
+    const kept = ["tokens", "interviewer_tokens", "interviewer_token_share", "reference_interviewer_tokens", "interviewer_tokens_vs_reference", "owner_words"].filter(recordedEffort);
+    expect(kept).toEqual(["tokens", "owner_words"]);
+  });
+
   test("aggregate: the mean ignores nulls, the spread covers scored runs, the stop reason is the first not done", () => {
     const r = (secrets: number | null) => report("acme-terse", { secrets });
     const a = aggregate({
@@ -213,17 +246,101 @@ describe("regressions", () => {
   });
 });
 
-describe("--update-baseline", () => {
-  test("writes the same bytes every time, equal to the committed baseline", async () => {
+// The PostgreSQL scenarios join the smoke only where PG_URL is set; the committed baseline holds their entries
+// either way and the smoke passes either way.
+describe("the PostgreSQL scenarios in the smoke", () => {
+  // An io whose PostgreSQL scenario is not run, as the runner reports it without the URL.
+  function withoutUrl() {
+    const f = fakeIO({});
+    const inner = f.io.runOne!;
+    f.io.runOne = async (name, opts) => {
+      if ((PG_SMOKE_SCENARIOS as readonly string[]).includes(name)) throw new NotRun(`Scenario ${name} is not run: it reads PostgreSQL through PG_URL, which is not set.`);
+      return inner(name, opts);
+    };
+    return f;
+  }
+
+  test("without the URL it is said to be not run, compared with nothing, and the smoke exits 0", async () => {
+    const f = withoutUrl();
+    expect(await main([], f.io)).toBe(0);
+    expect(f.text()).toContain(`Scenario ${PG_SMOKE_SCENARIO} is not run: it reads PostgreSQL through PG_URL, which is not set.`);
+    expect(f.text()).not.toContain("REGRESSION");
+    expect(f.text()).toContain(`Scenario ${PG_NOISY_SCENARIO} is not run: it reads PostgreSQL through PG_URL, which is not set.`);
+    for (const name of PG_SMOKE_SCENARIOS) expect(f.text().split("\n").some((l) => l.startsWith(`${name} `))).toBe(false);
+    expect(f.text()).toContain("Next: nothing to do for the evals.");
+    expect(f.err).toEqual([]);
+  });
+
+  test("the real smoke without the URL exits 0, and the committed baseline holds the entry", async () => {
+    const r = realIO();
+    expect(await main([], r.io)).toBe(0);
+    expect(r.text()).toContain(`Scenario ${PG_SMOKE_SCENARIO} is not run:`);
+    expect(r.text()).toContain("PG_URL, which is not set");
+    for (const name of PG_SMOKE_SCENARIOS) expect(committed().scenarios[name]).toBeDefined();
+  }, 30_000);
+
+  test("--update-baseline without the URL keeps the entry exactly as it was", async () => {
     const dir = tempDir();
     const file = join(dir, "baseline.json");
+    writeFileSync(file, readFileSync(BASELINE_FILE));
+    const f = withoutUrl();
+    expect(await main(["--update-baseline", "--baseline", file], f.io)).toBe(0);
+    const written = JSON.parse(readFileSync(file, "utf8")) as Baseline;
+    for (const name of PG_SMOKE_SCENARIOS) expect(written.scenarios[name]).toEqual(committed().scenarios[name]!);
+    expect(baselineText(written)).toBe(readFileSync(BASELINE_FILE, "utf8"));
+    expect(f.text()).toContain(`Scenario ${PG_SMOKE_SCENARIO} is not run:`);
+    // With no entry to keep there is none to write.
+    const bare = join(dir, "bare.json");
+    expect(await main(["--update-baseline", "--baseline", bare], withoutUrl().io)).toBe(0);
+    expect(Object.keys((JSON.parse(readFileSync(bare, "utf8")) as Baseline).scenarios).sort()).toEqual([...SMOKE_SCENARIOS].sort());
+  });
+
+  test("with the URL it is compared like the others, and a lowered score is a regression", async () => {
+    const f = fakeIO({ [PG_SMOKE_SCENARIO]: report(PG_SMOKE_SCENARIO, { figures: 0.5 }) });
+    expect(await main([], f.io)).toBe(1);
+    expect(tableRow(f.text(), PG_SMOKE_SCENARIO, "figures")).toContain("REGRESSION");
+    expect(f.text()).not.toContain("is not run:");
+  });
+
+  test.skipIf(!PG_URL)("the real smoke with the URL runs it and every grader scores 1 against the baseline", async () => {
+    assertLocalPg(PG_URL);
+    const out: string[] = [];
+    const io: SmokeIO = { out: (t) => out.push(t), err: () => {}, env: { PG_URL } };
+    expect(await main([], io)).toBe(0);
+    const text = out.join("\n");
+    for (const name of PG_SMOKE_SCENARIOS) {
+      for (const g of ["figures", "secrets", "selection", "approvals", "connection_first", "authority", "validate"]) expect(tableRow(text, name, g)).toMatch(/\s1\s+1\s+0\s+ok$/);
+    }
+    expect(text).not.toContain("is not run:");
+    expect(text).not.toContain("REGRESSION");
+  }, 60_000);
+});
+
+describe("--update-baseline", () => {
+  test("writes the same bytes every time, equal to the committed baseline but for effort.tokens, the run's total", async () => {
+    const dir = tempDir();
+    const file = join(dir, "baseline.json");
+    // The PostgreSQL scenario is not run here (no URL in realIO's env), so its entry must come through as it was.
+    writeFileSync(file, readFileSync(BASELINE_FILE));
+    const runs = join(dir, "runs");
     const r1 = realIO();
-    expect(await main(["--update-baseline", "--baseline", file], r1.io)).toBe(0);
+    expect(await main(["--update-baseline", "--baseline", file, "--out", runs], r1.io)).toBe(0);
     const first = readFileSync(file, "utf8");
     const r2 = realIO();
     expect(await main(["--update-baseline", "--baseline", file], r2.io)).toBe(0);
     expect(readFileSync(file, "utf8")).toBe(first);
-    expect(first).toBe(readFileSync(BASELINE_FILE, "utf8"));
+    // effort.tokens follows whatever the tool prints, so it is the run's computed total, never a pinned figure.
+    const written = JSON.parse(first) as Baseline;
+    for (const s of SMOKE_SCENARIOS) {
+      const summary = JSON.parse(readFileSync(join(runs, `${s}-20260101T000000000Z`, "summary.json"), "utf8")) as { tokens: number };
+      expect(written.scenarios[s]!.effort.tokens).toBe(summary.tokens);
+    }
+    const withoutTokens = (b: Baseline) => {
+      const c = structuredClone(b);
+      for (const s of Object.values(c.scenarios)) delete s.effort.tokens;
+      return c;
+    };
+    expect(baselineText(withoutTokens(written))).toBe(baselineText(withoutTokens(committed())));
     expect(evalSchemaIssues("eval-baseline", JSON.parse(first), file)).toEqual([]);
     // Keys sorted at every level.
     const walk = (v: unknown): void => {
@@ -287,7 +404,7 @@ describe("--update-baseline", () => {
     };
     expect(await main(["--update-baseline", "--driver", "sdk"], f.io)).toBe(2);
     expect(ran).toEqual([]);
-    expect(f.err.at(-1)).toContain("--update-baseline --driver sdk --baseline evals/baseline.sdk.json");
+    expect(f.err.at(-1)).toContain("--update-baseline --driver sdk --runs 5 --baseline evals/baseline.sdk.json");
     // Named explicitly, the file is replaced.
     const file = join(tempDir(), "baseline.json");
     writeFileSync(file, readFileSync(BASELINE_FILE));
@@ -353,7 +470,7 @@ describe("errors and where runs go", () => {
   test("runs go to a temporary directory that is removed afterwards, never into the repository", async () => {
     const f = fakeIO({});
     expect(await main([], f.io)).toBe(0);
-    expect(f.outDirs.length).toBe(SMOKE_SCENARIOS.length);
+    expect(f.outDirs.length).toBe(SMOKE_SCENARIOS.length + PG_SMOKE_SCENARIOS.length);
     for (const d of f.outDirs) {
       expect(d.startsWith(REPO_ROOT)).toBe(false);
       expect(existsSync(d)).toBe(false);
@@ -381,18 +498,22 @@ describe("the CI job", () => {
   const ci = parseYamlText(text, "ci.yml") as { jobs: Record<string, Record<string, unknown>> };
   const job = ci.jobs["eval-smoke"]!;
 
-  test("eval-smoke parses, is non-blocking and runs the smoke command after an install", () => {
+  test("eval-smoke parses, blocks a merge and runs the smoke command after an install", () => {
     expect(job).toBeDefined();
-    expect(job["continue-on-error"]).toBe(true);
-    expect(String(job.name)).toContain("non-blocking");
+    expect(job["continue-on-error"]).toBeUndefined();
+    expect(job.name).toBe("eval-smoke");
     const runs = (job.steps as { run?: string }[]).map((s) => s.run).filter(Boolean);
     expect(runs).toEqual(["bun install --frozen-lockfile", "bun run eval:smoke"]);
   });
 
-  test("eval-smoke uses no secret, no key and no environment", () => {
-    const jobText = text.slice(text.indexOf("  eval-smoke:"));
-    expect(jobText).not.toMatch(/secrets\.|API_KEY|TOKEN|PASSWORD/i);
-    expect(job.env).toBeUndefined();
+  test("eval-smoke uses no secret and no key; its only environment is the throwaway PostgreSQL service's URL, as the checks job has it", () => {
+    const jobText = text.slice(text.indexOf("  eval-smoke:"), text.indexOf("  compat:"));
+    expect(jobText).not.toMatch(/secrets\.|API_KEY|TOKEN/i);
+    // The service's password is the checks job's own literal for a database that lives for the job.
+    expect(jobText.match(/PASSWORD/gi)?.length).toBe(1);
+    expect(job.env).toEqual((ci.jobs.checks as { env: unknown }).env);
+    expect(job.env).toEqual({ PG_URL: "postgres://postgres:postgres@localhost:5432/postgres" });
+    expect((job.services as Record<string, unknown>).postgres).toEqual((ci.jobs.checks!.services as Record<string, unknown>).postgres);
     expect(JSON.stringify(job)).not.toContain("--driver");
   });
 

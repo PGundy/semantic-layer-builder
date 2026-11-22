@@ -32,13 +32,26 @@ jobs:
       - run: bash scripts/verify.sh
 
   # The eval smoke subset (docs/PRD.md FR-6.4, decision D6): one fixture, two personas, with the
-  # scripted driver, compared with evals/baseline.json. It needs no database server, no key and no
-  # secret, so it runs whenever the workflow does. Non-blocking for now: continue-on-error keeps a
-  # regression from failing the workflow.
+  # scripted driver, compared with evals/baseline.json. It needs no key and no secret, so it runs
+  # whenever the workflow does; its PostgreSQL service, the same as the checks job's, is for scenarios
+  # that name a PostgreSQL source. A grader score below its baseline or a run that no longer finishes
+  # fails the job; the token counts it prints only warn.
   eval-smoke:
-    name: eval-smoke (non-blocking)
+    name: eval-smoke
     runs-on: ubuntu-latest
-    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -46,3 +59,34 @@ jobs:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
       - run: bun run eval:smoke
+
+  # The live Postgres tests on every supported server version, 13 to 17. The script starts
+  # each server in Docker on the runner, so the job needs no service container and no secret.
+  compat:
+    name: compat (postgres ${{ matrix.pg }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ["13", "14", "15", "16", "17"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bash scripts/compat-pg.sh ${{ matrix.pg }}
+
+  # The pooled and TLS connection tests: the script starts postgres:16, PgBouncer
+  # in transaction mode in front of it, and a TLS-only postgres:16 with a certificate it makes for the
+  # run, all in Docker on the runner, so the job needs no service container and no secret.
+  compat-network:
+    name: compat-network
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bash scripts/compat-network.sh

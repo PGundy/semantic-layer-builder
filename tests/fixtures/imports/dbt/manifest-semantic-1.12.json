@@ -1,0 +1,827 @@
+{
+  "metadata": {
+    "dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v12.json",
+    "dbt_version": "1.12.7",
+    "adapter_type": "postgres",
+    "project_name": "acme_demo"
+  },
+  "nodes": {
+    "model.acme_demo.orders": {
+      "unique_id": "model.acme_demo.orders",
+      "resource_type": "model",
+      "name": "orders",
+      "database": "acme",
+      "schema": "analytics",
+      "alias": "orders",
+      "relation_name": "\"acme\".\"analytics\".\"orders\"",
+      "description": "",
+      "config": {
+        "materialized": "table"
+      },
+      "columns": {
+        "order_id": {
+          "name": "order_id",
+          "data_type": "integer"
+        },
+        "customer_id": {
+          "name": "customer_id",
+          "data_type": "integer"
+        },
+        "amount": {
+          "name": "amount",
+          "data_type": "numeric"
+        },
+        "quantity": {
+          "name": "quantity",
+          "data_type": "integer"
+        },
+        "status": {
+          "name": "status",
+          "data_type": "text"
+        },
+        "ordered_at": {
+          "name": "ordered_at",
+          "data_type": "timestamp without time zone"
+        }
+      }
+    },
+    "model.acme_demo.customers": {
+      "unique_id": "model.acme_demo.customers",
+      "resource_type": "model",
+      "name": "customers",
+      "database": "acme",
+      "schema": "analytics",
+      "alias": "customers",
+      "relation_name": "\"acme\".\"analytics\".\"customers\"",
+      "description": "",
+      "config": {
+        "materialized": "table"
+      },
+      "columns": {
+        "customer_id": {
+          "name": "customer_id",
+          "data_type": "integer"
+        },
+        "region": {
+          "name": "region",
+          "data_type": "text"
+        },
+        "signed_up_on": {
+          "name": "signed_up_on",
+          "data_type": "date"
+        }
+      }
+    }
+  },
+  "sources": {},
+  "semantic_models": {
+    "semantic_model.acme_demo.customers": {
+      "name": "customers",
+      "resource_type": "semantic_model",
+      "unique_id": "semantic_model.acme_demo.customers",
+      "fqn": [
+        "acme_demo",
+        "customers"
+      ],
+      "model": "ref('customers')",
+      "node_relation": {
+        "alias": "customers",
+        "schema_name": "analytics",
+        "database": "acme",
+        "relation_name": "\"acme\".\"analytics\".\"customers\""
+      },
+      "description": "One row per customer.",
+      "label": null,
+      "defaults": {
+        "agg_time_dimension": "signed_up_on"
+      },
+      "entities": [
+        {
+          "name": "customer",
+          "type": "primary",
+          "description": null,
+          "label": null,
+          "role": null,
+          "expr": "customer_id",
+          "config": {
+            "meta": {}
+          }
+        }
+      ],
+      "measures": [
+        {
+          "name": "customer_count",
+          "agg": "count_distinct",
+          "description": null,
+          "label": null,
+          "create_metric": false,
+          "expr": "customer_id",
+          "agg_params": null,
+          "non_additive_dimension": null,
+          "agg_time_dimension": null,
+          "config": {
+            "meta": {}
+          }
+        }
+      ],
+      "dimensions": [
+        {
+          "name": "region",
+          "type": "categorical",
+          "description": null,
+          "label": null,
+          "is_partition": false,
+          "type_params": null,
+          "expr": null,
+          "metadata": null,
+          "config": {
+            "meta": {}
+          },
+          "datatype": null
+        },
+        {
+          "name": "signed_up_on",
+          "type": "time",
+          "description": null,
+          "label": null,
+          "is_partition": false,
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          },
+          "expr": null,
+          "metadata": null,
+          "config": {
+            "meta": {}
+          },
+          "datatype": null
+        }
+      ],
+      "metadata": null,
+      "depends_on": {
+        "macros": [],
+        "nodes": [
+          "model.acme_demo.customers"
+        ]
+      },
+      "refs": [
+        {
+          "name": "customers",
+          "package": null,
+          "version": null
+        }
+      ],
+      "config": {
+        "enabled": true,
+        "group": null,
+        "meta": {}
+      },
+      "unrendered_config": {},
+      "primary_entity": null,
+      "group": null
+    },
+    "semantic_model.acme_demo.orders": {
+      "name": "orders",
+      "resource_type": "semantic_model",
+      "unique_id": "semantic_model.acme_demo.orders",
+      "fqn": [
+        "acme_demo",
+        "orders"
+      ],
+      "model": "ref('orders')",
+      "node_relation": {
+        "alias": "orders",
+        "schema_name": "analytics",
+        "database": "acme",
+        "relation_name": "\"acme\".\"analytics\".\"orders\""
+      },
+      "description": "One row per order.",
+      "label": null,
+      "defaults": {
+        "agg_time_dimension": "ordered_at"
+      },
+      "entities": [
+        {
+          "name": "order",
+          "type": "primary",
+          "description": null,
+          "label": null,
+          "role": null,
+          "expr": "order_id",
+          "config": {
+            "meta": {}
+          }
+        },
+        {
+          "name": "customer",
+          "type": "foreign",
+          "description": null,
+          "label": null,
+          "role": null,
+          "expr": "customer_id",
+          "config": {
+            "meta": {}
+          }
+        }
+      ],
+      "measures": [
+        {
+          "name": "order_total",
+          "agg": "sum",
+          "description": "Sum of order amounts.",
+          "label": null,
+          "create_metric": false,
+          "expr": "amount",
+          "agg_params": null,
+          "non_additive_dimension": null,
+          "agg_time_dimension": null,
+          "config": {
+            "meta": {}
+          }
+        },
+        {
+          "name": "order_count",
+          "agg": "count",
+          "description": null,
+          "label": null,
+          "create_metric": false,
+          "expr": "order_id",
+          "agg_params": null,
+          "non_additive_dimension": null,
+          "agg_time_dimension": null,
+          "config": {
+            "meta": {}
+          }
+        },
+        {
+          "name": "avg_amount",
+          "agg": "average",
+          "description": null,
+          "label": null,
+          "create_metric": false,
+          "expr": "amount",
+          "agg_params": null,
+          "non_additive_dimension": null,
+          "agg_time_dimension": null,
+          "config": {
+            "meta": {}
+          }
+        },
+        {
+          "name": "median_amount",
+          "agg": "median",
+          "description": null,
+          "label": null,
+          "create_metric": false,
+          "expr": "amount",
+          "agg_params": null,
+          "non_additive_dimension": null,
+          "agg_time_dimension": null,
+          "config": {
+            "meta": {}
+          }
+        }
+      ],
+      "dimensions": [
+        {
+          "name": "status",
+          "type": "categorical",
+          "description": null,
+          "label": null,
+          "is_partition": false,
+          "type_params": null,
+          "expr": null,
+          "metadata": null,
+          "config": {
+            "meta": {}
+          },
+          "datatype": null
+        },
+        {
+          "name": "ordered_at",
+          "type": "time",
+          "description": null,
+          "label": null,
+          "is_partition": false,
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          },
+          "expr": null,
+          "metadata": null,
+          "config": {
+            "meta": {}
+          },
+          "datatype": null
+        }
+      ],
+      "metadata": null,
+      "depends_on": {
+        "macros": [],
+        "nodes": [
+          "model.acme_demo.orders"
+        ]
+      },
+      "refs": [
+        {
+          "name": "orders",
+          "package": null,
+          "version": null
+        }
+      ],
+      "config": {
+        "enabled": true,
+        "group": null,
+        "meta": {}
+      },
+      "unrendered_config": {},
+      "primary_entity": null,
+      "group": null
+    }
+  },
+  "metrics": {
+    "metric.acme_demo.revenue": {
+      "name": "revenue",
+      "resource_type": "metric",
+      "unique_id": "metric.acme_demo.revenue",
+      "fqn": [
+        "acme_demo",
+        "revenue"
+      ],
+      "description": "",
+      "label": "Revenue",
+      "type": "simple",
+      "type_params": {
+        "measure": {
+          "name": "order_total",
+          "filter": null,
+          "alias": null,
+          "join_to_timespine": false,
+          "fill_nulls_with": null
+        },
+        "input_measures": [
+          {
+            "name": "order_total",
+            "filter": null,
+            "alias": null,
+            "join_to_timespine": false,
+            "fill_nulls_with": null
+          }
+        ],
+        "numerator": null,
+        "denominator": null,
+        "expr": null,
+        "window": null,
+        "grain_to_date": null,
+        "metrics": [],
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "metric_aggregation_params": null,
+        "fill_nulls_with": null,
+        "join_to_timespine": false,
+        "is_private": null
+      },
+      "filter": null,
+      "metadata": null,
+      "time_granularity": null,
+      "config": {
+        "enabled": true,
+        "group": null,
+        "meta": {}
+      },
+      "unrendered_config": {},
+      "sources": [],
+      "depends_on": {
+        "macros": [],
+        "nodes": [
+          "semantic_model.acme_demo.orders"
+        ]
+      },
+      "refs": [],
+      "metrics": [],
+      "group": null,
+      "meta": {},
+      "tags": []
+    },
+    "metric.acme_demo.open_revenue": {
+      "name": "open_revenue",
+      "resource_type": "metric",
+      "unique_id": "metric.acme_demo.open_revenue",
+      "fqn": [
+        "acme_demo",
+        "open_revenue"
+      ],
+      "description": "",
+      "label": "Open revenue",
+      "type": "simple",
+      "type_params": {
+        "measure": {
+          "name": "order_total",
+          "filter": null,
+          "alias": null,
+          "join_to_timespine": false,
+          "fill_nulls_with": null
+        },
+        "input_measures": [
+          {
+            "name": "order_total",
+            "filter": null,
+            "alias": null,
+            "join_to_timespine": false,
+            "fill_nulls_with": null
+          }
+        ],
+        "numerator": null,
+        "denominator": null,
+        "expr": null,
+        "window": null,
+        "grain_to_date": null,
+        "metrics": [],
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "metric_aggregation_params": null,
+        "fill_nulls_with": null,
+        "join_to_timespine": false,
+        "is_private": null
+      },
+      "filter": {
+        "where_filters": [
+          {
+            "where_sql_template": "{{ Dimension('order__status') }} = 'open'"
+          }
+        ]
+      },
+      "metadata": null,
+      "time_granularity": null,
+      "config": {
+        "enabled": true,
+        "group": null,
+        "meta": {}
+      },
+      "unrendered_config": {},
+      "sources": [],
+      "depends_on": {
+        "macros": [],
+        "nodes": [
+          "semantic_model.acme_demo.orders"
+        ]
+      },
+      "refs": [],
+      "metrics": [],
+      "group": null,
+      "meta": {},
+      "tags": []
+    },
+    "metric.acme_demo.orders": {
+      "name": "orders",
+      "resource_type": "metric",
+      "unique_id": "metric.acme_demo.orders",
+      "fqn": [
+        "acme_demo",
+        "orders"
+      ],
+      "description": "",
+      "label": "Orders",
+      "type": "simple",
+      "type_params": {
+        "measure": {
+          "name": "order_count",
+          "filter": null,
+          "alias": null,
+          "join_to_timespine": false,
+          "fill_nulls_with": null
+        },
+        "input_measures": [
+          {
+            "name": "order_count",
+            "filter": null,
+            "alias": null,
+            "join_to_timespine": false,
+            "fill_nulls_with": null
+          }
+        ],
+        "numerator": null,
+        "denominator": null,
+        "expr": null,
+        "window": null,
+        "grain_to_date": null,
+        "metrics": [],
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "metric_aggregation_params": null,
+        "fill_nulls_with": null,
+        "join_to_timespine": false,
+        "is_private": null
+      },
+      "filter": null,
+      "metadata": null,
+      "time_granularity": null,
+      "config": {
+        "enabled": true,
+        "group": null,
+        "meta": {}
+      },
+      "unrendered_config": {},
+      "sources": [],
+      "depends_on": {
+        "macros": [],
+        "nodes": [
+          "semantic_model.acme_demo.orders"
+        ]
+      },
+      "refs": [],
+      "metrics": [],
+      "group": null,
+      "meta": {},
+      "tags": []
+    },
+    "metric.acme_demo.revenue_per_order": {
+      "name": "revenue_per_order",
+      "resource_type": "metric",
+      "unique_id": "metric.acme_demo.revenue_per_order",
+      "fqn": [
+        "acme_demo",
+        "revenue_per_order"
+      ],
+      "description": "",
+      "label": "Revenue per order",
+      "type": "ratio",
+      "type_params": {
+        "measure": null,
+        "input_measures": [
+          {
+            "name": "order_total",
+            "filter": null,
+            "alias": null,
+            "join_to_timespine": false,
+            "fill_nulls_with": null
+          },
+          {
+            "name": "order_count",
+            "filter": null,
+            "alias": null,
+            "join_to_timespine": false,
+            "fill_nulls_with": null
+          }
+        ],
+        "numerator": {
+          "name": "revenue",
+          "filter": null,
+          "alias": null,
+          "offset_window": null,
+          "offset_to_grain": null
+        },
+        "denominator": {
+          "name": "orders",
+          "filter": null,
+          "alias": null,
+          "offset_window": null,
+          "offset_to_grain": null
+        },
+        "expr": null,
+        "window": null,
+        "grain_to_date": null,
+        "metrics": [],
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "metric_aggregation_params": null,
+        "fill_nulls_with": null,
+        "join_to_timespine": false,
+        "is_private": null
+      },
+      "filter": null,
+      "metadata": null,
+      "time_granularity": null,
+      "config": {
+        "enabled": true,
+        "group": null,
+        "meta": {}
+      },
+      "unrendered_config": {},
+      "sources": [],
+      "depends_on": {
+        "macros": [],
+        "nodes": [
+          "metric.acme_demo.revenue",
+          "metric.acme_demo.orders"
+        ]
+      },
+      "refs": [],
+      "metrics": [],
+      "group": null,
+      "meta": {},
+      "tags": []
+    },
+    "metric.acme_demo.revenue_plus_orders": {
+      "name": "revenue_plus_orders",
+      "resource_type": "metric",
+      "unique_id": "metric.acme_demo.revenue_plus_orders",
+      "fqn": [
+        "acme_demo",
+        "revenue_plus_orders"
+      ],
+      "description": "",
+      "label": "Revenue plus orders",
+      "type": "derived",
+      "type_params": {
+        "measure": null,
+        "input_measures": [
+          {
+            "name": "order_total",
+            "filter": null,
+            "alias": null,
+            "join_to_timespine": false,
+            "fill_nulls_with": null
+          },
+          {
+            "name": "order_count",
+            "filter": null,
+            "alias": null,
+            "join_to_timespine": false,
+            "fill_nulls_with": null
+          }
+        ],
+        "numerator": null,
+        "denominator": null,
+        "expr": "revenue + orders",
+        "window": null,
+        "grain_to_date": null,
+        "metrics": [
+          {
+            "name": "revenue",
+            "filter": null,
+            "alias": null,
+            "offset_window": null,
+            "offset_to_grain": null
+          },
+          {
+            "name": "orders",
+            "filter": null,
+            "alias": null,
+            "offset_window": null,
+            "offset_to_grain": null
+          }
+        ],
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "metric_aggregation_params": null,
+        "fill_nulls_with": null,
+        "join_to_timespine": false,
+        "is_private": null
+      },
+      "filter": null,
+      "metadata": null,
+      "time_granularity": null,
+      "config": {
+        "enabled": true,
+        "group": null,
+        "meta": {}
+      },
+      "unrendered_config": {},
+      "sources": [],
+      "depends_on": {
+        "macros": [],
+        "nodes": [
+          "metric.acme_demo.revenue",
+          "metric.acme_demo.orders"
+        ]
+      },
+      "refs": [],
+      "metrics": [],
+      "group": null,
+      "meta": {},
+      "tags": []
+    },
+    "metric.acme_demo.cumulative_revenue": {
+      "name": "cumulative_revenue",
+      "resource_type": "metric",
+      "unique_id": "metric.acme_demo.cumulative_revenue",
+      "fqn": [
+        "acme_demo",
+        "cumulative_revenue"
+      ],
+      "description": "",
+      "label": "Cumulative revenue",
+      "type": "cumulative",
+      "type_params": {
+        "measure": {
+          "name": "order_total",
+          "filter": null,
+          "alias": null,
+          "join_to_timespine": false,
+          "fill_nulls_with": null
+        },
+        "input_measures": [
+          {
+            "name": "order_total",
+            "filter": null,
+            "alias": null,
+            "join_to_timespine": false,
+            "fill_nulls_with": null
+          }
+        ],
+        "numerator": null,
+        "denominator": null,
+        "expr": null,
+        "window": null,
+        "grain_to_date": null,
+        "metrics": [],
+        "conversion_type_params": null,
+        "cumulative_type_params": {
+          "window": null,
+          "grain_to_date": null,
+          "period_agg": "first",
+          "metric": null
+        },
+        "metric_aggregation_params": null,
+        "fill_nulls_with": null,
+        "join_to_timespine": false,
+        "is_private": null
+      },
+      "filter": null,
+      "metadata": null,
+      "time_granularity": null,
+      "config": {
+        "enabled": true,
+        "group": null,
+        "meta": {}
+      },
+      "unrendered_config": {},
+      "sources": [],
+      "depends_on": {
+        "macros": [],
+        "nodes": [
+          "semantic_model.acme_demo.orders"
+        ]
+      },
+      "refs": [],
+      "metrics": [],
+      "group": null,
+      "meta": {},
+      "tags": []
+    },
+    "metric.acme_demo.median_order": {
+      "name": "median_order",
+      "resource_type": "metric",
+      "unique_id": "metric.acme_demo.median_order",
+      "fqn": [
+        "acme_demo",
+        "median_order"
+      ],
+      "description": "",
+      "label": "Median order",
+      "type": "simple",
+      "type_params": {
+        "measure": {
+          "name": "median_amount",
+          "filter": null,
+          "alias": null,
+          "join_to_timespine": false,
+          "fill_nulls_with": null
+        },
+        "input_measures": [
+          {
+            "name": "median_amount",
+            "filter": null,
+            "alias": null,
+            "join_to_timespine": false,
+            "fill_nulls_with": null
+          }
+        ],
+        "numerator": null,
+        "denominator": null,
+        "expr": null,
+        "window": null,
+        "grain_to_date": null,
+        "metrics": [],
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "metric_aggregation_params": null,
+        "fill_nulls_with": null,
+        "join_to_timespine": false,
+        "is_private": null
+      },
+      "filter": null,
+      "metadata": null,
+      "time_granularity": null,
+      "config": {
+        "enabled": true,
+        "group": null,
+        "meta": {}
+      },
+      "unrendered_config": {},
+      "sources": [],
+      "depends_on": {
+        "macros": [],
+        "nodes": [
+          "semantic_model.acme_demo.orders"
+        ]
+      },
+      "refs": [],
+      "metrics": [],
+      "group": null,
+      "meta": {},
+      "tags": []
+    }
+  }
+}

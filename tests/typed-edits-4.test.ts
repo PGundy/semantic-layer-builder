@@ -350,7 +350,7 @@ describe("semlayer remove-metric", () => {
     expect(f.code).toBe(0);
     expect(f.out).toContain("metric:average_order_value was approved: tell the owner it is removed.");
     expect(text("metrics.yaml")).not.toContain("average_order_value");
-    expect(text("metrics.yaml")).toContain("approved_hash: sha256:a03b15c0");
+    expect(text("metrics.yaml")).toContain("approved_hash: sha256:d30ffe9a");
     for (const n of ["net_revenue_2025", "finance_net_revenue_2025"]) rmSync(join(root, "goldens", `${n}.yaml`));
     expect((await semlayer(root, ["approve", "--target", "access", "--revoke"])).code).toBe(0);
     writeFileSync(join(root, "access.yaml"), text("access.yaml").replace(', "metric:net_revenue"]', "]"));

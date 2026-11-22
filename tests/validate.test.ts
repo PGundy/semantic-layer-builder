@@ -348,8 +348,6 @@ const CASES: Case[] = [
     expect: [
       ["error", "metrics.yaml", "metrics[0].denominator", "only approved measures"],
       ["error", GOLDEN2, "request.dimensions[0]", 'customers has no dimension "ship_region"'],
-      // The metric now spans orders and customers, so it and orders.order_count no longer share one model.
-      ["error", GOLDEN2, "request.measures[1]", "a request's measures must share one model, or be one metric"],
     ],
   },
   { name: "approved metric without description", file: "metrics.yaml", edit: (d) => delete d.metrics[0].description, expect: ["error", "metrics.yaml", "metrics[0].description", "approved metric"] },
@@ -593,7 +591,13 @@ const CASES: Case[] = [
     edit: (d) => ((d.request.measures = ["customers.customer_count"]), (d.request.dimensions = []), (d.request.filters = [{ field: "orders.order_count", op: "gt", value: 1 }])),
     expect: ["error", GOLDEN3, "request.filters[0].field", "model orders is not reachable from customers, the model of the request's first measure,"],
   },
-  { name: "golden filter on a reachable model's measure", file: GOLDEN3, edit: (d) => (d.request.filters = [{ field: "customers.customer_count", op: "gt", value: 1 }]), expect: [] },
+  // validate's field checks allow it, but the compiler filters only on the base model's measures, so the draft does not compile.
+  {
+    name: "golden filter on a reachable model's measure",
+    file: GOLDEN3,
+    edit: (d) => (d.request.filters = [{ field: "customers.customer_count", op: "gt", value: 1 }]),
+    expect: ["warning", GOLDEN3, "request", "does not compile: filters[0] names customers.customer_count, a measure of model customers; a request filters only on measures of orders"],
+  },
   {
     name: "golden with no measures names its first dimension as the base",
     file: GOLDEN3,
@@ -2342,7 +2346,7 @@ describe("approval hashes", () => {
     const issues = validateProject(root);
     expect(atIssues(issues, CHANGED)).toEqual([["error", ORDERS, "measures[0]"]]);
     expect(issues.find((i) => i.message.includes(CHANGED))!.message).toBe(
-      "warehouse.orders.revenue changed since it was approved by Dana Ruiz on 2026-01-15: its definition, or a join it reads through, no longer matches approved_hash. " +
+      "warehouse.orders.revenue changed since it was approved by Dana Ruiz on 2026-01-15: its definition, or a join it reads through, or its description no longer matches approved_hash. " +
         'Read it back to the owner as it now stands and approve it again only after they confirm (semlayer approve --target warehouse.orders.revenue --by "<owner>"), ' +
         "or restore the approved definition",
     );
@@ -2360,7 +2364,7 @@ describe("approval hashes", () => {
     ]);
   });
 
-  test("model, metric and access changes are errors; descriptions, open questions and formatting are not", () => {
+  test("model, metric, access and description changes are errors; open questions and formatting are not", () => {
     const root = copyFixture();
     mutate(root, ORDERS, (d) => (d.grain = "One row per order line."));
     mutate(root, "metrics.yaml", (d) => (d.metrics[0].denominator = "orders.revenue"));
@@ -2369,10 +2373,20 @@ describe("approval hashes", () => {
       ["error", "metrics.yaml", "metrics[0]"],
     ]);
 
-    const quiet = copyFixture();
-    mutate(quiet, ORDERS, (d) => {
+    const described = copyFixture();
+    mutate(described, ORDERS, (d) => {
       d.description = "Orders, reworded.";
       d.measures[0].description = "Reworded.";
+    });
+    expect(atIssues(validateProject(described), CHANGED)).toEqual([
+      ["error", ORDERS, ""],
+      ["error", ORDERS, "measures[0]"],
+    ]);
+
+    const quiet = copyFixture();
+    mutate(quiet, ORDERS, (d) => {
+      // A description reflowed over lines, with its spacing changed, says the same.
+      d.description = `  ${String(d.description).split(" ").join("\n   ")}\n`;
       d.measures[0].synonyms = [" sales "];
       d.measures[0].filter = `  ${d.measures[0].filter}\n`;
       d.open_questions = ["A new question."];
@@ -2603,24 +2617,28 @@ describe("joins whose evidence shows fan-out", () => {
 });
 
 describe("golden requests and their hand-written SQL", () => {
-  const MUST_SHARE = "a request's measures must share one model, or be one metric";
+  const NOT_SHARED = "golden.dimension_not_shared";
 
-  test("measures from two models that are not one metric are an error, in a draft golden too", () => {
-    // The review's t6: refunds and orders measures side by side validated cleanly.
+  test("measures from two models are fine without dimensions, in a draft golden too, and a dimension one of them cannot reach is an error", () => {
+    // Measures of two models compile in parts on the dimensions they share (spec: Bridges and multi-fact requests).
     const root = copyFixture();
     mutate(root, GOLDEN3, (d) => (d.request.measures = ["orders.revenue", "customers.customer_count"]));
-    expectIssue(validateProject(root), "error", GOLDEN3, "request.measures[1]", `customers.customer_count aggregates over customers, and orders.revenue over orders; ${MUST_SHARE}`);
+    mutate(root, GOLDEN3, (d) => delete d.request.dimensions);
+    expect(validateProject(root).filter((i) => i.file === GOLDEN3 && i.level === "error")).toEqual([]);
+    mutate(root, GOLDEN3, (d) => (d.request.dimensions = ["orders.status"]));
+    expectIssue(validateProject(root), "error", GOLDEN3, "request.dimensions[0]", 'the request has measures of orders, customers, so it groups by dimensions that exist with the same name in each, or that each reaches through one path of to-one joins; customers has no dimension "status" and no such path to orders');
   });
 
-  test("one metric over two models, and several measures of one model, are fine", () => {
+  test("one metric over two models, several measures of one model, and a spanning metric next to another measure are fine", () => {
     const root = copyFixture();
     mutate(root, "metrics.yaml", (d) => d.metrics.push({ name: "orders_per_customer", source: "warehouse", type: "ratio", numerator: "orders.order_count", denominator: "customers.customer_count", status: "draft" }));
     mutate(root, GOLDEN3, (d) => (d.request.measures = ["orders_per_customer"]));
     mutate(root, GOLDEN, (d) => (d.request.measures = ["orders.revenue", "orders.order_count"]));
-    expect(validateProject(root).filter((i) => i.message.includes(MUST_SHARE))).toEqual([]);
-    // A spanning metric next to another measure is more than one model again.
+    const errors = () => validateProject(root).filter((i) => (i.file === GOLDEN3 || i.file === GOLDEN) && i.code === NOT_SHARED);
+    expect(errors()).toEqual([]);
+    // A spanning metric next to another measure compiles in parts as well.
     mutate(root, GOLDEN3, (d) => (d.request.measures = ["orders_per_customer", "orders.revenue"]));
-    expectIssue(validateProject(root), "error", GOLDEN3, "request.measures[1]", MUST_SHARE);
+    expect(errors()).toEqual([]);
   });
 
   test("SQL that leaves out a requested measure's filter gets a warning", () => {

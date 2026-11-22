@@ -55,7 +55,8 @@ function twin(from: string): string {
 }
 
 const ledger = (at: string) => (existsSync(join(at, ".semlayer", "ledger.jsonl")) ? readFileSync(join(at, ".semlayer", "ledger.jsonl"), "utf8") : "");
-const lines = (at: string) => ledger(at).split("\n").filter(Boolean).map((l) => JSON.parse(l) as LedgerReply);
+// The reply lines: the example's own confirm line (ans_0001) and the revoke line (ans_0002) left out.
+const lines = (at: string) => ledger(at).split("\n").filter(Boolean).map((l) => JSON.parse(l) as LedgerReply).filter((l) => (l.kind as string) !== "confirm" && (l.kind as string) !== "revoke");
 
 // Makes the models drafts and reads them back; returns the readback id and its items.
 async function readBack(at: string, models: string[]): Promise<{ id: string; items: { n: number; target: string }[] }> {
@@ -95,7 +96,7 @@ describe("semlayer reply --answers --approve is semlayer reply --answers then th
     expect(files(root)).toEqual(files(other));
     expect(lines(root)).toHaveLength(items.length);
     // The output is the reply's, then semlayer approve --readback's own report, then what is left to do.
-    expect(one.out).toContain(`Recorded ans_0001 to ans_000${items.length} in .semlayer/ledger.jsonl`);
+    expect(one.out).toContain(`Recorded ans_0003 to ans_000${items.length + 2} in .semlayer/ledger.jsonl`);
     expect(one.out).toContain(`Approved ${items.length - 2} of the ${items.length} items of ${id} answered now, each on the owner's own yes to it as it stands:`);
     expect(one.out).toContain(`  - ${items[1]!.target} (item 2): the owner's latest reply (ans_`);
     expect(one.out).toContain(`Next: make the changes the owner asked for to ${items[1]!.target}, ${items[2]!.target} with one semlayer apply --file -, then semlayer readback --targets ${items[1]!.target},${items[2]!.target}.`);
@@ -355,6 +356,19 @@ describe("the texts behind the walkthrough's mistakes", () => {
     expect(help.out).toContain("is written a,b or [a, b]: primary_key order_id,line_no and primary_key '[order_id, line_no]' write the same.");
     expect(help.out).toContain("One name is written [a], as primary_key '[order_id]'.");
     expect(help.out).not.toContain("A list is written a,b.");
+  });
+
+  test("the model-level filter refusal says the entries add to a measure's filter and names replace and segment", async () => {
+    const r = await semlayer(root, ["set", "warehouse.refunds", "filter", "reason <> 'test'"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("ADD the rule to each measure's existing filter");
+    expect(r.err).toContain("a rule that is new");
+    expect(r.err).toContain('semlayer set <source>.<model>.<measure> filter "<the whole new rule>"');
+    expect(r.err).toContain('semlayer add-segment --source <source> --model <model> --name <segment> --filter "<rule>"');
+    expect(r.err).toContain("segments '[<segment>]'");
+    expect(r.err.length).toBeLessThan(1700);
+    const j = await semlayer(root, ["set", "warehouse.refunds", "filter", "reason <> 'test'", "--json"]);
+    expect(j.code).toBe(1);
   });
 
   test("a model-level filter is refused with the one semlayer apply that puts the rule on each measure", async () => {

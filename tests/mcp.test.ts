@@ -413,8 +413,8 @@ describe("the docs", () => {
     expect(section).toContain("so pass absolute paths");
   });
 
-  test("the README shows how to start the server", () => {
-    const readme = flat("README.md");
+  test("the reference shows how to start the server", () => {
+    const readme = flat("docs/reference.md");
     expect(readme).toContain("### As an MCP server");
     expect(readme).toContain("bun skills/semantic-layer/scripts/mcp/server.ts --root /path/to/semantic");
     expect(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).scripts.mcp).toBe("bun skills/semantic-layer/scripts/mcp/server.ts");

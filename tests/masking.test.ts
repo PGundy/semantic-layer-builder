@@ -9,7 +9,7 @@ import { type ProtectedNames, PROTECTED_VALUE, protectedNames, sqlMask } from ".
 import { loadSource } from "../skills/semantic-layer/scripts/lib/project.ts";
 import type { Golden } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeJson, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, confirmWithYes, duckdbSource, initProject, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, confirmExisting, confirmWithYes, duckdbSource, initProject, PG_URL, semlayer, serverVersionNum, tempRoot, uniqueSchema } from "./helpers.ts";
 
 const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 
@@ -68,6 +68,7 @@ async function duckdbProject(): Promise<Project> {
   const p: Project = { dialect: "duckdb", root: t.root, env: {}, t: (name) => name };
   expect((await semlayer(p.root, ["introspect", "--source", "wh"])).code).toBe(0);
   writeModels(p);
+  await confirmExisting(p.root);
   return p;
 }
 
@@ -124,6 +125,7 @@ async function postgresProject(): Promise<Project> {
   const p: Project = { dialect: "postgres", root: t.root, env: { MASK_PG_URL: PG_URL }, t: (name) => `${PG_SCHEMA}.${name}` };
   expect((await semlayer(p.root, ["introspect", "--source", "wh", "--schemas", PG_SCHEMA], p.env)).code).toBe(0);
   writeModels(p);
+  await confirmExisting(p.root);
   return p;
 }
 
@@ -508,6 +510,8 @@ describe.skipIf(!PG_URL)("semlayer run masks what only Postgres writes", () => {
   test("a row function called as a column, a U& name and the planner's statistics", async () => {
     const p = await postgresProject();
     const c = p.t("customers");
+    // jsonb_agg_strict and json_agg_strict are functions from PostgreSQL 16; before it they are no column.
+    const has16 = (await serverVersionNum(PG_URL!)) >= 160000;
     for (const sql of [
       `select x.to_jsonb from ${c} x`,
       `select to_jsonb(x) as j, x.city from ${c} x`,
@@ -524,8 +528,7 @@ describe.skipIf(!PG_URL)("semlayer run masks what only Postgres writes", () => {
       `select anti from ${c} anti`,
       `select semi from ${c} as semi`,
       `select asof.city, asof from ${c} asof`,
-      `select t.jsonb_agg_strict from (select * from ${c}) t`,
-      `with t as (select * from ${c}) select t.json_agg_strict from t`,
+      ...(has16 ? [`select t.jsonb_agg_strict from (select * from ${c}) t`, `with t as (select * from ${c}) select t.json_agg_strict from t`] : []),
       `select '' operator(pg_catalog.||) x from ${c} x`,
     ]) {
       const out = await run(p, sql);

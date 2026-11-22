@@ -6,6 +6,7 @@ import { classifyType, isNumeric, isTemporal } from "./column-types.ts";
 import { UserError } from "./errors.ts";
 import { findTable, qualifiedName } from "./naming.ts";
 import { inScope } from "./patterns.ts";
+import { andPredicates, segmentFilters } from "./segments.ts";
 import { loadSnapshot, loadSource } from "./project.ts";
 import { sensitivityOf } from "./sensitivity.ts";
 import { referencedColumns } from "./snapshot-diff.ts";
@@ -333,7 +334,9 @@ export function protectedColumns(tables: SnapshotTable[], models: unknown[], dia
       ...objects(m.dimensions).map((d) => [d, "dimension"] as [Record<string, unknown>, "dimension"]),
       ...objects(m.measures).map((x) => [x, "measure"] as [Record<string, unknown>, "measure"]),
     ];
-    for (const [field, kind] of fields) {
+    for (const [named, kind] of fields) {
+      // A measure's segments narrow it as its filter does, so their columns count as its filter's.
+      const field = kind === "measure" ? { ...named, filter: andPredicates([named.filter, ...segmentFilters(named, m)].filter((t): t is string => typeof t === "string")) } : named;
       const one = { ...m, primary_key: undefined, joins: joinsOnly, dimensions: [], measures: [] } as Model;
       if (kind === "dimension") one.dimensions = [field as unknown as Dimension];
       else one.measures = [field as unknown as Measure];

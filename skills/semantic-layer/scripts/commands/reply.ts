@@ -27,6 +27,7 @@ function replyLine(pending: PendingReadback, item: ReadbackItem, text: string, v
     item: item.n,
     target: item.target,
     content_hash: item.content_hash,
+    ...(item.definition_hash ? { definition_hash: item.definition_hash } : {}),
     text,
     verdict,
     ...(about ? { about } : {}),

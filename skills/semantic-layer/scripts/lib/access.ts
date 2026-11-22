@@ -7,7 +7,10 @@
 //     "changed") is a draft too, and so is an approved access.yaml that changed; each is listed in
 //     changed_since_approval. So is one without a hash while other items of the project record one
 //     ("missing": its hash may have been removed), listed in hash_missing. An approved item without a
-//     hash in a project where none records one ("unhashed") keeps applying as approved.
+//     hash in a project where none records one ("unhashed") keeps applying as approved. An approved
+//     item that no recorded yes of the owner backs (approval-hash.ts standing() "unbacked": a stamp
+//     written without one) is a draft too, with the reason and message of a plain draft, listed in
+//     stamped_without_yes; loadAccessLayer reads the ledger once for it.
 //   - roles: in open mode every item is visible unless each held role denies it; in closed mode an
 //     item is visible when a held role's allow.models matches its model and that role does not deny
 //     it. A user holding no role sees everything in open mode and nothing in closed mode. Reasons:
@@ -41,11 +44,13 @@
 //     unknown default_role breaks a user holding no other role.
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { holdsHashes, integrity, itemApprovals, listApprovals } from "./approval-hash.ts";
+import { type ApprovalLedger, holdsHashes, itemApprovals, listApprovals, standing } from "./approval-hash.ts";
 import { type Condition, evaluateCondition, parseCondition } from "./conditions.ts";
+import { readApprovalLedger } from "./ledger.ts";
 import { matchesDotted, validatePattern } from "./patterns.ts";
 import { listSourceNames, loadSource, paths } from "./project.ts";
 import { parseRequestField } from "./refs.ts";
+import { sourceWeekStart, type WeekDay } from "./compiler/calendar.ts";
 import type { AccessMode, Dialect, JoinKey, Metric, Model, QueryRequest } from "./types.ts";
 import { DIALECTS, PROTECTED_TAGS, TO_ONE_RELATIONSHIPS } from "./types.ts";
 import { sqlNames } from "./validate.ts";
@@ -85,6 +90,8 @@ export interface FieldVisibility {
   // Present on an approved item without approved_hash while other items of the project record one:
   // treated as a draft in the same way.
   hash_missing?: true;
+  // Present on an approved item no recorded yes of the owner backs: treated as a plain draft.
+  no_recorded_yes?: true;
 }
 
 // One hop of a join reference a row filter reads through: a many_to_one or one_to_one join of
@@ -159,6 +166,7 @@ export interface ModelVisibility {
   row_filters?: ModelRows;
   changed_since_approval?: true; // as on FieldVisibility
   hash_missing?: true; // as on FieldVisibility
+  no_recorded_yes?: true; // as on FieldVisibility
 }
 
 export interface MetricVisibility {
@@ -171,6 +179,7 @@ export interface MetricVisibility {
   reasons: string[];
   changed_since_approval?: true; // as on FieldVisibility
   hash_missing?: true; // as on FieldVisibility
+  no_recorded_yes?: true; // as on FieldVisibility
 }
 
 export interface Counts {
@@ -214,6 +223,9 @@ export interface AccessVisibility {
   // while other items of the project record one, as approve targets, sorted; each is treated as a
   // draft as above.
   hash_missing: string[];
+  // The approved models, fields, joins and metrics, and access.yaml, whose file says approved but that
+  // no recorded yes of the owner backs (approval-hash.ts standing), sorted; each is treated as a draft.
+  stamped_without_yes: string[];
   user: { attributes: Record<string, unknown>; roles: string[]; default_audience: boolean };
   roles: HeldRole[];
   unknown_roles: string[];
@@ -266,12 +278,17 @@ export interface AccessLayer {
   skipped?: SkippedEntry[];
   // Each source's dialect, used to read row filter SQL; a source without one is read generically.
   dialects?: Record<string, Dialect>;
+  // The day each source's weeks start, when it is not Monday (sourceWeekStart), for approval hashes.
+  week_starts?: Record<string, WeekDay>;
   // The sources the project lists; each is reported, even with no models or metrics.
   sources?: string[];
   // false skips the approved_hash comparison, so no item is treated as changed or missing: set by
   // the golden checks of semlayer validate and semlayer status, which take every item as approved, and by the
   // sensitivity checks of semlayer validate, which read what the layer exposes once approved again.
   compare_hashes?: boolean;
+  // The answer ledger as approvals read it, which loadAccessLayer always sets: an approved item it does
+  // not back is a draft. A layer built in memory without it compares hashes only.
+  ledger?: ApprovalLedger;
 }
 
 // --- normalizing access.yaml -------------------------------------------------------------
@@ -547,11 +564,15 @@ export function loadAccessLayer(root: string): AccessLayer {
   const skipped: SkippedEntry[] = [];
   const models: Model[] = [];
   const dialects: Record<string, Dialect> = {};
+  const weekStarts: Record<string, WeekDay> = {};
   const sources = listSourceNames(root);
   for (const source of sources) {
     try {
-      const d = loadSource(root, source).dialect;
+      const config = loadSource(root, source);
+      const d = config.dialect;
       if ((DIALECTS as readonly string[]).includes(d)) dialects[source] = d;
+      const w = sourceWeekStart(config);
+      if (w) weekStarts[source] = w;
     } catch {
       // A source file that cannot be read leaves its row filter SQL read generically.
     }
@@ -591,7 +612,7 @@ export function loadAccessLayer(root: string): AccessLayer {
       access = undefined;
     }
   }
-  return { models, metrics, access, access_present: accessPresent, skipped, dialects, sources };
+  return { models, metrics, access, access_present: accessPresent, skipped, dialects, ...(Object.keys(weekStarts).length ? { week_starts: weekStarts } : {}), sources, ledger: readApprovalLedger(root) };
 }
 
 // --- evaluation ----------------------------------------------------------------------------
@@ -883,13 +904,14 @@ function rowFilterResult(
 }
 
 // The approved models, fields, joins and metrics of a layer, and its access.yaml, whose content no
-// longer matches their approved_hash ("changed") or that record none while others do ("missing"):
-// the items themselves, to treat as drafts, and their approve targets, sorted. Each model is hashed
-// as semlayer approve hashes it, reading its second-hop joins from the models of its source and its SQL
-// in the source's dialect.
-function unapprovedApprovals(layer: AccessLayer): { items: Map<unknown, "changed" | "missing">; changed: string[]; missing: string[] } {
-  const items = new Map<unknown, "changed" | "missing">();
-  if (layer.compare_hashes === false) return { items, changed: [], missing: [] };
+// longer matches their approved_hash ("changed"), that record none while others do ("missing") or
+// that no recorded yes backs ("unbacked", approval-hash.ts standing): the items themselves, to treat
+// as drafts, and their approve targets, sorted. Each model is hashed as semlayer approve hashes it,
+// reading its second-hop joins from the models of its source and its SQL in the source's dialect.
+type Unapproved = "changed" | "missing" | "unbacked";
+function unapprovedApprovals(layer: AccessLayer): { items: Map<unknown, Unapproved>; changed: string[]; missing: string[]; unbacked: string[] } {
+  const items = new Map<unknown, Unapproved>();
+  if (layer.compare_hashes === false) return { items, changed: [], missing: [], unbacked: [] };
   const bySource = new Map<string, Map<string, Model>>();
   for (const m of layer.models) {
     const models = bySource.get(m.source) ?? new Map<string, Model>();
@@ -898,20 +920,20 @@ function unapprovedApprovals(layer: AccessLayer): { items: Map<unknown, "changed
   }
   const entries = itemApprovals(
     listApprovals({
-      models: layer.models.map((m) => ({ source: m.source, model: m, lookup: (name: string) => bySource.get(m.source)?.get(name), dialect: layer.dialects?.[m.source] })),
+      models: layer.models.map((m) => ({ source: m.source, model: m, lookup: (name: string) => bySource.get(m.source)?.get(name), dialect: layer.dialects?.[m.source], weekStart: layer.week_starts?.[m.source] })),
       metrics: layer.metrics,
       access: layer.access_present ? layer.access : undefined,
     }),
   );
   const hashed = holdsHashes(entries);
-  const refs = { changed: new Set<string>(), missing: new Set<string>() };
+  const refs = { changed: new Set<string>(), missing: new Set<string>(), unbacked: new Set<string>() };
   for (const e of entries) {
-    const state = integrity(e, hashed);
-    if (state !== "changed" && state !== "missing") continue;
+    const state = standing(e, hashed, layer.ledger);
+    if (state !== "changed" && state !== "missing" && state !== "unbacked") continue;
     items.set(e.item, state);
     refs[state].add(e.ref);
   }
-  return { items, changed: [...refs.changed].sort(), missing: [...refs.missing].sort() };
+  return { items, changed: [...refs.changed].sort(), missing: [...refs.missing].sort(), unbacked: [...refs.unbacked].sort() };
 }
 
 // The sign-off an approved access.yaml records, reported as last_approved once it changed or lost
@@ -943,9 +965,9 @@ export function evaluateLayer(layer: AccessLayer, user: AccessUser = {}): Access
   const accessChanged = changed.items.has(layer.access);
   if (a.state === "approved" && accessChanged) a.state = "draft";
   const statusOf = (x: object & { status?: unknown }): "draft" | "approved" => (x.status === "approved" && !changed.items.has(x) ? "approved" : "draft");
-  const changedFlag = (x: unknown): { changed_since_approval?: true; hash_missing?: true } => {
+  const changedFlag = (x: unknown): { changed_since_approval?: true; hash_missing?: true; no_recorded_yes?: true } => {
     const state = changed.items.get(x);
-    return state === "changed" ? { changed_since_approval: true } : state === "missing" ? { hash_missing: true } : {};
+    return state === "changed" ? { changed_since_approval: true } : state === "missing" ? { hash_missing: true } : state === "unbacked" ? { no_recorded_yes: true } : {};
   };
 
   const modelRefs = new Set(layer.models.map((m) => `${m.source}.${m.model}`));
@@ -1133,6 +1155,7 @@ export function evaluateLayer(layer: AccessLayer, user: AccessUser = {}): Access
     ...(last ? { last_approved: last } : {}),
     changed_since_approval: changed.changed,
     hash_missing: changed.missing,
+    stamped_without_yes: changed.unbacked,
     user: { attributes: attrs, roles: uniq(assigned), default_audience: !Object.keys(attrs).length && !assigned.length },
     roles: held,
     unknown_roles: unknown,

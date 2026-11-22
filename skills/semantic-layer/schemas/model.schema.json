@@ -114,6 +114,40 @@
       "items": {
         "$ref": "#/$defs/join"
       }
+    },
+    "default_time_dimension": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "The name of a type: time dimension of this model that its measures are measured over by default; a request's bare :grain field reads it (spec.md, Metric semantics). Part of the model's approval hash when set."
+    },
+    "segments": {
+      "type": "array",
+      "description": "Named SQL predicates of this model that a measure names in its segments, or a request in its segments as model.segment (spec.md, Metric semantics).",
+      "items": {
+        "type": "object",
+        "description": "A segment.",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "filter"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "description": "Segment name, unique among the model's segments."
+          },
+          "filter": {
+            "type": "string",
+            "minLength": 1,
+            "description": "SQL predicate, written and checked as a measure filter is: this table's columns and join references through this model's to-one joins, one expression, no subquery (spec.md, Expression text)."
+          },
+          "description": {
+            "type": "string",
+            "description": "What the segment keeps, in the owner's words."
+          }
+        }
+      }
     }
   },
   "allOf": [
@@ -187,6 +221,11 @@
           "minLength": 1,
           "pattern": "^[A-Za-z][A-Za-z0-9_+\\-]*(/[A-Za-z0-9_+\\-]+)*$",
           "description": "Only on type time: the IANA zone (America/New_York, UTC) the dimension's values are stored in, for a timestamp without a time zone. A timestamp with a time zone carries its own. semlayer validate errors on a zone it does not know."
+        },
+        "conforms_to": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
+          "description": "<model>.<dimension> of another model of the same source that means the same thing (spec.md, Bridges and multi-fact requests): a request over both models groups this model by this dimension where it names the other, and the other's where it names this one. One hop: the target conforms to nothing itself. Written by semlayer conform; part of the approval hash."
         },
         "description": {
           "type": "string",
@@ -324,6 +363,43 @@
           },
           "uniqueItems": true,
           "description": "Tags that access rules read. pii and sensitive are protected: the field is hidden from everyone but the roles that grant the tag in allow.tags. public records that the owner confirmed everyone may see it although it looks sensitive; it never overrides pii or sensitive."
+        },
+        "default_time_dimension": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "The name of a type: time dimension of this model the measure is measured over by default, in place of the model's. Part of the measure's approval hash when set."
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "uniqueItems": true,
+          "description": "Names of segments of this model whose filters narrow the measure, ANDed with its filter. Their filter texts are part of the measure's approval hash."
+        },
+        "non_additive_dimension": {
+          "type": "object",
+          "description": "Makes the measure semi-additive, as a balance is: it is not added up across this time dimension, and in each period keeps the last (or first) row of each entity along it (spec.md, Metric semantics). Part of the measure's approval hash when set.",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "window"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "description": "A type: time dimension of this model whose expr is a column of its primary_key."
+            },
+            "window": {
+              "enum": [
+                "last",
+                "first"
+              ],
+              "description": "last keeps the latest row in each period (a closing balance), first the earliest (an opening balance)."
+            }
+          }
         },
         "status": {
           "enum": [
@@ -587,6 +663,39 @@
                 "many_to_many"
               ],
               "description": "Relationship the data supports. many_to_many needs a bridge table."
+            },
+            "through": {
+              "type": "object",
+              "description": "A bridge join's bridge, measured by semlayer check-join: counts only, never a value.",
+              "additionalProperties": false,
+              "required": ["model", "keys", "fact_rows", "bridge_rows", "duplicate_rows", "rows_without_fact", "rows_without_target", "facts_unbridged", "facts_one_value", "facts_many_values", "max_values_per_fact"],
+              "properties": {
+                "model": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "description": "Bridge model the check measured." },
+                "keys": {
+                  "type": "array",
+                  "minItems": 1,
+                  "description": "Bridge-to-target key pairs the check measured.",
+                  "items": {
+                    "type": "object",
+                    "description": "One key pair.",
+                    "additionalProperties": false,
+                    "required": ["from", "to"],
+                    "properties": {
+                      "from": { "type": "string", "minLength": 1, "description": "Column of the bridge's table." },
+                      "to": { "type": "string", "minLength": 1, "description": "Column of the target's table." }
+                    }
+                  }
+                },
+                "fact_rows": { "type": "integer", "minimum": 0, "description": "Rows in this model's table." },
+                "bridge_rows": { "type": "integer", "minimum": 0, "description": "Rows in the bridge's table." },
+                "duplicate_rows": { "type": "integer", "minimum": 0, "description": "Bridge rows that repeat a pair an earlier row holds." },
+                "rows_without_fact": { "type": "integer", "minimum": 0, "description": "Bridge rows whose key matches no row of this model." },
+                "rows_without_target": { "type": "integer", "minimum": 0, "description": "Bridge rows whose key matches no row of the target." },
+                "facts_unbridged": { "type": "integer", "minimum": 0, "description": "Rows of this model with no bridge row." },
+                "facts_one_value": { "type": "integer", "minimum": 0, "description": "Rows of this model with one target value." },
+                "facts_many_values": { "type": "integer", "minimum": 0, "description": "Rows of this model with several target values." },
+                "max_values_per_fact": { "type": "integer", "minimum": 0, "description": "Most target values of one row of this model." }
+              }
             }
           }
         },
@@ -594,6 +703,43 @@
           "type": "string",
           "minLength": 1,
           "description": "Why an approved many_to_one or one_to_one join stands although its evidence shows fan-out (the target key is not unique or a row matches more than one target row), such as a known-dirty key the owner accepts. Without it semlayer validate errors on such a join."
+        },
+        "through": {
+          "type": "object",
+          "description": "Makes the join a bridge join: this model reaches the target (the join's to) through a bridge model that holds one row per pair. The join's keys then pair this model's columns with the bridge's, relationship is one_to_many, and an approved bridge join needs a dedupe rule.",
+          "additionalProperties": false,
+          "required": ["model", "keys"],
+          "properties": {
+            "model": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "description": "The bridge model, a bare name in the same source."
+            },
+            "keys": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Column pairs that must be equal between the bridge and the target: from is a column of the bridge's table, to a column of the target's.",
+              "items": {
+                "type": "object",
+                "description": "One key pair.",
+                "additionalProperties": false,
+                "required": ["from", "to"],
+                "properties": {
+                  "from": { "type": "string", "minLength": 1, "description": "Column of the bridge model's table." },
+                  "to": { "type": "string", "minLength": 1, "description": "Column of the target model's table." }
+                }
+              }
+            },
+            "dedupe": {
+              "enum": ["distinct_pairs", "equal_split", "weight"],
+              "description": "How a measure is shared among the target values of one row: distinct_pairs counts each (row, target) pair once, so group totals add up to more than the overall total; equal_split gives each of n target values 1/n of the figure; weight gives each its share of the bridge's weight column. The owner chooses it; an approved bridge join needs it."
+            },
+            "weight": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Numeric column of the bridge's table that dedupe weight shares by. Set only with dedupe weight."
+            }
+          }
         }
       },
       "allOf": [
@@ -614,6 +760,19 @@
               "approved_at"
             ]
           }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "approved" } },
+            "required": ["status", "through"]
+          },
+          "then": {
+            "properties": { "through": { "required": ["dedupe"] } }
+          }
+        },
+        {
+          "if": { "required": ["through"] },
+          "then": { "properties": { "relationship": { "const": "one_to_many" } } }
         }
       ]
     }

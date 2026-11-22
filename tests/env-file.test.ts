@@ -380,7 +380,8 @@ describe("the prefix form", () => {
       adapter: "postgres",
       max: 1,
       prepare: false,
-      connection: { default_transaction_read_only: "on", statement_timeout: 5000, TimeZone: "UTC" },
+      // A transaction-mode pooler refuses statement_timeout at startup; each query's transaction sets it.
+      connection: { default_transaction_read_only: "on", TimeZone: "UTC" },
       hostname: "db.internal",
       port: 6432,
       username: USER,
@@ -388,6 +389,7 @@ describe("the prefix form", () => {
       database: "acme",
       tls: "require",
     });
+    expect(conn.timeoutMs).toBe(5000);
     expect(password(conn)).toBe(PASSWORD);
     expect(conn.options).not.toHaveProperty("url");
     expect(conn.target).toEqual({ host: "db.internal", port: "6432" });
@@ -784,6 +786,7 @@ describe("semlayer validate", () => {
         level: "error",
         file: "../.env",
         path: "",
+        code: "env.file_tracked",
         message: `git tracks this env file, so the secrets in it are in the repository: run git -C ${p.dir} rm --cached .env and commit, have the owner rotate the credentials it held, then run semlayer validate again (semlayer setup keeps .env out of version control)`,
       },
     ]);
@@ -805,6 +808,7 @@ describe("semlayer validate", () => {
         level: "error",
         file: "sources/lake.yaml",
         path: "connection",
+        code: "source.env_and_prefix",
         message: "has both env and env_prefix; a source names one variable that holds the URL or a prefix for the parts, not both: keep one (semlayer setup --source lake --dialect postgres --env <VAR> or --env-prefix <PREFIX> writes it)",
       },
     ]);

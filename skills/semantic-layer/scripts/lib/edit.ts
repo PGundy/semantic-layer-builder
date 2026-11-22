@@ -7,7 +7,8 @@ import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, unlinkS
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import type { LastApproval } from "./access.ts";
-import { type ApprovalEntry, carriesHash, itemApprovals, type LayerModel, listApprovals, UNHASHED_MESSAGE } from "./approval-hash.ts";
+import { type ApprovalEntry, carriesHash, editKeepsApproval, itemApprovals, type LayerModel, listApprovals, matchesRecorded, UNHASHED_MESSAGE } from "./approval-hash.ts";
+import { sourceWeekStart, type WeekDay } from "./compiler/calendar.ts";
 import { columnRefs } from "./compiler/qualify.ts";
 import { resolveRef } from "./layer-reads.ts";
 import { UserError } from "./errors.ts";
@@ -25,7 +26,7 @@ import { editYamlText, parseYaml, parseYamlText, readYamlIfExists } from "./yaml
 // Keys only semlayer approve writes.
 export const APPROVAL_FIELDS = ["status", "approved_by", "approved_at", "approved_hash", "last_approved"];
 
-export type ItemKind = "model" | "dimension" | "measure" | "join" | "metric" | "access";
+export type ItemKind = "model" | "dimension" | "measure" | "join" | "metric" | "access" | "schema-pair";
 
 // One item a ref names: the file that holds it, its path inside the file and its parsed value.
 export interface Located {
@@ -38,11 +39,28 @@ export interface Located {
   model?: Model;
 }
 
-// Finds the item of an approve-style ref: source.model, source.model.field, metric:<name> or access.
-export function locate(root: string, ref: string): Located {
+// Finds the item of an approve-style ref: source.model, source.model.field, metric:<name> or access,
+// and with `pairs` a schema pair (schema-pair:<source>:<from>:<to>), whose entry in sources/<s>.yaml
+// semlayer approve stamps. A schema pair takes no typed edit: without `pairs` it is refused.
+export function locate(root: string, ref: string, opts: { pairs?: boolean } = {}): Located {
   const t = parseTarget(ref);
   const obj = (x: unknown) => x as Record<string, unknown>;
   switch (t.kind) {
+    case "schema-pair": {
+      if (!opts.pairs)
+        throw new UserError(
+          `${ref} is a schema pair, which takes no typed edit: change its keys with semlayer add-cross-schema or semlayer remove-cross-schema ` +
+            `(--source ${t.source} --from ${t.from} --to ${t.to}), read it back with semlayer readback --targets ${ref}, and approve it on the owner's yes with semlayer approve --target ${ref}.`,
+        );
+      const file = paths(root).source(t.source);
+      const config = readYamlIfExists<Record<string, unknown>>(file);
+      if (!config) throw new UserError(`No source "${t.source}" (${file}). Run semlayer status to list the sources.`);
+      const pairs = Array.isArray(config.cross_schema) ? (config.cross_schema as unknown[]) : [];
+      const index = pairs.findIndex((p) => !!p && typeof p === "object" && (p as { from?: unknown }).from === t.from && (p as { to?: unknown }).to === t.to);
+      if (index < 0)
+        throw new UserError(`sources/${t.source}.yaml declares no schema pair ${t.from} -> ${t.to}. Record it with semlayer add-cross-schema --source ${t.source} --from ${t.from} --to ${t.to} --keys <table>.<column>=<table>.<column>.`);
+      return { ref, kind: "schema-pair", file, path: ["cross_schema", index], item: obj(pairs[index]), source: t.source };
+    }
     case "golden":
       throw new UserError(`Goldens are not edited with typed edits; semlayer goldens run --name ${t.name} shows one.`);
     case "access": {
@@ -131,6 +149,15 @@ function sourceDialect(root: string, source: string): Dialect | undefined {
   }
 }
 
+// The day a source's weeks start, as semlayer approve hashes its week-grain dimensions.
+function sourceWeek(root: string, source: string): WeekDay | undefined {
+  try {
+    return sourceWeekStart(readYamlIfExists<unknown>(paths(root).source(source)));
+  } catch {
+    return undefined;
+  }
+}
+
 // Every approval entry of the project, reading each file in `overrides` as its text there (a model
 // file only there counts as written) and leaving out the files in `removed`; files that cannot be
 // read are skipped.
@@ -154,14 +181,15 @@ function projectEntries(root: string, overrides: ReadonlyMap<string, string>, re
       if (m && typeof m === "object") models.set(stem(f), m as Model);
     }
     const dialect = sourceDialect(root, source);
-    for (const [name, m] of models) layer.push({ source, model: { ...m, model: name }, lookup: (n) => models.get(n), dialect });
+    const weekStart = sourceWeek(root, source);
+    for (const [name, m] of models) layer.push({ source, model: { ...m, model: name }, lookup: (n) => models.get(n), dialect, weekStart });
   }
   const metrics = read(paths(root).metrics) as { metrics?: unknown } | null;
   return itemApprovals(listApprovals({ models: layer, metrics: metrics?.metrics, access: read(paths(root).access) }));
 }
 
-// The approved items whose content an edit changes, unless it restores the content their
-// approved_hash records: each now needs a readback and a new approval. `renamed` maps an item's
+// The approved items whose content an edit changes, description included, unless it restores the
+// content their approved_hash records: each now needs a readback and a new approval. `renamed` maps an item's
 // ref after the edit to its ref before, for an item the edit renames.
 function changedApprovals(root: string, after: ReadonlyMap<string, string>, renamed?: ReadonlyMap<string, string>, removed?: ReadonlySet<string>): string[] {
   const was = new Map(projectEntries(root, new Map()).map((e) => [e.ref, e]));
@@ -169,7 +197,7 @@ function changedApprovals(root: string, after: ReadonlyMap<string, string>, rena
   for (const e of projectEntries(root, after, removed)) {
     const old = was.get(renamed?.get(e.ref) ?? e.ref);
     if (!old || old.hash === e.hash || e.item.status !== "approved") continue;
-    if (!carriesHash(e.item) || String(e.item.approved_hash).trim() !== e.hash) out.push(e.ref);
+    if (!carriesHash(e.item) || !editKeepsApproval(old, e)) out.push(e.ref);
   }
   return out.sort();
 }
@@ -184,19 +212,22 @@ export interface EditOutcome {
 
 // The warnings semlayer validate gives for a value of one key that can never be right, whatever else the
 // layer holds: a typed edit that adds one is refused with validate's own words, as an error is.
-// - time_zone on a time dimension whose column carries its own zone;
-// - a measure expr dividing by a numeric literal on duckdb (validate: "this warning never stands");
-// - a column listed in ignored_columns that a field, a filter, a join key or a row filter reads.
+// - time.zone_carries_own: time_zone on a time dimension whose column carries its own zone;
+// - expr.divides_by_literal: a measure expr dividing by a numeric literal on duckdb;
+// - ignore.column_read: a column listed in ignored_columns that a field, a filter, a join key or a row filter reads.
+const NEVER_RIGHT: ReadonlySet<string> = new Set(["time.zone_carries_own", "expr.divides_by_literal", "ignore.column_read"]);
+
 export function neverRight(i: Issue): boolean {
-  if (i.level !== "warning") return false;
-  if (/\.time_zone$/.test(i.path) && i.message.includes("which carries its own")) return true;
-  if (/\.expr$/.test(i.path) && i.message.includes("this warning never stands")) return true;
-  return /^ignored_columns\[\d+\]$/.test(i.path) && i.message.includes("so it is not left out");
+  return i.level === "warning" && NEVER_RIGHT.has(i.code);
 }
 
 // A typed edit refused for a value that can never be right (neverRight). semlayer apply names every
-// entry refused this way, not only the first.
-export class ValueRefusal extends UserError {}
+// entry refused this way, not only the first. Its code is the code of the first warning it names.
+export class ValueRefusal extends UserError {
+  constructor(message: string, code: string) {
+    super(message, undefined, code);
+  }
+}
 
 // An issue as one line: the file, the path in it and validate's message.
 export function issueLine(i: Issue): string {
@@ -212,11 +243,12 @@ export function resetEditWarnings(): void {
 }
 
 // A command's output with the warnings its typed edits added: with --json lines added to the
-// object's "warnings" list (made when it has none), otherwise a "Warning: " line each, before the
-// output's Next: line.
+// object's "warnings" list (made when it has none) and {code, path, message} objects to its
+// "warning_issues" list, otherwise a "Warning: " line each, before the output's Next: line.
 export function withEditWarnings(text: string, json: boolean): string {
   if (!pendingWarnings.length) return text;
   const lines = pendingWarnings.map(issueLine);
+  const issues = warningIssues(pendingWarnings);
   pendingWarnings = [];
   if (json) {
     let value: unknown;
@@ -228,12 +260,19 @@ export function withEditWarnings(text: string, json: boolean): string {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return text;
     const own = (value as { warnings?: unknown }).warnings;
     if (own !== undefined && !Array.isArray(own)) return text;
-    return JSON.stringify({ ...value, warnings: [...(own ?? []), ...lines] }, null, text.includes("\n") ? 2 : undefined);
+    const ownIssues = (value as { warning_issues?: unknown }).warning_issues;
+    const before = Array.isArray(ownIssues) ? ownIssues : [];
+    return JSON.stringify({ ...value, warnings: [...(own ?? []), ...lines], warning_issues: [...before, ...issues] }, null, text.includes("\n") ? 2 : undefined);
   }
   const out = text.split("\n");
   const at = out.findLastIndex((l) => l.startsWith("Next: "));
   out.splice(at < 0 ? out.length : at, 0, ...lines.map((l) => `Warning: ${l}`));
   return out.join("\n");
+}
+
+// Warnings as --json carries them beside their lines: the code, the file's path and validate's message.
+export function warningIssues(warnings: Issue[]): { code: string; file: string; path: string; message: string }[] {
+  return warnings.map((i) => ({ code: i.code, file: i.file, path: i.path, message: i.message }));
 }
 
 // One file's edit; several for the same file run in order on one document.
@@ -340,9 +379,12 @@ function invalid(what: string, added: Issue[]): UserError {
     return new ValueRefusal(
       `Cannot ${what}: semlayer validate would warn about the value, and it can never be right here, so nothing was written:\n${lines.join("\n")}\n` +
         "Leave the key out or give a value the warning allows, then run it again; semlayer validate lists the project's issues.",
+      added[0]?.code ?? "user_error",
     );
   return new UserError(
     `Cannot ${what}: the result would not validate, so nothing was written:\n${lines.join("\n")}\nFix the value and run it again; semlayer validate lists the project's errors.`,
+    undefined,
+    added[0]?.code,
   );
 }
 
@@ -577,7 +619,7 @@ function stillChanged(root: string, refs: Iterable<string>): string[] {
   const wanted = new Set(refs);
   if (!wanted.size) return [];
   return projectEntries(root, new Map())
-    .filter((e) => wanted.has(e.ref) && e.item.status === "approved" && (!carriesHash(e.item) || String(e.item.approved_hash).trim() !== e.hash))
+    .filter((e) => wanted.has(e.ref) && e.item.status === "approved" && !matchesRecorded(e))
     .map((e) => e.ref)
     .sort();
 }
@@ -897,8 +939,9 @@ export function pathText(path: (string | number)[]): string {
 }
 
 // Every place outside the target's own name that names it: join references in model exprs and
-// filters (through the model's own join or a join to the target's model), metric measure
-// references, golden requests, and access.yaml restriction targets, deny.fields and row filters.
+// filters (through the model's own join or a join to the target's model), a dimension's use as a
+// measure's non_additive_dimension or another model's dimension's conforms_to, metric measure references, golden requests, and access.yaml
+// restriction targets, deny.fields and row filters.
 // `conflicts` lists the access patterns that would make a list of access.yaml cover the new name
 // differently from the old one, which a rename would silently change. With no new name, `to` equals `from`.
 export function referenceSites(root: string, target: RefTarget, newName = target.name): { sites: RefSite[]; conflicts: string[] } {
@@ -943,6 +986,24 @@ export function referenceSites(root: string, target: RefTarget, newName = target
       });
     }
   }
+  // A model's or a measure's default_time_dimension and a measure's non_additive_dimension name a
+  // time dimension of the measure's own model.
+  if (field?.kind === "dimension") {
+    const m = models.get(field.model);
+    const file = paths(root).model(field.source, field.model);
+    if (obj(m).default_time_dimension === field.name) add(file, ["default_time_dimension"], field.name, newName);
+    arr(m?.measures).forEach((x, i) => {
+      if (obj(x).default_time_dimension === field.name) add(file, ["measures", i, "default_time_dimension"], field.name, newName);
+      const nad = obj(obj(x).non_additive_dimension);
+      if (nad.name === field.name) add(file, ["measures", i, "non_additive_dimension", "name"], nad.name, newName);
+    });
+    // A dimension of another model that conforms to it names it as <model>.<dimension>.
+    for (const [name, other] of models)
+      arr(other.dimensions).forEach((d, i) => {
+        const c = obj(d).conforms_to;
+        if (name !== field.model && typeof c === "string" && c.trim() === `${field.model}.${field.name}`) add(paths(root).model(field.source, name), ["dimensions", i, "conforms_to"], c, `${field.model}.${newName}`);
+      });
+  }
   if (field?.kind === "measure") {
     const file = paths(root).metrics;
     const ref = `${field.model}.${field.name}`;
@@ -977,6 +1038,9 @@ export function referenceSites(root: string, target: RefTarget, newName = target
       if (m && m[1] === field.model && m[2] === field.name) add(file, path, value, `${field.model}.${newName}${m[3] ?? ""}`);
     };
     for (const key of ["measures", "dimensions"]) arr(request[key]).forEach((v, i) => check(["request", key, i], v));
+    check(["request", "running", "over"], obj(request.running).over);
+    check(["request", "compare", "over"], obj(request.compare).over);
+    check(["request", "window", "dimension"], obj(request.window).dimension);
     for (const key of ["filters", "order_by"]) arr(request[key]).forEach((v, i) => check(["request", key, i, "field"], obj(v).field));
   }
   // access.yaml, read as semlayer access reads it: a restriction target with the metric: prefix names a

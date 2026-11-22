@@ -277,7 +277,7 @@ describe("approve refusals", () => {
   test("a measure without description: refused by the readback, and by approve after a yes when the description was removed since", async () => {
     const root = await project();
     expect((await semlayer(root, ["readback", "--targets", "wh.customers.customer_count"])).err).toContain("Measure wh.customers.customer_count has no description");
-    // A description is outside the approval hash, so a yes given with one stands after it is removed.
+    // A yes given with a description, which is then removed: the refusal names the missing description.
     const file = join(root, "models", "wh", "customers.yaml");
     writeFileSync(file, CUSTOMERS.replace("    agg: count\n", "    agg: count\n    description: Customers.\n"));
     await recordReply(root, "wh.customers.customer_count");
@@ -380,7 +380,7 @@ describe("approve refusals", () => {
     const root = await project();
     const r = await semlayer(root, ["approve", "--help"]);
     expect(r.code).toBe(0);
-    expect(r.out).toContain("approve --target <source.model | source.model.field | metric:<name> | access>");
+    expect(r.out).toContain("approve --target <source.model | source.model.field | metric:<name> | access | schema-pair:<source>:<from>:<to>>");
     expect(r.out).not.toContain("golden");
   });
 
@@ -581,11 +581,13 @@ describe("approval hashes", () => {
     expect((await approve(root, ["--target", "wh.orders.revenue", "--by", "Lee"])).out).toContain("already approved");
   });
 
-  test("a description edit leaves the approval standing", async () => {
+  test("a description edit needs a new approval, and a reflowed description does not", async () => {
     const root = await project();
     await approve(root, ["--target", "wh.orders.revenue", "--by", "Dana"]);
-    writeFileSync(join(root, "models/wh/orders.yaml"), text(root, "models/wh/orders.yaml").replace("description: Order value.", "description: Order value, gross."));
+    writeFileSync(join(root, "models/wh/orders.yaml"), text(root, "models/wh/orders.yaml").replace("description: Order value.", "description: >-\n      Order   value."));
     expect((await approve(root, ["--target", "wh.orders.revenue", "--by", "Lee"])).out).toContain("already approved");
+    writeFileSync(join(root, "models/wh/orders.yaml"), text(root, "models/wh/orders.yaml").replace("Order   value.", "Order value, gross."));
+    expect((await approve(root, ["--target", "wh.orders.revenue", "--by", "Lee"])).out).toContain("Approved wh.orders.revenue again (it changed since its last approval) by Lee");
   });
 
   test("a measure's hash covers the joins its filter reads through", async () => {

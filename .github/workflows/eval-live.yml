@@ -1,0 +1,75 @@
+name: eval-live
+
+# The live smoke (evals/README.md, The live gate): the two lake scenarios played by a model through the Claude
+# Agent SDK and compared with evals/baseline.sdk.json by `eval:smoke --driver sdk --gate`. It costs
+# money and varies from run to run, so it never blocks a merge: it is not a required check, ci.yml does
+# not depend on it, and it runs only on a weekly schedule, by hand, or when a maintainer puts the
+# `eval-live` label on a pull request. Without the ANTHROPIC_API_KEY secret (a fork gets none) or
+# without a committed evals/baseline.sdk.json it prints a notice and ends green.
+on:
+  schedule:
+    - cron: "43 3 * * 1"
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eval-live
+  cancel-in-progress: false
+
+jobs:
+  eval-live:
+    name: eval-live
+    if: github.event_name != 'pull_request' || github.event.label.name == 'eval-live'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      # The SDK is not a dependency of the repository: it goes into this job's workspace only, at one
+      # exact version, and --no-save leaves package.json and the lockfile as they are.
+      - name: Install the SDK
+        if: hashFiles('evals/baseline.sdk.json') != ''
+        run: bun add --no-save @anthropic-ai/claude-agent-sdk@0.3.330
+      # The only step that sees the key. It skips with a notice when the key or the baseline is absent,
+      # runs the gate, and keeps the run directories for upload only when none of them holds the key.
+      - name: Live smoke
+        id: live
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          out="$RUNNER_TEMP/eval-live-runs"
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice::eval-live skipped: the repository secret that holds the Anthropic API key is not available (not set, or this run is from a fork)."
+            exit 0
+          fi
+          if [ ! -f evals/baseline.sdk.json ]; then
+            echo "::notice::eval-live skipped: evals/baseline.sdk.json is not committed yet. The owner records it first (evals/README.md, The live gate)."
+            exit 0
+          fi
+          rc=0
+          bun run eval:smoke -- --driver sdk --gate --runs 3 --out "$out" || rc=$?
+          if [ -d "$out" ]; then
+            s=0
+            grep -rqFf <(printf '%s' "$ANTHROPIC_API_KEY") "$out" || s=$?
+            if [ "$s" -ne 1 ]; then
+              rm -rf "$out"
+              echo "::error::The run directories held the API key, or could not be searched, so they were deleted and not uploaded. If a key was found, rotate it."
+              exit 1
+            fi
+            echo "upload=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$rc"
+      - name: Upload the runs
+        if: always() && steps.live.outputs.upload == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-live-runs
+          path: ${{ runner.temp }}/eval-live-runs
+          retention-days: 30

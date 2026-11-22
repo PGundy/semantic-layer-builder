@@ -2,10 +2,12 @@
 // dimensions, measures, pii and sensitive tags, the columns left out and the open questions the
 // owner must answer. Every item is written as draft; nothing here guesses meaning beyond the rules.
 import { classifyType, isNumeric } from "./column-types.ts";
+import { proposeBridge } from "./draft-bridge.ts";
 import { quoteIdent } from "./dialect.ts";
 import { findTable, qualifiedName, toSpecName } from "./naming.ts";
 import { summarizeTable } from "./profile.ts";
 import { classifyTable } from "./rank.ts";
+import { type CrossSchemaPair, crossesSchema, findPair, pairAnswered, pairApproved, referencedSchema, splitKeyEnd } from "./schema-scope.ts";
 import { nearUnique, PII_NAME, sensitivityOf } from "./sensitivity.ts";
 import { incomingKeyColumns, referencedColumns, sqlIdentifiers, unreferencedColumns } from "./snapshot-diff.ts";
 import type {
@@ -28,6 +30,8 @@ export interface DraftOptions {
   stripPrefixes: string[];
   // Tables a join may target: in scope or already modeled.
   knownTables: SnapshotTable[];
+  // The source's declared schema pairs: a key into a schema the owner declined joining asks nothing.
+  crossSchema?: readonly CrossSchemaPair[];
 }
 
 export interface DraftResult {
@@ -382,7 +386,8 @@ function joinCandidates(ctx: Context, self: SnapshotTable, x: string): Candidate
   // A column named for the table it sits in is that table's own key, not a reference.
   if (tableNameForms(self.name, ctx.opts.stripPrefixes).some((f) => forms.has(f))) return out;
   for (const t of ctx.snapshot.tables) {
-    if (tableKey(t) === tableKey(self)) continue;
+    // A name never joins across schemas (spec: Schema scope).
+    if (tableKey(t) === tableKey(self) || t.schema !== self.schema) continue;
     const pk = primaryKeyOf(ctx, t);
     if (pk.length !== 1) continue;
     const pkNorm = toSpecName(pk[0]!);
@@ -395,7 +400,6 @@ function joinCandidates(ctx: Context, self: SnapshotTable, x: string): Candidate
     (a, b) =>
       Number(b.known) - Number(a.known) ||
       Number(b.nameMatch) - Number(a.nameMatch) ||
-      Number(b.table.schema === self.schema) - Number(a.table.schema === self.schema) ||
       qualifiedName(a.table).localeCompare(qualifiedName(b.table)),
   );
 }
@@ -442,15 +446,11 @@ function keyNameCandidates(ctx: Context, self: SnapshotTable, col: SnapshotColum
     ctx.keyIndex = index;
   }
   const matched = (ctx.keyIndex.get(toSpecName(col.name)) ?? []).filter(
-    (c) => tableKey(c.table) !== tableKey(self) && compatibleKeyTypes(col.type, c.keyColumn.type) && classifyTable(c.table)?.role !== "noise",
+    (c) => tableKey(c.table) !== tableKey(self) && c.table.schema === self.schema && compatibleKeyTypes(col.type, c.keyColumn.type) && classifyTable(c.table)?.role !== "noise",
   );
   const clean = matched.filter((c) => !classifyTable(c.table));
   return (clean.length ? clean : matched)
-    .sort(
-      (a, b) =>
-        Number(b.table.schema === self.schema) - Number(a.table.schema === self.schema) ||
-        qualifiedName(a.table).localeCompare(qualifiedName(b.table)),
-    )
+    .sort((a, b) => qualifiedName(a.table).localeCompare(qualifiedName(b.table)))
     .map((c) => ({ table: c.table, keyColumn: c.keyColumn.name }));
 }
 
@@ -736,8 +736,28 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
   const fkColumns = new Set<string>();
   for (const fk of table.foreign_keys ?? []) {
     for (const c of fk.columns) fkColumns.add(c.toLowerCase());
-    const target = referencedTable(ctx, table, fk.references);
     const targetName = qualifiedName({ schema: fk.references.schema ?? table.schema, name: fk.references.table });
+    // A key into another schema is a question for the owner, never a drafted join (spec: Schema scope).
+    if (crossesSchema(table, fk)) {
+      const fromSchema = table.schema ?? "no schema";
+      const toSchema = referencedSchema(table, fk) ?? "no schema";
+      const declared = findPair(ctx.opts.crossSchema ?? [], fromSchema, toSchema);
+      // A declined pair asks nothing; an approved one is drafted from its listed keys below.
+      if (pairAnswered(declared)) continue;
+      const by = fk.constraint ? `the foreign key ${fk.constraint}` : "a foreign key whose name the snapshot does not record";
+      const record = fk.constraint
+        ? `--constraint ${fk.constraint}`
+        : `--keys ${fk.columns.map((c, i) => `${table.name}.${c}=${fk.references.table}.${fk.references.columns[i] ?? c}`).join(",")}`;
+      const pair = `semlayer add-cross-schema --source ${ctx.opts.source} --from ${fromSchema} --to ${toSchema}`;
+      ask(
+        `${fk.columns.join(", ")} references ${targetName} through ${by}, across schemas: ${q} is in ${fromSchema} and ${fk.references.table} in ${toSchema}. ` +
+          `A join across schemas is drafted only after you say which schemas the layer joins. Do your questions need ${targetName}? ` +
+          `If yes, record the pair with ${pair} ${record}; if no, with ${pair} --decline --reply "<the owner's words>".`,
+        fk.columns,
+      );
+      continue;
+    }
+    const target = referencedTable(ctx, table, fk.references);
     if (!target) {
       ask(`${fk.columns.join(", ")} references ${targetName}, which is not in the snapshot. Should it join to another table?`, fk.columns);
       continue;
@@ -757,6 +777,37 @@ function draftOne(ctx: Context, table: SnapshotTable, modelName: string, notes: 
       columns: fk.columns,
       relationship: isSolePk(fk.columns) ? "one_to_one" : "many_to_one",
     });
+  }
+  // An approved schema pair from this table's schema drafts a join to each table its keys pair with
+  // this one, on the keys it lists only: one join per target table and constraint.
+  const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  for (const pair of ctx.opts.crossSchema ?? []) {
+    if (pair.from !== table.schema || !pairApproved(pair)) continue;
+    const groups = new Map<string, { target: SnapshotTable; keys: JoinKey[] }>();
+    for (const key of pair.keys ?? []) {
+      const near = splitKeyEnd(key.from);
+      const far = splitKeyEnd(key.to);
+      if (!near || !far || !sameName(near.table, table.name)) continue;
+      const target = referencedTable(ctx, table, { schema: pair.to, table: far.table });
+      const from = table.columns.find((c) => sameName(c.name, near.column))?.name;
+      const to = target?.columns.find((c) => sameName(c.name, far.column))?.name;
+      // A key missing from the snapshot is reported by semlayer validate (scope.key_not_in_snapshot).
+      if (!target || !from || !to) continue;
+      const id = `${tableKey(target)}\u0000${key.constraint ?? ""}`;
+      const group = groups.get(id) ?? { target, keys: [] };
+      group.keys.push({ from, to });
+      groups.set(id, group);
+    }
+    for (const { target, keys } of groups.values()) {
+      const columns = keys.map((k) => k.from);
+      for (const c of columns) fkColumns.add(c.toLowerCase());
+      if (!ctx.known.has(tableKey(target))) {
+        ask(`${columns.join(", ")} joins ${qualifiedName(target)} by the approved pair ${pair.from} -> ${pair.to}, but ${qualifiedName(target)} is out of scope and has no model. Bring it into scope to draft this join?`, columns);
+        continue;
+      }
+      for (const c of columns) joinTargets.set(c, qualifiedName(target));
+      pending.push({ target, keys, origin: "declared", columns, relationship: isSolePk(columns) ? "one_to_one" : "many_to_one" });
+    }
   }
   for (const col of table.columns) {
     const norm = toSpecName(col.name);
@@ -1215,6 +1266,22 @@ export function draftModels(snapshot: Snapshot, tables: SnapshotTable[], existin
     drafted.push({ model: draftOne(ctx, t, planned, notes).model, table: t });
   }
   const all = [...existing, ...drafted.map((d) => d.model)];
+  // A drafted link table also proposes the bridge join between the models it links.
+  const draftedNames = new Set(drafted.map((d) => d.model.model));
+  const bridgeContext = {
+    snapshot,
+    models: all,
+    drafted: draftedNames,
+    pairs: opts.crossSchema ?? [],
+    measureLike: (column: string) => numericRule(toSpecName(column)) !== null,
+  };
+  for (const { model, table } of drafted) {
+    const proposal = proposeBridge(model, table, bridgeContext);
+    if (!proposal) continue;
+    const fact = drafted.find((d) => d.model.model === proposal.model)!.model;
+    fact.joins = [...(fact.joins ?? []), proposal.join];
+    fact.open_questions = [...(fact.open_questions ?? []), proposal.question];
+  }
   const models = drafted.map(({ model, table }) => {
     const ignored = unreferencedColumns(model, table, snapshot.dialect, incomingKeyColumns(model, all)).map((c) => c.name);
     return withIgnored(model, ignored);

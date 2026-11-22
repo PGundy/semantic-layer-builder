@@ -2,12 +2,15 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isMap, isScalar, type Document, type YAMLMap } from "yaml";
 import type { LastApproval } from "../lib/access.ts";
-import { type ApprovalEntry, carriesHash, holdsHashes, integrity, itemApprovals, itemHash, type LayerModel, listApprovals } from "../lib/approval-hash.ts";
+import { type ApprovalEntry, backed, carriesHash, describedLater, holdsHashes, integrity, itemApprovals, itemHashes, type LayerModel, listApprovals } from "../lib/approval-hash.ts";
 import type { CommandSpec } from "../lib/command.ts";
+import { sourceWeekStart, type WeekDay } from "../lib/compiler/calendar.ts";
 import { approvedIssues, describedProblem, metricProblems, modelProblems } from "../lib/approve-checks.ts";
 import { bool, list, str, type CommandContext, type OptionValues } from "../lib/command.ts";
+import { locate, oneLine } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
-import { LEDGER_FILE, latestReply, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
+import { currentYes, LEDGER_FILE, latestReply, openLedger, ownerText, readApprovalLedger, readPending, readReplies, shellQuote } from "../lib/ledger.ts";
+import { statusDetail } from "../lib/status.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadAccess, loadMetrics, loadModel, loadProject, paths } from "../lib/project.ts";
 import { findField, parseTarget, type Target } from "../lib/refs.ts";
@@ -23,7 +26,8 @@ interface Change {
 // One item to flip, located by its path inside one YAML file. keepLast marks access.yaml, whose
 // revoke keeps the approval it sets aside in last_approved. hash is the item's content hash, which
 // an approval records. changed marks an approved item whose content no longer matches its hash,
-// and missing one with no hash while other items of the project record one. by, at and ledger come
+// and missing one with no hash while other items of the project record one; described one whose
+// hash covers its definition only (approved before descriptions counted). by, at and ledger come
 // from the owner's recorded yes an approval rests on.
 interface Edit {
   target: string;
@@ -32,6 +36,7 @@ interface Edit {
   hash: string;
   keepLast?: boolean;
   changed?: boolean;
+  described?: boolean;
   missing?: boolean;
   by?: string;
   at?: string;
@@ -39,6 +44,9 @@ interface Edit {
 }
 
 type Mode = { revoke: false } | { revoke: true };
+
+// An item's hash and its definition hash (itemHashes).
+type Hashes = { hash: string; definitionHash: string };
 
 // An item approve would change but does not, and why; byMismatch when only --by stood in the way.
 interface Refusal {
@@ -54,13 +62,17 @@ function statusOf(item: Approval): Status {
 // Whether the item already holds the state this run would give it. An approved item whose content
 // no longer matches its recorded hash is approved again, and so is one without a hash while other
 // items of the project record one (its hash may have been removed); one approved before any hash
-// was recorded stands (semlayer approve --stamp-hashes records its hash).
-function settled(item: Approval, mode: Mode, hash: string, projectHashed: boolean): boolean {
+// was recorded stands (semlayer approve --stamp-hashes records its hash), and so does one whose hash
+// covers its definition only (`definition`), unless the owner's latest reply is a yes to it as it now
+// stands, description included (`yesNow`): it is then approved again with its full hash.
+// An approved item that no recorded yes of the owner backs (`backedNow`, approval-hash.ts backed) is
+// not settled either: it is approved only on the owner's yes, as a draft is.
+function settled(item: Approval, mode: Mode, hash: string, projectHashed: boolean, definition: string, yesNow: () => boolean, backedNow: () => boolean): boolean {
   if (mode.revoke)
     return item.status !== "approved" && item.approved_by === undefined && item.approved_at === undefined && item.approved_hash === undefined;
   const recorded = typeof item.approved_hash === "string" && item.approved_hash.trim() ? item.approved_hash.trim() : undefined;
-  const hashOk = recorded === undefined ? !projectHashed : recorded === hash;
-  return item.status === "approved" && !!item.approved_by && !!item.approved_at && hashOk;
+  const hashOk = recorded === undefined ? !projectHashed : recorded === hash || (recorded === definition && !yesNow());
+  return item.status === "approved" && !!item.approved_by && !!item.approved_at && hashOk && backedNow();
 }
 
 // The dialect a source file names, for reading join references the way the source writes SQL.
@@ -73,6 +85,15 @@ function sourceDialect(root: string, source: string): Dialect | undefined {
   }
   const d = config?.dialect;
   return typeof d === "string" && (DIALECTS as readonly string[]).includes(d) ? d : undefined;
+}
+
+// The day a source's weeks start, when it is not Monday: part of the hash of a week-grain dimension.
+function sourceWeek(root: string, source: string): WeekDay | undefined {
+  try {
+    return sourceWeekStart(readYamlIfExists<SourceConfig>(paths(root).source(source)));
+  } catch {
+    return undefined;
+  }
 }
 
 // Finds the other models of a source by name, for the second hop of a join reference.
@@ -269,6 +290,8 @@ function targetText(t: Target): string {
       return "access";
     case "golden":
       return `golden:${t.name}`;
+    case "schema-pair":
+      return `schema-pair:${t.source}:${t.from}:${t.to}`;
   }
 }
 
@@ -287,6 +310,7 @@ function underTarget(e: ApprovalEntry, target: Target | undefined): boolean {
     case "access":
       return e.ref === "access";
     case "golden":
+    case "schema-pair":
       return false;
   }
 }
@@ -298,7 +322,7 @@ function projectEntries(root: string): { file: string; entries: ApprovalEntry[] 
     const file = paths(root).model(source, name);
     const model = readYaml<Model>(file);
     if (!model || typeof model !== "object") continue;
-    models.push({ source, model: { ...model, model: name }, file, lookup: modelLookup(root, source), dialect: sourceDialect(root, source) });
+    models.push({ source, model: { ...model, model: name }, file, lookup: modelLookup(root, source), dialect: sourceDialect(root, source), weekStart: sourceWeek(root, source) });
   }
   const metricsFile = paths(root).metrics;
   const metrics = existsSync(metricsFile) ? loadMetrics(root)?.metrics : undefined;
@@ -318,8 +342,10 @@ function projectHashed(root: string): boolean {
 // Records approved_hash on every approved item that has none, keeping approved_by and approved_at.
 // While other items of the project record a hash, an item without one may have had its hash
 // removed after an edit; it is refused unless confirmUnchanged says version control shows it
-// unchanged since its approved_at.
-function stampHashes(root: string, target: Target | undefined, confirmUnchanged: boolean): { file: string; refs: string[] }[] {
+// unchanged since its approved_at. An item whose hash covers its definition only (describedLater)
+// is brought forward the same way: its hash is recorded again with its description as it stands,
+// which only confirmUnchanged allows, since the file cannot show whether the description changed.
+function stampHashes(root: string, target: Target | undefined, confirmUnchanged: boolean): { file: string; refs: string[]; described: string[] }[] {
   const files = projectEntries(root);
   const all = files.flatMap((f) => f.entries);
   if (target && !all.some((e) => underTarget(e, target))) {
@@ -334,9 +360,17 @@ function stampHashes(root: string, target: Target | undefined, confirmUnchanged:
         "Only when version control shows each unchanged since its approved_at, run semlayer approve --stamp-hashes --confirm-unchanged.",
     );
   }
-  const out: { file: string; refs: string[] }[] = [];
+  const described = all.filter((e) => underTarget(e, target) && describedLater(e));
+  if (described.length && !confirmUnchanged) {
+    throw new UserError(
+      `Cannot stamp hashes: the approved_hash of ${described.length} approved item(s) covers the definition but not the description (${previewRefs(described.map((e) => e.ref))}), ` +
+        "and the file cannot show whether a description changed since approved_at. Check each in version control, have the owner read each description " +
+        "(semlayer readback --targets <ref>), then run semlayer approve --stamp-hashes --confirm-unchanged; or read one back and approve it on the owner's yes.",
+    );
+  }
+  const out: { file: string; refs: string[]; described: string[] }[] = [];
   for (const { file, entries } of files) {
-    const todo = entries.filter((e) => underTarget(e, target) && e.item.status === "approved" && !carriesHash(e.item));
+    const todo = entries.filter((e) => underTarget(e, target) && e.item.status === "approved" && (!carriesHash(e.item) || describedLater(e)));
     if (!todo.length) continue;
     updateYaml(file, (doc) => {
       for (const e of todo) {
@@ -344,9 +378,75 @@ function stampHashes(root: string, target: Target | undefined, confirmUnchanged:
         if (isMap(node)) setScalar(doc, node, "approved_hash", e.hash, ["approved_at", "approved_by", "status"]);
       }
     });
-    out.push({ file, refs: todo.map((e) => e.ref) });
+    out.push({ file, refs: todo.map((e) => e.ref), described: todo.filter((e) => describedLater(e)).map((e) => e.ref) });
   }
   return out;
+}
+
+// semlayer approve --confirm-existing: the owner's confirmation, in their name and words, of every approved
+// item, schema pair and confirmed golden that no recorded yes or earlier confirmation backs, as each
+// stands, recorded as one kind: confirm line of the ledger (who, when, which targets at which hashes).
+// It changes no YAML: from that line on, each counts as approved at the hash it was confirmed at, and
+// an item stamped or edited afterwards needs a readback and yes as any other.
+function confirmExisting(ctx: CommandContext, values: OptionValues): number {
+  for (const flag of ["target", "readback", "date"] as const)
+    if (values[flag] !== undefined && !(Array.isArray(values[flag]) && !values[flag].length))
+      throw new UserError(`--confirm-existing confirms every approval no recorded yes backs, so it takes no --${flag}. Nothing was recorded.`);
+  for (const flag of ["revoke", "recursive", "stamp-hashes", "confirm-unchanged"] as const)
+    if (bool(values, flag)) throw new UserError(`--confirm-existing takes no --${flag}. Nothing was recorded.`);
+  const by = ownerText(oneLine(str(values, "by") ?? "")).text;
+  const words = ownerText(str(values, "reply") ?? "");
+  const answers = readApprovalLedger(ctx.root);
+  // The confirmation is given once, for approvals older than the ledger: a stamp written after it
+  // needs a readback and the owner's yes, so a second confirmation is refused, and an item the
+  // ledger holds an answer for is left out.
+  if (answers.confirmedBefore)
+    throw new UserError(
+      "The owner has already confirmed the approvals given before the ledger, so --confirm-existing is not run again: an approval stamped since then needs a readback and the owner's yes. " +
+        "List them with semlayer validate, then semlayer readback --targets <ref>, or return one to draft with semlayer approve --revoke --target <ref>. Nothing was recorded.",
+    );
+  const targets: { target: string; content_hash: string }[] = [];
+  for (const [ref, t] of statusDetail(ctx.root).targets) {
+    if (t.state !== "current" && t.state !== "unhashed" && t.state !== "unbacked") continue;
+    if (answers.present && (answers.latest.has(ref) || backed(answers, { ref, hash: t.hash, definitionHash: t.definition ?? t.hash }))) continue;
+    targets.push({ target: ref, content_hash: t.hash });
+  }
+  if (!targets.length) {
+    if (ctx.json) ctx.out(formatJson({ confirmed: [] }));
+    else ctx.out("Every approval already has the owner's recorded yes or confirmation behind it; nothing was recorded. Next: semlayer validate.");
+    return 0;
+  }
+  if (!by || !words.text)
+    throw new UserError(
+      'semlayer approve --confirm-existing records the owner\'s confirmation of approvals given before the ledger recorded their yes, so it needs the owner\'s name and words: ' +
+        'semlayer approve --confirm-existing --by "<owner>" --reply "<owner\'s words>". ' +
+        `It would confirm ${targets.length} approval(s) as they stand: ${targets.map((t) => t.target).join(", ")}. Run it only after the owner, shown that list, says these approvals stand as they are. Nothing was recorded.`,
+    );
+  const line = openLedger(ctx.root).appendConfirm({ kind: "confirm", targets, text: words.text, by, at: ctx.now().toISOString() });
+  const refs = targets.map((t) => t.target);
+  if (ctx.json) {
+    ctx.out(formatJson({ confirmed: refs, ledger: line.id, by }));
+    return 0;
+  }
+  ctx.out(
+    `Recorded ${line.id} in ${LEDGER_FILE}: ${by} confirms ${refs.length} approval(s) as they stand: ${previewRefs(refs)}. ` +
+      "They count as approved from now on; an item edited or stamped after this needs a readback and the owner's yes." +
+      (words.redacted ? " The owner's words held what looks like a credential; it was stored as [redacted]. Ask the owner to change that credential." : "") +
+      " Next: semlayer validate.",
+  );
+  return 0;
+}
+
+// Whether the ledger's latest answer to a target is one an approval could rest on: the owner's yes or
+// their confirmation.
+function standsIn(ledger: ReturnType<typeof readApprovalLedger>, ref: string): boolean {
+  const last = ledger.latest.get(ref);
+  return !!last && ("confirmed" in last || ("reply" in last && last.reply.verdict === "yes"));
+}
+
+// Up to ten refs, then how many more.
+function previewRefs(refs: string[]): string {
+  return refs.slice(0, 10).join(", ") + (refs.length > 10 ? ` and ${refs.length - 10} more` : "");
 }
 
 // One item of a batched approve, as it ended.
@@ -478,20 +578,27 @@ export async function approveMany(ctx: CommandContext, values: OptionValues, ref
 }
 
 const spec: CommandSpec = {
-  summary: "Mark a model, field, metric or the access file approved on the owner's recorded yes, or revoke an approval.",
+  summary: "Mark a model, field, metric, schema pair or the access file approved on the owner's recorded yes, or revoke an approval.",
   usage:
-    "approve --target <source.model | source.model.field | metric:<name> | access> [--by <name>] [--recursive]\n" +
+    "approve --target <source.model | source.model.field | metric:<name> | access | schema-pair:<source>:<from>:<to>> [--by <name>] [--recursive]\n" +
     "       approve --readback <readback_id> [--by <name>]\n" +
     "       approve --target <ref> --target <ref> ... [--by <name>]\n" +
     "       approve --target <ref> --revoke [--recursive]\n" +
-    "       approve --stamp-hashes [--target <ref>] [--confirm-unchanged]\n\n" +
+    "       approve --stamp-hashes [--target <ref>] [--confirm-unchanged]\n" +
+    '       approve --confirm-existing --by <owner> --reply "<owner\'s words>"\n\n' +
     "Approves an item only when the owner's latest reply to it in .semlayer/ledger.jsonl is a yes to it as it\n" +
     "now stands (semlayer readback, then semlayer reply --verdict yes); approved_by and approved_at come from that\n" +
     "reply, and --by, when given, must name the same owner. --date is no longer taken.\n" +
     "--readback (or --target given more than once) takes each item on its own, as --target would: it approves\n" +
     "each one the owner said yes to as it stands and lists every other with why (a change, a no, no reply,\n" +
     "changed since the yes). It exits 0 when every item whose latest reply is a yes was approved, and 1 when\n" +
-    "one of them was not; items the owner did not say yes to are listed and do not fail it.",
+    "one of them was not; items the owner did not say yes to are listed and do not fail it.\n" +
+    "An approval covers the item's description too, so editing a description needs a new readback and yes.\n" +
+    "--stamp-hashes records approved_hash on approved items without one, and with --confirm-unchanged brings\n" +
+    "forward items whose hash covers their definition but not their description, recording it as they stand.\n" +
+    "An approval counts only while the owner's recorded yes stands behind it; a stamp written without one is a\n" +
+    "draft for every tool. --confirm-existing records, in the owner's name and words, their confirmation of the\n" +
+    "approvals no recorded yes backs (given before the ledger), as they stand; run it only on the owner's say-so.",
   options: {
     target: { type: "string", multiple: true, mcp: "single" },
     readback: { type: "string", mcp: "omit" },
@@ -501,10 +608,15 @@ const spec: CommandSpec = {
     date: { type: "string" },
     "stamp-hashes": { type: "boolean" },
     "confirm-unchanged": { type: "boolean" },
+    // The owner's confirmation is given in the terminal, in their words: the MCP tool does not take it.
+    "confirm-existing": { type: "boolean", mcp: "omit" },
+    reply: { type: "string", mcp: "omit" },
   },
   writes: "whole",
   async run({ values }, ctx) {
     loadProject(ctx.root);
+    if (bool(values, "confirm-existing")) return confirmExisting(ctx, values);
+    if (str(values, "reply") !== undefined) throw new UserError("--reply applies only to semlayer approve --confirm-existing; record an answer to a readback with semlayer reply.");
     if (bool(values, "stamp-hashes")) {
       for (const flag of ["by", "date"] as const)
         if (str(values, flag) !== undefined) throw new UserError(`--stamp-hashes keeps each item's approved_by and approved_at, so it takes no --${flag}.`);
@@ -515,16 +627,24 @@ const spec: CommandSpec = {
       if (targetRefs.length > 1) throw new UserError(`--stamp-hashes takes one --target at most, not ${targetRefs.join(", ")}.`);
       const target = targetRefs[0] ? parseTarget(targetRefs[0]) : undefined;
       if (target?.kind === "golden") throw new UserError("Goldens are confirmed with semlayer goldens confirm and carry no approved_hash.");
+      if (target?.kind === "schema-pair")
+        throw new UserError(`A schema pair is approved only with its hash, so there is none to stamp. Read it back with semlayer readback --targets ${targetRefs[0]} and approve it on the owner's yes with semlayer approve --target ${targetRefs[0]}.`);
       const stamped = stampHashes(ctx.root, target, bool(values, "confirm-unchanged"));
       const refs = stamped.flatMap((s) => s.refs);
+      const described = stamped.flatMap((s) => s.described);
       if (ctx.json) {
-        ctx.out(formatJson({ stamped: refs }));
+        ctx.out(formatJson({ stamped: refs, ...(described.length ? { descriptions_covered: described } : {}) }));
         return 0;
       }
+      const covered = !described.length
+        ? ""
+        : described.length === refs.length
+          ? " Their descriptions, as they stand now, are part of their approval from now on, so the owner should read them."
+          : ` The descriptions of ${described.length} of them, as they stand now, are part of their approval from now on, so the owner should read them: ${previewRefs(described)}.`;
       ctx.out(
         refs.length
-          ? `Recorded approved_hash on ${refs.length} approved item(s), keeping who approved them and when: ${refs.join(", ")}. ` +
-              "From now on semlayer validate errors when one of them changes."
+          ? `Recorded approved_hash on ${refs.length} approved item(s), keeping who approved them and when: ${previewRefs(refs)}.${covered} ` +
+              "From now on semlayer validate errors when one of them changes. Next: semlayer validate."
           : "Every approved item already has approved_hash; nothing changed.",
       );
       return 0;
@@ -536,7 +656,7 @@ const spec: CommandSpec = {
     const ref = refs[0];
     if (!ref) {
       throw new UserError(
-        "--target is required: source.model, source.model.field, metric:<name> or access (a golden:<name> is confirmed with semlayer goldens confirm). " +
+        "--target is required: source.model, source.model.field, metric:<name>, access or schema-pair:<source>:<from>:<to> (a golden:<name> is confirmed with semlayer goldens confirm). " +
           "Or pass --readback <readback_id> to approve each item of a readback the owner said yes to.",
       );
     }
@@ -567,15 +687,27 @@ const spec: CommandSpec = {
     const warnings: { target: string; text: string }[] = [];
     // Items already in the requested state, reported when nothing changes.
     let skipped = 0;
-    const hashed = !revoke && projectHashed(ctx.root);
-    const isSettled = (item: Approval, hash: string) => settled(item, mode, hash, hashed);
-    const consider = (targetRef: string, path: (string | number)[], item: Approval, hash: string, keepLast = false): boolean => {
-      if (isSettled(item, hash)) {
+    // Every item a revoke covers, a draft included, with its hash: the ledger's answer to each is withdrawn.
+    const covered: { target: string; content_hash: string }[] = [];
+    // A schema pair is new with content hashes, so one approved without a hash is approved again.
+    const hashed = !revoke && (target.kind === "schema-pair" || projectHashed(ctx.root));
+    let read: LedgerReply[] | undefined;
+    const replies = () => (read ??= readReplies(ctx.root));
+    let answers: ReturnType<typeof readApprovalLedger> | undefined;
+    // The ledger is read only for an item whose hash covers its definition only, or that is approved.
+    const isSettled = (targetRef: string, item: Approval, h: Hashes) =>
+      settled(item, mode, h.hash, hashed, h.definitionHash, () => !!currentYes(replies(), targetRef, h.hash), () => backed((answers ??= readApprovalLedger(ctx.root)), { ref: targetRef, ...h }));
+    const consider = (targetRef: string, path: (string | number)[], item: Approval, h: Hashes, keepLast = false): boolean => {
+      if (mode.revoke) covered.push({ target: targetRef, content_hash: h.hash });
+      if (isSettled(targetRef, item, h)) {
         skipped++;
         return false;
       }
+      const { hash } = h;
       const approved = !mode.revoke && item.status === "approved";
-      const changed = approved && typeof item.approved_hash === "string" && item.approved_hash.trim() !== "" && item.approved_hash.trim() !== hash;
+      const recorded = typeof item.approved_hash === "string" ? item.approved_hash.trim() : "";
+      const described = approved && recorded !== "" && recorded !== hash && recorded === h.definitionHash;
+      const changed = approved && recorded !== "" && recorded !== hash && !described;
       const missing = approved && !carriesHash(item as unknown as Record<string, unknown>);
       edits.push({
         target: targetRef,
@@ -584,6 +716,7 @@ const spec: CommandSpec = {
         hash,
         ...(keepLast ? { keepLast } : {}),
         ...(changed ? { changed } : {}),
+        ...(described ? { described } : {}),
         ...(missing ? { missing } : {}),
       });
       return true;
@@ -607,7 +740,22 @@ const spec: CommandSpec = {
               : `No access.yaml at ${file}. Write the roles first, then approve them.`,
           );
         }
-        consider("access", [], access, itemHash("access", obj(access)), true);
+        consider("access", [], access, itemHashes("access", obj(access)), true);
+        break;
+      }
+
+      case "schema-pair": {
+        const loc = locate(ctx.root, ref, { pairs: true });
+        file = loc.file;
+        if (!revoke && loc.item.status === "declined") {
+          const keys = `semlayer add-cross-schema --source ${target.source} --from ${target.from} --to ${target.to} --keys <table>.<column>=<table>.<column>`;
+          throw new UserError(
+            `Cannot approve ${ref}: the owner declined joining ${target.from} to ${target.to}, so it has no keys to approve; nothing was approved. ` +
+              `If they now want the join, record its keys with ${keys}, read it back with semlayer readback --targets ${ref}, and approve it on their yes.`,
+            keys,
+          );
+        }
+        consider(ref, loc.path, loc.item as unknown as Approval, itemHashes("schema-pair", loc.item));
         break;
       }
 
@@ -621,8 +769,8 @@ const spec: CommandSpec = {
           const known = metrics.map((m) => m.name);
           throw new UserError(`No metric "${target.name}" in metrics.yaml. Known metrics: ${known.length ? known.join(", ") : "none"}.`);
         }
-        const metricHash = itemHash("metric", obj(metric));
-        if (!revoke && !isSettled(metric, metricHash)) {
+        const metricHash = itemHashes("metric", obj(metric));
+        if (!revoke && !isSettled(`metric:${metric.name}`, metric, metricHash)) {
           const { problems: own, drafts } = metricProblems(ctx.root, metric);
           if (drafts.length) own.push(`it references draft measures: ${drafts.join(", ")}. Approve them first.`);
           problems.push(...own.map((text) => ({ target: `metric:${metric.name}`, text })));
@@ -637,10 +785,10 @@ const spec: CommandSpec = {
         const base = `${target.source}.${target.model}`;
         const lookup = modelLookup(ctx.root, target.source);
         const dialect = sourceDialect(ctx.root, target.source);
-        const scope = { source: target.source, model: obj(model), lookup, dialect };
-        const hash = (kind: "dimension" | "measure" | "join", item: unknown) => itemHash(kind, obj(item), scope);
-        const modelHash = itemHash("model", obj(model), { source: target.source });
-        if (!revoke && !isSettled(model, modelHash)) problems.push(...modelProblems(base, model).map((text) => ({ target: base, text })));
+        const scope = { source: target.source, model: obj(model), lookup, dialect, weekStart: sourceWeek(ctx.root, target.source) };
+        const hash = (kind: "dimension" | "measure" | "join", item: unknown) => itemHashes(kind, obj(item), scope);
+        const modelHash = itemHashes("model", obj(model), { source: target.source });
+        if (!revoke && !isSettled(base, model, modelHash)) problems.push(...modelProblems(base, model).map((text) => ({ target: base, text })));
         consider(base, [], model, modelHash);
         if (recursive) {
           for (const [i, d] of (model.dimensions ?? []).entries()) consider(`${base}.${d.name}`, ["dimensions", i], d, hash("dimension", d));
@@ -674,11 +822,12 @@ const spec: CommandSpec = {
           );
         }
         const section = match.kind === "dimension" ? "dimensions" : match.kind === "measure" ? "measures" : "joins";
-        const hash = itemHash(match.kind, obj(match.item), {
+        const hash = itemHashes(match.kind, obj(match.item), {
           source: target.source,
           model: obj(model),
           lookup: modelLookup(ctx.root, target.source),
           dialect: sourceDialect(ctx.root, target.source),
+          weekStart: sourceWeek(ctx.root, target.source),
         });
         const changing = consider(full, [section, match.index], match.item, hash);
         if (changing && !revoke) {
@@ -701,10 +850,9 @@ const spec: CommandSpec = {
     const refused: Refusal[] = [];
     let ready = edits;
     if (!revoke && edits.length) {
-      const replies = readReplies(ctx.root);
       ready = [];
       for (const e of edits) {
-        const g = ledgerGate(replies, e.target, e.hash, by);
+        const g = ledgerGate(replies(), e.target, e.hash, by);
         if ("reason" in g) refused.push(g);
         else ready.push({ ...e, ...g });
       }
@@ -735,9 +883,22 @@ const spec: CommandSpec = {
         throw new UserError(
           `Cannot approve ${r.target}: ${r.reason}; nothing was approved. semlayer approve needs the owner's yes in ${LEDGER_FILE} to it as it now stands. ` +
             `Next: ${nextFor(r)}.${fixFirst.length ? ` Before reading it back, fix: ${fixFirst.map((p) => p.replace(/\.$/, "")).join("; ")}.` : ""}`,
+          undefined,
+          r.byMismatch ? "by_mismatch" : "approval.no_ledger_yes",
         );
       }
-      throw new UserError(`Cannot approve ${ref}; nothing was approved:\n${refusedText()}`);
+      throw new UserError(`Cannot approve ${ref}; nothing was approved:\n${refusedText()}`, undefined, unanswered.length ? "approval.no_ledger_yes" : "by_mismatch");
+    }
+
+    // A revoke withdraws the owner's yes or confirmation the ledger holds for each item it covers, so a
+    // stamp put back by a file write is unbacked and approving again takes a new readback and yes. The
+    // line is written before the file: were the file write to fail, the item would read as unbacked.
+    // A project with no ledger gets none: its approvals count under the rule for those older than it.
+    let withdrawn: { id: string; targets: string[] } | undefined;
+    if (revoke) {
+      const held = readApprovalLedger(ctx.root);
+      const targets = held.present && !held.unreadable ? covered.filter((t) => standsIn(held, t.target)) : [];
+      if (targets.length) withdrawn = { id: openLedger(ctx.root).appendRevoke({ kind: "revoke", targets, at: ctx.now().toISOString() }).id, targets: targets.map((t) => t.target) };
     }
 
     // The approval a revoke of access.yaml set aside in last_approved.
@@ -758,6 +919,7 @@ const spec: CommandSpec = {
           changed,
           warnings: warned,
           ...(keptApproval ? { last_approved: keptApproval } : {}),
+          ...(withdrawn ? { withdrawn: withdrawn.targets, ledger: withdrawn.id } : {}),
           ...(refused.length ? { refused: refused.map((r) => ({ target: r.target, reason: r.reason, next: nextFor(r) })) } : {}),
         }),
       );
@@ -769,10 +931,15 @@ const spec: CommandSpec = {
       const how = `by ${e.by} on ${e.at} (reply ${e.ledger})`;
       if (revoke) lines.push(`Revoked ${e.target} (${e.from} -> draft).`);
       else if (e.changed) lines.push(`Approved ${e.target} again (it changed since its last approval) ${how}.`);
+      else if (e.described) lines.push(`Approved ${e.target} again, its description now part of its approval, ${how}.`);
       else if (e.missing) lines.push(`Approved ${e.target} again (its approved_hash was missing) ${how}.`);
       else lines.push(`Approved ${e.target} (${e.from} -> approved) ${how}.`);
     }
     if (changed.length && skipped) lines.push(`${skipped} item(s) were already ${revoke ? "drafts" : "approved"}.`);
+    if (withdrawn)
+      lines.push(
+        `Recorded ${withdrawn.id} in ${LEDGER_FILE}: the owner's recorded yes to ${previewRefs(withdrawn.targets)} no longer stands, so approving ${withdrawn.targets.length === 1 ? "it" : "any of them"} again takes a new readback and the owner's yes.`,
+      );
     if (keptApproval) {
       lines.push(
         `access.yaml keeps that approval in last_approved: the version approved by ${keptApproval.by} on ${keptApproval.at} ` +

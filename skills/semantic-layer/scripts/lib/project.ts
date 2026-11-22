@@ -78,7 +78,7 @@ export function loadFile<T>(root: string, path: string, kind: SchemaKind, emptyO
 
 // The message and next command for a directory with no semantic layer in it.
 export function noLayer(root: string): UserError {
-  return new UserError(`No semantic layer at ${root}. Run \`semlayer init --name <name>\` first, or pass --root.`, "semlayer init --name <name>");
+  return new UserError(`No semantic layer at ${root}. Run \`semlayer init --name <name>\` first, or pass --root.`, "semlayer init --name <name>", "no_layer");
 }
 
 export function loadProject(root: string): Project {

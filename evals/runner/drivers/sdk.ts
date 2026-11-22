@@ -51,7 +51,9 @@ const missingPackage = () =>
       "or run with --driver scripted.",
   );
 
-export async function sdkDriver(opts: SdkDriverOptions = {}): Promise<Driver> {
+// Imports the package and checks the key, and constructs nothing: a failure is the plain message of a
+// missing package or key. The smoke's --gate calls it before it creates anything.
+export async function sdkPreflight(opts: Pick<SdkDriverOptions, "env" | "importer"> = {}): Promise<QueryFn> {
   const env = opts.env ?? process.env;
   let mod: unknown;
   try {
@@ -66,7 +68,11 @@ export async function sdkDriver(opts: SdkDriverOptions = {}): Promise<Driver> {
   if (!env.ANTHROPIC_API_KEY) {
     throw new EvalError("The sdk driver needs ANTHROPIC_API_KEY set in the environment (never in a file). Export it and rerun, or run with --driver scripted.");
   }
-  return makeDriver(query as QueryFn, opts.model, opts.agents === "multi");
+  return query as QueryFn;
+}
+
+export async function sdkDriver(opts: SdkDriverOptions = {}): Promise<Driver> {
+  return makeDriver(await sdkPreflight(opts), opts.model, opts.agents === "multi");
 }
 
 function tokensOf(usage: Record<string, unknown> | undefined): number {

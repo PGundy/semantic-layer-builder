@@ -4,6 +4,7 @@ import { hasCredential } from "../skills/semantic-layer/scripts/lib/credentials.
 import { join } from "node:path";
 import { parseYamlText } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { evalSchemaIssues, type EvalSchemaKind } from "../skills/semantic-layer/scripts/lib/validate.ts";
+import { FIXED_CONTEXT, tokensOf } from "../evals/runner/count.ts";
 import { scriptedDriver } from "../evals/runner/drivers/scripted.ts";
 import { refuseSkillTool, SKILL_DIR, SEMLAYER } from "../evals/runner/drivers/guard.ts";
 import { DONE_MARKER, guardHook, SDK_PACKAGE, sdkDriver } from "../evals/runner/drivers/sdk.ts";
@@ -65,8 +66,10 @@ describe("both shipped scenarios run with the scripted driver", () => {
       expect(r.summary).toMatchObject({ scenario: name, fixture: "acme", intake: "connection", driver: "scripted", stop_reason: "done", turns: 14 });
       expect(r.summary.skill_turns + r.summary.owner_turns).toBe(r.summary.turns);
       expect(r.summary.tokens).toBe(r.transcript.reduce((n, t) => n + t.tokens, 0));
-      // The scripts' counts follow evals/README.md, Token counts (tests/evals-tokens.test.ts recomputes them).
-      expect(r.summary.tokens_by_speaker.skill).toBe(name === "acme-structured" ? 10374 : 10338);
+      // The driver computes each turn's count at replay (evals/runner/count.ts; tests/evals-tokens.test.ts recounts them).
+      expect(r.summary.tokens_by_speaker.skill).toBe(r.transcript.filter((t) => t.speaker === "skill").reduce((n, t) => n + t.tokens, 0));
+      expect(r.summary.tokens_by_speaker.owner).toBe(r.transcript.filter((t) => t.speaker === "owner").reduce((n, t) => n + t.tokens, 0));
+      for (const t of r.transcript.filter((t) => t.speaker === "skill")) expect(t.tokens).toBeGreaterThan(FIXED_CONTEXT);
 
       for (const t of r.transcript) expect(evalSchemaIssues("eval-transcript-turn", t, "transcript.jsonl")).toEqual([]);
       expect(r.transcript.map((t) => t.turn)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
@@ -169,17 +172,21 @@ describe("budgets", () => {
 
   test("the token budget stops the run on the turn that goes past it", async () => {
     const { scenario, script } = scenarioNamed("acme-structured");
-    const r = await run({ ...scenario, budgets: { ...scenario.budgets, max_tokens: 767 } }, scripted(scenario, script));
-    // 726 after the first skill turn is within the budget; the owner's 41 more make 767, not past it.
-    // The next skill turn's 838 goes past it.
-    expect(r.summary).toMatchObject({ stop_reason: "token_budget", turns: 4, tokens: 1605 });
+    // The counts of the first turns, from a run without a token budget.
+    const free = await run(scenario, scripted(scenario, script));
+    const [, skill1, owner1, skill2] = free.transcript.map((t) => t.tokens);
+    // A budget the first skill turn and the owner's answer reach exactly is not passed; the next skill turn passes it.
+    const budget = skill1! + owner1!;
+    const r = await run({ ...scenario, budgets: { ...scenario.budgets, max_tokens: budget } }, scripted(scenario, script));
+    expect(r.summary).toMatchObject({ stop_reason: "token_budget", turns: 4, tokens: budget + skill2! });
     expect(r.transcript.at(-1)!.speaker).toBe("skill");
   });
 
   test("a done turn that goes past the token budget is a budget stop", async () => {
     const { scenario } = scenarioNamed("acme-structured");
-    const script: Script = { skill: [{ text: "all done", tokens: 50, done: true }], owner: [] };
-    const r = await run({ ...scenario, budgets: { max_turns: 10, max_tokens: 49 } }, scripted(scenario, script));
+    const script: Script = { skill: [{ text: "all done", done: true }], owner: [] };
+    // The turn counts the fixed context and its message: one token past this budget.
+    const r = await run({ ...scenario, budgets: { max_turns: 10, max_tokens: FIXED_CONTEXT + tokensOf("all done".length) - 1 } }, scripted(scenario, script));
     expect(r.summary.stop_reason).toBe("token_budget");
   });
 });
@@ -240,10 +247,10 @@ describe("redaction", () => {
     const { scenario } = scenarioNamed("acme-structured");
     const script: Script = {
       skill: [
-        { text: "Which variable holds the warehouse connection?", tokens: 10 },
-        { text: `Please don't paste it. I would never write SET s3_secret_access_key='FAKEKEY0042' or password=fakepw0042 anywhere.`, tokens: 10, done: true },
+        { text: "Which variable holds the warehouse connection?" },
+        { text: `Please don't paste it. I would never write SET s3_secret_access_key='FAKEKEY0042' or password=fakepw0042 anywhere.`, done: true },
       ],
-      owner: [{ text: `here: WAREHOUSE_URL=${URL} (and the same as "${URL}")`, tokens: 10 }],
+      owner: [{ text: `here: WAREHOUSE_URL=${URL} (and the same as "${URL}")` }],
     };
     const inner = scripted(scenario, script);
     const received: string[] = [];
@@ -343,7 +350,7 @@ describe("errors are plain and name the fix", () => {
     const r = await run(scenario, scripted(scenario, { skill: [{ text: "hello" }], owner: [{ text: "hi" }] }));
     expect(r.summary.stop_reason).toBe("error");
     expect(r.summary.error).toContain('"done": true');
-    expect(r.transcript.map((t) => t.tokens)).toEqual([0, 2, 1]);
+    expect(r.transcript.map((t) => t.tokens)).toEqual([0, FIXED_CONTEXT + tokensOf("hello".length), tokensOf("hi".length)]);
   });
 
   test("a scenario that fails its schema", () => {
@@ -432,7 +439,7 @@ describe("errors are plain and name the fix", () => {
     const err: string[] = [];
     const io = { out: (t: string) => out.push(t), err: (t: string) => err.push(t), env: {} };
     expect(await main(["--scenario", "nope"], io)).toBe(1);
-    expect(err.join("\n")).toContain("Known scenarios: acme-busy, acme-contradicting, acme-credential, acme-export, acme-export-upgrade, acme-hedging, acme-injection, acme-multi, acme-structured, acme-terse. Run: bun evals/runner/run.ts --scenario <name>");
+    expect(err.join("\n")).toContain("Known scenarios: acme-busy, acme-contradicting, acme-credential, acme-export, acme-export-upgrade, acme-hedging, acme-injection, acme-multi, acme-noisy-200, acme-pg-structured, acme-structured, acme-terse. Run: bun evals/runner/run.ts --scenario <name>");
     expect(await main([], io)).toBe(1);
     expect(err.join("\n")).toContain("--scenario is required");
     expect(await main(["--scenario", "acme-terse", "--driver", "robot"], io)).toBe(1);
@@ -446,7 +453,8 @@ describe("errors are plain and name the fix", () => {
     const dir = outDir();
     const io = { out: (t: string) => out.push(t), err: (t: string) => out.push(t), env: {} };
     expect(await main(["--scenario", "acme-terse", "--now", START, "--out", dir], io)).toBe(0);
-    expect(out[0]).toBe("Run acme-terse-20260101T000000000Z: 14 turns (7 owner), 10354 tokens, stopped: done.");
+    const summary = JSON.parse(readFileSync(join(dir, "acme-terse-20260101T000000000Z", "summary.json"), "utf8")) as Summary;
+    expect(out[0]).toBe(`Run acme-terse-20260101T000000000Z: 14 turns (7 owner), ${summary.tokens} tokens, stopped: done.`);
     expect(out.at(-1)).toContain("Next: read");
     expect(existsSync(join(dir, "acme-terse-20260101T000000000Z", "summary.json"))).toBe(true);
   });

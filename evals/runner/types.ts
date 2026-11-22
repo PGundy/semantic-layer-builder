@@ -17,7 +17,19 @@ export interface Budgets {
 export interface ConnectionIntake {
   path: "connection";
   source: string;
-  dialect: "duckdb";
+  dialect: "duckdb" | "postgres";
+  // postgres only: "per_run" loads the fixture into a new schema, semlayer_eval_<run id>, that the
+  // runner drops when the run ends; `{schema}` in a script's semlayer argument stands for its name.
+  schema?: "per_run";
+  // postgres only: the name of the environment variable holding the URL of an administrator who may
+  // create and drop schemas. Only the name is ever written to a run's files. The scenario is "not
+  // run" when the variable is unset.
+  url_env?: string;
+  // postgres only: load only these warehouse tables of the fixture, with their data.
+  tables?: string[];
+  // postgres only: a SQL script, relative to the repository's fixtures/ directory, run in the run's
+  // schema after the tables; fixtures/noisy/decoys.sql adds empty look-alike tables.
+  decoys?: string;
   // View name -> relation. `{fixture}` is replaced by the fixture directory, relative to the root.
   views?: Record<string, string>;
   // A DuckDB SQL script, relative to the repository's fixtures/ directory, that the runner runs
@@ -103,6 +115,10 @@ export interface SkillTurnInput {
   files: Record<string, string>;
   // The owner's latest message.
   owner_message: string;
+  // A postgres scenario only: the run's schema, and the environment its semlayer commands run with
+  // (the connection URL under the scenario's url_env). Never written to a file.
+  schema?: string;
+  env?: Record<string, string>;
 }
 
 export interface SkillTurnOutput {
@@ -173,5 +189,13 @@ export class EvalError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "EvalError";
+  }
+}
+
+// A scenario that cannot run here because something it needs is absent (a PostgreSQL URL): not a failure.
+export class NotRun extends EvalError {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotRun";
   }
 }

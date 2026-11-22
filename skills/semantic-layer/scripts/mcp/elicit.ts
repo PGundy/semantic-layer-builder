@@ -5,6 +5,7 @@
 // agent's tool arguments.
 import { LEDGER_FILE, readPending } from "../lib/ledger.ts";
 import { oneLine } from "../lib/edit.ts";
+import type { CliError } from "../lib/cli.ts";
 import { UserError } from "../lib/errors.ts";
 import { paths } from "../lib/project.ts";
 import { parseTarget } from "../lib/refs.ts";
@@ -101,12 +102,28 @@ export interface Run {
 export interface ToolResult {
   content: { type: "text"; text: string }[];
   isError?: true;
+  // A failed call's error object, as the command printed it with --json (schemas/cli-error.schema.json).
+  structuredContent?: CliError;
+}
+
+// The {error, code, next?} object a refused command printed on stdout, if that is what it printed.
+function cliError(out: string): CliError | undefined {
+  let v: unknown;
+  try {
+    v = JSON.parse(out);
+  } catch {
+    return undefined;
+  }
+  if (!isObj(v) || typeof v.error !== "string" || typeof v.code !== "string") return undefined;
+  return { error: v.error, code: v.code, ...(typeof v.next === "string" ? { next: v.next } : {}) };
 }
 
 export function toolResult(command: string, r: Run): ToolResult {
   const content = [r.out, r.err].filter((t) => t !== "").map((text) => ({ type: "text" as const, text }));
   if (!content.length) content.push({ type: "text", text: r.code === 0 ? "{}" : `semlayer ${command} exited with code ${r.code}.` });
-  return r.code === 0 ? { content } : { content, isError: true };
+  if (r.code === 0) return { content };
+  const error = cliError(r.out);
+  return error ? { content, isError: true, structuredContent: error } : { content, isError: true };
 }
 
 export interface GateDeps {
@@ -232,7 +249,8 @@ async function askAndRecord(
     ran.push(r);
     if (r.code !== 0) {
       const owner = { asked: "elicitation", action: "accept", verdict: answer.verdict, by: answer.by, readback_id: readbackId, recorded };
-      return { content: [...toolResult("reply", r).content, ...summary(owner, `Recording the owner's answer to item ${item.n} failed (above), so ${nothing}. Next: fix what that output names, then call ${tool} again.`).content], isError: true };
+      const failed = toolResult("reply", r);
+      return { ...failed, content: [...failed.content, ...summary(owner, `Recording the owner's answer to item ${item.n} failed (above), so ${nothing}. Next: fix what that output names, then call ${tool} again.`).content], isError: true };
     }
     recorded.push(String((JSON.parse(r.out) as { id: unknown }).id));
   }
@@ -248,7 +266,10 @@ export async function ownerGate(command: string, a: Msg, deps: GateDeps): Promis
   const nothing = command === "approve" ? "nothing was approved" : "nothing was confirmed";
   // The readback the owner answers is stored exactly as semlayer readback stores it.
   const rb = await deps.run(["readback", ...target.refs.map((r) => `--targets=${r}`), ...target.flags, "--json", `--root=${deps.root}`]);
-  if (rb.code !== 0) return { content: [...toolResult("readback", rb).content, { type: "text", text: `The target could not be read back to the owner, so ${nothing}.` }], isError: true };
+  if (rb.code !== 0) {
+    const failed = toolResult("readback", rb);
+    return { ...failed, content: [...failed.content, { type: "text", text: `The target could not be read back to the owner, so ${nothing}.` }] };
+  }
   const pending = JSON.parse(rb.out) as PendingReadback;
   const got = await askAndRecord(deps, target.tool, pending.readback_id, pending.items, nothing);
   if (!("answer" in got)) return got;

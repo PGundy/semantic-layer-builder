@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": ".semlayer/change.json",
+  "description": "The open change round of a released layer, written by semlayer change start and removed by semlayer change close. Committed; holds the owner's note, a name, a time and a version, never a data value, URL or credential.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "note", "started_by", "started_at", "from_version"],
+  "properties": {
+    "version": { "const": 1, "description": "Record format version." },
+    "note": { "type": "string", "minLength": 1, "maxLength": 500, "description": "What the round is for, in the owner's words." },
+    "started_by": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Who asked for the change." },
+    "started_at": { "type": "string", "minLength": 1, "description": "When the round started, from the command's clock." },
+    "from_version": { "type": "string", "pattern": "^\\d+\\.\\d+$", "description": "The layer version the round started from, the last release in changelog.yaml." },
+    "drafts_at_start": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Refs of the drafts never approved that were present when the round started, the ones the owner deferred; semlayer next does not hold the close back for them." }
+  }
+}

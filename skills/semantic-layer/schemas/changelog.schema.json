@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "changelog.yaml",
+  "description": "The releases of a semantic layer, oldest first, beside semantic.yaml. Append-only: an entry is added by semlayer change close and never edited. Holds approve targets, content hashes and the golden rows a golden file already holds; never a connection URL or a password.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "entries"],
+  "properties": {
+    "version": { "const": 1, "description": "Changelog format version." },
+    "entries": {
+      "type": "array",
+      "description": "One entry per release; versions rise down the list.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "date", "note", "items", "goldens", "added", "changed", "removed", "goldens_moved"],
+        "properties": {
+          "version": { "type": "string", "pattern": "^\\d+\\.\\d+$", "description": "The layer version this entry records, chosen by the owner." },
+          "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "format": "date", "description": "ISO date of the release." },
+          "note": { "type": "string", "description": "What the release is for, in the owner's words." },
+          "items": {
+            "type": "object",
+            "description": "Approve target to content hash, for every item of the layer at the release.",
+            "additionalProperties": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+          },
+          "definitions": {
+            "type": "object",
+            "description": "Approve target to the item's hash without its description, for each item of items that has a description, so semlayer change status can tell a description-only change. Absent in an entry recorded before descriptions were part of an approval, whose items hold those hashes.",
+            "additionalProperties": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+          },
+          "goldens": {
+            "type": "object",
+            "description": "Golden name to the rows recorded for it at the release, as the golden file stores them (a protected column's values included, as the golden holds them).",
+            "additionalProperties": { "type": "array", "items": { "type": "object" } }
+          },
+          "added": { "type": "array", "items": { "type": "string" }, "description": "Approve targets new since the last entry." },
+          "changed": { "type": "array", "items": { "type": "string" }, "description": "Approve targets whose hash differs from the last entry." },
+          "removed": { "type": "array", "items": { "type": "string" }, "description": "Approve targets the last entry had and this one lacks." },
+          "goldens_moved": {
+            "type": "array",
+            "description": "Goldens whose recorded rows differ from the last entry's, with cell counts.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["golden", "before", "after", "changed"],
+              "properties": {
+                "golden": { "type": "string" },
+                "before": { "type": "integer", "minimum": 0, "description": "Cells in the previous recorded rows." },
+                "after": { "type": "integer", "minimum": 0, "description": "Cells in the rows now recorded." },
+                "changed": { "type": "integer", "minimum": 0, "description": "Cells that differ." }
+              }
+            }
+          },
+          "goldens_unconfirmed": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Goldens that are drafts at this release (returned to draft with semlayer goldens unconfirm, their figures not confirmed as they stand): ones the last entry recorded, and ones the last entry left out that are still drafts with the same request. This entry leaves them out. Absent when there are none."
+          },
+          "goldens_unconfirmed_requests": {
+            "type": "object",
+            "description": "Golden name to the hash of its request, for each golden of goldens_unconfirmed, so a draft with the same request later reads as deferred by the owner at this release and one whose request changed does not. Absent when there are none.",
+            "additionalProperties": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+          },
+          "goldens_removed": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Goldens the last entry recorded whose file is gone at this release (semlayer goldens remove), so this entry leaves them out. Absent when there are none."
+          }
+        }
+      }
+    }
+  }
+}

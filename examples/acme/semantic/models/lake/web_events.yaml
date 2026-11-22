@@ -4,7 +4,7 @@ table: main.web_events
 status: approved
 approved_by: Dana Ruiz
 approved_at: 2026-10-26
-approved_hash: sha256:705f4da0a445f30fa62e177c0f086ec73055388482ee6d343f7ba9ab49e0ea48
+approved_hash: sha256:f3f4d126b217aedf99620f231d1478da87181ba6e9ef3c646b02288c79e26eac
 description: >-
   Front-end tracking events on the website, one row per event, each with its own event_id: 30,551 events from 1 Jan
   2024 to 31 Dec 2025, every one belonging to a session in sessions. No figures are defined on this table: Dana Ruiz
@@ -32,7 +32,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:8bbddba1e5c6805e58ee63d7f2d2444e8833df99f4c7b077eea5ba28ad6ca509
+    approved_hash: sha256:036e1065190c69c466eb94540425ade2007acdf03a3c68e21ee1ea2cf2bebcf1
   - name: event_type
     expr: event_type
     type: string
@@ -42,7 +42,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:7321eb0ed71de4845ee264654b71b57cae254298d3971c0ec3507e3cd4428664
+    approved_hash: sha256:7cf27ea07d186908abb59bba278681dbf6d711ca59265eb70de0cfd25a850151
   - name: page_path
     expr: page_path
     type: string
@@ -50,7 +50,7 @@ dimensions:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:04386b2d3d712d24684ca90fc2d9418831f3832dff257fd02cd8b0be153e1125
+    approved_hash: sha256:aeec949b6d1c24caab975a9c93ab3d7c6bd887637aa7ab2848eb77da220e6ab0
 measures: []
 joins:
   - name: session
@@ -65,7 +65,7 @@ joins:
     status: approved
     approved_by: Dana Ruiz
     approved_at: 2026-10-26
-    approved_hash: sha256:2ae60499a1c1a71c852110427019555c85417c02511b1dd9e2c69a37faf0c35b
+    approved_hash: sha256:44344cdc82849c9626a1d0a209508e33354e7c65cd30cb294c51c2112c6e4241
     evidence:
       checked_at: 2026-10-26T09:08:38.699Z
       left_rows: 30551

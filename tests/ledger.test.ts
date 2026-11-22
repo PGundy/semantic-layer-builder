@@ -13,16 +13,26 @@ const ACME = join(import.meta.dir, "..", "examples", "acme", "semantic");
 const LEDGER = join(".semlayer", "ledger.jsonl");
 const PRODUCTS = join("models", "warehouse", "products.yaml");
 
-function acme(): string {
+// A copy of the example; `fresh` leaves its ledger out, for a test that writes a ledger of its own.
+function acme(fresh = false): string {
   const dir = tempDir("ledger");
   const root = join(dir, "semantic");
   cpSync(ACME, root, { recursive: true });
+  if (fresh) rmSync(join(root, LEDGER));
   return root;
 }
 
 const read = (root: string, rel: string) => readFileSync(join(root, rel), "utf8");
+// The example ships its ledger: one kind: confirm line (ans_0001) backing its approvals, so the
+// lines a test records follow it, from ans_0002.
+const EXAMPLE_LEDGER = readFileSync(join(ACME, LEDGER), "utf8");
 const ledgerText = (root: string) => read(root, LEDGER);
-const ledger = (root: string): LedgerEntry[] => ledgerText(root).trimEnd().split("\n").map((l) => JSON.parse(l) as LedgerEntry);
+const added = (root: string) => {
+  const text = ledgerText(root);
+  expect(text.startsWith(EXAMPLE_LEDGER)).toBe(true);
+  return text.slice(EXAMPLE_LEDGER.length);
+};
+const ledger = (root: string): LedgerEntry[] => added(root).trimEnd().split("\n").map((l) => JSON.parse(l) as LedgerEntry);
 const pending = (root: string, id: string) => JSON.parse(read(root, join(".semlayer", "pending", `${id}.json`))) as PendingReadback;
 
 // Every file under a directory, relative to it, with its contents.
@@ -51,11 +61,13 @@ describe("semlayer reply", () => {
     const root = acme();
     const rb = await readback(root, "warehouse.orders.revenue,warehouse.products,warehouse.orders");
     const [h1, h2, h3] = rb.items.map((i) => i.content_hash);
+    // Each of these items has a description, so the readback also records its hash without it.
+    const [d1, d2, d3] = rb.items.map((i) => i.definition_hash);
 
     const yes = await reply(root, ["--readback", "rb_0001", "--item", "1", "--text", "Yes, that's right.", "--verdict", "yes", "--by", "Dana Ruiz"]);
     expect(yes.code).toBe(0);
     expect(yes.out).toBe(
-      "Recorded ans_0001 in .semlayer/ledger.jsonl: Dana Ruiz's reply to item 1 of rb_0001 (warehouse.orders.revenue), verdict yes.\n" +
+      "Recorded ans_0002 in .semlayer/ledger.jsonl: Dana Ruiz's reply to item 1 of rb_0001 (warehouse.orders.revenue), verdict yes.\n" +
         'The owner said yes to the item as read back. Next: semlayer approve --target warehouse.orders.revenue --by "Dana Ruiz".',
     );
     const first = ledgerText(root);
@@ -64,20 +76,21 @@ describe("semlayer reply", () => {
     expect(no.out).toContain("Make the correction the owner asked for with a typed edit");
     expect(no.out).toContain("then read it back again: semlayer readback --targets warehouse.products.");
     const change = await reply(root, ["--readback", "rb_0001", "--item", "3", "--text", "Change the grain wording.", "--verdict", "Change", "--by", "Dana Ruiz", "--json"]);
-    expect(change.json()).toMatchObject({ id: "ans_0003", hash_changed: false, redacted: false, warnings: [], next: "semlayer readback --targets warehouse.orders" });
+    expect(change.json()).toMatchObject({ id: "ans_0004", hash_changed: false, redacted: false, warnings: [], next: "semlayer readback --targets warehouse.orders" });
     const none = await reply(root, ["--readback", "rb_0001", "--item", "1", "--text", "I think so, let me check with Sam.", "--by", "Dana Ruiz"]);
     expect(none.out).toContain("no verdict yet");
     expect(none.out).toContain("The reply has no verdict, so no approval can use it.");
     expect(none.out).toContain('semlayer reply --readback rb_0001 --item 1 --text "<owner\'s words>" --verdict yes|no|change --by "Dana Ruiz"');
 
-    const line = (id: string, item: number, target: string, hash: string, text: string, verdict: string | null) =>
-      JSON.stringify({ at: FIXED_NOW, by: "Dana Ruiz", content_hash: hash, id, item, kind: "reply", readback_id: "rb_0001", target, text, verdict });
-    expect(ledgerText(root)).toBe(
+    const line = (id: string, item: number, target: string, hash: string, definition: string, text: string, verdict: string | null) =>
+      JSON.stringify({ at: FIXED_NOW, by: "Dana Ruiz", content_hash: hash, definition_hash: definition, id, item, kind: "reply", readback_id: "rb_0001", target, text, verdict });
+    expect([d1, d2, d3].every((d, i) => typeof d === "string" && d !== [h1, h2, h3][i])).toBe(true);
+    expect(added(root)).toBe(
       [
-        line("ans_0001", 1, "warehouse.orders.revenue", h1!, "Yes, that's right.", "yes"),
-        line("ans_0002", 2, "warehouse.products", h2!, "No, products is the catalogue only.", "no"),
-        line("ans_0003", 3, "warehouse.orders", h3!, "Change the grain wording.", "change"),
-        line("ans_0004", 1, "warehouse.orders.revenue", h1!, "I think so, let me check with Sam.", null),
+        line("ans_0002", 1, "warehouse.orders.revenue", h1!, d1!, "Yes, that's right.", "yes"),
+        line("ans_0003", 2, "warehouse.products", h2!, d2!, "No, products is the catalogue only.", "no"),
+        line("ans_0004", 3, "warehouse.orders", h3!, d3!, "Change the grain wording.", "change"),
+        line("ans_0005", 1, "warehouse.orders.revenue", h1!, d1!, "I think so, let me check with Sam.", null),
       ].join("\n") + "\n",
     );
     expect(ledgerText(root).startsWith(first)).toBe(true);
@@ -139,7 +152,7 @@ describe("semlayer reply", () => {
     expect((await reply(root, ["--readback", "rb_0001", "--item", "1", "--text", "yes", "--verdict", "maybe", "--by", "D"])).err).toContain("--verdict is yes, no or change");
     expect((await reply(root, ["--readback", "rb_0001", "--item", "1", "--text", "  ", "--by", "D"])).err).toContain("--text is empty");
     expect((await reply(root, ["--readback", "rb_0001", "--item", "1", "--text", "yes"])).err).toContain("Usage: semlayer reply --readback");
-    expect(existsSync(join(root, LEDGER))).toBe(false);
+    expect(ledgerText(root)).toBe(EXAMPLE_LEDGER);
   });
 
   test("refuses to append to a ledger with a malformed or cut-off line, leaving it as it was", async () => {
@@ -172,7 +185,7 @@ describe("semlayer reply", () => {
   });
 
   test("writes only inside the semantic root: a linked ledger file, dangling or not, is never followed", async () => {
-    const root = acme();
+    const root = acme(true);
     await readback(root, "warehouse.orders.revenue");
     const before = read(root, PRODUCTS);
     const outside = tempDir("ledger-outside");
@@ -226,7 +239,7 @@ describe("semlayer reply", () => {
     };
     const a = await run();
     expect(await run()).toEqual(a);
-    expect(a.ledger.split("\n")).toHaveLength(4);
+    expect(a.ledger.slice(EXAMPLE_LEDGER.length).split("\n")).toHaveLength(4);
   });
 });
 
@@ -238,18 +251,18 @@ describe("semlayer question resolve", () => {
       "launched_on: the reading is the date the product went on sale, but that comes from the column name only (Dana Ruiz). Left as draft until someone who knows confirms it, probably the merchandising team.";
     const r = await semlayer(root, ["question", "resolve", "warehouse.products", "--match", "LAUNCHED_ON: the reading", "--text", "Yes, the day it went on sale.", "--by", "Dana Ruiz"]);
     expect(r.code).toBe(0);
-    expect(r.out).toContain("Recorded the owner's answer as ans_0001 in .semlayer/ledger.jsonl.");
+    expect(r.out).toContain("Recorded the owner's answer as ans_0002 in .semlayer/ledger.jsonl.");
     expect(r.out).toContain("Next: semlayer status.");
     expect(read(root, PRODUCTS)).toBe(before.replace(`  - "${q2}"\n`, ""));
-    expect(ledgerText(root)).toBe(
-      `${JSON.stringify({ at: FIXED_NOW, by: "Dana Ruiz", id: "ans_0001", kind: "question", question: q2, target: "warehouse.products", text: "Yes, the day it went on sale." })}\n`,
+    expect(added(root)).toBe(
+      `${JSON.stringify({ at: FIXED_NOW, by: "Dana Ruiz", id: "ans_0002", kind: "question", question: q2, target: "warehouse.products", text: "Yes, the day it went on sale." })}\n`,
     );
     // The last question goes with its key, as question add would add it back.
     const last = await semlayer(root, ["question", "resolve", "warehouse.products", "--index", "1", "--text", "Merchandising will check.", "--by", "Dana Ruiz", "--json"]);
-    expect(last.json()).toMatchObject({ changed: true, file: "models/warehouse/products.yaml", reapprove: [], ref: "warehouse.products", open_questions: [], ledger_id: "ans_0002" });
+    expect(last.json()).toMatchObject({ changed: true, file: "models/warehouse/products.yaml", reapprove: [], ref: "warehouse.products", open_questions: [], ledger_id: "ans_0003" });
     const q1 = /\n {2}- ("Why do 5 product names[^\n]*")\n/.exec(before)![1]!;
     expect(read(root, PRODUCTS)).toBe(before.replace(`open_questions:\n  - ${q1}\n  - "${q2}"\n`, ""));
-    expect(ledger(root).map((e) => e.id)).toEqual(["ans_0001", "ans_0002"]);
+    expect(ledger(root).map((e) => e.id)).toEqual(["ans_0002", "ans_0003"]);
     const status = await semlayer(root, ["status", "--json"]);
     expect(status.code).toBe(0);
     expect((await semlayer(root, ["validate", "--json"])).json<{ issues: { level: string; file: string }[] }>().issues.filter((i) => i.level === "error")).toEqual([]);
@@ -275,7 +288,7 @@ describe("semlayer question resolve", () => {
     expect((await semlayer(root, ["question", "add", "access", "--text", "Should marketing see refunds?"])).code).toBe(0);
     expect((await semlayer(root, ["question", "resolve", "access", "--match", "refunds", "--text", "No.", "--by", "Dana Ruiz"])).code).toBe(0);
     expect(read(root, "access.yaml")).toBe(access);
-    expect(ledger(root).at(-1)).toEqual({ at: FIXED_NOW, by: "Dana Ruiz", id: "ans_0003", kind: "question", question: "Should marketing see refunds?", target: "access", text: "No." } as LedgerEntry);
+    expect(ledger(root).at(-1)).toEqual({ at: FIXED_NOW, by: "Dana Ruiz", id: "ans_0004", kind: "question", question: "Should marketing see refunds?", target: "access", text: "No." } as LedgerEntry);
   });
 
   test("keeps comments and the list style around the removed question, and --json gives the stored question", async () => {
@@ -315,7 +328,7 @@ describe("semlayer question resolve", () => {
     expect((await resolve("--index", "3")).err).toContain("--index is 1 to 2 for warehouse.products");
     expect((await resolve()).err).toContain("Usage: semlayer question resolve");
     expect((await resolve("--index", "1", "--match", "x")).err).toContain("Usage: semlayer question resolve");
-    expect(existsSync(join(root, LEDGER))).toBe(false);
+    expect(ledgerText(root)).toBe(EXAMPLE_LEDGER);
 
     mkdirSync(join(root, ".semlayer"), { recursive: true });
     writeFileSync(join(root, LEDGER), '{"id":"ans_0001"}\n{broken\n');
@@ -340,8 +353,7 @@ describe("semlayer question resolve", () => {
 
 describe("semlayer validate checks the ledger", () => {
   test("reports a malformed line, a schema error, a reused or out-of-order id and a cut-off last line", async () => {
-    const root = acme();
-    mkdirSync(join(root, ".semlayer"));
+    const root = acme(true);
     const q = (id: string, extra: Record<string, unknown> = {}) =>
       JSON.stringify({ at: FIXED_NOW, by: "Dana Ruiz", id, kind: "question", question: "q?", target: "access", text: "a", ...extra });
     writeFileSync(
@@ -374,8 +386,7 @@ describe("semlayer validate checks the ledger", () => {
   });
 
   test("reports a blank line in the middle, and an append refuses to number on top of it", async () => {
-    const root = acme();
-    mkdirSync(join(root, ".semlayer"));
+    const root = acme(true);
     const q = JSON.stringify({ at: FIXED_NOW, by: "D", id: "ans_0001", kind: "question", question: "q", target: "access", text: "a" });
     writeFileSync(join(root, LEDGER), `${q}\n\n`);
     const issues = (await semlayer(root, ["validate", "--json"])).json<{ issues: { file: string; path: string }[] }>().issues.filter((i) => i.file === ".semlayer/ledger.jsonl");

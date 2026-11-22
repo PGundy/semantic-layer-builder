@@ -120,6 +120,17 @@ export function assertLocalPg(url: string | undefined, env: Record<string, strin
   );
 }
 
+// The server_version_num of the Postgres a URL names, for a test that needs a feature of a newer major.
+export async function serverVersionNum(url: string): Promise<number> {
+  const { SQL } = await import("bun");
+  const db = new SQL({ url, max: 1 });
+  try {
+    return Number(((await db.unsafe("show server_version_num")) as { server_version_num: string }[])[0]!.server_version_num);
+  } finally {
+    await db.close();
+  }
+}
+
 // A schema name no other live test uses: the prefix, the process id and a random suffix.
 export function uniqueSchema(prefix: string): string {
   return `${prefix}_${process.pid}_${Math.random().toString(36).slice(2, 8)}`;
@@ -186,4 +197,13 @@ export async function confirmWithYes(root: string, args: string[], opts: ReplyOp
     }
   }
   return semlayer(root, ["goldens", "confirm", ...args], env);
+}
+
+// A fixture that writes approved YAML by hand stands for a layer the owner approved before the
+// ledger: the owner's confirmation of it as it stands (semlayer approve --confirm-existing) makes those
+// approvals count once the project has a ledger. Returns the command's run.
+export async function confirmExisting(root: string, by = "Dana"): Promise<CliRun> {
+  const r = await semlayer(root, ["approve", "--confirm-existing", "--by", by, "--reply", "These approvals stand as they are."]);
+  if (r.code !== 0) throw new Error(r.err);
+  return r;
 }

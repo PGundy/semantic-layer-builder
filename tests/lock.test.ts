@@ -73,9 +73,12 @@ function tempDir(): string {
 }
 
 // A copy of the Acme example layer.
-function acme(): string {
+// `bare` leaves out its .semlayer directory (which holds only the example's ledger), for a test of
+// what the lock and whole-file writes leave there.
+function acme(bare = false): string {
   const root = join(tempDir(), "semantic");
   cpSync(ACME, root, { recursive: true });
+  if (bare) rmSync(join(root, ".semlayer"), { recursive: true });
   return root;
 }
 
@@ -138,6 +141,13 @@ function description(field: { file: string; kind: "dimensions" | "measures"; nam
   return readYaml<Model>(field.file)[field.kind]!.find((x) => x.name === field.name)!.description;
 }
 
+// semlayer validate on a layer whose approved fields `edited` had their descriptions changed: the only
+// errors are those fields' changed approvals, since a description is part of what the owner approves.
+async function validExceptEdited(root: string, edited: string[]): Promise<void> {
+  const { issues } = (await semlayer(root, ["validate", "--json"])).json<{ issues: { level: string; code: string; message: string }[] }>();
+  for (const i of issues.filter((x) => x.level === "error")) expect({ code: i.code, edited: edited.includes(i.message.split(" ")[0]!) }).toEqual({ code: "approval.hash_changed", edited: true });
+}
+
 // The parallel tests are about every edit landing, so a slow machine gets a long wait for its turn.
 const PATIENT = { SEMLAYER_LOCK_WAIT_MS: "120000" };
 
@@ -154,7 +164,7 @@ describe("acceptance: parallel writers (real processes)", () => {
       for (const r of runs) expect({ code: r.code, err: r.err }).toEqual({ code: 0, err: "" });
       fields.forEach((f, i) => expect(description(f)).toBe(`Parallel edit ${i}.`));
       expect(existsSync(lockFile(root))).toBe(false);
-      expect((await semlayer(root, ["validate"])).code).toBe(0);
+      await validExceptEdited(root, fields.map((f) => f.ref));
     },
     120_000,
   );
@@ -173,8 +183,9 @@ describe("acceptance: parallel writers (real processes)", () => {
       const text = read(root, join(".semlayer", "ledger.jsonl"));
       expect(text.endsWith("\n")).toBe(true);
       const lines = text.trimEnd().split("\n").map((l) => JSON.parse(l) as LedgerEntry);
-      // Ids are allocated under the lock: 20 of them, each once, in file order.
-      expect(lines.map((l) => l.id)).toEqual(Array.from({ length: 20 }, (_, i) => `ans_${String(i + 1).padStart(4, "0")}`));
+      // Ids are allocated under the lock: 20 of them, each once, in file order, after the example's own ans_0001.
+      expect(lines.shift()!.id).toBe("ans_0001");
+      expect(lines.map((l) => l.id)).toEqual(Array.from({ length: 20 }, (_, i) => `ans_${String(i + 2).padStart(4, "0")}`));
       expect(new Set(lines.map((l) => l.text)).size).toBe(20);
       const validate = await semlayer(root, ["validate", "--json"]);
       expect(validate.code).toBe(0);
@@ -186,7 +197,7 @@ describe("acceptance: parallel writers (real processes)", () => {
   test(
     "parallel writers that find a stale lock take it over one at a time, and every edit lands",
     async () => {
-      const root = acme();
+      const root = acme(true);
       writeLock(root, await deadPid());
       const fields = acmeFields(root).slice(0, 8);
       const runs = await Promise.all(fields.map((f, i) => spawnSl(root, ["set", f.ref, "description", `After the takeover ${i}.`], PATIENT)));
@@ -405,7 +416,7 @@ describe("taking and releasing the lock", () => {
   });
 
   test("a stale lock is taken over: a dead process, this pid from an earlier process, and one never filled in", async () => {
-    const root = acme();
+    const root = acme(true);
     const edit = (n: number) => ["set", "warehouse.orders.revenue", "description", `Takeover ${n}.`];
     const stale = [await deadPid(), process.pid];
     for (const [n, pid] of stale.entries()) {
@@ -434,7 +445,7 @@ describe("taking and releasing the lock", () => {
   });
 
   test("a link or a directory at .semlayer/lock is a lock that cannot be read: never followed, and the wait still ends", async () => {
-    const root = acme();
+    const root = acme(true);
     const outside = tempDir();
     const edit = (n: number) => ["set", "warehouse.orders.revenue", "description", `Not a file ${n}.`];
     const old = new Date(Date.now() - 10_000);
@@ -489,7 +500,7 @@ describe("taking and releasing the lock", () => {
     expect(r.err).toContain("No semantic layer at");
     expect(readdirSync(dir)).toEqual([]);
     // A root without a .semlayer directory gets none from a command that fails before it writes.
-    const root = acme();
+    const root = acme(true);
     expect(existsSync(join(root, ".semlayer"))).toBe(false);
     expect((await semlayer(root, ["set", "warehouse.orders.revenue", "type", "not-a-type"])).code).toBe(1);
     expect((await semlayer(root, ["readback", "--targets", "warehouse.nope"])).code).toBe(1);
@@ -498,7 +509,7 @@ describe("taking and releasing the lock", () => {
 
   // Invariant 6: tools write only inside the semantic root.
   test("a .semlayer that leads outside the semantic root, or nowhere, gets no lock file", async () => {
-    const root = acme();
+    const root = acme(true);
     const outside = tempDir();
     symlinkSync(outside, join(root, ".semlayer"));
     const release = await acquireLock(root, WHO, 0);
@@ -661,13 +672,13 @@ describe("whole-file writes", () => {
     expect(readFileSync(victim, "utf8")).toBe("outside the root\n");
     expect(readdirSync(outside)).toEqual(["victim.txt"]);
     expect(Object.keys(tree(root)).filter((f) => f.endsWith(".semlayer-tmp"))).toEqual([]);
-    expect((await semlayer(root, ["validate"])).code).toBe(0);
+    await validExceptEdited(root, ["warehouse.orders.order_count"]);
   });
 
   test(
     "a writer killed mid-write leaves the previous file intact, and its temporary file and lock break no later command",
     async () => {
-      const root = acme();
+      const root = acme(true);
       const target = join(root, "models", "warehouse", "orders.yaml");
       const before = readFileSync(target, "utf8");
       const writer = await helper("half-write.ts", [root, target], "writing");
@@ -696,7 +707,7 @@ describe("whole-file writes", () => {
       expect(existsSync(temp)).toBe(false);
       expect(readdirSync(join(root, "models", "warehouse")).filter((f) => f.startsWith("."))).toEqual([]);
       expect(readdirSync(join(root, ".semlayer"))).toEqual([]);
-      expect((await semlayer(root, ["validate"])).code).toBe(0);
+      await validExceptEdited(root, ["warehouse.orders.revenue"]);
     },
     60_000,
   );

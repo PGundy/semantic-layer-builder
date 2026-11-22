@@ -6,7 +6,7 @@ import { goldenHash } from "../skills/semantic-layer/scripts/lib/approval-hash.t
 import { compareRows, currencyColumns, displayRows, goldenDraftFields, goldenPlan, twoDecimals } from "../skills/semantic-layer/scripts/lib/goldens.ts";
 import type { Golden, Metric, Model, QueryPlan } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { confirmWithYes, duckdbSource, initProject, semlayer, tempRoot } from "./helpers.ts";
+import { confirmExisting, confirmWithYes, duckdbSource, initProject, semlayer, tempRoot } from "./helpers.ts";
 
 let cleanup: (() => void) | undefined;
 afterEach(() => {
@@ -319,7 +319,8 @@ const approvedOrders = (): Model => ({ ...ordersModel("approved"), ...APPROVED }
 const ACCESS = { status: "approved", approved_by: "Dana", approved_at: "2026-01-15", mode: "open", roles: [{ name: "analyst", description: "Analysts." }] };
 
 // A project with the orders table, a golden on it and, unless `layer` is false, an approved orders
-// model and access.yaml, so the golden's request compiles.
+// model and access.yaml, written by hand and confirmed by the owner as they stand, so the golden's
+// request compiles.
 async function setup(goldenYaml = GOLDEN_YAML, statements = ORDERS, layer = true) {
   const t = tempRoot();
   cleanup = t.cleanup;
@@ -331,6 +332,7 @@ async function setup(goldenYaml = GOLDEN_YAML, statements = ORDERS, layer = true
   }
   const goldenPath = join(t.root, "goldens", "revenue_by_region.yaml");
   writeFileSync(goldenPath, goldenYaml);
+  if (layer) await confirmExisting(t.root);
   return { ...t, goldenPath };
 }
 
@@ -800,6 +802,7 @@ describe("goldens CLI on a snowflake source", () => {
     writeYaml(join(t.root, "access.yaml"), ACCESS);
     const goldenPath = join(t.root, "goldens", "revenue_by_region.yaml");
     writeFileSync(goldenPath, GOLDEN_YAML);
+    await confirmExisting(t.root);
 
     const live = await semlayer(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
     expect(live.code).toBe(1);
@@ -915,4 +918,45 @@ describe("goldens CLI safety and resilience", () => {
     expect(r.code).toBe(0);
     expect(r.json<{ passed: number }>().passed).toBe(1);
   });
+});
+
+describe("goldens CLI: comparison and running columns of a currency measure", () => {
+  const MONTHLY = [
+    "create table orders (id integer, region varchar, amount decimal(10,2), created_at date)",
+    "insert into orders values (1, 'east', 100.00, '2025-01-10'), (2, 'east', 150.50, '2025-02-10'), (3, 'west', 200.00, '2025-02-12')",
+  ];
+  const goldenYaml = (key: "compare" | "running") => `name: revenue_by_region
+question: What was revenue by month against the month before?
+request:
+  source: wh
+  measures: [orders.revenue]
+  dimensions: ["orders.created:month"]
+  ${key}: ${key === "compare" ? '{over: "orders.created:month", with: [prior]}' : '{over: "orders.created:month", periods: 2}'}
+sql: |
+  select '2025-02' as created_month, 350.5 as revenue, ${
+    key === "compare" ? "100.0 as revenue_prior, 250.5 as revenue_prior_change, 2.505 as revenue_prior_pct" : "450.5 as revenue_trailing_2"
+  }
+status: draft
+`;
+  for (const key of ["compare", "running"] as const) {
+    test(`goldens run and readback show the ${key} columns of a currency measure as money, and a fraction as it is`, async () => {
+      const t = await setup(goldenYaml(key), MONTHLY);
+      const model = approvedOrders();
+      model.measures[0]!.format = "currency";
+      writeYaml(join(t.root, "models", "wh", "orders.yaml"), model);
+      const run = await semlayer(t.root, ["goldens", "run", "--name", "revenue_by_region"]);
+      expect(run.code).toBe(0);
+      expect(run.out).toContain("350.50");
+      if (key === "compare") {
+        expect(run.out).toMatch(/350\.50\s+100\.00\s+250\.50\s+2\.505\n/);
+      } else {
+        expect(run.out).toMatch(/350\.50\s+450\.50\n/);
+      }
+      const rb = await semlayer(t.root, ["readback", "--targets", "golden:revenue_by_region", "--json"]);
+      expect(rb.code).toBe(0);
+      const text = JSON.stringify(rb.json());
+      if (key === "compare") expect(text).toMatch(/2025-02\s+350\.50\s+100\.00\s+250\.50\s+2\.505/);
+      else expect(text).toMatch(/2025-02\s+350\.50\s+450\.50/);
+    });
+  }
 });

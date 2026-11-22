@@ -299,7 +299,7 @@ describe("the four cases of the gap review", () => {
       expect(plain).toMatchObject({ code: 1, out: "", err: `semlayer status: ${c.message}` });
       const json = await semlayer(root, ["status", "--json"]);
       expect(json.code).toBe(1);
-      expect(json.json()).toEqual({ error: c.message, next: "semlayer validate" });
+      expect(json.json()).toEqual({ error: c.message, code: "user_error", next: "semlayer validate" });
       expect(json.err).toBe(`semlayer status: ${c.message}`);
       // semlayer validate goes on past the file and lists it with everything else it finds.
       const v = await semlayer(root, ["validate", "--json"]);
@@ -325,8 +325,9 @@ describe("no semantic root", () => {
       const { root } = tempRoot();
       const r = await semlayer(root, [command, "--json"]);
       expect(r.code).toBe(1);
-      const data = r.json<{ error: string; next: string }>();
-      expect(Object.keys(data).sort()).toEqual(["error", "next"]);
+      const data = r.json<{ error: string; code: string; next: string }>();
+      expect(Object.keys(data).sort()).toEqual(["code", "error", "next"]);
+      expect(data.code).toBe("no_layer");
       expect(data.error).toContain("No semantic layer at");
       expect(data.error).toContain("semlayer init --name <name>");
       expect(data.next).toBe("semlayer init --name <name>");
@@ -343,11 +344,13 @@ describe("no semantic root", () => {
     expect(r.json<{ kind: string; phase: string; action: unknown }>()).toMatchObject({ kind: "ask_owner", phase: "init", action: { command: "init", args: ["--name", "<name>"], kind: "ask_owner" } });
   });
 
-  test("a refusal that names no next command stays one plain line under --json", async () => {
+  test("a refusal that names no next command keeps its one plain line, and under --json is user_error with no next", async () => {
     const r = await semlayer(layer(), ["status", "--source", "nope", "--json"]);
-    expect(r).toMatchObject({ code: 1, out: "", err: 'semlayer status: Unknown source "nope". Known sources: lake, warehouse.' });
+    expect(r).toMatchObject({ code: 1, err: 'semlayer status: Unknown source "nope". Known sources: lake, warehouse.' });
+    expect(r.json()).toEqual({ error: 'Unknown source "nope". Known sources: lake, warehouse.', code: "user_error" });
     const flag = await semlayer(layer(), ["status", "--json", "--no-such-flag"]);
-    expect(flag).toMatchObject({ code: 1, out: "" });
+    expect(flag.code).toBe(1);
+    expect(flag.json()).toMatchObject({ code: "usage", next: "semlayer status --help" });
     expect(flag.err).toStartWith("semlayer status: ");
   });
 });
@@ -410,7 +413,7 @@ describe("the loaders", () => {
       expect(plain).toMatchObject({ code: 1, out: "", err: `semlayer status: ${message} ${FIX}` });
       const json = await semlayer(root, ["status", "--json"]);
       expect(json.code).toBe(1);
-      expect(json.json()).toEqual({ error: `${message} ${FIX}`, next: "semlayer validate" });
+      expect(json.json()).toEqual({ error: `${message} ${FIX}`, code: "user_error", next: "semlayer validate" });
       expect(plain.err).not.toContain("synthetic words");
     }
   });
@@ -421,11 +424,11 @@ describe("the loaders", () => {
     const message = `models/warehouse/orders.yaml: is a directory, not a file. ${FIX}`;
     const r = await semlayer(root, ["status", "--json"]);
     expect(r.code).toBe(1);
-    expect(r.json()).toEqual({ error: message, next: "semlayer validate" });
+    expect(r.json()).toEqual({ error: message, code: "user_error", next: "semlayer validate" });
     expect(r.err).toBe(`semlayer status: ${message}`);
     const v = await semlayer(root, ["validate", "--json"]);
     expect(v.code).toBe(1);
-    expect(v.json<{ issues: object[] }>().issues).toContainEqual({ level: "error", file: "models/warehouse/orders.yaml", path: "", message: "is a directory, not a file" });
+    expect(v.json<{ issues: object[] }>().issues).toContainEqual({ level: "error", file: "models/warehouse/orders.yaml", path: "", message: "is a directory, not a file", code: "file.unreadable" });
   });
 
   test("a metrics.yaml, access.yaml or listed golden with nothing written yet loads as none, as it did, and semlayer validate lists the empty file", async () => {
@@ -444,7 +447,7 @@ describe("the loaders", () => {
     // Asked for by name, the empty golden is refused like any other empty file.
     const r = await semlayer(root, ["goldens", "run", "--name", "later", "--json"]);
     expect(r.code).toBe(1);
-    expect(r.json()).toEqual({ error: `goldens/later.yaml: the file should be a map (found an empty file). ${FIX}`, next: "semlayer validate" });
+    expect(r.json()).toEqual({ error: `goldens/later.yaml: the file should be a map (found an empty file). ${FIX}`, code: "user_error", next: "semlayer validate" });
   });
 
   test("what the commands read around in words of their own loads: a status and a tables_file of any shape, an empty item in metrics", async () => {
@@ -507,7 +510,7 @@ describe("a wrong shape below the top level", () => {
         // A command that never reads the file runs as it does on the well-formed layer.
         if (r.code === 0) continue;
         // The refusal is the last line of stderr (semlayer readback notes a golden that does not compile before it).
-        expect({ args, code: r.code, out: r.json(), err: r.err.split("\n").at(-1) }).toEqual({ args, code: 1, out: { error: `${message} ${FIX}`, next: "semlayer validate" }, err: `semlayer ${args[0]}: ${message} ${FIX}` });
+        expect({ args, code: r.code, out: r.json(), err: r.err.split("\n").at(-1) }).toEqual({ args, code: 1, out: { error: `${message} ${FIX}`, code: "user_error", next: "semlayer validate" }, err: `semlayer ${args[0]}: ${message} ${FIX}` });
       }
       expect((await semlayer(root, ["status", "--json"])).code).toBe(1);
       expect((await semlayer(root, ["next", "--json"])).code).toBe(1);
@@ -541,22 +544,22 @@ describe("semlayer readback of a target whose file is malformed", () => {
     const root = layer({ ".semlayer/pending/rb_0002.json": '{"readback_id": "rb_0002", "created_at": "2026-01-15T12:00:00.000Z", "items": {"n": 1}}' });
     const reply = await semlayer(root, ["reply", "--readback", "rb_0002", "--item", "1", "--text", "Yes.", "--by", "Dana Ruiz", "--verdict", "yes", "--json"]);
     expect(reply.code).toBe(1);
-    expect(reply.json()).toEqual({ error: ".semlayer/pending/rb_0002.json does not match its schema; run semlayer validate, then semlayer readback --targets <ref> again.", next: "semlayer validate" });
+    expect(reply.json()).toEqual({ error: ".semlayer/pending/rb_0002.json does not match its schema; run semlayer validate, then semlayer readback --targets <ref> again.", code: "user_error", next: "semlayer validate" });
     const exported = await semlayer(root, ["review", "export", "--readback", "rb_0002", "--format", "md", "--json"]);
     expect(exported.code).toBe(1);
-    expect(exported.json()).toEqual({ error: ".semlayer/pending/rb_0002.json is not a valid readback. Run semlayer validate to see why, then semlayer readback again.", next: "semlayer validate" });
+    expect(exported.json()).toEqual({ error: ".semlayer/pending/rb_0002.json is not a valid readback. Run semlayer validate to see why, then semlayer readback again.", code: "user_error", next: "semlayer validate" });
   });
 
   test("a ledger with a line that is not an entry is a JSON error for semlayer reply and semlayer approve", async () => {
     const root = layer({ ".semlayer/ledger.jsonl": "[1, 2]\nnull\n" });
     const reply = await semlayer(root, ["reply", "--readback", "rb_0002", "--item", "1", "--text", "Yes.", "--by", "Dana Ruiz", "--verdict", "yes", "--json"]);
     expect(reply.code).toBe(1);
-    expect(reply.json<{ error: string; next: string }>()).toMatchObject({ next: "semlayer validate" });
+    expect(reply.json<{ error: string; next: string }>()).toMatchObject({ code: "user_error", next: "semlayer validate" });
     expect(reply.json<{ error: string }>().error).toStartWith("Line 1 of .semlayer/ledger.jsonl is not a JSON object; nothing was written.");
     const approve = await semlayer(root, ["approve", "--target", "warehouse.products.launched_on", "--by", "Dana Ruiz", "--json"]);
     expect(approve.code).toBe(1);
-    expect(approve.json<{ error: string; next: string }>()).toMatchObject({ next: "semlayer validate" });
-    expect(approve.json<{ error: string }>().error).toStartWith(".semlayer/ledger.jsonl cannot be read: line 1 is not a reply or question line");
+    expect(approve.json<{ error: string; next: string }>()).toMatchObject({ code: "user_error", next: "semlayer validate" });
+    expect(approve.json<{ error: string }>().error).toStartWith(".semlayer/ledger.jsonl cannot be read: line 1 is not a reply, question, confirm or revoke line");
     expect(readFileSync(join(root, ".semlayer", "ledger.jsonl"), "utf8")).toBe("[1, 2]\nnull\n");
   });
 });
@@ -585,7 +588,8 @@ describe("a failure of the tool itself", () => {
     for (const root of [layer(), layer({ "models/lake/sessions.yaml": incomplete })]) {
       expect((await semlayer(root, ["status"])).code).toBe(0);
       const r = await semlayer(root, ["fall-over", "--json"]);
-      expect(r).toMatchObject({ code: 2, out: "" });
+      expect(r.code).toBe(2);
+      expect(r.json()).toEqual({ error: "a bug in the command", code: "internal" });
       expect(r.err).toStartWith("semlayer fall-over: unexpected error: TypeError: a bug in the command");
       expect(r.err).not.toContain("sessions.yaml");
     }

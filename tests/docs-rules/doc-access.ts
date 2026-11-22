@@ -1,0 +1,108 @@
+import type { DocRule } from "./index.ts";
+
+// The procedure rules references/access.md keeps: one phrase per rule.
+export const RULES: DocRule[] = [
+  ["access.md", "default role asked open", "Ask it open"],
+  ["access.md", "row filters on joined models go in ON", "goes in that join's `on` clause"],
+  ["access.md", "deny.fields names dimensions and measures only", "`deny.fields` names dimensions and measures only"],
+  ["access.md", "access open questions", "`open_questions`, at the top level and on each role"],
+  ["access.md", "aggregates only approximation", "There is no aggregates-only grant"],
+  ["access.md", "whole-file readback after changes", "the whole-file readback comes again"],
+  ["access.md", "open questions do not block approval", "Approval may stand with open questions"],
+  ["access.md", "a related-model row filter keeps base rows on a left join", "keeps every row of the base model; it drops base rows only on an inner join"],
+  ["access.md", "totals only denies the key's dimension, not a column", "deny the dimension that exposes the primary key"],
+  ["access.md", "template values are guesses, the readback is the gate", "the whole-file readback (`semlayer readback --targets access`) is the gate, not this reply"],
+  // Definition joins and access.
+  ["access.md", "definition joins section", "### Definition joins"],
+  ["access.md", "definition joins apply whatever the role may see", "The compiler applies it whenever the field is used, whatever the role may see, and joins it without the target's row filters"],
+  ["access.md", "no helper model for row filters", "No helper model over the same table is needed"],
+  ["access.md", "validate warns on dimensions through hidden models", "`semlayer validate` warns when a role is allowed a dimension whose `expr` reads through a join"],
+  ["access.md", "measure filters do not warn", "A measure filter does not warn"],
+  ["access.md", "a missing user attribute returns no rows", "returns no rows of that model; the compiler enforces it"],
+  ["access.md", "comment-only edits need no new readback", "an edit to comments only is not one"],
+  // Review fixes.
+  ["access.md", "row-filtered targets of a dimension do not warn", "the definition join carries no row filter; `semlayer validate` does not warn"],
+  // Synonyms, engineering asks, rule goldens, access open questions, handoff and resume.
+  ["access.md", "open-question edits need no re-approval", "neither is deleting an answered open question or adding a new one"],
+  ["access.md", "open-question edits are mentioned", "Mention such an open-question edit in your next message"],
+  // Standing warnings, cast divisors, coverage by role, rounded ratios.
+  ["access.md", "writing an answer into a role is a change", "Writing the answer into roles, patterns, denials or row filters is a change; only the question's own deletion or addition is not"],
+  // Open access: exceptions first, protected tags, roles by attribute, restrictions, span of control.
+  ["access.md", "access is open by default", "Access is open by default"],
+  ["access.md", "draft items are never exposed", "Draft items are never exposed, in either mode"],
+  ["access.md", "allow.models has no effect in open mode", "`allow.models` has no effect in open mode"],
+  ["access.md", "the interview starts from exceptions", "Start from the exceptions, not from a list of roles"],
+  ["access.md", "the exceptions question", "Is there anything some people should not see?"],
+  ["access.md", "no exceptions is still approved", "an approved `access.yaml` with `mode: open` and no roles is a complete access phase"],
+  ["access.md", "every protected tag is confirmed", "Confirm every `pii` and `sensitive` tag, and who may see each"],
+  ["access.md", "protected tags hide in both modes", "`pii` and `sensitive` are protected in both modes"],
+  ["access.md", "public never overrides a protected tag", "It never overrides `pii` or `sensitive` on the same field"],
+  ["access.md", "the sensitivity warning", "is visible to everyone and looks sensitive (<reason>); tag it pii or sensitive, or tag it public if everyone may see it"],
+  ["access.md", "roles held by condition", "when its `assign_when` condition is true for the user's attributes"],
+  ["access.md", "several roles combine as a union", "an item is visible when any role they hold makes it visible"],
+  ["access.md", "default role only without another role", "`default_role` applies only when the user holds no other role"],
+  ["access.md", "conditions read declared attributes", "Every attribute a condition reads must be declared in `user_attributes`"],
+  ["access.md", "row filters union across roles", "a role they hold with no row filter on that model contributes every row"],
+  ["access.md", "no role in open mode sees every row", "In open mode a user who holds no role sees every row"],
+  ["access.md", "a metric needs its measures visible", "A metric is visible only when the metric itself is visible and every measure it uses is visible"],
+  ["access.md", "a hidden field is never named", "A request may never name a hidden field anywhere: selected, grouped, filtered or sorted"],
+  ["access.md", "span of control section", "### Span of control"],
+  ["access.md", "closure: every pair at any depth", "one row per manager and member pair at any depth"],
+  ["access.md", "ask for a closure view", "When the source has only a `manager_id` column on the employees table, ask the owner's engineers for a view"],
+  ["access.md", "the closure model reads without row filters", "reads the closure model without its own row filters"],
+  ["access.md", "semlayer access explains the default audience", "With no `--user` and no `--roles` it explains the default audience"],
+  ["access.md", "semlayer access before the whole-file readback", "Run it for the default audience first, then once per role"],
+  // Who sees what is decided once, in the access phase (docs/PRD-hardening.md HR-9).
+  ["access.md", "a who-sees change during the interview does not hold the item", "It does not hold the item: the table or field is approved on the owner's yes to the item itself"],
+  ["access.md", "a table readback states who sees it and does not ask", "Every table, field and metric readback states who will see the item once it is approved and does not ask"],
+  ["access.md", "every access rule has a command", "Build the file with the access commands, never by hand"],
+  // Conditions, role unions and what draft tags.
+  ["access.md", "a negated grant is true for an unknown user", "so a grant using either one is true for a user the tool knows nothing about"],
+  ["access.md", "a negated grant is paired with a presence test", "Pair it with a presence test"],
+  ["access.md", "closed mode does not hide from a group", "Closed mode does not help, because there too an item is visible when any held role shows it"],
+  ["access.md", "only a restriction hides from a group", "only its `allow.roles` or `allow.when` see the target, whatever other roles a person holds"],
+  ["access.md", "an empty role is not harmless", "A role that grants, denies and filters nothing is not harmless"],
+  ["access.md", "an empty role blocks the default", "it keeps `default_role` from applying"],
+  ["access.md", "an exception is checked for a reason other than draft", "hidden for a reason other than `draft`"],
+  ["access.md", "tags live in the model file", "a `pii` or `sensitive` tag on the field or model in the model file"],
+  ["access.md", "near-unique text is left out, not tagged", "is left out and listed in `ignored_columns`, with an open question naming the tag to add"],
+  // Counts and plain language.
+  ["access.md", "name what is hidden, not counts", "by naming what is hidden from it, not by counts of tables and fields"],
+  ["access.md", "semlayer access counts per source", "per source on each `Source <s>:` line"],
+  // Draft and approved access.
+  ["access.md", "draft and approved access section", "## Draft and approved access"],
+  ["access.md", "tools serve only approved access", "Tools serve only an approved `access.yaml`"],
+  ["access.md", "a draft serves nothing", "A tool that loads an `access.yaml` in draft serves nothing and says access is awaiting sign-off"],
+  ["access.md", "changes are edited in version control", "edited in version control (a branch or the working copy) while the approved version that is deployed keeps applying"],
+  ["access.md", "semlayer access explains a draft", "`semlayer access` still explains a draft file, labelled as a draft"],
+  ["access.md", "a revoke says what applies", "The last approved version keeps applying where it is deployed until you approve the new one"],
+  ["access.md", "mode changes name who gains or loses", "say the old and new mode and who gains or loses visibility, naming the users who hold no role"],
+  ["access.md", "open questions block a draft's next step", "`blocked_on: open_questions`, command `semlayer access`, `after_owner_yes: false`"],
+  // Row filters through joins and child tables.
+  ["access.md", "row filters read through to-one joins", "through one or two `many_to_one` or `one_to_one` joins of the filtered model itself"],
+  ["access.md", "row-filter joins are definition joins", "the compiler adds them without their targets' row filters"],
+  ["access.md", "a child row filter through its join", "expr: order.ship_region = {{ user.region }}"],
+  ["access.md", "a hierarchy column through a join", "`order.sales_rep_id`"],
+  ["access.md", "child tables section", "### Child tables"],
+  ["access.md", "child tables in the interview", "list every model with a to-one join into it"],
+  ["access.md", "child tables are settled one by one", "list every model with a `many_to_one` or `one_to_one` join into it, one or two hops away, and settle each one"],
+  ["access.md", "an open question naming the model silences it", "A role's `open_questions` entry naming the model silences it"],
+  // Restrictions, personal values.
+  ["access.md", "a restriction-only role is an empty role", "A role whose only job is to be named in a restriction's `allow.roles` is such a role"],
+  ["access.md", "prefer allow.when", "Prefer `allow.when` when an attribute says who may see it"],
+  ["access.md", "no personal values in text", "Never write a value of a `pii` or `sensitive` column (a person's name, an email) into a description, a synonym, a golden question or a golden reference"],
+  // Profile privacy.
+  ["access.md", "protected profiles keep counts only", "its top values are not stored, raw or hashed"],
+  ["access.md", "the check never sees protected values", "So the check never sees a protected column's values, and keeping them out of the files rests on you"],
+  ["access.md", "protection is a heuristic; snapshots are reviewed", "The name rules behind protection are a heuristic"],
+  ["access.md", "expected rows are exempt", "A golden's `expected.rows` are not checked: they are the answer as the golden's role, which may see the column"],
+  // Handoff, suggestions, readbacks and resume.
+  ["access.md", "each role is walked through inside the one whole-file readback", 'reads the whole file back as one item, naming every role with what it adds and takes away; it takes no single role. Walk the owner through each role in it, with that role\'s `semlayer access` view, before the whole-file "Approve?"; a no or a correction about any role voids the yes to the whole file'],
+  // Revoke keeps the last approval; semlayer access wording.
+  ["access.md", "an edit of an approved file keeps the sign-off", "The edit keeps the sign-off as `last_approved: { by, at }`"],
+  ["access.md", "semlayer access totals line", 'on the line "Items visible across N source(s) (row filters limit rows, not these counts)"'],
+  ["access.md", "row filters always printed", '"row filters: none (every row of every visible model)"'],
+  ["access.md", "assigned roles only with --roles", "names assigned roles only when `--roles` was given"],
+  // connection.views holds one table expression, so a rule needing an aggregate goes to engineering.
+  ["access.md", "a closure view comes from engineering on DuckDB too", "since `connection.views` takes no recursive query"],
+];

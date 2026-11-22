@@ -4,7 +4,7 @@
 // semantic root (a directory holding semantic.yaml) it exits 2, with the reason and the command to
 // use on stderr, when the call would add, change or remove an approval field, change what an
 // approved item's content hash covers, change a confirmed golden's recorded rows, or write
-// .semlayer/ledger.jsonl or .semlayer/pending/ by hand. Before those checks, a call from one of the plugin's
+// .semlayer/ledger.jsonl, .semlayer/pending/, .semlayer/change.json or changelog.yaml by hand. Before those checks, a call from one of the plugin's
 // role agents (spec: Agent roles) is held to what lib/roles.ts lets that role run and edit.
 // It also refuses a read or a search of the env file that holds a connection's secret (Read, Grep
 // and Bash), and it runs the before half of the answer ledger's before-and-after comparison (integrity.ts).
@@ -13,7 +13,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { type ApprovalEntry, carriesHash, itemApprovals, listApprovals } from "../lib/approval-hash.ts";
+import { type ApprovalEntry, carriesHash, editKeepsApproval, itemApprovals, listApprovals, matchesRecorded } from "../lib/approval-hash.ts";
+import { sourceWeekStart, type WeekDay } from "../lib/compiler/calendar.ts";
 import { applyFileRefusals, commandList, DENIED_FLAGS, roleOf, semlayerRefusal, type Role } from "../lib/roles.ts";
 import { DIALECTS, type Dialect, type Model } from "../lib/types.ts";
 import { parseYamlText } from "../lib/yaml.ts";
@@ -43,8 +44,14 @@ const REPLY = 'semlayer reply --readback <id> --item <n> --text "<owner\'s words
 const LEDGER =
   "is written only by the CLI, so it records exactly what the owner heard and said: semlayer readback writes .semlayer/pending/, and semlayer reply, " +
   `semlayer question resolve and semlayer review apply append to .semlayer/ledger.jsonl. Record an owner's answer with ${REPLY.replace("yes", "yes|no|change")}.`;
+const CHANGELOG =
+  "is append-only and records item hashes and golden rows that later releases compare against, so it is written only by semlayer change close; " +
+  "a hand edit would rewrite what a release says the layer held. Restore it from version control if it was changed.";
+const CHANGE =
+  "is the open change round: it is written only by semlayer change start, which records who asked and when, and removed by semlayer change close, " +
+  "so a hand edit would change what the round says it started from. Run semlayer change status to see the round.";
 const MAX_LINES = 5;
-const TYPED = "semlayer set, semlayer tag, semlayer ignore-column, semlayer question add, semlayer add-field, semlayer remove-field, semlayer add-metric, semlayer remove-metric, semlayer add-join, semlayer remove-join or semlayer rename";
+const TYPED = "semlayer set, semlayer tag, semlayer ignore-column, semlayer question add, semlayer add-field, semlayer remove-field, semlayer add-metric, semlayer remove-metric, semlayer add-join, semlayer remove-join, semlayer add-segment, semlayer remove-segment, semlayer conform or semlayer rename";
 
 // A stable JSON text: object keys sorted.
 function canonical(v: unknown): string {
@@ -53,16 +60,20 @@ function canonical(v: unknown): string {
   return JSON.stringify(v) ?? "null";
 }
 
-type Area = "ledger" | "layer" | "dir";
+type Area = "ledger" | "changelog" | "change" | "layer" | "source" | "dir";
 
 // Which guarded part of the root a path is: the ledger and pending readbacks, a layer YAML file
-// (models/, goldens/, metrics.yaml, access.yaml), or a directory holding either.
+// (models/, goldens/, metrics.yaml, access.yaml), a source file (sources/<s>.yaml, whose schema pairs
+// carry approvals), or a directory holding either.
 function areaOf(root: string, abs: string): { area: Area; rel: string } | undefined {
   const rel = relative(root, abs).split(sep).join("/");
   if (rel.startsWith("../") || rel === ".." || isAbsolute(rel)) return undefined;
   if (rel === ".semlayer" || rel === ".semlayer/ledger.jsonl" || rel === ".semlayer/pending" || rel.startsWith(".semlayer/pending/")) return { area: "ledger", rel };
+  if (rel === "changelog.yaml") return { area: "changelog", rel };
+  if (rel === ".semlayer/change.json") return { area: "change", rel };
   if (rel === "" || rel === "models" || rel === "goldens") return { area: "dir", rel };
   if (rel === "metrics.yaml" || rel === "access.yaml") return { area: "layer", rel };
+  if (/^sources\/[^/]+\.ya?ml$/.test(rel)) return { area: "source", rel };
   if (/^(models|goldens)\//.test(rel)) {
     if (/\.ya?ml$/.test(rel)) return { area: "layer", rel };
     if (existsSync(abs) && statSync(abs).isDirectory()) return { area: "dir", rel };
@@ -79,13 +90,15 @@ function guarded(abs: string, self = false) {
 
 // --- YAML files ------------------------------------------------------------------------------
 
-type FileKind = { kind: "model"; source: string; name: string } | { kind: "golden"; name: string } | { kind: "metrics" | "access" | "other" };
+type FileKind = { kind: "model"; source: string; name: string } | { kind: "golden"; name: string } | { kind: "source"; source: string } | { kind: "metrics" | "access" | "other" };
 
 function fileKind(rel: string): FileKind {
   const m = /^models\/([^/]+)\/([^/]+)\.ya?ml$/.exec(rel);
   if (m) return { kind: "model", source: m[1]!, name: m[2]! };
   const g = /^goldens\/([^/]+)\.ya?ml$/.exec(rel);
   if (g) return { kind: "golden", name: g[1]! };
+  const s = /^sources\/([^/]+)\.ya?ml$/.exec(rel);
+  if (s) return { kind: "source", source: s[1]! };
   return { kind: rel === "metrics.yaml" ? "metrics" : rel === "access.yaml" ? "access" : "other" };
 }
 
@@ -102,7 +115,7 @@ function parse(text: string | null, label: string): { ok: true; value: unknown }
 }
 
 // Every approval field in a parsed file, keyed by where it sits: list items by name when they have
-// one, so reordering a list moves nothing.
+// one, and a schema pair by its from and to, so reordering a list moves nothing.
 function marks(v: unknown, skip: ReadonlySet<string>, path = "", out = new Map<string, string>()): Map<string, string> {
   if (Array.isArray(v)) {
     const seen = new Map<string, number>();
@@ -112,7 +125,7 @@ function marks(v: unknown, skip: ReadonlySet<string>, path = "", out = new Map<s
         const n = (seen.get(x.name) ?? 0) + 1;
         seen.set(x.name, n);
         seg = n > 1 ? `${x.name}#${n}` : x.name;
-      }
+      } else if (isObject(x) && typeof x.from === "string" && typeof x.to === "string") seg = `${x.from}:${x.to}`;
       marks(x, skip, `${path}[${seg}]`, out);
     });
   } else if (isObject(v)) {
@@ -131,10 +144,11 @@ interface Violation {
   keys?: string[];
 }
 
-function sourceDialect(root: string, source: string): Dialect | undefined {
+// The dialect a source file names and the day its weeks start, as semlayer approve reads them.
+function sourceHashScope(root: string, source: string): { dialect: Dialect | undefined; weekStart: WeekDay | undefined } {
   const p = parse(readText(join(root, "sources", `${source}.yaml`)), "source");
   const d = p.ok && isObject(p.value) ? p.value.dialect : undefined;
-  return typeof d === "string" && (DIALECTS as readonly string[]).includes(d) ? (d as Dialect) : undefined;
+  return { dialect: typeof d === "string" && (DIALECTS as readonly string[]).includes(d) ? (d as Dialect) : undefined, weekStart: sourceWeekStart(p.ok ? p.value : undefined) };
 }
 
 // The approved items of `before` whose content `after` changes or drops, unless the change restores
@@ -146,7 +160,7 @@ function contentViolations(before: ApprovalEntry[], after: ApprovalEntry[], what
     if (b.item.status !== "approved") continue;
     const a = now.get(b.ref);
     if (!a) out.push({ ref: b.ref, what: "removed" });
-    else if (a.hash !== b.hash && !(carriesHash(a.item) && String(a.item.approved_hash).trim() === a.hash)) out.push({ ref: b.ref, what });
+    else if (a.hash !== b.hash && !editKeepsApproval(b, a)) out.push({ ref: b.ref, what });
   }
   return out;
 }
@@ -169,13 +183,13 @@ function sourceModels(root: string, source: string): Map<string, Model> {
 function modelScope(root: string, k: { source: string; name: string }) {
   let siblings: Map<string, Model> | undefined;
   const others = () => (siblings ??= sourceModels(root, k.source));
-  const dialects = new Map<string, Dialect | undefined>();
+  const scopes = new Map<string, ReturnType<typeof sourceHashScope>>();
   const entries = (self: unknown, of: string = k.name, value: unknown = self): ApprovalEntry[] => {
     if (!isObject(value)) return [];
     const source = typeof value.source === "string" ? value.source : k.source;
-    if (!dialects.has(source)) dialects.set(source, sourceDialect(root, source));
+    if (!scopes.has(source)) scopes.set(source, sourceHashScope(root, source));
     const lookup = (n: string) => (n === k.name ? (isObject(self) ? (self as unknown as Model) : undefined) : others().get(n));
-    return itemApprovals(listApprovals({ models: [{ source, model: { ...(value as unknown as Model), model: typeof value.model === "string" ? value.model : of }, lookup, dialect: dialects.get(source) }] }));
+    return itemApprovals(listApprovals({ models: [{ source, model: { ...(value as unknown as Model), model: typeof value.model === "string" ? value.model : of }, lookup, ...scopes.get(source) }] }));
   };
   return { entries, others };
 }
@@ -210,7 +224,9 @@ function repairProblem(root: string, kind: FileKind, before: string, after: stri
         ? itemApprovals(listApprovals({ metrics: isObject(value) ? value.metrics : undefined }))
         : kind.kind === "access"
           ? itemApprovals(listApprovals({ access: value }))
-          : undefined;
+          : kind.kind === "source"
+            ? pairApprovals(kind.source, value)
+            : undefined;
   if (!own) return marked ? `the hook cannot match its approval fields to ${kind.kind === "golden" ? "the rows a confirmed golden records" : "items"}` : undefined;
   // Fields of the source's other models that read through this model's joins count too; their
   // hashes are recorded in their own files.
@@ -218,11 +234,16 @@ function repairProblem(root: string, kind: FileKind, before: string, after: stri
   for (const e of [...own, ...others]) {
     if (e.item.status !== "approved") continue;
     const h = carriesHash(e.item) ? String(e.item.approved_hash).trim() : "";
-    if (h !== e.hash || (own.includes(e) && !before.includes(h))) return `approved ${e.ref} would not match the approved_hash it recorded`;
+    if (!matchesRecorded(e) || (own.includes(e) && !before.includes(h))) return `approved ${e.ref} would not match the approved_hash it recorded`;
   }
   const fields: [string, RegExp][] = [...MARK_KEYS.map((k): [string, RegExp] => [k, new RegExp(`\\b${k}\\b`, "g")]), ["status: approved", new RegExp(STATUS_TEXT.source, "g")]];
   for (const [label, re] of fields) if ((after.match(re)?.length ?? 0) > (before.match(re)?.length ?? 0)) return `it would add an approval field (${label})`;
   return undefined;
+}
+
+// The schema pairs of a source file's parsed value, as semlayer approve hashes them.
+function pairApprovals(source: string, value: unknown): ApprovalEntry[] {
+  return itemApprovals(listApprovals({ sources: [{ source, config: value }] }));
 }
 
 function markViolations(kind: FileKind, before: unknown, after: unknown): Violation[] {
@@ -251,6 +272,10 @@ function refOf(kind: FileKind, path: string): string {
     }
     case "access":
       return "access";
+    case "source": {
+      const f = /^cross_schema\[([^\]#]+)/.exec(path);
+      return f ? `schema-pair:${kind.source}:${f[1]}` : `sources/${kind.source}.yaml${path ? ` (${path})` : ""}`;
+    }
     case "golden":
       return `golden:${kind.name}`;
     case "other":
@@ -265,7 +290,7 @@ function message(v: Violation): string {
       if (g !== undefined)
         return (
           `this edit changes the confirmation fields of ${v.ref} (${v.keys!.join(", ")}). Only semlayer goldens confirm writes them, on the owner's recorded yes: ` +
-          `semlayer readback --targets ${v.ref}, ${REPLY}, then semlayer goldens confirm --name ${g}.`
+          `semlayer readback --targets ${v.ref}, ${REPLY}, then semlayer goldens confirm --name ${g}. To make it a draft, run semlayer goldens unconfirm --name ${g}.`
         );
       return (
         `this edit changes the approval fields of ${v.ref} (${v.keys!.join(", ")}). Only semlayer approve writes them, on the owner's recorded yes: ` +
@@ -274,10 +299,13 @@ function message(v: Violation): string {
     case "expected":
       return (
         `${v.ref} is confirmed, and its expected rows and tolerance are what the owner said yes to. Only semlayer goldens confirm records them: ` +
-        `semlayer readback --targets ${v.ref} [--tolerance <t>], ${REPLY}, then semlayer goldens confirm --name ${g}.`
+        `semlayer readback --targets ${v.ref} [--tolerance <t>], ${REPLY}, then semlayer goldens confirm --name ${g}. ` +
+        `If the owner cannot check its figures now, semlayer goldens unconfirm --name ${g} returns it to draft.`
       );
     case "removed": {
       const head = `this edit removes or renames approved ${v.ref}.`;
+      if (v.ref.startsWith("schema-pair:")) return `${head} ${pairChange(v.ref)}`;
+      if (g !== undefined) return `${head} Return it to draft with semlayer goldens unconfirm --name ${g}, then remove it with semlayer goldens remove --name ${g}.`;
       const revoke = `make it a draft first with semlayer approve --target ${v.ref} --revoke`;
       if (!v.ref.includes(":") && v.ref.split(".").length === 3) return `${head} Rename it with semlayer rename ${v.ref} <new_name> or remove it with semlayer remove-field ${v.ref}, or ${revoke}.`;
       if (v.ref.startsWith("metric:")) return `${head} Rename it with semlayer rename ${v.ref} <new_name> or remove it with semlayer remove-metric ${v.ref.slice(7)} --force (on the owner's yes), or ${revoke}.`;
@@ -295,6 +323,7 @@ function message(v: Violation): string {
         `Change the join with semlayer set <source.model.join> <key> <value>, which names every approved item to read back again, or revoke ${v.ref} first (semlayer approve --target ${v.ref} --revoke).`
       );
     case "changed":
+      if (v.ref.startsWith("schema-pair:")) return `${v.ref} is approved, and this edit changes the keys the owner approved. ${pairChange(v.ref)}`;
       if (v.ref === "access")
         return (
           "access.yaml is approved, and this edit changes the rules the owner approved. Revoke it first (semlayer approve --target access --revoke; " +
@@ -302,9 +331,19 @@ function message(v: Violation): string {
         );
       return (
         `${v.ref} is approved, and this edit changes what the owner approved. Use a typed edit (${TYPED}), which routes it back to the owner ` +
-        `for re-approval, or make it a draft first with semlayer approve --target ${v.ref} --revoke. Descriptions and open questions are outside the approval and may be edited directly.`
+        `for re-approval, or make it a draft first with semlayer approve --target ${v.ref} --revoke. Open questions are outside the approval and may be edited directly; a description is part of it.`
       );
   }
+}
+
+// How an approved schema pair is changed: its commands, which send it back to draft, or a revoke first.
+function pairChange(ref: string): string {
+  const [, source, from, to] = ref.split(":");
+  const which = `--source ${source} --from ${from} --to ${to}`;
+  return (
+    `Change its keys with semlayer add-cross-schema ${which} --keys ... or semlayer remove-cross-schema ${which}, which send it back to draft for the owner, ` +
+    `or make it a draft first with semlayer approve --target ${ref} --revoke.`
+  );
 }
 
 // The violations of replacing a layer file's text `before` (null: no file) with `after` (null: deleted).
@@ -334,6 +373,7 @@ export function layerViolations(root: string, rel: string, before: string | null
   const entries = (value: unknown) =>
     itemApprovals(listApprovals(kind.kind === "metrics" ? { metrics: isObject(value) ? value.metrics : undefined } : kind.kind === "access" ? { access: value } : {}));
   if (kind.kind === "metrics" || kind.kind === "access") out.push(...contentViolations(entries(b.value), entries(a.value), "changed"));
+  if (kind.kind === "source") out.push(...contentViolations(pairApprovals(kind.source, b.value), pairApprovals(kind.source, a.value), "changed"));
   if (kind.kind === "golden" && isObject(b.value) && b.value.status === "approved") {
     if (canonical(b.value.expected) !== canonical(isObject(a.value) ? a.value.expected : undefined)) out.push({ ref: `golden:${kind.name}`, what: "expected" });
   }
@@ -384,6 +424,8 @@ function fileCall(tool: string, input: Obj, cwd: string): Verdict {
   if (!g || g.area === "dir") return { allow: true };
   const head = `semantic-layer: refused ${tool} on ${g.rel} in the semantic layer at ${g.root}:`;
   if (g.area === "ledger") return refuse([head, `- ${g.rel} ${LEDGER}`]);
+  if (g.area === "changelog") return refuse([head, `- ${g.rel} ${CHANGELOG}`]);
+  if (g.area === "change") return refuse([head, `- ${g.rel} ${CHANGE}`]);
   if (tool === "NotebookEdit") return refuse([head, `- ${g.rel} is not a notebook; change it with a typed edit (${TYPED}).`]);
   // From here the file is inside a semantic root: input that cannot be read is refused.
   try {
@@ -445,12 +487,18 @@ function bashCall(input: Obj, cwd: string): Verdict {
       }
       const g = guarded(p, true);
       if (!g || seen.has(g.real)) continue;
+      // A source file is guarded only while it holds approval fields: those of its schema pairs.
+      if (g.area === "source" && !(existsSync(g.real) && statSync(g.real).isFile() && MARK_TEXT.test(readFileSync(g.real, "utf8")))) continue;
       seen.add(g.real);
       const where = g.rel || "the semantic root itself";
       lines.push(
         g.area === "ledger"
           ? `- it writes ${where} in ${g.root} (${w.how}); ${g.rel} ${LEDGER}`
-          : `- it writes ${where} in ${g.root} (${w.how}). A shell write cannot be checked against approvals: change YAML with a typed edit (${TYPED}), or edit a draft with the Edit tool, which this hook checks. Approvals come only from semlayer approve and semlayer goldens confirm on the owner's recorded yes.`,
+          : g.area === "changelog"
+            ? `- it writes ${where} in ${g.root} (${w.how}); ${g.rel} ${CHANGELOG}`
+            : g.area === "change"
+              ? `- it writes ${where} in ${g.root} (${w.how}); ${g.rel} ${CHANGE}`
+              : `- it writes ${where} in ${g.root} (${w.how}). A shell write cannot be checked against approvals: change YAML with a typed edit (${TYPED}), or edit a draft with the Edit tool, which this hook checks. Approvals come only from semlayer approve and semlayer goldens confirm on the owner's recorded yes.`,
       );
     }
   }

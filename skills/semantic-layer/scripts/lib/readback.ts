@@ -5,7 +5,8 @@
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type AccessLayer, type AccessVisibility, evaluateLayer, loadAccessLayer } from "./access.ts";
-import { type ApprovalEntry, goldenHash, itemApprovals, listApprovals } from "./approval-hash.ts";
+import { type ApprovalEntry, descriptionOnly, goldenHash, itemApprovals, listApprovals, pairEntries } from "./approval-hash.ts";
+import { conformedWords } from "./conformed.ts";
 import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { findTable, qualifiedName } from "./naming.ts";
@@ -14,12 +15,19 @@ import { formatTable, maskRows, PROTECTED_VALUE, plainText } from "./output.ts";
 import { protectedColumns } from "./profile.ts";
 import { listModels, loadAccess, loadFile, loadMetrics, loadSnapshot, paths } from "./project.ts";
 import { parseTarget } from "./refs.ts";
+import { sourceWeekStart, type WeekDay } from "./compiler/calendar.ts";
+import { entityKeys, nonAdditiveDimension } from "./compiler/semi-additive.ts";
+import { andPredicates, findSegment, modelSegments, segmentNames } from "./segments.ts";
 import { referencedColumns } from "./snapshot-diff.ts";
 import { sqlNames } from "./sql-names.ts";
-import type { Dialect, FigureEvidence, Golden, Join, Metric, Model, PendingReadback, ResultRows, Snapshot, SnapshotTable } from "./types.ts";
+import { timeShapeWords } from "./time-request-words.ts";
+import type { Dialect, FigureEvidence, Golden, Join, LedgerReply, Metric, Model, PendingReadback, ResultRows, Snapshot, SnapshotTable } from "./types.ts";
+import { ledgerState } from "./ledger.ts";
 import { DIALECTS, NAME_PATTERN, PROTECTED_TAGS } from "./types.ts";
 import { conditionWords, parseCondition } from "./conditions.ts";
 import { readYamlIfExists } from "./yaml.ts";
+import { keyRepeats } from "./key-uniqueness.ts";
+import { bridgeDefinition, bridgeSql, goldenBridgeWords, throughCurrent, throughLines } from "./readback-bridge.ts";
 
 export const PENDING_DIR = join(".semlayer", "pending");
 // A readback's file, or the marker semlayer readback --discard leaves in its place so its id is never issued again.
@@ -226,16 +234,23 @@ function joinReads(model: Model, sql: unknown[], lookup: (m: string) => Model | 
 
 interface SourceInfo {
   dialect?: Dialect;
+  // The day the source's weeks start when it is not Monday (sourceWeekStart).
+  weekStart?: WeekDay;
   snapshot: Snapshot | null;
   lookup: (name: string) => Model | undefined;
+  // Every model of the source, for the facts a model's key takes from a join through it.
+  models: Model[];
   protected: Map<string, Set<string>>;
 }
 
 function sourceInfo(root: string, source: string): SourceInfo {
   let dialect: Dialect | undefined;
+  let weekStart: WeekDay | undefined;
   try {
-    const d = readYamlIfExists<{ dialect?: unknown }>(paths(root).source(source))?.dialect;
+    const config = readYamlIfExists<{ dialect?: unknown }>(paths(root).source(source));
+    const d = config?.dialect;
     dialect = typeof d === "string" && (DIALECTS as readonly string[]).includes(d) ? (d as Dialect) : undefined;
+    weekStart = sourceWeekStart(config);
   } catch {
     dialect = undefined;
   }
@@ -258,7 +273,7 @@ function sourceInfo(root: string, source: string): SourceInfo {
   }
   const models = listModels(root, source).map((l) => l.model as unknown);
   const prot = snapshot && Array.isArray(snapshot.tables) ? protectedColumns(snapshot.tables, models, dialect) : new Map<string, Set<string>>();
-  return { dialect, snapshot, lookup, protected: prot };
+  return { dialect, weekStart, snapshot, lookup, models: models as Model[], protected: prot };
 }
 
 // Measured facts --------------------------------------------------------------------------------
@@ -429,6 +444,18 @@ function grainLines(model: Model, table: SnapshotTable | undefined): string[] {
   return quoted("", fromComment ? `grain (what one row is), copied from the database comment on ${model.table}` : "grain (what one row is), from the YAML", model.grain);
 }
 
+// The segments a model declares: each one's conditions in words and the measures that name it.
+function segmentLines(model: Model): string[] {
+  const segments = modelSegments(model);
+  if (!segments.length) return [];
+  const each = segments.map((seg) => {
+    const clauses = typeof seg.filter === "string" ? filterClauses(seg.filter).map((c) => clauseWords(c)) : [];
+    const users = (model.measures ?? []).filter((m) => segmentNames(m).includes(seg.name)).map((m) => m.name);
+    return `  - ${seg.name}: keeps rows where ${clauses.length ? clauses.join("; ") : "no condition is written"}. ${users.length ? `Named by ${users.join(", ")}.` : "No measure names it yet."}`;
+  });
+  return ["- Segments (named conditions its measures can add to their own):", ...each];
+}
+
 function renderModel(source: string, model: Model, info: SourceInfo): Rendered {
   const table = tableOf(info, model);
   const pk = strs(model.primary_key);
@@ -438,6 +465,8 @@ function renderModel(source: string, model: Model, info: SourceInfo): Rendered {
     `- Reads ${model.table}.`,
     ...grainLines(model, table),
     `- Primary key: ${listText(pk)}.`,
+    ...(typeof model.default_time_dimension === "string" ? [`- Its measures are measured over ${model.default_time_dimension} by default, unless a measure names its own.`] : []),
+    ...segmentLines(model),
     ...common(model),
     WHO,
   ];
@@ -448,6 +477,8 @@ function renderModel(source: string, model: Model, info: SourceInfo): Rendered {
   const p = pk.length === 1 ? table.columns.find((c) => c.name === pk[0])?.profile : undefined;
   if (p && !p.sampled && typeof p.distinct_count === "number" && typeof table.row_count === "number")
     out.push(p.distinct_count === table.row_count && !p.null_fraction ? `- Each ${pk[0]} appears once.` : `- ${pk[0]} repeats: ${num(p.distinct_count)} distinct values over ${num(table.row_count)} rows.`);
+  const repeats = keyRepeats(model, table, info.dialect, info.models);
+  if (repeats) out.push(`- Its primary key is not unique: ${repeats}. Confirm the key, or correct it, before approving.`);
   return { lines: out, who };
 }
 
@@ -501,6 +532,7 @@ function joinSql(from: string, j: Join): string {
 }
 
 const BARE = /^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$/i;
+const SEMI_AGG_WORDS: Record<string, string> = { sum: "adds those up", avg: "averages those", min: "takes the smallest of those", max: "takes the largest of those" };
 
 function renderField(ref: string, source: string, model: Model, e: ApprovalEntry, info: SourceInfo, figure: FigureEvidence | undefined): Rendered {
   const f = e.item as Obj;
@@ -508,6 +540,19 @@ function renderField(ref: string, source: string, model: Model, e: ApprovalEntry
   const out = [`${ref} (${e.kind})`];
   if (e.kind === "join") {
     const j = f as unknown as Join;
+    // A bridge join reads back its bridge, both key pairs, the dedupe rule and the bridge's counts
+    // (lib/readback-bridge.ts); semlayer readback's gate refuses one with no rule or no bridge evidence.
+    if (j.through) {
+      const via = String(j.through.model);
+      const tb = j.evidence?.through;
+      const measured = tb
+        ? [...throughLines(model.model, j, tb).map((l) => `- ${l}`), `- Checked ${j.evidence!.checked_at}.`, ...(throughCurrent(j, tb) ? [] : [`- This evidence measured another bridge or other keys; rerun semlayer check-join --source ${source} --model ${model.model} --join ${j.name}.`])]
+        : [`- No bridge evidence yet: run semlayer check-join --source ${source} --model ${model.model} --join ${j.name}.`];
+      return {
+        lines: [...out, ...description(j, null, ""), ...bridgeDefinition(model.model, j).map((l) => `- ${l}`), WHO, MEASURED, ...measured, ...technical([bridgeSql(model.model, j)])],
+        who: [`${source}.${model.model}`, `${source}.${via}`, `${source}.${j.to}`],
+      };
+    }
     out.push(...description(j, null, ""), `- Links ${joinWords(model.model, j)}.`, WHO);
     const who = [`${source}.${model.model}`, `${source}.${j.to}`];
     const sql = technical([joinSql(model.model, j)]);
@@ -536,14 +581,40 @@ function renderField(ref: string, source: string, model: Model, e: ApprovalEntry
     if (!bare) sql.push(String(f.expr));
     if (strs(f.time_grains).length) out.push(`- Time grains: ${strs(f.time_grains).join(", ")}.`);
     if (typeof f.time_zone === "string") out.push(`- Stored in time zone ${f.time_zone}.`);
+    if (typeof f.conforms_to === "string") out.push(`- ${conformedWords(model.model, f.conforms_to)}`);
+    // A week grain on a source whose weeks do not start on Monday: the owner approves the weeks they get.
+    if (info.weekStart && f.type === "time" && (!Array.isArray(f.time_grains) || f.time_grains.includes("week")))
+      out.push(`- A week starts on ${info.weekStart[0]!.toUpperCase()}${info.weekStart.slice(1)} (calendar.week_start of source ${source}).`);
   } else {
     out.push(`- ${f.agg === "count" && !f.expr ? "A count of rows" : `${AGG_WORDS[String(f.agg)] ?? `The ${String(f.agg)} of`} ${String(f.expr)}`}.`);
-    const clauses = typeof f.filter === "string" ? filterClauses(f.filter) : [];
-    if (clauses.length) out.push("- It counts only rows where:", ...clauses.map((c, i) => `  ${i + 1}. ${clauseWords(c)}`));
+    // The measure's own filter and the filter of each segment it names narrow the same rows, so the
+    // owner is shown all of them: a segment's conditions carry its name.
+    const clauses = typeof f.filter === "string" ? filterClauses(f.filter).map((c) => clauseWords(c)) : [];
+    const named = segmentNames(f).map((name) => ({ name, filter: findSegment(model, name)?.filter }));
+    for (const seg of named) {
+      if (typeof seg.filter === "string") clauses.push(...filterClauses(seg.filter).map((c) => `${clauseWords(c)} (segment ${seg.name})`));
+      else clauses.push(`the conditions of segment ${seg.name}, which model ${model.model} does not declare`);
+    }
+    if (clauses.length) out.push("- It counts only rows where:", ...clauses.map((c, i) => `  ${i + 1}. ${c}`));
     else out.push("- It counts every row.");
+    // A semi-additive measure: the owner approves which row of each period counts.
+    const nad = nonAdditiveDimension(f);
+    let kept: string | undefined;
+    if (nad) {
+      const dim = (model.dimensions ?? []).find((d) => d.name === nad.name);
+      const keys = dim ? entityKeys(model, dim) : undefined;
+      const each = keys?.length ? ` for each ${keys.join(" and ")}` : "";
+      const then = SEMI_AGG_WORDS[String(f.agg)] ?? `takes the ${String(f.agg)} of those`;
+      out.push(
+        `- Not added up across time: in each period it keeps the ${nad.window} value along ${model.model}.${nad.name}${each} (the ${nad.window === "last" ? "latest" : "earliest"} one when no period is asked for), then ${then}.`,
+      );
+      kept = `over the rows of distinct on (${[...(keys ?? []), "<period>"].join(", ")}) order by ${String(dim?.expr ?? nad.name)} ${nad.window === "last" ? "desc" : "asc"}`;
+    }
     const fmt = typeof f.format === "string" ? f.format : "not set";
     out.push(`- Format: ${fmt}${typeof f.currency === "string" ? `, in ${f.currency}` : ""}.`);
-    sql.push(`${String(f.agg)}(${f.expr === undefined ? "*" : String(f.expr)})${typeof f.filter === "string" ? ` where ${f.filter}` : ""}`);
+    if (typeof f.default_time_dimension === "string") out.push(`- Measured over ${model.model}.${f.default_time_dimension} by default.`);
+    const where = andPredicates([f.filter, ...named.map((seg) => seg.filter)].filter((t): t is string => typeof t === "string"));
+    sql.push(`${String(f.agg)}(${f.expr === undefined ? "*" : String(f.expr)})${where === undefined ? "" : ` where ${where}`}${kept ? ` ${kept}` : ""}`);
   }
   const hops = new Map<string, Join & { from: string }>();
   for (const r of reads) {
@@ -682,6 +753,25 @@ function renderAccess(aud: Audiences, access: Obj): Rendered {
   return { lines: out };
 }
 
+// A schema pair: the two schemas, and each key a join between them may use, with its constraint.
+function renderPair(ref: string, source: string, pair: Obj): Rendered {
+  const from = String(pair.from);
+  const to = String(pair.to);
+  const keys = objs<Obj>(pair.keys).map((k) => {
+    const constraint = typeof k.constraint === "string" && k.constraint.trim() ? `, from the foreign key ${plainText(k.constraint)}` : ", named by hand (no foreign key recorded)";
+    return `  - ${from}.${plainText(String(k.from))} = ${to}.${plainText(String(k.to))}${constraint}`;
+  });
+  return {
+    lines: [
+      `${ref} (schema pair of source ${source}, from ${from} to ${to})`,
+      `- A join may cross between schemas ${from} and ${to}, either way, only on these keys:`,
+      ...(keys.length ? keys : ["  - none"]),
+      `- A join between the two schemas on any other columns stays refused until a pair listing it is approved; every other join stays within one schema.`,
+      `- Saying yes lets semlayer add-join add joins on these keys and semlayer draft draft them, so a question can read tables of ${from} and ${to} together.`,
+    ],
+  };
+}
+
 // A golden's rows as semlayer readback ran them, with the tolerance the readback states.
 export interface GoldenRun {
   rows: ResultRows;
@@ -726,6 +816,7 @@ function requestWords(g: Golden): string[] {
   const order = objs<Obj>(r.order_by).map((o) => `${flat(o.field)} ${o.direction === "desc" ? "descending" : "ascending"}`);
   if (order.length) out.push(`  - Sorted by: ${order.join(", ")}.`);
   if (typeof r.limit === "number") out.push(`  - At most ${num(r.limit)} rows.`);
+  out.push(...timeShapeWords(r).map((s) => `  - ${flat(s)}`));
   return out;
 }
 
@@ -737,7 +828,7 @@ function rowsFrom(g: Golden, run: GoldenRun): string {
   return "Its SQL returns now";
 }
 
-function renderGolden(g: Golden, run: GoldenRun): string[] {
+function renderGolden(g: Golden, run: GoldenRun, bridges: string[] = []): string[] {
   const user = isObj(g.user) && Object.keys(g.user).length ? ` with user attributes ${flat(JSON.stringify(g.user))}` : "";
   const role = typeof g.role === "string" ? `role ${g.role}` : "no role of its own (access.yaml's default role, or the default audience)";
   const n = run.rows.length;
@@ -749,6 +840,7 @@ function renderGolden(g: Golden, run: GoldenRun): string[] {
     `golden:${g.name} (golden)`,
     ...quoted("", "question, from the YAML", String(g.question ?? "")),
     ...requestWords(g),
+    ...bridges,
     `- Runs as ${role}${user}.`,
     ...(typeof g.reference === "string" && g.reference.trim()
       ? quoted("", "figure the owner trusts (reference), from the YAML", g.reference)
@@ -807,14 +899,16 @@ export function renderReadbacks(
   refs: string[],
   goldens: ReadonlyMap<string, GoldenRun> = new Map(),
   figures: ReadonlyMap<string, FigureEvidence> = new Map(),
-): { target: string; text: string; content_hash: string }[] {
+): { target: string; text: string; content_hash: string; definition_hash?: string }[] {
   const infos = new Map<string, SourceInfo>();
   const info = (s: string) => infos.get(s) ?? infos.set(s, sourceInfo(root, s)).get(s)!;
   let evaluated: ReturnType<Audiences> | undefined;
   const aud: Audiences = () => (evaluated ??= audiences(root));
   const unknown = (ref: string, why: string) =>
-    new UserError(`Unknown target "${ref}": ${why}. Run semlayer status to see the models, fields, metrics and goldens; targets are source.model, source.model.field, metric:<name>, golden:<name> or access.`);
+    new UserError(`Unknown target "${ref}": ${why}. Run semlayer status to see the models, fields, metrics and goldens; targets are source.model, source.model.field, metric:<name>, golden:<name>, access or schema-pair:<source>:<from>:<to>.`);
   const blocks = new Map<string, number>();
+  let read: LedgerReply[] | undefined;
+  const replies = () => (read ??= ledgerState(root).replies);
   return [...new Set(refs)].map((ref, index) => {
     const t = parseTarget(ref);
     let r: Rendered;
@@ -826,7 +920,8 @@ export function renderReadbacks(
         if (!g) throw unknown(ref, `there is no goldens/${t.name}.yaml`);
         const run = goldens.get(t.name);
         if (!run) throw new UserError(`${ref} is read back with the rows its request compiles to: run semlayer readback --targets ${ref}.`);
-        const text = renderGolden(g, run).join("\n");
+        const source = isObj(g.request) && typeof g.request.source === "string" ? g.request.source : undefined;
+        const text = renderGolden(g, run, source ? goldenBridgeWords(g.request, info(source).lookup) : []).join("\n");
         return { target: ref, text, content_hash: goldenHash(g as unknown as Obj, run.rows, run.tolerance) };
       }
       case "access": {
@@ -834,6 +929,16 @@ export function renderReadbacks(
         entry = itemApprovals(listApprovals({ access }))[0];
         if (!entry) throw unknown(ref, "there is no access.yaml; write it as a draft first");
         r = renderAccess(aud, entry.item);
+        break;
+      }
+      case "schema-pair": {
+        const file = paths(root).source(t.source);
+        const config = existsSync(file) ? readYamlIfExists<Obj>(file) : null;
+        if (!config) throw unknown(ref, `there is no source ${t.source}`);
+        entry = pairEntries(t.source, config).find((e) => e.ref === ref);
+        if (!entry) throw unknown(ref, `sources/${t.source}.yaml declares no schema pair ${t.from} -> ${t.to}; record it with semlayer add-cross-schema`);
+        if (entry.item.status === "declined") throw unknown(ref, `the owner declined joining ${t.from} to ${t.to}, so it has no keys to read back; record them with semlayer add-cross-schema first`);
+        r = renderPair(ref, t.source, entry.item);
         break;
       }
       case "metric": {
@@ -849,7 +954,7 @@ export function renderReadbacks(
         const i = info(t.source);
         // The model as its file holds it, hashed the way semlayer approve hashes it; a field is found the way
         // semlayer approve finds it (dimensions, then measures, then joins).
-        const entries = itemApprovals(listApprovals({ models: [{ source: t.source, model, lookup: i.lookup, dialect: i.dialect }] }));
+        const entries = itemApprovals(listApprovals({ models: [{ source: t.source, model, lookup: i.lookup, dialect: i.dialect, weekStart: i.weekStart }] }));
         const field = t.kind === "field" ? t.field : undefined;
         entry = field === undefined ? entries[0] : entries.find((e) => e.kind !== "model" && e.item.name === field);
         if (!entry) throw unknown(ref, `${t.source}.${t.model} has no dimension, measure or join "${field}"`);
@@ -862,6 +967,10 @@ export function renderReadbacks(
     if (earlier === undefined && who.length) blocks.set(key, index + 1);
     const block = earlier === undefined ? who : [`Who sees it once approved: the same as item ${earlier}.`];
     const lines = r.lines.flatMap((l) => (l === WHO ? block : [l]));
-    return { target: ref, text: lines.join("\n"), content_hash: entry.hash };
+    // An approved item whose description alone changed since the owner's yes: its figures are untouched.
+    if (descriptionOnly(replies(), entry)) lines.splice(1, 0, "- Since the owner's yes, only its description changed: its definition, and so its figures, are as they approved.");
+    // definition_hash on every item, equal to content_hash for one without a description, marks the
+    // readback as one that hashed the description: a yes to it backs that text only (approval-hash.ts yesBacks).
+    return { target: ref, text: lines.join("\n"), content_hash: entry.hash, definition_hash: entry.definitionHash };
   });
 }

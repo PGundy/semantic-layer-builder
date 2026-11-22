@@ -1,6 +1,7 @@
 import { relative } from "node:path";
 import type { CommandSpec } from "../lib/command.ts";
 import { bool, list, str } from "../lib/command.ts";
+import { writeDrift } from "../lib/drift-record.ts";
 import { UserError } from "../lib/errors.ts";
 import { droppedText, dropOtherSchemas, intakeSchemas, schemaFilter, schemaListText } from "../lib/intake.ts";
 import { buildSnapshot, snapshotCounts } from "../lib/introspect.ts";
@@ -16,6 +17,7 @@ import { effectiveScope } from "../lib/table-list.ts";
 import type { Scope, Snapshot, SnapshotTable, SourceConfig, TableKind } from "../lib/types.ts";
 import type { RoleReport } from "../lib/adapters/index.ts";
 import { roleNote } from "../lib/role-sql.ts";
+import { unreadableFrom, unreadableLine, unreadablePlan } from "../lib/sql/unreadable.ts";
 
 // Datasets named by include patterns such as "analytics.*", those of the table-list file
 // included, for a BigQuery source introspected without --schemas.
@@ -177,6 +179,17 @@ const spec: CommandSpec = {
     let roleReport: RoleReport | undefined;
     const results = await executePlan(plan, { root: ctx.root, source, env: ctx.env, ...input, onRoleReport: (r) => (roleReport = r) });
 
+    // A live run also names the relations the role cannot read, which the queries above leave out.
+    let unreadable: ReturnType<typeof unreadableFrom> = [];
+    const unreadableQuery = input.resultsFile || input.planId ? null : unreadablePlan(source, schemas);
+    if (unreadableQuery) {
+      try {
+        unreadable = unreadableFrom((await executePlan(unreadableQuery, { root: ctx.root, source, env: ctx.env }))["unreadable"] ?? []);
+      } catch {
+        // The list is a courtesy; the snapshot stands without it.
+      }
+    }
+
     // The queries ran without the lock: the snapshot is read and written under it.
     const unlock = await ctx.lock();
     const previous = loadSnapshot(ctx.root, source.source);
@@ -200,9 +213,14 @@ const spec: CommandSpec = {
     }
     const loadModels = () => listModels(ctx.root, source.source).map((l) => l.model);
     const scopeChanges = recordScope(previous, snapshot, selectionMatcher(source, scope), loadModels);
+    const diff = previous ? diffSnapshots(previous, snapshot, { byFamily: previous.method !== snapshot.method }) : null;
+    // The drift record is written first, so a refusal there leaves the snapshot as it was.
+    if (diff) {
+      const unreadableNames = unreadable.map((r) => `${r.schema}.${r.name}`);
+      writeDrift(ctx.root, { source: source.source, dialect: source.dialect, snapshot, diff, at: ctx.now().toISOString(), unreadable: unreadableNames, methods: { from: previous!.method, to: snapshot.method }, models: loadModels });
+    }
     saveSnapshot(ctx.root, snapshot);
     unlock();
-    const diff = previous ? diffSnapshots(previous, snapshot) : null;
     const changes = diff && scopeChanges ? { ...diff, ...scopeChanges } : null;
 
     const counts = snapshotCounts(snapshot);
@@ -232,6 +250,7 @@ const spec: CommandSpec = {
           dropped: { tables: left.tables, schemas: left.schemas },
           changes,
           ...(roleReport ? { role_report: roleReport } : {}),
+          ...(unreadable.length ? { skipped_unreadable: unreadable } : {}),
           next,
         }),
       );
@@ -246,6 +265,8 @@ const spec: CommandSpec = {
       const modeled = diff ? modeledTables(snapshot, loadModels, scope) : undefined;
       for (const line of [...changeLines(diff, source.source, modeled), ...scopeLines(scopeChanges, source.source, diff?.tables_removed)]) ctx.out(line);
       if (unknownRows) ctx.out(unknownRows.note);
+      const skipped = unreadableLine(unreadable, source.source);
+      if (skipped) ctx.out(skipped);
       if (roleReport && !roleReport.least_privilege) ctx.out(roleNote(source, roleReport));
       ctx.out(next);
     }

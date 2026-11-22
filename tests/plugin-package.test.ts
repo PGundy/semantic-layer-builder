@@ -264,15 +264,20 @@ describe("the package's files", () => {
 });
 
 describe("the docs", () => {
-  const docs = ["README.md", "docs/plugin.md"].map((d) => [d, text(d)] as const);
+  // The reference and docs/plugin.md say what the plugin ships; the README and the quick start guide show the install.
+  const docs = ["docs/reference.md", "docs/plugin.md"].map((d) => [d, text(d)] as const);
 
   test("show the install with this marketplace's and plugin's names, and the hook's install command", () => {
     const repo = new URL(String(plugin.repository)).pathname.slice(1);
+    for (const d of ["README.md", "docs/quickstart.md", "docs/plugin.md"]) {
+      expect(text(d)).toContain(`claude plugin marketplace add ${repo}`);
+      expect(text(d)).toContain(`claude plugin install ${PLUGIN_ID}`);
+    }
+    for (const d of ["docs/quickstart.md", "docs/plugin.md"]) {
+      expect(text(d)).toContain(`/plugin marketplace add ${repo}`);
+      expect(text(d)).toContain(`/plugin install ${PLUGIN_ID}`);
+    }
     for (const [, body] of docs) {
-      expect(body).toContain(`claude plugin marketplace add ${repo}`);
-      expect(body).toContain(`claude plugin install ${PLUGIN_ID}`);
-      expect(body).toContain(`/plugin marketplace add ${repo}`);
-      expect(body).toContain(`/plugin install ${PLUGIN_ID}`);
       expect(body).toContain(`cd "<plugin root>" && ${INSTALL}`);
       expect(body).toContain(`claude plugin details ${String(plugin.name)}`);
       expect(body).toContain(`claude --agent ${String(plugin.name)}:${ROLES.interviewer.agent}`);
@@ -287,6 +292,11 @@ describe("the docs", () => {
       const named = new Set([...body.matchAll(/\bsemlayer-[a-z]+(?:-[a-z]+)*/g)].map((m) => m[0]).filter((n) => n !== DEMO_DIR));
       for (const a of agents) expect(`${name}: ${named.has(a)}`).toBe(`${name}: true`);
       for (const a of named) expect(agents).toContain(a);
+    }
+    // A document that names an agent anywhere else names one the plugin ships.
+    for (const d of ["README.md", "docs/quickstart.md", ".claude/CLAUDE.md"]) {
+      // Link targets are left out: a heading's anchor (#running-semlayer-yourself) is not an agent's name.
+      for (const m of text(d).replace(/\]\([^)]*\)/g, "]").matchAll(/\bsemlayer-[a-z]+(?:-[a-z]+)*/g)) if (m[0] !== DEMO_DIR) expect(agents).toContain(m[0]);
     }
   });
 
@@ -738,10 +748,16 @@ describe("the SessionStart hook in a project that holds a semantic layer", () =>
 });
 
 describe("the docs' links", () => {
-  test("every relative link in README.md and docs/plugin.md resolves, and each in-page anchor exists", () => {
+  test("every relative link in the README and the documents under docs/ resolves, and each anchor exists", () => {
     const missing: string[] = [];
-    for (const doc of ["README.md", "docs/plugin.md"]) {
+    const slug = (h: string) => h.toLowerCase().replace(/[^a-z0-9 -]/g, "").replace(/ /g, "-");
+    for (const doc of ["README.md", ".claude/CLAUDE.md", "docs/plugin.md", "docs/quickstart.md", "docs/reference.md"]) {
       const body = text(doc);
+      // A link to a heading of another document names a heading that document has.
+      for (const m of body.matchAll(/\]\(([^)#\s]+\.md)#([^)]+)\)/g)) {
+        const target = join(REPO, dirname(doc), m[1]!);
+        if (existsSync(target) && ![...readFileSync(target, "utf8").matchAll(/^#+ (.+)$/gm)].some((h) => slug(h[1]!) === m[2]!)) missing.push(`${doc}: ${m[1]!}#${m[2]!}`);
+      }
       for (const m of body.matchAll(/\]\(([^)#\s]+)(?:#[^)]*)?\)/g)) {
         if (!/^[a-z]+:/.test(m[1]!) && !existsSync(join(REPO, dirname(doc), m[1]!))) missing.push(`${doc}: ${m[1]!}`);
       }
@@ -786,7 +802,7 @@ describe(`Claude Code's checks${why}`, () => {
 
   test.skipIf(!claude)("every claude command the docs show exists", () => {
     const shown = new Set<string>();
-    for (const d of ["README.md", "docs/plugin.md", "CONTRIBUTING.md"]) {
+    for (const d of ["README.md", "docs/quickstart.md", "docs/reference.md", "docs/plugin.md", "CONTRIBUTING.md"]) {
       for (const m of text(d).matchAll(/\bclaude ((?:plugin|mcp) (?:marketplace )?[a-z]+)/g)) shown.add(m[1]!);
     }
     expect([...shown].sort()).toEqual(

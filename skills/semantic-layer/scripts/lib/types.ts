@@ -1,4 +1,7 @@
 // Types mirroring references/spec.md. The spec is authoritative; these follow it.
+import type { Through } from "./through.ts";
+import type { ThroughEvidence } from "./sql/through-check.ts";
+import type { CompareRequest, RunningRequest, WindowRequest } from "./time-request.ts";
 
 export const DIALECTS = ["duckdb", "postgres", "snowflake", "bigquery", "databricks"] as const;
 export type Dialect = (typeof DIALECTS)[number];
@@ -27,6 +30,7 @@ export interface Project {
   name: string;
   description?: string;
   default_source?: string;
+  layer_version?: string;
   settings?: ProjectSettings;
 }
 
@@ -61,6 +65,7 @@ export interface SourceIntake {
   mode?: IntakeMode;
   reason?: string | null;
   schemas?: string[];
+  primary?: string;
   export?: { file: string };
 }
 
@@ -78,6 +83,8 @@ export interface SourceConfig {
   scope?: Scope;
   profile?: SourceProfileSettings;
   draft?: { strip_prefixes?: string[] };
+  cross_schema?: import("./schema-scope.ts").CrossSchemaPair[];
+  calendar?: { week_start?: import("./compiler/calendar.ts").WeekDay };
 }
 
 // Snapshot
@@ -114,6 +121,7 @@ export interface SnapshotColumn {
 export interface ForeignKey {
   columns: string[];
   references: { schema?: string | null; table: string; columns: string[] };
+  constraint?: string;
 }
 
 export interface SnapshotTable {
@@ -179,6 +187,8 @@ export interface Dimension extends Approval {
   time_grains?: TimeGrain[];
   // The IANA zone a time dimension's naive timestamps are stored in, such as America/New_York.
   time_zone?: string;
+  // <model>.<dimension> of another model of the source that means the same thing (lib/conformed.ts).
+  conforms_to?: string;
   description?: string;
   synonyms?: string[];
   tags?: string[];
@@ -196,6 +206,11 @@ export interface Measure extends Approval {
   description?: string;
   synonyms?: string[];
   tags?: string[];
+  // Names of segments of the model whose filters narrow this measure, ANDed with filter (lib/segments.ts).
+  segments?: string[];
+  default_time_dimension?: string;
+  // A time dimension of the model the measure is not added up across, and which value it keeps (lib/compiler/semi-additive.ts).
+  non_additive_dimension?: { name: string; window: "last" | "first" };
 }
 
 export interface JoinKey {
@@ -217,6 +232,8 @@ export interface JoinEvidence {
   left_key_unique: boolean;
   max_fanout: number;
   suggested_relationship: Relationship | "many_to_many";
+  // A bridge join's bridge, measured by semlayer check-join (lib/sql/through-check.ts): counts only.
+  through?: ThroughEvidence;
 }
 
 export interface Join extends Approval {
@@ -230,6 +247,8 @@ export interface Join extends Approval {
   evidence?: JoinEvidence;
   // Why an approved to-one join stands although its evidence shows fan-out (a known-dirty key).
   fanout_override?: string;
+  // Present on a bridge join (lib/through.ts): the bridge model, its keys to the target and the dedupe rule.
+  through?: Through;
 }
 
 export interface Model extends Approval {
@@ -246,6 +265,8 @@ export interface Model extends Approval {
   dimensions: Dimension[];
   measures: Measure[];
   joins?: Join[];
+  segments?: import("./segments.ts").Segment[];
+  default_time_dimension?: string;
 }
 
 // Metrics
@@ -373,6 +394,11 @@ export interface QueryRequest {
   filters?: RequestFilter[];
   order_by?: { field: string; direction?: "asc" | "desc" }[];
   limit?: number;
+  // model.segment: segments of the request's base model whose filters narrow every row it reads.
+  segments?: string[];
+  running?: RunningRequest;
+  compare?: CompareRequest;
+  window?: WindowRequest;
 }
 
 export interface Golden {
@@ -391,6 +417,7 @@ export interface Golden {
   confirmed_at?: string;
   // The role and user the golden ran as when semlayer goldens confirm recorded its rows.
   confirmed_as?: GoldenRunAs;
+  unconfirmed_yes?: string; // The owner's reply semlayer goldens unconfirm set aside, on which semlayer next offers no confirm.
 }
 
 export interface GoldenRunAs {
@@ -429,6 +456,8 @@ export interface ReadbackItem {
   text: string;
   // The target's content hash when it was read back: what semlayer approve records as approved_hash.
   content_hash: string;
+  // An item with a description: its hash without the description (approval-hash.ts itemHashes).
+  definition_hash?: string;
   // A golden:<name> item only: the tolerance it was read back with, which semlayer goldens confirm records.
   tolerance?: number;
   // A golden:<name> item read back from stored rows: the --results <file> or --plan <plan_id> it took.
@@ -482,6 +511,8 @@ export interface LedgerReply {
   target: string;
   // The target's content hash when it was read back, copied from the pending readback.
   content_hash: string;
+  // Copied from the pending readback when it holds one: the hash without the item's description.
+  definition_hash?: string;
   text: string;
   verdict: ReplyVerdict | null;
   // "access" on a change to who sees the item (semlayer reply --about access): it is settled in the access
@@ -500,6 +531,28 @@ export interface LedgerQuestion {
   question: string;
   text: string;
   by: string;
+  at: string;
+}
+
+// The owner's confirmation of approvals given before the ledger recorded their yes (semlayer approve
+// --confirm-existing): each approved item, and each confirmed golden, that no recorded yes backed,
+// at the content hash it had when the owner confirmed it as it stood.
+export interface LedgerConfirm {
+  id: string;
+  kind: "confirm";
+  targets: { target: string; content_hash: string }[];
+  text: string;
+  by: string;
+  at: string;
+}
+
+// A revoke (semlayer approve --revoke) of items the ledger held a yes or a confirmation for, each at the
+// content hash it had then. It holds no owner words: it withdraws the answers given to each target
+// so far, so approving one again takes a new readback and yes.
+export interface LedgerRevoke {
+  id: string;
+  kind: "revoke";
+  targets: { target: string; content_hash: string }[];
   at: string;
 }
 

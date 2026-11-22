@@ -1,8 +1,10 @@
 // How a source's schema changed between two snapshots, and which of a table's columns a model
 // reads, so tools can report the columns a table gained or lost since its model was drafted.
+import { sameTypeFamily, typeFamily } from "./column-types.ts";
 import { intakeSchemas, schemaFilter } from "./intake.ts";
 import { findTable, qualifiedName, splitQualified } from "./naming.ts";
 import { inScope, scopeTest } from "./patterns.ts";
+import { segmentFilters } from "./segments.ts";
 import type { Dialect, Model, Scope, Snapshot, SnapshotScopeState, SnapshotTable, SourceConfig } from "./types.ts";
 
 export interface ColumnChanges {
@@ -68,8 +70,11 @@ function sameNames(a: { name: string }[], b: { name: string }[]): boolean {
 }
 
 // Tables and columns match by name: exactly, else ignoring case when that is unambiguous. A type
-// change ignores case and spacing. With no previous snapshot, every table is added.
-export function diffSnapshots(previous: Snapshot | null | undefined, next: Snapshot): SnapshotDiff {
+// change ignores case and spacing, and a type a source did not know ("unknown", empty) is never a change. With no previous snapshot, every table is added.
+// `byFamily` is for a diff between snapshots of different sources of truth (a database read and a
+// file import): a type is changed only when its family differs or both sides state different
+// precision, so spelling ("character varying" and "varchar") and a type the file does not know are no change.
+export function diffSnapshots(previous: Snapshot | null | undefined, next: Snapshot, opts: { byFamily?: boolean } = {}): SnapshotDiff {
   const prevTables = previous?.tables ?? [];
   const tablePairs = pairByName(prevTables, next.tables, qualifiedName);
   const pairedPrev = new Set(tablePairs.values());
@@ -86,7 +91,7 @@ export function diffSnapshots(previous: Snapshot | null | undefined, next: Snaps
     for (const c of t.columns) {
       const o = colPairs.get(c);
       if (!o) change.added.push({ name: c.name, type: c.type });
-      else if (o.type !== c.type && normType(o.type) !== normType(c.type)) change.retyped.push({ name: c.name, from: o.type, to: c.type });
+      else if (o.type !== c.type && normType(o.type) !== normType(c.type) && !(opts.byFamily && sameTypeFamily(o.type, c.type)) && typeFamily(o.type) !== "" && typeFamily(c.type) !== "") change.retyped.push({ name: c.name, from: o.type, to: c.type });
     }
     for (const c of old.columns) if (!pairedCols.has(c)) change.removed.push(c.name);
     if (change.added.length || change.removed.length || change.retyped.length) diff.columns.push(change);
@@ -465,7 +470,7 @@ export function incomingKeyColumns(model: Pick<Model, "model">, models: Pick<Mod
 }
 
 // The columns of `table` the model reads: bare columns (and the first part of dotted names that
-// are not join references) in dimension exprs, measure exprs and filters, its joins' `from`
+// are not join references) in dimension exprs, measure exprs, filters and segment filters, its joins' `from`
 // keys, its primary key, and `extraKeys` (the keys other models join to it on). Names match the
 // snapshot's columns ignoring case, except a quoted name that matches one exactly. Returned in
 // the table's column order, as the snapshot spells them.
@@ -478,6 +483,7 @@ export function referencedColumns(model: Model, table: SnapshotTable, dialect?: 
   for (const m of Array.isArray(model.measures) ? model.measures : []) {
     if (typeof m?.expr === "string") exprs.push(m.expr);
     if (typeof m?.filter === "string") exprs.push(m.filter);
+    for (const f of segmentFilters(m, model)) if (typeof f === "string") exprs.push(f);
   }
   for (const sql of exprs) {
     for (const id of sqlIdentifiers(sql, dialect)) {

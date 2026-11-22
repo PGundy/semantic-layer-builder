@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 // bun evals/smoke.ts [--report-only] [--update-baseline] [--baseline <file>] [--out <dir>]
-//   [--driver scripted|sdk] [--runs <n>] [--model <id>]
+//   [--driver scripted|sdk] [--runs <n>] [--model <id>] [--gate]
 // Runs the smoke subset, grades each run and compares every grader's score with evals/baseline.json
-// (docs/PRD.md FR-6.4). Exit codes: 0 when no score fell below its baseline by more than its band
-// (always with --report-only or --update-baseline), 1 on a regression, 2 when the smoke could not run.
+// (docs/PRD.md FR-6.4); a PostgreSQL scenario whose URL variable is unset is reported "not run".
+// Exit codes: 0 when no score fell below its baseline by more than its band (always with --report-only or --update-baseline), 1 on a regression, 2 when the smoke could not run.
+// --gate (evals/README.md, The live gate) is the pass/fail form for live runs: with --driver sdk it compares with evals/baseline.sdk.json and checks the key, the package and the baseline before anything is created.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -11,21 +12,33 @@ import { parseArgs } from "node:util";
 import { evalSchemaIssues } from "../skills/semantic-layer/scripts/lib/validate.ts";
 import type { GradeReport } from "./graders/types.ts";
 import { scriptedDriver } from "./runner/drivers/scripted.ts";
-import { sdkDriver } from "./runner/drivers/sdk.ts";
+import { sdkDriver, sdkPreflight } from "./runner/drivers/sdk.ts";
 import { loadScenario, loadScript, REPO_ROOT, scenarioPath, stableJson } from "./runner/files.ts";
 import { runScenario, steppingClock } from "./runner/runner.ts";
-import { EvalError, type StopReason } from "./runner/types.ts";
+import { EvalError, NotRun, type StopReason } from "./runner/types.ts";
 
 // One fixture, two personas.
 export const SMOKE_SCENARIOS = ["acme-structured", "acme-terse"] as const;
+// The PostgreSQL scenarios join the subset when their URL variable is set; otherwise the smoke says each
+// was not run, compares nothing for it and keeps its baseline entry as it is.
+export const PG_SMOKE_SCENARIO = "acme-pg-structured";
+export const PG_NOISY_SCENARIO = "acme-noisy-200";
+export const PG_SMOKE_SCENARIOS = [PG_SMOKE_SCENARIO, PG_NOISY_SCENARIO] as const;
 // Graders that measure and never fail: recorded in the baseline's `effort`, never compared.
 export const REPORT_ONLY_GRADERS = new Set(["effort"]);
+// The effort metrics the baseline records: every one but the per-item and per-role token figures,
+// which the scripted driver computes at replay; `tokens`, the run's total, stays as a reference.
+export const recordedEffort = (metric: string) => metric === "tokens" || !metric.includes("token");
+// How far above the baseline's `effort.tokens` a run's total may go before the smoke warns.
+export const TOKEN_WARN_SHARE = 0.1;
 export const BASELINE_FILE = join(REPO_ROOT, "evals", "baseline.json");
+// The live (sdk) driver's baseline, which --gate reads by default.
+export const SDK_BASELINE_FILE = join(REPO_ROOT, "evals", "baseline.sdk.json");
 // The scripted driver's clock starts here on every run, so its runs and the baseline are reproducible.
 export const SMOKE_START = "2026-01-01T00:00:00Z";
 
 export const USAGE =
-  "Usage: bun evals/smoke.ts [--report-only] [--update-baseline] [--baseline <file>] [--out <dir>] [--driver scripted|sdk] [--runs <n>] [--model <id>]";
+  "Usage: bun evals/smoke.ts [--report-only] [--update-baseline] [--baseline <file>] [--out <dir>] [--driver scripted|sdk] [--runs <n>] [--model <id>] [--gate]";
 
 export interface BaselineGrader {
   score: number | null;
@@ -82,7 +95,7 @@ export function aggregate(o: Observed): { scores: Map<string, { score: number | 
   for (const { report } of o.runs) {
     for (const g of report.graders) {
       if (REPORT_ONLY_GRADERS.has(g.grader)) {
-        for (const [k, v] of Object.entries(g.metrics ?? {})) {
+        for (const [k, v] of Object.entries(g.metrics ?? {}).filter(([k]) => recordedEffort(k))) {
           if (!metricValues.has(k)) metricValues.set(k, []);
           if (v !== null) metricValues.get(k)!.push(v);
         }
@@ -156,6 +169,19 @@ export function compare(baseline: Baseline, observed: Observed[]): Row[] {
   return rows;
 }
 
+// The lines a gate prints for its regressions: the scenario and grader, the score, the baseline and the
+// band, so a failing live run says what fell and by how much.
+export function gateLines(rows: Row[]): string[] {
+  return rows
+    .filter((r) => r.status === "REGRESSION")
+    .map((r) => `Gate: ${r.scenario} / ${r.grader}: score ${r.score}, baseline ${r.baseline}, band ${r.band}${r.why ? ` (${r.why})` : ""}.`);
+}
+
+// The baseline without the named scenarios, for a comparison that leaves them out.
+function withoutScenarios(b: Baseline, names: Set<string>): Baseline {
+  return { ...b, scenarios: Object.fromEntries(Object.entries(b.scenarios).filter(([n]) => !names.has(n))) };
+}
+
 export function formatRows(rows: Row[]): string {
   const head = ["scenario", "grader", "baseline", "score", "band", "status"];
   const cells = rows.map((r) => [r.scenario, r.grader, r.baseline, r.score, r.band, r.why ? `${r.status} (${r.why})` : r.status]);
@@ -164,17 +190,28 @@ export function formatRows(rows: Row[]): string {
   return [line(head), ...cells.map(line)].join("\n");
 }
 
-// The effort metrics beside the baseline's: reported, never compared.
-export function formatEffort(baseline: Baseline | undefined, observed: Observed[]): string {
+// The effort metrics beside the baseline's: reported, never compared. A run whose total tokens are
+// more than TOKEN_WARN_SHARE above the baseline's `effort.tokens` gets a warning, which fails nothing.
+export function formatEffort(baseline: Baseline | undefined, observed: Observed[], recordWith = RECORD_COMMAND): string {
   const lines = ["Effort (report only; it never fails the smoke):"];
+  const warnings: string[] = [];
   for (const o of observed) {
     const base = baseline?.scenarios[o.scenario]?.effort ?? {};
-    const parts = Object.entries(aggregate(o).effort)
+    const effort = aggregate(o).effort;
+    const parts = Object.entries(effort)
       .filter(([k, v]) => v !== null || (base[k] ?? null) !== null)
       .map(([k, v]) => `${k} ${show(v)} (baseline ${show(base[k])})`);
     lines.push(`  ${o.scenario}: ${parts.join(", ") || "nothing measured"}`);
+    const now = effort.tokens ?? null;
+    const was = base.tokens ?? null;
+    if (now !== null && was !== null && was > 0 && now > was * (1 + TOKEN_WARN_SHARE)) {
+      warnings.push(
+        `Warning: ${o.scenario} used ${now} tokens, ${Math.round((now / was - 1) * 100)}% above the baseline's ${was} (more than ${TOKEN_WARN_SHARE * 100}%). ` +
+          `Check what the change makes the agent read; if the rise is intended, record it with ${recordWith}.`,
+      );
+    }
   }
-  return lines.join("\n");
+  return [...lines, ...warnings].join("\n");
 }
 
 // The baseline in an existing file, or what is wrong with it.
@@ -212,7 +249,7 @@ export async function runOne(name: string, opts: RunOneOptions): Promise<{ repor
   const scenario = loadScenario(file);
   const clock = opts.driver === "scripted" ? steppingClock(SMOKE_START) : () => new Date();
   const driver = opts.driver === "sdk" ? await sdkDriver({ model: opts.model, env: opts.env, agents: scenario.agents }) : scriptedDriver(loadScript(scenario, file), clock, scenario.fixture);
-  const r = await runScenario({ scenario, driver, driverName: opts.driver, clock, outDir: opts.outDir, scenarioFile: file });
+  const r = await runScenario({ scenario, driver, driverName: opts.driver, clock, outDir: opts.outDir, scenarioFile: file, env: opts.env });
   return { report: r.grades, stop_reason: r.summary.stop_reason };
 }
 
@@ -222,6 +259,8 @@ export interface SmokeIO {
   env: Record<string, string | undefined>;
   // Replaced in tests to feed synthetic grades.
   runOne?: typeof runOne;
+  // Replaced in tests for the --gate check that the sdk package can be imported.
+  importer?: (name: string) => Promise<unknown>;
 }
 
 export async function main(argv: string[], io: SmokeIO): Promise<number> {
@@ -237,6 +276,7 @@ export async function main(argv: string[], io: SmokeIO): Promise<number> {
         driver: { type: "string" },
         runs: { type: "string" },
         model: { type: "string" },
+        gate: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
       strict: true,
@@ -249,17 +289,27 @@ export async function main(argv: string[], io: SmokeIO): Promise<number> {
     if (driver !== "scripted" && driver !== "sdk") throw new EvalError(`--driver is scripted or sdk, not "${driver}".`);
     const runs = values.runs === undefined ? 1 : Number(values.runs);
     if (!Number.isInteger(runs) || runs < 1) throw new EvalError(`--runs takes a whole number of 1 or more, not "${values.runs}".`);
-    const file = resolve(values.baseline ?? BASELINE_FILE);
+    const gate = values.gate === true;
+    if (gate && (values["update-baseline"] || values["report-only"])) {
+      throw new EvalError("--gate fails on a regression, so it cannot go with --report-only or --update-baseline. Use one of them alone, or drop --gate.");
+    }
+    // --gate with the scripted driver is the default comparison under another name; with sdk it reads its own baseline.
+    // Only a live gate prints its own lines and prefix; a scripted run prints what it prints without --gate.
+    const live = gate && driver === "sdk";
+    const gateFile = live && values.baseline === undefined;
+    const file = resolve(values.baseline ?? (gateFile ? SDK_BASELINE_FILE : BASELINE_FILE));
     const rel = shownPath(file);
     const update = values["update-baseline"] === true;
     // The command that records this baseline again, built from the flags given.
+    // A live baseline is recorded from 5 runs, whatever number the gate itself plays.
+    const recordRuns = live ? 5 : runs;
     const recordWith = [
       RECORD_COMMAND,
       ...(driver !== "scripted" ? [`--driver ${driver}`] : []),
-      ...(runs > 1 ? [`--runs ${runs}`] : []),
-      ...(values.baseline !== undefined ? [`--baseline ${rel}`] : []),
+      ...(recordRuns > 1 ? [`--runs ${recordRuns}`] : []),
+      ...(values.baseline !== undefined || gateFile ? [`--baseline ${rel}`] : []),
     ].join(" ");
-    const ownFile = `${RECORD_COMMAND} --driver ${driver} --baseline evals/baseline.${driver}.json`;
+    const ownFile = `${RECORD_COMMAND} --driver ${driver}${driver === "sdk" ? " --runs 5" : ""} --baseline evals/baseline.${driver}.json`;
     let baseline: Baseline | undefined;
     if (!update) {
       baseline = loadBaseline(file, recordWith);
@@ -278,40 +328,60 @@ export async function main(argv: string[], io: SmokeIO): Promise<number> {
       }
     }
 
+    // A live gate stops here, before a run directory exists or a driver is built, when the key or the package is missing.
+    if (live) await sdkPreflight({ env: io.env, importer: io.importer });
+
     // Runs go to --out, kept, or to a temporary directory removed afterwards; never to the repository.
     const outRoot = values.out ? resolve(values.out) : (tempDir = mkdtempSync(join(tmpdir(), "semlayer-smoke-")));
     const run = io.runOne ?? runOne;
     const observed: Observed[] = [];
-    for (const name of SMOKE_SCENARIOS) {
+    const notRun: { scenario: string; why: string }[] = [];
+    for (const name of [...SMOKE_SCENARIOS, ...PG_SMOKE_SCENARIOS]) {
       const o: Observed = { scenario: name, runs: [] };
-      for (let i = 0; i < runs; i++) {
-        const outDir = runs > 1 ? join(outRoot, `run-${i + 1}`) : outRoot;
-        mkdirSync(outDir, { recursive: true });
-        o.runs.push(await run(name, { driver, model: values.model, env: io.env, outDir }));
+      try {
+        for (let i = 0; i < runs; i++) {
+          const outDir = runs > 1 ? join(outRoot, `run-${i + 1}`) : outRoot;
+          mkdirSync(outDir, { recursive: true });
+          o.runs.push(await run(name, { driver, model: values.model, env: io.env, outDir }));
+        }
+      } catch (e) {
+        if (!(e instanceof NotRun)) throw e;
+        notRun.push({ scenario: name, why: e.message });
+        continue;
       }
       observed.push(o);
     }
+    // A scenario that was not run is neither compared nor dropped from the baseline.
+    const skipped = new Set(notRun.map((n) => n.scenario));
+    const notRunText = notRun.map((n) => n.why).join("\n");
 
     if (update) {
       const next = buildBaseline(observed, driver, runs, baseline);
-      if (baseline) io.out(`${formatRows(compare(baseline, observed))}\n`);
+      for (const name of skipped) if (baseline?.scenarios[name]) next.scenarios[name] = baseline.scenarios[name]!;
+      if (baseline) io.out(`${formatRows(compare(withoutScenarios(baseline, skipped), observed.filter((o) => baseline!.scenarios[o.scenario])))}\n`);
       writeFileSync(file, baselineText(next));
       io.out(formatEffort(next, observed));
       io.out("");
-      io.out(`Wrote ${rel} from ${runs} ${driver} run(s) of ${SMOKE_SCENARIOS.join(" and ")}.`);
+      if (notRunText) io.out(`${notRunText}\nIts baseline entry is kept as it was; record it where the variable is set.\n`);
+      io.out(`Wrote ${rel} from ${runs} ${driver} run(s) of ${observed.map((o) => o.scenario).join(", ")}.`);
       io.out(`Next: commit ${rel}, and say in the pull request why the scores changed.`);
       return 0;
     }
 
-    const rows = compare(baseline!, observed);
+    const rows = compare(withoutScenarios(baseline!, skipped), observed);
     const regressions = rows.filter((r) => r.status === "REGRESSION");
     io.out(formatRows(rows));
     io.out("");
-    io.out(formatEffort(baseline, observed));
+    io.out(formatEffort(baseline, observed, recordWith));
     io.out("");
+    if (notRunText) {
+      io.out(notRunText);
+      io.out("");
+    }
     const kept = values.out ? ` The runs are in ${shownPath(outRoot)}.` : "";
     if (regressions.length) {
-      io.out(`Smoke: ${regressions.length} regression(s) against ${rel}.${kept}`);
+      if (live) gateLines(rows).forEach((l) => io.out(l));
+      io.out(`${live ? "Gate" : "Smoke"}: ${regressions.length} regression(s) against ${rel}.${kept}`);
       io.out(
         `Next: rerun with --out <dir> to keep the runs, and read each run's grades.json and transcript.jsonl; ` +
           `if the drop is intended, record it with ${recordWith} and say why in the pull request.`,
@@ -323,7 +393,7 @@ export async function main(argv: string[], io: SmokeIO): Promise<number> {
       return 1;
     }
     const stale = rows.some((r) => r.status === "improved" || r.status === "new" || r.status === "not run");
-    io.out(`Smoke: no regression against ${rel}.${kept}`);
+    io.out(`${live ? "Gate" : "Smoke"}: no regression against ${rel}.${kept}`);
     io.out(stale ? `Next: the baseline is out of date (a score rose, a grader is new or a scenario is no longer run); record it with ${recordWith}.` : "Next: nothing to do for the evals.");
     return 0;
   } catch (e) {

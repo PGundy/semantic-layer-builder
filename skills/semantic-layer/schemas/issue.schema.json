@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "semlayer validate --json issue",
+  "description": "One entry of the issues list semlayer validate --json prints.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["level", "file", "path", "message", "code"],
+  "properties": {
+    "level": { "enum": ["error", "warning"], "description": "An error fails validation (exit 1); a warning does not." },
+    "file": { "type": "string", "description": "The file, from the semantic root, or the path the issue is about." },
+    "path": { "type": "string", "description": "The place in the file (version, measures[0].expr), or empty for the whole file." },
+    "message": { "type": "string", "minLength": 1, "description": "The issue in words, as the human lines print it. Its words may change between releases." },
+    "code": {
+      "type": "string",
+      "pattern": "^[a-z_]+\\.[a-z0-9_]+$",
+      "description": "Stable across releases, registered in scripts/lib/issue-codes/: family.name."
+    },
+    "next": { "type": "string", "minLength": 1, "description": "The command that fixes or explains the issue, where there is one." }
+  }
+}

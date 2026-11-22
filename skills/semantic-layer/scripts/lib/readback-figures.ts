@@ -68,7 +68,7 @@ function protectedWhy(root: string, source: string, model: Model, m: Measure): s
   if (!snapshot || !table) return `${model.table} is not in the snapshot, so semlayer cannot tell whether it reads a protected column (semlayer introspect --source ${source})`;
   const models = list<Model>(loadAccessLayer(root).models).filter((x) => x.source === source);
   const prot = protectedColumns(snapshot.tables, models, loadSource(root, source).dialect).get(qualifiedName(table)) ?? new Set();
-  const alone = { ...model, dimensions: [], measures: [{ ...m, filter: undefined }], primary_key: [], joins: list<Obj>(model.joins).map((j) => ({ ...j, keys: [] })) } as unknown as Model;
+  const alone = { ...model, dimensions: [], measures: [{ ...m, filter: undefined, segments: undefined }], primary_key: [], joins: list<Obj>(model.joins).map((j) => ({ ...j, keys: [] })) } as unknown as Model;
   const cols = referencedColumns(alone, table, loadSource(root, source).dialect);
   const hit = cols.filter((c) => prot.has(c) || table.columns.find((x) => x.name === c)?.profile?.redacted === true);
   return hit.length ? `it reads the protected column ${hit.join(", ")}` : undefined;
@@ -95,7 +95,16 @@ function measurePlan(layer: AccessLayer, source: SourceConfig, root: string, mod
   const base = layer.models.find((m) => m.source === source.source && m.model === model)!;
   const m = list<Measure>(base.measures).find((x) => x.name === measure)!;
   const rows = freeName(base);
-  const count = { name: rows, agg: "count", status: "approved", ...(m.filter !== undefined ? { filter: m.filter } : {}) };
+  // The count reads the rows the measure reads: for a semi-additive measure, the row it keeps per
+  // entity (compiler/semi-additive.ts), so both come from one subquery.
+  const count = {
+    name: rows,
+    agg: "count",
+    status: "approved",
+    ...(m.filter !== undefined ? { filter: m.filter } : {}),
+    ...(m.segments ? { segments: m.segments } : {}),
+    ...(m.non_additive_dimension ? { non_additive_dimension: m.non_additive_dimension } : {}),
+  };
   const copy = { ...layer, models: layer.models.map((x) => (x === base ? ({ ...x, measures: [...list(x.measures), count] } as unknown as Model) : x)) };
   const c = compileLayer({ layer: copy, source, request: { source: source.source, measures: [`${model}.${measure}`, `${model}.${rows}`] }, root, snapshot: null });
   if (!c.ok) return { why: c.reason };

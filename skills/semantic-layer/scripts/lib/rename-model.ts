@@ -14,7 +14,8 @@ const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 
 // The places that name model `from` of `source`, each with its text after the rename to `to`: the
-// model key of its own file; `to` and `evidence.to` of every join to it in the source's models;
+// model key of its own file; `to` and `evidence.to` of every join to it and every conforms_to naming one of
+// its dimensions in the source's models;
 // model.measure references in metrics.yaml; model.field references in the requests of goldens in its
 // source; and in access.yaml, row filters' `model` and `hierarchy.via` and each entry of allow.models,
 // deny.models, deny.fields and restriction targets that names it or one of its fields (a pattern whose
@@ -38,6 +39,10 @@ export function modelReferenceSites(root: string, source: string, from: string, 
       const j = obj(raw);
       if (j.to === from) add(file, ["joins", i, "to"], j.to, to);
       if (obj(j.evidence).to === from) add(file, ["joins", i, "evidence", "to"], from, to);
+    });
+    arr(m.dimensions).forEach((d, i) => {
+      const c = obj(d).conforms_to;
+      if (typeof c === "string" && c.trim().startsWith(`${from}.`)) add(file, ["dimensions", i, "conforms_to"], c, `${to}.${c.trim().slice(from.length + 1)}`);
     });
   }
 
@@ -78,6 +83,9 @@ export function modelReferenceSites(root: string, source: string, from: string, 
       if (now !== undefined) add(file, path, value, now);
     };
     for (const key of ["measures", "dimensions"]) arr(request[key]).forEach((v, i) => check(["request", key, i], v));
+    check(["request", "running", "over"], obj(request.running).over);
+    check(["request", "compare", "over"], obj(request.compare).over);
+    check(["request", "window", "dimension"], obj(request.window).dimension);
     for (const key of ["filters", "order_by"]) arr(request[key]).forEach((v, i) => check(["request", key, i, "field"], obj(v).field));
   }
 

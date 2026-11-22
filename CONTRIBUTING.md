@@ -26,6 +26,11 @@ The repository has one `package.json`, at the root, and one `bun.lock` beside it
 - `skills/semantic-layer/schemas/`: JSON Schemas for the YAML files.
 - `tests/`: the test suites; `tests/skill-docs.test.ts` checks the docs against the CLI.
 - `fixtures/acme/`: the synthetic Acme dataset (`bun run fixtures` regenerates it); `examples/`: layers built from it.
+- `fixtures/chinook/`: the public Chinook sample database (version 1.4.5, MIT), vendored unmodified with its licence; `bun fixtures/chinook/load-postgres.ts` loads it into a schema of a local Postgres. No test needs a model API key.
+
+## Where new code goes
+
+New validation goes in its own file, `skills/semantic-layer/scripts/lib/validate-rules/<topic>.ts`, not in `lib/validate.ts`. The file's default export is a function that takes the `RuleContext` of `lib/validate-rules/index.ts` (a view of the loaded files, read-only by type, that a rule never changes; the lookups `snapshotTable`, `identRules`, `checkSqlRefs` and `joinPaths`; and the calls `error` and `warn`). Each `error` and `warn` call passes a code as its last argument, registered in the workstream's family file under `skills/semantic-layer/scripts/lib/issue-codes/`; `tests/issue-codes.test.ts` fails on a call without one. `lib/validate-rules/index.ts` finds every file in the directory without an edit elsewhere, and `validateProject` runs them in file-name order after its own checks and lists their issues after its own. A new type lives beside the code that owns it; an existing type in `lib/types.ts` gets at most a one-line field.
 
 ## Tests
 
@@ -44,6 +49,12 @@ bash scripts/pg-local.sh --stop      # stops it
 ```
 
 `scripts/pg-local.sh` keeps the cluster in a directory only you can read (`${TMPDIR:-/tmp}/semlayer-pg-<uid>`, or `PG_LOCAL_DIR`), on a Unix socket only you can open, with no TCP listener. `PG_LOCAL_PORT` and `PG_BIN` override the port and the binaries; a cluster already running in the directory keeps its own port, and the printed `PG_URL` names it. Homebrew's `postgresql@16` is keg-only, so its `pg_ctl` is not on `PATH`: run `eval "$(PG_BIN="$(brew --prefix postgresql@16)/bin" bash scripts/pg-local.sh)"`.
+
+To run the live tests against one server version in Docker (13 to 17, the supported range), use `bash scripts/compat-pg.sh <major>`, for example `bash scripts/compat-pg.sh 14`. It starts `postgres:<major>-alpine` on `127.0.0.1:55432` (`COMPAT_PG_PORT` changes the port), runs every test file that reads `PG_URL`, and removes the container. CI runs it for each version in the `compat` job.
+
+The pooled and TLS connection tests (`tests/compat/pooler.test.ts`, `tests/compat/tls.test.ts`) need three servers in Docker: `bash scripts/compat-network.sh` starts `postgres:16-alpine`, PgBouncer in transaction mode in front of it, and a `postgres:16-alpine` that takes TLS connections only, with a CA and server certificate `openssl` makes for the run (nothing is committed), on `127.0.0.1:55442` to `55444` (`COMPAT_NET_PORT` changes the first), runs the two files, and removes the containers, the network and the certificates. Without those servers their live tests skip. CI runs it in the `compat-network` job.
+
+To record whether semlayer works on your managed PostgreSQL service (Supabase, Neon, RDS, Cloud SQL), follow `docs/compat/postgres.md`: `bash scripts/compat-provider.sh <provider> <schema> docs/compat/fixtures/<name>.json` with a read-only role's URL in `SEMLAYER_PROVIDER_URL` writes one redacted file you can commit, and `tests/compat-fixtures.test.ts` checks it.
 
 The live tests create and drop schemas, each test in its own uniquely named schema, in the database `PG_URL` names. They refuse to run unless its host is `localhost`, `127.0.0.1`, `::1` or a socket path, or `SEMLAYER_TEST_ALLOW_REMOTE=1` is set. Never point `PG_URL` at a database whose data you care about.
 
@@ -75,7 +86,7 @@ A change should:
 
 - add or update tests for what it changes; a fix comes with a test that reproduces the problem;
 - update `references/spec.md` and the JSON Schemas when it changes a file format, and the CLI table in `spec.md` when it adds or changes a command or flag (`tests/skill-docs.test.ts` fails when a doc shows a command or flag the CLI lacks, or the table and `--help` disagree);
-- keep `SKILL.md` under 120 lines and each phase card under 150: a phase's steps go in its card, detail in the topic reference, and a new phase `semlayer next` can name gets a row in `SKILL.md`'s router table and a card (`tests/skill-docs.test.ts` checks the caps, the table and every card's commands against `--help`);
+- keep `SKILL.md` at 110 lines or fewer (under the cap of 120) and each phase card under 150: a phase's steps go in its card, detail in the topic reference, and a new phase `semlayer next` can name gets a row in `SKILL.md`'s router table and a card (`tests/skill-docs.test.ts` checks the caps, the table and every card's commands against `--help`);
 - write docs and comments in the present tense, describing what the code does.
 
 Before a release, run the exit walkthrough by hand (`evals/walkthrough/README.md`): a fresh agent builds a layer from an empty folder and a `.env` through the plugin's hooks, and `evals/walkthrough/count.ts` counts the exit conditions of `docs/PRD-hardening.md` section 2 from its log. It needs an agent and a Postgres, so CI does not run it.
@@ -100,3 +111,15 @@ The plugin ships without an icon, so `validate --strict` prints an `ICON_MISSING
 v1 is built on `release/v1` (docs/PRD.md, decision D8). Branch from it as `v1/<pr-id>-<slug>`, for example `v1/1.4-table-list-files`, and open the pull request against `release/v1`. Each pull request implements one PR of a plan (`docs/PRD.md` section 9, or `docs/PRD-hardening.md` section 3, branched as `v1/h<n>-<slug>`), cites its requirement IDs, and fills in `.github/pull_request_template.md`. Spec, schemas, validation and docs change in the same pull request as the behaviour. A pull request merges when `scripts/verify.sh` passes in CI and its review is done; one that touches a file listed in `.github/CODEOWNERS` also needs the owner's review.
 
 A new command is a file in `skills/semantic-layer/scripts/commands/`: the file name is the command name, and the registry finds it without an edit.
+
+## Parallel work
+
+Several pull requests are often open at once. These rules keep them off each other's lines:
+
+1. **One owner per file.** A file another open pull request also edits is edited only at a named anchor (a function, a section heading, a table row) that the other does not touch; the pull request that merges second merges its base in. Two pull requests never share an anchor.
+2. **New code goes in new files.** A new command is its own file under `commands/` and needs no registry edit. A new type lives beside the code that owns it.
+3. **Reserved names.** Issue and refusal codes take their area's family (`scope.*`, `metric.*`, `join.*`, `release.*`; `schema.*` is kept for JSON-schema keyword issues), and each family is registered in a file of its own, so no pull request edits a shared list of codes.
+4. **Docs by section.** An area owns its phase card and its section of `references/spec.md`. Docs rules live in `tests/docs-rules/`, one file per document, `doc-<document>.ts` (`doc-skill.ts` for `SKILL.md`, `doc-phases-intake.ts` for `references/phases/intake.md`, `doc-interview-guide.ts` for `references/interview-guide.md`), with an area's own rules in a file named after its topic, with no `doc-` prefix; `tests/skill-docs.test.ts` loads every file there in sorted order, so a new file needs no other edit. `SKILL.md` is at most 110 lines, and a pull request adds a line to it only within the budget its plan gives it.
+5. **Computed, never hand-merged.** Eval token counts are computed at replay. The CLI table in `references/spec.md` has one single-line row per command form, sorted by its Command cell, so a conflict there is resolved by keeping both rows.
+6. **One pull request integrates.** `README.md`, `docs/quickstart.md`, `docs/reference.md`, `.claude/CLAUDE.md`, `docs/plugin.md` and the cross-references between sections of the spec are reconciled by one pull request at the end of a wave of parallel work; the others leave them alone unless their plan names an edit.
+7. **Small pull requests.** A pull request is about 400 changed lines outside tests and fixtures, or it is split.

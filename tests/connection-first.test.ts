@@ -15,7 +15,7 @@ import type { NextAction } from "../skills/semantic-layer/scripts/lib/next.ts";
 import type { ProjectStatus } from "../skills/semantic-layer/scripts/lib/status.ts";
 import type { Model, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
-import { assertLocalPg, PG_URL, semlayer, tempRoot, uniqueSchema } from "./helpers.ts";
+import { assertLocalPg, confirmExisting, PG_URL, semlayer, serverVersionNum, tempRoot, uniqueSchema } from "./helpers.ts";
 
 const EXPORT_CSV = join(import.meta.dir, "..", "examples", "acme-export", "schema.csv");
 const GOLDEN_DIR = join(import.meta.dir, "fixtures", "role-sql");
@@ -251,6 +251,8 @@ describe("an export source waits on a connection (the Acme export)", () => {
       request: { source: "warehouse", measures: [`fct_orders.${measure}`] },
       status: "draft",
     });
+    // The owner confirms the approvals written by hand above, so the ledger backs them.
+    await confirmExisting(root, "Test Owner");
     const plan = (await semlayer(root, ["goldens", "run", "--name", "orders_total", "--emit-sql", "--json"])).json<{ plan_id: string; queries: { id: string }[] }>();
     const rows = join(root, "rows.json");
     writeFileSync(rows, JSON.stringify([{ [measure]: 5 }]));
@@ -396,6 +398,7 @@ describe("the role report on connect, live Postgres", () => {
     return u.toString();
   };
 
+  let version = 0;
   beforeAll(async () => {
     if (!live) return;
     assertLocalPg(PG_URL);
@@ -406,6 +409,10 @@ describe("the role report on connect, live Postgres", () => {
     columns = `${uniqueSchema("r")}_cols`;
     writeAll = `${uniqueSchema("r")}_wall`;
     admin = new SQL({ url: PG_URL!, max: 1 });
+    version = await serverVersionNum(PG_URL!);
+    // Before PostgreSQL 15 every role may create in public, which the role report rightly lists; the
+    // cases below that expect a read-only role close that default for the length of the run.
+    if (version < 150000) await admin.unsafe("revoke create on schema public from public");
     await admin.unsafe(`create schema ${schema}`);
     await admin.unsafe(`create table ${schema}.orders (id int primary key, amount_cents bigint)`);
     await admin.unsafe(`insert into ${schema}.orders values (1, 100), (2, 250)`);
@@ -429,7 +436,7 @@ describe("the role report on connect, live Postgres", () => {
     await admin.unsafe(`grant select (id) on ${other}.secrets to ${columns}`);
     // A member of pg_write_all_data, which writes every table without a grant on it.
     await admin.unsafe(`create role ${writeAll} login password '${TEST_PASSWORD}'`);
-    await admin.unsafe(`grant pg_write_all_data to ${writeAll}`);
+    if (version >= 140000) await admin.unsafe(`grant pg_write_all_data to ${writeAll}`);
     await admin.unsafe(`grant usage on schema ${schema} to ${writeAll}`);
     await admin.unsafe(`grant select on ${schema}.orders to ${writeAll}`);
     // A table the administrator creates after the grants: the printed default privileges cover it.
@@ -438,6 +445,7 @@ describe("the role report on connect, live Postgres", () => {
 
   afterAll(async () => {
     if (!admin) return;
+    if (version < 150000) await admin.unsafe("grant create on schema public to public");
     for (const r of [reader, wide, columns, writeAll]) {
       await admin.unsafe(`drop owned by ${r}`).catch(() => {});
       await admin.unsafe(`drop role if exists ${r}`);
@@ -573,6 +581,10 @@ describe("the role report on connect, live Postgres", () => {
   });
 
   test.skipIf(!live)("a member of pg_write_all_data is reported as writing", async () => {
+    if (version < 140000) {
+      console.log(`skipped: pg_write_all_data arrived in PostgreSQL 14 (server ${version})`);
+      return;
+    }
     const { report: r } = await report(as(writeAll));
     expect(r.write_privileges.find((w) => w.schema === schema)?.privileges).toEqual(["INSERT", "UPDATE", "DELETE"]);
     expect(r.least_privilege).toBe(false);

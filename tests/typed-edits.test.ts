@@ -36,14 +36,14 @@ function expectOnly(before: string, after: string, edits: [string, string][]): v
 }
 
 describe("semlayer set", () => {
-  test("sets a description, keeping every other byte, and an unhashed key asks for no new approval", async () => {
+  test("sets a description, keeping every other byte, and asks for the approved field's new approval", async () => {
     const before = text(ORDERS);
     const r = await semlayer(root, ["set", "warehouse.orders.order_date", "description", "When the order was placed: days in UTC. # kept as text", "--json"]);
     expect(r.code).toBe(0);
     expect(r.json()).toEqual({
       changed: true,
       file: ORDERS,
-      reapprove: [],
+      reapprove: ["warehouse.orders.order_date"],
       ref: "warehouse.orders.order_date",
       key: "description",
       value: "When the order was placed: days in UTC. # kept as text",
@@ -51,7 +51,10 @@ describe("semlayer set", () => {
     const old = before.split("\n").find((l) => l.includes("When the customer placed the order (created_at)"))!;
     expectOnly(before, text(ORDERS), [[old, "    description: \"When the order was placed: days in UTC. # kept as text\""]]);
     expect(model(ORDERS).dimensions[0]!.description).toBe("When the order was placed: days in UTC. # kept as text");
-    expect((await semlayer(root, ["validate"])).code).toBe(0);
+    const v = await semlayer(root, ["validate", "--json"]);
+    expect(v.json<{ issues: { level: string; message: string }[] }>().issues.filter((i) => i.level === "error").map((i) => i.message.split(":")[0])).toEqual([
+      "warehouse.orders.order_date changed since it was approved by Dana Ruiz on 2026-10-26",
+    ]);
   });
 
   test("a value is YAML for a list key, and setting an approved item's hashed key names semlayer approve", async () => {
@@ -232,7 +235,7 @@ describe("semlayer tag", () => {
       added: ["sensitive"],
       tags: ["pii", "sensitive"],
     });
-    const emailTags = "    tags:\n      - pii\n    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n    approved_hash: sha256:1993";
+    const emailTags = "    tags:\n      - pii\n    status: approved\n    approved_by: Dana Ruiz\n    approved_at: 2026-10-26\n    approved_hash: sha256:8f0d";
     expectOnly(before, text(CUSTOMERS), [[emailTags, emailTags.replace("      - pii\n", "      - pii\n      - sensitive\n")]]);
     const human = await semlayer(root, ["tag", "warehouse.customers.email", "sensitive", "--remove"]);
     expect(human.out).toContain("Removed sensitive from warehouse.customers.email");

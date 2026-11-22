@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { CommandContext, CommandSpec } from "../lib/command.ts";
 import { str } from "../lib/command.ts";
-import { accessDraftLines, batchEntry, issueLine, reapproveLines, runBatch, ValueRefusal } from "../lib/edit.ts";
+import { accessDraftLines, batchEntry, issueLine, reapproveLines, runBatch, ValueRefusal, warningIssues } from "../lib/edit.ts";
 import { UserError } from "../lib/errors.ts";
 import { formatJson } from "../lib/output.ts";
 import { loadProject } from "../lib/project.ts";
@@ -56,6 +56,7 @@ interface Failure {
   text: string;
   alone?: string;
   next?: string;
+  code?: string;
 }
 
 // One refusal for every refused entry, nothing written. An entry that names what an earlier refused
@@ -72,7 +73,7 @@ function refusal(refused: Failure[]): UserError {
     if (f.words) made.push({ i: f.i, names: creates(f.words) });
   }
   const one = own[0]!;
-  if (own.length === 1 && !after.size && one.alone) return new UserError(one.alone, one.next);
+  if (own.length === 1 && !after.size && one.alone) return new UserError(one.alone, one.next, one.code);
   const lines = own.map((f) => f.text);
   let skipped = 0;
   for (const [i, later] of after) {
@@ -80,8 +81,14 @@ function refusal(refused: Failure[]): UserError {
     lines.push(`Entr${later.length === 1 ? "y" : "ies"} ${later.map((n) => n + 1).join(", ")} ${later.length === 1 ? "was" : "were"} not checked: ${later.length === 1 ? "it reads" : "they read"} what entry ${i + 1} would have created.`);
   }
   const counted = `${own.length === 1 ? "An entry is" : `${own.length} entries are`} refused${skipped ? ` and ${skipped} not checked` : ""}`;
-  return new UserError(`${counted}, so nothing was written:\n${lines.join("\n")}\nRemove or fix each entry named and run semlayer apply again.`);
+  // One code when every refused entry carries the same one, else the bare word batch_refused.
+  const codes = new Set(own.map((f) => f.code ?? "user_error"));
+  const code = codes.size === 1 ? [...codes][0]! : "batch_refused";
+  return new UserError(`${counted}, so nothing was written:\n${lines.join("\n")}\nRemove or fix each entry named and run semlayer apply again.`, undefined, code);
 }
+
+// Prefix of a segment's bare name in a creates set: a measure's segments list holds the bare name.
+const SEGMENT = "segment:";
 
 // The names a typed edit would create, as later entries name them.
 function creates(words: string[]): Set<string> {
@@ -97,7 +104,13 @@ function creates(words: string[]): Set<string> {
     out.add(`${first}.${name}`);
     out.add(`${first.split(".").slice(1).join(".")}.${name}`);
   } else if (command === "add-join" && first && name) out.add(`${first}.${name}`);
-  else if (command === "add-metric" && name) [name, `metric:${name}`].forEach((n) => out.add(n));
+  else if (command === "add-segment" && name) {
+    // A request names it model.segment; a measure lists it by its bare name in segments (see dependsOn).
+    const [source, model] = [flag("source"), flag("model")];
+    if (model) out.add(`${model}.${name}`);
+    if (source && model) out.add(`${source}.${model}.${name}`);
+    out.add(`${SEGMENT}${name}`);
+  } else if (command === "add-metric" && name) [name, `metric:${name}`].forEach((n) => out.add(n));
   else if ((command === "add-role" || command === "add-attribute" || command === "add-restriction") && name) [name, `${command.slice(4)}:${name}`].forEach((n) => out.add(n));
   else if (command === "goldens" && first === "new" && name) [name, `golden:${name}`].forEach((n) => out.add(n));
   else if (command === "rename" && first && second) {
@@ -114,7 +127,13 @@ function creates(words: string[]): Set<string> {
 function dependsOn(words: string[], names: Set<string>): boolean {
   if (!names.size) return false;
   const named = (t: string) => names.has(t) || names.has(t.replace(/^user\./, ""));
-  return words.some((w) => named(w) || w.split(/[\s,=()'"\[\]{}]+/).some((t) => /[.:]\w/.test(t) && named(t.replace(/[.:]+$/, ""))));
+  // A list in a word, as [sales, big] or segments=[sales], holds segment names.
+  const listed = (w: string) =>
+    (/\[([^\]]*)\]/.exec(w)?.[1] ?? "")
+      .split(",")
+      .map((t) => t.trim().replace(/^['"]|['"]$/g, ""))
+      .some((t) => t && names.has(`${SEGMENT}${t}`));
+  return words.some(listed) || words.some((w) => named(w) || w.split(/[\s,=()'"\[\]{}]+/).some((t) => /[.:]\w/.test(t) && named(t.replace(/[.:]+$/, ""))));
 }
 
 const spec: CommandSpec = {
@@ -188,6 +207,7 @@ const spec: CommandSpec = {
           refused.push({
             i,
             words: e.words,
+            code: err.code,
             text: `Entry ${i + 1} (${shown(e.words)}): ${text}`,
             ...(err instanceof ValueRefusal ? {} : { alone: `Entry ${i + 1} (${shown(e.words)}) failed, so nothing was written: ${err.message}\nFix entry ${i + 1} and run semlayer apply again.`, next: err.next }),
           });
@@ -219,7 +239,7 @@ const spec: CommandSpec = {
         return { entry: i + 1, command: e!.words, result, ...(own.length ? { warnings: own } : {}) };
       });
       const drafted = outcome.access_draft ? { returned_to_draft: true, ...outcome.access_draft } : {};
-      ctx.out(formatJson({ applied, reapprove: outcome.reapprove, warnings, ...drafted }));
+      ctx.out(formatJson({ applied, reapprove: outcome.reapprove, warnings, warning_issues: warningIssues(outcome.warnings), ...drafted }));
       return 0;
     }
     const lines: string[] = [];

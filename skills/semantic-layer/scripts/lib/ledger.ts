@@ -9,10 +9,13 @@ import { UserError } from "./errors.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { plainText } from "./output.ts";
 import { PENDING_DIR } from "./readback.ts";
-import type { LedgerEntry, LedgerQuestion, LedgerReply, PendingReadback } from "./types.ts";
+import type { ApprovalLedger } from "./approval-hash.ts";
+import type { LedgerConfirm, LedgerEntry, LedgerQuestion, LedgerReply, LedgerRevoke, PendingReadback } from "./types.ts";
 import { schemaIssues } from "./schema.ts";
 
 export const LEDGER_FILE = ".semlayer/ledger.jsonl";
+// The owner-named step that confirms approvals given before the ledger recorded their yes.
+export const CONFIRM_EXISTING = 'semlayer approve --confirm-existing --by "<owner>" --reply "<owner\'s words>"';
 const ID = /^ans_(\d{4,})$/;
 const RESTORE = `restore it from version control (git checkout -- ${LEDGER_FILE}), then run semlayer validate`;
 
@@ -39,7 +42,7 @@ export function readPending(root: string, id: string): PendingReadback {
 }
 
 // One ledger line: the entry with its keys sorted, so the same answer always writes the same bytes.
-export function ledgerLine(entry: LedgerEntry): string {
+export function ledgerLine(entry: LedgerEntry | LedgerConfirm | LedgerRevoke): string {
   const obj = entry as unknown as Record<string, unknown>;
   return `${JSON.stringify(Object.fromEntries(Object.keys(obj).sort().map((k) => [k, obj[k]])))}\n`;
 }
@@ -65,6 +68,10 @@ export interface LedgerAppender {
   // Appends the entries in order under that id and the ones after it, in one write: all of them
   // land or none do. Each line is the one append would write for its entry.
   appendAll(entries: NewLedgerEntry[]): LedgerEntry[];
+  // Appends the owner's confirmation of earlier approvals (semlayer approve --confirm-existing) under that id.
+  appendConfirm(entry: Omit<LedgerConfirm, "id">): LedgerConfirm;
+  // Appends a revoke of items the ledger held an answer for (semlayer approve --revoke) under that id.
+  appendRevoke(entry: Omit<LedgerRevoke, "id">): LedgerRevoke;
 }
 
 // Checks that the ledger can take a line (inside the root, a file whose every line is a JSON object
@@ -94,8 +101,8 @@ export function openLedger(root: string): LedgerAppender {
     });
   }
   const idAt = (k: number) => `ans_${String(max + 1 + k).padStart(4, "0")}`;
-  const write = (entries: NewLedgerEntry[]): LedgerEntry[] => {
-    const full = entries.map((entry, k) => ({ ...entry, id: idAt(k) }) as LedgerEntry);
+  const write = <T extends LedgerEntry | LedgerConfirm | LedgerRevoke>(entries: Omit<T, "id">[]): T[] => {
+    const full = entries.map((entry, k) => ({ ...entry, id: idAt(k) }) as T);
     mkdirSync(dirname(file), { recursive: true });
     // The ledger with the new lines replaces the file in one rename, so a cut-off write leaves it
     // whole. A link put at the path after openLedger's check is refused here, and one put there
@@ -107,8 +114,10 @@ export function openLedger(root: string): LedgerAppender {
   };
   return {
     id: idAt(0),
-    append: (entry) => write([entry])[0]!,
-    appendAll: (entries) => (entries.length ? write(entries) : []),
+    append: (entry) => write<LedgerEntry>([entry])[0]!,
+    appendAll: (entries) => (entries.length ? write<LedgerEntry>(entries) : []),
+    appendConfirm: (entry) => write<LedgerConfirm>([entry])[0]!,
+    appendRevoke: (entry) => write<LedgerRevoke>([entry])[0]!,
   };
 }
 
@@ -137,16 +146,68 @@ function isReply(data: unknown): data is LedgerReply {
   );
 }
 
+// A confirm line as approval reads it: kind confirm, a non-empty by and at, and each target with its hash.
+function isConfirm(data: unknown): data is LedgerConfirm {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return false;
+  const d = data as Record<string, unknown>;
+  return (
+    d.kind === "confirm" &&
+    typeof d.id === "string" &&
+    typeof d.by === "string" &&
+    d.by.trim() !== "" &&
+    typeof d.at === "string" &&
+    d.at.trim() !== "" &&
+    hashedTargets(d.targets)
+  );
+}
+
+// A revoke line: kind revoke, a non-empty at, and each target with its hash.
+function isRevoke(data: unknown): data is LedgerRevoke {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return false;
+  const d = data as Record<string, unknown>;
+  return d.kind === "revoke" && typeof d.id === "string" && typeof d.at === "string" && d.at.trim() !== "" && hashedTargets(d.targets);
+}
+
+function hashedTargets(targets: unknown): boolean {
+  return Array.isArray(targets) && targets.every((t) => typeof t === "object" && t !== null && typeof (t as { target?: unknown }).target === "string" && typeof (t as { content_hash?: unknown }).content_hash === "string");
+}
+
+// The answers that still stand once a revoke of `targets` is read: the replies to each target's
+// content and its place in a confirmation are withdrawn, so its latest answer is none. With
+// access.yaml, the changes to who sees an item that its withdrawn yes had settled go with it: the
+// file is read back whole before it is approved again.
+function withdraw(answers: LedgerAnswer[], targets: Set<string>): LedgerAnswer[] {
+  let settled = -1;
+  if (targets.has("access"))
+    answers.forEach((a, i) => {
+      if (a.kind === "reply" && a.target === "access" && a.about === undefined && a.verdict === "yes") settled = i;
+    });
+  return answers.flatMap((a, i): LedgerAnswer[] => {
+    if (a.kind === "reply") return (a.about === undefined ? targets.has(a.target) : i < settled) ? [] : [a];
+    if (a.kind === "confirm") return [{ ...a, targets: a.targets.filter((t) => !targets.has(t.target)) }];
+    return [a];
+  });
+}
+
 // The kind: reply lines of ledger text, in file order. Strict, as semlayer approve reads it, a line that is
 // not JSON, a reply line without the fields an approval needs, or a last line without a line break
 // is an error, since skipping it could let an earlier yes stand over a later no. Otherwise such lines
 // are skipped (semlayer validate reports them on its own).
 export function ledgerReplies(text: string, strict = false): LedgerReply[] {
+  return ledgerAnswers(text, strict).filter((e): e is LedgerReply => e.kind === "reply");
+}
+
+export type LedgerAnswer = LedgerReply | LedgerConfirm | LedgerRevoke;
+
+// The kind: reply, kind: confirm and kind: revoke lines of ledger text, in file order, read as
+// ledgerReplies reads them. The answers a revoke withdraws (withdraw) are left out, so no reader
+// counts a yes given before its item was revoked.
+export function ledgerAnswers(text: string, strict = false): LedgerAnswer[] {
   const fail = (why: string) => {
     throw new UserError(`${LEDGER_FILE} cannot be read: ${why}, so no approval can rely on it; nothing was approved. ${RESTORE[0]!.toUpperCase()}${RESTORE.slice(1)}.`, "semlayer validate");
   };
   if (strict && text && !text.endsWith("\n")) fail("its last line has no line break (an append was cut off)");
-  const out: LedgerReply[] = [];
+  let out: LedgerAnswer[] = [];
   text.split("\n").forEach((line, i) => {
     if (!line.trim()) return;
     let data: unknown;
@@ -157,9 +218,12 @@ export function ledgerReplies(text: string, strict = false): LedgerReply[] {
       return;
     }
     const kind = typeof data === "object" && data !== null ? (data as { kind?: unknown }).kind : undefined;
-    if (isReply(data)) out.push(data);
+    if (isRevoke(data)) out = [...withdraw(out, new Set(data.targets.map((t) => t.target))), data];
+    else if (isReply(data) || isConfirm(data)) out.push(data);
+    else if (strict && kind === "revoke") fail(`line ${i + 1} is a revoke line without the fields an approval needs (a non-empty at, and targets each with a target and a content_hash)`);
+    else if (strict && kind === "confirm") fail(`line ${i + 1} is a confirm line without the fields an approval needs (a non-empty by and at, and targets each with a target and a content_hash)`);
     else if (strict && kind === "reply") fail(`line ${i + 1} is a reply line without the fields an approval needs (a non-empty by and at, a target, a content_hash, a verdict; about only as access on a change)`);
-    else if (strict && kind !== "question") fail(`line ${i + 1} is not a reply or question line`);
+    else if (strict && kind !== "question") fail(`line ${i + 1} is not a reply, question, confirm or revoke line`);
   });
   return out;
 }
@@ -218,4 +282,37 @@ export function openAccessChanges(replies: LedgerReply[]): LedgerReply[] {
 export function currentYes(replies: LedgerReply[], target: string, hash: string): LedgerReply | undefined {
   const r = latestReply(replies, target);
   return r && r.verdict === "yes" && r.content_hash === hash ? r : undefined;
+}
+
+// The ledger as approvals read it (approval-hash.ts ApprovalLedger), from its text (undefined when the
+// project has none): each target's latest answer about its content, read strictly, so a ledger
+// semlayer approve would refuse backs nothing. An empty file is no ledger.
+export function approvalLedger(text: string | undefined): ApprovalLedger {
+  const latest: ApprovalLedger["latest"] = new Map();
+  if (text === undefined || text.trim() === "") return { present: false, latest };
+  let answers: LedgerAnswer[] = [];
+  let unreadable = false;
+  try {
+    answers = ledgerAnswers(text, true);
+  } catch (e) {
+    if (!(e instanceof UserError)) throw e;
+    unreadable = true;
+  }
+  let confirmedBefore = false;
+  for (const a of answers) {
+    if (a.kind === "confirm") confirmedBefore = true;
+    if (a.kind === "confirm") for (const t of a.targets) latest.set(t.target, { confirmed: t.content_hash });
+    else if (a.kind === "revoke") for (const t of a.targets) latest.set(t.target, { revoked: true });
+    else if (a.about === undefined) latest.set(a.target, { reply: a });
+  }
+  return { present: true, latest, ...(unreadable ? { unreadable } : {}), ...(confirmedBefore ? { confirmedBefore } : {}) };
+}
+
+// The semantic root's ledger as approvals read it. A ledger that is not a plain file inside the root
+// is present and backs nothing.
+export function readApprovalLedger(root: string): ApprovalLedger {
+  const file = join(root, LEDGER_FILE);
+  if (!lstatSync(file, { throwIfNoEntry: false })) return approvalLedger(undefined);
+  if (!lstatSync(dirname(file)).isDirectory() || !lstatSync(file).isFile()) return { present: true, latest: new Map(), unreadable: true };
+  return approvalLedger(readFileSync(file, "utf8"));
 }

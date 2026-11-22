@@ -195,6 +195,20 @@ describe("a failure changes nothing", () => {
     expect((await semlayer(root, ["apply", "--file", editsFile(edits.slice(0, 2))])).code).toBe(0);
   });
 
+  test("an entry that names a segment a refused add-segment would have created is not checked, however it names the segment", async () => {
+    const bad = ["add-segment", "--source", "warehouse", "--model", "orders", "--name", "big_sales", "--filter", "amount > (select 1)", "--description", "Big sales."];
+    const own = (await semlayer(root, bad)).err.replace(/^semlayer add-segment: /, "");
+    expect(own).toContain("subquer");
+    const later: string[][] = [
+      ["set", "warehouse.orders.revenue", "segments", "[big_sales]"],
+      ["add-field", "warehouse.orders", "--kind", "measure", "--name", "big_revenue", "--expr", "amount", "--agg", "sum", "--description", "Big revenue.", "--set", "segments=[big_sales]"],
+    ];
+    for (const entry of later) {
+      const r = await failsWith([bad, entry], "Entry 1 (semlayer add-segment", "Entry 2 was not checked: it reads what entry 1 would have created.");
+      expect(r.err.split("Entry 2").length).toBe(2);
+    }
+  });
+
   test("a moved model file and a created metrics entry are put back when a later entry fails", async () => {
     await failsWith(
       [["rename", "warehouse.regions", "areas"], TWELVE[7], TWELVE[9], ["set", "warehouse.nope", "grain", "x"]],

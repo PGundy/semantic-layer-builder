@@ -5,8 +5,10 @@ import { commitEdit, type IgnoredRead, ignoredRefusal, itemMap, locate, oneLine,
 import { UserError } from "../lib/errors.ts";
 import { findTable } from "../lib/naming.ts";
 import { formatJson } from "../lib/output.ts";
-import { listModels, loadProject, loadSnapshot } from "../lib/project.ts";
+import { listModels, loadProject, loadSnapshot, loadSource } from "../lib/project.ts";
 import { findField } from "../lib/refs.ts";
+import { backedPairs, crossSchemaLevel, schemaJoin, undeclaredPairError } from "../lib/schema-scope.ts";
+import { readApprovalLedger } from "../lib/ledger.ts";
 import { type Model, NAME_PATTERN } from "../lib/types.ts";
 
 const RELATIONSHIPS = ["many_to_one", "one_to_one", "one_to_many"];
@@ -93,6 +95,11 @@ const spec: CommandSpec = {
     };
     spell(model, "from");
     spell(target, "to");
+    // A join across schemas needs an approved pair that declares its keys (spec: Schema scope).
+    const pairs = backedPairs(loadSource(ctx.root, source), readApprovalLedger(ctx.root));
+    const shape = schemaJoin(snapshot, String(model.table), String(target.table), keys);
+    if (shape && crossSchemaLevel(pairs, shape, "draft"))
+      throw undeclaredPairError(`The join ${ref}`, source, shape, pairs, `run this semlayer add-join again`);
     const isIn = (m: Model, c: string) => (m.ignored_columns ?? []).map(String).find((x) => x.toLowerCase() === c.toLowerCase());
     const ignored: IgnoredRead[] = [];
     for (const k of keys) {

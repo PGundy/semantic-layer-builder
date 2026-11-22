@@ -37,6 +37,9 @@ async function replay(name: string, out: string, script?: Script, scenario?: Sce
   return { ...r, transcript, root: join(r.runDir, "semantic"), script: script ?? s.script };
 }
 const grader = (r: GradeReport, name: string): GraderResult => r.graders.find((g) => g.grader === name)!;
+// The effort grader's rounding: a ratio to 4 places, shown as a percentage to one place.
+const share = (n: number, d: number) => Math.round((n / d) * 10000) / 10000;
+const pct = (x: number) => `${Math.round(x * 1000) / 10}%`;
 const yaml = <T,>(root: string, rel: string) => parseYamlText(readFileSync(join(root, rel), "utf8")) as T;
 
 describe("acme-multi", () => {
@@ -60,13 +63,18 @@ describe("acme-multi", () => {
       skill_turns: 7,
       owner_turns: 7,
       role_turns: 5,
-      tokens_by_role: { interviewer: 8156, batch_analyst: 3671, readback_verifier: 3448, golden_builder: 1894, connector_runner: 0 },
-      interviewer_token_share: 0.475,
     });
-    expect(summary.tokens_by_speaker.skill).toBe(8156);
-    expect(summary.tokens).toBe(8156 + 3671 + 3448 + 1894 + summary.tokens_by_speaker.owner);
-
     const transcript = bytes["transcript.jsonl"]!.trimEnd().split("\n").map((l) => JSON.parse(l) as TranscriptTurn);
+    // Each role's tokens are its turns' (the interviewer's the skill turns'), and the share is the interviewer's of the agents'.
+    const spent = (speaker: string) => transcript.filter((t) => t.speaker === speaker).reduce((n, t) => n + t.tokens, 0);
+    const byRole = summary.tokens_by_role!;
+    expect(byRole).toEqual({ interviewer: spent("skill"), batch_analyst: spent("batch_analyst"), readback_verifier: spent("readback_verifier"), golden_builder: spent("golden_builder"), connector_runner: 0 });
+    for (const role of ["batch_analyst", "readback_verifier", "golden_builder"] as const) expect(byRole[role]).toBeGreaterThan(0);
+    expect(summary.tokens_by_speaker.skill).toBe(byRole.interviewer);
+    const agents = byRole.interviewer + byRole.batch_analyst + byRole.readback_verifier + byRole.golden_builder;
+    expect(summary.tokens).toBe(agents + summary.tokens_by_speaker.owner);
+    expect(summary.interviewer_token_share).toBe(share(byRole.interviewer, agents));
+
     for (const t of transcript) expect(evalSchemaIssues("eval-transcript-turn", t, "transcript.jsonl")).toEqual([]);
     for (const t of transcript) for (const c of t.commands ?? []) expect(c).toMatchObject({ exit_code: 0 });
     // Each role turn follows the interviewer turn that dispatched it; the owner answers the interviewer.
@@ -100,30 +108,39 @@ describe("acme-multi", () => {
       ["approvals", 1],
       ["connection_first", 1],
       ["authority", 1],
+      ["validate", 1],
       ["effort", null],
     ]);
     expect(grader(grades, "authority").details).toContain("transcript.jsonl: each of the 5 role-agent turn(s) ran only the semlayer commands its role may run.");
     const effort = grader(grades, "effort");
-    expect(effort.metrics).toMatchObject({ interviewer_tokens: 8156, interviewer_token_share: 0.475, reference_interviewer_tokens: 10374, interviewer_tokens_vs_reference: 0.7862 });
+    // The reference is acme-structured's run in the same directory: its skill tokens.
+    const reference = (JSON.parse(readFileSync(join(out, "acme-structured-20260101T000000000Z", "summary.json"), "utf8")) as Summary).tokens_by_speaker.skill;
+    const vs = share(byRole.interviewer, reference);
+    // The scripted interviewer stays under the scenario's 80% of acme-structured's interviewer tokens.
+    expect(vs).toBeLessThanOrEqual(0.8);
+    expect(effort.metrics).toMatchObject({ interviewer_tokens: byRole.interviewer, interviewer_token_share: summary.interviewer_token_share, reference_interviewer_tokens: reference, interviewer_tokens_vs_reference: vs });
     expect(effort.details.slice(-2)).toEqual([
-      "acme-structured-20260101T000000000Z/summary.json: the interviewer used 8156 tokens, 78.6% of the 10374 the single-agent run acme-structured-20260101T000000000Z used.",
-      "The interviewer holds 78.6% of acme-structured's interviewer tokens, within the scenario's max_interviewer_share of 80%.",
+      `acme-structured-20260101T000000000Z/summary.json: the interviewer used ${byRole.interviewer} tokens, ${pct(vs)} of the ${reference} the single-agent run acme-structured-20260101T000000000Z used.`,
+      `The interviewer holds ${pct(vs)} of acme-structured's interviewer tokens, within the scenario's max_interviewer_share of 80%.`,
     ]);
   }, 60_000);
 
   test("effort fails only above max_interviewer_share, and says why when the reference run is missing", async () => {
     const out = temp();
-    await replay("acme-structured", out);
-    // The interviewer reads the brief packet itself: its 3,105 tokens on the drafting turn.
+    const reference = (await replay("acme-structured", out)).summary.tokens_by_speaker.skill;
+    // The interviewer reads the brief packet itself: it runs the batch analyst's semlayer brief on its own turn too.
     const s = named("acme-multi");
     const heavy = structuredClone(s.script);
-    heavy.skill[2]!.tokens! += 3105;
+    expect(heavy.skill[3]!.agent).toBe("batch_analyst");
+    heavy.skill[2]!.semlayer = [...(heavy.skill[2]!.semlayer ?? []), ...heavy.skill[3]!.semlayer!];
     const r = await replay("acme-multi", out, heavy);
     const effort = grader(r.grades, "effort");
     expect(effort).toMatchObject({ passed: false, score: null });
-    expect(effort.metrics!.interviewer_tokens_vs_reference).toBe(1.0855);
+    const vs = share(r.summary.tokens_by_speaker.skill, reference);
+    expect(vs).toBeGreaterThan(0.8);
+    expect(effort.metrics!.interviewer_tokens_vs_reference).toBe(vs);
     expect(effort.details.at(-1)).toBe(
-      "The interviewer holds 108.6% of acme-structured's interviewer tokens, above the scenario's max_interviewer_share of 80%; dispatch more of the reading to the role agents (agents/semlayer-*.md).",
+      `The interviewer holds ${pct(vs)} of acme-structured's interviewer tokens, above the scenario's max_interviewer_share of 80%; dispatch more of the reading to the role agents (agents/semlayer-*.md).`,
     );
     expect(r.grades.passed).toBe(false);
 
@@ -135,9 +152,11 @@ describe("acme-multi", () => {
     expect(e.details.at(-1)).toStartWith("not compared: no finished scripted run of acme-structured beside this run; run bun evals/runner/run.ts --scenario acme-structured --driver scripted --out ");
     // Without a reference, the threshold applies to the interviewer's share of the agents' tokens.
     const { reference: _r, ...noRef } = s.scenario.grading!;
-    const share = await replay("acme-multi", temp(), undefined, { ...s.scenario, grading: { ...noRef, max_interviewer_share: 0.4 } });
-    expect(grader(share.grades, "effort")).toMatchObject({ passed: false });
-    expect(grader(share.grades, "effort").details.at(-1)).toStartWith("The interviewer holds 47.5% of the agents' tokens, above the scenario's max_interviewer_share of 40%");
+    const own = await replay("acme-multi", temp(), undefined, { ...s.scenario, grading: { ...noRef, max_interviewer_share: 0.4 } });
+    const held = own.summary.interviewer_token_share!;
+    expect(held).toBeGreaterThan(0.4);
+    expect(grader(own.grades, "effort")).toMatchObject({ passed: false });
+    expect(grader(own.grades, "effort").details.at(-1)).toStartWith(`The interviewer holds ${pct(held)} of the agents' tokens, above the scenario's max_interviewer_share of 40%`);
   }, 90_000);
 
   test("a role agent that runs semlayer approve or semlayer reply is refused by the guard, approves nothing and fails authority", async () => {

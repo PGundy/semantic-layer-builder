@@ -6,6 +6,7 @@ import { UserError } from "../errors.ts";
 import { sortTables } from "../project.ts";
 import type { Snapshot, SnapshotMethod, SourceConfig } from "../types.ts";
 import { importDbt } from "./dbt.ts";
+import { type DbtSemantic, readDbtSemantic } from "./dbt-semantic.ts";
 import { importDdl } from "./ddl.ts";
 import { importInformationSchema } from "./information-schema.ts";
 
@@ -17,6 +18,8 @@ export interface ImportFiles {
   file: string;
   // Absolute path of a dbt catalog.json, for dbt_manifest only.
   catalog?: string;
+  // Also read the manifest's semantic models and metrics (dbt_manifest only).
+  semantic?: boolean;
 }
 
 // Header names that mark a delimited file as a column export: a table and a column field.
@@ -82,7 +85,7 @@ export async function importSnapshot(
   requested: ImportFormat | undefined,
   files: ImportFiles,
   capturedAt: string,
-): Promise<{ snapshot: Snapshot; warnings: string[]; format: ImportFormat; detected: boolean }> {
+): Promise<{ snapshot: Snapshot; warnings: string[]; format: ImportFormat; detected: boolean; semantic?: DbtSemantic }> {
   const content = read(files.file);
   const label = basename(files.file);
   const format = requested ?? detectFormat(files.file, content);
@@ -93,6 +96,13 @@ export async function importSnapshot(
     );
   }
   if (files.catalog && format !== "dbt_manifest") throw new UserError("--catalog applies only to --format dbt_manifest.");
+  if (files.semantic && format !== "dbt_manifest") {
+    throw new UserError(
+      `--semantic reads the semantic models and metrics of a dbt manifest.json, and ${label} is read as ${format}.`,
+      `semlayer import --source ${source.source} --file target/manifest.json --semantic`,
+      "semantic_needs_dbt_manifest",
+    );
+  }
   const result =
     format === "information_schema"
       ? importInformationSchema(content, label)
@@ -103,6 +113,7 @@ export async function importSnapshot(
           })
         : await importDdl(content, source.dialect);
   const warnings = [...result.warnings];
+  const semantic = files.semantic ? readDbtSemantic(JSON.parse(content)) : undefined;
   const seen = new Map<string, number>();
   const tables = result.tables.filter((t) => {
     const k = `${t.schema ?? ""}.${t.name}`.toLowerCase();
@@ -119,5 +130,5 @@ export async function importSnapshot(
     method: format,
     tables: sortTables(tables),
   };
-  return { snapshot, warnings, format, detected: requested === undefined };
+  return { snapshot, warnings, format, detected: requested === undefined, ...(semantic ? { semantic } : {}) };
 }

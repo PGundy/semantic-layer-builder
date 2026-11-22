@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { itemHash } from "../skills/semantic-layer/scripts/lib/approval-hash.ts";
+import { itemHash, itemHashes } from "../skills/semantic-layer/scripts/lib/approval-hash.ts";
 import type { NextAction } from "../skills/semantic-layer/scripts/lib/next.ts";
 import { UNPROTECT } from "../skills/semantic-layer/scripts/lib/output.ts";
 import { duckdbSource, initProject, semlayer, tempDir, tempRoot } from "./helpers.ts";
@@ -115,10 +115,12 @@ describe("items 3 and 4: the readback gate's step and drafted counts", () => {
     expect(await next(root)).toMatchObject({ kind: "run", action: { command: "readback" } });
   });
 
-  test("a description is outside the approval hash, so describing a drafted count changes no recorded approval", () => {
+  test("a drafted count's description is part of the hash the owner approves, and leaves its definition hash as it was", () => {
     const measure = { name: "product_count", agg: "count", format: "integer", status: "approved" };
     const scope = { source: "wh", model: { model: "products", source: "wh", table: "shop.products" } as never };
-    expect(itemHash("measure", { ...measure, description: "Number of rows of shop.products" }, scope)).toBe(itemHash("measure", measure, scope));
+    const described = itemHashes("measure", { ...measure, description: "Number of rows of shop.products" }, scope);
+    expect(described.hash).not.toBe(itemHash("measure", measure, scope));
+    expect(described.definitionHash).toBe(itemHash("measure", measure, scope));
   });
 });
 

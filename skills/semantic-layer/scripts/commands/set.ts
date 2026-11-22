@@ -79,7 +79,8 @@ const spec: CommandSpec = {
     "allow_models, ...) is written a,b or [a, b]: primary_key order_id,line_no and primary_key '[order_id, line_no]' write the same.\n" +
     "One name is written [a], as primary_key '[order_id]'. An edit to an approved access.yaml makes it a draft again.\n" +
     "A model has no filter: a rule for every figure of a model goes on each measure's filter, and\n" +
-    "semlayer set <s>.<m> filter \"<rule>\" prints the one semlayer apply that writes it on every measure.",
+    "semlayer set <s>.<m> filter \"<rule>\" prints the one semlayer apply that adds it to every measure's existing filter, for a rule that is new.\n" +
+    "To replace a measure's rule, set that measure's filter whole; a rule several measures share is a segment (semlayer add-segment --help).",
   options: { unset: { type: "boolean" } },
   positionals: true,
   writes: "whole",
@@ -136,7 +137,8 @@ const spec: CommandSpec = {
       const edits = measures.length
         ? measures.map((m) => ["set", `${ref}.${m.name}`, "filter", typeof m.filter === "string" && m.filter.trim() ? `(${m.filter.trim()}) and (${rule})` : rule])
         : [["set", `${ref}.<measure>`, "filter", rule]];
-      throw new UserError(`A model has no filter: a rule that holds for every figure of ${ref} goes on each measure's filter. Write it on every measure ${inTurnApply(edits)}.`);
+      throw new UserError(`A model has no filter: a rule that holds for every figure of ${ref} goes on each measure's filter. Write it on every measure ${inTurnApply(edits)}. ` +
+          `These entries ADD the rule to each measure's existing filter, so they are for a rule that is new. To REPLACE a measure's rule, set that measure's filter whole, on the measures the owner named: semlayer set <source>.<model>.<measure> filter "<the whole new rule>". A rule several measures share can be stated once: semlayer add-segment --source <source> --model <model> --name <segment> --filter "<rule>", then semlayer set <source>.<model>.<measure> segments '[<segment>]' on each.`);
     }
     if (!(key in props)) {
       const known = Object.keys(props).filter((k) => !APPROVAL_FIELDS.includes(k) && !OWNED[k]);

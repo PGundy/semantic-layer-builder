@@ -40,8 +40,8 @@ describe("examples/acme goldens use cross_check_sql", () => {
     const issues = validateProject(ACME);
     expect(issues.filter((i) => i.level === "error")).toEqual([]);
     expect(issues.filter((i) => i.path === "sql" || i.message.includes("is now cross_check_sql"))).toEqual([]);
-    // Beyond the confirmations made before semlayer goldens confirm required a recorded yes, the goldens'
-    // only warning is the draft golden that names a measure engineering has not added yet.
+    // The example's ledger backs every confirmed golden, so the goldens' only warning is the draft golden
+    // that names a measure engineering has not added yet.
     const goldenIssues = issues.filter((i) => i.file.startsWith("goldens/") && !i.message.startsWith("golden:"));
     expect(goldenIssues.map((i) => [i.level, i.file, i.path])).toEqual([["warning", "goldens/new_customers_2025.yaml", "request.measures[0]"]]);
   });
@@ -63,6 +63,10 @@ describe("examples/acme goldens use cross_check_sql", () => {
     // The copy's lake views read the fixture by absolute path.
     const lake = join(t.root, "sources", "lake.yaml");
     writeFileSync(lake, readFileSync(lake, "utf8").replaceAll("'../../../fixtures/", `'${join(REPO, "fixtures")}/`));
+    // The example's ledger confirms the golden as it stands; without that line, only a yes backs it.
+    const ledger = join(t.root, ".semlayer", "ledger.jsonl");
+    const confirm = JSON.parse(readFileSync(ledger, "utf8")) as { targets: { target: string }[] };
+    writeFileSync(ledger, `${JSON.stringify({ ...confirm, targets: confirm.targets.filter((x) => x.target !== "golden:sessions_2025") })}\n`);
     const path = join(t.root, "goldens", "sessions_2025.yaml");
     const committed = readFileSync(path, "utf8");
     writeFileSync(path, beforeRename(committed));
@@ -78,7 +82,7 @@ describe("examples/acme goldens use cross_check_sql", () => {
 
     writeFileSync(path, committed);
     expect(validateProject(t.root).filter((i) => i.file === "goldens/sessions_2025.yaml")).toEqual([]);
-    const confirm = await semlayer(t.root, ["goldens", "confirm", "--name", "sessions_2025", "--by", "Dana Ruiz", "--tolerance", "0"]);
-    expect(confirm.code).toBe(0);
+    const confirmed = await semlayer(t.root, ["goldens", "confirm", "--name", "sessions_2025", "--by", "Dana Ruiz", "--tolerance", "0"]);
+    expect(confirmed.code).toBe(0);
   });
 });

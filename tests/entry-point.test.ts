@@ -43,10 +43,10 @@ describe("/semlayer", () => {
   });
 
   test("every doc and agent that names the skill names it semlayer", () => {
-    const docs = ["README.md", "docs/plugin.md", ...readdirSync(join(REPO, "agents")).map((a) => `agents/${a}`)];
+    const docs = ["README.md", ".claude/CLAUDE.md", "docs/quickstart.md", "docs/reference.md", "docs/plugin.md", ...readdirSync(join(REPO, "agents")).map((a) => `agents/${a}`)];
     for (const d of docs) expect(`${d}: ${/the `?semantic-layer`? skill/.test(read(d))}`).toBe(`${d}: false`);
     expect(read("agents/semlayer-interviewer.md")).toContain("Load the semlayer skill");
-    expect(read("README.md")).toContain("the `semlayer` skill");
+    expect(read("docs/reference.md")).toContain("the `semlayer` skill");
     const plugin = flat(read("docs/plugin.md"));
     expect(plugin).toContain("| This plugin | `/semantic-layer-builder:semlayer`, and the bare `/semlayer` unless another command already uses that name |");
     expect(plugin).toContain("| A copy of `skills/semantic-layer/` in a project's or your own `.claude/skills/` | `/semlayer` |");
@@ -76,19 +76,19 @@ describe("the permission rule, said once", () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
-  test("SKILL.md tells the agent to mention it once and never to add it; the README's quick start shows it, honestly", () => {
+  test("SKILL.md tells the agent to mention it once and never to add it; the quick start guide shows it, honestly", () => {
     const s = flat(skill);
     expect(s).toContain("The first time it asks them to approve one, or they say the prompts are in the way, tell them once that they may add the rule `Bash(semlayer *)` under `permissions.allow`");
     expect(s).toContain("never edit a settings file to add it yourself");
     for (const f of PERMISSION_FILES) expect(s).toContain(`\`${f.file}\` (${f.scope})`);
-    const readme = read("README.md");
-    const quick = flat(readme.slice(readme.indexOf("## Quick start"), readme.indexOf("## What a session looks like")));
+    const guide = read("docs/quickstart.md");
+    const quick = flat(guide.slice(guide.indexOf("## Fewer permission prompts"), guide.indexOf("## When something goes wrong")));
     expect(quick).toContain("add the rule `Bash(semlayer *)` under `permissions.allow`");
     for (const f of PERMISSION_FILES) expect(quick).toContain(`\`${f.file}\` (${f.scope})`);
     expect(quick).toContain('{ "permissions": { "allow": ["Bash(semlayer *)"] } }');
-    expect(JSON.parse(/```json\n([\s\S]*?)```/.exec(readme)![1]!)).toEqual({ permissions: { allow: ["Bash(semlayer *)"] } });
+    expect(JSON.parse(/```json\n([\s\S]*?)```/.exec(guide)![1]!)).toEqual({ permissions: { allow: ["Bash(semlayer *)"] } });
     expect(quick).toContain("The tool never adds it for you.");
-    // Untested here: how Claude Code matches a heredoc. The README says so and links the documentation.
+    // Untested here: how Claude Code matches a heredoc. The guide says so and links the documentation.
     expect(quick).toContain("[permissions documentation](https://code.claude.com/docs/en/permissions)");
     expect(quick).toContain("so such a command may still ask");
   });
@@ -139,28 +139,66 @@ describe("the agents", () => {
   });
 });
 
-describe("the README, for someone at a terminal with ten minutes", () => {
+describe("the README, the quick start guide and the reference, for someone at a terminal", () => {
   const readme = read("README.md");
-  const headings = [...readme.matchAll(/^(#{2,3}) (.+)$/gm)].map((m) => `${m[1]} ${m[2]}`);
+  const guide = read("docs/quickstart.md");
+  const reference = read("docs/reference.md");
+  const headingsOf = (text: string) => [...text.replace(/```[\s\S]*?```/g, "").matchAll(/^(#{2,3}) (.+)$/gm)].map((m) => `${m[1]} ${m[2]}`);
 
-  test("opens with what it is, then the quick start, in the order a person needs", () => {
-    expect(readme.indexOf("## Quick start")).toBeLessThan(1200);
-    expect(headings.slice(0, 9)).toEqual([
+  test("the README is short: what it is, what you get, the quick start, then where to read more", () => {
+    expect(readme.split("\n").length).toBeLessThan(140);
+    expect(headingsOf(readme)).toEqual([
+      "## What you get",
       "## Quick start",
-      "### Try it on sample data",
-      "### On your own warehouse",
       "## What a session looks like",
-      "## Running semlayer yourself",
-      "## What it builds",
-      "## Where it runs",
-      "### As an MCP server",
-      "## Trust model",
+      "## How a build goes",
+      "## Is it safe to point at my database?",
+      "## Documentation",
+      "## Status",
+      "## License",
     ]);
-    for (const h of ["## Sources and dialects", "## Example", "## Develop", "## License"]) expect(headings).toContain(h);
+    // The three numbered steps of its quick start, and a link to each document a reader may want next.
+    const quick = flat(readme.slice(readme.indexOf("## Quick start"), readme.indexOf("## What a session looks like")));
+    for (const step of ["**1. Install the plugin**", "**2. Try it on sample data.**", "**3. Use it on your own database**"]) expect(quick).toContain(step);
+    expect(quick).toContain("claude plugin marketplace add PGundy/semantic-layer-builder claude plugin install semantic-layer-builder@semantic-layer-builder");
+    expect(quick).toContain("WAREHOUSE_URL=postgres://<user>:<password>@<host>:5432/<database>?sslmode=require");
+    for (const link of ["(docs/quickstart.md)", "(docs/reference.md)", "(.claude/CLAUDE.md)", "(skills/semantic-layer/SKILL.md)", "(docs/plugin.md)", "(CONTRIBUTING.md)", "(SECURITY.md)"]) expect(readme).toContain(link);
   });
 
-  test("the quick start names Claude Code and Bun with versions, the install, the role, the .env line, /semlayer and semlayer doctor", () => {
-    const quick = flat(readme.slice(readme.indexOf("## Quick start"), readme.indexOf("## What a session looks like")));
+  test("the guide goes step by step, and the reference keeps the detail in the order a person needs", () => {
+    expect(headingsOf(guide)).toEqual([
+      "## Words this guide uses",
+      "## Before you start",
+      "## Step 1. Install the plugin",
+      "## Step 2. Try it on sample data",
+      "## Step 3. Connect your own database",
+      "## Step 4. Answer Claude's questions",
+      "## Step 5. Stop, resume and review",
+      "## Step 6. Change it later",
+      "## Fewer permission prompts",
+      "## When something goes wrong",
+      "## Running the commands yourself",
+    ]);
+    expect(headingsOf(reference).slice(0, 5)).toEqual(["## Running semlayer yourself", "## What it builds", "## Where it runs", "### As an MCP server", "## Trust model"]);
+    for (const h of ["## Sources and dialects", "## Example", "## Develop"]) expect(headingsOf(reference)).toContain(h);
+  });
+
+  test("CLAUDE.md is short, is for changing the code, and sends an agent building a layer to the skill", () => {
+    const claude = read(".claude/CLAUDE.md");
+    // The repository root is the plugin root, where claude plugin validate --strict fails on a CLAUDE.md.
+    expect(existsSync(join(REPO, "CLAUDE.md"))).toBe(false);
+    // Claude Code loads it into every session started in a clone, so it stays short.
+    expect(claude.split("\n").length).toBeLessThan(60);
+    expect(headingsOf(claude)).toEqual(["## Layout", "## Commands", "## Where a change goes", "## Rules"]);
+    expect(flat(claude)).toContain("To build a layer for an owner, this file is not the guide: load the skill (`/semlayer`, or `skills/semantic-layer/SKILL.md`) and follow it.");
+    expect(flat(claude)).toContain("bash scripts/verify.sh");
+    expect(flat(claude)).toContain("no approval without the owner's recorded yes");
+    // One document for an agent: the outline that stood beside it is gone.
+    expect(existsSync(join(REPO, "docs", "agent-quickstart.md"))).toBe(false);
+  });
+
+  test("the guide names Claude Code and Bun with versions, the install, the role, the .env line, /semlayer and semlayer doctor", () => {
+    const quick = flat(guide);
     expect(quick).toContain("[Bun](https://bun.sh) 1.4 or later");
     expect(quick).toMatch(/\[Claude Code\]\(https:\/\/code\.claude\.com\/[^)]+\) \(checked here with \d+\.\d+\.\d+/);
     expect(quick).toContain("claude plugin marketplace add PGundy/semantic-layer-builder claude plugin install semantic-layer-builder@semantic-layer-builder");
@@ -171,14 +209,14 @@ describe("the README, for someone at a terminal with ten minutes", () => {
     // start first says to type it, with the documentation's caveat.
     const first = quick.indexOf("/semlayer");
     expect(quick.indexOf("[skills documentation](https://code.claude.com/docs/en/skills)")).toBeGreaterThan(first);
-    expect(quick.indexOf("[skills documentation](https://code.claude.com/docs/en/skills)")).toBeLessThan(quick.indexOf("### Try it on sample data") + 400);
+    expect(quick.indexOf("[skills documentation](https://code.claude.com/docs/en/skills)")).toBeLessThan(quick.indexOf("## Step 3. Connect your own database"));
     expect(quick).toContain("the bare `/semlayer` invokes it too unless another command already uses that name");
     expect(quick).toContain("ask Claude to run `semlayer doctor`");
   });
 
   test("the session excerpt shows measure, ask, read back, approve, and says how to stop and resume and that it is all files", () => {
     const at = readme.indexOf("## What a session looks like");
-    const s = readme.slice(at, readme.indexOf("## Running semlayer yourself"));
+    const s = readme.slice(at, readme.indexOf("## How a build goes"));
     expect(s).toContain("illustrative");
     for (const part of ["semlayer setup --source warehouse", "semlayer baseline --source warehouse", "Approve?", "Stop here or continue?", "> yes", "semlayer reply --readback rb_0004 --answers - --approve"])
       expect(s).toContain(part);
@@ -189,7 +227,7 @@ describe("the README, for someone at a terminal with ten minutes", () => {
   });
 
   test("Running semlayer yourself gives the doctor's PATH line and the commands a person uses, and each runs as written in a demo project", async () => {
-    const s = readme.slice(readme.indexOf("## Running semlayer yourself"), readme.indexOf("## What it builds"));
+    const s = reference.slice(reference.indexOf("## Running semlayer yourself"), reference.indexOf("## What it builds"));
     expect(s).toContain("`export PATH=\"$PATH\":'<plugin root>/bin'`");
     const block = /```sh\n([\s\S]*?)```/.exec(s)![1]!;
     const commands = block.split("\n").map((l) => l.replace(/\s+#.*$/, "").trim()).filter(Boolean);
@@ -212,7 +250,7 @@ describe("the README, for someone at a terminal with ten minutes", () => {
   }, 60_000);
 
   test("Where it runs: the terminal first, the documentation linked for what is not tested here, and the copy without the plugin", () => {
-    const s = flat(readme.slice(readme.indexOf("## Where it runs"), readme.indexOf("### As an MCP server")));
+    const s = flat(reference.slice(reference.indexOf("## Where it runs"), reference.indexOf("### As an MCP server")));
     expect(s).toContain("Claude Code in the terminal is the supported surface.");
     expect(s).toContain("IDE extensions and the desktop app's Code tab load the same plugin ([plugins documentation](https://code.claude.com/docs/en/plugins))");
     expect(s).toContain("claude.ai and Cowork do not install it, because it ships a command (`bin/semlayer`)");

@@ -3,6 +3,7 @@ import { dirname, extname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { CommandContext, CommandSpec } from "../lib/command.ts";
 import { bool, list, str } from "../lib/command.ts";
+import { sourceWeekStart, WEEK_DAYS } from "../lib/compiler/calendar.ts";
 import { redactCredentials } from "../lib/credentials.ts";
 import { envExampleNote, ignoreEnvFiles, resolveConnection, writeEnvExample } from "../lib/env-file.ts";
 import { UserError } from "../lib/errors.ts";
@@ -10,6 +11,7 @@ import { writeFileAtomic } from "../lib/lock.ts";
 import { patternFlags } from "../lib/export-filters.ts";
 import { intakeMode, intakeSchemas, SCHEMA_NAME_HINT, schemaListIssues } from "../lib/intake.ts";
 import { qualifiedName } from "../lib/naming.ts";
+import { primarySchema } from "../lib/schema-scope.ts";
 import { formatJson, formatTable } from "../lib/output.ts";
 import { filterInScope } from "../lib/patterns.ts";
 import { listModels, loadProject, loadSnapshot, loadSource, paths, projectSettings } from "../lib/project.ts";
@@ -123,7 +125,8 @@ const spec: CommandSpec = {
   usage:
     "setup --source <source> --dialect duckdb|postgres|snowflake|bigquery|databricks (--env VAR | --env-prefix PREFIX | --export <file> [--reason <text>])\n" +
     "      [--schemas a,b] [--include <pattern>]... [--exclude <pattern>]... [--tables-file <path>]\n" +
-    "      [--database <path>] [--view name=relation]... [--name <project>]\n" +
+    "      [--database <path>] [--view name=relation]... [--name <project>] [--primary <schema>]\n" +
+    "      [--week-start monday|tuesday|wednesday|thursday|friday|saturday|sunday]\n" +
     "setup --print-role-sql --dialect postgres|redshift|snowflake|bigquery|databricks --schemas a,b [--role-name semlayer_reader]\n" +
     "      [--database <name>] [--warehouse <name>] [--catalog <name>] [--project <id>]\n\n" +
     "  Runs semlayer init when there is no project, writes or updates sources/<source>.yaml in place, sets the scope,\n" +
@@ -132,7 +135,10 @@ const spec: CommandSpec = {
     "  URL; --env-prefix names a postgres connection in parts (PG reads PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE and\n" +
     "  PGSSLMODE). The variables come from the environment, else from --env-file, else from the .env beside the semantic\n" +
     "  root, which setup keeps out of version control (.gitignore). The same arguments again change nothing;\n" +
-    "  a group of flags left out (--schemas; the scope flags; --database; --view) leaves that part of the source as it is.\n" +
+    "  a group of flags left out (--schemas; the scope flags; --database; --view; --primary; --week-start) leaves that part of the source as it is.\n" +
+    "  --primary names the primary schema, the one schema the layer reads and joins within (intake.primary).\n" +
+    "  --week-start names the day a week starts (calendar.week_start; Monday when unset); changing it sends each approved\n" +
+    "  dimension with a week grain back for the owner's yes.\n" +
     "  An export source given its connection is upgraded: it introspects, profiles, checks every join and lists the items\n" +
     "  the data contradicts, for semlayer readback.",
   options: {
@@ -143,6 +149,8 @@ const spec: CommandSpec = {
     export: { type: "string" },
     reason: { type: "string" },
     schemas: { type: "string", multiple: true },
+    primary: { type: "string" },
+    "week-start": { type: "string" },
     include: { type: "string", multiple: true },
     exclude: { type: "string", multiple: true },
     "tables-file": { type: "string" },
@@ -210,6 +218,14 @@ const spec: CommandSpec = {
     const schemaIssues = schemaListIssues(schemas, { dialect, connection: { database } }, (i) => `name ${i + 1}`);
     const schemaError = schemaIssues.find((x) => x.level === "error");
     if (schemaError) throw new UserError(`--schemas: ${schemaError.path} ${schemaError.message}. Fix it and run semlayer setup again.`);
+    const primaryArg = str(values, "primary");
+    if (primaryArg !== undefined) {
+      const bad = schemaListIssues([primaryArg], { dialect, connection: { database } }, () => "the name").find((x) => x.level === "error");
+      if (!primaryArg.trim() || bad) throw new UserError(`--primary needs one schema name; ${SCHEMA_NAME_HINT}. Fix it and run semlayer setup again.`);
+    }
+    const weekStart = str(values, "week-start");
+    if (weekStart !== undefined && !(WEEK_DAYS as readonly string[]).includes(weekStart))
+      throw new UserError(`--week-start names the day a week starts: one of ${WEEK_DAYS.join(", ")}, in lower case. Fix it and run semlayer setup again.`);
     const include = patternFlags(values, "include");
     const exclude = patternFlags(values, "exclude");
     let tablesFrom: string | undefined;
@@ -255,6 +271,8 @@ const spec: CommandSpec = {
       // Without --reason a recorded reason stays; a source without one gets "" and a warning.
       reason: mode === "export" ? (reason?.text ?? (typeof old?.intake?.reason === "string" ? undefined : "")) : undefined,
       schemas: values.schemas !== undefined ? schemas : undefined,
+      primary: primaryArg,
+      weekStart,
       exportFile: exportRel,
       scope: scopeGiven ? { include: spelled(include, old?.scope?.include), exclude: spelled(exclude, old?.scope?.exclude), tables_file: tablesArg !== undefined ? `scope/${name}.txt` : undefined } : undefined,
     };
@@ -263,6 +281,13 @@ const spec: CommandSpec = {
       if (upgrading) dropExportIntake(doc);
     }, rel);
     const next = parseYamlText(newText, rel) as SourceConfig;
+    const listed = intakeSchemas(next);
+    if (next.intake?.primary !== undefined && listed.length && !listed.includes(next.intake.primary)) {
+      throw new UserError(
+        `The primary schema ${next.intake.primary} is not among the schemas read (${listed.join(", ")}), so the layer could not read it. ` +
+          `Run semlayer setup again with --schemas ${[...listed, next.intake.primary].join(",")}, or with --primary set to one of them.`,
+      );
+    }
     if (mode === "export" && !next.intake?.reason) {
       warnings.push(
         'intake.reason is recorded as empty. The interview asks the owner for a connection first and uses an export only when one is not possible; record why with semlayer setup ... --reason "<why>".',
@@ -280,6 +305,8 @@ const spec: CommandSpec = {
       connection: ["env", "env_prefix", "database", "views"].filter((k) => !isDeepStrictEqual(oc[k], nc[k])),
       intake_mode: old?.intake?.mode !== next.intake?.mode,
       reason: (old?.intake?.reason ?? null) !== (next.intake?.reason ?? null),
+      primary: (old?.intake?.primary ?? null) !== (next.intake?.primary ?? null),
+      week_start: (old?.calendar?.week_start ?? null) !== (next.calendar?.week_start ?? null),
       schemas: listChange(old ? intakeSchemas(old) : [], intakeSchemas(next)),
       include: listChange(oldScope.include, newScope.include),
       exclude: listChange(oldScope.exclude, newScope.exclude),
@@ -385,7 +412,8 @@ const spec: CommandSpec = {
               ? `semlayer profile --source ${name}${dialectFlag}`
               : `semlayer baseline --source ${name}`;
     const changed = projectCreated || created || updated || Boolean(tablesCopy?.status) || Boolean(exportCopy?.status) || read;
-    const intake = { mode, schemas: intakeSchemas(next), ...(mode === "export" ? { reason: next.intake?.reason ?? "", export_file: exportRel } : {}) };
+    const primary = primarySchema(next, snapshot) ?? null;
+    const intake = { mode, schemas: intakeSchemas(next), primary, ...(mode === "export" ? { reason: next.intake?.reason ?? "", export_file: exportRel } : {}) };
     const counts = result ? { tables: Number(result.tables ?? 0), columns: Number(result.columns ?? 0) } : null;
 
     if (ctx.json) {
@@ -419,13 +447,17 @@ const spec: CommandSpec = {
     const viewNames = Object.keys(next.connection?.views ?? {});
     const prefix = next.connection?.env_prefix;
     const how = mode === "export" ? `schema export ${exportRel}` : env ? `connection through ${env}` : prefix !== undefined ? `connection through ${prefix}HOST and the other ${prefix} variables` : viewNames.length ? `views ${viewNames.join(", ")}` : "a database file";
-    const schemaText = intake.schemas.length ? `; ${intake.schemas.length === 1 ? "schema" : "schemas"} ${intake.schemas.join(", ")}` : "; every schema";
+    const schemaText =
+      (intake.schemas.length ? `; ${intake.schemas.length === 1 ? "schema" : "schemas"} ${intake.schemas.join(", ")}` : "; every schema") +
+      (next.intake?.primary !== undefined ? `; primary ${next.intake.primary}` : "");
     if (created) lines.push(`Created ${rel} (${dialect}; ${how}${schemaText}).`);
     else if (updated) {
       lines.push(`Updated ${rel} in place:`);
       if (changes.connection.length) lines.push(`  connection: ${changes.connection.join(", ")} changed`);
       if (changes.intake_mode) lines.push(`  intake.mode: ${mode}`);
       if (changes.reason) lines.push(upgrading ? "  intake.reason and intake.export removed" : "  intake.reason changed");
+      if (changes.primary) lines.push(`  intake.primary: ${next.intake?.primary ?? "removed"}`);
+      if (changes.week_start) lines.push(`  calendar.week_start: ${next.calendar?.week_start ?? "removed"}`);
       for (const [key, c] of [["schemas", changes.schemas], ["include", changes.include], ["exclude", changes.exclude]] as const) {
         if (listText(c)) lines.push(`  ${key}: ${listText(c)}`);
       }
@@ -443,6 +475,11 @@ const spec: CommandSpec = {
     } else if (snapshot) {
       lines.push(`The snapshot was not read again: the connection, schemas and export are unchanged (semlayer ${mode === "export" ? "import" : "introspect"} --source ${name} reads it again).`);
     }
+    if (!created && sourceWeekStart(old) !== sourceWeekStart(next))
+      lines.push(
+        `Weeks now start on ${next.calendar?.week_start ?? "monday"}: each approved dimension of ${name} with a week grain changed, and waits for the owner's yes again (semlayer status lists them; semlayer readback --targets <dimension>).`,
+      );
+    if (primary !== null) lines.push(`Primary schema: ${primary}${next.intake?.primary !== undefined ? "" : " (the only schema read)"}.`);
     if (preview) {
       lines.push("", `Scope: ${preview.in_scope} of ${plural(preview.total, "table")} in scope.`);
       for (const s of preview.by_schema) lines.push(`  ${s.schema ?? "(no schema)"}: ${s.in_scope} of ${s.total}`);

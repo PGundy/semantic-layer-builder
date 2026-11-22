@@ -1,5 +1,6 @@
 // SQL fragments the reference compiler writes, per dialect (references/spec.md, Reference compiler).
 import type { Aggregation, Dialect, FilterOp, TimeGrain } from "../types.ts";
+import { type WeekDay, weekStart } from "./calendar.ts";
 
 // The dialects the compiler writes SQL for.
 export const COMPILER_DIALECTS: readonly Dialect[] = ["postgres", "duckdb"];
@@ -22,9 +23,10 @@ export function embed(text: string): string {
 }
 
 // A time dimension at a grain. hour keeps the timestamp; day and coarser give a date. The
-// expression is truncated as written, in the session time zone (UTC) for a value with a zone.
-export function grained(_dialect: Dialect, expr: string, grain: TimeGrain): string {
-  const truncated = `date_trunc('${grain}', ${expr})`;
+// expression is truncated as written, in the session time zone (UTC) for a value with a zone. A
+// week starts on the source's calendar.week_start, Monday when it sets none.
+export function grained(_dialect: Dialect, expr: string, grain: TimeGrain, week?: WeekDay): string {
+  const truncated = grain === "week" && week ? weekStart(expr, week) : `date_trunc('${grain}', ${expr})`;
   return grain === "hour" ? truncated : `cast(${truncated} as date)`;
 }
 

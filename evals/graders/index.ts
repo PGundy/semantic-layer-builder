@@ -13,6 +13,7 @@ import { gradeEffort } from "./effort.ts";
 import { gradeFigures } from "./figures.ts";
 import { gradeSecrets, maskProtected, protectedValues } from "./secrets.ts";
 import { gradeSelection } from "./selection.ts";
+import { gradeValidate } from "./validate.ts";
 import type { GradeReport, GraderResult, RunFiles } from "./types.ts";
 
 export const GRADES_FILE = "grades.json";
@@ -22,6 +23,8 @@ export interface GradeOptions {
   scenario?: Scenario;
   // Its file, which a mapping file in grading resolves from; evals/scenarios/ when not given.
   scenarioFile?: string;
+  // The environment sources are opened with, such as the URL variable of a postgres source.
+  env?: Record<string, string | undefined>;
 }
 
 // JSON text, or an EvalError naming the file (and line) that does not parse.
@@ -67,6 +70,7 @@ export function loadRun(dir: string, opts: GradeOptions = {}): RunFiles {
     grading: scenario.grading ?? {},
     intakeSource: scenario.intake.source,
     scenarioDir: scenarioFile ? dirname(scenarioFile) : SCENARIOS_DIR,
+    ...(opts.env ? { env: opts.env } : {}),
   };
 }
 
@@ -91,6 +95,7 @@ export async function gradeRun(dir: string, opts: GradeOptions = {}): Promise<Gr
     ["approvals", gradeApprovals],
     ["connection_first", gradeConnectionFirst],
     ["authority", gradeAuthority],
+    ["validate", gradeValidate],
     ["effort", gradeEffort],
   ];
   const results: GraderResult[] = [];

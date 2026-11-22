@@ -13,6 +13,8 @@ import { protectedColumns, redactSnapshot } from "../lib/profile.ts";
 import { listModels, loadProject, loadSource, paths, projectSettings, requireSnapshot, saveSnapshot } from "../lib/project.ts";
 import { effectiveScope } from "../lib/table-list.ts";
 import { rankTables } from "../lib/rank.ts";
+import { readApprovalLedger } from "../lib/ledger.ts";
+import { backedPairs, crossSchemaFks, crossSchemaPairs, explicitPrimary, findPair, keepsToPrimary, pairAnswered, pairApproved, schemaQuestion, schemasRead, splitKeyEnd } from "../lib/schema-scope.ts";
 import type { Model, Scope, Snapshot, SnapshotTable, SourceConfig } from "../lib/types.ts";
 import { updateYaml, writeYaml } from "../lib/yaml.ts";
 import { sourceFlag } from "./tables.ts";
@@ -228,6 +230,58 @@ function draftNewColumnsCommand(
   return 0;
 }
 
+interface LeftOutSchema {
+  schema: string;
+  tables: number;
+  command: string;
+}
+
+// The primary schema draft keeps to (spec: Schema scope, The schema question): undefined while the
+// snapshot's tables in scope are in one schema, and for a source that is not postgres. With more than one, draft refuses until intake.primary is set,
+// then keeps by default the primary schema's tables and the tables of another schema that an approved
+// pair's keys name.
+function primaryForDraft(source: SourceConfig, snapshot: Snapshot, scoped: (t: SnapshotTable) => boolean): { schema: string; keeps: (t: SnapshotTable) => boolean } | undefined {
+  if (!keepsToPrimary(source)) return undefined;
+  const read = schemasRead(source, snapshot, scoped);
+  if (read.length < 2) return undefined;
+  const primary = explicitPrimary(source);
+  if (primary === undefined) {
+    const setup = `semlayer setup ${schemaQuestion(source, snapshot, scoped)!.setup.join(" ")} --primary <schema>`;
+    throw new UserError(
+      `Source "${source.source}" reads more than one schema (${read.join(", ")}) and names no primary schema, so draft does not know which one the layer is about. Nothing was written. ` +
+        `Ask the owner the schema question semlayer next gives, then record the schema their questions are about with ${setup}.`,
+      setup,
+      "scope.primary_unset",
+    );
+  }
+  if (!read.includes(primary)) {
+    const setup = `semlayer setup --source ${source.source} --primary <schema>`;
+    throw new UserError(
+      `The primary schema "${primary}" of source "${source.source}" has no table in scope (the schemas read are ${read.join(", ")}), so draft would select nothing. Nothing was written. ` +
+        `Record a schema that is read with ${setup}, or read ${primary} with semlayer setup --source ${source.source} --schemas <list>.`,
+      setup,
+      "scope.primary_not_in_schemas",
+    );
+  }
+  const named = new Set<string>();
+  for (const pair of crossSchemaPairs(source)) {
+    if (!pairApproved(pair) || (pair.from !== primary && pair.to !== primary)) continue;
+    const [other, side] = pair.from === primary ? [pair.to, "to" as const] : [pair.from, "from" as const];
+    for (const key of pair.keys ?? []) {
+      const end = splitKeyEnd(key[side]);
+      if (end) named.add(`${other}\u0000${end.table.toLowerCase()}`);
+    }
+  }
+  return { schema: primary, keeps: (t) => t.schema === primary || named.has(`${t.schema}\u0000${t.name.toLowerCase()}`) };
+}
+
+// The tables left out per schema, with the command that drafts them.
+function leftOutSchemas(source: string, tables: SnapshotTable[]): LeftOutSchema[] {
+  const counts = new Map<string, number>();
+  for (const t of tables) counts.set(t.schema ?? "", (counts.get(t.schema ?? "") ?? 0) + 1);
+  return [...counts].map(([schema, n]) => ({ schema, tables: n, command: `semlayer draft --source ${source} --tables ${schema}.*` }));
+}
+
 const spec: CommandSpec = {
   summary:
     "Write draft models for in-scope tables that have none, with inferred keys and joins. Never overwrites a model. " +
@@ -246,9 +300,12 @@ const spec: CommandSpec = {
   async run({ values }, ctx) {
     const project = loadProject(ctx.root);
     const sourceName = sourceFlag(values, project);
-    const source = loadSource(ctx.root, sourceName);
+    // Its schema pairs as tools read them: an approved pair no recorded yes backs is a draft (schema-scope.ts backedPairs).
+    const loaded = loadSource(ctx.root, sourceName);
+    const source: SourceConfig = { ...loaded, cross_schema: backedPairs(loaded, readApprovalLedger(ctx.root)) };
     const scope = effectiveScope(ctx.root, source);
     const snapshot = requireSnapshot(ctx.root, sourceName);
+    const primary = primaryForDraft(source, snapshot, (t) => inScope(scope, t));
     const { focus_threshold } = projectSettings(project);
     // --strip-prefix is saved in the source config the first time, so later drafts name models the same way.
     const flagPrefixes = list(values, "strip-prefix");
@@ -278,6 +335,7 @@ const spec: CommandSpec = {
     const ranked = rankTables(snapshot.tables).map((r) => r.table);
 
     const skipped: SkippedEntry[] = [];
+    let leftOut: LeftOutSchema[] = [];
     const refs = list(values, "tables");
     let selected: SnapshotTable[];
     if (refs.length) {
@@ -295,7 +353,8 @@ const spec: CommandSpec = {
         else selected.push(t);
       }
     } else {
-      selected = ranked.filter((t) => inScope(scope, t) && !modeled.has(keyOf(t)));
+      selected = ranked.filter((t) => inScope(scope, t) && !modeled.has(keyOf(t)) && (!primary || primary.keeps(t)));
+      if (primary) leftOut = leftOutSchemas(sourceName, ranked.filter((t) => inScope(scope, t) && !modeled.has(keyOf(t)) && !primary.keeps(t)));
       for (const t of ranked) {
         const model = modeled.get(keyOf(t));
         if (model && inScope(scope, t)) skipped.push({ table: qualifiedName(t), reason: `already modeled as ${model}` });
@@ -311,7 +370,7 @@ const spec: CommandSpec = {
     }
 
     const knownTables = snapshot.tables.filter((t) => inScope(scope, t) || modeled.has(keyOf(t)));
-    const { models, notes } = draftModels(snapshot, selected, existing, { source: sourceName, stripPrefixes, knownTables });
+    const { models, notes } = draftModels(snapshot, selected, existing, { source: sourceName, stripPrefixes, knownTables, crossSchema: crossSchemaPairs(source) });
 
     const drafted: DraftedEntry[] = [];
     for (const model of models) {
@@ -337,8 +396,24 @@ const spec: CommandSpec = {
     }
 
     const redacted = redactDrafted(ctx, source, snapshot, drafted.map((d) => d.table));
+    // The declared keys of the drafted tables that point into another schema with no answer from
+    // the owner yet: questions, not joins. A declined pair or an approved one answers them (spec: Schema scope).
+    const draftedTables = new Set(drafted.map((d) => d.table.toLowerCase()));
+    const answered = (x: { from_schema: string | null; to_schema: string | null }) => {
+      return pairAnswered(findPair(crossSchemaPairs(source), x.from_schema ?? "", x.to_schema ?? ""));
+    };
+    const crossKeys = crossSchemaFks({ tables: selected })
+      .filter((x) => draftedTables.has(qualifiedName(x.table).toLowerCase()))
+      .filter((x) => !answered(x))
+      .map((x) => ({
+        table: qualifiedName(x.table),
+        columns: x.fk.columns,
+        references: qualifiedName({ schema: x.to_schema, name: x.fk.references.table }),
+        constraint: x.fk.constraint ?? null,
+      }));
+
     if (ctx.json) {
-      ctx.out(formatJson({ source: sourceName, drafted, skipped, redacted }));
+      ctx.out(formatJson({ source: sourceName, drafted, skipped, redacted, cross_schema_keys: crossKeys, ...(primary ? { left_out_schemas: leftOut } : {}) }));
       return 0;
     }
 
@@ -367,6 +442,16 @@ const spec: CommandSpec = {
     if (skipped.length) {
       lines.push("", `Skipped ${plural(skipped.length, "table")}:`);
       for (const s of skipped) lines.push(`  ${s.table}: ${s.reason}`);
+    }
+    if (leftOut.length) {
+      lines.push("", `Left out, outside the primary schema ${primary!.schema}:`);
+      for (const x of leftOut) lines.push(`  ${x.schema}: ${plural(x.tables, "table")}; ${x.command} drafts them`);
+    }
+    if (crossKeys.length) {
+      lines.push("", "Keys across schemas, drafted as open questions and not as joins:");
+      for (const k of crossKeys) {
+        lines.push(`  ${k.table} (${k.columns.join(", ")}) -> ${k.references}, ${k.constraint === null ? "a foreign key whose name the snapshot does not record" : `foreign key ${k.constraint}`}`);
+      }
     }
     if (notes.length) {
       lines.push("", "Notes:");

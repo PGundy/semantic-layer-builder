@@ -223,23 +223,24 @@ describe("a golden's readback shows each figure as confirm records and compares 
 });
 
 describe("carried from earlier reviews", () => {
-  test("semlayer goldens check --emit-sql --json prints { error, next } when a file it plans from is malformed", async () => {
+  test("semlayer goldens check --emit-sql --json prints { error, code, next } when a file it plans from is malformed", async () => {
     const { root } = acme();
     writeFileSync(join(root, "sources", "warehouse.yaml"), "- a\n");
     const r = await semlayer(root, ["goldens", "check", "--emit-sql", "--source", "warehouse", "--json"]);
     expect(r.code).toBe(1);
-    const data = r.json<{ error: string; next: string }>();
-    expect(Object.keys(data).sort()).toEqual(["error", "next"]);
+    const data = r.json<{ error: string; code: string; next: string }>();
+    expect(Object.keys(data).sort()).toEqual(["code", "error", "next"]);
+    expect(data.code).toBe("user_error");
     expect(data.error).toStartWith("Cannot plan every golden:");
     expect(data.next).toBe("semlayer validate");
   });
 
-  test("semlayer goldens check --emit-sql --json over a malformed golden prints { error, next }", async () => {
+  test("semlayer goldens check --emit-sql --json over a malformed golden prints { error, code, next }", async () => {
     const { root } = acme();
     writeFileSync(join(root, "goldens", "broken.yaml"), "- not a golden\n");
     const r = await semlayer(root, ["goldens", "check", "--emit-sql", "--source", "warehouse", "--json"]);
     expect(r.code).toBe(1);
-    expect(Object.keys(r.json<Record<string, unknown>>()).sort()).toEqual(["error", "next"]);
+    expect(Object.keys(r.json<Record<string, unknown>>()).sort()).toEqual(["code", "error", "next"]);
   });
 
   test("with goldens that name roles and no access.yaml, the access step is one semlayer apply that runs", async () => {

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { metricEntries, accessEntry, modelEntries } from "../skills/semantic-layer/scripts/lib/approval-hash.ts";
-import { writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
+import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import type { Model } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { checkToolUse, type Verdict } from "../skills/semantic-layer/scripts/hooks/guard-edits.ts";
 import { shellWrites } from "../skills/semantic-layer/scripts/hooks/shell-writes.ts";
@@ -205,8 +205,22 @@ describe("approved items", () => {
     allowed(edit(model("regions"), "model: regions\n", "model: regions_v2\n"));
   });
 
-  test("a description of an approved measure may be edited", () => {
-    allowed(edit(model(), "description: Revenue in dollars.", "description: Revenue in US dollars, completed orders only."));
+  test("a description of an approved measure is guarded, since the owner approved it; its spacing is not", () => {
+    refused(edit(model(), "description: Revenue in dollars.", "description: Revenue in US dollars, completed orders only."), "wh.orders.revenue is approved", "semlayer set");
+    allowed(edit(model(), "description: Revenue in dollars.", "description: Revenue in  dollars."));
+  });
+
+  test("a description reworded on an item approved before descriptions counted is guarded too", () => {
+    const original = readFileSync(model(), "utf8");
+    const m = readYaml<Model>(model());
+    const e = modelEntries("wh", { ...m, model: "orders" }, () => undefined, "duckdb").find((x) => x.ref === "wh.orders.revenue")!;
+    try {
+      // The measure's approved_hash is the one recorded before descriptions were part of it.
+      writeFileSync(model(), original.replace(`approved_hash: ${e.hash}`, `approved_hash: ${e.definitionHash}`));
+      refused(edit(model(), "description: Revenue in dollars.", "description: Revenue in US dollars, completed orders only."), "wh.orders.revenue is approved", "semlayer set");
+    } finally {
+      writeFileSync(model(), original);
+    }
   });
 
   test("a draft measure, and a draft model, may be edited freely", () => {
@@ -239,10 +253,10 @@ describe("approved items", () => {
     refused(call("Edit", { file_path: f, old_string: "expr: amount_cents\n    agg: sum\n    filter: status", new_string: "expr: amount_cents * 2\n    agg: sum\n    filter: status" }), "wh.orders.revenue is approved");
   });
 
-  test("an approved metric's numerator is guarded, its description is not", () => {
+  test("an approved metric's numerator is guarded, and so is its description", () => {
     const m = join(root, "metrics.yaml");
     refused(edit(m, "numerator: orders.revenue", "numerator: orders.revenue_ne"), "metric:aov is approved");
-    allowed(edit(m, "description: Average order value.", "description: Average order value (AOV)."));
+    refused(edit(m, "description: Average order value.", "description: Average order value (AOV)."), "metric:aov is approved");
   });
 
   test("an approved access.yaml is guarded, its open questions are not", () => {
@@ -263,7 +277,7 @@ describe("approved items", () => {
 describe("MultiEdit, matching and paths", () => {
   test("MultiEdit is checked on the file after every edit", () => {
     const file = model();
-    allowed(call("MultiEdit", { file_path: file, edits: [{ old_string: "Revenue in dollars.", new_string: "Revenue." }, { old_string: "expr: order_id", new_string: "expr: id" }] }));
+    allowed(call("MultiEdit", { file_path: file, edits: [{ old_string: "Revenue in dollars.", new_string: "Revenue  in dollars." }, { old_string: "expr: order_id", new_string: "expr: id" }] }));
     refused(
       call("MultiEdit", { file_path: file, edits: [{ old_string: "Revenue in dollars.", new_string: "Revenue." }, { old_string: "table: main.orders", new_string: "table: x" }] }),
       "wh.orders is approved",

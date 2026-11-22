@@ -129,6 +129,7 @@ describe("acme-export", () => {
       ["approvals", 1],
       ["connection_first", 1],
       ["authority", 1],
+      ["validate", 1],
       ["effort", null],
     ]);
     expect(grader(r.grades, "connection_first").details).toEqual([

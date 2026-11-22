@@ -7,6 +7,7 @@ import { rowCountNote } from "../skills/semantic-layer/scripts/commands/introspe
 import { type CredentialSlot, hasCredential } from "../skills/semantic-layer/scripts/lib/credentials.ts";
 import { buildSnapshot, nullable } from "../skills/semantic-layer/scripts/lib/introspect.ts";
 import { introspectionPlan, schemaMatcher } from "../skills/semantic-layer/scripts/lib/sql/introspection.ts";
+import { unreadableLine } from "../skills/semantic-layer/scripts/lib/sql/unreadable.ts";
 import type { QueryPlan, Snapshot, SnapshotTable, SourceConfig } from "../skills/semantic-layer/scripts/lib/types.ts";
 import { readYaml, writeYaml } from "../skills/semantic-layer/scripts/lib/yaml.ts";
 import { duckdbSource, FIXED_NOW, initProject, PG_URL, semlayer, tempRoot } from "./helpers.ts";
@@ -82,13 +83,17 @@ describe("introspect: duckdb", () => {
     expect(orders.columns[2]).toEqual({ name: "amount_cents", type: "BIGINT", nullable: true, description: "Order value in cents." });
     expect(orders.columns[0]!.nullable).toBe(false);
     expect(orders.foreign_keys).toEqual([
-      { columns: ["customer_id"], references: { schema: "sales", table: "customers", columns: ["customer_id"] } },
+      { columns: ["customer_id"], references: { schema: "sales", table: "customers", columns: ["customer_id"] }, constraint: "orders_customer_id_customer_id_fkey" },
     ]);
     const lines = table(s, "sales", "order_lines");
     expect(lines.primary_key).toEqual(["order_id", "line_no"]);
     const ship = table(s, "sales", "shipments");
     expect(ship.foreign_keys).toEqual([
-      { columns: ["order_id", "line_no"], references: { schema: "sales", table: "order_lines", columns: ["order_id", "line_no"] } },
+      {
+        columns: ["order_id", "line_no"],
+        references: { schema: "sales", table: "order_lines", columns: ["order_id", "line_no"] },
+        constraint: "shipments_order_id_line_no_order_id_line_no_fkey",
+      },
     ]);
     const view = table(s, "sales", "big_orders");
     expect(view.kind).toBe("view");
@@ -502,10 +507,10 @@ describe("introspect: postgres", () => {
     expect(lines.row_count).toBeNull();
     expect(lines.columns.find((c) => c.name === "qty")!.type).toBe("numeric(10,2)");
     expect(lines.foreign_keys).toEqual([
-      { columns: ["customer_id"], references: { schema, table: "customers", columns: ["customer_id"] } },
+      { columns: ["customer_id"], references: { schema, table: "customers", columns: ["customer_id"] }, constraint: "order_lines_customer_id_fkey" },
     ]);
     expect(table(s, schema, "returns").foreign_keys).toEqual([
-      { columns: ["order_id", "line_no"], references: { schema, table: "order_lines", columns: ["order_id", "line_no"] } },
+      { columns: ["order_id", "line_no"], references: { schema, table: "order_lines", columns: ["order_id", "line_no"] }, constraint: "returns_order_id_line_no_fkey" },
     ]);
     const view = table(s, schema, "v_lines");
     expect(view.kind).toBe("view");
@@ -650,7 +655,7 @@ describe("introspect: plan-only dialects", () => {
     const returns = table(s, "sales", "returns");
     expect(returns.columns.map((c) => c.name)).toEqual(["order_id", "line_no"]);
     expect(returns.foreign_keys).toEqual([
-      { columns: ["order_id", "line_no"], references: { schema: "sales", table: "lines", columns: ["order_id", "line_no"] } },
+      { columns: ["order_id", "line_no"], references: { schema: "sales", table: "lines", columns: ["order_id", "line_no"] }, constraint: "fk_lines" },
     ]);
   });
 
@@ -723,10 +728,10 @@ describe("introspect: plan-only dialects", () => {
     expect(table(s, "gold", "orders")).toMatchObject({ kind: "external", description: "Orders.", primary_key: ["order_id"] });
     expect(table(s, "gold", "lines").primary_key).toEqual(["order_id", "line_no"]);
     expect(table(s, "gold", "lines").foreign_keys).toEqual([
-      { columns: ["order_id"], references: { schema: "gold", table: "orders", columns: ["order_id"] } },
+      { columns: ["order_id"], references: { schema: "gold", table: "orders", columns: ["order_id"] }, constraint: "fk_lines_orders" },
     ]);
     expect(table(s, "gold", "returns").foreign_keys).toEqual([
-      { columns: ["order_id", "line_no"], references: { schema: "gold", table: "lines", columns: ["order_id", "line_no"] } },
+      { columns: ["order_id", "line_no"], references: { schema: "gold", table: "lines", columns: ["order_id", "line_no"] }, constraint: "fk_ret_lines" },
     ]);
   });
 });
@@ -980,5 +985,31 @@ describe("add-source", () => {
     const r = await semlayer(t.root, ["add-source", "--name", "x", "--dialect", "duckdb"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("semlayer init");
+  });
+});
+
+describe("the skipped-relations line", () => {
+  const relations = (n: number) => Array.from({ length: n }, (_, i) => ({ schema: "acme", name: `t${String(i + 1).padStart(2, "0")}` }));
+
+  test("three relations are all named", () => {
+    const line = unreadableLine(relations(3), "wh")!;
+    expect(line).toContain("Skipped 3 relations this role cannot read: acme.t01, acme.t02, acme.t03.");
+    expect(line).not.toContain("more");
+  });
+
+  test("25 relations name the first 10, then how many more, and say where the full list is", () => {
+    const line = unreadableLine(relations(25), "wh")!;
+    expect(line).toContain("Skipped 25 relations this role cannot read: acme.t01, ");
+    expect(line).toContain("acme.t10 and 15 more");
+    expect(line).not.toContain("acme.t11");
+    expect(line).toContain("--json");
+    expect(line).toContain("skipped_unreadable");
+    expect(line.length).toBeLessThan(600);
+  });
+
+  test("exactly 10 relations are all named", () => {
+    const line = unreadableLine(relations(10), "wh")!;
+    expect(line).toContain("acme.t10.");
+    expect(line).not.toContain("more");
   });
 });

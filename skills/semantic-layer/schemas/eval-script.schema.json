@@ -14,7 +14,6 @@
         "required": ["text"],
         "properties": {
           "text": { "type": "string" },
-          "tokens": { "type": "integer", "minimum": 0, "description": "Defaults to the text's length divided by 4, rounded up." },
           "semlayer": {
             "type": "array",
             "description": "semlayer commands to run in the working root before the turn is recorded, each as its arguments without --root.",
@@ -41,7 +40,6 @@
         "required": ["text"],
         "properties": {
           "text": { "type": "string" },
-          "tokens": { "type": "integer", "minimum": 0 },
           "fill": {
             "type": "array",
             "description": "Review forms the owner fills in and hands back with this turn: each form semlayer review export wrote, with the owner's verdict and words per item, written in as a person fills in the form.",

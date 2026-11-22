@@ -1,4 +1,5 @@
 import { SQL } from "bun";
+import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { redactCredentials, REDACTED } from "../credentials.ts";
 import { noteConnection, readConnection, URL_PLACEHOLDER } from "../env-file.ts";
@@ -38,9 +39,10 @@ export function statementTimeout(raw: string | undefined): number {
   return Number(raw);
 }
 
-// The startup settings every connection opens with, so a reconnect keeps them.
-export function startupSettings(timeoutMs: number): Record<string, string | number> {
-  return { default_transaction_read_only: "on", statement_timeout: timeoutMs, TimeZone: "UTC" };
+// The startup settings every connection opens with, so a reconnect keeps them. PgBouncer in
+// transaction mode passes both on; it refuses statement_timeout, which run() sets per transaction.
+export function startupSettings(): Record<string, string> {
+  return { default_transaction_read_only: "on", TimeZone: "UTC" };
 }
 
 // The role, whether it is a superuser and the server-file roles it is a member of.
@@ -155,21 +157,44 @@ function warnOnce(warn: (m: string) => void, key: string, message: string): void
 // connection.env_prefix as options, so a password is used as written and never put in a URL.
 // `sql` is the driver's client built from `options`, not yet connected. `target` is the host and
 // port a message names; no message may hold one of `secrets`, or one of `users` as a word.
+// `timeoutMs` is the statement timeout each query's transaction sets.
 export interface DriverConnection {
   options: Record<string, unknown>;
   sql: SQL;
+  timeoutMs: number;
   target: { host: string; port: string };
   secrets: string[];
   users: string[];
   // How to turn TLS on, for a server that requires it, and off, for one that has none.
   sslHint: string;
   noSslHint: string;
+  // How to name a CA certificate file.
+  caHint: string;
 }
 
 const SSL_MODES = ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"];
+const CA_MODES = ["require", "verify-ca", "verify-full"];
 
-export function driverConnection(source: SourceConfig, values: Record<string, string>, timeoutMs: number): DriverConnection {
-  const base = { adapter: "postgres", max: 1, prepare: false, connection: startupSettings(timeoutMs) };
+// Refuses a CA certificate file that cannot be read or holds no PEM certificate. `named` says where
+// the path is set; the message names no value.
+function checkRootCert(source: string, path: string, named: string): void {
+  let text: string | null;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    text = null;
+  }
+  if (text?.includes("-----BEGIN CERTIFICATE-----")) return;
+  throw new UserError(
+    `Source "${source}": ${named} names a file that ${text === null ? "cannot be read" : "holds no certificate (it is not a PEM file)"}. ` +
+      "Ask the owner for the CA certificate file the server's certificate is signed by, and to set that file's path there, then run the same command again.",
+    undefined,
+    "source.ssl_root_cert_unreadable",
+  );
+}
+
+export function driverConnection(source: SourceConfig, values: Record<string, string>, timeoutMs: number, startup: Record<string, string> = startupSettings()): DriverConnection {
+  const base = { adapter: "postgres", max: 1, prepare: false, connection: startup };
   const refuse = (what: string) => new UserError(`Source "${source.source}": ${what}; ask the owner to correct it, then run the same command again.`);
   const variable = source.connection?.env;
   if (variable) {
@@ -178,6 +203,9 @@ export function driverConnection(source: SourceConfig, values: Record<string, st
     // The driver judges the URL, so every form it takes works, a unix socket's among them. A blank
     // one it would replace with DATABASE_URL.
     if (!url.trim()) throw invalid();
+    // The driver reads sslrootcert from the URL itself; a file it cannot read is named here.
+    const rootCert = URL.canParse(url) ? new URL(url).searchParams.get("sslrootcert") : null;
+    if (rootCert?.trim()) checkRootCert(source.source, rootCert, `sslrootcert in the URL in ${variable}`);
     const options = { ...base, url };
     let sql: SQL;
     try {
@@ -194,11 +222,13 @@ export function driverConnection(source: SourceConfig, values: Record<string, st
     return {
       options,
       sql,
+      timeoutMs,
       target: /^postgres(ql)?:\/\//i.test(url) ? { host: read.path ? dirname(text(read.path)) : text(read.hostname), port: text(read.port) } : { host: `the host ${variable} names`, port: "" },
       secrets: [url, text(read.password), written?.password ?? ""],
       users: [text(read.username), written?.username ?? ""],
       sslHint: `add sslmode=require to the URL in ${variable} (it then ends ?sslmode=require)`,
       noSslHint: `take sslmode out of the URL in ${variable}`,
+      caHint: `add sslrootcert=<path of the CA file> to the URL in ${variable}`,
     };
   }
   const prefix = source.connection?.env_prefix ?? "";
@@ -207,11 +237,17 @@ export function driverConnection(source: SourceConfig, values: Record<string, st
   if (!/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw refuse(`${prefix}PORT must be a port number such as 5432`);
   const sslmode = part("SSLMODE");
   if (sslmode !== undefined && !SSL_MODES.includes(sslmode)) throw refuse(`${prefix}SSLMODE must be one of ${SSL_MODES.join(", ")}`);
+  const rootCert = part("SSLROOTCERT")?.trim() || undefined;
+  if (rootCert !== undefined && !CA_MODES.includes(sslmode ?? "disable")) throw refuse(`${prefix}SSLROOTCERT is set, so ${prefix}SSLMODE must be verify-full (or verify-ca, or require) beside it`);
+  if (rootCert !== undefined) checkRootCert(source.source, rootCert, `${prefix}SSLROOTCERT`);
+  // With a CA file, verify-full also checks the server's name against its certificate, as libpq
+  // does; verify-ca and require check only that the CA signed it.
+  const tls = rootCert === undefined ? (sslmode ?? "disable") : { ca: Bun.file(rootCert), ...(sslmode === "verify-full" ? {} : { checkServerIdentity: () => undefined }) };
   const password = part("PASSWORD") ?? "";
   // Every field is given, so the driver takes none from DATABASE_URL or the PG* variables. The
   // password is a function because the driver replaces an empty one with PGPASSWORD or the
   // password of DATABASE_URL, which would send another server's password to this one.
-  const options = { ...base, hostname: part("HOST"), port: Number(port), username: part("USER"), password: () => password, database: part("DATABASE"), tls: sslmode ?? "disable" };
+  const options = { ...base, hostname: part("HOST"), port: Number(port), username: part("USER"), password: () => password, database: part("DATABASE"), tls };
   let sql: SQL;
   try {
     sql = new SQL(options as SQL.Options);
@@ -221,11 +257,13 @@ export function driverConnection(source: SourceConfig, values: Record<string, st
   return {
     options,
     sql,
+    timeoutMs,
     target: { host: part("HOST")!, port },
     secrets: [password],
     users: [part("USER")!],
     sslHint: `add the line ${prefix}SSLMODE=require beside ${prefix}HOST`,
     noSslHint: `set ${prefix}SSLMODE=disable, or take that line out`,
+    caHint: `add the line ${prefix}SSLROOTCERT=<path of the CA file> beside ${prefix}HOST`,
   };
 }
 
@@ -243,11 +281,15 @@ function scrub(text: string, conn: DriverConnection): string {
 const UNREACHABLE = /^ERR_POSTGRES_CONNECTION_(REFUSED|TIMEOUT)$/;
 const NEEDS_SSL = /no encryption|SSL off|SSL connection is required|sslmode=require|connection is insecure/i;
 const NO_SSL = /does not support SSL/i;
+const STARTUP_PARAMETER = /unsupported startup parameter:\s*"?([A-Za-z_][A-Za-z0-9_.]*)/i;
+const UNVERIFIED = /^(UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT(_LOCALLY)?|SELF_SIGNED_CERT_IN_CHAIN|DEPTH_ZERO_SELF_SIGNED_CERT|CERT_HAS_EXPIRED|ERR_TLS_CERT_ALTNAME_INVALID)$/;
 
 // The message for a connection that failed to open: an unreachable server by host and port, a
 // server that accepts only encrypted connections with how to turn TLS on, one that has no TLS
-// with how to turn it off, anything else with the driver's words scrubbed. `described` says where
-// the variables came from; no message names a value but the host and the port.
+// with how to turn it off, a pooler that refuses a startup parameter with the setting that lets it
+// pass, a certificate that cannot be verified with how to name the CA file, anything else with the
+// driver's words scrubbed. `described` says where the variables came from; no message names a
+// value but the host and the port.
 export function connectFailure(source: string, e: unknown, conn: DriverConnection, described: string): UserError {
   const code = String((e as { code?: unknown }).code ?? "");
   const text = e instanceof Error ? e.message : String(e);
@@ -266,20 +308,37 @@ export function connectFailure(source: string, e: unknown, conn: DriverConnectio
   if (NO_SSL.test(text)) {
     return new UserError(`Source "${source}": the database at ${at} does not take encrypted connections. Ask the owner to ${conn.noSslHint}, then run the same command again.`);
   }
+  const parameter = STARTUP_PARAMETER.exec(text)?.[1];
+  if (parameter) {
+    return new UserError(
+      `Source "${source}": the connection pooler at ${at} refuses the startup parameter ${scrub(parameter, conn)}. Every query also runs in a read-only transaction, so the pooler may ignore it: ` +
+        `ask the owner to add ${scrub(parameter, conn)} to ignore_startup_parameters in the pooler's settings (pgbouncer.ini for PgBouncer), or for the server's own port instead of the pooler's, then run the same command again.`,
+      undefined,
+      "source.pooler_startup_parameter",
+    );
+  }
+  if (UNVERIFIED.test(code)) {
+    return new UserError(
+      `Source "${source}": the database at ${at} presents a certificate this machine cannot verify (${scrub(text, conn).replace(/\.$/, "")}). ` +
+        `Ask the owner for the CA certificate file it is signed by and to ${conn.caHint}, or, when the certificate is for another host name, to connect by that name; then run the same command again.`,
+    );
+  }
   return new UserError(
     `Source "${source}": cannot connect to the database at ${at}: ${scrub(text, conn).replace(/\.$/, "")}. Ask the owner to check the values of those variables, then run the same command again.`,
   );
 }
 
 // Opens a Postgres source read-only by construction. Every connection starts with
-// default_transaction_read_only=on, the statement timeout and TimeZone=UTC as startup settings,
-// so a reconnect keeps them. Each query runs alone over the extended protocol, which refuses
-// several statements in one call, inside BEGIN TRANSACTION READ ONLY and is always rolled back,
-// so nothing it sets outlives it. The connection variables come from the environment or an env
-// file (lib/env-file.ts), and the command is told which. On connect it measures what the role can
+// default_transaction_read_only=on and TimeZone=UTC as startup settings, so a reconnect keeps them.
+// Each query runs alone over the extended protocol, which refuses several statements in one call,
+// inside BEGIN TRANSACTION READ ONLY with SET LOCAL statement_timeout, and is always rolled back,
+// so nothing it sets outlives it, also on a server connection a transaction-mode pooler shares.
+// The connection variables come from the environment or an env file (lib/env-file.ts), and the
+// command is told which. On connect it measures what the role can
 // do (buildRoleReport) and warns once, without refusing, when the role is a superuser, can write,
-// is a member of a server-file role or reads schemas outside intake.schemas.
-export async function openPostgres(root: string, source: SourceConfig, env: Record<string, string | undefined>, opts: AdapterOptions = {}): Promise<Adapter> {
+// is a member of a server-file role or reads schemas outside intake.schemas. `startup` replaces the
+// startup settings; a test passes fewer to prove the read-only transaction alone refuses a write.
+export async function openPostgres(root: string, source: SourceConfig, env: Record<string, string | undefined>, opts: AdapterOptions = {}, startup?: Record<string, string>): Promise<Adapter> {
   if (!source.connection?.env && source.connection?.env_prefix === undefined) {
     throw new UserError(
       `Source "${source.source}" names no connection variable. Run semlayer setup --source ${source.source} --dialect postgres --env <VAR> (the variable that holds its connection URL) or --env-prefix <PREFIX> (for <PREFIX>HOST, <PREFIX>USER and the rest).`,
@@ -287,9 +346,10 @@ export async function openPostgres(root: string, source: SourceConfig, env: Reco
   }
   const { resolution, values } = readConnection(root, source, env);
   if (resolution.status === "unset") throw new UserError(resolution.message);
-  const conn = driverConnection(source, values, statementTimeout(env.SEMLAYER_STATEMENT_TIMEOUT_MS));
+  const conn = driverConnection(source, values, statementTimeout(env.SEMLAYER_STATEMENT_TIMEOUT_MS), startup);
   noteConnection(source.source, resolution, env);
   const sql = conn.sql;
+  const timeoutMs = conn.timeoutMs;
 
   async function run(text: string): Promise<QueryResult> {
     const conn = await sql.reserve();
@@ -297,6 +357,7 @@ export async function openPostgres(root: string, source: SourceConfig, env: Reco
     try {
       await conn.unsafe("BEGIN TRANSACTION READ ONLY");
       try {
+        await conn.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
         result = (await conn`${conn.unsafe(text)}`) as typeof result;
       } finally {
         await conn.unsafe("ROLLBACK").catch(() => {});
