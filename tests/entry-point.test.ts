@@ -43,7 +43,7 @@ describe("/semlayer", () => {
   });
 
   test("every doc and agent that names the skill names it semlayer", () => {
-    const docs = ["README.md", "docs/quickstart.md", "docs/reference.md", "docs/agent-quickstart.md", "docs/plugin.md", ...readdirSync(join(REPO, "agents")).map((a) => `agents/${a}`)];
+    const docs = ["README.md", ".claude/CLAUDE.md", "docs/quickstart.md", "docs/reference.md", "docs/plugin.md", ...readdirSync(join(REPO, "agents")).map((a) => `agents/${a}`)];
     for (const d of docs) expect(`${d}: ${/the `?semantic-layer`? skill/.test(read(d))}`).toBe(`${d}: false`);
     expect(read("agents/semlayer-interviewer.md")).toContain("Load the semlayer skill");
     expect(read("docs/reference.md")).toContain("the `semlayer` skill");
@@ -162,7 +162,7 @@ describe("the README, the quick start guide and the reference, for someone at a 
     for (const step of ["**1. Install the plugin**", "**2. Try it on sample data.**", "**3. Use it on your own database**"]) expect(quick).toContain(step);
     expect(quick).toContain("claude plugin marketplace add PGundy/semantic-layer-builder claude plugin install semantic-layer-builder@semantic-layer-builder");
     expect(quick).toContain("WAREHOUSE_URL=postgres://<user>:<password>@<host>:5432/<database>?sslmode=require");
-    for (const link of ["(docs/quickstart.md)", "(docs/reference.md)", "(docs/agent-quickstart.md)", "(docs/plugin.md)", "(CONTRIBUTING.md)", "(SECURITY.md)"]) expect(readme).toContain(link);
+    for (const link of ["(docs/quickstart.md)", "(docs/reference.md)", "(.claude/CLAUDE.md)", "(skills/semantic-layer/SKILL.md)", "(docs/plugin.md)", "(CONTRIBUTING.md)", "(SECURITY.md)"]) expect(readme).toContain(link);
   });
 
   test("the guide goes step by step, and the reference keeps the detail in the order a person needs", () => {
@@ -183,28 +183,18 @@ describe("the README, the quick start guide and the reference, for someone at a 
     for (const h of ["## Sources and dialects", "## Example", "## Develop"]) expect(headingsOf(reference)).toContain(h);
   });
 
-  test("the agent quick start outlines the repository, the loop, the phases, the rules and the checks", () => {
-    const agent = read("docs/agent-quickstart.md");
-    expect(headingsOf(agent)).toEqual([
-      "## What this is",
-      "## Repository map",
-      "## Part A. Building a layer with an owner",
-      "### The loop",
-      "### Phases",
-      "### Commands by purpose",
-      "### Rules that are never broken",
-      "### Output conventions",
-      "## Part B. Changing this repository",
-      "### Set up and check",
-      "### Where a change goes",
-      "### Conventions",
-    ]);
-    // Every phase the skill's router names has a row, so the outline cannot drift from the router.
-    const routed = [...skill.slice(skill.indexOf("## Phase cards"), skill.indexOf("## Hand edits")).matchAll(/^\| (`[^|]+) \| `references\/phases\//gm)].flatMap((m) => [...m[1]!.matchAll(/`([a-z-]+)`/g)].map((p) => p[1]!));
-    expect(routed.length).toBeGreaterThan(12);
-    const phases = agent.slice(agent.indexOf("### Phases"), agent.indexOf("### Commands by purpose"));
-    for (const p of routed) expect(`${p}: ${phases.includes(`\`${p}\``)}`).toBe(`${p}: true`);
-    expect(flat(agent)).toContain("bash scripts/verify.sh");
+  test("CLAUDE.md is short, is for changing the code, and sends an agent building a layer to the skill", () => {
+    const claude = read(".claude/CLAUDE.md");
+    // The repository root is the plugin root, where claude plugin validate --strict fails on a CLAUDE.md.
+    expect(existsSync(join(REPO, "CLAUDE.md"))).toBe(false);
+    // Claude Code loads it into every session started in a clone, so it stays short.
+    expect(claude.split("\n").length).toBeLessThan(60);
+    expect(headingsOf(claude)).toEqual(["## Layout", "## Commands", "## Where a change goes", "## Rules"]);
+    expect(flat(claude)).toContain("To build a layer for an owner, this file is not the guide: load the skill (`/semlayer`, or `skills/semantic-layer/SKILL.md`) and follow it.");
+    expect(flat(claude)).toContain("bash scripts/verify.sh");
+    expect(flat(claude)).toContain("no approval without the owner's recorded yes");
+    // One document for an agent: the outline that stood beside it is gone.
+    expect(existsSync(join(REPO, "docs", "agent-quickstart.md"))).toBe(false);
   });
 
   test("the guide names Claude Code and Bun with versions, the install, the role, the .env line, /semlayer and semlayer doctor", () => {

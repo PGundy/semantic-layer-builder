@@ -294,7 +294,7 @@ describe("the docs", () => {
       for (const a of named) expect(agents).toContain(a);
     }
     // A document that names an agent anywhere else names one the plugin ships.
-    for (const d of ["README.md", "docs/quickstart.md", "docs/agent-quickstart.md"]) {
+    for (const d of ["README.md", "docs/quickstart.md", ".claude/CLAUDE.md"]) {
       // Link targets are left out: a heading's anchor (#running-semlayer-yourself) is not an agent's name.
       for (const m of text(d).replace(/\]\([^)]*\)/g, "]").matchAll(/\bsemlayer-[a-z]+(?:-[a-z]+)*/g)) if (m[0] !== DEMO_DIR) expect(agents).toContain(m[0]);
     }
@@ -751,7 +751,7 @@ describe("the docs' links", () => {
   test("every relative link in the README and the documents under docs/ resolves, and each anchor exists", () => {
     const missing: string[] = [];
     const slug = (h: string) => h.toLowerCase().replace(/[^a-z0-9 -]/g, "").replace(/ /g, "-");
-    for (const doc of ["README.md", "docs/plugin.md", "docs/quickstart.md", "docs/reference.md", "docs/agent-quickstart.md"]) {
+    for (const doc of ["README.md", ".claude/CLAUDE.md", "docs/plugin.md", "docs/quickstart.md", "docs/reference.md"]) {
       const body = text(doc);
       // A link to a heading of another document names a heading that document has.
       for (const m of body.matchAll(/\]\(([^)#\s]+\.md)#([^)]+)\)/g)) {

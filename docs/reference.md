@@ -1,6 +1,6 @@
 # Reference
 
-The detail behind the [README](../README.md) and the [quick start](quickstart.md): running `semlayer` by hand, what a layer holds, where the plugin runs, the trust model, the supported databases, and the features a first build does not need. An agent working with this repository starts at the [agent quick start](agent-quickstart.md).
+The detail behind the [README](../README.md) and the [quick start](quickstart.md): running `semlayer` by hand, what a layer holds, where the plugin runs, the trust model, the supported databases, and the features a first build does not need. An agent changing this repository reads [`.claude/CLAUDE.md`](../.claude/CLAUDE.md).
 
 ## Running semlayer yourself
 
