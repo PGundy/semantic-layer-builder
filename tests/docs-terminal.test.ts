@@ -16,6 +16,9 @@ const flat = (text: string) => text.replace(/\s+/g, " ");
 
 const DOCS = [
   "README.md",
+  "docs/quickstart.md",
+  "docs/reference.md",
+  "docs/agent-quickstart.md",
   "docs/plugin.md",
   "CONTRIBUTING.md",
   "SECURITY.md",
@@ -111,10 +114,12 @@ describe("paths and commands in the documents", () => {
   });
 
   test("the documents name semlayer doctor, the .env.example and the --plugin-dir fallback where a person needs them", () => {
-    const readme = flat(read("README.md"));
-    expect(readme).toContain("type `/semlayer doctor`, or ask Claude to run `semlayer doctor`");
-    expect(readme).toContain("`semlayer setup` writes a `.env.example` beside it");
-    expect(readme).toContain("claude --plugin-dir ../semantic-layer-builder");
+    const guide = flat(read("docs/quickstart.md"));
+    expect(guide).toContain("Type `/semlayer doctor`, or ask Claude to run `semlayer doctor`");
+    expect(guide).toContain("`semlayer setup` writes a `.env.example` beside it");
+    expect(guide).toContain("claude --plugin-dir ../semantic-layer-builder");
+    // The README sends a person with a problem to the same command.
+    expect(flat(read("README.md"))).toContain("If something does not work, type `/semlayer doctor`.");
     expect(flat(read("docs/plugin.md"))).toContain("`semlayer setup` writes a `.env.example` beside `.env`");
     expect(flat(read("skills/semantic-layer/references/phases/intake.md"))).toContain("**When a connection does not work.** Run `semlayer doctor`");
     expect(flat(read("skills/semantic-layer/references/phases/profile.md"))).toContain("run `semlayer doctor` to check the connection and the role");

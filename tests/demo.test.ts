@@ -318,13 +318,18 @@ describe("semlayer demo finds the data from its own real path", () => {
   });
 });
 
-describe("the README's Try it on sample data section", () => {
+describe("the quick start guide's Try it on sample data step", () => {
   const readme = readFileSync(join(REPO, "README.md"), "utf8");
-  const section = readme.slice(readme.indexOf("### Try it on sample data"), readme.indexOf("### On your own warehouse"));
+  const guide = readFileSync(join(REPO, "docs", "quickstart.md"), "utf8");
+  const section = guide.slice(guide.indexOf("## Step 2. Try it on sample data"), guide.indexOf("## Step 3. Connect your own database"));
 
-  test("is in the quick start, names /semlayer demo, and its clone commands run as written", () => {
+  test("is in the README's quick start too, names /semlayer demo, and its clone commands run as written", () => {
     const quick = readme.slice(readme.indexOf("## Quick start"), readme.indexOf("\n## ", readme.indexOf("## Quick start") + 1));
-    expect(quick).toContain("### Try it on sample data");
+    expect(quick).toContain("**2. Try it on sample data.**");
+    expect(quick).toContain("type `/semlayer demo`");
+    expect(quick).toContain("claude    # then type: /semlayer");
+    expect(quick).toContain("[quick start guide](docs/quickstart.md)");
+    expect(section.length).toBeGreaterThan(200);
     expect(section).toContain("type `/semlayer demo`; it makes `semlayer-demo/`");
     const blocks = [...section.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]!.split("\n").map((l) => l.replace(/\s+#.*$/, "").trim()).filter(Boolean));
     expect(blocks[0]).toEqual(["cd semlayer-demo", "claude"]);
