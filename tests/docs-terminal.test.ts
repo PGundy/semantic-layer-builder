@@ -18,7 +18,7 @@ const DOCS = [
   "README.md",
   "docs/quickstart.md",
   "docs/reference.md",
-  "docs/agent-quickstart.md",
+  ".claude/CLAUDE.md",
   "docs/plugin.md",
   "CONTRIBUTING.md",
   "SECURITY.md",

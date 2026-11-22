@@ -101,7 +101,7 @@ The [trust model](docs/reference.md#trust-model) has the full account, limits in
 |---|---|
 | Setting it up for the first time | [Quick start guide](docs/quickstart.md) |
 | Looking for a command, a file format or a feature | [Reference](docs/reference.md), then the [specification](skills/semantic-layer/references/spec.md) |
-| An AI agent, or pointing one at this repository | [Agent quick start](docs/agent-quickstart.md) |
+| Pointing an AI agent at this repository | [`.claude/CLAUDE.md`](.claude/CLAUDE.md), which Claude Code reads on its own. To build a layer, the agent follows the skill, [`SKILL.md`](skills/semantic-layer/SKILL.md) |
 | Checking what the plugin installs | [Plugin details](docs/plugin.md) |
 | Changing the code | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Reporting a security problem | [SECURITY.md](SECURITY.md) |

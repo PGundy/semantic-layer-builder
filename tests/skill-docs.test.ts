@@ -1345,12 +1345,12 @@ function repoFile(path: string): string {
   return readFileSync(join(REPO, path), "utf8");
 }
 
-// The reference holds the detail the README links to; the README, the quick start guide and the agent
-// quick start show commands too, and every one of them is checked against the CLI.
+// The reference holds the detail the README links to; the README, the quick start guide and .claude/CLAUDE.md
+// show commands too, and every one of them is checked against the CLI.
 describe("the README and the documents it links", () => {
   const readme = repoFile("docs/reference.md");
   const flat = readme.replace(/\s+/g, " ");
-  const shown = ["README.md", "docs/quickstart.md", "docs/reference.md", "docs/agent-quickstart.md"].flatMap((d) => invocations(d, repoFile(d)));
+  const shown = ["README.md", "docs/quickstart.md", "docs/reference.md", ".claude/CLAUDE.md"].flatMap((d) => invocations(d, repoFile(d)));
 
   test("every semlayer command it shows exists, with flags it takes", async () => {
     expect(shown.length).toBeGreaterThan(8);
@@ -1420,7 +1420,7 @@ describe("the README and the documents it links", () => {
 describe("goldens are never called a regression test of the layer", () => {
   test("in the README, SKILL.md and every reference", () => {
     for (const [name, text] of [
-      ...["README.md", "docs/quickstart.md", "docs/reference.md", "docs/agent-quickstart.md"].map((d) => [d, repoFile(d)] as const),
+      ...["README.md", "docs/quickstart.md", "docs/reference.md", ".claude/CLAUDE.md"].map((d) => [d, repoFile(d)] as const),
       ...[...DOCS, "references/spec.md"].map((d) => [d, read(d)] as const),
     ] as const) {
       expect(`${name}: ${/regression (test|gate|check)/i.exec(text)?.[0] ?? ""}`).toBe(`${name}: `);
