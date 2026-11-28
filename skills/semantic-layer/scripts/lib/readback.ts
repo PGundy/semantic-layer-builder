@@ -577,7 +577,9 @@ function renderField(ref: string, source: string, model: Model, e: ApprovalEntry
   const sql: string[] = [];
   if (e.kind === "dimension") {
     const bare = typeof f.expr === "string" && BARE.test(f.expr.trim());
-    out.push(bare ? `- Value: ${String(f.expr)}, a ${String(f.type)}.` : `- Value: a ${String(f.type)} worked out from ${listText(own)} (the technical definition below has the formula).`);
+    // A value read only through a join names no column of its own table, so it is described by the join it reads.
+    const from = own.length ? listText(own) : reads.length ? `what the ${listText([...new Set(reads.map((r) => r.path))])} join reaches` : "no column of the table";
+    out.push(bare ? `- Value: ${String(f.expr)}, a ${String(f.type)}.` : `- Value: a ${String(f.type)} worked out from ${from} (the technical definition below has the formula).`);
     if (!bare) sql.push(String(f.expr));
     if (strs(f.time_grains).length) out.push(`- Time grains: ${strs(f.time_grains).join(", ")}.`);
     if (typeof f.time_zone === "string") out.push(`- Stored in time zone ${f.time_zone}.`);

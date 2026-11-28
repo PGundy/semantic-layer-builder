@@ -50,7 +50,7 @@ This needs no database, no password and no network. Every value in the sample is
 
 4. Claude starts asking about the sample store's data. You play the owner: answer from `OWNER.md`, the cheat sheet in that folder. You can also say "help me build a semantic layer for the data in this folder" in place of `/semlayer`.
 
-The practice project holds the sample store's tables as CSV and Parquet files in `data/`, a semantic layer already set up over them in `semantic/`, and `OWNER.md`.
+The practice project holds the sample store's tables as CSV and Parquet files in `data/`, the start of a semantic layer in `semantic/`, and `OWNER.md`. The sample data is already connected and nothing is defined yet: defining it with Claude is the exercise.
 
 A note on the name: the plugin's skill is `/semantic-layer-builder:semlayer`, and Claude Code's [skills documentation](https://code.claude.com/docs/en/skills) says the bare `/semlayer` invokes it too unless another command already uses that name. If it does, type the long form.
 

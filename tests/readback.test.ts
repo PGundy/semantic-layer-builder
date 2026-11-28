@@ -184,6 +184,20 @@ describe("semlayer readback renders each kind of target", () => {
   });
 });
 
+// Found by a walkthrough: a dimension read only through a join names no column of its own table, and its
+// readback said it was "worked out from none".
+describe("a value read only through a join", () => {
+  test("is described by the join it reads when its formula is more than the joined column", async () => {
+    const { root } = acme();
+    // A joined column on its own reads as "Value: order.created_at, a time."; a formula over it has no column of its own table to name.
+    const file = join(root, "models", "warehouse", "refunds.yaml");
+    writeFileSync(file, readFileSync(file, "utf8").replace("expr: order.created_at\n", "expr: order.created_at at time zone 'UTC'\n"));
+    const text = (await readback(root, "warehouse.refunds.order_date")).items[0]!.text;
+    expect(text).toContain("- Value: a time worked out from what the order join reaches (the technical definition below has the formula).");
+    expect(text).not.toContain("worked out from none");
+  });
+});
+
 describe("the pending store", () => {
   test("content hashes equal what semlayer approve records", async () => {
     const { root } = acme();
