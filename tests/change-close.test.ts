@@ -156,6 +156,22 @@ describe("the first release", () => {
     expect(existsSync(join(root, "changelog.yaml"))).toBe(false);
   });
 
+  // Found by a walkthrough: a table the owner deferred keeps its draft join to an approved table, and every
+  // golden on the approved table was held as if it read that join.
+  test("a draft join that reaches a golden's model does not hold the release: the golden never follows it", async () => {
+    const root = committed();
+    const added = await semlayer(root, ["add-join", "--source", "lake", "--model", "sessions", "--name", "channel_spend", "--to", "marketing_spend", "--keys", "utm_channel=channel"]);
+    expect(added.err).toBe("");
+    expect(added.code).toBe(0);
+    const r = await close(root, "1.0");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(r.json<Closed>().drafts_left_out).toContain("lake.sessions.channel_spend");
+    const entry = readChangelog(root)!.entries[0]!;
+    for (const g of SPEND_GOLDENS) expect(Object.keys(entry.goldens)).toContain(g);
+    expect(Object.keys(entry.items)).not.toContain("lake.sessions.channel_spend");
+  });
+
   test("a draft golden blocks nothing and is not recorded", async () => {
     const root = committed();
     expect(golden(root, "new_customers_2025").status).toBe("draft");

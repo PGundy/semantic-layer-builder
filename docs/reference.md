@@ -165,6 +165,7 @@ On Postgres, a request asks for any approved measure or ratio metric over time, 
 
 ```sh
 semlayer sql --source chinook --request request.json   # the SQL, the three date ranges in words, never run
+semlayer run --source chinook --request request.json   # the figures, with the date ranges in words
 semlayer goldens new --name revenue_30_days --question "Revenue in the last 30 days against the prior 30 days and a year ago" --request request.json
 ```
 
