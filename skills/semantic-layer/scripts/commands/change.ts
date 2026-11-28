@@ -9,7 +9,7 @@ import { compareRows, compileGolden, groupingColumns, resultColumns } from "../l
 import { intakeMode } from "../lib/intake.ts";
 import { BACKFILL_BATCH } from "../lib/next.ts";
 import { formatJson, plainText, protectedNames, protectedResultColumns } from "../lib/output.ts";
-import { listGoldens, loadProject, loadSource, paths } from "../lib/project.ts";
+import { listGoldens, listModels, loadProject, loadSource, paths } from "../lib/project.ts";
 import type { GoldenRun } from "../lib/readback.ts";
 import { appendEntry, CHANGELOG_FILE, compareVersions, movedCells, readChangelog, VERSION_PATTERN } from "../lib/release.ts";
 import type { ChangelogEntry, GoldenMoved } from "../lib/release-types.ts";
@@ -259,12 +259,27 @@ async function closeCommand(ctx: CommandContext, version: string | undefined): P
   // in the release that the owner has not approved. validate only warns about it (golden.uses_draft), so the close refuses.
   if (draftsLeftOut.length) {
     const readers = affectedGoldens(ctx.root, draftsLeftOut);
+    // A draft join is rested on only by a golden whose compiled request follows it. One that reads the model the
+    // join reaches, such as an approved table a deferred table joins to, does not: its figures cannot move with a
+    // join it never takes. A golden that no longer compiles is kept as a reader, since what it follows is unknown.
+    const joinRefs = new Set(listModels(ctx.root).flatMap(({ model: m }) => (m.joins ?? []).map((j) => `${m.source}.${m.model}.${j.name}`)));
+    const followed = new Map<string, Set<string> | null>();
+    const follows = (name: string, ref: string): boolean => {
+      if (!followed.has(name)) {
+        const g = goldens.get(name)!;
+        const compiled = compileGolden(ctx.root, g);
+        followed.set(name, compiled.ok ? new Set(compiled.joins.map((j) => `${g.request.source}.${j.via}`)) : null);
+      }
+      return followed.get(name)?.has(ref) ?? true;
+    };
     for (const [ref, names] of readers)
-      for (const name of names)
+      for (const name of names) {
+        if (joinRefs.has(ref) && !follows(name, ref)) continue;
         blockers.push({
           why: `golden ${name} is confirmed and reads ${ref}, a draft the release would leave out, so its recorded rows would rest on an item the owner has not approved. Read ${ref} back for the owner's yes, or return the golden to draft with semlayer goldens unconfirm --name ${name}.`,
           next: `semlayer readback --targets ${ref}`,
         });
+      }
   }
   const skipped = notRerun.length
     ? `Not rerun (${notRerun.length}): ${notRerun.map((n) => `${n.golden} (${n.reason})`).join(", ")}; their figures were not compared with their recorded rows, so the release does not show whether they moved.`

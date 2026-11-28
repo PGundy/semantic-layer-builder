@@ -117,7 +117,7 @@ const spec: CommandSpec = {
     ctx.out(
       [
         `Made ${cd}: data/ holds a made-up online store (${tables} tables as CSV and Parquet; every value is synthetic),`,
-        `semantic/ is a semantic layer set up over it with no connection or secret, and ${DEMO_SHEET} is your cheat sheet as the data owner.`,
+        `semantic/ is the start of a semantic layer over it (the data is connected, with no connection or secret; nothing is defined yet), and ${DEMO_SHEET} is your cheat sheet as the data owner.`,
         `Next: cd ${cd} && claude`,
         `Then type /semlayer (or say: "${DEMO_PROMPT}"), and answer the agent's questions as the owner, from ${DEMO_SHEET}.`,
       ].join("\n"),
