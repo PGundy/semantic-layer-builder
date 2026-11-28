@@ -66,6 +66,18 @@ describe("revenue over the last 30 days against the 30 days before and a year ea
     expect([ten(r!.revenue_prior_pct), ten(r!.revenue_year_ago_pct)]).toEqual([ten((cur - prior) / prior), ten((cur - ya) / ya)]);
   });
 
+  test.skipIf(!PG_URL)("semlayer run --request runs it with its parameters bound: the same three figures, and the date ranges in words", async () => {
+    const r = await layer!.run(["run", "--source", "chinook", "--request", JSON.stringify(base), "--json"]);
+    expect(r.code).toBe(0);
+    const out = r.json<{ columns: string[]; rows: Row[]; row_count: number; as_of: string; as_of_from: string; notes: string[] }>();
+    expect(out.columns).toEqual(COLS);
+    expect(out.row_count).toBe(1);
+    const row = out.rows[0]!;
+    expect([Number(row.revenue), Number(row.revenue_prior), Number(row.revenue_year_ago)]).toEqual([38.62, 49.62, 37.62]);
+    expect([out.as_of, out.as_of_from]).toEqual(["2025-12-22", "request"]);
+    expect(out.notes[0]).toContain("Over the 30 days 2025-11-23 to 2025-12-22 (as of 2025-12-22), against 2025-10-24 to 2025-11-22 and against 2024-11-23 to 2024-12-22");
+  });
+
   test.skipIf(!PG_URL)("by billing country, revenue descending, top 5; without the limit 14 countries, Czech Republic 0 against 25.86", async () => {
     const order = [{ field: "invoice.revenue", direction: "desc" }, { field: "invoice.billing_country" }];
     const r = await rows({ ...base, dimensions: ["invoice.billing_country"], order_by: order, limit: 5 });

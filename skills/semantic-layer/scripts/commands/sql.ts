@@ -14,7 +14,7 @@ const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 
 
 // --request: a JSON object, or a YAML or JSON file holding a request or a whole golden (its
 // request, role and user).
-function readRequest(text: string, cwd: string): { request: unknown; golden?: string; role?: string; user?: Record<string, unknown> } {
+export function readRequest(text: string, cwd: string): { request: unknown; golden?: string; role?: string; user?: Record<string, unknown> } {
   let doc: unknown;
   if (text.trim().startsWith("{")) {
     try {
@@ -37,7 +37,7 @@ function readRequest(text: string, cwd: string): { request: unknown; golden?: st
   };
 }
 
-function parseUser(text: string): Record<string, unknown> {
+export function parseUser(text: string): Record<string, unknown> {
   let v: unknown;
   try {
     v = JSON.parse(text);
@@ -54,8 +54,8 @@ function accessCommand(user: Record<string, unknown>, role: string | undefined):
   return `semlayer access --user ${quoted}${role ? ` --roles ${role}` : ""}`;
 }
 
-// The command to run after a refusal, by its first kind of problem.
-function nextStep(refusals: Refusal[], source: string, user: Record<string, unknown>, role: string | undefined, golden: string | undefined): string {
+// The command to run after a refusal, by its first kind of problem. semlayer run --request gives the same step, naming itself.
+export function nextStep(refusals: Refusal[], source: string, user: Record<string, unknown>, role: string | undefined, golden: string | undefined): string {
   const codes = refusals.map((r) => r.code);
   const who = accessCommand(user, role);
   if (codes.includes("invalid_request")) return "Fix the request (the request format is in references/spec.md, goldens) and run semlayer sql again.";
@@ -133,8 +133,8 @@ const spec: CommandSpec = {
     }
     for (const w of result.warnings ?? []) ctx.out(plainText(`Warning: ${w.message}.`));
     ctx.out(
-      `Compiled for ${result.dialect} from model ${result.model}; semlayer sql never runs it. Run it with the parameters bound and the session time zone UTC, ` +
-        "and compare a golden's recorded rows with semlayer goldens check.",
+      `Compiled for ${result.dialect} from model ${result.model}; semlayer sql never runs it. semlayer run --source ${result.source} --request <the same request> runs it with the parameters bound, ` +
+        "and semlayer goldens check compares a golden's recorded rows.",
     );
     return 0;
   },

@@ -3,12 +3,19 @@ import { resolve } from "node:path";
 import type { Adapter, QueryResult } from "../lib/adapters/index.ts";
 import type { CommandSpec } from "../lib/command.ts";
 import { bool, str } from "../lib/command.ts";
+import { compileRequest } from "../lib/compiler/index.ts";
 import { UserError } from "../lib/errors.ts";
+import { inlineParams } from "../lib/goldens.ts";
 import { assertDistinctColumns, errorMessage, openQueryAdapter } from "../lib/plan.ts";
-import { formatJson, formatTable, maskNote, maskRows, protectedNames, type SqlMask, sqlMask } from "../lib/output.ts";
+import { formatJson, formatTable, maskNote, maskRows, plainText, protectedNames, protectedResultColumns, type SqlMask, sqlMask } from "../lib/output.ts";
 import { loadSource } from "../lib/project.ts";
 import { globInsideViews } from "../lib/source-safety.ts";
 import { assertReadOnly } from "../lib/sql-guard.ts";
+import { withAsOf } from "../lib/time-request.ts";
+import { timeShapeWords } from "../lib/time-request-words.ts";
+import { nextStep, parseUser, readRequest } from "./sql.ts";
+
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
 export const DEFAULT_LIMIT = 100;
 
@@ -56,14 +63,18 @@ async function queryOrFail(adapter: Adapter, dialect: string, sql: string, guard
 }
 
 const spec: CommandSpec = {
-  summary: "Run one read-only query against a duckdb or postgres source.",
+  summary: "Run one read-only query against a duckdb or postgres source: a statement, or a request compiled from the layer.",
   usage:
-    "run --source <source> (--sql <query> | --file <path>) [--limit <n>] [--show-protected]   (--limit defaults to 100; all rows are counted, at most n are shown; " +
+    "run --source <source> (--sql <query> | --file <path> | --request <file|json> [--role <role>] [--user <json object of attributes>]) [--limit <n>] [--show-protected]   " +
+    "(--request compiles the request as semlayer sql does and runs it with its parameters bound; --limit defaults to 100; all rows are counted, at most n are shown; " +
     "values of protected columns show as [protected] unless --show-protected)",
   options: {
     source: { type: "string" },
     sql: { type: "string" },
     file: { type: "string" },
+    request: { type: "string" },
+    role: { type: "string" },
+    user: { type: "string" },
     limit: { type: "string" },
     "show-protected": { type: "boolean" },
   },
@@ -73,19 +84,53 @@ const spec: CommandSpec = {
     if (!sourceName) throw new UserError("--source is required.");
     const inline = str(values, "sql");
     const file = str(values, "file");
-    if (!inline === !file) throw new UserError("Pass exactly one of --sql or --file.");
-    const sql = inline ?? readFileSync(resolve(ctx.cwd, file!), "utf8");
+    const requestText = str(values, "request");
+    if ([inline, file, requestText].filter((v) => v !== undefined).length !== 1) throw new UserError("Pass exactly one of --sql, --file or --request.");
+    for (const flag of ["role", "user"] as const)
+      if (requestText === undefined && str(values, flag) !== undefined) throw new UserError(`--${flag} goes with --request: a statement of your own runs as written.`);
     const limit = parseLimit(str(values, "limit"));
     const source = loadSource(ctx.root, sourceName);
+    // A request is compiled from the approved layer for the role and user given, as semlayer sql compiles it,
+    // and what runs is that SQL with its parameters written in. Its lines are printed after the rows.
+    const notes: string[] = [];
+    let asOf: { as_of?: string; as_of_from?: string } = {};
+    let compiledSql: string | undefined;
+    if (requestText !== undefined) {
+      const read = readRequest(requestText, ctx.cwd);
+      const userFlag = str(values, "user");
+      const user = userFlag !== undefined ? parseUser(userFlag) : (read.user ?? {});
+      const role = str(values, "role") ?? read.role;
+      const { request, filled } = withAsOf(read.request, ctx.now());
+      const w = isObj(request) && isObj(request.window) ? request.window : undefined;
+      if (w && typeof w.as_of === "string") asOf = { as_of: w.as_of, as_of_from: filled ? "clock" : "request" };
+      const result = compileRequest(ctx.root, request, { source: sourceName, role, user });
+      if (!result.ok) {
+        const next = nextStep(result.refusals, result.source, user, role, read.golden).replaceAll("run semlayer sql again", "run semlayer run again");
+        if (ctx.json) ctx.out(formatJson({ ...result, ...asOf, next }));
+        else {
+          ctx.err(plainText(`semlayer run refused the request: ${result.refusals.length === 1 ? result.reason : ""}`).trimEnd());
+          if (result.refusals.length > 1) for (const r of result.refusals) ctx.err(plainText(`  - ${r.message}`));
+          ctx.err(plainText(next));
+        }
+        return 1;
+      }
+      compiledSql = inlineParams(result.sql, result.params, source.dialect);
+      if (filled) notes.push(`The window runs as of ${filled}, from the clock (the date in UTC); pass window.as_of to choose the date.`);
+      notes.push(...timeShapeWords(request));
+      for (const warning of result.warnings ?? []) notes.push(`Warning: ${warning.message}.`);
+    }
+    const sql = compiledSql ?? inline ?? readFileSync(resolve(ctx.cwd, file!), "utf8");
     assertReadOnly(sql, { globAllowed: (pattern) => globInsideViews(ctx.root, source, pattern) });
     const adapter = await openQueryAdapter(ctx.root, source, ctx.env, { warn: ctx.err });
     try {
-      // The statement is not the compiler's, so its columns are masked by what it reads (sqlMask).
+      // A statement that is not the compiler's is masked by what it reads (sqlMask); the compiler's columns
+      // carry the names of the fields they read, so they are masked by name, as semlayer goldens run masks them.
       const show = bool(values, "show-protected");
       const prot = protectedNames(ctx.root, source);
       const { columns, rows } = await queryOrFail(adapter, source.dialect, sql, () => (show ? undefined : sqlMask(sql, [], prot, { ordered: true }).guard));
       assertDistinctColumns(columns);
-      const mask: SqlMask = show ? { columns: [], reads: [], extra: false } : sqlMask(sql, columns, prot, { ordered: true });
+      const none: SqlMask = { columns: [], reads: [], extra: false };
+      const mask: SqlMask = show ? none : compiledSql !== undefined ? { ...none, columns: protectedResultColumns(columns, prot) } : sqlMask(sql, columns, prot, { ordered: true });
       const shown = maskRows(rows.slice(0, limit), mask.columns);
       if (ctx.json) {
         ctx.out(
@@ -97,12 +142,15 @@ const spec: CommandSpec = {
             protected_columns: mask.columns,
             protected_reads: mask.reads,
             ...(mask.extra ? { protected_note: maskNote(mask) } : {}),
+            ...asOf,
+            ...(notes.length ? { notes } : {}),
           }),
         );
       } else {
         ctx.out(formatTable(shown, columns));
         ctx.out(`(${rows.length} row${rows.length === 1 ? "" : "s"}${rows.length > shown.length ? `, showing ${shown.length}` : ""})`);
         if (mask.columns.length) ctx.out(maskNote(mask));
+        for (const line of notes) ctx.out(plainText(line));
       }
     } finally {
       await adapter.close();
